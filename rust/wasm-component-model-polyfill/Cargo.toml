@@ -35,3 +35,4 @@ web-sys = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
 wasm-bindgen-test = { workspace = true }
+wcmp-macros = { workspace = true }

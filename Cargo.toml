@@ -1,5 +1,5 @@
 [workspace]
-members = ["rust/wasm-component-model-polyfill"]
+members = ["rust/wasm-component-model-polyfill", "rust/wcmp-macros"]
 resolver = "2"
 
 [workspace.package]
@@ -14,6 +14,9 @@ anyhow = "1"
 console_error_panic_hook = "0.1"
 futures = "0.3"
 js-sys = "0.3"
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
 thiserror = "2"
 tokio = "1"
 tracing = "0.1"
@@ -21,10 +24,14 @@ wasm-bindgen = "=0.2.108"
 wasm-bindgen-futures = "0.4"
 wasm-bindgen-test = "0.3"
 wasm_runtime_layer = "0.7"
+wat = "1"
 web-sys = "0.3"
 
 [workspace.dependencies.wasm-component-model-polyfill]
 path = "./rust/wasm-component-model-polyfill"
+
+[workspace.dependencies.wcmp-macros]
+path = "./rust/wcmp-macros"
 
 [profile.dev]
 opt-level = 1

@@ -201,7 +201,7 @@ expect minor churn there.
 
 | Concern                                                                             | Current state                                       | Polyfill target                                                                                                                                             | Wasmtime            | Reference                                |
 | ----------------------------------------------------------------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | ---------------------------------------- |
-| `Engine` / `Store` / `Module` / `Instance` (Core layer, via [`wasm_runtime_layer`]) | ✅ pinned to 0.4.x; PR upstream bumps to 0.5/0.6    | Track upstream                                                                                                                                              | ✅                  | [`wasmtime::component::Linker`]          |
+| `Engine` / `Store` / `Module` / `Instance` (Core layer, via [`wasm_runtime_layer`]) | ✅ on 0.7                                          | Track upstream                                                                                                                                              | ✅                  | [`wasmtime::component::Linker`]          |
 | `Component` / `Linker` / `LinkerInstance` / `Instance` (component layer)            | ✅ multi-instance, `define_func`, `define_resource` | Preserve and extend for async                                                                                                                               | ✅                  | [`wasmtime::component::LinkerInstance`]  |
 | Identifier model (`PackageName`, `InterfaceIdentifier`, semver)                     | ✅                                                  | Preserve                                                                                                                                                    | ✅                  | [Explainer]                              |
 | Host function definition (sync)                                                     | ✅ untyped and typed                                | Preserve                                                                                                                                                    | ✅                  | [`LinkerInstance::func_wrap`]            |
@@ -296,7 +296,8 @@ subsystem; the order within each group is not prescriptive.
 
 **Track upstream**
 
-1. [`wasm_runtime_layer`] 0.5/0.6 API upgrade (PR already in flight upstream).
+1. Stay current with [`wasm_runtime_layer`] releases (workspace is on 0.7 as of
+   this writing).
 
 ## What This Document Does Not Commit To
 
