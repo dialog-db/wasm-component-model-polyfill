@@ -11,3 +11,15 @@
 //! - PDD002 — ecosystem foundation ([`wasm_runtime_layer`] and
 //!   [`wasm_component_layer`])
 //! - PDD003 — compatibility outlook and implementation checklist
+//! - PDD005 — library foundations (this slice)
+//!
+//! [`wasm_component_layer`]: https://github.com/DouglasDwyer/wasm_component_layer
+
+mod backend;
+mod engine;
+mod error;
+mod store;
+
+pub use crate::engine::Engine;
+pub use crate::error::{Error, Result};
+pub use crate::store::Store;
