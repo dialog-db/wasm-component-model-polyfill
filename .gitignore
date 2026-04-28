@@ -1,0 +1,6 @@
+/target
+/dist
+Cargo.lock.bak
+.direnv
+result
+result-*
