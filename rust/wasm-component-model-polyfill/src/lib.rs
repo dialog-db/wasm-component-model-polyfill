@@ -18,8 +18,10 @@
 mod backend;
 mod engine;
 mod error;
+mod identifier;
 mod store;
 
 pub use crate::engine::Engine;
 pub use crate::error::{Error, Result};
+pub use crate::identifier::{IdentifierParseError, InterfaceIdentifier, PackageName};
 pub use crate::store::Store;

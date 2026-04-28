@@ -18,9 +18,11 @@ web-integration-tests = []
 [dependencies]
 anyhow = { workspace = true }
 futures = { workspace = true }
+semver = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 wasm_runtime_layer = { workspace = true }
+wasmparser = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["rt", "sync"] }

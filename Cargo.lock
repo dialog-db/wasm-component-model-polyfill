@@ -644,6 +644,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f467dd6dccf739c208452f8014c75c18bb8301b050ad1cfb27153803edb0f51"
 dependencies = [
  "foldhash 0.2.0",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -1510,6 +1512,7 @@ dependencies = [
  "futures",
  "js-sys",
  "js_wasm_runtime_layer",
+ "semver",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -1517,6 +1520,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "wasm_runtime_layer",
+ "wasmparser 0.248.0",
  "wasmtime",
  "wasmtime_runtime_layer",
  "wcmp-macros",
@@ -1627,8 +1631,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa4439c5eee9df71ee0c6efb37f63b1fcb1fec38f85f5142c54e7ed05d33091a"
 dependencies = [
  "bitflags",
+ "hashbrown 0.17.0",
  "indexmap",
  "semver",
+ "serde",
 ]
 
 [[package]]
