@@ -1,0 +1,37 @@
+//! The structural shape of a `result<T, E>` value type.
+
+use super::value_type::ValueType;
+
+/// A success-or-failure value with optional payload types on each
+/// arm.
+///
+/// Either or both of the `ok` and `err` arms may carry a payload, or
+/// neither may. Two result types are structurally equal when both
+/// arms agree — same presence pattern, structurally-equal payload
+/// types when present.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ResultType {
+    ok: Option<Box<ValueType>>,
+    err: Option<Box<ValueType>>,
+}
+
+impl ResultType {
+    /// Construct a result type from optional `ok` and `err` payload
+    /// types.
+    pub fn new(ok: Option<ValueType>, err: Option<ValueType>) -> Self {
+        Self {
+            ok: ok.map(Box::new),
+            err: err.map(Box::new),
+        }
+    }
+
+    /// The payload type of the `ok` arm, if any.
+    pub fn ok(&self) -> Option<&ValueType> {
+        self.ok.as_deref()
+    }
+
+    /// The payload type of the `err` arm, if any.
+    pub fn err(&self) -> Option<&ValueType> {
+        self.err.as_deref()
+    }
+}

@@ -1,12 +1,10 @@
 //! The polyfill's compilation context.
 //!
-//! See [PDD005] for the design intent: a thin newtype over
-//! [`wasm_runtime_layer::Engine`] that hides the runtime-layer backend
-//! behind a cfg-selected alias and is the moral equivalent of
-//! [Wasmtime]'s `wasmtime::component::Engine`.
-//!
-//! [PDD005]: ../../../../design/PDD005%20Library%20Foundations.md
-//! [Wasmtime]: https://github.com/bytecodealliance/wasmtime
+//! `Engine` is a thin wrapper over the runtime-layer engine selected
+//! at compile time for the host platform. It hides the backend type
+//! from the polyfill's public API and is the moral equivalent of
+//! `wasmtime::component::Engine` — the type from which component
+//! compilation will hang in subsequent slices.
 
 use crate::backend::Backend;
 use crate::error::Result;

@@ -1,22 +1,16 @@
 //! The polyfill's single error type.
 //!
-//! Per [PDD005], every public function that can fail returns
-//! [`Result<T, Error>`][Result] (aliased to [`Result<T>`][Result] at the
-//! crate root). Subsequent slices add variants to this same enum rather
-//! than introducing parallel error hierarchies. Underlying causes from
-//! [`wasm_runtime_layer`] are captured as `#[source]` fields so the
-//! origin of an error is preserved without leaking the runtime layer's
-//! types into the public API.
+//! Every public function that can fail returns [`Result<T, Error>`]
+//! (aliased to [`Result<T>`] at the crate root). The variant set
+//! grows additively as the polyfill grows; the polyfill does not
+//! introduce parallel error hierarchies for each subsystem.
 //!
-//! Note on [`anyhow::Error`] in `#[source]` fields: it appears here
-//! only because [`wasm_runtime_layer`] surfaces fallible operations as
-//! `anyhow::Result`, and the polyfill must propagate whatever it
-//! receives. Exposing `anyhow::Error` is a pragmatic compromise, not a
-//! design preference — a future slice may replace these `#[source]`
-//! captures with structured causes once the runtime-layer error story
-//! firms up. Consumers should treat the inner cause as opaque.
-//!
-//! [PDD005]: ../../../../design/PDD005%20Library%20Foundations.md
+//! Underlying causes are captured as `#[source]` fields so the
+//! origin of an error is preserved without leaking the runtime
+//! layer's types into the public API. [`anyhow::Error`] appears in
+//! `#[source]` fields only because the runtime layer surfaces
+//! fallible operations as `anyhow::Result`; consumers should treat
+//! the inner cause as opaque.
 
 use thiserror::Error;
 
@@ -35,6 +29,15 @@ pub enum Error {
     /// The runtime-layer backend store could not be constructed.
     #[error("failed to construct the backend store")]
     BackendStoreCreation(#[source] anyhow::Error),
+
+    /// Decoding a component binary failed.
+    ///
+    /// Surfaced when the bytes handed to the parser do not form a
+    /// valid component: a corrupted preamble, a truncated section,
+    /// or an encoding the polyfill does not yet implement. The
+    /// underlying parser cause is captured as the source.
+    #[error("failed to parse the component binary")]
+    Parse(#[source] anyhow::Error),
 }
 
 /// A `Result` whose error variant is the polyfill's [`Error`].

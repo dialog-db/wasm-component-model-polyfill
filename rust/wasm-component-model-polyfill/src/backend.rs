@@ -1,15 +1,12 @@
-//! Selection of the [`wasm_runtime_layer`] backend that the polyfill's
+//! Selection of the runtime-layer backend the polyfill's
 //! foundational types are built against.
 //!
-//! The choice is target-conditional and an implementation detail of the
-//! polyfill — the public API never names the backend directly. Per
-//! [PDD002] and [PDD005], native targets use the Wasmtime backend and
-//! `wasm32-unknown-unknown` uses the browser's native `WebAssembly`
-//! interface via `js_wasm_runtime_layer`. This module is itself
-//! workspace-private; nothing inside it is re-exported by `lib.rs`.
-//!
-//! [PDD002]: ../../../../design/PDD002%20Ecosystem%20Foundation.md
-//! [PDD005]: ../../../../design/PDD005%20Library%20Foundations.md
+//! The choice is target-conditional and an implementation detail —
+//! the public API never names the backend directly. Native targets
+//! use the Wasmtime backend; `wasm32-unknown-unknown` uses the
+//! browser's native `WebAssembly` interface via the `js_wasm`
+//! backend. This module is workspace-private; nothing inside it is
+//! re-exported by `lib.rs`.
 
 #[cfg(not(target_arch = "wasm32"))]
 pub type Backend = wasmtime_runtime_layer::Engine;

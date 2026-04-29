@@ -1,12 +1,10 @@
 //! The polyfill's owner of guest state.
 //!
-//! See [PDD005] for the design intent: a thin newtype over
-//! [`wasm_runtime_layer::Store`] that carries host data of type `T` and
-//! serves as the unit of isolation between independent component
-//! instances. Later slices will attach instances and their tables,
-//! memories, and resource handle tables to it.
-//!
-//! [PDD005]: ../../../../design/PDD005%20Library%20Foundations.md
+//! `Store<T>` carries host data of type `T` and is the unit of
+//! isolation between independent component instances: the
+//! polyfill's analogue to `wasmtime::Store`. Subsequent slices will
+//! attach instance state — tables, memories, and resource handle
+//! tables — to it.
 
 use crate::backend::Backend;
 use crate::engine::Engine;

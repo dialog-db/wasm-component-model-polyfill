@@ -18,6 +18,10 @@ General guidelines:
   - These should be decided during engineering planning after the design
     is considered
   - Psuedocode and flexible / non-specific suggestions are always welcome
+- **DO NOT pre-empt future design documents by referencing them or
+    anticipating their contents contemporaneously**
+  - If something is not in scope or will be covered later, add it to the
+    "Non-goals" section
 - **DO NOT leave lingering open questions unanswered!**
 - **Make an effort to follow the format, structure and idioms of the
   design documents that have already been accepted!**
