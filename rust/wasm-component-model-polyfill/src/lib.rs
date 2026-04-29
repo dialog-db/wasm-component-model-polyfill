@@ -27,7 +27,7 @@ mod types;
 
 pub use crate::component::{
     Component, ComponentExport, ComponentImport, ExternType, ExternalName, FunctionParameter,
-    FunctionType, InstanceItem, InstanceType, SectionInventory,
+    FunctionType, InstanceItem, InstanceType,
 };
 pub use crate::engine::Engine;
 pub use crate::error::{Error, Result};

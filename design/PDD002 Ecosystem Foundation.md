@@ -20,17 +20,11 @@ project owes back to the ecosystem that made it possible.
 - Establish [`wasm_runtime_layer`] as the polyfill's runtime substrate, so that
   the browser-versus-Wasmtime split described in [PDD000] is solved by an
   upstream crate rather than re-engineered in this project.
-- Adopt [`wasm_component_layer`] as the structural starting point for the
-  polyfill's Component Model implementation, recognising that it is presently
-  unmaintained and does not target wasip3.
-- Define the polyfill's relationship to those upstream projects clearly enough
+- Define the polyfill's relationship to upstream projects clearly enough
   that contributors know when to upstream a fix, when to extend locally, and
   when to diverge.
 - Honour the licenses, attribution, and stylistic conventions of the upstream
   crates so that the polyfill remains a good citizen of the Rust Wasm ecosystem.
-- Position the polyfill so that, if the upstream Component Model crate ever
-  resumes active maintenance, convergence remains possible rather than
-  precluded by gratuitous divergence.
 
 ## Non-goals
 
@@ -43,9 +37,9 @@ project owes back to the ecosystem that made it possible.
 - This document does not commit the project to upstreaming any particular
   change. It describes a posture, not a schedule.
 - This document does not address packaging or publication of the polyfill
-  itself; that remains the subject of a future PDD.
+  itself; that is out of scope here.
 
-## The Runtime Abstraction
+## Runtime Abstraction
 
 [`wasm_runtime_layer`] is a thin, backend-agnostic façade over WebAssembly
 Core runtimes. It defines a `WasmEngine` trait that backends implement, and
@@ -65,34 +59,67 @@ polyfill needs at the runtime layer — additional backend behaviour, missing
 trait methods, performance work — should be pursued upstream first and brought
 into the polyfill only when upstreaming is impractical.
 
-## The Component Model Foundation
+## Relationship to Wasmtime
 
-[`wasm_component_layer`] is, to our knowledge, the only mature
+On native targets the polyfill inherits and forwards the capabilities of
+[Wasmtime] via [`wasm_runtime_layer`]. The polyfill's component-layer types
+(`Engine`, `Component`, `Linker`, `Instance`, host-function and host-resource
+registration, the canonical ABI, and everything that follows them) are, on
+native, thin wrappers over their `wasmtime::component` counterparts. Parsing,
+validation, the type system, lift/lower, instantiation, and the canonical-ABI
+runtime state are all delegated to Wasmtime; the polyfill's job on native is to
+expose the polyfill's own public API surface around them and to translate
+Wasmtime's introspection types into the polyfill's data shapes (so downstream
+consumers never see an upstream type).
+
+The web target (`wasm32-unknown-unknown`) is where the polyfill earns its
+name. There the polyfill cannot delegate to Wasmtime, and re-implements
+the same component-layer surface on top of the browser's `WebAssembly.*`
+JS API behind the same public API. The native target leads each PDD:
+every feature's semantics are settled on native (i.e. "what does Wasmtime
+do?") before the web re-implementation begins.
+
+Two corollaries follow from this posture, and they concern every following PDD
+that introduces a component-layer type:
+
+- **Don't re-implement on native targets what may already by available in
+  Wasmtime.** If the polyfill is reaching for `wasmparser`, hand-rolling a type
+  space, or building a parallel canonical-ABI implementation on native, that is
+  almost certainly the wrong shape.
+- **Minimise the polyfill's public API surface.** Wasmtime's
+  `wasmtime::component` API is large; the polyfill is not obliged to
+  shadow all of it. Each PDD exposes only the types and methods load-
+  bearing for that PDD's user stories, and resists the urge to mirror
+  Wasmtime one-for-one. The polyfill is a polyfill, not a re-export.
+
+## Component Model Foundation
+
+[`wasm_component_layer`] is, to our knowledge, the only extant
 runtime-agnostic implementation of the WebAssembly Component Model in Rust.
 It builds on [`wasm_runtime_layer`] and provides the `Engine`, `Store`,
 `Component`, `Linker`, and `Instance` types that a host needs in order to
 load, link, instantiate, and call into a component. It supports parsing
 component binaries, runtime construction of component interface types, guest
 and host resources with destructors, and structural type equality as required
-by the Component Model specification.
+by the Component Model specification (citation needed).
 
-The crate targets wasip2 and predates the wasip3 proposal. As of the writing
-of this document, it is effectively unmaintained: the upstream repository has
-not been advanced to track wasip3, and several wasip2-era limitations
-(string transcoders, host binding macros, subtyping, broader test coverage)
-remain unresolved. None of this diminishes the value of the work; it simply
-means that the polyfill cannot reach its goals by depending on
+The crate targets a subset of wasip2 and predates the wasip3 proposal. As of the
+writing of this document, it is effectively unmaintained: the upstream
+repository has not been advanced to track wasip3, and several wasip2-era
+limitations (string transcoders, host binding macros, subtyping, broader test
+coverage) remain unresolved. None of this diminishes the value of the work; it
+simply means that the polyfill cannot reach its goals by depending on
 `wasm_component_layer` unmodified.
 
-The polyfill's strategy is therefore to treat `wasm_component_layer` as a
-seed crystal. Its data structures, traversal patterns, and ABI implementations
-are the starting point from which a wasip3-capable polyfill is grown. Where
-the existing design carries directly forward to wasip3, the polyfill preserves
-it; where wasip3 diverges from wasip2, the polyfill extends, replaces, or
-rewrites the relevant pieces. Where existing wasip2 functionality is
-incomplete (the gaps the upstream README already notes), the polyfill is free
-to finish the job. The specific shape of the wasip3 deltas — and the
-polyfill's plan for absorbing them — is the subject of a future PDD.
+The polyfill's strategy is therefore to treat `wasm_component_layer` as a seed
+crystal and a prior art reference. Its data structures, traversal patterns, and
+ABI implementations are the starting point from which a wasip3-capable polyfill
+is grown. Where the existing design carries directly forward to wasip3, the
+polyfill preserves it; where wasip3 diverges from wasip2, the polyfill extends,
+replaces, or rewrites the relevant pieces. Where existing wasip2 functionality
+is incomplete (the gaps the upstream README already notes), the polyfill is free
+to finish the job. The specific shape of the wasip3 deltas — and the polyfill's
+plan for absorbing them — is out of scope here.
 
 ## Relationship to Upstream
 

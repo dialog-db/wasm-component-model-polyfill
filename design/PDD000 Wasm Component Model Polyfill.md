@@ -21,7 +21,7 @@ browsers. Additionally, the library progressively falls back to [Wasmtime]
 under the hood when running outside of the browser, which enables developers
 to use a single API and mental model when targeting both platforms.
 
-- [polyfill]: <https://developer.mozilla.org/en-US/docs/Glossary/Polyfill>
-- [Wasm Core]: <https://www.w3.org/TR/wasm-core-2/>
-- [Wasm Component Model]: <https://github.com/WebAssembly/component-model>
-- [Wasmtime]: <https://github.com/bytecodealliance/wasmtime>
+[polyfill]: https://developer.mozilla.org/en-US/docs/Glossary/Polyfill
+[Wasm Core]: https://www.w3.org/TR/wasm-core-2/
+[Wasm Component Model]: https://github.com/WebAssembly/component-model
+[Wasmtime]: https://github.com/bytecodealliance/wasmtime

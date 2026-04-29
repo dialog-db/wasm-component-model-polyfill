@@ -41,8 +41,8 @@ against.
   polyfill needs at this stage. A larger fixture story may be revisited if
   pre-built component binaries enter the corpus.
 - This document does not commit the inline-assembly macros to a public,
-  consumer-facing API. They are a workspace-internal authoring tool. If a
-  case for downstream exposure emerges, it is a future PDD's concern.
+  consumer-facing API. They are a workspace-internal authoring tool;
+  downstream exposure is out of scope here.
 - This document does not address how host-side Component Model behaviour is
   asserted on (the polyfill's runtime APIs themselves are described in
   [PDD002] and [PDD003]); it only addresses the macros that surround such
@@ -188,4 +188,4 @@ its scope and correctness in one pass.
 [`wasm_component_layer`]: https://github.com/DouglasDwyer/wasm_component_layer
 [wasm-bindgen-test]: https://rustwasm.github.io/docs/wasm-bindgen/wasm-bindgen-test/index.html
 [tokio]: https://tokio.rs
-[Dialog DB `#[test]` macro]: https://github.com/dialog-db/dialog-db/blob/00c7bc5fa8ea187da7abda27c2a0a8edbd8c05ed/rust/dialog-common/src/lib.rs#L132
+[Dialog DB `#[test]` macro]: <https://github.com/dialog-db/dialog-db/blob/00c7bc5fa8ea187da7abda27c2a0a8edbd8c05ed/rust/dialog-common/src/lib.rs#L132>

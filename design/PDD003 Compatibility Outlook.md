@@ -39,8 +39,8 @@ plain Wasm Core engine.
 - This document does not specify per-WASI-world bindings (e.g. the
   `wasi:http/types` interface). Those are downstream of the polyfill: a WASI
   world is a *consumer* of the Component Model machinery, linked into a
-  `Linker` like any other component import. A future PDD may revisit specific
-  worlds once the polyfill is feature-complete.
+  `Linker` like any other component import. Specific worlds are out of
+  scope here.
 - This document does not implement, polyfill, or otherwise compensate for
   Wasm Core proposals (GC, threads, exception handling, stack switching, …).
   Those are the host engine's responsibility. The inventory only notes which
@@ -201,7 +201,7 @@ expect minor churn there.
 
 | Concern                                                                             | Current state                                       | Polyfill target                                                                                                                                             | Wasmtime            | Reference                                |
 | ----------------------------------------------------------------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | ---------------------------------------- |
-| `Engine` / `Store` / `Module` / `Instance` (Core layer, via [`wasm_runtime_layer`]) | ✅ on 0.7                                          | Track upstream                                                                                                                                              | ✅                  | [`wasmtime::component::Linker`]          |
+| `Engine` / `Store` / `Module` / `Instance` (Core layer, via [`wasm_runtime_layer`]) | ✅ on 0.7                                           | Track upstream                                                                                                                                              | ✅                  | [`wasmtime::component::Linker`]          |
 | `Component` / `Linker` / `LinkerInstance` / `Instance` (component layer)            | ✅ multi-instance, `define_func`, `define_resource` | Preserve and extend for async                                                                                                                               | ✅                  | [`wasmtime::component::LinkerInstance`]  |
 | Identifier model (`PackageName`, `InterfaceIdentifier`, semver)                     | ✅                                                  | Preserve                                                                                                                                                    | ✅                  | [Explainer]                              |
 | Host function definition (sync)                                                     | ✅ untyped and typed                                | Preserve                                                                                                                                                    | ✅                  | [`LinkerInstance::func_wrap`]            |
@@ -212,92 +212,6 @@ expect minor churn there.
 | Component-level `start` function                                                    | ❌                                                  | Implement                                                                                                                                                   | ✅                  | [Explainer – start definitions]          |
 | Value imports / value exports                                                       | ❌                                                  | **Deferred.** Tracked on the roadmap; implementation deferred until [Wasmtime] resumes work. The Component Model MVP currently treats this as out-of-scope. | ❌ removed from MVP | [Explainer – component definitions]      |
 | WIT `@since` / `@unstable` feature gate handling                                    | ❌                                                  | Tolerate and gate appropriately                                                                                                                             | ✅                  | [WIT Feature Gates]                      |
-
-### Test Substrate
-
-| Concern                                              | Current state                    | Polyfill target                                   |
-| ---------------------------------------------------- | -------------------------------- | ------------------------------------------------- |
-| Multi-backend test matrix (Wasmtime, Wasmi, browser) | ❌ examples-only, single backend | Multi-backend coverage as established by [PDD001] |
-| Conformance corpus                                   | ❌                               | Adopt or build                                    |
-| Async, cancellation, and drop-ordering edge cases    | ❌                               | Add to test corpus                                |
-
-## The Implementation Checklist
-
-This section flattens the matrix above into a single discrete checklist that
-the polyfill can use to track progress. The grouping is by Component Model
-subsystem; the order within each group is not prescriptive.
-
-**Component binary format**
-
-1. wasip3 `canon` builtin opcode parsing and dispatch (task / subtask /
-   backpressure / context / yield / stream / future / error-context /
-   waitable-set).
-2. Type-encoding bytes `0x64` (`error-context`), `0x65` (`future`), and
-   `0x66` (`stream`) in the type decoder.
-3. Re-target component parsing to wasip3-aware `wit-parser`,
-   `wit-component`, and `wasmtime-environ` versions.
-
-**Component type system**
-
-1. Subtyping (variance, depth, and width).
-2. `future<T>` as a first-class valtype.
-3. `stream<T>` as a first-class valtype.
-4. `error-context` as a first-class valtype.
-5. The `async?` bit on function types.
-6. Async resource destructors.
-7. Cross-component resource handle transfer (transfer trampolines).
-
-**Canonical ABI**
-
-1. String transcoders (UTF-8 ↔ UTF-16 ↔ Latin1+UTF-16).
-2. `post-return` as a first-class option, restricted to sync lifts.
-3. Async `canon lift` in callback mode.
-4. Async `canon lift` in stackful mode (best-effort: [JSPI]-backed in
-    browsers; native where stack switching is available).
-5. Async `canon lower`.
-6. Per-task lift/lower context threading.
-7. Generalized handle table (futures + streams + resources).
-
-**Async runtime substrate**
-
-1. Cooperative scheduler bridging JS Promises in the browser and a
-    runtime-agnostic executor on native targets.
-2. Task lifecycle.
-3. `task.return`.
-4. `task.cancel`, `subtask.cancel`, and `cancellable` wait/poll.
-5. `subtask.drop`.
-6. `backpressure.set`, `backpressure.inc`, and `backpressure.dec`.
-7. `context.get` and `context.set` (i32 and i64 variants; fixed length 2 i32).
-8. Structured-concurrency subtask/supertask edges.
-9. `yield`.
-10. Waitable sets (`waitable-set.{new,add,remove,wait,poll,drop}` and
-    `waitable.join`).
-11. Event encoding for waits, polls, and callback status words.
-
-**Future, stream, and error-context lifecycles**
-
-1. `future.{new, read, write, cancel-read, cancel-write, drop-readable,
-    drop-writable}`.
-2. `stream.{new, read, write, cancel-read, cancel-write, drop-readable,
-    drop-writable}`.
-3. `error-context.{new, debug-message, drop}`.
-4. End-drop and cancellation ordering test corpus
-    (cf. CVE-2026-27195).
-
-**Linking, instantiation, and host integration**
-
-1. Async host function registration.
-2. Async host resource destructors.
-3. Host-binding code generation (`wit-bindgen!` equivalent).
-4. Component-level `start` function.
-5. Value imports / value exports — *deferred until [Wasmtime] adopts them
-    upstream.*
-6. WIT `@since` / `@unstable` feature gate handling.
-
-**Track upstream**
-
-1. Stay current with [`wasm_runtime_layer`] releases (workspace is on 0.7 as of
-   this writing).
 
 ## What This Document Does Not Commit To
 

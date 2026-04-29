@@ -18,7 +18,6 @@ mod external_name;
 mod function_type;
 mod instance_type;
 mod parse;
-mod section_inventory;
 
 pub use component_export::ComponentExport;
 pub use component_import::ComponentImport;
@@ -27,4 +26,3 @@ pub use extern_type::ExternType;
 pub use external_name::ExternalName;
 pub use function_type::{FunctionParameter, FunctionType};
 pub use instance_type::{InstanceItem, InstanceType};
-pub use section_inventory::SectionInventory;

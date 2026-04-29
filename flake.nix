@@ -64,6 +64,32 @@
           };
         };
 
+        # Inline rumdl configuration for design-doc formatting. Materialised
+        # into the Nix store so the menu command can reference it via
+        # `--config` without checking a file into the repo.
+        rumdlConfig = (pkgs.formats.toml { }).generate "rumdl.toml" {
+          global = {
+            "respect-gitignore" = true;
+
+            # The config lives in /nix/store, so rumdl can't write its
+            # default cache next to it. Disable rather than redirect.
+            cache = false;
+
+            # MD013 (line-length) is noisy on prose; skip it on design docs.
+            # disable = [ "MD013" ];
+          };
+
+          # Line length
+          MD013 = {
+            reflow = true;
+          };
+
+          # Tables
+          MD060 = {
+            enabled = true;
+          };
+        };
+
         # Tools every Rust derivation in this workspace needs as
         # `nativeBuildInputs`.
         commonBuildInputs = with pkgs; [
@@ -93,6 +119,7 @@
             cargo-nextest
             chrome
             chromedriver
+            rumdl
             rustToolchain
             wasm-bindgen-cli
           ]);
@@ -201,6 +228,14 @@
             description = "Clippy and format checks across the workspace";
             command = "nix flake check";
           };
+
+          "format:design" = {
+            description = "Format PDD Markdown files in the design/ folder";
+            command = ''
+              root=$(git rev-parse --show-toplevel)
+              rumdl fmt --config ${rumdlConfig} "$root/design"
+            '';
+          };
         };
 
         menu = makeMenu {
@@ -244,7 +279,13 @@
           };
         };
 
-        checks = cargoChecks;
+        checks = cargoChecks // {
+          design = pkgs.runCommand "lint-design" { } ''
+            set -e
+            ${pkgs.rumdl}/bin/rumdl check --config ${rumdlConfig} ${./.}/design
+            touch $out
+          '';
+        };
 
         devShells.default = pkgs.mkShell {
           name = "wcmp";

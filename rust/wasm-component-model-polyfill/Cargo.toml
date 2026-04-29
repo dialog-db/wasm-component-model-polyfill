@@ -22,10 +22,15 @@ semver = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 wasm_runtime_layer = { workspace = true }
-wasmparser = { workspace = true }
+wit-component = { workspace = true }
+wit-parser = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["rt", "sync"] }
+# Pulled in for its feature flag: `wasmtime_runtime_layer`'s default
+# `Backend` constructs a `wasmtime::Engine` whose GC support requires
+# at least one collector feature to be enabled in the dep graph.
+wasmtime = { workspace = true, features = ["gc-drc"] }
 wasmtime_runtime_layer = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -40,6 +45,3 @@ web-sys = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
 wasm-bindgen-test = { workspace = true }
 wcmp-macros = { workspace = true }
-
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-wasmtime = { workspace = true, features = ["gc-drc"] }

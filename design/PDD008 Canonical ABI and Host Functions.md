@@ -3,17 +3,18 @@
 [PDD006] introduced `Component` and the polyfill's type-system data
 shapes; [PDD007] introduced `Linker<T>`, `LinkerInstance<'_, T>`, and
 `Instance`, with instantiation and primitive-only export invocation.
-This document picks up where those slices stopped: it introduces the
+This document picks up where those PDDs stopped: it introduces the
 polyfill's host-side value family — `Val`, the value-bearing
 counterpart to [PDD006]'s `ValueType` shapes — implements the
 canonical ABI for every compound valtype in the synchronous baseline
 *except* `own<T>` and `borrow<T>`, and adds typed and untyped
 host-function registration on `LinkerInstance`.
 
-The slice inherits both boundaries [PDD006] established: the
-synchronous baseline (defined in [PDD006] §The Synchronous Baseline)
-and the native-leading discipline (expressed through the test gate
-defined in [PDD006] §The Native-Leading Test Gate). Neither is
+This PDD inherits both boundaries [PDD006] established: the
+synchronous baseline (defined in
+[PDD006 §The Synchronous Baseline][pdd006-synchronous-baseline]) and
+the parity-per-PDD discipline (expressed in
+[PDD006 §Web Parity Per PDD][pdd006-web-parity-per-pdd]). Neither is
 restated here.
 
 ## Goals
@@ -28,48 +29,49 @@ restated here.
   `cabi_realloc` invocation for heap-allocating values, and sync
   `post-return` after the caller observes the return.
 - The three corresponding tests in `tests/baseline_linking.rs` execute
-  under `test:native:*` without the `#[ignore]` attribute they
-  currently carry. Concretely:
+  under both `test:native:*` and `test:web:*` without the `#[ignore]`
+  attribute they currently carry. Concretely:
   `it_defines_an_untyped_host_function`,
   `it_defines_a_typed_host_function`, and
   `it_invokes_an_exported_component_function`.
-- Each of the un-stubbed tests is target-gated per [PDD006]'s
-  convention.
+- The un-stubbed tests run unconditionally on every supported target
+  per [PDD006 §Web Parity Per PDD][pdd006-web-parity-per-pdd] — no
+  `#[ignore]`, no target gate.
 - `Val` lives in the polyfill's public API at the crate root
   (`wcmp::Val`) and wraps, rather than re-exports, any
   [`wasm_runtime_layer`] type or upstream component-layer type it
   happens to be built on top of.
 - The single `wcmp::Error` enum grows additively with type-mismatch
   and ABI variants.
-- The path from this slice to the slice that follows is described
-  well enough that the canonical-ABI surface does not have to be
-  reshaped to accommodate handle-typed valtypes.
+- This PDD leaves the canonical-ABI surface in a shape that does not
+  have to be reshaped to accommodate handle-typed valtypes when those
+  land.
 
 ## Non-goals
 
 - `own<T>` and `borrow<T>` lift/lower; the handle table; host-
-  resource registration with sync destructor — all are deferred to
-  [PDD009]. The lift/lower machinery this slice introduces is shaped
-  to accept the handle valtypes additively but does not process them.
+  resource registration with sync destructor — all are out of scope
+  and tracked on [PDD003]'s checklist. The lift/lower machinery this
+  PDD introduces is shaped to accept the handle valtypes additively
+  but does not process them.
 - Specialized list lift/lower fast paths (e.g. `list<u8>`,
   `list<u32>`) and string transcoders (UTF-8 ↔ UTF-16 ↔ Latin1+UTF-16)
-  are permitted but not required by this slice; observable behaviour
-  is what the public API contracts on. A future slice may revisit
-  them once profiling identifies the cost.
+  are permitted but not required by this PDD; observable behaviour
+  is what the public API contracts on. Profiling-driven improvements
+  to these paths are out of scope here.
 - Async lift/lower (callback or stackful), per-task lift/lower context
   threading, and the generalised handle-table extension to `future<T>`
   and `stream<T>`. All are async-tier work.
-- The web target. Same target-gate convention as [PDD006].
 
 ## The Canonical ABI Surface
 
 Calling an export — typed or untyped — exercises the canonical ABI.
-The slice covers, on the native target:
+This PDD covers, on every supported target:
 
 - Lift and lower for every valtype in the synchronous baseline
   *except* `own<T>` and `borrow<T>`, in both argument and result
-  position. This includes the primitives [PDD007] passed through
-  directly and adds the compound and string types this slice
+  position. This includes the primitives [PDD007] handled by direct
+  passthrough and adds the compound and string types this PDD
   introduces.
 - Invocation of the guest's `cabi_realloc` during lowering of
   heap-allocating values (e.g. `string`, `list<T>`, deeply-nested
@@ -81,7 +83,9 @@ The slice covers, on the native target:
 
 The lift/lower implementation operates on the runtime layer's
 `Memory` through the crate-private accessors [PDD005] established; no
-upstream type is exposed.
+upstream type is exposed. Per
+[PDD006 §Web Parity Per PDD][pdd006-web-parity-per-pdd], the
+implementation lands on every supported target in the same change.
 
 ## The Host Value Surface
 
@@ -98,8 +102,8 @@ signature and the canonical ABI's runtime machinery.
 component-layer type. Its representation for compound valtypes (e.g.
 `Val::Record`, `Val::List`) carries owned, polyfill-typed data. The
 cases corresponding to `own<T>` and `borrow<T>` are present in the
-enum, but their payload semantics are settled by a later slice in the
-synchronous-baseline group.
+enum so the shape is closed; their payload semantics are out of
+scope for this PDD.
 
 ## Host Function Registration
 
@@ -117,7 +121,7 @@ synchronous-baseline group.
   the registration.
 
 A typed registration's argument and return types must each correspond
-to a baseline valtype this slice handles — i.e. anything but `own<T>`
+to a baseline valtype this PDD handles — i.e. anything but `own<T>`
 and `borrow<T>`. Typed registrations whose signature involves a
 handle valtype are rejected at link time with a
 `wcmp::Error::TypeMismatch`; untyped registrations targeting a
@@ -125,7 +129,7 @@ handle-valtyped import are similarly rejected at call time.
 
 ## Error Model Growth
 
-`wcmp::Error` grows additively. The variants this slice introduces:
+`wcmp::Error` grows additively. The variants this PDD introduces:
 
 - A *type mismatch* variant for failures unifying a host
   registration's declared type against the component's declared type
@@ -140,23 +144,12 @@ Each variant carries a `#[source]` cause where one is available;
 [PDD005]'s note about [`anyhow::Error`] in `#[source]` fields applies
 unchanged.
 
-## Implementation Posture
-
-This slice is governed by [PDD005]'s implementation posture, as
-restated in [PDD006] §Implementation Posture, without modification.
-A reviewer checking scope should find: the `Val` family at the crate
-root; the canonical-ABI lift/lower for every baseline valtype except
-the handle valtypes; the typed and untyped host-function registration
-modes on `LinkerInstance`; type-mismatch and ABI variants on the
-error enum — and nothing else.
-
 ## User Stories
 
-**As a developer adopting the polyfill on a native host**, I want to
-register a typed host function against an interface and call a
-component export whose signature uses strings, lists, and records, so
-that the polyfill is featureful enough to back a non-trivial host on
-its own.
+**As a developer adopting the polyfill**, I want to register a typed
+host function against an interface and call a component export whose
+signature uses strings, lists, and records, so that the polyfill is
+featureful enough to back a non-trivial host on its own.
 
 > The developer builds a `wcmp::Linker<T>` over an engine, registers a
 > typed host function against an interface the component imports,
@@ -165,20 +158,21 @@ its own.
 > `cabi_realloc` invocation and `post-return` — through the
 > polyfill's API.
 
-**As a contributor opening a successor slice**, I want the canonical
-ABI already in tree and stable except for handle valtypes, so that my
-slice is purely an extension to the lift/lower machinery and the
-registration modes on `LinkerInstance`.
+**As a contributor opening a downstream PDD that builds on this
+work**, I want the canonical ABI already in tree and stable except
+for handle valtypes, so that my PDD is purely an extension to the
+lift/lower machinery and the registration modes on `LinkerInstance`.
 
 > The contributor reads this document, sees the additive shape, and
 > writes their additions against the existing `LinkerInstance` and
 > lift/lower implementation without reshaping either.
 
-**As a reviewer evaluating an in-progress slice**, I want the scope
-of each slice to be readable.
+**As a reviewer evaluating an in-progress PDD**, I want the scope
+of each PDD to be readable.
 
 > The reviewer reads the goals and non-goals, confirms that the PR
-> un-stubs only the three named tests on native, that no
+> un-stubs only the three named tests — green on both
+> `test:native:*` and `test:web:*`, with no target gate — that no
 > handle-valtype lift/lower or host-resource registration surface
 > sneaks in, and that the public API additions are limited to `Val`
 > and the new registration modes on `LinkerInstance`.
@@ -188,19 +182,18 @@ of each slice to be readable.
 - [PDD000] — product overview.
 - [PDD001] — development environment.
 - [PDD002] — ecosystem foundation.
-- [PDD003] — compatibility outlook. This slice covers the canonical-
+- [PDD003] — compatibility outlook. This PDD covers the canonical-
   ABI rows of "Canonical ABI" and the host-function rows of "Linking,
   Instantiation, and Host Integration".
 - [PDD004] — test macros.
 - [PDD005] — library foundations.
 - [PDD006] — component parsing.
-- [PDD007] — linking and instantiation; the slice this one extends.
-- [PDD009] — resources.
+- [PDD007] — linking and instantiation; the PDD this one extends.
 - [`wasm_runtime_layer`] — the runtime substrate.
 - [`wasm_component_layer`] — prior art only.
 - [Wasmtime] — the reference runtime.
 - [Explainer] — the canonical Component Model design document.
-- [CanonicalABI] — the canonical ABI rules this slice's lift/lower
+- [CanonicalABI] — the canonical ABI rules this PDD's lift/lower
   implementation realises for the synchronous baseline's valtypes.
 - [Subtyping] — structural-equality rules.
 - [`thiserror`] — the derive used by the polyfill's error enum.
@@ -212,9 +205,12 @@ of each slice to be readable.
 [PDD003]: ./PDD003%20Compatibility%20Outlook.md
 [PDD004]: ./PDD004%20Test%20Macros.md
 [PDD005]: ./PDD005%20Library%20Foundations.md
+[pdd005-implementation-posture]: ./PDD005%20Library%20Foundations.md#implementation-posture
 [PDD006]: ./PDD006%20Component%20Parsing.md
+[pdd006-synchronous-baseline]: ./PDD006%20Component%20Parsing.md#the-synchronous-baseline
+[pdd006-web-parity-per-pdd]: ./PDD006%20Component%20Parsing.md#web-parity-per-pdd
+[pdd006-implementation-posture]: ./PDD006%20Component%20Parsing.md#implementation-posture
 [PDD007]: ./PDD007%20Linking%20and%20Instantiation.md
-[PDD009]: ./PDD009%20Resources.md
 [`wasm_runtime_layer`]: https://github.com/DouglasDwyer/wasm_runtime_layer
 [`wasm_component_layer`]: https://github.com/DouglasDwyer/wasm_component_layer
 [`thiserror`]: https://docs.rs/thiserror
