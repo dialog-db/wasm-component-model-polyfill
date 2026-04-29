@@ -33,7 +33,7 @@ pub enum IdentifierParseError {
 ///
 /// Returns the head segment together with a parsed [`Version`] when
 /// a suffix is present.
-pub(super) fn split_optional_version(
+pub fn split_optional_version(
     input: &str,
 ) -> Result<(&str, Option<Version>), IdentifierParseError> {
     if let Some((head, tail)) = input.split_once('@') {

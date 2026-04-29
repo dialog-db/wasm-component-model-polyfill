@@ -73,7 +73,7 @@ impl PackageName {
     /// the package, where the WIT grammar treats it as belonging.
     ///
     /// [`InterfaceIdentifier`]: super::InterfaceIdentifier
-    pub(super) fn set_version(&mut self, version: Option<Version>) {
+    pub fn set_version(&mut self, version: Option<Version>) {
         self.version = version;
     }
 }
@@ -103,7 +103,7 @@ impl FromStr for PackageName {
 /// [`InterfaceIdentifier`]'s parser. Not exported.
 ///
 /// [`InterfaceIdentifier`]: super::InterfaceIdentifier
-pub(super) fn parse_package(input: &str) -> Result<PackageName, IdentifierParseError> {
+pub fn parse_package(input: &str) -> Result<PackageName, IdentifierParseError> {
     let (head, version) = split_optional_version(input)?;
     let (namespace, name) = head
         .split_once(':')

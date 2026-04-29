@@ -30,14 +30,45 @@ pub enum Error {
     #[error("failed to construct the backend store")]
     BackendStoreCreation(#[source] anyhow::Error),
 
-    /// Decoding a component binary failed.
-    ///
-    /// Surfaced when the bytes handed to the parser do not form a
-    /// valid component: a corrupted preamble, a truncated section,
-    /// or an encoding the polyfill does not yet implement. The
-    /// underlying parser cause is captured as the source.
-    #[error("failed to parse the component binary")]
-    Parse(#[source] anyhow::Error),
+    /// The bytes did not start with the component preamble, or
+    /// failed binary-format validation while being decoded.
+    /// Carries the structured reason and the byte offset at which
+    /// the parser tripped.
+    #[error("invalid component binary at offset {offset}: {message}")]
+    InvalidComponentBinary {
+        /// A short human-readable description of what failed.
+        message: String,
+        /// The byte offset at which the parser detected the
+        /// failure.
+        offset: usize,
+    },
+
+    /// The bytes were a core WebAssembly module rather than a
+    /// component.
+    #[error("expected a component binary, got a core module")]
+    NotAComponent,
+
+    /// A type-index reference fell outside the component's type
+    /// space. The component declared at most `_index` types when
+    /// the lookup happened.
+    #[error("type index {index} is out of bounds for the component's type space")]
+    TypeIndexOutOfBounds {
+        /// The out-of-bounds index.
+        index: u32,
+    },
+
+    /// A type-space slot was the wrong kind for the place it was
+    /// referenced from. For example, an export that names a
+    /// function used a type index whose slot held a record.
+    #[error("expected type index {index} to refer to {expected}, found {actual}")]
+    WrongTypeKind {
+        /// The type index whose kind disagreed with the use site.
+        index: u32,
+        /// What the use site expected.
+        expected: &'static str,
+        /// What the slot actually held.
+        actual: &'static str,
+    },
 }
 
 /// A `Result` whose error variant is the polyfill's [`Error`].
