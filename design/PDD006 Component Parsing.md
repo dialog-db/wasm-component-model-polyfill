@@ -376,7 +376,6 @@ foundational code.
 [PDD003]: ./PDD003%20Compatibility%20Outlook.md
 [PDD004]: ./PDD004%20Test%20Macros.md
 [PDD005]: ./PDD005%20Library%20Foundations.md
-[pdd005-implementation-posture]: ./PDD005%20Library%20Foundations.md#implementation-posture
 [pdd006-component-surface]: #the-component-surface
 [pdd006-web-parity-per-pdd]: #web-parity-per-pdd
 [`wasm_runtime_layer`]: https://github.com/DouglasDwyer/wasm_runtime_layer

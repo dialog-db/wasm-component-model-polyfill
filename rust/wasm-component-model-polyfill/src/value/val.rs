@@ -104,4 +104,3 @@ pub struct ValField {
     /// The field's value.
     pub value: Val,
 }
-

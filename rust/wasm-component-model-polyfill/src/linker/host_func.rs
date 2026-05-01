@@ -41,8 +41,7 @@ pub struct HostFunc<T> {
 /// implementation fills with the host's `Val` results. The result
 /// slice is sized by the polyfill from the registration's declared
 /// signature.
-pub type HostFuncBody<T> =
-    dyn Fn(&mut T, &[Val], &mut [Val]) -> Result<()> + Send + Sync + 'static;
+pub type HostFuncBody<T> = dyn Fn(&mut T, &[Val], &mut [Val]) -> Result<()> + Send + Sync + 'static;
 
 impl<T> HostFunc<T> {
     /// Construct a host-function payload from its signature and a

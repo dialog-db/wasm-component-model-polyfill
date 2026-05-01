@@ -73,13 +73,13 @@ the polyfill on top of `wasm_runtime_layer`'s generic core-Wasm
 abstractions, so the same component-level code drives every supported
 target.
 
-This single-architecture stance is the polyfill's reading of [`wasm_component_layer`]:
-the prior art proves that component-level semantics can be built on top
-of `wasm_runtime_layer`'s `Engine`, `Store`, `Module`, `Instance`,
-`Func`, `Memory`, `Global`, and `Table` without reaching for any
-backend-specific component runtime, and that the same source then
-compiles cross-target. The polyfill carries the same architecture
-forward, refining and extending it where the prior art falls short.
+This single-architecture stance is the polyfill's reading of
+[`wasm_component_layer`]: the prior art proves that component-level semantics
+can be built on top of `wasm_runtime_layer`'s `Engine`, `Store`, `Module`,
+`Instance`, `Func`, `Memory`, `Global`, and `Table` without reaching for any
+backend-specific component runtime, and that the same source then compiles
+cross-target. The polyfill carries the same architecture forward, refining and
+extending it where the prior art falls short.
 
 The web target (`wasm32-unknown-unknown`) is therefore *not* a separate
 re-implementation — it is the same component-level code, running over

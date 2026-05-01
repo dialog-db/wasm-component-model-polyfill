@@ -168,11 +168,9 @@ of each PDD to be readable.
 [PDD003]: ./PDD003%20Compatibility%20Outlook.md
 [PDD004]: ./PDD004%20Test%20Macros.md
 [PDD005]: ./PDD005%20Library%20Foundations.md
-[pdd005-implementation-posture]: ./PDD005%20Library%20Foundations.md#implementation-posture
 [PDD006]: ./PDD006%20Component%20Parsing.md
 [pdd006-synchronous-baseline]: ./PDD006%20Component%20Parsing.md#the-synchronous-baseline
 [pdd006-web-parity-per-pdd]: ./PDD006%20Component%20Parsing.md#web-parity-per-pdd
-[pdd006-implementation-posture]: ./PDD006%20Component%20Parsing.md#implementation-posture
 [PDD007]: ./PDD007%20Linking%20and%20Instantiation.md
 [PDD008]: ./PDD008%20Canonical%20ABI%20and%20Host%20Functions.md
 [`wasm_runtime_layer`]: https://github.com/DouglasDwyer/wasm_runtime_layer

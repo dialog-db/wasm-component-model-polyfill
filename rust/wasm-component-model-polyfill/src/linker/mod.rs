@@ -21,6 +21,7 @@
 mod component_value;
 mod host_func;
 mod host_resource;
+#[allow(clippy::module_inception)]
 mod linker;
 mod linker_instance;
 mod registration;

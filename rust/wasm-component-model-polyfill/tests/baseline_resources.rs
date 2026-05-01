@@ -180,7 +180,9 @@ async fn it_rejects_a_completely_fabricated_handle_index() {
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let consume = inst.get_func(&mut store, "consume").expect("consume export");
+    let consume = inst
+        .get_func(&mut store, "consume")
+        .expect("consume export");
     let bogus = ResourceHandle {
         type_id,
         index: 999,
@@ -228,18 +230,15 @@ async fn it_supports_two_distinct_resource_types_in_one_interface() {
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, COMPONENT).expect("component parses");
     let mut linker: Linker<Counters> = Linker::new(&engine);
-    let iface: InterfaceIdentifier = "pdd009-tests:host/multi@0.1.0"
-        .parse()
-        .expect("identifier");
+    let iface: InterfaceIdentifier = "pdd009-tests:host/multi@0.1.0".parse().expect("identifier");
     let mut iface_view = linker.instance(&iface);
-    let alpha_id =
-        iface_view.resource(
-            "alpha",
-            |c: &mut Counters, rep: u32| -> wasm_component_model_polyfill::Result<()> {
-                c.alphas.push(rep);
-                Ok(())
-            },
-        );
+    let alpha_id = iface_view.resource(
+        "alpha",
+        |c: &mut Counters, rep: u32| -> wasm_component_model_polyfill::Result<()> {
+            c.alphas.push(rep);
+            Ok(())
+        },
+    );
     let beta_id = iface_view.resource(
         "beta",
         |c: &mut Counters, rep: u32| -> wasm_component_model_polyfill::Result<()> {

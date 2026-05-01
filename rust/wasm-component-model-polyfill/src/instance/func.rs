@@ -8,7 +8,7 @@ use wasm_runtime_layer::{AsContextMut, Val as RuntimeVal};
 
 use crate::abi::context::{LiftContext, LowerContext};
 use crate::abi::flatten::lower_into_flat_slots;
-use crate::abi::layout::{flat_count, flat_types, FlatType};
+use crate::abi::layout::{FlatType, flat_count, flat_types};
 use crate::abi::lift;
 
 /// Per the canonical ABI, the maximum flat-slot count for the
@@ -16,9 +16,7 @@ use crate::abi::lift;
 /// pointer path.
 const MAX_FLAT_PARAMS: usize = 16;
 use crate::component::FunctionType;
-use crate::error::{
-    AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result,
-};
+use crate::error::{AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result};
 use crate::executor::ir::CanonOptions;
 use crate::executor::trampoline::AbiRuntimeState;
 use crate::store::Store;
@@ -38,6 +36,11 @@ use crate::value::Val;
 /// [`Instance`]: super::Instance
 /// [`Instance::get_func`]: super::Instance::get_func
 pub struct Func {
+    /// The leaf name this export was declared under. Carried so
+    /// the typed-conversion entry point can name the export in
+    /// type-mismatch diagnostics; `Func::call` does not consult it.
+    /// Workspace-internal; never re-exported through `lib.rs`.
+    pub name: String,
     /// The runtime-layer core-Wasm function handle this export
     /// resolves to. Workspace-internal; never re-exported through
     /// `lib.rs`.
@@ -71,7 +74,7 @@ impl Func {
     /// created in.
     pub fn call<T: 'static>(&self, store: &mut Store<T>, args: &[Val]) -> Result<Box<[Val]>> {
         if args.len() != self.signature.parameters.len() {
-            return Err(Error::Abi(AbiError {
+            return Err(Error::from(AbiError {
                 position: AbiPosition::Argument(0),
                 valtype: ValueType::Primitive(PrimitiveType::Bool),
                 cause: AbiCause::InvalidEncoding {
@@ -112,7 +115,7 @@ impl Func {
 
         self.inner
             .call(store.inner_mut(), &core_args, &mut core_results)
-            .map_err(|err| Error::Instantiation(InstantiationError::SubstrateFailure(err)))?;
+            .map_err(|err| Error::from(InstantiationError::SubstrateFailure(err)))?;
 
         let lifted_result = self.lift_result(store, &core_results, memory)?;
 
@@ -129,7 +132,7 @@ impl Func {
             post_return_func
                 .call(store.inner_mut(), &core_results, &mut empty)
                 .map_err(|err| {
-                    Error::Abi(AbiError {
+                    Error::from(AbiError {
                         position: AbiPosition::Result,
                         valtype: ValueType::Primitive(PrimitiveType::Bool),
                         cause: AbiCause::SubstrateFailure(err),
@@ -179,11 +182,11 @@ impl Func {
         // tuple. The canonical ABI uses per-slot flat passing when
         // it fits in `MAX_FLAT_PARAMS = 16`; otherwise the entire
         // tuple is passed as a single memory pointer.
-        let total_flat: Option<usize> =
-            self.signature
-                .parameters
-                .iter()
-                .try_fold(0usize, |acc, p| flat_count(&p.ty).map(|n| acc + n));
+        let total_flat: Option<usize> = self
+            .signature
+            .parameters
+            .iter()
+            .try_fold(0usize, |acc, p| flat_count(&p.ty).map(|n| acc + n));
 
         match total_flat {
             Some(n) if n <= MAX_FLAT_PARAMS => {
@@ -205,7 +208,7 @@ impl Func {
                 }
                 Ok(out)
             }
-            _ => Err(Error::Abi(AbiError {
+            _ => Err(Error::from(AbiError {
                 position: AbiPosition::Argument(0),
                 valtype: ValueType::Primitive(PrimitiveType::Bool),
                 cause: AbiCause::InvalidEncoding {
@@ -238,7 +241,7 @@ impl Func {
         match flat_count(result_ty) {
             Some(n) if n <= 1 => {
                 if core_results.is_empty() {
-                    return Err(Error::Abi(AbiError {
+                    return Err(Error::from(AbiError {
                         position,
                         valtype: result_ty.clone(),
                         cause: AbiCause::InvalidEncoding {
@@ -256,7 +259,7 @@ impl Func {
                 let ptr = match core_results.first() {
                     Some(RuntimeVal::I32(p)) => *p as usize,
                     _ => {
-                        return Err(Error::Abi(AbiError {
+                        return Err(Error::from(AbiError {
                             position,
                             valtype: result_ty.clone(),
                             cause: AbiCause::InvalidEncoding {
@@ -279,7 +282,7 @@ fn lift_value_from_flat<T: 'static>(
     position: AbiPosition,
 ) -> Result<Val> {
     let mismatch = || {
-        Error::Abi(AbiError {
+        Error::from(AbiError {
             position,
             valtype: ty.clone(),
             cause: AbiCause::HostValueMismatch,
@@ -299,7 +302,7 @@ fn lift_value_from_flat<T: 'static>(
         (ValueType::Primitive(PrimitiveType::F64), RuntimeVal::F64(v)) => Ok(Val::F64(*v)),
         (ValueType::Primitive(PrimitiveType::Char), RuntimeVal::I32(v)) => {
             char::from_u32(*v as u32).map(Val::Char).ok_or_else(|| {
-                Error::Abi(AbiError {
+                Error::from(AbiError {
                     position,
                     valtype: ty.clone(),
                     cause: AbiCause::InvalidEncoding {

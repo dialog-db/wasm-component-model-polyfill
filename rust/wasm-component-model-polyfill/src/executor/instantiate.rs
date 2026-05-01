@@ -26,8 +26,8 @@ use super::ir::{
     LoweringSpec, ModuleEntry, ResourceSpec, TrampolineSpec,
 };
 use super::trampoline::{
-    build_resource_drop_trampoline, build_resource_new_trampoline, build_resource_rep_trampoline,
-    build_trampoline, AbiRuntimeState, ResourceRuntime,
+    AbiRuntimeState, ResourceRuntime, build_resource_drop_trampoline,
+    build_resource_new_trampoline, build_resource_rep_trampoline, build_trampoline,
 };
 
 /// Translate the component's bytes into the executor's IR and drive
@@ -67,8 +67,7 @@ pub fn instantiate<T: 'static>(
     // the resulting runtime-layer `Func`s can be slotted into the
     // import table for any module that references them via
     // `CoreDef::Trampoline`.
-    let mut trampolines: Vec<Option<RuntimeFunc>> =
-        Vec::with_capacity(ir.trampoline_specs.len());
+    let mut trampolines: Vec<Option<RuntimeFunc>> = Vec::with_capacity(ir.trampoline_specs.len());
     for spec in ir.trampoline_specs.iter() {
         let func = build_runtime_trampoline(
             spec,
@@ -89,15 +88,16 @@ pub fn instantiate<T: 'static>(
                 module_index,
                 imports,
             } => {
-                let entry = ir.modules.get(*module_index).ok_or_else(|| {
-                    internal("module index in IR initializer is out of bounds")
-                })?;
+                let entry = ir
+                    .modules
+                    .get(*module_index)
+                    .ok_or_else(|| internal("module index in IR initializer is out of bounds"))?;
                 let runtime_imports =
                     build_imports(&ir, &core_instances, &trampolines, store, entry, imports)?;
                 let instance =
                     RuntimeInstance::new(store.inner_mut(), &entry.runtime, &runtime_imports)
                         .map_err(InstantiationError::SubstrateFailure)
-                        .map_err(Error::Instantiation)?;
+                        .map_err(Error::from)?;
                 core_instances.push(instance);
             }
             Initializer::ExtractMemory { slot, source } => {
@@ -108,7 +108,9 @@ pub fn instantiate<T: 'static>(
                         "ExtractMemory directive resolved to a non-memory item",
                     ));
                 };
-                let mut state = abi_state.lock().map_err(|_| internal("ABI state poisoned"))?;
+                let mut state = abi_state
+                    .lock()
+                    .map_err(|_| internal("ABI state poisoned"))?;
                 if let Some(s) = state.memories.get_mut(*slot) {
                     *s = Some(memory);
                 } else {
@@ -123,7 +125,9 @@ pub fn instantiate<T: 'static>(
                         "ExtractRealloc directive resolved to a non-function item",
                     ));
                 };
-                let mut state = abi_state.lock().map_err(|_| internal("ABI state poisoned"))?;
+                let mut state = abi_state
+                    .lock()
+                    .map_err(|_| internal("ABI state poisoned"))?;
                 if let Some(s) = state.reallocs.get_mut(*slot) {
                     *s = Some(realloc);
                 } else {
@@ -138,7 +142,9 @@ pub fn instantiate<T: 'static>(
                         "ExtractPostReturn directive resolved to a non-function item",
                     ));
                 };
-                let mut state = abi_state.lock().map_err(|_| internal("ABI state poisoned"))?;
+                let mut state = abi_state
+                    .lock()
+                    .map_err(|_| internal("ABI state poisoned"))?;
                 if let Some(s) = state.post_returns.get_mut(*slot) {
                     *s = Some(post_return);
                 } else {
@@ -214,14 +220,14 @@ fn resolve_resource_runtime<T: 'static>(
     let chosen = match &import.name {
         ExternalName::Interface(id) => id,
         ExternalName::Plain(_) => {
-            return Err(Error::Link(LinkError::UnsupportedRegistration {
+            return Err(Error::from(LinkError::UnsupportedRegistration {
                 import: import.name.clone(),
                 reason: "plain-named imports require host-item registration",
             }));
         }
     };
     let registration = linker.registration_for(chosen).ok_or_else(|| {
-        Error::Link(LinkError::UnresolvedImport {
+        Error::from(LinkError::UnresolvedImport {
             import: import.name.clone(),
         })
     })?;
@@ -234,7 +240,7 @@ fn resolve_resource_runtime<T: 'static>(
         }
     };
     let host = registration.resource(label).ok_or_else(|| {
-        Error::Link(LinkError::UnresolvedImport {
+        Error::from(LinkError::UnresolvedImport {
             import: import.name.clone(),
         })
     })?;
@@ -256,14 +262,14 @@ fn lookup_host_func<T: 'static>(
     let chosen = match &import.name {
         ExternalName::Interface(id) => id,
         ExternalName::Plain(_) => {
-            return Err(Error::Link(LinkError::UnsupportedRegistration {
+            return Err(Error::from(LinkError::UnsupportedRegistration {
                 import: import.name.clone(),
                 reason: "plain-named imports require host-item registration",
             }));
         }
     };
     let registration = linker.registration_for(chosen).ok_or_else(|| {
-        Error::Link(LinkError::UnresolvedImport {
+        Error::from(LinkError::UnresolvedImport {
             import: import.name.clone(),
         })
     })?;
@@ -281,7 +287,7 @@ fn lookup_host_func<T: 'static>(
         }
     };
     let host = registration.func(item_name).ok_or_else(|| {
-        Error::Link(LinkError::UnresolvedImport {
+        Error::from(LinkError::UnresolvedImport {
             import: import.name.clone(),
         })
     })?;
@@ -330,9 +336,7 @@ fn resolve_source<T: 'static>(
                 .get(*idx)
                 .and_then(|slot| slot.clone())
                 .ok_or_else(|| {
-                    internal(
-                        "ImportSource::Trampoline references a lowering not yet constructed",
-                    )
+                    internal("ImportSource::Trampoline references a lowering not yet constructed")
                 })?;
             Ok(RuntimeExtern::Func(func))
         }
@@ -345,9 +349,9 @@ fn resolve_core_instance_export<T: 'static>(
     store: &mut Store<T>,
     export: &CoreInstanceExport,
 ) -> Result<RuntimeExtern> {
-    let runtime_instance = core_instances.get(export.instance_index).ok_or_else(|| {
-        internal("CoreInstanceExport.instance_index is out of bounds")
-    })?;
+    let runtime_instance = core_instances
+        .get(export.instance_index)
+        .ok_or_else(|| internal("CoreInstanceExport.instance_index is out of bounds"))?;
     let module_index = *ir
         .runtime_instance_to_module
         .get(export.instance_index)
@@ -361,9 +365,7 @@ fn resolve_core_instance_export<T: 'static>(
             .entity_to_name
             .get(entity)
             .map(String::as_str)
-            .ok_or_else(|| {
-                internal("CoreSourceItem::Index has no corresponding export name")
-            })?,
+            .ok_or_else(|| internal("CoreSourceItem::Index has no corresponding export name"))?,
     };
     runtime_instance
         .get_export(store.inner(), name)
@@ -387,6 +389,7 @@ fn collect_function_exports<T: 'static>(
     let mut out = Vec::with_capacity(ir.exports.len());
     for ExportSpec {
         name,
+        parent,
         source,
         signature,
         options,
@@ -400,6 +403,7 @@ fn collect_function_exports<T: 'static>(
         };
         out.push(ExportedFunction {
             name: name.clone(),
+            parent: parent.clone(),
             func,
             signature: signature.clone(),
             options: options.clone(),

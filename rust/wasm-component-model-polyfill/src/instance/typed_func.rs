@@ -1,0 +1,154 @@
+//! A typed handle for invoking a component export with native Rust
+//! values.
+//!
+//! `TypedFunc<P, R>` is the typed counterpart to [`Func`]: the
+//! parameter tuple `P` and the return type `R` are checked at
+//! handle acquisition (via [`Func::typed`]) against the export's
+//! declared component-level signature, and at call time native Rust
+//! values flow across the canonical-ABI boundary without the caller
+//! ever constructing a [`Val`].
+//!
+//! The handle's parameter tuple and return type are constrained by
+//! the polyfill's own [`ComponentParameters`] / [`ComponentResult`]
+//! traits — the lift/lower/typed-descriptor triple Wasmtime exposes
+//! at `wasmtime::component`, named in the polyfill's surface and
+//! restricted to the synchronous-baseline valtypes.
+//!
+//! [`Val`]: crate::Val
+
+use core::marker::PhantomData;
+
+use crate::component::FunctionType;
+use crate::error::{Error, Result, TypeMismatch, TypeMismatchPosition, TypeRendering};
+use crate::linker::{ComponentParameters, ComponentResult};
+use crate::store::Store;
+
+use super::func::Func;
+
+/// A statically-typed handle for invoking one component export.
+///
+/// `TypedFunc<P, R>` is acquired from [`Func::typed`]; the conversion
+/// checks that the export's declared signature matches the function
+/// type derived from `P` and `R` and surfaces a structured
+/// [`Error::TypeMismatch`] on mismatch. Calling the handle takes a
+/// native Rust tuple and returns the native Rust return value;
+/// internally the call delegates to [`Func::call`], so heap-
+/// allocating valtypes drive the same `cabi_realloc` /
+/// `post-return` round-trip the untyped path observes.
+///
+/// [`Func::typed`]: super::Func::typed
+/// [`Func::call`]: super::Func::call
+pub struct TypedFunc<P, R> {
+    inner: Func,
+    _phantom: PhantomData<fn(P) -> R>,
+}
+
+impl<P, R> core::fmt::Debug for TypedFunc<P, R> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TypedFunc")
+            .field("name", &self.inner.name)
+            .field("signature", &self.inner.signature)
+            .finish()
+    }
+}
+
+impl<P, R> TypedFunc<P, R>
+where
+    P: ComponentParameters,
+    R: ComponentResult,
+{
+    /// Construct a typed handle from an untyped [`Func`] after the
+    /// signature check has succeeded. Workspace-internal — public
+    /// callers reach this through [`Func::typed`].
+    ///
+    /// [`Func::typed`]: super::Func::typed
+    pub fn from_checked(inner: Func) -> Self {
+        Self {
+            inner,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Invoke the export with native Rust values.
+    ///
+    /// `args` is the parameter tuple `P`; the return is the
+    /// native Rust value `R` the export produces. Compound
+    /// argument and return shapes drive the same canonical-ABI
+    /// round-trip — `cabi_realloc` for heap-allocating values and
+    /// `post-return` after the result is observed — that the
+    /// untyped [`Func::call`] path observes.
+    ///
+    /// `T` is the host-data type of the [`Store`] the export's
+    /// owning [`Instance`] was created in.
+    ///
+    /// [`Func::call`]: super::Func::call
+    /// [`Instance`]: super::Instance
+    pub fn call<T: 'static>(&self, store: &mut Store<T>, args: P) -> Result<R> {
+        let lowered = args.into_vals();
+        let results = self.inner.call(store, &lowered)?;
+        match results.len() {
+            0 => R::from_val(None),
+            1 => R::from_val(Some(&results[0])),
+            n => Err(Error::Internal {
+                message: format!(
+                    "typed export call observed {n} return values; the synchronous baseline admits at most one"
+                ),
+            }),
+        }
+    }
+}
+
+impl Func {
+    /// Convert this untyped function handle into a typed one whose
+    /// parameter tuple `P` and return type `R` are checked against
+    /// the export's declared component-level signature.
+    ///
+    /// Returns [`Error::TypeMismatch`] when `P` and `R` derive a
+    /// component signature that does not equal the export's
+    /// declared signature; the [`TypeMismatch`]'s `position` is
+    /// [`TypeMismatchPosition::TypedConversion`] and its
+    /// `expected` / `actual` renderings carry the export-side and
+    /// requested-from-Rust signatures, respectively.
+    pub fn typed<P, R>(self) -> Result<TypedFunc<P, R>>
+    where
+        P: ComponentParameters,
+        R: ComponentResult,
+    {
+        let requested = FunctionType {
+            parameters: P::parameter_types(),
+            result: R::result_type(),
+        };
+        if !signatures_compatible(&self.signature, &requested) {
+            return Err(Error::from(TypeMismatch {
+                position: TypeMismatchPosition::TypedConversion {
+                    export: self.name.clone(),
+                },
+                expected: TypeRendering::Function(self.signature.clone()),
+                actual: TypeRendering::Function(requested),
+            }));
+        }
+        Ok(TypedFunc::from_checked(self))
+    }
+}
+
+/// Two function types are compatible for the typed-conversion entry
+/// point when their parameter and result `ValueType`s match
+/// positionally and structurally. Parameter *names* are ignored: the
+/// component-side declares the names of the parameters in WIT, but
+/// the host's typed-conversion call site supplies a Rust tuple
+/// without names — the polyfill synthesises `arg0, arg1, …` for the
+/// requested signature. Comparing names directly would force every
+/// caller to know the WIT parameter names, which is a surface a
+/// host-binding code generator covers; the polyfill checks the
+/// types instead.
+fn signatures_compatible(declared: &FunctionType, requested: &FunctionType) -> bool {
+    if declared.parameters.len() != requested.parameters.len() {
+        return false;
+    }
+    for (left, right) in declared.parameters.iter().zip(requested.parameters.iter()) {
+        if left.ty != right.ty {
+            return false;
+        }
+    }
+    declared.result == requested.result
+}

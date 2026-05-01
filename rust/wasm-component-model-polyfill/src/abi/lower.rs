@@ -259,7 +259,7 @@ fn lower_string<T: 'static>(
             (bytes, units.len())
         }
         StringEncoding::CompactUtf16 => {
-            return Err(Error::Abi(AbiError {
+            return Err(Error::from(AbiError {
                 position,
                 valtype: ty.clone(),
                 cause: AbiCause::InvalidEncoding {
@@ -295,7 +295,7 @@ fn write_discriminant<T: 'static>(
         1 => ctx.write_bytes(offset, &[tag as u8], position, ty),
         2 => ctx.write_bytes(offset, &(tag as u16).to_le_bytes(), position, ty),
         4 => ctx.write_bytes(offset, &(tag as u32).to_le_bytes(), position, ty),
-        _ => Err(Error::Abi(AbiError {
+        _ => Err(Error::from(AbiError {
             position,
             valtype: ty.clone(),
             cause: AbiCause::InvalidEncoding {
@@ -311,25 +311,27 @@ fn validate_handle<T: 'static>(
     ty: &ValueType,
     position: AbiPosition,
 ) -> Result<()> {
-    let tables = ctx.tables.as_ref().ok_or_else(|| Error::Abi(AbiError {
-        position,
-        valtype: ty.clone(),
-        cause: AbiCause::InvalidHandle {
-            reason: "no handle-tables ledger available to the lower context".to_owned(),
-        },
-    }))?;
+    let tables = ctx.tables.as_ref().ok_or_else(|| {
+        Error::from(AbiError {
+            position,
+            valtype: ty.clone(),
+            cause: AbiCause::InvalidHandle {
+                reason: "no handle-tables ledger available to the lower context".to_owned(),
+            },
+        })
+    })?;
     let guard = tables.lock().map_err(|_| Error::Internal {
         message: "resource handle tables lock poisoned".to_owned(),
     })?;
-    let table = guard
-        .for_type(handle.type_id)
-        .ok_or_else(|| Error::Abi(AbiError {
+    let table = guard.for_type(handle.type_id).ok_or_else(|| {
+        Error::from(AbiError {
             position,
             valtype: ty.clone(),
             cause: AbiCause::UnregisteredResourceType,
-        }))?;
+        })
+    })?;
     if table.get(handle.index).is_none() {
-        return Err(Error::Abi(AbiError {
+        return Err(Error::from(AbiError {
             position,
             valtype: ty.clone(),
             cause: AbiCause::InvalidHandle {
@@ -344,7 +346,7 @@ fn validate_handle<T: 'static>(
 }
 
 fn host_value_mismatch(ty: &ValueType, position: AbiPosition) -> Error {
-    Error::Abi(AbiError {
+    Error::from(AbiError {
         position,
         valtype: ty.clone(),
         cause: AbiCause::HostValueMismatch,

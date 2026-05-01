@@ -9,8 +9,15 @@
 //! the underlying core function and does not touch component memory.
 //! Compound-valtype lift/lower lands additively in later work.
 
+mod export_instance;
+mod exports;
 mod func;
+#[allow(clippy::module_inception)]
 mod instance;
+mod typed_func;
 
+pub use export_instance::ExportInstance;
+pub use exports::InstanceExports;
 pub use func::Func;
 pub use instance::{ExportedFunction, Instance};
+pub use typed_func::TypedFunc;

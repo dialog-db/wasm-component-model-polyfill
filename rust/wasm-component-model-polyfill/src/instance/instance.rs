@@ -5,8 +5,10 @@ use std::sync::{Arc, Mutex};
 use crate::component::FunctionType;
 use crate::executor::ir::CanonOptions;
 use crate::executor::trampoline::AbiRuntimeState;
+use crate::identifier::InterfaceIdentifier;
 use crate::store::Store;
 
+use super::exports::InstanceExports;
 use super::func::Func;
 
 /// One exported function of an instantiated component, paired with
@@ -19,8 +21,15 @@ use super::func::Func;
 ///
 /// [`Func::call`]: crate::Func::call
 pub struct ExportedFunction {
-    /// The export's declared name.
+    /// The export's leaf name. For root-level exports this is the
+    /// name the component publishes; for instance-typed exports
+    /// this is the item name inside the enclosing instance.
     pub name: String,
+    /// The enclosing instance-typed export's identifier when this
+    /// function is nested inside one, or `None` for a root-level
+    /// function export. Used by the [`InstanceExports`] navigator
+    /// to scope `func` lookups to the addressed instance.
+    pub parent: Option<InterfaceIdentifier>,
     /// The runtime-layer core-Wasm function that backs this export.
     pub func: wasm_runtime_layer::Func,
     /// The polyfill's component-level signature for this export.
@@ -68,8 +77,10 @@ pub struct Instance {
 }
 
 impl Instance {
-    /// Look up an exported function by its declared name. Returns
-    /// `None` if the export is absent or is not a function.
+    /// Look up a root-level exported function by its declared name.
+    /// Returns `None` if the export is absent, not a function, or
+    /// nested inside an instance-typed export. Use
+    /// [`Self::exports`] to traverse instance-typed exports.
     ///
     /// `T` is the host-data type of the [`Store`] the instance was
     /// created in. The store is taken so future work that needs to
@@ -78,12 +89,27 @@ impl Instance {
     pub fn get_func<T>(&self, _store: &mut Store<T>, name: &str) -> Option<Func> {
         self.function_exports
             .iter()
-            .find(|export| export.name == name)
+            .find(|export| export.parent.is_none() && export.name == name)
             .map(|export| Func {
+                name: export.name.clone(),
                 inner: export.func.clone(),
                 signature: export.signature.clone(),
                 options: export.options.clone(),
                 abi_state: self.abi_state.clone(),
             })
+    }
+
+    /// The export navigator for this instance.
+    ///
+    /// The returned [`InstanceExports`] borrows from `self` and
+    /// exposes both root-level function exports (via
+    /// [`InstanceExports::func`]) and the per-interface lookup that
+    /// reaches into instance-typed exports (via
+    /// [`InstanceExports::instance`]). The navigator complements
+    /// [`Self::get_func`]: the latter is the unchanged shorthand
+    /// for root-level function exports, while the navigator adds
+    /// the instance-typed traversal `get_func` cannot see.
+    pub fn exports(&self) -> InstanceExports<'_> {
+        InstanceExports::new(self)
     }
 }

@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 
 use crate::component::FunctionType;
+use crate::identifier::InterfaceIdentifier;
 
 /// The executor's IR for a single parsed component.
 ///
@@ -158,7 +159,6 @@ pub enum Initializer {
         /// Where the underlying core function comes from.
         source: ImportSource,
     },
-
 }
 
 /// Where a single core-Wasm item comes from when satisfying a
@@ -206,10 +206,18 @@ pub enum CoreSourceItem {
 }
 
 /// One component-level function export the executor exposes to the
-/// caller through [`crate::Instance::get_func`].
+/// caller through [`crate::Instance::get_func`] or through the
+/// [`crate::Instance::exports`] navigator.
 pub struct ExportSpec {
-    /// The name the component declares the export under.
+    /// The leaf name the export is declared under. For root-level
+    /// exports this is the name the component publishes; for
+    /// instance-typed exports this is the item name inside the
+    /// enclosing instance.
     pub name: String,
+    /// The enclosing instance-typed export's identifier when this
+    /// function is nested inside one, or `None` for a root-level
+    /// function export.
+    pub parent: Option<InterfaceIdentifier>,
     /// Where the underlying core-Wasm function lives.
     pub source: ImportSource,
     /// The component-level signature the lift produced.

@@ -45,9 +45,7 @@ impl<T> HostResource<T> {
     /// Construct a registration from a destructor closure. A fresh
     /// [`ResourceTypeId`] is minted; the caller never sees the
     /// underlying integer.
-    pub fn new(
-        destructor: impl Fn(&mut T, u32) -> Result<()> + Send + Sync + 'static,
-    ) -> Self {
+    pub fn new(destructor: impl Fn(&mut T, u32) -> Result<()> + Send + Sync + 'static) -> Self {
         Self {
             type_id: ResourceTypeId::fresh(),
             destructor: Arc::new(destructor),

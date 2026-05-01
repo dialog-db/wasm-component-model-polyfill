@@ -21,7 +21,7 @@
 use wasm_runtime_layer::Val as RuntimeVal;
 
 use super::context::{LiftContext, LowerContext};
-use super::layout::{flat_types, size_of, FlatType};
+use super::layout::{FlatType, flat_types, size_of};
 use super::{lift, lower};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::StringEncoding;
@@ -117,7 +117,11 @@ pub fn lower_into_flat_slots<T: 'static>(
                 None => (0usize, None),
                 Some(v) => (1usize, Some(v)),
             };
-            let active_payload_ty = if tag == 1 { Some(option.payload()) } else { None };
+            let active_payload_ty = if tag == 1 {
+                Some(option.payload())
+            } else {
+                None
+            };
             lower_variant_flat(
                 ctx,
                 tag,
@@ -212,8 +216,7 @@ pub fn lift_from_flat_slots<T: 'static>(
         ValueType::Record(record) => {
             let mut fields: Vec<ValField> = Vec::with_capacity(record.fields().len());
             for record_field in record.fields() {
-                let value =
-                    lift_from_flat_slots(ctx, args, cursor, record_field.ty(), position)?;
+                let value = lift_from_flat_slots(ctx, args, cursor, record_field.ty(), position)?;
                 fields.push(ValField {
                     name: record_field.name().to_owned(),
                     value,
@@ -230,10 +233,9 @@ pub fn lift_from_flat_slots<T: 'static>(
         }
         ValueType::Variant(variant) => {
             let tag = take_i32(args, cursor, ty, position)? as usize;
-            let case = variant
-                .cases()
-                .get(tag)
-                .ok_or_else(|| invalid_encoding(ty, position, "variant discriminant out of range"))?;
+            let case = variant.cases().get(tag).ok_or_else(|| {
+                invalid_encoding(ty, position, "variant discriminant out of range")
+            })?;
             let payload_ty = case.payload().cloned();
             let case_name = case.name().to_owned();
             let case_payloads: Vec<Option<ValueType>> = variant
@@ -257,8 +259,7 @@ pub fn lift_from_flat_slots<T: 'static>(
         }
         ValueType::Option(option) => {
             let tag = take_i32(args, cursor, ty, position)? as usize;
-            let case_payloads: Vec<Option<ValueType>> =
-                vec![None, Some(option.payload().clone())];
+            let case_payloads: Vec<Option<ValueType>> = vec![None, Some(option.payload().clone())];
             match tag {
                 0 => {
                     // Skip the joined payload slots without reading
@@ -286,7 +287,11 @@ pub fn lift_from_flat_slots<T: 'static>(
                     )?;
                     Ok(Val::Option(inner.map(Box::new)))
                 }
-                _ => Err(invalid_encoding(ty, position, "option discriminant must be 0 or 1")),
+                _ => Err(invalid_encoding(
+                    ty,
+                    position,
+                    "option discriminant must be 0 or 1",
+                )),
             }
         }
         ValueType::Result(result) => {
@@ -318,7 +323,11 @@ pub fn lift_from_flat_slots<T: 'static>(
                     )?;
                     Ok(Val::Result(Err(payload.map(Box::new))))
                 }
-                _ => Err(invalid_encoding(ty, position, "result discriminant must be 0 or 1")),
+                _ => Err(invalid_encoding(
+                    ty,
+                    position,
+                    "result discriminant must be 0 or 1",
+                )),
             }
         }
         ValueType::Enum(en) => {
@@ -347,7 +356,14 @@ pub fn lift_from_flat_slots<T: 'static>(
         }
         ValueType::Own(_) | ValueType::Borrow(_) => {
             let index = take_i32(args, cursor, ty, position)? as u32;
-            crate::abi::lift_handle(ctx, "", index, ty, position, matches!(ty, ValueType::Own(_)))
+            crate::abi::lift_handle(
+                ctx,
+                "",
+                index,
+                ty,
+                position,
+                matches!(ty, ValueType::Own(_)),
+            )
         }
     }
 }
@@ -357,6 +373,7 @@ pub fn lift_from_flat_slots<T: 'static>(
 /// active case's payload is filled in at the matching slot
 /// positions, and remaining slots are zero-filled (or
 /// reinterpreted) per the canonical ABI's join rules.
+#[allow(clippy::too_many_arguments)]
 fn lower_variant_flat<T: 'static, I: Iterator<Item = Option<ValueType>>>(
     ctx: &mut LowerContext<'_, T>,
     tag: usize,
@@ -438,15 +455,13 @@ fn lift_variant_payload_flat<T: 'static>(
     // flat shape and lift the value through a fresh sub-cursor.
     let mut decoded: Vec<RuntimeVal> = Vec::with_capacity(active_types.len());
     for (i, active_ty) in active_types.iter().copied().enumerate() {
-        let slot = joined_slots
-            .get(i)
-            .ok_or_else(|| {
-                invalid_encoding(
-                    ty,
-                    position,
-                    "active case has more flat slots than the joined payload",
-                )
-            })?;
+        let slot = joined_slots.get(i).ok_or_else(|| {
+            invalid_encoding(
+                ty,
+                position,
+                "active case has more flat slots than the joined payload",
+            )
+        })?;
         let joined_ty = joined.get(i).copied().unwrap_or(FlatType::I32);
         decoded.push(reinterpret_flat(slot, joined_ty, active_ty, ty, position)?);
     }
@@ -510,13 +525,17 @@ fn reinterpret_flat(
     }
     let mismatch = || invalid_encoding(ty, position, "flat slot reinterpretation not supported");
     Ok(match (slot, from, to) {
-        (RuntimeVal::I32(v), FlatType::I32, FlatType::F32) => RuntimeVal::F32(f32::from_bits(*v as u32)),
+        (RuntimeVal::I32(v), FlatType::I32, FlatType::F32) => {
+            RuntimeVal::F32(f32::from_bits(*v as u32))
+        }
         (RuntimeVal::F32(v), FlatType::F32, FlatType::I32) => RuntimeVal::I32(v.to_bits() as i32),
         (RuntimeVal::I32(v), FlatType::I32, FlatType::I64) => RuntimeVal::I64(i64::from(*v as u32)),
         (RuntimeVal::I64(v), FlatType::I64, FlatType::I32) => RuntimeVal::I32(*v as i32),
         (RuntimeVal::F32(v), FlatType::F32, FlatType::F64) => RuntimeVal::F64(f64::from(*v)),
         (RuntimeVal::F64(v), FlatType::F64, FlatType::F32) => RuntimeVal::F32(*v as f32),
-        (RuntimeVal::I64(v), FlatType::I64, FlatType::F64) => RuntimeVal::F64(f64::from_bits(*v as u64)),
+        (RuntimeVal::I64(v), FlatType::I64, FlatType::F64) => {
+            RuntimeVal::F64(f64::from_bits(*v as u64))
+        }
         (RuntimeVal::F64(v), FlatType::F64, FlatType::I64) => RuntimeVal::I64(v.to_bits() as i64),
         _ => return Err(mismatch()),
     })
@@ -706,7 +725,7 @@ fn validate_handle_in_table<T: 'static>(
     position: AbiPosition,
 ) -> Result<()> {
     let tables = ctx.tables.as_ref().ok_or_else(|| {
-        Error::Abi(AbiError {
+        Error::from(AbiError {
             position,
             valtype: ty.clone(),
             cause: AbiCause::InvalidHandle {
@@ -717,15 +736,15 @@ fn validate_handle_in_table<T: 'static>(
     let guard = tables.lock().map_err(|_| Error::Internal {
         message: "resource handle tables lock poisoned".to_owned(),
     })?;
-    let table = guard
-        .for_type(handle.type_id)
-        .ok_or_else(|| Error::Abi(AbiError {
+    let table = guard.for_type(handle.type_id).ok_or_else(|| {
+        Error::from(AbiError {
             position,
             valtype: ty.clone(),
             cause: AbiCause::UnregisteredResourceType,
-        }))?;
+        })
+    })?;
     if table.get(handle.index).is_none() {
-        return Err(Error::Abi(AbiError {
+        return Err(Error::from(AbiError {
             position,
             valtype: ty.clone(),
             cause: AbiCause::InvalidHandle {
@@ -761,14 +780,18 @@ fn take_runtime_val(
     position: AbiPosition,
 ) -> Result<RuntimeVal> {
     let v = args.get(*cursor).cloned().ok_or_else(|| {
-        invalid_encoding(ty, position, "ran out of flat slots while lifting variant payload")
+        invalid_encoding(
+            ty,
+            position,
+            "ran out of flat slots while lifting variant payload",
+        )
     })?;
     *cursor += 1;
     Ok(v)
 }
 
 fn invalid_encoding(ty: &ValueType, position: AbiPosition, message: &str) -> Error {
-    Error::Abi(AbiError {
+    Error::from(AbiError {
         position,
         valtype: ty.clone(),
         cause: AbiCause::InvalidEncoding {
@@ -778,7 +801,7 @@ fn invalid_encoding(ty: &ValueType, position: AbiPosition, message: &str) -> Err
 }
 
 fn host_value_mismatch(ty: &ValueType, position: AbiPosition) -> Error {
-    Error::Abi(AbiError {
+    Error::from(AbiError {
         position,
         valtype: ty.clone(),
         cause: AbiCause::HostValueMismatch,

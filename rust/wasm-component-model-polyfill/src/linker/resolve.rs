@@ -32,9 +32,7 @@ use semver::Version;
 use crate::component::{
     Component, ComponentImport, ExternType, ExternalName, FunctionType, InstanceItem,
 };
-use crate::error::{
-    Error, LinkError, Result, TypeMismatch, TypeMismatchPosition, TypeRendering,
-};
+use crate::error::{Error, LinkError, Result, TypeMismatch, TypeMismatchPosition, TypeRendering};
 use crate::identifier::InterfaceIdentifier;
 
 use super::linker::Linker;
@@ -81,7 +79,7 @@ pub fn resolve_imports<T: 'static>(
     let registered: Vec<&InterfaceIdentifier> = linker.registered_keys().collect();
     let mut bindings = Vec::with_capacity(component.imports.len());
     for import in component.imports.iter() {
-        let binding = resolve_one(import, &registered).map_err(Error::Link)?;
+        let binding = resolve_one(import, &registered).map_err(Error::from)?;
         if let ImportBinding::Resolved { chosen } = &binding {
             // Item-level type check: every function item the
             // import declares must have a registered host function
@@ -93,6 +91,7 @@ pub fn resolve_imports<T: 'static>(
     Ok(Resolution { bindings })
 }
 
+#[allow(clippy::result_large_err)]
 fn resolve_one(
     import: &ComponentImport,
     registered: &[&InterfaceIdentifier],
@@ -108,14 +107,12 @@ fn resolve_one(
                 None => Ok(ImportBinding::Vacuous),
             }
         }
-        (ExternalName::Interface(id), _) => {
-            match find_match(id, registered.iter().copied()) {
-                Some(chosen) => Ok(ImportBinding::Resolved {
-                    chosen: chosen.clone(),
-                }),
-                None => Err(unresolved_or_incompatible(import, id, registered)),
-            }
-        }
+        (ExternalName::Interface(id), _) => match find_match(id, registered.iter().copied()) {
+            Some(chosen) => Ok(ImportBinding::Resolved {
+                chosen: chosen.clone(),
+            }),
+            None => Err(unresolved_or_incompatible(import, id, registered)),
+        },
         (ExternalName::Plain(_), _) => Err(LinkError::UnsupportedRegistration {
             import: import.name.clone(),
             reason: "plain-named imports require host-item registration",
@@ -128,11 +125,11 @@ fn check_items<T: 'static>(
     chosen: &InterfaceIdentifier,
     linker: &Linker<T>,
 ) -> Result<()> {
-    let registration = linker
-        .registration_for(chosen)
-        .ok_or_else(|| Error::Link(LinkError::UnresolvedImport {
+    let registration = linker.registration_for(chosen).ok_or_else(|| {
+        Error::from(LinkError::UnresolvedImport {
             import: import.name.clone(),
-        }))?;
+        })
+    })?;
     let items: &[InstanceItem] = match &import.ty {
         ExternType::Instance(instance) => &instance.items,
         // Non-instance interface-typed imports (e.g. an interface-
@@ -166,7 +163,7 @@ fn check_resource_item<T: 'static>(
     if registration.resource(item_name).is_some() {
         return Ok(());
     }
-    Err(Error::Link(LinkError::UnresolvedImport {
+    Err(Error::from(LinkError::UnresolvedImport {
         import: import_name.clone(),
     }))
 }
@@ -179,13 +176,13 @@ fn check_function_item<T: 'static>(
     import_name: &ExternalName,
 ) -> Result<()> {
     let host = registration.func(item_name).ok_or_else(|| {
-        Error::Link(LinkError::UnresolvedImport {
+        Error::from(LinkError::UnresolvedImport {
             import: ExternalName::Interface(chosen.clone()),
         })
     })?;
     let _ = import_name;
     if !function_types_compatible(&host.signature, declared) {
-        return Err(Error::TypeMismatch(TypeMismatch {
+        return Err(Error::from(TypeMismatch {
             position: TypeMismatchPosition::HostFunctionRegistration {
                 interface: chosen.clone(),
                 item: item_name.to_owned(),
@@ -285,10 +282,7 @@ pub fn versions_compatible(import: Option<&Version>, candidate: Option<&Version>
 /// greater. Both must already have been confirmed compatible with
 /// the same import.
 fn prefer(candidate: &InterfaceIdentifier, current: &InterfaceIdentifier) -> bool {
-    match (
-        candidate.package().version(),
-        current.package().version(),
-    ) {
+    match (candidate.package().version(), current.package().version()) {
         (Some(n), Some(c)) => n > c,
         // Two unversioned candidates tie; keep the first.
         // Mixed shapes shouldn't reach here because shape_matches
@@ -363,7 +357,7 @@ mod tests {
     #[test]
     fn it_picks_highest_version_when_multiple_match() {
         let import = id("wasi:cli/run@0.2.0");
-        let registered = vec![id("wasi:cli/run@0.2.5"), id("wasi:cli/run@0.2.7")];
+        let registered = [id("wasi:cli/run@0.2.5"), id("wasi:cli/run@0.2.7")];
         let chosen = find_match(&import, registered.iter()).cloned();
         assert_eq!(chosen, Some(id("wasi:cli/run@0.2.7")));
     }
@@ -371,7 +365,7 @@ mod tests {
     #[test]
     fn it_skips_a_candidate_with_a_different_interface_name() {
         let import = id("wasi:cli/run@0.2.0");
-        let registered = vec![id("wasi:cli/exit@0.2.0")];
+        let registered = [id("wasi:cli/exit@0.2.0")];
         let chosen = find_match(&import, registered.iter()).cloned();
         assert_eq!(chosen, None);
     }
@@ -379,7 +373,7 @@ mod tests {
     #[test]
     fn it_skips_a_candidate_with_a_different_package() {
         let import = id("wasi:cli/run@0.2.0");
-        let registered = vec![id("wasi:io/run@0.2.0")];
+        let registered = [id("wasi:io/run@0.2.0")];
         let chosen = find_match(&import, registered.iter()).cloned();
         assert_eq!(chosen, None);
     }

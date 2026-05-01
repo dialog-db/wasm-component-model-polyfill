@@ -154,8 +154,7 @@ async fn it_passes_a_record_argument_to_a_host_function() {
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, COMPONENT).expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
-    let iface: InterfaceIdentifier =
-        "pdd-tests:host/maths@0.1.0".parse().expect("identifier");
+    let iface: InterfaceIdentifier = "pdd-tests:host/maths@0.1.0".parse().expect("identifier");
     let record_ty = ValueType::Record(RecordType::new([
         RecordField::new("a", ValueType::Primitive(PrimitiveType::S32)),
         RecordField::new("b", ValueType::Primitive(PrimitiveType::S32)),
@@ -195,10 +194,75 @@ async fn it_passes_a_record_argument_to_a_host_function() {
 }
 
 #[wcmp_macros::test]
-#[ignore = "stub: returning a record through the wide-result memory-pointer path is exercised below for tuple; record-result remains stubbed until the lift_result side parses the projected type"]
 async fn it_returns_a_record_from_an_export() {
-    todo!(
-        "round-trip a record through an export's *return* position, requiring the polyfill's wide-result memory pointer path to lift back to Val::Record"
+    // Returning `(record (field "a" s32) (field "b" s32))` exercises
+    // the wide-result memory-pointer path: the result has 2 flat
+    // slots (i32, i32) > MAX_FLAT_RESULTS=1, so the core function
+    // calls `cabi_realloc`, writes the two i32 fields, and returns
+    // the result-area pointer. The polyfill's `lift_result` then
+    // routes through `abi::lift` on `ValueType::Record`.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (import "test:host/shapes@0.1.0" (instance $iface
+            (type $rec' (record (field "a" s32) (field "b" s32)))
+            (export "rec" (type $rec (eq $rec')))))
+          (alias export $iface "rec" (type $rec))
+          (core module $m
+            (memory (export "memory") 1)
+            (global $bump (mut i32) (i32.const 16))
+            (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
+              (local $ptr i32)
+              global.get $bump local.set $ptr
+              global.get $bump local.get 3 i32.add global.set $bump
+              local.get $ptr)
+            (func (export "make") (param i32 i32) (result i32)
+              (local $ptr i32)
+              i32.const 0 i32.const 0 i32.const 4 i32.const 8 call 0
+              local.set $ptr
+              local.get $ptr local.get 0 i32.store
+              local.get $ptr local.get 1 i32.store offset=4
+              local.get $ptr))
+          (core instance $i (instantiate $m))
+          (type $make-ty (func (param "a" s32) (param "b" s32) (result $rec)))
+          (func $make (type $make-ty)
+            (canon lift (core func $i "make") (memory $i "memory") (realloc (func $i "cabi_realloc"))))
+          (export "make" (func $make)))
+        "#
+    );
+
+    use wasm_component_model_polyfill::{InterfaceIdentifier, ValField};
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let iface: InterfaceIdentifier = "test:host/shapes@0.1.0".parse().expect("identifier");
+    let _ = linker.instance(&iface);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiate");
+    let make = instance
+        .get_func(&mut store, "make")
+        .expect("`make` export");
+    let result = make
+        .call(&mut store, &[Val::S32(7), Val::S32(11)])
+        .expect("call");
+    let [Val::Record(fields)] = result.as_ref() else {
+        panic!("expected a single record result, got {result:?}");
+    };
+    assert_eq!(fields.len(), 2);
+    assert_eq!(
+        fields.as_ref(),
+        &[
+            ValField {
+                name: "a".to_owned(),
+                value: Val::S32(7),
+            },
+            ValField {
+                name: "b".to_owned(),
+                value: Val::S32(11),
+            },
+        ],
     );
 }
 
@@ -229,11 +293,40 @@ async fn it_passes_a_tuple_argument_to_an_export() {
 }
 
 #[wcmp_macros::test]
-#[ignore = "stub: returning a tuple through the wide-result memory-pointer path"]
 async fn it_returns_a_tuple_from_an_export() {
-    todo!(
-        "round-trip a tuple through an export's *return* position; lift_result needs to read multiple fields from the wide-result pointer"
+    // `(tuple s32 s32)` flattens identically to a two-i32 record;
+    // this proves `lift_result` walks `ValueType::Tuple` through the
+    // wide-result pointer path.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (core module $m
+            (memory (export "memory") 1)
+            (global $bump (mut i32) (i32.const 16))
+            (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
+              (local $ptr i32)
+              global.get $bump local.set $ptr
+              global.get $bump local.get 3 i32.add global.set $bump
+              local.get $ptr)
+            (func (export "make") (param i32 i32) (result i32)
+              (local $ptr i32)
+              i32.const 0 i32.const 0 i32.const 4 i32.const 8 call 0
+              local.set $ptr
+              local.get $ptr local.get 0 i32.store
+              local.get $ptr local.get 1 i32.store offset=4
+              local.get $ptr))
+          (core instance $i (instantiate $m))
+          (func (export "make") (param "a" s32) (param "b" s32) (result (tuple s32 s32))
+            (canon lift (core func $i "make") (memory $i "memory") (realloc (func $i "cabi_realloc")))))
+        "#
     );
+
+    let (mut store, instance) = instantiate(COMPONENT);
+    let result = call(&instance, &mut store, "make", &[Val::S32(13), Val::S32(17)]);
+    let [Val::Tuple(elements)] = result.as_ref() else {
+        panic!("expected a single tuple result, got {result:?}");
+    };
+    assert_eq!(elements.as_ref(), &[Val::S32(13), Val::S32(17)],);
 }
 
 #[wcmp_macros::test]
@@ -271,8 +364,7 @@ async fn it_passes_a_variant_argument_to_a_host_function() {
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, COMPONENT).expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
-    let iface: InterfaceIdentifier =
-        "pdd-tests:host/maths@0.1.0".parse().expect("identifier");
+    let iface: InterfaceIdentifier = "pdd-tests:host/maths@0.1.0".parse().expect("identifier");
     let variant_ty = ValueType::Variant(VariantType::new([
         VariantCase::new("none", None),
         VariantCase::new("value", Some(ValueType::Primitive(PrimitiveType::S32))),
@@ -432,18 +524,13 @@ async fn it_passes_an_enum_argument_to_a_host_function() {
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, COMPONENT).expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
-    let iface: InterfaceIdentifier =
-        "pdd-tests:host/probe@0.1.0".parse().expect("identifier");
+    let iface: InterfaceIdentifier = "pdd-tests:host/probe@0.1.0".parse().expect("identifier");
     linker.instance(&iface).func_new(
         "decode",
         FunctionType {
             parameters: vec![FunctionParameter {
                 name: "c".to_owned(),
-                ty: ValueType::Enum(EnumType::new([
-                    "red".into(),
-                    "green".into(),
-                    "blue".into(),
-                ])),
+                ty: ValueType::Enum(EnumType::new(["red".into(), "green".into(), "blue".into()])),
             }],
             result: Some(ValueType::Primitive(PrimitiveType::S32)),
         },
@@ -507,8 +594,7 @@ async fn it_passes_a_flags_argument_to_a_host_function() {
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, COMPONENT).expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
-    let iface: InterfaceIdentifier =
-        "pdd-tests:host/probe@0.1.0".parse().expect("identifier");
+    let iface: InterfaceIdentifier = "pdd-tests:host/probe@0.1.0".parse().expect("identifier");
     linker.instance(&iface).func_new(
         "popcount",
         FunctionType {
@@ -537,7 +623,9 @@ async fn it_passes_a_flags_argument_to_a_host_function() {
     let go = inst.get_func(&mut store, "go").expect("go export");
     // Bits 0b101 = read + execute.
     assert_eq!(
-        go.call(&mut store, &[Val::U32(0b101)]).expect("call").as_ref(),
+        go.call(&mut store, &[Val::U32(0b101)])
+            .expect("call")
+            .as_ref(),
         &[Val::U32(2)]
     );
 }
@@ -627,10 +715,7 @@ async fn it_round_trips_list_of_bytes_through_an_export() {
         &instance,
         &mut store,
         "byte-at",
-        &[
-            Val::List(bytes.into_boxed_slice()),
-            Val::U32(2),
-        ],
+        &[Val::List(bytes.into_boxed_slice()), Val::U32(2)],
     );
     assert_eq!(result.as_ref(), &[Val::U8(2)]);
 }
@@ -761,9 +846,7 @@ async fn it_invokes_post_return_after_a_sync_lift() {
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let len = inst
-        .get_func(&mut store, "len")
-        .expect("len export");
+    let len = inst.get_func(&mut store, "len").expect("len export");
     assert_eq!(*store.data(), 0, "post-return has not run yet");
     let results = len
         .call(&mut store, &[Val::String("ab".to_owned())])
@@ -823,11 +906,42 @@ async fn it_tracks_resource_handles_in_a_handle_table() {
 // --------------------------------------------------------------
 
 #[wcmp_macros::test]
-#[ignore = "stub: UTF-16 string canon-option encoding round-trip"]
 async fn it_supports_the_utf16_string_encoding() {
-    todo!(
-        "instantiate a component whose `(canon lift)` declares `(string-encoding utf16)` and round-trip a string with non-ASCII content"
+    // The export takes a string and returns its length in UTF-16
+    // code units. Both lift and lower walk the
+    // `StringEncoding::Utf16` arms; non-ASCII content (`café`) makes
+    // the encoding choice observable — UTF-8 length is 5 bytes,
+    // UTF-16 length is 4 code units.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (core module $m
+            (memory (export "memory") 1)
+            (global $bump (mut i32) (i32.const 16))
+            (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
+              (local $ptr i32)
+              global.get $bump local.set $ptr
+              global.get $bump local.get 3 i32.add global.set $bump
+              local.get $ptr)
+            (func (export "len") (param i32 i32) (result i32)
+              local.get 1))
+          (core instance $i (instantiate $m))
+          (func (export "len") (param "s" string) (result s32)
+            (canon lift (core func $i "len")
+                       string-encoding=utf16
+                       (memory $i "memory")
+                       (realloc (func $i "cabi_realloc")))))
+        "#
     );
+
+    let (mut store, instance) = instantiate(COMPONENT);
+    let result = call(
+        &instance,
+        &mut store,
+        "len",
+        &[Val::String("café".to_owned())],
+    );
+    assert_eq!(result.as_ref(), &[Val::S32(4)]);
 }
 
 #[wcmp_macros::test]

@@ -68,10 +68,9 @@ pub fn lift<T: 'static>(
             let disc_size = discriminant_size(case_count);
             let disc_bytes = ctx.read_bytes(offset, disc_size, position, ty)?;
             let discriminant = read_discriminant(&disc_bytes);
-            let case = variant
-                .cases()
-                .get(discriminant)
-                .ok_or_else(|| invalid_encoding(ty, position, "variant discriminant out of range"))?;
+            let case = variant.cases().get(discriminant).ok_or_else(|| {
+                invalid_encoding(ty, position, "variant discriminant out of range")
+            })?;
             let payload_align = variant
                 .cases()
                 .iter()
@@ -100,7 +99,11 @@ pub fn lift<T: 'static>(
                     let inner = lift(ctx, payload_offset, option.payload(), position)?;
                     Ok(Val::Option(Some(Box::new(inner))))
                 }
-                _ => Err(invalid_encoding(ty, position, "option discriminant must be 0 or 1")),
+                _ => Err(invalid_encoding(
+                    ty,
+                    position,
+                    "option discriminant must be 0 or 1",
+                )),
             }
         }
         ValueType::Result(result) => {
@@ -131,7 +134,11 @@ pub fn lift<T: 'static>(
                     };
                     Ok(Val::Result(Err(payload)))
                 }
-                _ => Err(invalid_encoding(ty, position, "result discriminant must be 0 or 1")),
+                _ => Err(invalid_encoding(
+                    ty,
+                    position,
+                    "result discriminant must be 0 or 1",
+                )),
             }
         }
         ValueType::Enum(en) => {
@@ -162,7 +169,14 @@ pub fn lift<T: 'static>(
         ValueType::Own(rt) | ValueType::Borrow(rt) => {
             let bytes = ctx.read_bytes(offset, 4, position, ty)?;
             let index = read_u32(&bytes);
-            lift_handle(ctx, rt.label(), index, ty, position, matches!(ty, ValueType::Own(_)))
+            lift_handle(
+                ctx,
+                rt.label(),
+                index,
+                ty,
+                position,
+                matches!(ty, ValueType::Own(_)),
+            )
         }
     }
 }
@@ -246,9 +260,9 @@ fn lift_string<T: 'static>(
     let bytes = match ctx.string_encoding {
         StringEncoding::Utf8 => ctx.read_bytes(ptr, units, position, ty)?,
         StringEncoding::Utf16 => {
-            let byte_len = units.checked_mul(2).ok_or_else(|| {
-                invalid_encoding(ty, position, "utf16 length overflow")
-            })?;
+            let byte_len = units
+                .checked_mul(2)
+                .ok_or_else(|| invalid_encoding(ty, position, "utf16 length overflow"))?;
             let raw = ctx.read_bytes(ptr, byte_len, position, ty)?;
             let units_vec: Vec<u16> = raw
                 .chunks_exact(2)
@@ -320,13 +334,15 @@ pub fn lift_handle<T: 'static>(
     position: AbiPosition,
     is_own: bool,
 ) -> Result<Val> {
-    let tables = ctx.tables.clone().ok_or_else(|| Error::Abi(AbiError {
-        position,
-        valtype: ty.clone(),
-        cause: AbiCause::InvalidHandle {
-            reason: "no handle-tables ledger available to the lift context".to_owned(),
-        },
-    }))?;
+    let tables = ctx.tables.clone().ok_or_else(|| {
+        Error::from(AbiError {
+            position,
+            valtype: ty.clone(),
+            cause: AbiCause::InvalidHandle {
+                reason: "no handle-tables ledger available to the lift context".to_owned(),
+            },
+        })
+    })?;
 
     let mut guard = tables.lock().map_err(|_| Error::Internal {
         message: "resource handle tables lock poisoned".to_owned(),
@@ -349,25 +365,26 @@ pub fn lift_handle<T: 'static>(
             break;
         }
     }
-    let type_id = found.ok_or_else(|| Error::Abi(AbiError {
-        position,
-        valtype: ty.clone(),
-        cause: AbiCause::InvalidHandle {
-            reason: format!("handle index {index} is not live in any resource table"),
-        },
-    }))?;
+    let type_id = found.ok_or_else(|| {
+        Error::from(AbiError {
+            position,
+            valtype: ty.clone(),
+            cause: AbiCause::InvalidHandle {
+                reason: format!("handle index {index} is not live in any resource table"),
+            },
+        })
+    })?;
 
     if is_own {
-        guard
-            .for_type_mut(type_id)
-            .remove(index)
-            .ok_or_else(|| Error::Abi(AbiError {
+        guard.for_type_mut(type_id).remove(index).ok_or_else(|| {
+            Error::from(AbiError {
                 position,
                 valtype: ty.clone(),
                 cause: AbiCause::InvalidHandle {
                     reason: format!("handle index {index} disappeared during lift"),
                 },
-            }))?;
+            })
+        })?;
         Ok(Val::Own(ResourceHandle { type_id, index }))
     } else {
         Ok(Val::Borrow(ResourceHandle { type_id, index }))
@@ -375,7 +392,7 @@ pub fn lift_handle<T: 'static>(
 }
 
 fn invalid_encoding(ty: &ValueType, position: AbiPosition, message: &str) -> Error {
-    Error::Abi(AbiError {
+    Error::from(AbiError {
         position,
         valtype: ty.clone(),
         cause: AbiCause::InvalidEncoding {

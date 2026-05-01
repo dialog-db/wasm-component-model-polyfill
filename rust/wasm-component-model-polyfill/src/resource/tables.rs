@@ -16,8 +16,8 @@
 
 use std::collections::HashMap;
 
-use super::table::HandleTable;
 use super::identity::ResourceTypeId;
+use super::table::HandleTable;
 
 /// The full set of per-resource-type handle tables a [`Store`]
 /// carries.

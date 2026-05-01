@@ -84,8 +84,13 @@ pub enum Error {
     /// import's WIT-spec compatibility range, or the import requires
     /// a host item the polyfill does not yet support
     /// (every host-function and host-resource registration mode).
+    ///
+    /// The cause is carried behind a `Box` so `Error` itself stays
+    /// small at the boundary; matching against the variant is
+    /// unaffected and the inner [`LinkError`] is reachable through
+    /// a deref or pattern-binding the box.
     #[error("link error: {0}")]
-    Link(#[source] LinkError),
+    Link(#[source] Box<LinkError>),
 
     /// The runtime substrate failed to instantiate a successfully
     /// linked component, or the polyfill rejected the component for
@@ -93,7 +98,7 @@ pub enum Error {
     /// (e.g. an exported signature that requires compound-valtype
     /// lift/lower).
     #[error("instantiation error: {0}")]
-    Instantiation(#[source] InstantiationError),
+    Instantiation(#[source] Box<InstantiationError>),
 
     /// A host-side type does not unify with the corresponding
     /// component-side type. The carried [`TypeMismatch`] identifies
@@ -107,14 +112,14 @@ pub enum Error {
     /// declared signature does not satisfy the export's component-
     /// level type.
     #[error("type mismatch: {0}")]
-    TypeMismatch(#[source] TypeMismatch),
+    TypeMismatch(#[source] Box<TypeMismatch>),
 
     /// Lift or lower of a value across the canonical-ABI boundary
     /// failed. The carried [`AbiError`] identifies the position the
     /// failure was observed at (an argument index or the result
     /// slot), the value type involved, and the structured cause.
     #[error("canonical ABI error: {0}")]
-    Abi(#[source] AbiError),
+    Abi(#[source] Box<AbiError>),
 
     /// A polyfill-internal invariant that "shouldn't happen given
     /// upstream guarantees" was nevertheless violated. This
@@ -127,6 +132,30 @@ pub enum Error {
         /// where.
         message: String,
     },
+}
+
+impl From<LinkError> for Error {
+    fn from(value: LinkError) -> Self {
+        Error::Link(Box::new(value))
+    }
+}
+
+impl From<InstantiationError> for Error {
+    fn from(value: InstantiationError) -> Self {
+        Error::Instantiation(Box::new(value))
+    }
+}
+
+impl From<TypeMismatch> for Error {
+    fn from(value: TypeMismatch) -> Self {
+        Error::TypeMismatch(Box::new(value))
+    }
+}
+
+impl From<AbiError> for Error {
+    fn from(value: AbiError) -> Self {
+        Error::Abi(Box::new(value))
+    }
 }
 
 /// The reason an import could not be resolved.
@@ -161,7 +190,9 @@ pub enum LinkError {
     /// A registered linker instance shared the import's interface
     /// identifier but its version fell outside the import's
     /// WIT-spec compatibility range.
-    #[error("import `{import}` requested version {requested:?}, available versions {available:?} are not compatible")]
+    #[error(
+        "import `{import}` requested version {requested:?}, available versions {available:?} are not compatible"
+    )]
     IncompatibleVersion {
         /// The name of the import whose version constraint failed.
         import: ExternalName,
@@ -274,6 +305,19 @@ pub enum TypeMismatchPosition {
         /// Which slot the mismatch occurred at.
         slot: AbiPosition,
     },
+    /// The typed-conversion entry point on an export's [`Func`]
+    /// rejected the requested Rust parameter tuple and return type:
+    /// the export's declared component-level signature does not
+    /// match the signature the caller asked for. The `expected` and
+    /// `actual` [`TypeRendering::Function`]s on the enclosing
+    /// [`TypeMismatch`] carry the component-side and Rust-side
+    /// signatures, respectively.
+    ///
+    /// [`Func`]: crate::Func
+    TypedConversion {
+        /// The name the component declares the export under.
+        export: String,
+    },
 }
 
 impl core::fmt::Display for TypeMismatchPosition {
@@ -290,6 +334,9 @@ impl core::fmt::Display for TypeMismatchPosition {
             }
             Self::TypedExportSlot { export, slot } => {
                 write!(f, "typed export call for `{export}` at {slot}")
+            }
+            Self::TypedConversion { export } => {
+                write!(f, "typed conversion for export `{export}`")
             }
         }
     }

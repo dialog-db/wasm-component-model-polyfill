@@ -16,8 +16,7 @@ use wasmtime_environ::component::CanonicalAbiInfo;
 pub use wasmtime_environ::component::FlatType;
 
 use crate::types::{
-    FlagsType, OptionType, PrimitiveType, RecordType, ResultType, TupleType, ValueType,
-    VariantType,
+    FlagsType, OptionType, PrimitiveType, RecordType, ResultType, TupleType, ValueType, VariantType,
 };
 
 /// Round `offset` up to the next multiple of `alignment`. The
@@ -51,7 +50,7 @@ pub fn flat_count(ty: &ValueType) -> Option<usize> {
 /// ≤ 256 cases, 2 bytes for ≤ 65 536, 4 bytes otherwise.
 pub fn discriminant_size(case_count: usize) -> usize {
     match case_count {
-        0 | 1..=0x100 => 1,
+        0..=0x100 => 1,
         n if n <= 0x1_0000 => 2,
         _ => 4,
     }
@@ -190,7 +189,7 @@ fn flat_type_of_primitive(prim: PrimitiveType) -> FlatType {
 
 fn num_i32_flag_chunks(flags: &FlagsType) -> usize {
     let n = flags.names().len();
-    if n == 0 { 0 } else { (n + 31) / 32 }
+    if n == 0 { 0 } else { n.div_ceil(32) }
 }
 
 /// The flat-slot list for a discriminated union: one i32 for the

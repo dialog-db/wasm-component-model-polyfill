@@ -25,6 +25,7 @@ use wasmtime_environ::{EntityIndex as EnvironEntityIndex, ScopeVec, Tunables};
 use crate::component::{Component, ExternType, ExternalName, FunctionType, InstanceItem};
 use crate::engine::Engine;
 use crate::error::{Error, Result};
+use crate::identifier::InterfaceIdentifier;
 
 use super::ir::{
     CanonOptions, CoreInstanceExport, CoreSourceItem, EntityIndex, ExecutorIr, ExportSpec,
@@ -55,8 +56,7 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
     let mut module_index_for_static: HashMap<StaticModuleIndex, usize> =
         HashMap::with_capacity(modules.len());
     for (static_idx, module) in modules {
-        let runtime =
-            RuntimeModule::new(engine.inner(), module.wasm).map_err(translation_error)?;
+        let runtime = RuntimeModule::new(engine.inner(), module.wasm).map_err(translation_error)?;
         let imports = module
             .module
             .imports()
@@ -70,7 +70,12 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
             .module
             .exports
             .iter()
-            .map(|(atom, idx)| (lift_entity_index(*idx), module.module.strings[*atom].to_owned()))
+            .map(|(atom, idx)| {
+                (
+                    lift_entity_index(*idx),
+                    module.module.strings[*atom].to_owned(),
+                )
+            })
             .collect();
         module_index_for_static.insert(static_idx, module_entries.len());
         module_entries.push(ModuleEntry {
@@ -189,7 +194,10 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
 
     for initializer in &translation.component.initializers {
         match initializer {
-            GlobalInitializer::InstantiateModule(InstantiateModule::Static(static_idx, defs), _) => {
+            GlobalInitializer::InstantiateModule(
+                InstantiateModule::Static(static_idx, defs),
+                _,
+            ) => {
                 let module_index = *module_index_for_static.get(static_idx).ok_or_else(|| {
                     internal("module index from translator missing from projection map")
                 })?;
@@ -233,8 +241,7 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
             GlobalInitializer::ExtractPostReturn(ExtractPostReturn { index, def }) => {
                 let source = state.lift_core_def(def, &trampoline_to_spec)?;
                 let slot = index.as_u32() as usize;
-                state.num_runtime_post_returns =
-                    state.num_runtime_post_returns.max(slot + 1);
+                state.num_runtime_post_returns = state.num_runtime_post_returns.max(slot + 1);
                 state
                     .initializers
                     .push(Initializer::ExtractPostReturn { slot, source });
@@ -254,41 +261,17 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
 
     let mut exports: Vec<ExportSpec> = Vec::new();
     for (name, export_index) in translation.component.exports.raw_iter() {
-        let export = translation
-            .component
-            .export_items
-            .get(*export_index)
-            .ok_or_else(|| internal("export index from translator missing from export_items"))?;
-        match export {
-            ComponentExport::LiftedFunction { func, options, .. } => {
-                let source = state.lift_core_def(func, &trampoline_to_spec)?;
-                let signature = lookup_export_signature(component, name)?;
-                let canon = translation
-                    .component
-                    .options
-                    .get(*options)
-                    .ok_or_else(|| internal("export OptionsIndex out of bounds"))?;
-                exports.push(ExportSpec {
-                    name: name.clone(),
-                    source,
-                    signature,
-                    options: lift_canon_options(canon),
-                });
-            }
-            ComponentExport::ModuleStatic { .. } | ComponentExport::ModuleImport { .. } => {
-                todo!(
-                    "module-typed component exports are out of scope for the synchronous baseline; see PDD003 checklist"
-                )
-            }
-            ComponentExport::Instance { .. } => {
-                todo!(
-                    "instance-typed component exports — the polyfill exposes function exports only at present"
-                )
-            }
-            ComponentExport::Type(_) => {
-                // Type exports carry no runtime presence.
-            }
-        }
+        collect_export(
+            &translation,
+            component,
+            &mut state,
+            &trampoline_to_spec,
+            &mut exports,
+            name,
+            *export_index,
+            None,
+            None,
+        )?;
     }
 
     Ok(ExecutorIr {
@@ -302,6 +285,86 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
         num_runtime_reallocs: state.num_runtime_reallocs,
         num_runtime_post_returns: state.num_runtime_post_returns,
     })
+}
+
+/// Recursively project one component-level export into [`ExportSpec`]
+/// entries. Root-level functions land as a single entry with no
+/// parent; instance-typed exports recurse into their inner exports
+/// with the enclosing instance's [`InterfaceIdentifier`] threaded
+/// through as the `parent`. The `parent_path` carries the inner
+/// item-name path for nested instances so the per-leaf signature
+/// lookup can resolve into the polyfill's parsed-component view.
+#[allow(clippy::too_many_arguments)]
+fn collect_export(
+    translation: &ComponentTranslation,
+    component: &Component,
+    state: &mut ProjectionState,
+    trampoline_to_spec: &HashMap<TrampolineIndex, usize>,
+    out: &mut Vec<ExportSpec>,
+    name: &str,
+    export_index: wasmtime_environ::component::ExportIndex,
+    parent: Option<&InterfaceIdentifier>,
+    parent_path: Option<&str>,
+) -> Result<()> {
+    let export = translation
+        .component
+        .export_items
+        .get(export_index)
+        .ok_or_else(|| internal("export index from translator missing from export_items"))?;
+    match export {
+        ComponentExport::LiftedFunction { func, options, .. } => {
+            let source = state.lift_core_def(func, trampoline_to_spec)?;
+            let signature = lookup_leaf_signature(component, parent, parent_path, name)?;
+            let canon = translation
+                .component
+                .options
+                .get(*options)
+                .ok_or_else(|| internal("export OptionsIndex out of bounds"))?;
+            out.push(ExportSpec {
+                name: name.to_owned(),
+                parent: parent.cloned(),
+                source,
+                signature,
+                options: lift_canon_options(canon),
+            });
+            Ok(())
+        }
+        ComponentExport::ModuleStatic { .. } | ComponentExport::ModuleImport { .. } => {
+            todo!(
+                "module-typed component exports are out of scope for the synchronous baseline; see PDD003 checklist"
+            )
+        }
+        ComponentExport::Instance { exports, .. } => {
+            if parent.is_some() {
+                todo!(
+                    "doubly-nested instance exports — only one level of nesting is exercised by the synchronous baseline"
+                );
+            }
+            let identifier = name.parse::<InterfaceIdentifier>().map_err(|err| {
+                internal_msg(format!(
+                    "instance-typed export name `{name}` does not parse as a WIT interface identifier: {err}"
+                ))
+            })?;
+            for (item_name, inner_index) in exports.raw_iter() {
+                collect_export(
+                    translation,
+                    component,
+                    state,
+                    trampoline_to_spec,
+                    out,
+                    item_name,
+                    *inner_index,
+                    Some(&identifier),
+                    Some(name),
+                )?;
+            }
+            Ok(())
+        }
+        ComponentExport::Type(_) => {
+            // Type exports carry no runtime presence.
+            Ok(())
+        }
+    }
 }
 
 /// Resolve a [`TypeResourceTableIndex`] to the polyfill's resource
@@ -418,9 +481,9 @@ impl ProjectionState {
             CoreDef::UnsafeIntrinsic(_) => todo!(
                 "Wasmtime unsafe intrinsics are not part of the polyfill's surface — see PDD003"
             ),
-            CoreDef::TaskMayBlock => todo!(
-                "task-may-block global is part of the async-tier runtime state — see PDD003"
-            ),
+            CoreDef::TaskMayBlock => {
+                todo!("task-may-block global is part of the async-tier runtime state — see PDD003")
+            }
         }
     }
 
@@ -540,26 +603,74 @@ fn matches_top_level_name(polyfill: &ExternalName, wire: &str) -> bool {
     }
 }
 
-/// Find the polyfill function type the parsed-component view declares
-/// for an export named `name`.
-fn lookup_export_signature(component: &Component, name: &str) -> Result<FunctionType> {
-    for export in component.exports.iter() {
-        let matches = match &export.name {
-            ExternalName::Plain(text) => text == name,
-            ExternalName::Interface(id) => id.to_string() == name,
-        };
-        if matches {
-            return match &export.ty {
-                ExternType::Function(ty) => Ok(ty.clone()),
-                _ => Err(internal(
-                    "lifted-function export's polyfill type is not a function",
-                )),
-            };
+/// Resolve the polyfill [`FunctionType`] for one lifted-function
+/// export. When `parent_path` is `Some`, look up the parent
+/// instance-typed export first and find `leaf` inside its declared
+/// items; otherwise the export is at the root of the component and
+/// `leaf` is the wire-name the binary publishes.
+fn lookup_leaf_signature(
+    component: &Component,
+    parent: Option<&InterfaceIdentifier>,
+    parent_path: Option<&str>,
+    leaf: &str,
+) -> Result<FunctionType> {
+    match (parent, parent_path) {
+        (Some(_), Some(parent_wire)) => {
+            for export in component.exports.iter() {
+                let matches = match &export.name {
+                    ExternalName::Plain(text) => text == parent_wire,
+                    ExternalName::Interface(id) => id.to_string() == parent_wire,
+                };
+                if matches {
+                    let instance = match &export.ty {
+                        ExternType::Instance(instance) => instance,
+                        _ => {
+                            return Err(internal_msg(format!(
+                                "export `{parent_wire}` is not an instance in the polyfill's parsed-component view"
+                            )));
+                        }
+                    };
+                    let item = instance
+                        .items
+                        .iter()
+                        .find(|InstanceItem { name, .. }| name == leaf)
+                        .ok_or_else(|| {
+                            internal_msg(format!(
+                                "instance export `{parent_wire}` has no item named `{leaf}`"
+                            ))
+                        })?;
+                    return match &item.ty {
+                        ExternType::Function(ty) => Ok(ty.clone()),
+                        _ => Err(internal_msg(format!(
+                            "instance export `{parent_wire}` item `{leaf}` is not a function"
+                        ))),
+                    };
+                }
+            }
+            Err(internal_msg(format!(
+                "instance export `{parent_wire}` not present in the polyfill's parsed-component view"
+            )))
+        }
+        _ => {
+            for export in component.exports.iter() {
+                let matches = match &export.name {
+                    ExternalName::Plain(text) => text == leaf,
+                    ExternalName::Interface(id) => id.to_string() == leaf,
+                };
+                if matches {
+                    return match &export.ty {
+                        ExternType::Function(ty) => Ok(ty.clone()),
+                        _ => Err(internal(
+                            "lifted-function export's polyfill type is not a function",
+                        )),
+                    };
+                }
+            }
+            Err(internal(
+                "lifted-function export not present in the polyfill's parsed-component view",
+            ))
         }
     }
-    Err(internal(
-        "lifted-function export not present in the polyfill's parsed-component view",
-    ))
 }
 
 fn lift_canon_options(options: &EnvironCanonOptions) -> CanonOptions {

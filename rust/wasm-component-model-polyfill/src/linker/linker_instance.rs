@@ -125,20 +125,15 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
         let host = HostFunc::new(signature, move |data, args, results| {
             let params = Params::from_vals(args)?;
             let ret = func(data, params)?;
-            match ret.into_val() {
-                Some(val) => {
-                    if results.is_empty() {
-                        // Caller's signature declared no result;
-                        // discarding silently is wrong — reach for
-                        // a structured error in a future revision.
-                        // For now, this mirrors the assertion the
-                        // untyped path makes that the lengths
-                        // agree.
-                    } else {
-                        results[0] = val;
-                    }
-                }
-                None => {}
+            if let Some(val) = ret.into_val()
+                && !results.is_empty()
+            {
+                // The untyped path enforces that `results.len()`
+                // matches the declared result count; an empty slot
+                // here means the registered Rust signature
+                // disagreed with the declared ABI, which the
+                // link-time check should already have rejected.
+                results[0] = val;
             }
             Ok(())
         });

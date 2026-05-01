@@ -74,10 +74,7 @@ impl<T: 'static> Linker<T> {
     /// host-trampoline builder to dispatch a lowered import.
     ///
     /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn registration_for(
-        &self,
-        id: &InterfaceIdentifier,
-    ) -> Option<&InstanceRegistration<T>> {
+    pub fn registration_for(&self, id: &InterfaceIdentifier) -> Option<&InstanceRegistration<T>> {
         self.instances.get(id)
     }
 
@@ -90,10 +87,7 @@ impl<T: 'static> Linker<T> {
     /// WIT compatibility rules; see the polyfill's identifier
     /// resolution module for the matching semantics.
     pub fn instance(&mut self, id: &InterfaceIdentifier) -> LinkerInstance<'_, T> {
-        let entry = self
-            .instances
-            .entry(id.clone())
-            .or_insert_with(InstanceRegistration::new);
+        let entry = self.instances.entry(id.clone()).or_default();
         LinkerInstance::new(entry)
     }
 
@@ -122,11 +116,7 @@ impl<T: 'static> Linker<T> {
     ///
     /// [`Error::Link`]: crate::Error::Link
     /// [`Error::Instantiation`]: crate::Error::Instantiation
-    pub fn instantiate(
-        &self,
-        store: &mut Store<T>,
-        component: &Component,
-    ) -> Result<Instance> {
+    pub fn instantiate(&self, store: &mut Store<T>, component: &Component) -> Result<Instance> {
         let resolution = resolve_imports(component, self)?;
         self.instantiate_resolved(store, component, &resolution)
     }

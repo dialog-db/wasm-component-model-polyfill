@@ -46,6 +46,10 @@ pub trait ComponentParameters: Sized + Send + Sync + 'static {
     fn parameter_types() -> Vec<FunctionParameter>;
     /// Decode a slice of [`Val`]s into this tuple.
     fn from_vals(vals: &[Val]) -> Result<Self>;
+    /// Encode this tuple into the slice of [`Val`]s the canonical
+    /// ABI lower path consumes. The order matches
+    /// [`Self::parameter_types`].
+    fn into_vals(self) -> Vec<Val>;
 }
 
 /// A statically-typed return value.
@@ -56,6 +60,10 @@ pub trait ComponentResult: Sized + Send + Sync + 'static {
     fn result_type() -> Option<ValueType>;
     /// Encode this Rust value as the optional result [`Val`].
     fn into_val(self) -> Option<Val>;
+    /// Decode the optional result [`Val`] the canonical-ABI lift
+    /// produced into this Rust value. `None` means the export
+    /// declared no result; `Some(val)` carries the lifted value.
+    fn from_val(val: Option<&Val>) -> Result<Self>;
 }
 
 // === ComponentValue impls for primitives ===
@@ -69,7 +77,7 @@ macro_rules! impl_primitive_value {
             fn from_val(val: &Val) -> Result<Self> {
                 match val {
                     Val::$variant(v) => Ok(v.clone()),
-                    _ => Err(value_mismatch::<Self>(val)),
+                    _ => Err(value_mismatch(val)),
                 }
             }
             fn to_val(self) -> Val {
@@ -100,7 +108,7 @@ impl<T: ComponentValue> ComponentValue for Vec<T> {
     fn from_val(val: &Val) -> Result<Self> {
         match val {
             Val::List(items) => items.iter().map(T::from_val).collect(),
-            _ => Err(value_mismatch::<Self>(val)),
+            _ => Err(value_mismatch(val)),
         }
     }
     fn to_val(self) -> Val {
@@ -116,7 +124,7 @@ impl<T: ComponentValue> ComponentValue for Option<T> {
         match val {
             Val::Option(None) => Ok(None),
             Val::Option(Some(inner)) => T::from_val(inner).map(Some),
-            _ => Err(value_mismatch::<Self>(val)),
+            _ => Err(value_mismatch(val)),
         }
     }
     fn to_val(self) -> Val {
@@ -137,6 +145,9 @@ impl ComponentParameters for () {
             Err(arity_mismatch(0, vals.len()))
         }
     }
+    fn into_vals(self) -> Vec<Val> {
+        Vec::new()
+    }
 }
 
 macro_rules! impl_component_parameters {
@@ -156,6 +167,9 @@ macro_rules! impl_component_parameters {
                 }
                 Ok(( $( $name::from_val(&vals[$index])?, )+ ))
             }
+            fn into_vals(self) -> Vec<Val> {
+                vec![ $( self.$index.to_val(), )+ ]
+            }
         }
     };
 }
@@ -174,6 +188,12 @@ impl ComponentResult for () {
     fn into_val(self) -> Option<Val> {
         None
     }
+    fn from_val(val: Option<&Val>) -> Result<Self> {
+        match val {
+            None => Ok(()),
+            Some(_) => Err(unexpected_result_present()),
+        }
+    }
 }
 
 impl<T: ComponentValue> ComponentResult for T {
@@ -182,6 +202,12 @@ impl<T: ComponentValue> ComponentResult for T {
     }
     fn into_val(self) -> Option<Val> {
         Some(<T as ComponentValue>::to_val(self))
+    }
+    fn from_val(val: Option<&Val>) -> Result<Self> {
+        match val {
+            Some(v) => <T as ComponentValue>::from_val(v),
+            None => Err(missing_result()),
+        }
     }
 }
 
@@ -196,8 +222,8 @@ pub fn function_type_for<P: ComponentParameters, R: ComponentResult>() -> Functi
     }
 }
 
-fn value_mismatch<T>(_val: &Val) -> Error {
-    Error::Abi(AbiError {
+fn value_mismatch(_val: &Val) -> Error {
+    Error::from(AbiError {
         position: AbiPosition::Argument(0),
         valtype: ValueType::Primitive(PrimitiveType::Bool),
         cause: AbiCause::HostValueMismatch,
@@ -205,7 +231,7 @@ fn value_mismatch<T>(_val: &Val) -> Error {
 }
 
 fn arity_mismatch(expected: usize, found: usize) -> Error {
-    Error::TypeMismatch(TypeMismatch {
+    Error::from(TypeMismatch {
         position: TypeMismatchPosition::TypedExportCall {
             export: "<typed-call>".to_owned(),
         },
@@ -223,5 +249,21 @@ fn arity_mismatch(expected: usize, found: usize) -> Error {
             }],
             result: None,
         }),
+    })
+}
+
+fn missing_result() -> Error {
+    Error::from(AbiError {
+        position: AbiPosition::Result,
+        valtype: ValueType::Primitive(PrimitiveType::Bool),
+        cause: AbiCause::HostValueMismatch,
+    })
+}
+
+fn unexpected_result_present() -> Error {
+    Error::from(AbiError {
+        position: AbiPosition::Result,
+        valtype: ValueType::Primitive(PrimitiveType::Bool),
+        cause: AbiCause::HostValueMismatch,
     })
 }

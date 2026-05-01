@@ -6,11 +6,11 @@
 
 #![cfg(test)]
 
+use std::sync::{Arc, Mutex};
 use wasm_component_model_polyfill::{
     Component, Engine, Error, ExternType, ExternalName, FunctionParameter, FunctionType,
     InterfaceIdentifier, Linker, PrimitiveType, Store, Val, ValueType,
 };
-use std::sync::{Arc, Mutex};
 use wcmp_macros::component;
 
 #[cfg(target_arch = "wasm32")]
@@ -159,18 +159,27 @@ async fn it_supports_multiple_independent_instances() {
         .expect("`next` export present on second instance");
 
     assert_eq!(
-        first_next.call(&mut store, &[]).expect("first call").as_ref(),
+        first_next
+            .call(&mut store, &[])
+            .expect("first call")
+            .as_ref(),
         &[Val::S32(1)],
     );
     assert_eq!(
-        first_next.call(&mut store, &[]).expect("second call").as_ref(),
+        first_next
+            .call(&mut store, &[])
+            .expect("second call")
+            .as_ref(),
         &[Val::S32(2)],
     );
 
     // The second instance's counter is unaffected by the first
     // instance's mutations.
     assert_eq!(
-        second_next.call(&mut store, &[]).expect("third call").as_ref(),
+        second_next
+            .call(&mut store, &[])
+            .expect("third call")
+            .as_ref(),
         &[Val::S32(1)],
     );
 }
@@ -215,7 +224,10 @@ async fn it_resolves_package_and_interface_identifiers_with_semver() {
         .get_func(&mut store, "answer")
         .expect("`answer` export present");
     assert_eq!(
-        answer.call(&mut store, &[]).expect("call succeeds").as_ref(),
+        answer
+            .call(&mut store, &[])
+            .expect("call succeeds")
+            .as_ref(),
         &[Val::S32(42)],
     );
 }
@@ -250,7 +262,9 @@ async fn it_defines_an_untyped_host_function() {
     let engine = Engine::new().expect("engine construction succeeds");
     let component = Component::new(&engine, COMPONENT).expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
-    let iface: InterfaceIdentifier = "pdd008:host/maths@0.1.0".parse().expect("identifier parses");
+    let iface: InterfaceIdentifier = "pdd008:host/maths@0.1.0"
+        .parse()
+        .expect("identifier parses");
     let mut instance = linker.instance(&iface);
     instance.func_new(
         "double",
@@ -315,13 +329,13 @@ async fn it_defines_a_typed_host_function() {
 
     // Happy path: the typed registration agrees with the import.
     let mut linker: Linker<()> = Linker::new(&engine);
-    let iface: InterfaceIdentifier = "pdd008:host/maths@0.1.0".parse().expect("identifier parses");
+    let iface: InterfaceIdentifier = "pdd008:host/maths@0.1.0"
+        .parse()
+        .expect("identifier parses");
     let mut instance = linker.instance(&iface);
     instance.func_wrap(
         "double",
-        |_data: &mut (), (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> {
-            Ok(n * 2)
-        },
+        |_data: &mut (), (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> { Ok(n * 2) },
     );
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
@@ -405,10 +419,7 @@ async fn it_defines_a_host_resource_with_a_sync_destructor() {
         .expect("identifier parses");
     let mut linker_iface = linker.instance(&iface);
     let type_id = linker_iface.resource("thing", |data: &mut HostData, rep: u32| {
-        data.dropped
-            .lock()
-            .expect("dropped lock")
-            .push(rep);
+        data.dropped.lock().expect("dropped lock").push(rep);
         Ok(())
     });
 
@@ -521,8 +532,7 @@ async fn it_dispatches_to_multiple_host_functions_in_one_interface() {
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, COMPONENT).expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
-    let iface: InterfaceIdentifier =
-        "pdd008-tests:host/maths@0.1.0".parse().expect("identifier");
+    let iface: InterfaceIdentifier = "pdd008-tests:host/maths@0.1.0".parse().expect("identifier");
     let mut iface_view = linker.instance(&iface);
     iface_view.func_wrap(
         "incr",
@@ -536,9 +546,7 @@ async fn it_dispatches_to_multiple_host_functions_in_one_interface() {
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let f = inst
-        .get_func(&mut store, "incr-then-decr")
-        .expect("export");
+    let f = inst.get_func(&mut store, "incr-then-decr").expect("export");
     let result = f.call(&mut store, &[Val::S32(7)]).expect("call");
     assert_eq!(result.as_ref(), &[Val::S32(7)]);
 }
@@ -599,7 +607,7 @@ async fn it_propagates_a_host_function_error_through_the_call() {
         .get_func(&mut store, "trigger")
         .expect("trigger export");
     let outcome = trigger.call(&mut store, &[]);
-    let err = outcome.err().expect("call should fail");
+    let err = outcome.expect_err("call should fail");
     // The error is currently wrapped by the runtime substrate's
     // trap surface; the structured polyfill error is preserved as
     // a `#[source]` chain. Asserting the top-level `Error::Abi` /
@@ -688,8 +696,9 @@ async fn it_rejects_a_component_whose_import_signature_disagrees_with_the_regist
         },
     );
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    let outcome = linker.instantiate(&mut store, &component);
-    let err = outcome.err().expect("link should fail");
+    let Err(err) = linker.instantiate(&mut store, &component) else {
+        panic!("link should fail");
+    };
     assert!(matches!(err, Error::TypeMismatch(_)), "got {err:?}");
 }
 
@@ -711,10 +720,12 @@ async fn it_rejects_a_call_whose_argument_count_disagrees_with_the_signature() {
     let component = Component::new(&engine, COMPONENT).expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    let inst = linker.instantiate(&mut store, &component).expect("instantiate");
+    let inst = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiate");
     let id = inst.get_func(&mut store, "id").expect("id export");
     let outcome = id.call(&mut store, &[Val::S32(1), Val::S32(2)]);
-    let err = outcome.err().expect("call should fail");
+    let err = outcome.expect_err("call should fail");
     assert!(matches!(err, Error::Abi(_)), "got {err:?}");
 }
 
@@ -736,10 +747,12 @@ async fn it_rejects_a_typed_export_call_whose_argument_type_disagrees() {
     let component = Component::new(&engine, COMPONENT).expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    let inst = linker.instantiate(&mut store, &component).expect("instantiate");
+    let inst = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiate");
     let id = inst.get_func(&mut store, "id").expect("id export");
     let outcome = id.call(&mut store, &[Val::S64(1)]);
-    let err = outcome.err().expect("call should fail");
+    let err = outcome.expect_err("call should fail");
     assert!(matches!(err, Error::Abi(_)), "got {err:?}");
 }
 
@@ -827,16 +840,15 @@ async fn it_rejects_an_import_with_a_required_item_when_the_registration_version
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, COMPONENT).expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
-    let too_old: InterfaceIdentifier = "pdd008-tests:host/maths@0.1.0"
-        .parse()
-        .expect("identifier");
+    let too_old: InterfaceIdentifier = "pdd008-tests:host/maths@0.1.0".parse().expect("identifier");
     linker.instance(&too_old).func_wrap(
         "double",
         |_: &mut (), (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> { Ok(n * 2) },
     );
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    let outcome = linker.instantiate(&mut store, &component);
-    let err = outcome.err().expect("link should fail");
+    let Err(err) = linker.instantiate(&mut store, &component) else {
+        panic!("link should fail");
+    };
     assert!(matches!(err, Error::Link(_)), "got {err:?}");
 }
 
@@ -886,17 +898,202 @@ async fn it_supports_a_plain_named_top_level_import() {
 }
 
 #[wcmp_macros::test]
-#[ignore = "stub: instance-typed component exports — `Component::exports` exposes flat exports only; `Instance::get_func` looks up by name without traversing instance-typed exports"]
 async fn it_navigates_instance_typed_exports() {
-    todo!(
-        "instantiate a component whose exports include `(export \"test:guest/foo\" (instance ...))` and reach the inner `select-nth` function via an `instance(name)` traversal mirroring wasm_component_layer's exports() API"
+    // The component publishes an `(instance)` export under the
+    // `test:guest/foo` interface name; the inner `select-nth`
+    // function picks an element of a `list<string>` argument. The
+    // navigator reaches it through `exports().instance(...).func(...)`
+    // and round-trips a real call.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (core module $m
+            (memory (export "memory") 1)
+            (global $bump (mut i32) (i32.const 16))
+            (func $cabi-realloc (export "cabi_realloc")
+                  (param i32 i32 i32 i32) (result i32)
+              (local $ptr i32)
+              global.get $bump
+              local.set $ptr
+              global.get $bump
+              local.get 3
+              i32.add
+              global.set $bump
+              local.get $ptr)
+            (func (export "select-nth")
+                  (param $list-ptr i32) (param $list-len i32) (param $n i32)
+                  (result i32)
+              (local $ret i32)
+              (local $elem i32)
+              i32.const 0
+              i32.const 0
+              i32.const 4
+              i32.const 8
+              call $cabi-realloc
+              local.set $ret
+              local.get $list-ptr
+              local.get $n
+              i32.const 3
+              i32.shl
+              i32.add
+              local.set $elem
+              local.get $ret
+              local.get $elem
+              i32.load
+              i32.store
+              local.get $ret
+              local.get $elem
+              i32.load offset=4
+              i32.store offset=4
+              local.get $ret))
+          (core instance $i (instantiate $m))
+          (func $select-nth
+                (param "x" (list string)) (param "n" u32) (result string)
+            (canon lift (core func $i "select-nth")
+                       (memory $i "memory")
+                       (realloc (func $i "cabi_realloc"))))
+          (instance $foo (export "select-nth" (func $select-nth)))
+          (export "test:guest/foo" (instance $foo)))
+        "#
     );
+
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiation succeeds");
+
+    // Root-level `func` is empty — the function lives nested inside
+    // the instance-typed export.
+    assert!(instance.exports().func("select-nth").is_none());
+
+    let interface: InterfaceIdentifier = "test:guest/foo"
+        .parse()
+        .expect("interface identifier parses");
+    let foo = instance
+        .exports()
+        .instance(&interface)
+        .expect("instance-typed export `test:guest/foo` is present");
+    let select_nth = foo
+        .func("select-nth")
+        .expect("`select-nth` is exported by the instance");
+
+    let example = ["a", "b", "c"]
+        .iter()
+        .map(|s| Val::String((*s).to_owned()))
+        .collect::<Vec<_>>();
+    let results = select_nth
+        .call(
+            &mut store,
+            &[Val::List(example.into_boxed_slice()), Val::U32(1)],
+        )
+        .expect("call succeeds");
+    assert_eq!(results.as_ref(), &[Val::String("b".to_owned())]);
+
+    // Looking up an unknown interface returns `None` rather than
+    // raising.
+    let absent: InterfaceIdentifier = "test:guest/missing".parse().expect("identifier parses");
+    assert!(instance.exports().instance(&absent).is_none());
 }
 
 #[wcmp_macros::test]
-#[ignore = "stub: typed export-call API — the polyfill exposes `Func::call(&[Val])` only; a `TypedFunc<P, R>` analogue would catch type mismatches at compile time"]
 async fn it_supports_a_typed_export_call_surface() {
-    todo!(
-        "expose a `Func::typed::<Params, Ret>()` method and a `TypedFunc<Params, Ret>::call(...)` that performs the lower/lift round-trip with statically-checked Rust types, mirroring wasm_component_layer's typed call API"
+    // The same `select-nth` shape as the navigator test, used here
+    // to exercise the typed-call surface end-to-end and the link-
+    // time signature check.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (core module $m
+            (memory (export "memory") 1)
+            (global $bump (mut i32) (i32.const 16))
+            (func $cabi-realloc (export "cabi_realloc")
+                  (param i32 i32 i32 i32) (result i32)
+              (local $ptr i32)
+              global.get $bump
+              local.set $ptr
+              global.get $bump
+              local.get 3
+              i32.add
+              global.set $bump
+              local.get $ptr)
+            (func (export "select-nth")
+                  (param $list-ptr i32) (param $list-len i32) (param $n i32)
+                  (result i32)
+              (local $ret i32)
+              (local $elem i32)
+              i32.const 0
+              i32.const 0
+              i32.const 4
+              i32.const 8
+              call $cabi-realloc
+              local.set $ret
+              local.get $list-ptr
+              local.get $n
+              i32.const 3
+              i32.shl
+              i32.add
+              local.set $elem
+              local.get $ret
+              local.get $elem
+              i32.load
+              i32.store
+              local.get $ret
+              local.get $elem
+              i32.load offset=4
+              i32.store offset=4
+              local.get $ret))
+          (core instance $i (instantiate $m))
+          (func $select-nth
+                (param "x" (list string)) (param "n" u32) (result string)
+            (canon lift (core func $i "select-nth")
+                       (memory $i "memory")
+                       (realloc (func $i "cabi_realloc"))))
+          (instance $foo (export "select-nth" (func $select-nth)))
+          (export "test:guest/foo" (instance $foo)))
+        "#
+    );
+
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiation succeeds");
+    let interface: InterfaceIdentifier = "test:guest/foo"
+        .parse()
+        .expect("interface identifier parses");
+    let foo = instance
+        .exports()
+        .instance(&interface)
+        .expect("`test:guest/foo` is present");
+
+    // Happy path: the requested Rust signature matches the export.
+    let select_nth = foo
+        .func("select-nth")
+        .expect("`select-nth` present")
+        .typed::<(Vec<String>, u32), String>()
+        .expect("typed conversion succeeds");
+
+    let example: Vec<String> = ["a", "b", "c"].iter().map(|s| (*s).to_owned()).collect();
+    let result = select_nth
+        .call(&mut store, (example.clone(), 1))
+        .expect("typed call succeeds");
+    assert_eq!(result, "b");
+
+    // Mismatched return type: the export returns `string`, the
+    // requested signature claims `u32`. The conversion fails before
+    // any call is made.
+    let mismatch = foo
+        .func("select-nth")
+        .expect("`select-nth` present")
+        .typed::<(Vec<String>, u32), u32>()
+        .expect_err("typed conversion rejects a return-type mismatch");
+    assert!(
+        matches!(mismatch, Error::TypeMismatch(_)),
+        "expected Error::TypeMismatch, got {mismatch:?}",
     );
 }

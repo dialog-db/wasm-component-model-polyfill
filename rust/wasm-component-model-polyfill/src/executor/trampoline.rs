@@ -25,12 +25,12 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
 use wasm_runtime_layer::{
-    AsContextMut, Func as RuntimeFunc, FuncType, Memory, ValType as CoreType, Val as RuntimeVal,
+    AsContextMut, Func as RuntimeFunc, FuncType, Memory, Val as RuntimeVal, ValType as CoreType,
 };
 
 use crate::abi::context::{LiftContext, LowerContext};
 use crate::abi::flatten::lift_from_flat_slots;
-use crate::abi::layout::{align_to, alignment_of, flat_count, flat_types, FlatType};
+use crate::abi::layout::{FlatType, align_to, alignment_of, flat_count, flat_types};
 use crate::abi::lower;
 use crate::backend::Backend;
 use crate::component::FunctionType;
@@ -215,7 +215,7 @@ fn read_handle(
 }
 
 fn invalid_handle(index: u32) -> Error {
-    Error::Abi(AbiError {
+    Error::from(AbiError {
         position: AbiPosition::Argument(0),
         valtype: ValueType::Primitive(PrimitiveType::U32),
         cause: AbiCause::InvalidHandle {
@@ -272,7 +272,7 @@ fn derive_runtime_func_type(signature: &FunctionType) -> FuncType {
 
     let mut results: Vec<CoreType> = Vec::new();
     if let Some(result_ty) = &signature.result {
-        let result_flat = flat_types(&result_ty);
+        let result_flat = flat_types(result_ty);
         match flat_count(result_ty) {
             Some(n) if n <= 1 => {
                 for slot in result_flat {
@@ -302,6 +302,7 @@ fn core_type_of_flat(slot: FlatType) -> CoreType {
 /// The body of a trampoline closure. Reads the per-call canon
 /// options state, lifts arguments, dispatches to the host func, and
 /// lowers the return.
+#[allow(clippy::too_many_arguments)]
 fn invoke_trampoline<T: 'static>(
     mut store_ctx: wasm_runtime_layer::StoreContextMut<'_, T, Backend>,
     signature: &FunctionType,
@@ -313,11 +314,9 @@ fn invoke_trampoline<T: 'static>(
     results: &mut [RuntimeVal],
 ) -> Result<()> {
     let (memory, realloc, _post_return) = {
-        let state = abi_state
-            .lock()
-            .map_err(|_| Error::Internal {
-                message: "ABI runtime state lock poisoned".to_owned(),
-            })?;
+        let state = abi_state.lock().map_err(|_| Error::Internal {
+            message: "ABI runtime state lock poisoned".to_owned(),
+        })?;
         let memory = options
             .memory
             .and_then(|s| state.memories.get(s).and_then(|m| m.clone()));
@@ -359,7 +358,7 @@ fn invoke_trampoline<T: 'static>(
                 let ptr = match args.get(cursor) {
                     Some(RuntimeVal::I32(p)) => *p as usize,
                     _ => {
-                        return Err(Error::Abi(AbiError {
+                        return Err(Error::from(AbiError {
                             position: AbiPosition::Result,
                             valtype: ty.clone(),
                             cause: AbiCause::InvalidEncoding {
@@ -394,14 +393,13 @@ fn invoke_trampoline<T: 'static>(
     // Lower the host's return into the runtime's result slots (or
     // memory).
     if let Some(result_ty) = result_ty {
-        let host_val = host_results
-            .into_iter()
-            .next()
-            .ok_or_else(|| Error::Abi(AbiError {
+        let host_val = host_results.into_iter().next().ok_or_else(|| {
+            Error::from(AbiError {
                 position: AbiPosition::Result,
                 valtype: result_ty.clone(),
                 cause: AbiCause::HostValueMismatch,
-            }))?;
+            })
+        })?;
         match return_area_ptr {
             Some(ptr) => {
                 let store_ctx_mut = store_ctx.as_context_mut();
@@ -437,7 +435,7 @@ fn invoke_trampoline<T: 'static>(
                     AbiPosition::Result,
                 )?;
                 if results.is_empty() {
-                    return Err(Error::Abi(AbiError {
+                    return Err(Error::from(AbiError {
                         position: AbiPosition::Result,
                         valtype: result_ty,
                         cause: AbiCause::InvalidEncoding {
@@ -476,7 +474,7 @@ fn primitive_from_flat_unused(
     ty: &ValueType,
 ) -> Result<Val> {
     let mismatch = || {
-        Error::Abi(AbiError {
+        Error::from(AbiError {
             position,
             valtype: ty.clone(),
             cause: AbiCause::HostValueMismatch,
@@ -534,7 +532,7 @@ fn primitive_from_flat_unused(
         },
         PrimitiveType::Char => match take(cursor) {
             Some(RuntimeVal::I32(v)) => char::from_u32(v as u32).map(Val::Char).ok_or_else(|| {
-                Error::Abi(AbiError {
+                Error::from(AbiError {
                     position,
                     valtype: ty.clone(),
                     cause: AbiCause::InvalidEncoding {
@@ -558,7 +556,7 @@ fn primitive_from_flat_unused(
             // strings. Actually: we *can* read here if we have
             // memory; let me restructure to take the ctx.
             let _ = (ptr, len);
-            Err(Error::Abi(AbiError {
+            Err(Error::from(AbiError {
                 position,
                 valtype: ty.clone(),
                 cause: AbiCause::InvalidEncoding {
@@ -581,7 +579,7 @@ fn take_i32_arg(
             *cursor += 1;
             Ok(*v)
         }
-        _ => Err(Error::Abi(AbiError {
+        _ => Err(Error::from(AbiError {
             position,
             valtype: ty.clone(),
             cause: AbiCause::HostValueMismatch,
@@ -602,12 +600,8 @@ fn lower_to_single_flat<T: 'static>(
         (ValueType::Primitive(PrimitiveType::Bool), Val::Bool(b)) => {
             Ok(RuntimeVal::I32(i32::from(*b)))
         }
-        (ValueType::Primitive(PrimitiveType::S8), Val::S8(v)) => {
-            Ok(RuntimeVal::I32(i32::from(*v)))
-        }
-        (ValueType::Primitive(PrimitiveType::U8), Val::U8(v)) => {
-            Ok(RuntimeVal::I32(i32::from(*v)))
-        }
+        (ValueType::Primitive(PrimitiveType::S8), Val::S8(v)) => Ok(RuntimeVal::I32(i32::from(*v))),
+        (ValueType::Primitive(PrimitiveType::U8), Val::U8(v)) => Ok(RuntimeVal::I32(i32::from(*v))),
         (ValueType::Primitive(PrimitiveType::S16), Val::S16(v)) => {
             Ok(RuntimeVal::I32(i32::from(*v)))
         }
@@ -620,15 +614,13 @@ fn lower_to_single_flat<T: 'static>(
         (ValueType::Primitive(PrimitiveType::U64), Val::U64(v)) => Ok(RuntimeVal::I64(*v as i64)),
         (ValueType::Primitive(PrimitiveType::F32), Val::F32(v)) => Ok(RuntimeVal::F32(*v)),
         (ValueType::Primitive(PrimitiveType::F64), Val::F64(v)) => Ok(RuntimeVal::F64(*v)),
-        (ValueType::Primitive(PrimitiveType::Char), Val::Char(c)) => {
-            Ok(RuntimeVal::I32(*c as i32))
-        }
+        (ValueType::Primitive(PrimitiveType::Char), Val::Char(c)) => Ok(RuntimeVal::I32(*c as i32)),
         // Wider returns: the caller uses the memory-pointer branch,
         // so reaching this with a string/list/compound is a polyfill
         // bug.
         _ => {
             let _ = (ctx, align_to(0, alignment_of(ty)));
-            Err(Error::Abi(AbiError {
+            Err(Error::from(AbiError {
                 position,
                 valtype: ty.clone(),
                 cause: AbiCause::InvalidEncoding {

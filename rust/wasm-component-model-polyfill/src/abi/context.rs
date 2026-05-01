@@ -72,7 +72,7 @@ impl<'a, T: 'static> LiftContext<'a, T> {
         valtype: &ValueType,
     ) -> Result<Vec<u8>> {
         let Some(memory) = &self.memory else {
-            return Err(Error::Abi(AbiError {
+            return Err(Error::from(AbiError {
                 position,
                 valtype: valtype.clone(),
                 cause: AbiCause::OutOfBoundsMemory { offset, length },
@@ -82,7 +82,7 @@ impl<'a, T: 'static> LiftContext<'a, T> {
         memory
             .read(&mut self.store, offset, &mut buffer)
             .map_err(|cause| {
-                Error::Abi(AbiError {
+                Error::from(AbiError {
                     position,
                     valtype: valtype.clone(),
                     cause: AbiCause::SubstrateFailure(cause),
@@ -136,7 +136,7 @@ impl<'a, T: 'static> LowerContext<'a, T> {
         valtype: &ValueType,
     ) -> Result<()> {
         let Some(memory) = &self.memory else {
-            return Err(Error::Abi(AbiError {
+            return Err(Error::from(AbiError {
                 position,
                 valtype: valtype.clone(),
                 cause: AbiCause::OutOfBoundsMemory {
@@ -148,7 +148,7 @@ impl<'a, T: 'static> LowerContext<'a, T> {
         memory
             .write(&mut self.store, offset, bytes)
             .map_err(|cause| {
-                Error::Abi(AbiError {
+                Error::from(AbiError {
                     position,
                     valtype: valtype.clone(),
                     cause: AbiCause::SubstrateFailure(cause),
@@ -166,7 +166,7 @@ impl<'a, T: 'static> LowerContext<'a, T> {
         position: AbiPosition,
     ) -> Result<usize> {
         let Some(realloc) = self.realloc.clone() else {
-            return Err(Error::Abi(AbiError {
+            return Err(Error::from(AbiError {
                 position,
                 valtype: valtype.clone(),
                 cause: AbiCause::ReallocUnavailable,
@@ -184,7 +184,7 @@ impl<'a, T: 'static> LowerContext<'a, T> {
         realloc
             .call(&mut self.store, &args, &mut results)
             .map_err(|cause| {
-                Error::Abi(AbiError {
+                Error::from(AbiError {
                     position,
                     valtype: valtype.clone(),
                     cause: AbiCause::ReallocFailed(cause),
@@ -192,7 +192,7 @@ impl<'a, T: 'static> LowerContext<'a, T> {
             })?;
         match results[0] {
             RuntimeVal::I32(ptr) if ptr >= 0 => Ok(ptr as usize),
-            _ => Err(Error::Abi(AbiError {
+            _ => Err(Error::from(AbiError {
                 position,
                 valtype: valtype.clone(),
                 cause: AbiCause::ReallocFailed(anyhow::anyhow!(
@@ -202,4 +202,3 @@ impl<'a, T: 'static> LowerContext<'a, T> {
         }
     }
 }
-
