@@ -7,8 +7,14 @@ use std::sync::{Arc, Mutex};
 use wasm_runtime_layer::{AsContextMut, Val as RuntimeVal};
 
 use crate::abi::context::{LiftContext, LowerContext};
-use crate::abi::layout::{flat_count, flat_types, size_of, FlatType};
-use crate::abi::{lift, lower};
+use crate::abi::flatten::lower_into_flat_slots;
+use crate::abi::layout::{flat_count, flat_types, FlatType};
+use crate::abi::lift;
+
+/// Per the canonical ABI, the maximum flat-slot count for the
+/// parameter tuple before the call switches to the wide-arg memory
+/// pointer path.
+const MAX_FLAT_PARAMS: usize = 16;
 use crate::component::FunctionType;
 use crate::error::{
     AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result,
@@ -168,17 +174,47 @@ impl Func {
             self.options.string_encoding,
             Some(tables),
         );
-        let mut out: Vec<RuntimeVal> = Vec::new();
-        for (i, (param, val)) in self
-            .signature
-            .parameters
-            .iter()
-            .zip(args.iter())
-            .enumerate()
-        {
-            lower_argument(&mut lower_ctx, &param.ty, val, &mut out, AbiPosition::Argument(i))?;
+
+        // Compute the total flat-slot count for the parameter
+        // tuple. The canonical ABI uses per-slot flat passing when
+        // it fits in `MAX_FLAT_PARAMS = 16`; otherwise the entire
+        // tuple is passed as a single memory pointer.
+        let total_flat: Option<usize> =
+            self.signature
+                .parameters
+                .iter()
+                .try_fold(0usize, |acc, p| flat_count(&p.ty).map(|n| acc + n));
+
+        match total_flat {
+            Some(n) if n <= MAX_FLAT_PARAMS => {
+                let mut out: Vec<RuntimeVal> = Vec::new();
+                for (i, (param, val)) in self
+                    .signature
+                    .parameters
+                    .iter()
+                    .zip(args.iter())
+                    .enumerate()
+                {
+                    lower_into_flat_slots(
+                        &mut lower_ctx,
+                        val,
+                        &param.ty,
+                        &mut out,
+                        AbiPosition::Argument(i),
+                    )?;
+                }
+                Ok(out)
+            }
+            _ => Err(Error::Abi(AbiError {
+                position: AbiPosition::Argument(0),
+                valtype: ValueType::Primitive(PrimitiveType::Bool),
+                cause: AbiCause::InvalidEncoding {
+                    message: format!(
+                        "lifted-export call has more than {MAX_FLAT_PARAMS} flat parameter slots; the wide-arg memory-pointer path is not yet implemented"
+                    ),
+                },
+            })),
         }
-        Ok(out)
     }
 
     fn lift_result<T: 'static>(
@@ -233,194 +269,6 @@ impl Func {
                 Ok(Some(val))
             }
         }
-    }
-}
-
-fn lower_argument<T: 'static>(
-    ctx: &mut LowerContext<'_, T>,
-    ty: &ValueType,
-    val: &Val,
-    out: &mut Vec<RuntimeVal>,
-    position: AbiPosition,
-) -> Result<()> {
-    match (ty, val) {
-        (ValueType::Primitive(PrimitiveType::String), Val::String(s)) => {
-            let (ptr, units) = lower_string(ctx, s, position, ty)?;
-            out.push(RuntimeVal::I32(ptr as i32));
-            out.push(RuntimeVal::I32(units as i32));
-            Ok(())
-        }
-        (ValueType::Primitive(prim), _) => {
-            out.push(primitive_to_flat(*prim, val, position, ty, ctx)?);
-            Ok(())
-        }
-        (ValueType::Own(_), Val::Own(handle))
-        | (ValueType::Borrow(_), Val::Borrow(handle))
-        | (ValueType::Borrow(_), Val::Own(handle)) => {
-            // Handles flatten to a single i32 at the flat-arg
-            // position: the table index. No memory allocation.
-            out.push(RuntimeVal::I32(handle.index as i32));
-            Ok(())
-        }
-        (ValueType::List(_list), Val::List(elements)) => {
-            // Lower into a memory tuple: allocate an array of the
-            // right size, lower each element, then push (ptr, len)
-            // as flat slots.
-            let element_ty = match ty {
-                ValueType::List(l) => l.element().clone(),
-                _ => unreachable!(),
-            };
-            let element_size = size_of(&element_ty);
-            let total_size = element_size.saturating_mul(elements.len());
-            let ptr = if total_size == 0 {
-                0
-            } else {
-                ctx.allocate(total_size, ty, position)?
-            };
-            for (i, element) in elements.iter().enumerate() {
-                lower(ctx, ptr + i * element_size, element, &element_ty, position)?;
-            }
-            out.push(RuntimeVal::I32(ptr as i32));
-            out.push(RuntimeVal::I32(elements.len() as i32));
-            Ok(())
-        }
-        // Compound non-list values fit into a single pointer slot:
-        // allocate, lower into memory, push the pointer.
-        _ => {
-            let total_size = size_of(ty);
-            let ptr = if total_size == 0 {
-                0
-            } else {
-                ctx.allocate(total_size, ty, position)?
-            };
-            lower(ctx, ptr, val, ty, position)?;
-            out.push(RuntimeVal::I32(ptr as i32));
-            Ok(())
-        }
-    }
-}
-
-fn lower_string<T: 'static>(
-    ctx: &mut LowerContext<'_, T>,
-    s: &str,
-    position: AbiPosition,
-    ty: &ValueType,
-) -> Result<(usize, usize)> {
-    let bytes: Vec<u8> = match ctx.string_encoding {
-        crate::executor::ir::StringEncoding::Utf8 => s.as_bytes().to_vec(),
-        crate::executor::ir::StringEncoding::Utf16 => {
-            let units: Vec<u16> = s.encode_utf16().collect();
-            let mut bytes = Vec::with_capacity(units.len() * 2);
-            for u in &units {
-                bytes.extend_from_slice(&u.to_le_bytes());
-            }
-            bytes
-        }
-        crate::executor::ir::StringEncoding::CompactUtf16 => {
-            return Err(Error::Abi(AbiError {
-                position,
-                valtype: ty.clone(),
-                cause: AbiCause::InvalidEncoding {
-                    message:
-                        "Latin-1+UTF-16 string encoding is not yet implemented; the synchronous baseline tests use UTF-8"
-                            .to_owned(),
-                },
-            }));
-        }
-    };
-    let units = match ctx.string_encoding {
-        crate::executor::ir::StringEncoding::Utf8 => bytes.len(),
-        crate::executor::ir::StringEncoding::Utf16 => bytes.len() / 2,
-        crate::executor::ir::StringEncoding::CompactUtf16 => unreachable!(),
-    };
-    let ptr = if bytes.is_empty() {
-        0
-    } else {
-        ctx.allocate(bytes.len(), ty, position)?
-    };
-    if !bytes.is_empty() {
-        ctx.write_bytes(ptr, &bytes, position, ty)?;
-    }
-    Ok((ptr, units))
-}
-
-fn primitive_to_flat<T: 'static>(
-    prim: PrimitiveType,
-    val: &Val,
-    position: AbiPosition,
-    ty: &ValueType,
-    ctx: &mut LowerContext<'_, T>,
-) -> Result<RuntimeVal> {
-    let mismatch = || {
-        Error::Abi(AbiError {
-            position,
-            valtype: ty.clone(),
-            cause: AbiCause::HostValueMismatch,
-        })
-    };
-    match (prim, val) {
-        (PrimitiveType::Bool, Val::Bool(b)) => Ok(RuntimeVal::I32(i32::from(*b))),
-        (PrimitiveType::S8, Val::S8(v)) => Ok(RuntimeVal::I32(i32::from(*v))),
-        (PrimitiveType::U8, Val::U8(v)) => Ok(RuntimeVal::I32(i32::from(*v))),
-        (PrimitiveType::S16, Val::S16(v)) => Ok(RuntimeVal::I32(i32::from(*v))),
-        (PrimitiveType::U16, Val::U16(v)) => Ok(RuntimeVal::I32(i32::from(*v))),
-        (PrimitiveType::S32, Val::S32(v)) => Ok(RuntimeVal::I32(*v)),
-        (PrimitiveType::U32, Val::U32(v)) => Ok(RuntimeVal::I32(*v as i32)),
-        (PrimitiveType::S64, Val::S64(v)) => Ok(RuntimeVal::I64(*v)),
-        (PrimitiveType::U64, Val::U64(v)) => Ok(RuntimeVal::I64(*v as i64)),
-        (PrimitiveType::F32, Val::F32(v)) => Ok(RuntimeVal::F32(*v)),
-        (PrimitiveType::F64, Val::F64(v)) => Ok(RuntimeVal::F64(*v)),
-        (PrimitiveType::Char, Val::Char(c)) => Ok(RuntimeVal::I32(*c as i32)),
-        (PrimitiveType::String, Val::String(s)) => {
-            // A `string` flattens to (ptr, len) — encoded into the
-            // canon options' string encoding, allocated via
-            // realloc, written, and pushed as two flat slots.
-            let bytes: Vec<u8> = match ctx.string_encoding {
-                crate::executor::ir::StringEncoding::Utf8 => s.as_bytes().to_vec(),
-                crate::executor::ir::StringEncoding::Utf16 => {
-                    let units: Vec<u16> = s.encode_utf16().collect();
-                    let mut bytes = Vec::with_capacity(units.len() * 2);
-                    for u in &units {
-                        bytes.extend_from_slice(&u.to_le_bytes());
-                    }
-                    bytes
-                }
-                crate::executor::ir::StringEncoding::CompactUtf16 => {
-                    return Err(Error::Abi(AbiError {
-                        position,
-                        valtype: ty.clone(),
-                        cause: AbiCause::InvalidEncoding {
-                            message:
-                                "Latin-1+UTF-16 string encoding is not yet implemented; the synchronous baseline tests use UTF-8"
-                                    .to_owned(),
-                        },
-                    }));
-                }
-            };
-            let units = match ctx.string_encoding {
-                crate::executor::ir::StringEncoding::Utf8 => bytes.len(),
-                crate::executor::ir::StringEncoding::Utf16 => bytes.len() / 2,
-                crate::executor::ir::StringEncoding::CompactUtf16 => unreachable!(),
-            };
-            let ptr = if bytes.is_empty() {
-                0
-            } else {
-                ctx.allocate(bytes.len(), ty, position)?
-            };
-            if !bytes.is_empty() {
-                ctx.write_bytes(ptr, &bytes, position, ty)?;
-            }
-            // Push two slots: ptr, len-in-units.
-            // Caller's `lower_argument` only pushes one slot for
-            // primitive shapes, so we encode the second slot by
-            // writing it directly to the result vec via a side-
-            // effect: actually we cannot do that here. Restructure:
-            // strings are special in `lower_argument`, not here.
-            // Reaching this branch is a bug.
-            let _ = (ptr, units);
-            Err(mismatch())
-        }
-        _ => Err(mismatch()),
     }
 }
 

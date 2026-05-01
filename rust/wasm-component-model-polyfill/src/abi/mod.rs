@@ -26,6 +26,7 @@
 //!     https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md
 
 pub mod context;
+pub mod flatten;
 pub mod layout;
 mod lift;
 mod lower;

@@ -29,8 +29,9 @@ use wasm_runtime_layer::{
 };
 
 use crate::abi::context::{LiftContext, LowerContext};
-use crate::abi::layout::{align_to, alignment_of, flat_count, flat_types, size_of, FlatType};
-use crate::abi::{lift, lift_handle, lower};
+use crate::abi::flatten::lift_from_flat_slots;
+use crate::abi::layout::{align_to, alignment_of, flat_count, flat_types, FlatType};
+use crate::abi::lower;
 use crate::backend::Backend;
 use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
@@ -452,12 +453,10 @@ fn invoke_trampoline<T: 'static>(
     Ok(())
 }
 
-/// Lift a single argument from the flat-arg slice into a `Val`,
-/// advancing `cursor` past the slots the argument consumes. Mirrors
-/// [`crate::abi::flatten::primitive_from_flat`] for primitives but
-/// also handles the heap-allocating string and list cases by
-/// reading their pointer-pair slots and dispatching into
-/// [`crate::abi::lift`] against memory.
+/// Lift a single argument from the flat-arg slice into a `Val`.
+/// Delegates to [`crate::abi::flatten::lift_from_flat_slots`] which
+/// implements the canonical ABI's per-slot flat-arg encoding for
+/// every value type.
 fn lift_argument<T: 'static>(
     ctx: &mut LiftContext<'_, T>,
     ty: &ValueType,
@@ -465,96 +464,11 @@ fn lift_argument<T: 'static>(
     cursor: &mut usize,
     position: AbiPosition,
 ) -> Result<Val> {
-    match ty {
-        ValueType::Primitive(PrimitiveType::String) => {
-            let ptr = take_i32_arg(args, cursor, ty, position)? as usize;
-            let len = take_i32_arg(args, cursor, ty, position)? as usize;
-            // Lift a string by reading guest memory at ptr/len with
-            // the canon options' string encoding. Reuse the existing
-            // memory-resident string lift via a synthetic header
-            // location: write the (ptr, len) pair to a stack-local
-            // 8-byte buffer and call lift on that — but we can save
-            // a memory round-trip by inlining the read here.
-            let bytes = ctx.read_bytes(ptr, len, position, ty)?;
-            return match ctx.string_encoding {
-                crate::executor::ir::StringEncoding::Utf8 => String::from_utf8(bytes)
-                    .map(Val::String)
-                    .map_err(|_| Error::Abi(AbiError {
-                        position,
-                        valtype: ty.clone(),
-                        cause: AbiCause::InvalidEncoding {
-                            message: "invalid UTF-8 string".to_owned(),
-                        },
-                    })),
-                crate::executor::ir::StringEncoding::Utf16 => {
-                    let units: Vec<u16> = bytes
-                        .chunks_exact(2)
-                        .map(|p| u16::from_le_bytes([p[0], p[1]]))
-                        .collect();
-                    String::from_utf16(&units).map(Val::String).map_err(|_| {
-                        Error::Abi(AbiError {
-                            position,
-                            valtype: ty.clone(),
-                            cause: AbiCause::InvalidEncoding {
-                                message: "invalid UTF-16 string".to_owned(),
-                            },
-                        })
-                    })
-                }
-                crate::executor::ir::StringEncoding::CompactUtf16 => {
-                    Err(Error::Abi(AbiError {
-                        position,
-                        valtype: ty.clone(),
-                        cause: AbiCause::InvalidEncoding {
-                            message:
-                                "Latin-1+UTF-16 string encoding is not yet implemented; the synchronous baseline tests use UTF-8"
-                                    .to_owned(),
-                        },
-                    }))
-                }
-            };
-        }
-        ValueType::Primitive(prim) => {
-            let val = primitive_from_flat(*prim, args, cursor, position, ty)?;
-            Ok(val)
-        }
-        ValueType::List(list) => {
-            let ptr = take_i32_arg(args, cursor, ty, position)? as usize;
-            let len = take_i32_arg(args, cursor, ty, position)? as usize;
-            let element_ty = list.element().clone();
-            let element_size = size_of(&element_ty);
-            let mut out: Vec<Val> = Vec::with_capacity(len);
-            for i in 0..len {
-                out.push(lift(ctx, ptr + i * element_size, &element_ty, position)?);
-            }
-            Ok(Val::List(out.into_boxed_slice()))
-        }
-        ValueType::Own(rt) | ValueType::Borrow(rt) => {
-            // Handles flatten to a single i32: the table index. The
-            // value sits in the flat slot, not in a pointer to
-            // memory.
-            let index = take_i32_arg(args, cursor, ty, position)? as u32;
-            lift_handle(
-                ctx,
-                rt.label(),
-                index,
-                ty,
-                position,
-                matches!(ty, ValueType::Own(_)),
-            )
-        }
-        // Compound types other than list/string at flat-arg
-        // position are loaded from a single pointer slot; the
-        // canonical ABI's "load_flat" rule reads the value at that
-        // pointer.
-        _ => {
-            let ptr = take_i32_arg(args, cursor, ty, position)? as usize;
-            lift(ctx, ptr, ty, position)
-        }
-    }
+    lift_from_flat_slots(ctx, args, cursor, ty, position)
 }
 
-fn primitive_from_flat(
+#[allow(dead_code)]
+fn primitive_from_flat_unused(
     prim: PrimitiveType,
     args: &[RuntimeVal],
     cursor: &mut usize,

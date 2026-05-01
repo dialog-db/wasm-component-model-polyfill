@@ -486,3 +486,417 @@ async fn it_invokes_an_exported_component_function() {
         .expect("call succeeds");
     assert_eq!(results.as_ref(), &[Val::S32(12)]);
 }
+
+#[wcmp_macros::test]
+async fn it_dispatches_to_multiple_host_functions_in_one_interface() {
+    // The component imports two host functions from the same
+    // interface and re-exports a function that calls them in
+    // sequence. The host registers both; both must be dispatched.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (type $iface (instance
+            (export "incr" (func (param "n" s32) (result s32)))
+            (export "decr" (func (param "n" s32) (result s32)))))
+          (import "pdd008-tests:host/maths@0.1.0" (instance $imports (type $iface)))
+          (alias export $imports "incr" (func $incr))
+          (alias export $imports "decr" (func $decr))
+          (core func $core-incr (canon lower (func $incr)))
+          (core func $core-decr (canon lower (func $decr)))
+          (core module $m
+            (func (import "host" "incr") (param i32) (result i32))
+            (func (import "host" "decr") (param i32) (result i32))
+            (func (export "incr-then-decr") (param i32) (result i32)
+              local.get 0
+              call 0
+              call 1))
+          (core instance $i (instantiate $m
+            (with "host" (instance
+              (export "incr" (func $core-incr))
+              (export "decr" (func $core-decr))))))
+          (func (export "incr-then-decr") (param "n" s32) (result s32)
+            (canon lift (core func $i "incr-then-decr"))))
+        "#
+    );
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let iface: InterfaceIdentifier =
+        "pdd008-tests:host/maths@0.1.0".parse().expect("identifier");
+    let mut iface_view = linker.instance(&iface);
+    iface_view.func_wrap(
+        "incr",
+        |_: &mut (), (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> { Ok(n + 1) },
+    );
+    iface_view.func_wrap(
+        "decr",
+        |_: &mut (), (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> { Ok(n - 1) },
+    );
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let inst = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiate");
+    let f = inst
+        .get_func(&mut store, "incr-then-decr")
+        .expect("export");
+    let result = f.call(&mut store, &[Val::S32(7)]).expect("call");
+    assert_eq!(result.as_ref(), &[Val::S32(7)]);
+}
+
+#[wcmp_macros::test]
+#[ignore = "stub: passing a string to a host function requires composing the canon lower options against the same core instance whose memory/realloc the trampoline reads, which produces a forward-reference in WAT that the upstream parser rejects without an aliasing dance the polyfill's tests do not yet exercise"]
+async fn it_passes_a_string_argument_to_a_host_function() {
+    todo!(
+        "construct a component whose host import takes `string`, lower it via memory+realloc options bound to the importing core instance, and assert the host receives the lifted Rust String"
+    );
+}
+
+#[wcmp_macros::test]
+#[ignore = "stub: `js_wasm_runtime_layer`'s host-function shim (the `func_wrapper!` macro in `backends/js_wasm_runtime_layer/src/func.rs`) swallows host-returned `Err(_)` results — it returns `JsValue::UNDEFINED` instead of propagating a trap, so the polyfill's `Func::call` returns `Ok(_)` on the web target. The trampoline correctly returns `Err(_)` from its runtime-layer closure; the substrate drops it. Until upstream surfaces host errors as traps, this test cannot run unconditionally on every supported target — see PDD006's `Web Parity Per PDD` discipline"]
+async fn it_propagates_a_host_function_error_through_the_call() {
+    // A host function returns Err(_); the polyfill surfaces it as
+    // an Error wrapping the runtime substrate's trap (the runtime
+    // layer translates the host error into a guest trap).
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (type $iface (instance
+            (export "fail" (func))))
+          (import "pdd008-tests:host/io@0.1.0" (instance $imports (type $iface)))
+          (alias export $imports "fail" (func $fail))
+          (core func $core-fail (canon lower (func $fail)))
+          (core module $m
+            (func (import "host" "fail"))
+            (func (export "trigger") call 0))
+          (core instance $i (instantiate $m
+            (with "host" (instance
+              (export "fail" (func $core-fail))))))
+          (func (export "trigger")
+            (canon lift (core func $i "trigger"))))
+        "#
+    );
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let iface: InterfaceIdentifier = "pdd008-tests:host/io@0.1.0".parse().expect("identifier");
+    linker.instance(&iface).func_new(
+        "fail",
+        FunctionType {
+            parameters: Vec::new(),
+            result: None,
+        },
+        |_: &mut (), _args, _results| {
+            Err(Error::Internal {
+                message: "host refused".to_owned(),
+            })
+        },
+    );
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let inst = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiate");
+    let trigger = inst
+        .get_func(&mut store, "trigger")
+        .expect("trigger export");
+    let outcome = trigger.call(&mut store, &[]);
+    let err = outcome.err().expect("call should fail");
+    // The error is currently wrapped by the runtime substrate's
+    // trap surface; the structured polyfill error is preserved as
+    // a `#[source]` chain. Asserting the top-level `Error::Abi` /
+    // `Error::Instantiation` shape is enough to prove host errors
+    // propagate.
+    assert!(
+        matches!(err, Error::Instantiation(_) | Error::Abi(_)),
+        "expected wrapped host error, got {err:?}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_supports_typed_host_function_with_unit_result() {
+    // `func_wrap` with a closure returning `Result<()>` exercises
+    // the no-return branch of the typed registration path.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (type $iface (instance
+            (export "ping" (func))))
+          (import "pdd008-tests:host/io@0.1.0" (instance $imports (type $iface)))
+          (alias export $imports "ping" (func $ping))
+          (core func $core-ping (canon lower (func $ping)))
+          (core module $m
+            (func (import "host" "ping"))
+            (func (export "go") call 0))
+          (core instance $i (instantiate $m
+            (with "host" (instance
+              (export "ping" (func $core-ping))))))
+          (func (export "go")
+            (canon lift (core func $i "go"))))
+        "#
+    );
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let mut linker: Linker<u32> = Linker::new(&engine);
+    let iface: InterfaceIdentifier = "pdd008-tests:host/io@0.1.0".parse().expect("identifier");
+    linker.instance(&iface).func_wrap(
+        "ping",
+        |data: &mut u32, (): ()| -> wasm_component_model_polyfill::Result<()> {
+            *data += 1;
+            Ok(())
+        },
+    );
+    let mut store: Store<u32> = Store::new(&engine, 0).expect("store");
+    let inst = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiate");
+    let go = inst.get_func(&mut store, "go").expect("go export");
+    go.call(&mut store, &[]).expect("call");
+    go.call(&mut store, &[]).expect("call again");
+    assert_eq!(*store.data(), 2, "ping fired twice");
+}
+
+#[wcmp_macros::test]
+async fn it_rejects_a_component_whose_import_signature_disagrees_with_the_registered_host() {
+    // The component declares `double(s32) -> s32`; the host
+    // registers `double(s32) -> s64`. Resolution catches the
+    // mismatch at link time, before instantiation.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (type $iface (instance
+            (export "double" (func (param "n" s32) (result s32)))))
+          (import "pdd008:host/maths@0.1.0" (instance $imports (type $iface)))
+          (alias export $imports "double" (func $double))
+          (core func $core-double (canon lower (func $double)))
+          (core module $m
+            (func (import "host" "double") (param i32) (result i32))
+            (func (export "go") (param i32) (result i32) local.get 0 call 0))
+          (core instance $i (instantiate $m
+            (with "host" (instance
+              (export "double" (func $core-double))))))
+          (func (export "go") (param "n" s32) (result s32)
+            (canon lift (core func $i "go"))))
+        "#
+    );
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let iface: InterfaceIdentifier = "pdd008:host/maths@0.1.0".parse().expect("identifier");
+    linker.instance(&iface).func_wrap(
+        "double",
+        |_: &mut (), (n,): (i32,)| -> wasm_component_model_polyfill::Result<i64> {
+            Ok(i64::from(n) * 2)
+        },
+    );
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let outcome = linker.instantiate(&mut store, &component);
+    let err = outcome.err().expect("link should fail");
+    assert!(matches!(err, Error::TypeMismatch(_)), "got {err:?}");
+}
+
+#[wcmp_macros::test]
+async fn it_rejects_a_call_whose_argument_count_disagrees_with_the_signature() {
+    // The polyfill's `Func::call` already returns a structured
+    // error when `args.len()` mismatches the declared signature.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (core module $m
+            (func (export "id") (param i32) (result i32) local.get 0))
+          (core instance $i (instantiate $m))
+          (func (export "id") (param "v" s32) (result s32)
+            (canon lift (core func $i "id"))))
+        "#
+    );
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let inst = linker.instantiate(&mut store, &component).expect("instantiate");
+    let id = inst.get_func(&mut store, "id").expect("id export");
+    let outcome = id.call(&mut store, &[Val::S32(1), Val::S32(2)]);
+    let err = outcome.err().expect("call should fail");
+    assert!(matches!(err, Error::Abi(_)), "got {err:?}");
+}
+
+#[wcmp_macros::test]
+async fn it_rejects_a_typed_export_call_whose_argument_type_disagrees() {
+    // Lowering an i64 against an s32 parameter slot trips
+    // `AbiCause::HostValueMismatch` at lower time.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (core module $m
+            (func (export "id") (param i32) (result i32) local.get 0))
+          (core instance $i (instantiate $m))
+          (func (export "id") (param "v" s32) (result s32)
+            (canon lift (core func $i "id"))))
+        "#
+    );
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let inst = linker.instantiate(&mut store, &component).expect("instantiate");
+    let id = inst.get_func(&mut store, "id").expect("id export");
+    let outcome = id.call(&mut store, &[Val::S64(1)]);
+    let err = outcome.err().expect("call should fail");
+    assert!(matches!(err, Error::Abi(_)), "got {err:?}");
+}
+
+#[wcmp_macros::test]
+async fn it_resolves_an_unversioned_import_against_an_unversioned_registration() {
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (type $iface (instance))
+          (import "pdd008-tests:host/empty" (instance (type $iface)))
+          (core module $m
+            (func (export "answer") (result i32) i32.const 42))
+          (core instance $i (instantiate $m))
+          (func (export "answer") (result s32)
+            (canon lift (core func $i "answer"))))
+        "#
+    );
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let iface: InterfaceIdentifier = "pdd008-tests:host/empty".parse().expect("identifier");
+    let _ = linker.instance(&iface);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let inst = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiate");
+    let ans = inst.get_func(&mut store, "answer").expect("answer export");
+    let result = ans.call(&mut store, &[]).expect("call");
+    assert_eq!(result.as_ref(), &[Val::S32(42)]);
+}
+
+#[wcmp_macros::test]
+async fn it_treats_an_empty_unmatched_interface_import_as_vacuous() {
+    // The resolver allows an empty-interface import to remain
+    // unmatched at link time — its absence has no runtime
+    // consequence because the import declares no items.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (type $iface (instance))
+          (import "pdd008-tests:host/unrelated@0.1.0" (instance (type $iface)))
+          (core module $m
+            (func (export "noop") nop))
+          (core instance $i (instantiate $m))
+          (func (export "noop")
+            (canon lift (core func $i "noop"))))
+        "#
+    );
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let inst = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiation succeeds — vacuous import");
+    let noop = inst.get_func(&mut store, "noop").expect("noop export");
+    let result = noop.call(&mut store, &[]).expect("call");
+    assert!(result.is_empty());
+}
+
+#[wcmp_macros::test]
+async fn it_rejects_an_import_with_a_required_item_when_the_registration_version_is_incompatible() {
+    // The component's import has a function item; resolution
+    // must find a versioned registration in range. A registration
+    // outside the WIT compatibility range surfaces
+    // `LinkError::IncompatibleVersion`.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (type $iface (instance
+            (export "double" (func (param "n" s32) (result s32)))))
+          (import "pdd008-tests:host/maths@0.2.0" (instance $imports (type $iface)))
+          (alias export $imports "double" (func $double))
+          (core func $core-double (canon lower (func $double)))
+          (core module $m
+            (func (import "host" "double") (param i32) (result i32))
+            (func (export "go") (param i32) (result i32) local.get 0 call 0))
+          (core instance $i (instantiate $m
+            (with "host" (instance
+              (export "double" (func $core-double))))))
+          (func (export "go") (param "n" s32) (result s32)
+            (canon lift (core func $i "go"))))
+        "#
+    );
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let too_old: InterfaceIdentifier = "pdd008-tests:host/maths@0.1.0"
+        .parse()
+        .expect("identifier");
+    linker.instance(&too_old).func_wrap(
+        "double",
+        |_: &mut (), (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> { Ok(n * 2) },
+    );
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let outcome = linker.instantiate(&mut store, &component);
+    let err = outcome.err().expect("link should fail");
+    assert!(matches!(err, Error::Link(_)), "got {err:?}");
+}
+
+#[wcmp_macros::test]
+async fn it_inspects_a_components_imports_and_exports() {
+    // Component introspection — the parsed-component view exposes
+    // imports and exports along with their declared `ExternType`.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (type $iface (instance
+            (export "id" (func (param "n" s32) (result s32)))))
+          (import "pdd008-tests:host/io@0.1.0" (instance (type $iface)))
+          (core module $m
+            (func (export "answer") (result i32) i32.const 42))
+          (core instance $i (instantiate $m))
+          (func (export "answer") (result s32)
+            (canon lift (core func $i "answer"))))
+        "#
+    );
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    assert_eq!(component.imports.len(), 1);
+    assert_eq!(component.exports.len(), 1);
+    let import = &component.imports[0];
+    let interface = match &import.name {
+        ExternalName::Interface(id) => id,
+        other => panic!("expected interface import, got {other:?}"),
+    };
+    assert_eq!(interface.name(), "io");
+    assert!(matches!(import.ty, ExternType::Instance(_)));
+    let export = &component.exports[0];
+    assert_eq!(export.name, ExternalName::Plain("answer".to_owned()));
+    assert!(matches!(export.ty, ExternType::Function(_)));
+}
+
+// ----------------------------------------------------------------
+// Stubs: capabilities not yet realised.
+// ----------------------------------------------------------------
+
+#[wcmp_macros::test]
+#[ignore = "stub: plain-named (root-level) imports — the resolver currently rejects these with `LinkError::UnsupportedRegistration`"]
+async fn it_supports_a_plain_named_top_level_import() {
+    todo!(
+        "register a top-level (plain-named) host function `(import \"log\" (func ...))` mirroring wasm_component_layer's `Linker::root_mut().define_func` capability"
+    );
+}
+
+#[wcmp_macros::test]
+#[ignore = "stub: instance-typed component exports — `Component::exports` exposes flat exports only; `Instance::get_func` looks up by name without traversing instance-typed exports"]
+async fn it_navigates_instance_typed_exports() {
+    todo!(
+        "instantiate a component whose exports include `(export \"test:guest/foo\" (instance ...))` and reach the inner `select-nth` function via an `instance(name)` traversal mirroring wasm_component_layer's exports() API"
+    );
+}
+
+#[wcmp_macros::test]
+#[ignore = "stub: typed export-call API — the polyfill exposes `Func::call(&[Val])` only; a `TypedFunc<P, R>` analogue would catch type mismatches at compile time"]
+async fn it_supports_a_typed_export_call_surface() {
+    todo!(
+        "expose a `Func::typed::<Params, Ret>()` method and a `TypedFunc<Params, Ret>::call(...)` that performs the lower/lift round-trip with statically-checked Rust types, mirroring wasm_component_layer's typed call API"
+    );
+}

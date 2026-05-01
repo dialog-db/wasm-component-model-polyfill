@@ -4,3 +4,4 @@ Cargo.lock.bak
 .direnv
 result
 result-*
+do_not_track
