@@ -175,8 +175,8 @@ negotiation.
 - [PDD002] — the polyfill's relationship to [`wasm_runtime_layer`],
   [`wasm_component_layer`], and [Wasmtime]; this document binds the "seed
   crystal" language to "prior art only, no dependency, no vendored source", and
-  inherits [PDD002 §Authority on Native][pdd002-authority-on-native] for
-  Wasmtime.
+  inherits [PDD002 §Relationship to Wasmtime][pdd002-relationship-to-wasmtime]
+  for Wasmtime.
 - [PDD003] — the compatibility outlook and implementation checklist this
   document begins to work through.
 - [PDD004] — the test macros every baseline test in this PDD is
@@ -192,7 +192,7 @@ negotiation.
 [PDD000]: ./PDD000%20Wasm%20Component%20Model%20Polyfill.md
 [PDD001]: ./PDD001%20Development%20Environment.md
 [PDD002]: ./PDD002%20Ecosystem%20Foundation.md
-[pdd002-authority-on-native]: ./PDD002%20Ecosystem%20Foundation.md#authority-on-native
+[pdd002-relationship-to-wasmtime]: ./PDD002%20Ecosystem%20Foundation.md#relationship-to-wasmtime
 [PDD003]: ./PDD003%20Compatibility%20Outlook.md
 [PDD004]: ./PDD004%20Test%20Macros.md
 [`wasm_runtime_layer`]: https://github.com/DouglasDwyer/wasm_runtime_layer

@@ -10,10 +10,11 @@ use crate::error::Result;
 ///
 /// `Component` carries the introspectable shape of a component
 /// binary — its declared imports and exports, with each side
-/// resolved to the polyfill's own data shapes. It is the value
-/// handed to the linker when the next layer of the polyfill
-/// instantiates a component; at this stage it is purely a
-/// parsing-and-introspection surface.
+/// resolved to the polyfill's own data shapes — together with the
+/// executor's IR (the runtime-layer modules each `(core module ...)`
+/// section produced and the orchestration IR the executor walks at
+/// instantiation time). It is the value handed to the linker when
+/// the polyfill instantiates a component.
 ///
 /// Construct one with [`Component::new`]. Failure to decode the
 /// bytes — corrupted preamble, truncated section, an encoding the
@@ -31,16 +32,21 @@ pub struct Component {
     /// The declared exports of this component, in the order they
     /// appeared in the binary.
     pub exports: Box<[ComponentExport]>,
+    /// The component's original bytes, retained so the executor's
+    /// IR can be built lazily at instantiation time. Workspace-
+    /// internal — the field is `pub` because intra-crate items
+    /// follow plain `pub`, but the bytes are not part of the
+    /// polyfill's public contract.
+    pub bytes: Box<[u8]>,
 }
 
 impl Component {
     /// Parse a Component Model binary against an [`Engine`].
     ///
     /// The byte slice is borrowed only for the duration of the
-    /// call; the parsed representation is the polyfill's. The
-    /// engine is not consulted at this stage but is part of the
-    /// signature for forward compatibility with later layers that
-    /// will compile against it.
+    /// call; the parsed representation is the polyfill's, and the
+    /// executor's IR (with runtime-layer modules pre-built) lives
+    /// inside the returned [`Component`].
     pub fn new(engine: &Engine, bytes: &[u8]) -> Result<Self> {
         parse::parse_component(engine, bytes)
     }

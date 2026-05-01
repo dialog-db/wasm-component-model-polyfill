@@ -14,6 +14,12 @@
 //!   surface for component imports and exports.
 //! - [`ValueType`] — the structural identity of every value type a
 //!   parsed component can declare.
+//! - [`Linker`], [`LinkerInstance`], [`Instance`], and [`Func`] —
+//!   the build-up and runtime surface for linking a component
+//!   against a host environment, instantiating it into a [`Store`],
+//!   and calling its exports.
+//! - [`Val`] — the polyfill's component-level value enum, primitive
+//!   variants only at present.
 //! - [`Error`] and [`Result`] — the polyfill's single error enum and
 //!   the `Result` alias every public function returns.
 
@@ -21,19 +27,26 @@ mod backend;
 mod component;
 mod engine;
 mod error;
+mod executor;
 mod identifier;
+mod instance;
+mod linker;
 mod store;
 mod types;
+mod value;
 
 pub use crate::component::{
     Component, ComponentExport, ComponentImport, ExternType, ExternalName, FunctionParameter,
     FunctionType, InstanceItem, InstanceType,
 };
 pub use crate::engine::Engine;
-pub use crate::error::{Error, Result};
+pub use crate::error::{Error, InstantiationError, LinkError, Result};
 pub use crate::identifier::{IdentifierParseError, InterfaceIdentifier, PackageName};
+pub use crate::instance::{Func, Instance};
+pub use crate::linker::{Linker, LinkerInstance};
 pub use crate::store::Store;
 pub use crate::types::{
     EnumType, FlagsType, ListType, OptionType, PrimitiveType, RecordField, RecordType,
     ResourceType, ResultType, TupleType, ValueType, VariantCase, VariantType,
 };
+pub use crate::value::Val;

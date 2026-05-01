@@ -172,17 +172,13 @@ polyfill walks to produce its own data shapes. The polyfill does not pull
 parser. Because both `wit-component` and `wit-parser` are pure Rust and
 target-agnostic, the same lowering drives `Component::new` on every supported
 target — there is no platform-divergent parsing path in this PDD, and parity
-falls out of the implementation rather than being chased after. This is a
-deliberate departure from
-[PDD002 §Authority on Native][pdd002-authority-on-native] for the parsing
-surface: that posture envisioned a `wasmtime::component`-backed native path with
-a separate browser-API re-implementation on `wasm32-unknown-unknown`, but a
-single shared parser collapses the two into one and is the simpler shape for a
-PDD whose entire output is structural data. The "Authority on Native" stance
-still applies to component-layer concerns later PDDs take up where Wasmtime is
-the natural delegate (instantiation, the canonical-ABI runtime state,
-host-binding execution); it is the parsing surface specifically that this PDD
-delivers from a target-agnostic library.
+falls out of the implementation rather than being chased after. This sits
+naturally inside the cross-target stance
+[PDD002 §Relationship to Wasmtime][pdd002-relationship-to-wasmtime]
+establishes: component-level work is built on top of `wasm_runtime_layer`'s
+generic abstractions on every target, and parsing is the simplest case of
+that — a target-agnostic library in, the polyfill's own data shapes out, no
+substrate divergence at all.
 
 The types `Component` exposes through its introspection accessors are
 the polyfill's own — the type-system data shapes and identifier types
@@ -343,9 +339,11 @@ foundational code.
 - [PDD002] — the polyfill's relationship to [`wasm_runtime_layer`],
   [`wasm_component_layer`], and [Wasmtime]; this document inherits
   PDD002's "prior art only, no dependency, no vendored source"
-  reading for the runtime-agnostic upstream, and refines
-  [PDD002 §Authority on Native][pdd002-authority-on-native] for the
-  parsing surface specifically (see
+  reading for the runtime-agnostic upstream, and the cross-target
+  posture
+  [PDD002 §Relationship to Wasmtime][pdd002-relationship-to-wasmtime]
+  establishes for component-level work — the parsing surface is the
+  simplest case of that posture (see
   [The Component Surface][pdd006-component-surface] above).
 - [PDD003] — the compatibility outlook and implementation checklist.
   This PDD covers the parsing rows of "Component Binary Format" and
@@ -374,7 +372,7 @@ foundational code.
 [PDD000]: ./PDD000%20Wasm%20Component%20Model%20Polyfill.md
 [PDD001]: ./PDD001%20Development%20Environment.md
 [PDD002]: ./PDD002%20Ecosystem%20Foundation.md
-[pdd002-authority-on-native]: ./PDD002%20Ecosystem%20Foundation.md#authority-on-native
+[pdd002-relationship-to-wasmtime]: ./PDD002%20Ecosystem%20Foundation.md#relationship-to-wasmtime
 [PDD003]: ./PDD003%20Compatibility%20Outlook.md
 [PDD004]: ./PDD004%20Test%20Macros.md
 [PDD005]: ./PDD005%20Library%20Foundations.md

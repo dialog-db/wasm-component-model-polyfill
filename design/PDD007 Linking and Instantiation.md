@@ -118,6 +118,33 @@ Resolution operates entirely on [PDD006]'s identifier types; no
 upstream type appears in the resolution interface or in error
 diagnostics.
 
+### Semver Compatibility
+
+Two versions are considered compatible when they fall in the same WIT
+*compatibility range*, which is the WIT specification's reading of
+semver and is narrower than cargo-style caret matching:
+
+- For pre-`1.0.0` versions, the compatibility range is the *minor*
+  segment: `0.2.0` and `0.2.7` are compatible; `0.2.0` and `0.3.0` are
+  not. Patch differences within a minor are tolerated.
+- For `>= 1.0.0` versions, the compatibility range is the *major*
+  segment: `1.4.0` and `1.7.2` are compatible; `1.4.0` and `2.0.0` are
+  not.
+- Pre-release identifiers (`-alpha.1`, etc.) and build metadata
+  (`+sha.abc123`) are compared as the semver crate compares them; two
+  versions that differ only in build metadata are equal.
+- An import without a version matches a registration without a version
+  exactly. A versioned import does not match an unversioned
+  registration, and vice versa; the polyfill does not silently widen
+  one to the other.
+
+When more than one registered candidate falls in an import's
+compatibility range, resolution selects the *highest-versioned*
+candidate; an exactly-equal candidate ties with itself and is chosen
+deterministically. When no registered candidate falls in range, or
+when registration is ambiguous in a way the rules above do not
+disambiguate, resolution surfaces a `wcmp::Error::Link`.
+
 ## The Instance Surface
 
 `Instance` is the polyfill's owner of a successfully linked,

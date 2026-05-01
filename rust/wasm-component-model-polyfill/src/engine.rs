@@ -4,7 +4,10 @@
 //! at compile time for the host platform. It hides the backend type
 //! from the polyfill's public API and is the moral equivalent of
 //! `wasmtime::component::Engine` — the type from which component
-//! compilation will hang in subsequent slices.
+//! compilation hangs. The runtime-layer engine sees only core
+//! WebAssembly; component-level work is layered on top of the
+//! runtime-layer's generic abstractions in later modules and is not
+//! delegated to a backend's component runtime.
 
 use crate::backend::Backend;
 use crate::error::Result;
@@ -16,7 +19,7 @@ use crate::error::Result;
 /// state is shared — and is constructed without arguments via
 /// [`Engine::new`].
 ///
-/// Later slices will hang component compilation off this type; for now
+/// Later work hangs component compilation off this type; for now
 /// the public surface is just construction.
 #[derive(Clone)]
 pub struct Engine {
@@ -28,7 +31,7 @@ impl Engine {
     ///
     /// The return type is [`Result`] for forward compatibility:
     /// today, both supported backends are infallibly default-
-    /// constructible, but later slices will accept configuration that
+    /// constructible, but later work will accept configuration that
     /// can fail at construction time.
     #[allow(clippy::unnecessary_wraps)]
     pub fn new() -> Result<Self> {
@@ -40,7 +43,7 @@ impl Engine {
     /// Borrow the wrapped runtime-layer engine.
     ///
     /// This accessor is workspace-internal and is the seam through
-    /// which later slices reach into the runtime layer; it is not
+    /// which later work reaches into the runtime layer; it is not
     /// re-exported by `lib.rs` and never reaches downstream consumers.
     pub fn inner(&self) -> &wasm_runtime_layer::Engine<Backend> {
         &self.inner

@@ -2,9 +2,9 @@
 //!
 //! `Store<T>` carries host data of type `T` and is the unit of
 //! isolation between independent component instances: the
-//! polyfill's analogue to `wasmtime::Store`. Subsequent slices will
-//! attach instance state — tables, memories, and resource handle
-//! tables — to it.
+//! polyfill's analogue to `wasmtime::Store`. Later work attaches
+//! instance state — tables, memories, and resource handle tables —
+//! to it.
 
 use crate::backend::Backend;
 use crate::engine::Engine;
@@ -27,9 +27,9 @@ impl<T: 'static> Store<T> {
     /// for the host-data slot.
     ///
     /// The return type is [`Result`] for forward compatibility with
-    /// later slices that will surface backend errors at store
-    /// construction time; today, the supported backends construct a
-    /// store infallibly.
+    /// later work that surfaces backend errors at store construction
+    /// time; today, the supported backends construct a store
+    /// infallibly.
     #[allow(clippy::unnecessary_wraps)]
     pub fn new(engine: &Engine, data: T) -> Result<Self> {
         Ok(Self {

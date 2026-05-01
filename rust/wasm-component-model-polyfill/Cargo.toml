@@ -22,6 +22,15 @@ semver = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 wasm_runtime_layer = { workspace = true }
+wasmparser = { workspace = true }
+# `wasmtime-environ`'s `compile` feature gates the component-IR
+# `Translator` and the FACT adapter compiler. Despite the name, it
+# does not pull in Cranelift codegen or any host-only machinery — only
+# `wasm-encoder`, `wasmprinter`, and `gimli`/`object` write paths,
+# all of which build on `wasm32-unknown-unknown`. Enabling it on every
+# target lets the polyfill share one component-translation path
+# instead of maintaining a parallel hand-rolled walker on the web.
+wasmtime-environ = { workspace = true, features = ["component-model", "compile"] }
 wit-component = { workspace = true }
 wit-parser = { workspace = true }
 

@@ -78,6 +78,7 @@ pub fn parse_component(_engine: &Engine, bytes: &[u8]) -> Result<Component> {
     Ok(Component {
         imports: imports.into_boxed_slice(),
         exports: exports.into_boxed_slice(),
+        bytes: bytes.to_vec().into_boxed_slice(),
     })
 }
 

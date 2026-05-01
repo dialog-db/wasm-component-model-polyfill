@@ -61,31 +61,42 @@ into the polyfill only when upstreaming is impractical.
 
 ## Relationship to Wasmtime
 
-On native targets the polyfill inherits and forwards the capabilities of
-[Wasmtime] via [`wasm_runtime_layer`]. The polyfill's component-layer types
-(`Engine`, `Component`, `Linker`, `Instance`, host-function and host-resource
-registration, the canonical ABI, and everything that follows them) are, on
-native, thin wrappers over their `wasmtime::component` counterparts. Parsing,
-validation, the type system, lift/lower, instantiation, and the canonical-ABI
-runtime state are all delegated to Wasmtime; the polyfill's job on native is to
-expose the polyfill's own public API surface around them and to translate
-Wasmtime's introspection types into the polyfill's data shapes (so downstream
-consumers never see an upstream type).
+[Wasmtime] is the polyfill's *reference runtime*: the canonical reading of
+"what does the Component Model do?" comes from Wasmtime, and Wasmtime's
+`wasmtime::component` API shapes the polyfill's familiar names. But the
+polyfill is not a wrapper over `wasmtime::component`. Wasmtime participates
+in the polyfill's stack only as a [`wasm_runtime_layer`] backend — i.e.
+as a core-Wasm engine — on native targets. Component-level work (parsing,
+the type system, lift/lower, instantiation, the canonical-ABI runtime
+state, host-function and host-resource registration) is implemented by
+the polyfill on top of `wasm_runtime_layer`'s generic core-Wasm
+abstractions, so the same component-level code drives every supported
+target.
 
-The web target (`wasm32-unknown-unknown`) is where the polyfill earns its
-name. There the polyfill cannot delegate to Wasmtime, and re-implements
-the same component-layer surface on top of the browser's `WebAssembly.*`
-JS API behind the same public API. The native target leads each PDD:
-every feature's semantics are settled on native (i.e. "what does Wasmtime
-do?") before the web re-implementation begins.
+This single-architecture stance is the polyfill's reading of [`wasm_component_layer`]:
+the prior art proves that component-level semantics can be built on top
+of `wasm_runtime_layer`'s `Engine`, `Store`, `Module`, `Instance`,
+`Func`, `Memory`, `Global`, and `Table` without reaching for any
+backend-specific component runtime, and that the same source then
+compiles cross-target. The polyfill carries the same architecture
+forward, refining and extending it where the prior art falls short.
+
+The web target (`wasm32-unknown-unknown`) is therefore *not* a separate
+re-implementation — it is the same component-level code, running over
+the runtime-layer's browser backend instead of its Wasmtime backend.
+The polyfill's public surface (`Engine`, `Component`, `Linker`,
+`LinkerInstance`, `Instance`, host-function and host-resource
+registration) is the same on every target.
 
 Two corollaries follow from this posture, and they concern every following PDD
 that introduces a component-layer type:
 
-- **Don't re-implement on native targets what may already by available in
-  Wasmtime.** If the polyfill is reaching for `wasmparser`, hand-rolling a type
-  space, or building a parallel canonical-ABI implementation on native, that is
-  almost certainly the wrong shape.
+- **Don't reach into a backend-specific component runtime.** If the
+  polyfill is depending on `wasmtime::component`, vendoring its source,
+  or building parallel native-only logic that web has to retrace later,
+  that is almost certainly the wrong shape. The runtime substrate is
+  core-Wasm only on every target; component-level work happens above
+  it.
 - **Minimise the polyfill's public API surface.** Wasmtime's
   `wasmtime::component` API is large; the polyfill is not obliged to
   shadow all of it. Each PDD exposes only the types and methods load-

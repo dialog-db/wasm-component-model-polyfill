@@ -44,7 +44,6 @@ pub enum ExternType {
     /// exports as out-of-scope, but the binary format encodes them
     /// and the polyfill preserves the shape so that round-tripping
     /// a binary that contains them is possible. Linking against a
-    /// value import is a separate concern that this slice does not
-    /// address.
+    /// value import is a separate concern this PDD does not address.
     Value(ValueType),
 }
