@@ -146,9 +146,7 @@ fn check_items<T: 'static>(
                 check_function_item(chosen, &item.name, declared, registration, &import.name)?;
             }
             ExternType::Resource(_) | ExternType::ResourceEquals(_) => {
-                // Host-resource registration is out of scope; let
-                // unsatisfied resource items pass for now. PDD009
-                // tightens this.
+                check_resource_item(&item.name, registration, &import.name)?;
             }
             // Type, Instance, Module, Component, Value: the WIT shapes
             // typical interfaces use are functions plus opaque types;
@@ -158,6 +156,19 @@ fn check_items<T: 'static>(
         }
     }
     Ok(())
+}
+
+fn check_resource_item<T: 'static>(
+    item_name: &str,
+    registration: &InstanceRegistration<T>,
+    import_name: &ExternalName,
+) -> Result<()> {
+    if registration.resource(item_name).is_some() {
+        return Ok(());
+    }
+    Err(Error::Link(LinkError::UnresolvedImport {
+        import: import_name.clone(),
+    }))
 }
 
 fn check_function_item<T: 'static>(

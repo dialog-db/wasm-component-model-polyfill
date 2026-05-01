@@ -10,6 +10,7 @@ use wasm_component_model_polyfill::{
     Component, Engine, Error, ExternType, ExternalName, FunctionParameter, FunctionType,
     InterfaceIdentifier, Linker, PrimitiveType, Store, Val, ValueType,
 };
+use std::sync::{Arc, Mutex};
 use wcmp_macros::component;
 
 #[cfg(target_arch = "wasm32")]
@@ -359,11 +360,81 @@ async fn it_defines_a_typed_host_function() {
 }
 
 #[wcmp_macros::test]
-#[ignore = "stub: polyfill implementation pending"]
 async fn it_defines_a_host_resource_with_a_sync_destructor() {
-    todo!(
-        "declare a host-owned `ResourceType`, hand a handle to a guest, drop it, and assert the host destructor observes the drop synchronously"
+    // The component imports a resource type `thing` from a host
+    // interface and re-exports a function that takes ownership of a
+    // handle and drops it. The host registers the resource with a
+    // synchronous destructor that bumps a shared counter; observing
+    // the counter after the call asserts that the destructor ran
+    // exactly once.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (import "pdd009:host/resources@0.1.0" (instance $i
+            (export "thing" (type (sub resource)))))
+          (alias export $i "thing" (type $thing))
+          (core func $thing-drop (canon resource.drop $thing))
+          (core module $m
+            (func (import "host" "drop") (param i32))
+            (func (export "consume") (param i32)
+              local.get 0
+              call 0))
+          (core instance $core (instantiate $m
+            (with "host" (instance
+              (export "drop" (func $thing-drop))))))
+          (func (export "consume") (param "h" (own $thing))
+            (canon lift (core func $core "consume"))))
+        "#
     );
+
+    #[derive(Default)]
+    struct HostData {
+        dropped: Arc<Mutex<Vec<u32>>>,
+    }
+
+    let dropped = Arc::new(Mutex::new(Vec::<u32>::new()));
+    let host_data = HostData {
+        dropped: dropped.clone(),
+    };
+
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let mut linker: Linker<HostData> = Linker::new(&engine);
+    let iface: InterfaceIdentifier = "pdd009:host/resources@0.1.0"
+        .parse()
+        .expect("identifier parses");
+    let mut linker_iface = linker.instance(&iface);
+    let type_id = linker_iface.resource("thing", |data: &mut HostData, rep: u32| {
+        data.dropped
+            .lock()
+            .expect("dropped lock")
+            .push(rep);
+        Ok(())
+    });
+
+    let mut store: Store<HostData> = Store::new(&engine, host_data).expect("store construction");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiation succeeds");
+    let consume = instance
+        .get_func(&mut store, "consume")
+        .expect("`consume` export present");
+
+    // Mint a handle for a host-side resource (rep `42` is opaque to
+    // the polyfill — it is whatever value the host wants the
+    // destructor to receive) and pass ownership to the guest.
+    let handle = store
+        .resource_new(type_id, 42)
+        .expect("resource_new succeeds");
+    let results = consume
+        .call(&mut store, &[Val::Own(handle)])
+        .expect("call succeeds");
+    assert!(results.is_empty(), "consume returns no values");
+
+    // The destructor observed the drop exactly once with the
+    // host-supplied rep.
+    let observed: Vec<u32> = dropped.lock().expect("dropped lock").clone();
+    assert_eq!(observed, vec![42]);
 }
 
 #[wcmp_macros::test]

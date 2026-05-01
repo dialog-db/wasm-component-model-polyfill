@@ -9,6 +9,7 @@ use crate::abi::context::LiftContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::StringEncoding;
+use crate::resource::ResourceHandle;
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::{Val, ValField};
 
@@ -158,11 +159,11 @@ pub fn lift<T: 'static>(
             }
             Ok(Val::Flags(active.into_boxed_slice()))
         }
-        ValueType::Own(_) | ValueType::Borrow(_) => Err(Error::Abi(AbiError {
-            position,
-            valtype: ty.clone(),
-            cause: AbiCause::Unimplemented,
-        })),
+        ValueType::Own(rt) | ValueType::Borrow(rt) => {
+            let bytes = ctx.read_bytes(offset, 4, position, ty)?;
+            let index = read_u32(&bytes);
+            lift_handle(ctx, rt.label(), index, ty, position, matches!(ty, ValueType::Own(_)))
+        }
     }
 }
 
@@ -292,6 +293,84 @@ fn read_discriminant(bytes: &[u8]) -> usize {
         2 => u16::from_le_bytes([bytes[0], bytes[1]]) as usize,
         4 => u32::from_le_bytes(bytes_4(bytes)) as usize,
         _ => 0,
+    }
+}
+
+/// Lift a `own<T>` or `borrow<T>` handle from a 4-byte index that
+/// has already been read out of the flat slot or memory location.
+///
+/// The lift cross-references the index against the per-store
+/// handle tables: the polyfill reuses one table per registered
+/// resource type, addressed by the registered
+/// [`ResourceTypeId`](crate::resource::ResourceTypeId). For an
+/// `own<T>` lift the entry is removed from the table — ownership
+/// transfers to the host. For `borrow<T>` the entry is left in
+/// place and the host receives a handle that aliases the live entry.
+///
+/// The label argument is the resource-type label declared at the
+/// import site; it is used to locate the matching registered type
+/// identity by walking every table. This works because the lift
+/// runs only when the call's signature already named a resource type
+/// the executor resolved at instantiation time.
+pub fn lift_handle<T: 'static>(
+    ctx: &mut LiftContext<'_, T>,
+    _label: &str,
+    index: u32,
+    ty: &ValueType,
+    position: AbiPosition,
+    is_own: bool,
+) -> Result<Val> {
+    let tables = ctx.tables.clone().ok_or_else(|| Error::Abi(AbiError {
+        position,
+        valtype: ty.clone(),
+        cause: AbiCause::InvalidHandle {
+            reason: "no handle-tables ledger available to the lift context".to_owned(),
+        },
+    }))?;
+
+    let mut guard = tables.lock().map_err(|_| Error::Internal {
+        message: "resource handle tables lock poisoned".to_owned(),
+    })?;
+
+    // The polyfill currently uses one table per registered
+    // `ResourceTypeId`; the executor's resource trampolines and
+    // `Store::resource_new` are the only producers, so any live
+    // entry under a given resource label corresponds to exactly one
+    // type id. The lift walks the tables looking for a live entry
+    // at `index` — wasmtime's typed-by-`TypeResourceTableIndex`
+    // dispatch is replaced here by the per-store table's structural
+    // identity.
+    let candidates: Vec<crate::resource::ResourceTypeId> =
+        guard.iter().map(|(type_id, _)| type_id).collect();
+    let mut found = None;
+    for type_id in candidates {
+        if let Some(_rep) = guard.for_type(type_id).and_then(|t| t.get(index)) {
+            found = Some(type_id);
+            break;
+        }
+    }
+    let type_id = found.ok_or_else(|| Error::Abi(AbiError {
+        position,
+        valtype: ty.clone(),
+        cause: AbiCause::InvalidHandle {
+            reason: format!("handle index {index} is not live in any resource table"),
+        },
+    }))?;
+
+    if is_own {
+        guard
+            .for_type_mut(type_id)
+            .remove(index)
+            .ok_or_else(|| Error::Abi(AbiError {
+                position,
+                valtype: ty.clone(),
+                cause: AbiCause::InvalidHandle {
+                    reason: format!("handle index {index} disappeared during lift"),
+                },
+            }))?;
+        Ok(Val::Own(ResourceHandle { type_id, index }))
+    } else {
+        Ok(Val::Borrow(ResourceHandle { type_id, index }))
     }
 }
 

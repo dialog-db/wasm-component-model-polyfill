@@ -14,10 +14,13 @@
 //! Construction is workspace-internal — the context is always built
 //! immediately before a call drives the canonical ABI.
 
+use std::sync::{Arc, Mutex};
+
 use crate::abi::layout::{align_to, alignment_of};
 use crate::backend::Backend;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::StringEncoding;
+use crate::resource::HandleTables;
 use crate::types::ValueType;
 use wasm_runtime_layer::{Func as RuntimeFunc, Memory, StoreContextMut, Val as RuntimeVal};
 
@@ -37,6 +40,9 @@ pub struct LiftContext<'a, T: 'static> {
     pub memory: Option<Memory>,
     /// The string encoding the lift uses for `string`-typed values.
     pub string_encoding: StringEncoding,
+    /// The per-store handle tables. Required when lifting `own<T>`
+    /// or `borrow<T>` valtypes; `None` is rejected at first contact.
+    pub tables: Option<Arc<Mutex<HandleTables>>>,
 }
 
 impl<'a, T: 'static> LiftContext<'a, T> {
@@ -45,11 +51,13 @@ impl<'a, T: 'static> LiftContext<'a, T> {
         store: StoreContextMut<'a, T, Backend>,
         memory: Option<Memory>,
         string_encoding: StringEncoding,
+        tables: Option<Arc<Mutex<HandleTables>>>,
     ) -> Self {
         Self {
             store,
             memory,
             string_encoding,
+            tables,
         }
     }
 
@@ -96,6 +104,9 @@ pub struct LowerContext<'a, T: 'static> {
     pub realloc: Option<RuntimeFunc>,
     /// The string encoding the lower uses for `string`-typed values.
     pub string_encoding: StringEncoding,
+    /// The per-store handle tables. Required when lowering `own<T>`
+    /// or `borrow<T>` valtypes; `None` is rejected at first contact.
+    pub tables: Option<Arc<Mutex<HandleTables>>>,
 }
 
 impl<'a, T: 'static> LowerContext<'a, T> {
@@ -105,12 +116,14 @@ impl<'a, T: 'static> LowerContext<'a, T> {
         memory: Option<Memory>,
         realloc: Option<RuntimeFunc>,
         string_encoding: StringEncoding,
+        tables: Option<Arc<Mutex<HandleTables>>>,
     ) -> Self {
         Self {
             store,
             memory,
             realloc,
             string_encoding,
+            tables,
         }
     }
 

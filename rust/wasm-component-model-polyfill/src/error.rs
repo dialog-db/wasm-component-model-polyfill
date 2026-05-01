@@ -400,9 +400,37 @@ pub enum AbiCause {
     HostValueMismatch,
 
     /// The valtype is one whose lift or lower the polyfill defers
-    /// to a later PDD (`own<T>`, `borrow<T>`).
+    /// to a later PDD.
     #[error("lift/lower for this valtype is not yet implemented")]
     Unimplemented,
+
+    /// A handle index does not address a live entry in the
+    /// per-store handle table, or the host supplied a handle whose
+    /// resource-type identity does not match the declared
+    /// `own<T>` / `borrow<T>`.
+    #[error("invalid resource handle: {reason}")]
+    InvalidHandle {
+        /// A short description of why the handle was rejected
+        /// (out-of-range index, type-id mismatch, etc.).
+        reason: String,
+    },
+
+    /// The component transferred ownership of a resource handle to
+    /// the host, but no host registration carries the matching
+    /// resource type identity. Typically observed when a host
+    /// receives an `own<T>` it never registered a destructor for.
+    #[error("no host registration matches the transferred resource type")]
+    UnregisteredResourceType,
+
+    /// A host call returned with `borrow<T>` handles still
+    /// outstanding. The canonical-ABI runtime-state rules forbid
+    /// this; the count is the number of borrows the lift recorded
+    /// without an offsetting drop at return.
+    #[error("{count} borrow handles outstanding at host-call return")]
+    OutstandingBorrows {
+        /// The number of unreleased borrows.
+        count: usize,
+    },
 
     /// A failure surfaced by a lower-level component (e.g. the
     /// runtime substrate) while reading or writing memory. The

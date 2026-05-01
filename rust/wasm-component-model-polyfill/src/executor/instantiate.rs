@@ -23,9 +23,12 @@ use crate::store::Store;
 
 use super::ir::{
     CoreInstanceExport, CoreSourceItem, ExecutorIr, ExportSpec, ImportSource, Initializer,
-    LoweringSpec, ModuleEntry,
+    LoweringSpec, ModuleEntry, ResourceSpec, TrampolineSpec,
 };
-use super::trampoline::{build_trampoline, AbiRuntimeState};
+use super::trampoline::{
+    build_resource_drop_trampoline, build_resource_new_trampoline, build_resource_rep_trampoline,
+    build_trampoline, AbiRuntimeState, ResourceRuntime,
+};
 
 /// Translate the component's bytes into the executor's IR and drive
 /// instantiation against `store`.
@@ -43,14 +46,42 @@ pub fn instantiate<T: 'static>(
 ) -> Result<Instance> {
     let ir = super::translate(engine, component)?;
 
+    // Resolve each `ResourceSpec` against the linker's registered
+    // host resources before building the runtime state. The host
+    // destructor closure is captured by every resource trampoline
+    // the executor builds for that resource.
+    let mut resource_runtimes: Vec<ResourceRuntime<T>> = Vec::with_capacity(ir.resources.len());
+    for spec in ir.resources.iter() {
+        resource_runtimes.push(resolve_resource_runtime(linker, component, spec)?);
+    }
+
     let abi_state = Arc::new(Mutex::new(AbiRuntimeState::with_slabs(
         ir.num_runtime_memories,
         ir.num_runtime_reallocs,
         ir.num_runtime_post_returns,
     )));
 
+    // Build every trampoline upfront. Trampolines never depend on
+    // core-instance state at construction (memories, reallocs, etc.
+    // are read out of the shared `AbiRuntimeState` at call time), so
+    // the resulting runtime-layer `Func`s can be slotted into the
+    // import table for any module that references them via
+    // `CoreDef::Trampoline`.
+    let mut trampolines: Vec<Option<RuntimeFunc>> =
+        Vec::with_capacity(ir.trampoline_specs.len());
+    for spec in ir.trampoline_specs.iter() {
+        let func = build_runtime_trampoline(
+            spec,
+            component,
+            linker,
+            store,
+            &abi_state,
+            &resource_runtimes,
+        )?;
+        trampolines.push(Some(func));
+    }
+
     let mut core_instances: Vec<RuntimeInstance> = Vec::new();
-    let mut trampolines: Vec<Option<RuntimeFunc>> = vec![None; ir.lowerings.len()];
 
     for initializer in ir.initializers.iter() {
         match initializer {
@@ -114,19 +145,6 @@ pub fn instantiate<T: 'static>(
                     return Err(internal("ExtractPostReturn slot out of bounds"));
                 }
             }
-            Initializer::LowerImport { lowering_index } => {
-                let spec = ir.lowerings.get(*lowering_index).ok_or_else(|| {
-                    internal("LowerImport.lowering_index out of bounds")
-                })?;
-                let host_func = lookup_host_func(linker, component, spec)?;
-                let trampoline =
-                    build_trampoline(store, spec, abi_state.clone(), host_func);
-                if let Some(slot) = trampolines.get_mut(*lowering_index) {
-                    *slot = Some(trampoline);
-                } else {
-                    return Err(internal("trampoline slot out of bounds"));
-                }
-            }
         }
     }
 
@@ -136,6 +154,91 @@ pub fn instantiate<T: 'static>(
         function_exports,
         abi_state,
     })
+}
+
+/// Build the runtime-layer trampoline for one entry in
+/// [`ExecutorIr::trampoline_specs`]. Dispatches by variant: lowered
+/// imports become host-function trampolines, resource intrinsics
+/// become per-resource handle-table operations.
+fn build_runtime_trampoline<T: 'static>(
+    spec: &TrampolineSpec,
+    component: &Component,
+    linker: &Linker<T>,
+    store: &mut Store<T>,
+    abi_state: &Arc<Mutex<AbiRuntimeState>>,
+    resource_runtimes: &[ResourceRuntime<T>],
+) -> Result<RuntimeFunc> {
+    match spec {
+        TrampolineSpec::LowerImport(lowering) => {
+            let host_func = lookup_host_func(linker, component, lowering)?;
+            Ok(build_trampoline(
+                store,
+                lowering,
+                abi_state.clone(),
+                host_func,
+            ))
+        }
+        TrampolineSpec::ResourceDrop { resource_index } => {
+            let runtime = resource_runtimes
+                .get(*resource_index)
+                .ok_or_else(|| internal("ResourceDrop.resource_index out of bounds"))?;
+            Ok(build_resource_drop_trampoline(store, runtime.clone()))
+        }
+        TrampolineSpec::ResourceNew { resource_index } => {
+            let runtime = resource_runtimes
+                .get(*resource_index)
+                .ok_or_else(|| internal("ResourceNew.resource_index out of bounds"))?;
+            Ok(build_resource_new_trampoline(store, runtime.clone()))
+        }
+        TrampolineSpec::ResourceRep { resource_index } => {
+            let runtime = resource_runtimes
+                .get(*resource_index)
+                .ok_or_else(|| internal("ResourceRep.resource_index out of bounds"))?;
+            Ok(build_resource_rep_trampoline(store, runtime.clone()))
+        }
+    }
+}
+
+/// Look up a host-resource registration that satisfies the given
+/// [`ResourceSpec`]. Mirrors [`lookup_host_func`] but returns the
+/// destructor and identity for the resource.
+fn resolve_resource_runtime<T: 'static>(
+    linker: &Linker<T>,
+    component: &Component,
+    spec: &ResourceSpec,
+) -> Result<ResourceRuntime<T>> {
+    let import = component
+        .imports
+        .get(spec.import_index)
+        .ok_or_else(|| internal("ResourceSpec.import_index out of bounds"))?;
+    let chosen = match &import.name {
+        ExternalName::Interface(id) => id,
+        ExternalName::Plain(_) => {
+            return Err(Error::Link(LinkError::UnsupportedRegistration {
+                import: import.name.clone(),
+                reason: "plain-named imports require host-item registration",
+            }));
+        }
+    };
+    let registration = linker.registration_for(chosen).ok_or_else(|| {
+        Error::Link(LinkError::UnresolvedImport {
+            import: import.name.clone(),
+        })
+    })?;
+    let label = match &spec.item_name {
+        Some(name) => name.as_str(),
+        None => {
+            return Err(internal(
+                "top-level resource imports without an inner-instance path are not yet supported",
+            ));
+        }
+    };
+    let host = registration.resource(label).ok_or_else(|| {
+        Error::Link(LinkError::UnresolvedImport {
+            import: import.name.clone(),
+        })
+    })?;
+    Ok(ResourceRuntime::from_registration(host))
 }
 
 /// Look up the host-function payload registered against the import

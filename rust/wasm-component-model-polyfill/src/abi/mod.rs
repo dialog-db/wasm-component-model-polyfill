@@ -30,5 +30,5 @@ pub mod layout;
 mod lift;
 mod lower;
 
-pub use lift::lift;
+pub use lift::{lift, lift_handle};
 pub use lower::lower;

@@ -10,11 +10,8 @@
 //! typed payloads — a `Val::List` is a `Box<[Val]>`, a `Val::Record`
 //! is a `Box<[ValField]>`, and so on — so a `Val` can be passed
 //! across an export call without borrowing into the runtime
-//! substrate's memory. The handle variants `Val::Own` and
-//! `Val::Borrow` are present so the enum is closed for every shape
-//! `ValueType` admits; their canonical-ABI lift and lower are
-//! deferred to the resource handle work.
+//! substrate's memory.
 
 mod val;
 
-pub use val::{ResourceHandle, Val, ValField};
+pub use val::{Val, ValField};

@@ -12,11 +12,12 @@ use std::collections::HashMap;
 
 use wasm_runtime_layer::Module as RuntimeModule;
 use wasmtime_environ::component::{
-    CanonicalOptions as EnvironCanonOptions, ComponentTranslation, ComponentTypesBuilder, CoreDef,
-    CoreExport, Export as ComponentExport, ExportItem as ComponentExportItem, ExtractMemory,
-    ExtractPostReturn, ExtractRealloc, GlobalInitializer, InstantiateModule, LoweredIndex,
-    RuntimeImportIndex, StaticModuleIndex, StringEncoding as EnvironStringEncoding, Trampoline,
-    TrampolineIndex, Translator,
+    CanonicalOptions as EnvironCanonOptions, ComponentTranslation, ComponentTypes,
+    ComponentTypesBuilder, CoreDef, CoreExport, Export as ComponentExport,
+    ExportItem as ComponentExportItem, ExtractMemory, ExtractPostReturn, ExtractRealloc,
+    GlobalInitializer, InstantiateModule, LoweredIndex, ResourceIndex, RuntimeImportIndex,
+    StaticModuleIndex, StringEncoding as EnvironStringEncoding, Trampoline, TrampolineIndex,
+    Translator, TypeResourceTable, TypeResourceTableIndex,
 };
 use wasmtime_environ::wasmparser::{Validator, WasmFeatures};
 use wasmtime_environ::{EntityIndex as EnvironEntityIndex, ScopeVec, Tunables};
@@ -27,7 +28,8 @@ use crate::error::{Error, Result};
 
 use super::ir::{
     CanonOptions, CoreInstanceExport, CoreSourceItem, EntityIndex, ExecutorIr, ExportSpec,
-    ImportSource, Initializer, LoweringSpec, ModuleEntry, ModuleImport, StringEncoding,
+    ImportSource, Initializer, LoweringSpec, ModuleEntry, ModuleImport, ResourceSpec,
+    StringEncoding, TrampolineSpec,
 };
 
 /// Translate `component`'s bytes against `engine` and return the
@@ -42,6 +44,12 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
     let (translation, modules) = Translator::new(&tunables, &mut validator, &mut types, &scope)
         .translate(bytes)
         .map_err(translation_error)?;
+
+    // The component types map is needed to resolve
+    // `TypeResourceTableIndex` → `ResourceIndex` for the trampoline
+    // pre-walk. `ComponentTypesBuilder::finish` consumes the
+    // builder, which is fine — translation is finished.
+    let (component_types, _) = types.finish(&translation.component);
 
     let mut module_entries: Vec<ModuleEntry> = Vec::with_capacity(modules.len());
     let mut module_index_for_static: HashMap<StaticModuleIndex, usize> =
@@ -82,40 +90,97 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
         }
     }
 
-    // Pre-walk #2: build a `LoweringSpec` for every
-    // `Trampoline::LowerImport`. The resulting indices into
-    // `lowerings` are then consulted both by the
+    // Pre-walk #2: project every imported resource into a
+    // `ResourceSpec`. Defined (locally-declared) resources are not
+    // exercised by the synchronous baseline tests this PDD un-stubs;
+    // see the `GlobalInitializer::Resource` arm below for the
+    // deferral.
+    let mut resources: Vec<ResourceSpec> = Vec::new();
+    let mut resource_to_spec: HashMap<ResourceIndex, usize> = HashMap::new();
+    for (resource_idx, runtime_import) in translation.component.imported_resources.iter() {
+        let spec = build_resource_spec(component, &translation, *runtime_import)?;
+        let slot = resources.len();
+        resources.push(spec);
+        resource_to_spec.insert(resource_idx, slot);
+    }
+
+    // Pre-walk #3: build a [`TrampolineSpec`] for every entry in
+    // `translation.trampolines` whose kind the synchronous baseline
+    // exercises. The resulting indices are consulted both by the
     // `Initializer::LowerImport` projection (via `LoweredIndex →
     // slot`) and by `CoreDef::Trampoline` resolution (via
     // `TrampolineIndex → slot`).
-    let mut lowerings: Vec<LoweringSpec> = Vec::new();
-    let mut lowered_to_lowering: HashMap<LoweredIndex, usize> = HashMap::new();
-    let mut trampoline_to_lowering: HashMap<TrampolineIndex, usize> = HashMap::new();
+    let mut trampoline_specs: Vec<TrampolineSpec> = Vec::new();
+    let mut lowered_to_spec: HashMap<LoweredIndex, usize> = HashMap::new();
+    let mut trampoline_to_spec: HashMap<TrampolineIndex, usize> = HashMap::new();
     for (trampoline_idx, trampoline) in translation.trampolines.iter() {
-        if let Trampoline::LowerImport {
-            index: lowered_idx,
-            options,
-            ..
-        } = trampoline
-        {
-            let runtime_import = *lowered_to_import.get(lowered_idx).ok_or_else(|| {
-                internal("Trampoline::LowerImport has no matching GlobalInitializer::LowerImport")
-            })?;
-            let canon = translation
-                .component
-                .options
-                .get(*options)
-                .ok_or_else(|| internal("Trampoline OptionsIndex out of bounds"))?;
-            let lowering = build_lowering_spec(
-                component,
-                &translation,
-                runtime_import,
-                lift_canon_options(canon),
-            )?;
-            let slot = lowerings.len();
-            lowerings.push(lowering);
-            lowered_to_lowering.insert(*lowered_idx, slot);
-            trampoline_to_lowering.insert(trampoline_idx, slot);
+        match trampoline {
+            Trampoline::LowerImport {
+                index: lowered_idx,
+                options,
+                ..
+            } => {
+                let runtime_import = *lowered_to_import.get(lowered_idx).ok_or_else(|| {
+                    internal(
+                        "Trampoline::LowerImport has no matching GlobalInitializer::LowerImport",
+                    )
+                })?;
+                let canon = translation
+                    .component
+                    .options
+                    .get(*options)
+                    .ok_or_else(|| internal("Trampoline OptionsIndex out of bounds"))?;
+                let lowering = build_lowering_spec(
+                    component,
+                    &translation,
+                    runtime_import,
+                    lift_canon_options(canon),
+                )?;
+                let slot = trampoline_specs.len();
+                trampoline_specs.push(TrampolineSpec::LowerImport(lowering));
+                lowered_to_spec.insert(*lowered_idx, slot);
+                trampoline_to_spec.insert(trampoline_idx, slot);
+            }
+            Trampoline::ResourceDrop { ty, .. } => {
+                let resource_index = resolve_resource_index(
+                    &component_types,
+                    &translation.component.imported_resources,
+                    &resource_to_spec,
+                    *ty,
+                )?;
+                let slot = trampoline_specs.len();
+                trampoline_specs.push(TrampolineSpec::ResourceDrop { resource_index });
+                trampoline_to_spec.insert(trampoline_idx, slot);
+            }
+            Trampoline::ResourceNew { ty, .. } => {
+                let resource_index = resolve_resource_index(
+                    &component_types,
+                    &translation.component.imported_resources,
+                    &resource_to_spec,
+                    *ty,
+                )?;
+                let slot = trampoline_specs.len();
+                trampoline_specs.push(TrampolineSpec::ResourceNew { resource_index });
+                trampoline_to_spec.insert(trampoline_idx, slot);
+            }
+            Trampoline::ResourceRep { ty, .. } => {
+                let resource_index = resolve_resource_index(
+                    &component_types,
+                    &translation.component.imported_resources,
+                    &resource_to_spec,
+                    *ty,
+                )?;
+                let slot = trampoline_specs.len();
+                trampoline_specs.push(TrampolineSpec::ResourceRep { resource_index });
+                trampoline_to_spec.insert(trampoline_idx, slot);
+            }
+            // Other trampoline kinds — string transcoders, async
+            // intrinsics, futures, streams, etc. — fall outside the
+            // synchronous baseline. `CoreDef::Trampoline` references
+            // to one of these surface as the existing
+            // `internal("CoreDef::Trampoline references ...")`
+            // diagnostic at lift time.
+            _ => {}
         }
     }
 
@@ -130,7 +195,7 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
                 })?;
                 let mut imports = Vec::with_capacity(defs.len());
                 for def in defs.iter() {
-                    imports.push(state.lift_core_def(def, &trampoline_to_lowering)?);
+                    imports.push(state.lift_core_def(def, &trampoline_to_spec)?);
                 }
                 state.runtime_instance_to_module.push(module_index);
                 state.initializers.push(Initializer::InstantiateModule {
@@ -143,15 +208,11 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
                     "import-style core-module instantiation: only Wasmtime's adapter pipeline emits this; not exercised by the synchronous baseline tests yet"
                 )
             }
-            GlobalInitializer::LowerImport { index: lowered_idx, .. } => {
-                let lowering_index = *lowered_to_lowering.get(lowered_idx).ok_or_else(|| {
-                    internal(
-                        "GlobalInitializer::LowerImport has no matching trampoline pre-walk entry",
-                    )
-                })?;
-                state
-                    .initializers
-                    .push(Initializer::LowerImport { lowering_index });
+            GlobalInitializer::LowerImport { .. } => {
+                // The trampoline's runtime-layer function is built
+                // upfront from `ir.trampoline_specs` before the
+                // initializer walk runs (see `executor::instantiate`).
+                // The marker initializer adds no further state.
             }
             GlobalInitializer::ExtractMemory(ExtractMemory { index, export }) => {
                 let source = state.lift_core_export(export)?;
@@ -162,7 +223,7 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
                     .push(Initializer::ExtractMemory { slot, source });
             }
             GlobalInitializer::ExtractRealloc(ExtractRealloc { index, def }) => {
-                let source = state.lift_core_def(def, &trampoline_to_lowering)?;
+                let source = state.lift_core_def(def, &trampoline_to_spec)?;
                 let slot = index.as_u32() as usize;
                 state.num_runtime_reallocs = state.num_runtime_reallocs.max(slot + 1);
                 state
@@ -170,7 +231,7 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
                     .push(Initializer::ExtractRealloc { slot, source });
             }
             GlobalInitializer::ExtractPostReturn(ExtractPostReturn { index, def }) => {
-                let source = state.lift_core_def(def, &trampoline_to_lowering)?;
+                let source = state.lift_core_def(def, &trampoline_to_spec)?;
                 let slot = index.as_u32() as usize;
                 state.num_runtime_post_returns =
                     state.num_runtime_post_returns.max(slot + 1);
@@ -184,7 +245,9 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
                 )
             }
             GlobalInitializer::Resource(_) => {
-                todo!("host-resource registration lands with PDD009")
+                todo!(
+                    "locally-defined resources (with an in-binary destructor) are not exercised by the synchronous baseline tests this PDD un-stubs; only host-imported resources are covered"
+                )
             }
         }
     }
@@ -198,7 +261,7 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
             .ok_or_else(|| internal("export index from translator missing from export_items"))?;
         match export {
             ComponentExport::LiftedFunction { func, options, .. } => {
-                let source = state.lift_core_def(func, &trampoline_to_lowering)?;
+                let source = state.lift_core_def(func, &trampoline_to_spec)?;
                 let signature = lookup_export_signature(component, name)?;
                 let canon = translation
                     .component
@@ -232,11 +295,83 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
         modules: module_entries.into_boxed_slice(),
         initializers: state.initializers.into_boxed_slice(),
         exports: exports.into_boxed_slice(),
-        lowerings: lowerings.into_boxed_slice(),
+        trampoline_specs: trampoline_specs.into_boxed_slice(),
+        resources: resources.into_boxed_slice(),
         runtime_instance_to_module: state.runtime_instance_to_module.into_boxed_slice(),
         num_runtime_memories: state.num_runtime_memories,
         num_runtime_reallocs: state.num_runtime_reallocs,
         num_runtime_post_returns: state.num_runtime_post_returns,
+    })
+}
+
+/// Resolve a [`TypeResourceTableIndex`] to the polyfill's resource
+/// index. The trampoline references resources by their per-component
+/// table identity; the polyfill addresses them by position in the
+/// `imported_resources` map.
+fn resolve_resource_index(
+    component_types: &ComponentTypes,
+    imported_resources: &wasmtime_environ::PrimaryMap<ResourceIndex, RuntimeImportIndex>,
+    resource_to_spec: &HashMap<ResourceIndex, usize>,
+    ty: TypeResourceTableIndex,
+) -> Result<usize> {
+    let table = &component_types[ty];
+    let resource_idx = match table {
+        TypeResourceTable::Concrete { ty, .. } => *ty,
+        TypeResourceTable::Abstract(_) => {
+            return Err(internal(
+                "resource trampoline references an abstract resource table — should not appear in a concrete instantiation",
+            ));
+        }
+    };
+    let _ = imported_resources; // arg kept for symmetry; lookup is via resource_to_spec.
+    resource_to_spec.get(&resource_idx).copied().ok_or_else(|| {
+        internal(
+            "resource trampoline references a defined (non-imported) resource — locally-defined resources are not yet supported",
+        )
+    })
+}
+
+/// Build a [`ResourceSpec`] from a [`RuntimeImportIndex`] into the
+/// component's import table. Mirrors [`build_lowering_spec`] but
+/// resolves to a resource label rather than to a function signature.
+fn build_resource_spec(
+    component: &Component,
+    translation: &ComponentTranslation,
+    runtime_import: RuntimeImportIndex,
+) -> Result<ResourceSpec> {
+    let (import_idx, path) = translation
+        .component
+        .imports
+        .get(runtime_import)
+        .ok_or_else(|| internal("RuntimeImportIndex out of bounds"))?;
+    let (top_name, _) = translation
+        .component
+        .import_types
+        .get(*import_idx)
+        .ok_or_else(|| internal("ImportIndex out of bounds for import_types"))?;
+
+    let (polyfill_idx, _polyfill_import) = component
+        .imports
+        .iter()
+        .enumerate()
+        .find(|(_, imp)| matches_top_level_name(&imp.name, top_name))
+        .ok_or_else(|| {
+            internal("wasmtime resource import has no matching polyfill Component import by name")
+        })?;
+
+    let item_name = match path.len() {
+        0 => None,
+        1 => Some(path[0].clone()),
+        _ => {
+            todo!(
+                "deeply-nested resource imports (path > 1) are not exercised by the synchronous baseline; the polyfill defers them until a test demands the shape"
+            )
+        }
+    };
+
+    Ok(ResourceSpec {
+        import_index: polyfill_idx,
+        item_name,
     })
 }
 
@@ -265,12 +400,12 @@ impl ProjectionState {
     fn lift_core_def(
         &self,
         def: &CoreDef,
-        trampoline_to_lowering: &HashMap<TrampolineIndex, usize>,
+        trampoline_to_spec: &HashMap<TrampolineIndex, usize>,
     ) -> Result<ImportSource> {
         match def {
             CoreDef::Export(export) => self.lift_core_export(export),
             CoreDef::Trampoline(trampoline_idx) => {
-                let lowering_index = *trampoline_to_lowering.get(trampoline_idx).ok_or_else(|| {
+                let lowering_index = *trampoline_to_spec.get(trampoline_idx).ok_or_else(|| {
                     internal(
                         "CoreDef::Trampoline references a trampoline kind the polyfill defers (resource intrinsics, transcoders, async)",
                     )

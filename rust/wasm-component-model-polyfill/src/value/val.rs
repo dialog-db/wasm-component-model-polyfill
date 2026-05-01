@@ -1,5 +1,7 @@
 //! The polyfill's component-level value enum.
 
+use crate::resource::ResourceHandle;
+
 /// A single component-level value passed to or returned from an
 /// exported component function.
 ///
@@ -88,16 +90,8 @@ pub enum Val {
     /// and rejects unknown names.
     Flags(Box<[String]>),
     /// An owning handle to a resource (`own<T>`).
-    ///
-    /// Present so the enum is closed for every shape `ValueType`
-    /// admits; the polyfill rejects lift and lower of this variant
-    /// today with a structured error.
     Own(ResourceHandle),
     /// A borrow handle to a resource (`borrow<T>`).
-    ///
-    /// Present so the enum is closed for every shape `ValueType`
-    /// admits; the polyfill rejects lift and lower of this variant
-    /// today with a structured error.
     Borrow(ResourceHandle),
 }
 
@@ -111,17 +105,3 @@ pub struct ValField {
     pub value: Val,
 }
 
-/// An opaque, polyfill-typed handle into a resource table.
-///
-/// Constructing or receiving one is reserved for the resource layer
-/// the polyfill introduces with the resource handle work; today the
-/// type exists so [`Val::Own`] and [`Val::Borrow`] are constructible
-/// in tests that only assert error behaviour.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResourceHandle {
-    /// The resource table entry this handle addresses. The handle-
-    /// table semantics are deferred; the field is preserved so
-    /// downstream work can attach those semantics without reshaping
-    /// the public type.
-    pub index: u32,
-}

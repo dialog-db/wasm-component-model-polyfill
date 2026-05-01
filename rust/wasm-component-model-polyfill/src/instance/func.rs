@@ -159,8 +159,15 @@ impl Func {
         memory: Option<wasm_runtime_layer::Memory>,
         realloc: Option<wasm_runtime_layer::Func>,
     ) -> Result<Vec<RuntimeVal>> {
+        let tables = store.tables_handle();
         let store_ctx = store.inner_mut().as_context_mut();
-        let mut lower_ctx = LowerContext::new(store_ctx, memory, realloc, self.options.string_encoding);
+        let mut lower_ctx = LowerContext::new(
+            store_ctx,
+            memory,
+            realloc,
+            self.options.string_encoding,
+            Some(tables),
+        );
         let mut out: Vec<RuntimeVal> = Vec::new();
         for (i, (param, val)) in self
             .signature
@@ -184,8 +191,14 @@ impl Func {
             return Ok(None);
         };
         let position = AbiPosition::Result;
+        let tables = store.tables_handle();
         let store_ctx = store.inner_mut().as_context_mut();
-        let mut lift_ctx = LiftContext::new(store_ctx, memory, self.options.string_encoding);
+        let mut lift_ctx = LiftContext::new(
+            store_ctx,
+            memory,
+            self.options.string_encoding,
+            Some(tables),
+        );
         match flat_count(result_ty) {
             Some(n) if n <= 1 => {
                 if core_results.is_empty() {
@@ -239,6 +252,14 @@ fn lower_argument<T: 'static>(
         }
         (ValueType::Primitive(prim), _) => {
             out.push(primitive_to_flat(*prim, val, position, ty, ctx)?);
+            Ok(())
+        }
+        (ValueType::Own(_), Val::Own(handle))
+        | (ValueType::Borrow(_), Val::Borrow(handle))
+        | (ValueType::Borrow(_), Val::Own(handle)) => {
+            // Handles flatten to a single i32 at the flat-arg
+            // position: the table index. No memory allocation.
+            out.push(RuntimeVal::I32(handle.index as i32));
             Ok(())
         }
         (ValueType::List(_list), Val::List(elements)) => {

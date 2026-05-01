@@ -9,6 +9,7 @@ use crate::abi::context::LowerContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::StringEncoding;
+use crate::resource::ResourceHandle;
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
 
@@ -172,12 +173,23 @@ pub fn lower<T: 'static>(
             }
             ctx.write_bytes(offset, &bytes, position, ty)
         }
-        (ValueType::Own(_) | ValueType::Borrow(_), Val::Own(_) | Val::Borrow(_)) => {
-            Err(Error::Abi(AbiError {
-                position,
-                valtype: ty.clone(),
-                cause: AbiCause::Unimplemented,
-            }))
+        (ValueType::Own(_), Val::Own(handle)) => {
+            // The host already owns the entry: the handle was minted
+            // through `Store::resource_new` (or carried out of a
+            // prior lift). Validate that the index is live in the
+            // per-store table for the handle's resource-type id and
+            // write the index into the slot; ownership transfers
+            // structurally when the guest calls `resource.drop`.
+            validate_handle(ctx, handle, ty, position)?;
+            ctx.write_bytes(offset, &handle.index.to_le_bytes(), position, ty)
+        }
+        (ValueType::Borrow(_), Val::Borrow(handle) | Val::Own(handle)) => {
+            // Borrow lower: the host hands a live handle to the
+            // guest for the duration of the call. The polyfill does
+            // not yet enforce per-call borrow tracking; the index is
+            // written through and the table entry is left in place.
+            validate_handle(ctx, handle, ty, position)?;
+            ctx.write_bytes(offset, &handle.index.to_le_bytes(), position, ty)
         }
         _ => Err(host_value_mismatch(ty, position)),
     }
@@ -291,6 +303,44 @@ fn write_discriminant<T: 'static>(
             },
         })),
     }
+}
+
+fn validate_handle<T: 'static>(
+    ctx: &LowerContext<'_, T>,
+    handle: &ResourceHandle,
+    ty: &ValueType,
+    position: AbiPosition,
+) -> Result<()> {
+    let tables = ctx.tables.as_ref().ok_or_else(|| Error::Abi(AbiError {
+        position,
+        valtype: ty.clone(),
+        cause: AbiCause::InvalidHandle {
+            reason: "no handle-tables ledger available to the lower context".to_owned(),
+        },
+    }))?;
+    let guard = tables.lock().map_err(|_| Error::Internal {
+        message: "resource handle tables lock poisoned".to_owned(),
+    })?;
+    let table = guard
+        .for_type(handle.type_id)
+        .ok_or_else(|| Error::Abi(AbiError {
+            position,
+            valtype: ty.clone(),
+            cause: AbiCause::UnregisteredResourceType,
+        }))?;
+    if table.get(handle.index).is_none() {
+        return Err(Error::Abi(AbiError {
+            position,
+            valtype: ty.clone(),
+            cause: AbiCause::InvalidHandle {
+                reason: format!(
+                    "handle index {} is not live in the resource table",
+                    handle.index
+                ),
+            },
+        }));
+    }
+    Ok(())
 }
 
 fn host_value_mismatch(ty: &ValueType, position: AbiPosition) -> Error {

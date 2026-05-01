@@ -6,10 +6,12 @@ use core::marker::PhantomData;
 
 use crate::component::FunctionType;
 use crate::error::Result;
+use crate::resource::ResourceTypeId;
 use crate::value::Val;
 
 use super::component_value::{ComponentParameters, ComponentResult, function_type_for};
 use super::host_func::HostFunc;
+use super::host_resource::HostResource;
 use super::registration::InstanceRegistration;
 
 /// A borrowed view onto one interface's worth of host items inside a
@@ -32,6 +34,11 @@ use super::registration::InstanceRegistration;
 /// stores against the item's name, then the resolver's link-time
 /// type check consults when matching the registration against the
 /// component's declared import.
+///
+/// A third mode, [`Self::resource`], registers a host-owned
+/// resource type with a synchronous destructor closure. It produces
+/// a [`HostResource<T>`] that the linker stores against the
+/// resource's label.
 ///
 /// [`Linker`]: super::Linker
 /// [`Linker::instance`]: super::Linker::instance
@@ -78,6 +85,29 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
     ) {
         let host = HostFunc::new(ty, func);
         self.registration.funcs.insert(name.into(), host);
+    }
+
+    /// Register a host-owned resource type with a synchronous
+    /// destructor.
+    ///
+    /// Mints a fresh [`ResourceTypeId`] under the given resource
+    /// label and stores the destructor closure for the executor's
+    /// drop trampoline to invoke when the guest drops the last
+    /// handle. The returned identity threads the registration into
+    /// any handle the host subsequently mints.
+    ///
+    /// Today the polyfill registers exactly one resource per label
+    /// per interface; calling `resource` twice with the same label
+    /// overwrites the prior registration.
+    pub fn resource(
+        &mut self,
+        label: impl Into<String>,
+        destructor: impl Fn(&mut T, u32) -> Result<()> + Send + Sync + 'static,
+    ) -> ResourceTypeId {
+        let host = HostResource::new(destructor);
+        let type_id = host.type_id;
+        self.registration.resources.insert(label.into(), host);
+        type_id
     }
 
     /// Register a *typed* host function. The closure's argument

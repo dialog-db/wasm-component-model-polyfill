@@ -30,12 +30,13 @@ use wasm_runtime_layer::{
 
 use crate::abi::context::{LiftContext, LowerContext};
 use crate::abi::layout::{align_to, alignment_of, flat_count, flat_types, size_of, FlatType};
-use crate::abi::{lift, lower};
+use crate::abi::{lift, lift_handle, lower};
 use crate::backend::Backend;
 use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::{CanonOptions, LoweringSpec};
-use crate::linker::HostFuncBody;
+use crate::linker::{DestructorBody, HostFuncBody, HostResource};
+use crate::resource::{HandleTables, ResourceTypeId};
 use crate::store::Store;
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
@@ -50,6 +51,40 @@ pub struct AbiRuntimeState {
     pub post_returns: Vec<Option<RuntimeFunc>>,
 }
 
+/// Per-resource runtime data captured by every resource trampoline.
+///
+/// Bundles the engine-issued identity (the per-store handle table
+/// key) with the host destructor closure. The `Arc` shape is
+/// preserved so the resource trampolines for `new`/`drop`/`rep` —
+/// which all touch the same handle table — share one ledger.
+pub struct ResourceRuntime<T> {
+    /// The engine-issued identity for the registered resource type.
+    /// Used as the key into [`HandleTables`](crate::resource::HandleTables).
+    pub type_id: ResourceTypeId,
+    /// The host destructor closure invoked when the guest drops the
+    /// last handle to a resource.
+    pub destructor: Arc<DestructorBody<T>>,
+}
+
+impl<T> ResourceRuntime<T> {
+    /// Construct a runtime bundle from a host registration carrier.
+    pub fn from_registration(host: &HostResource<T>) -> Self {
+        Self {
+            type_id: host.type_id,
+            destructor: host.destructor.clone(),
+        }
+    }
+}
+
+impl<T> Clone for ResourceRuntime<T> {
+    fn clone(&self) -> Self {
+        Self {
+            type_id: self.type_id,
+            destructor: self.destructor.clone(),
+        }
+    }
+}
+
 impl AbiRuntimeState {
     /// Construct a state with the requested slab sizes, every slot
     /// initially empty.
@@ -60,6 +95,132 @@ impl AbiRuntimeState {
             post_returns: vec![None; num_post_returns],
         }
     }
+}
+
+/// Build a runtime-layer host function that implements the
+/// canonical `resource.drop` intrinsic for a single resource type.
+///
+/// The returned function takes one i32 (the handle index), removes
+/// the entry from the per-store handle table, and runs the host
+/// destructor with the entry's rep. Surfaces a structured ABI error
+/// if the index does not address a live entry.
+pub fn build_resource_drop_trampoline<T: 'static>(
+    store: &mut Store<T>,
+    runtime: ResourceRuntime<T>,
+) -> RuntimeFunc {
+    let tables = store.tables_handle();
+    let func_type = FuncType::new([CoreType::I32], []);
+    RuntimeFunc::new(
+        store.inner_mut(),
+        func_type,
+        move |mut store_ctx, args, _results| {
+            let index = take_i32(args, 0).map_err(|err| anyhow!("resource.drop: {err}"))?;
+            let rep = remove_handle(&tables, runtime.type_id, index)?;
+            (runtime.destructor)(store_ctx.data_mut(), rep)
+                .map_err(|err| anyhow!("resource destructor failed: {err}"))?;
+            Ok(())
+        },
+    )
+}
+
+/// Build a runtime-layer host function that implements the
+/// canonical `resource.new` intrinsic for a single resource type.
+/// The returned function takes one i32 (the rep) and returns the
+/// minted index.
+pub fn build_resource_new_trampoline<T: 'static>(
+    store: &mut Store<T>,
+    runtime: ResourceRuntime<T>,
+) -> RuntimeFunc {
+    let tables = store.tables_handle();
+    let func_type = FuncType::new([CoreType::I32], [CoreType::I32]);
+    RuntimeFunc::new(
+        store.inner_mut(),
+        func_type,
+        move |_store_ctx, args, results| {
+            let rep = take_i32(args, 0).map_err(|err| anyhow!("resource.new: {err}"))?;
+            let index = insert_handle(&tables, runtime.type_id, rep)?;
+            results[0] = RuntimeVal::I32(index as i32);
+            Ok(())
+        },
+    )
+}
+
+/// Build a runtime-layer host function that implements the
+/// canonical `resource.rep` intrinsic for a single resource type.
+/// The returned function takes one i32 (the index) and returns the
+/// rep stored at that entry.
+pub fn build_resource_rep_trampoline<T: 'static>(
+    store: &mut Store<T>,
+    runtime: ResourceRuntime<T>,
+) -> RuntimeFunc {
+    let tables = store.tables_handle();
+    let func_type = FuncType::new([CoreType::I32], [CoreType::I32]);
+    RuntimeFunc::new(
+        store.inner_mut(),
+        func_type,
+        move |_store_ctx, args, results| {
+            let rep = take_i32(args, 0).map_err(|err| anyhow!("resource.rep: {err}"))?;
+            let stored = read_handle(&tables, runtime.type_id, rep)?;
+            results[0] = RuntimeVal::I32(stored as i32);
+            Ok(())
+        },
+    )
+}
+
+fn take_i32(args: &[RuntimeVal], cursor: usize) -> Result<u32> {
+    match args.get(cursor) {
+        Some(RuntimeVal::I32(v)) => Ok(*v as u32),
+        _ => Err(Error::Internal {
+            message: "resource trampoline expected an i32 argument".to_owned(),
+        }),
+    }
+}
+
+fn remove_handle(
+    tables: &Arc<Mutex<HandleTables>>,
+    type_id: ResourceTypeId,
+    index: u32,
+) -> Result<u32> {
+    let mut guard = tables.lock().map_err(|_| Error::Internal {
+        message: "resource handle tables lock poisoned".to_owned(),
+    })?;
+    let table = guard.for_type_mut(type_id);
+    table.remove(index).ok_or_else(|| invalid_handle(index))
+}
+
+fn insert_handle(
+    tables: &Arc<Mutex<HandleTables>>,
+    type_id: ResourceTypeId,
+    rep: u32,
+) -> Result<u32> {
+    let mut guard = tables.lock().map_err(|_| Error::Internal {
+        message: "resource handle tables lock poisoned".to_owned(),
+    })?;
+    Ok(guard.for_type_mut(type_id).insert(rep))
+}
+
+fn read_handle(
+    tables: &Arc<Mutex<HandleTables>>,
+    type_id: ResourceTypeId,
+    index: u32,
+) -> Result<u32> {
+    let guard = tables.lock().map_err(|_| Error::Internal {
+        message: "resource handle tables lock poisoned".to_owned(),
+    })?;
+    let table = guard
+        .for_type(type_id)
+        .ok_or_else(|| invalid_handle(index))?;
+    table.get(index).ok_or_else(|| invalid_handle(index))
+}
+
+fn invalid_handle(index: u32) -> Error {
+    Error::Abi(AbiError {
+        position: AbiPosition::Argument(0),
+        valtype: ValueType::Primitive(PrimitiveType::U32),
+        cause: AbiCause::InvalidHandle {
+            reason: format!("handle index {index} is not live in the resource table"),
+        },
+    })
 }
 
 /// Build a runtime-layer host function that implements the lowered
@@ -74,6 +235,7 @@ pub fn build_trampoline<T: 'static>(
     let func_type = derive_runtime_func_type(&spec.signature);
     let signature = spec.signature.clone();
     let options = spec.options.clone();
+    let tables = store.tables_handle();
 
     RuntimeFunc::new(
         store.inner_mut(),
@@ -84,6 +246,7 @@ pub fn build_trampoline<T: 'static>(
                 &signature,
                 &options,
                 &abi_state,
+                &tables,
                 host_func.as_ref(),
                 args,
                 results,
@@ -143,6 +306,7 @@ fn invoke_trampoline<T: 'static>(
     signature: &FunctionType,
     options: &CanonOptions,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
+    tables: &Arc<Mutex<HandleTables>>,
     host_func: &HostFuncBody<T>,
     args: &[RuntimeVal],
     results: &mut [RuntimeVal],
@@ -172,7 +336,12 @@ fn invoke_trampoline<T: 'static>(
     let mut lifted: Vec<Val> = Vec::with_capacity(signature.parameters.len());
     let mut cursor = 0usize;
     let store_ctx_mut = store_ctx.as_context_mut();
-    let mut lift_ctx = LiftContext::new(store_ctx_mut, memory.clone(), options.string_encoding);
+    let mut lift_ctx = LiftContext::new(
+        store_ctx_mut,
+        memory.clone(),
+        options.string_encoding,
+        Some(tables.clone()),
+    );
     for (i, param) in signature.parameters.iter().enumerate() {
         let position = AbiPosition::Argument(i);
         let val = lift_argument(&mut lift_ctx, &param.ty, args, &mut cursor, position)?;
@@ -240,6 +409,7 @@ fn invoke_trampoline<T: 'static>(
                     memory,
                     realloc,
                     options.string_encoding,
+                    Some(tables.clone()),
                 );
                 lower(
                     &mut lower_ctx,
@@ -257,6 +427,7 @@ fn invoke_trampoline<T: 'static>(
                     memory,
                     realloc,
                     options.string_encoding,
+                    Some(tables.clone()),
                 );
                 let core = lower_to_single_flat(
                     &mut lower_ctx,
@@ -357,6 +528,20 @@ fn lift_argument<T: 'static>(
                 out.push(lift(ctx, ptr + i * element_size, &element_ty, position)?);
             }
             Ok(Val::List(out.into_boxed_slice()))
+        }
+        ValueType::Own(rt) | ValueType::Borrow(rt) => {
+            // Handles flatten to a single i32: the table index. The
+            // value sits in the flat slot, not in a pointer to
+            // memory.
+            let index = take_i32_arg(args, cursor, ty, position)? as u32;
+            lift_handle(
+                ctx,
+                rt.label(),
+                index,
+                ty,
+                position,
+                matches!(ty, ValueType::Own(_)),
+            )
         }
         // Compound types other than list/string at flat-arg
         // position are loaded from a single pointer slot; the

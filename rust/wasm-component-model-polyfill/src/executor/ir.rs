@@ -33,12 +33,16 @@ pub struct ExecutorIr {
     pub initializers: Box<[Initializer]>,
     /// The component's function exports, in declaration order.
     pub exports: Box<[ExportSpec]>,
-    /// One entry per `LowerImport` initializer, in declaration
-    /// order. Each entry names which of the resolved component
-    /// imports the lowered host function draws from, alongside the
-    /// canon options the lowering uses and the lifted (component-
-    /// level) function type the host registration declares.
-    pub lowerings: Box<[LoweringSpec]>,
+    /// One entry per trampoline the component requires, in the
+    /// order [`Trampoline`]s are emitted by the upstream translator.
+    /// Each entry names what the trampoline does — lower a host
+    /// import, run a `resource.drop` intrinsic, etc.
+    pub trampoline_specs: Box<[TrampolineSpec]>,
+    /// Per-resource metadata, indexed by the polyfill's own
+    /// resource index. Used by [`TrampolineSpec::ResourceDrop`] and
+    /// friends to resolve which host-resource registration the
+    /// trampoline dispatches into.
+    pub resources: Box<[ResourceSpec]>,
     /// Maps each runtime-instance position (the index a
     /// [`CoreInstanceExport`] uses) to the polyfill's `modules`
     /// slot the instance was instantiated against. The runtime-
@@ -155,16 +159,6 @@ pub enum Initializer {
         source: ImportSource,
     },
 
-    /// Build a host trampoline for a lowered import. The trampoline
-    /// is a runtime-layer core function that lifts its core
-    /// arguments to `Val`, dispatches the host registration named in
-    /// [`ExecutorIr::lowerings`], and lowers the host's `Val` return
-    /// back into core results.
-    LowerImport {
-        /// Index into [`ExecutorIr::lowerings`]. Slot `n` is the
-        /// `n`th `LowerImport` directive.
-        lowering_index: usize,
-    },
 }
 
 /// Where a single core-Wasm item comes from when satisfying a
@@ -286,4 +280,63 @@ pub struct LoweringSpec {
     /// host's `Val` shape and the core-wasm flat values the
     /// trampoline shuttles.
     pub options: CanonOptions,
+}
+
+/// What a trampoline slot in [`ExecutorIr::trampoline_specs`] does.
+///
+/// Each variant captures the polyfill-side metadata needed to build
+/// the corresponding runtime-layer host function at instantiation
+/// time. Lowered imports dispatch into a host registration; resource
+/// intrinsics dispatch into the per-store handle table for a named
+/// resource type.
+#[derive(Clone, Debug)]
+pub enum TrampolineSpec {
+    /// The trampoline lowers a host import: lifts core arguments to
+    /// [`Val`], dispatches into a host-function registration, and
+    /// lowers the host's [`Val`] return back into core slots.
+    ///
+    /// [`Val`]: crate::Val
+    LowerImport(LoweringSpec),
+    /// The trampoline implements the canonical `resource.drop`
+    /// intrinsic: removes the named resource handle from the per-
+    /// store table and runs the host destructor with the entry's
+    /// rep.
+    ResourceDrop {
+        /// Index into [`ExecutorIr::resources`].
+        resource_index: usize,
+    },
+    /// The trampoline implements `resource.new`: allocates a fresh
+    /// handle for the rep argument and returns the index.
+    ResourceNew {
+        /// Index into [`ExecutorIr::resources`].
+        resource_index: usize,
+    },
+    /// The trampoline implements `resource.rep`: returns the rep of
+    /// the handle at the given index without removing it.
+    ResourceRep {
+        /// Index into [`ExecutorIr::resources`].
+        resource_index: usize,
+    },
+}
+
+/// Per-resource metadata captured during translation.
+///
+/// Identifies a host-imported resource type by the polyfill import
+/// index of the enclosing imported instance and the resource's
+/// label within that instance. The executor resolves this at
+/// instantiation time against the [`Linker`]'s registered host
+/// resources.
+///
+/// [`Linker`]: crate::Linker
+#[derive(Clone, Debug)]
+pub struct ResourceSpec {
+    /// Index into the polyfill component's imports
+    /// (`Component::imports`). Identifies the imported instance the
+    /// resource lives in, or — when `item_name` is `None` — the
+    /// import that is itself a resource type.
+    pub import_index: usize,
+    /// The resource's label within the imported instance. `None`
+    /// when the import is itself the resource type (top-level
+    /// resource import).
+    pub item_name: Option<String>,
 }

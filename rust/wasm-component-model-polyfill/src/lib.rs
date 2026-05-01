@@ -32,6 +32,7 @@ mod executor;
 mod identifier;
 mod instance;
 mod linker;
+mod resource;
 mod store;
 mod types;
 mod value;
@@ -55,4 +56,5 @@ pub use crate::types::{
     EnumType, FlagsType, ListType, OptionType, PrimitiveType, RecordField, RecordType,
     ResourceType, ResultType, TupleType, ValueType, VariantCase, VariantType,
 };
-pub use crate::value::{ResourceHandle, Val, ValField};
+pub use crate::resource::{ResourceHandle, ResourceTypeId};
+pub use crate::value::{Val, ValField};
