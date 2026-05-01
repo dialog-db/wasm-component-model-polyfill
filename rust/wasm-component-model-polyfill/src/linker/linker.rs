@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use crate::component::Component;
 use crate::engine::Engine;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::identifier::InterfaceIdentifier;
 use crate::instance::Instance;
 use crate::store::Store;
@@ -41,7 +41,7 @@ pub struct Linker<T> {
     _phantom: PhantomData<fn(T) -> T>,
 }
 
-impl<T> Linker<T> {
+impl<T: 'static> Linker<T> {
     /// Construct an empty `Linker` against an [`Engine`].
     pub fn new(engine: &Engine) -> Self {
         Self {
@@ -66,6 +66,19 @@ impl<T> Linker<T> {
     /// Workspace-internal; not re-exported by `lib.rs`.
     pub fn registered_keys(&self) -> impl Iterator<Item = &InterfaceIdentifier> {
         self.instances.keys()
+    }
+
+    /// The registration entry for a given interface identifier, or
+    /// `None` when no matching entry exists. Used by the resolver
+    /// to look up host-function payloads by interface and by the
+    /// host-trampoline builder to dispatch a lowered import.
+    ///
+    /// Workspace-internal; not re-exported by `lib.rs`.
+    pub fn registration_for(
+        &self,
+        id: &InterfaceIdentifier,
+    ) -> Option<&InstanceRegistration<T>> {
+        self.instances.get(id)
     }
 
     /// Address (creating if absent) the [`LinkerInstance`] keyed by
@@ -114,7 +127,7 @@ impl<T> Linker<T> {
         store: &mut Store<T>,
         component: &Component,
     ) -> Result<Instance> {
-        let resolution = resolve_imports(component, self).map_err(Error::Link)?;
+        let resolution = resolve_imports(component, self)?;
         self.instantiate_resolved(store, component, &resolution)
     }
 
@@ -130,6 +143,6 @@ impl<T> Linker<T> {
         component: &Component,
         _resolution: &Resolution,
     ) -> Result<Instance> {
-        crate::executor::instantiate(&self.engine, component, store)
+        crate::executor::instantiate(&self.engine, component, store, self)
     }
 }

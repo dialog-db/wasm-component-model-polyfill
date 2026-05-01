@@ -5,13 +5,16 @@
 //! themselves — the data that travels through a function export call
 //! across the polyfill's public API.
 //!
-//! At present only the primitive valtypes are represented; compound
-//! valtype variants (records, variants, lists, options, results,
-//! tuples, flags, enums, strings, and resource handles) are out of
-//! scope for the export-invocation surface introduced here. Later
-//! work extends this enum additively as the canonical-ABI work for
-//! compound types lands.
+//! Every variant in [`Val`] mirrors a shape in
+//! [`crate::ValueType`]. Compound variants carry owned, polyfill-
+//! typed payloads — a `Val::List` is a `Box<[Val]>`, a `Val::Record`
+//! is a `Box<[ValField]>`, and so on — so a `Val` can be passed
+//! across an export call without borrowing into the runtime
+//! substrate's memory. The handle variants `Val::Own` and
+//! `Val::Borrow` are present so the enum is closed for every shape
+//! `ValueType` admits; their canonical-ABI lift and lower are
+//! deferred to the resource handle work.
 
 mod val;
 
-pub use val::Val;
+pub use val::{ResourceHandle, Val, ValField};

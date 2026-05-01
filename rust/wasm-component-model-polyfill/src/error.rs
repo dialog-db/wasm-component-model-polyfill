@@ -15,8 +15,9 @@
 use semver::Version;
 use thiserror::Error;
 
-use crate::component::ExternalName;
+use crate::component::{ExternalName, FunctionType};
 use crate::identifier::InterfaceIdentifier;
+use crate::types::ValueType;
 
 /// Every error the polyfill can return.
 ///
@@ -93,6 +94,27 @@ pub enum Error {
     /// lift/lower).
     #[error("instantiation error: {0}")]
     Instantiation(#[source] InstantiationError),
+
+    /// A host-side type does not unify with the corresponding
+    /// component-side type. The carried [`TypeMismatch`] identifies
+    /// the position the mismatch was observed at and the two types
+    /// that disagreed.
+    ///
+    /// Surfaced in two places: registering a typed or untyped host
+    /// function whose declared signature does not satisfy the
+    /// component's import (caught at link time, before the
+    /// registration is accepted), and calling a typed export whose
+    /// declared signature does not satisfy the export's component-
+    /// level type.
+    #[error("type mismatch: {0}")]
+    TypeMismatch(#[source] TypeMismatch),
+
+    /// Lift or lower of a value across the canonical-ABI boundary
+    /// failed. The carried [`AbiError`] identifies the position the
+    /// failure was observed at (an argument index or the result
+    /// slot), the value type involved, and the structured cause.
+    #[error("canonical ABI error: {0}")]
+    Abi(#[source] AbiError),
 
     /// A polyfill-internal invariant that "shouldn't happen given
     /// upstream guarantees" was nevertheless violated. This
@@ -193,6 +215,200 @@ pub enum InstantiationError {
         /// The structural reason the signature is rejected.
         reason: &'static str,
     },
+}
+
+/// A type-mismatch report.
+///
+/// Carried by [`Error::TypeMismatch`] for the two situations the
+/// polyfill checks structurally: a host function being registered
+/// against a component import, and a typed export call's declared
+/// signature being matched against the export's component-level
+/// signature. The `position` names where in the surface the
+/// mismatch was observed; the `expected` and `actual` types are the
+/// polyfill's own data shapes — no upstream type appears here.
+#[derive(Debug, Error)]
+#[error("at {position}: expected {expected}, found {actual}")]
+pub struct TypeMismatch {
+    /// Where the mismatch was observed.
+    pub position: TypeMismatchPosition,
+    /// The polyfill's structured rendering of the type the position
+    /// expected.
+    pub expected: TypeRendering,
+    /// The polyfill's structured rendering of the type the position
+    /// actually saw.
+    pub actual: TypeRendering,
+}
+
+/// Where in the surface a [`TypeMismatch`] was observed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum TypeMismatchPosition {
+    /// A host function was being registered against an
+    /// interface-named component import. The interface and the item
+    /// inside it are named.
+    HostFunctionRegistration {
+        /// The interface the registration is attached to.
+        interface: InterfaceIdentifier,
+        /// The item name inside the interface.
+        item: String,
+    },
+    /// A host function was being registered against a plain-named
+    /// component import.
+    HostFunctionRegistrationPlain {
+        /// The plain (kebab-case) import name the registration was
+        /// attached to.
+        name: String,
+    },
+    /// A typed export call asserted a signature against an export
+    /// whose declared component-level signature does not match.
+    TypedExportCall {
+        /// The name the component declares the export under.
+        export: String,
+    },
+    /// A typed export call's argument or result is the wrong shape
+    /// for the slot it is being lowered or lifted into. This is the
+    /// per-slot complement to [`Self::TypedExportCall`].
+    TypedExportSlot {
+        /// The name the component declares the export under.
+        export: String,
+        /// Which slot the mismatch occurred at.
+        slot: AbiPosition,
+    },
+}
+
+impl core::fmt::Display for TypeMismatchPosition {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::HostFunctionRegistration { interface, item } => {
+                write!(f, "host registration for `{interface}#{item}`")
+            }
+            Self::HostFunctionRegistrationPlain { name } => {
+                write!(f, "host registration for `{name}`")
+            }
+            Self::TypedExportCall { export } => {
+                write!(f, "typed export call for `{export}`")
+            }
+            Self::TypedExportSlot { export, slot } => {
+                write!(f, "typed export call for `{export}` at {slot}")
+            }
+        }
+    }
+}
+
+/// A polyfill-typed rendering of a [`ValueType`] or a
+/// [`FunctionType`] for inclusion in a [`TypeMismatch`].
+///
+/// Two renderings exist so a function-vs-function mismatch can be
+/// reported with the full signature on each side, while a value-vs-
+/// value mismatch can be reported with the offending value type
+/// only. Both shapes are owned, polyfill-typed data.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum TypeRendering {
+    /// A value type, used when the mismatch is at a single slot.
+    Value(ValueType),
+    /// A function type, used when an entire signature disagrees.
+    Function(FunctionType),
+}
+
+impl core::fmt::Display for TypeRendering {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Value(ty) => write!(f, "{ty:?}"),
+            Self::Function(ty) => write!(f, "{ty:?}"),
+        }
+    }
+}
+
+/// A canonical-ABI lift or lower failure.
+///
+/// Carried by [`Error::Abi`]. The `position` names the slot the
+/// failure occurred at; `valtype` carries the polyfill's value-type
+/// shape involved, and `cause` is the structured reason.
+#[derive(Debug, Error)]
+#[error("at {position} (type {valtype:?}): {cause}")]
+pub struct AbiError {
+    /// Where the failure was observed.
+    pub position: AbiPosition,
+    /// The value type the lift or lower was processing.
+    pub valtype: ValueType,
+    /// The structured cause of the failure.
+    #[source]
+    pub cause: AbiCause,
+}
+
+/// Which slot a canonical-ABI failure was observed at.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum AbiPosition {
+    /// The argument at the given index.
+    Argument(usize),
+    /// The function's result slot. The synchronous baseline admits
+    /// at most one result.
+    Result,
+}
+
+impl core::fmt::Display for AbiPosition {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Argument(i) => write!(f, "argument {i}"),
+            Self::Result => write!(f, "result"),
+        }
+    }
+}
+
+/// The structured reason a canonical-ABI lift or lower failed.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum AbiCause {
+    /// A pointer or length read out of the guest's memory addressed
+    /// a region the memory does not own.
+    #[error("out-of-bounds memory access at offset {offset} for {length} bytes")]
+    OutOfBoundsMemory {
+        /// The offset the access started at.
+        offset: usize,
+        /// The number of bytes the access requested.
+        length: usize,
+    },
+
+    /// The guest exposed no `cabi_realloc` (or it was unreachable),
+    /// but the lower path needed to allocate guest memory for the
+    /// value.
+    #[error("the export requires `cabi_realloc` for this value type, but none is available")]
+    ReallocUnavailable,
+
+    /// Calling the guest's `cabi_realloc` failed or returned a
+    /// pointer that the polyfill could not validate against memory
+    /// bounds.
+    #[error("`cabi_realloc` invocation failed")]
+    ReallocFailed(#[source] anyhow::Error),
+
+    /// A guest-supplied byte sequence was not valid for the value
+    /// type's encoding (e.g. an invalid UTF-8 string, an invalid
+    /// `char`, a discriminant outside the declared range).
+    #[error("invalid encoding for value type: {message}")]
+    InvalidEncoding {
+        /// A short human-readable description of what was malformed.
+        message: String,
+    },
+
+    /// The host supplied a `Val` whose variant does not match the
+    /// declared value type. Mirrors the link-time `TypeMismatch`,
+    /// but caught at call time when the host hands an untyped value
+    /// to lower.
+    #[error("host value variant does not match declared value type")]
+    HostValueMismatch,
+
+    /// The valtype is one whose lift or lower the polyfill defers
+    /// to a later PDD (`own<T>`, `borrow<T>`).
+    #[error("lift/lower for this valtype is not yet implemented")]
+    Unimplemented,
+
+    /// A failure surfaced by a lower-level component (e.g. the
+    /// runtime substrate) while reading or writing memory. The
+    /// underlying cause is captured as `#[source]`.
+    #[error("substrate-level memory access failed")]
+    SubstrateFailure(#[source] anyhow::Error),
 }
 
 /// A `Result` whose error variant is the polyfill's [`Error`].

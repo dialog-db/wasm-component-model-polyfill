@@ -1,6 +1,10 @@
 //! The polyfill's instantiated-component value.
 
+use std::sync::{Arc, Mutex};
+
 use crate::component::FunctionType;
+use crate::executor::ir::CanonOptions;
+use crate::executor::trampoline::AbiRuntimeState;
 use crate::store::Store;
 
 use super::func::Func;
@@ -21,6 +25,12 @@ pub struct ExportedFunction {
     pub func: wasm_runtime_layer::Func,
     /// The polyfill's component-level signature for this export.
     pub signature: FunctionType,
+    /// The canonical-ABI options the export's lift declared. Used
+    /// by [`Func::call`] to look up memory/realloc/post-return at
+    /// call time.
+    ///
+    /// [`Func::call`]: crate::Func::call
+    pub options: CanonOptions,
 }
 
 /// A successfully linked, instantiated component.
@@ -46,6 +56,15 @@ pub struct Instance {
     /// when wiring the component. Workspace-internal; never
     /// re-exported through `lib.rs`.
     pub function_exports: Box<[ExportedFunction]>,
+    /// The canonical-ABI runtime state populated during
+    /// instantiation: the per-component slabs of memories,
+    /// reallocs, and post-returns. Held inside an `Arc<Mutex<…>>`
+    /// because trampolines built for `LowerImport` directives
+    /// share access to the same slabs at call time, and the
+    /// runtime layer's `Func::new` requires `Send + Sync`
+    /// closures.
+    /// Workspace-internal; never re-exported through `lib.rs`.
+    pub abi_state: Arc<Mutex<AbiRuntimeState>>,
 }
 
 impl Instance {
@@ -63,6 +82,8 @@ impl Instance {
             .map(|export| Func {
                 inner: export.func.clone(),
                 signature: export.signature.clone(),
+                options: export.options.clone(),
+                abi_state: self.abi_state.clone(),
             })
     }
 }

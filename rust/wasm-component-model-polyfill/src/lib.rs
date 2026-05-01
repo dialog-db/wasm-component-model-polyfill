@@ -18,11 +18,12 @@
 //!   the build-up and runtime surface for linking a component
 //!   against a host environment, instantiating it into a [`Store`],
 //!   and calling its exports.
-//! - [`Val`] — the polyfill's component-level value enum, primitive
-//!   variants only at present.
+//! - [`Val`], [`ValField`], and [`ResourceHandle`] — the polyfill's
+//!   component-level value enum and its compound-variant payloads.
 //! - [`Error`] and [`Result`] — the polyfill's single error enum and
 //!   the `Result` alias every public function returns.
 
+mod abi;
 mod backend;
 mod component;
 mod engine;
@@ -40,13 +41,18 @@ pub use crate::component::{
     FunctionType, InstanceItem, InstanceType,
 };
 pub use crate::engine::Engine;
-pub use crate::error::{Error, InstantiationError, LinkError, Result};
+pub use crate::error::{
+    AbiCause, AbiError, AbiPosition, Error, InstantiationError, LinkError, Result, TypeMismatch,
+    TypeMismatchPosition, TypeRendering,
+};
 pub use crate::identifier::{IdentifierParseError, InterfaceIdentifier, PackageName};
 pub use crate::instance::{Func, Instance};
-pub use crate::linker::{Linker, LinkerInstance};
+pub use crate::linker::{
+    ComponentParameters, ComponentResult, ComponentValue, Linker, LinkerInstance,
+};
 pub use crate::store::Store;
 pub use crate::types::{
     EnumType, FlagsType, ListType, OptionType, PrimitiveType, RecordField, RecordType,
     ResourceType, ResultType, TupleType, ValueType, VariantCase, VariantType,
 };
-pub use crate::value::Val;
+pub use crate::value::{ResourceHandle, Val, ValField};

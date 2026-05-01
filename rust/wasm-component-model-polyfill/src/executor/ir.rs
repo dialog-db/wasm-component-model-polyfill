@@ -9,12 +9,20 @@
 
 use std::collections::HashMap;
 
+use crate::component::FunctionType;
+
 /// The executor's IR for a single parsed component.
 ///
-/// All three fields are owned and indexed in declaration order. The
+/// All fields are owned and indexed in declaration order. The
 /// executor walks `initializers` to drive substrate-level
 /// instantiation, then walks `exports` to expose component-level
 /// function handles.
+///
+/// The four `num_runtime_*` fields name the slab sizes the
+/// initializers populate. Slot ordering matches the order in which
+/// the corresponding `Extract*` / `LowerImport` initializer
+/// produces its entry. `CanonOptions` and `ImportSource::Trampoline`
+/// reference these slabs by index.
 pub struct ExecutorIr {
     /// One entry per `(core module ...)` section, in declaration
     /// order.
@@ -25,6 +33,30 @@ pub struct ExecutorIr {
     pub initializers: Box<[Initializer]>,
     /// The component's function exports, in declaration order.
     pub exports: Box<[ExportSpec]>,
+    /// One entry per `LowerImport` initializer, in declaration
+    /// order. Each entry names which of the resolved component
+    /// imports the lowered host function draws from, alongside the
+    /// canon options the lowering uses and the lifted (component-
+    /// level) function type the host registration declares.
+    pub lowerings: Box<[LoweringSpec]>,
+    /// Maps each runtime-instance position (the index a
+    /// [`CoreInstanceExport`] uses) to the polyfill's `modules`
+    /// slot the instance was instantiated against. The runtime-
+    /// instance position is the count of preceding
+    /// [`Initializer::InstantiateModule`] directives, so the n-th
+    /// entry here is the owning module of the n-th instance the
+    /// executor builds.
+    pub runtime_instance_to_module: Box<[usize]>,
+    /// The number of runtime memory slots `Initializer::ExtractMemory`
+    /// populates. Slot 0 corresponds to the first directive, slot 1
+    /// to the second, and so on.
+    pub num_runtime_memories: usize,
+    /// The number of runtime realloc slots
+    /// `Initializer::ExtractRealloc` populates.
+    pub num_runtime_reallocs: usize,
+    /// The number of runtime post-return slots
+    /// `Initializer::ExtractPostReturn` populates.
+    pub num_runtime_post_returns: usize,
 }
 
 /// One core module pre-translated to the runtime layer.
@@ -91,6 +123,48 @@ pub enum Initializer {
         /// [`ModuleEntry::imports`] enumerates.
         imports: Box<[ImportSource]>,
     },
+
+    /// Extract a core memory from a previously-instantiated core
+    /// instance and bind it to the next runtime-memory slot. The
+    /// slot is `0` for the first such directive in
+    /// [`ExecutorIr::initializers`], `1` for the second, and so on.
+    ExtractMemory {
+        /// The runtime-memory slot this directive populates.
+        slot: usize,
+        /// Where the underlying core memory comes from.
+        source: ImportSource,
+    },
+
+    /// Extract a core function and bind it to the next runtime-
+    /// realloc slot. Used to resolve `cabi_realloc` references in
+    /// canonical-ABI lowering.
+    ExtractRealloc {
+        /// The runtime-realloc slot this directive populates.
+        slot: usize,
+        /// Where the underlying core function comes from.
+        source: ImportSource,
+    },
+
+    /// Extract a core function and bind it to the next runtime-
+    /// post-return slot. Used to invoke `post-return` after a sync
+    /// lift returns to the caller.
+    ExtractPostReturn {
+        /// The runtime-post-return slot this directive populates.
+        slot: usize,
+        /// Where the underlying core function comes from.
+        source: ImportSource,
+    },
+
+    /// Build a host trampoline for a lowered import. The trampoline
+    /// is a runtime-layer core function that lifts its core
+    /// arguments to `Val`, dispatches the host registration named in
+    /// [`ExecutorIr::lowerings`], and lowers the host's `Val` return
+    /// back into core results.
+    LowerImport {
+        /// Index into [`ExecutorIr::lowerings`]. Slot `n` is the
+        /// `n`th `LowerImport` directive.
+        lowering_index: usize,
+    },
 }
 
 /// Where a single core-Wasm item comes from when satisfying a
@@ -98,6 +172,10 @@ pub enum Initializer {
 pub enum ImportSource {
     /// An export of an already-instantiated core-Wasm instance.
     CoreInstanceExport(CoreInstanceExport),
+    /// A host trampoline produced by an
+    /// [`Initializer::LowerImport`] directive. The carried index is
+    /// into [`ExecutorIr::lowerings`].
+    Trampoline(usize),
 }
 
 /// An export taken from a previously-instantiated core-Wasm
@@ -140,4 +218,72 @@ pub struct ExportSpec {
     pub name: String,
     /// Where the underlying core-Wasm function lives.
     pub source: ImportSource,
+    /// The component-level signature the lift produced.
+    pub signature: FunctionType,
+    /// The canonical-ABI options the lift declared.
+    pub options: CanonOptions,
+}
+
+/// Canonical-ABI options associated with a single lifted or lowered
+/// function.
+///
+/// Indexes reference the runtime slabs the corresponding `Extract*`
+/// initializer populates; `None` means the option was not declared
+/// (e.g. a function whose ABI does not need `realloc`).
+#[derive(Clone, Debug)]
+pub struct CanonOptions {
+    /// Index into the `num_runtime_memories` slab on
+    /// [`ExecutorIr`]. `None` when the function does not declare a
+    /// memory option.
+    pub memory: Option<usize>,
+    /// Index into the `num_runtime_reallocs` slab on
+    /// [`ExecutorIr`]. `None` when the function does not declare a
+    /// realloc option.
+    pub realloc: Option<usize>,
+    /// Index into the `num_runtime_post_returns` slab on
+    /// [`ExecutorIr`]. `None` when the function does not declare a
+    /// post-return option.
+    pub post_return: Option<usize>,
+    /// The string encoding the lift or lower uses for
+    /// `string`-typed values.
+    pub string_encoding: StringEncoding,
+}
+
+/// The string encoding a [`CanonOptions`] bundle declares.
+///
+/// The polyfill mirrors the three encodings the Component Model
+/// recognises. Today only [`StringEncoding::Utf8`] is exercised by
+/// the synchronous baseline tests; UTF-16 and Latin-1+UTF-16 are
+/// preserved through the IR so downstream work can implement them
+/// without reshaping the canon-options surface.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StringEncoding {
+    /// UTF-8 encoding (the default).
+    Utf8,
+    /// UTF-16 encoding.
+    Utf16,
+    /// Latin-1 (ISO-8859-1) with UTF-16 fallback for code points
+    /// above U+00FF.
+    CompactUtf16,
+}
+
+/// Per-`LowerImport` metadata: where to draw the host registration
+/// from, the canon options the lowering uses, and the lifted
+/// (component-level) function type the host is expected to satisfy.
+#[derive(Clone, Debug)]
+pub struct LoweringSpec {
+    /// Index into the resolved component imports — the same indexing
+    /// `Component::imports` and `Resolution::bindings` use.
+    pub import_index: usize,
+    /// For interface-typed imports, the item name within the
+    /// imported instance the lowered function targets. `None` when
+    /// the import itself is the target (a plain-named function
+    /// import).
+    pub item_name: Option<String>,
+    /// The host-side function type the registration must declare.
+    pub signature: FunctionType,
+    /// The canon options the lower uses to translate between the
+    /// host's `Val` shape and the core-wasm flat values the
+    /// trampoline shuttles.
+    pub options: CanonOptions,
 }

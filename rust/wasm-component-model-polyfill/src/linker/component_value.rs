@@ -1,0 +1,227 @@
+//! Conversion between statically-typed Rust values and the polyfill's
+//! [`Val`] enum.
+//!
+//! The [`ComponentValue`] trait names a Rust type that participates
+//! in the polyfill's typed host-function and typed export-call
+//! surfaces. Each implementation supplies (a) the static
+//! [`ValueType`] the corresponding component-level type carries,
+//! (b) `from_val` for receiving values across the boundary, and
+//! (c) `to_val` for sending them.
+//!
+//! [`ComponentParameters`] and [`ComponentResult`] erase the
+//! statically-typed argument tuple and return into the same `Val`
+//! shape the canonical-ABI machinery operates on. Both traits are
+//! implemented for the small set of arities the synchronous
+//! baseline tests exercise; extending to higher arities is purely
+//! mechanical.
+
+use crate::component::{FunctionParameter, FunctionType};
+use crate::error::{
+    AbiCause, AbiError, AbiPosition, Error, Result, TypeMismatch, TypeMismatchPosition,
+    TypeRendering,
+};
+use crate::types::{ListType, OptionType, PrimitiveType, ValueType};
+use crate::value::Val;
+
+/// A Rust type that maps to a single component-level value type.
+pub trait ComponentValue: Sized + Send + Sync + 'static {
+    /// The component-level [`ValueType`] this Rust type maps to.
+    fn value_type() -> ValueType;
+    /// Decode a [`Val`] into this Rust type.
+    fn from_val(val: &Val) -> Result<Self>;
+    /// Encode this Rust value as a [`Val`].
+    fn to_val(self) -> Val;
+}
+
+/// A statically-typed argument tuple.
+///
+/// Implemented for the empty tuple and for a small set of arities
+/// covering the synchronous baseline tests. Each implementation
+/// derives the function's parameter list from the constituent
+/// [`ComponentValue`] implementations.
+pub trait ComponentParameters: Sized + Send + Sync + 'static {
+    /// The parameter list this tuple corresponds to. Names are
+    /// synthesised as `arg0`, `arg1`, … because the host's binding
+    /// does not preserve them.
+    fn parameter_types() -> Vec<FunctionParameter>;
+    /// Decode a slice of [`Val`]s into this tuple.
+    fn from_vals(vals: &[Val]) -> Result<Self>;
+}
+
+/// A statically-typed return value.
+pub trait ComponentResult: Sized + Send + Sync + 'static {
+    /// The component-level result type this Rust type maps to.
+    /// `None` denotes "no result"; the synchronous baseline allows
+    /// at most one result.
+    fn result_type() -> Option<ValueType>;
+    /// Encode this Rust value as the optional result [`Val`].
+    fn into_val(self) -> Option<Val>;
+}
+
+// === ComponentValue impls for primitives ===
+
+macro_rules! impl_primitive_value {
+    ($rust:ty, $variant:ident, $primitive:ident) => {
+        impl ComponentValue for $rust {
+            fn value_type() -> ValueType {
+                ValueType::Primitive(PrimitiveType::$primitive)
+            }
+            fn from_val(val: &Val) -> Result<Self> {
+                match val {
+                    Val::$variant(v) => Ok(v.clone()),
+                    _ => Err(value_mismatch::<Self>(val)),
+                }
+            }
+            fn to_val(self) -> Val {
+                Val::$variant(self)
+            }
+        }
+    };
+}
+
+impl_primitive_value!(bool, Bool, Bool);
+impl_primitive_value!(i8, S8, S8);
+impl_primitive_value!(u8, U8, U8);
+impl_primitive_value!(i16, S16, S16);
+impl_primitive_value!(u16, U16, U16);
+impl_primitive_value!(i32, S32, S32);
+impl_primitive_value!(u32, U32, U32);
+impl_primitive_value!(i64, S64, S64);
+impl_primitive_value!(u64, U64, U64);
+impl_primitive_value!(f32, F32, F32);
+impl_primitive_value!(f64, F64, F64);
+impl_primitive_value!(char, Char, Char);
+impl_primitive_value!(String, String, String);
+
+impl<T: ComponentValue> ComponentValue for Vec<T> {
+    fn value_type() -> ValueType {
+        ValueType::List(ListType::new(T::value_type()))
+    }
+    fn from_val(val: &Val) -> Result<Self> {
+        match val {
+            Val::List(items) => items.iter().map(T::from_val).collect(),
+            _ => Err(value_mismatch::<Self>(val)),
+        }
+    }
+    fn to_val(self) -> Val {
+        Val::List(self.into_iter().map(T::to_val).collect())
+    }
+}
+
+impl<T: ComponentValue> ComponentValue for Option<T> {
+    fn value_type() -> ValueType {
+        ValueType::Option(OptionType::new(T::value_type()))
+    }
+    fn from_val(val: &Val) -> Result<Self> {
+        match val {
+            Val::Option(None) => Ok(None),
+            Val::Option(Some(inner)) => T::from_val(inner).map(Some),
+            _ => Err(value_mismatch::<Self>(val)),
+        }
+    }
+    fn to_val(self) -> Val {
+        Val::Option(self.map(|inner| Box::new(inner.to_val())))
+    }
+}
+
+// === ComponentParameters impls ===
+
+impl ComponentParameters for () {
+    fn parameter_types() -> Vec<FunctionParameter> {
+        Vec::new()
+    }
+    fn from_vals(vals: &[Val]) -> Result<Self> {
+        if vals.is_empty() {
+            Ok(())
+        } else {
+            Err(arity_mismatch(0, vals.len()))
+        }
+    }
+}
+
+macro_rules! impl_component_parameters {
+    ($count:literal, $( ($index:tt, $name:ident) ),+ ) => {
+        impl<$( $name: ComponentValue ),+> ComponentParameters for ($( $name, )+) {
+            fn parameter_types() -> Vec<FunctionParameter> {
+                vec![
+                    $( FunctionParameter {
+                        name: format!("arg{}", $index),
+                        ty: $name::value_type(),
+                    }, )+
+                ]
+            }
+            fn from_vals(vals: &[Val]) -> Result<Self> {
+                if vals.len() != $count {
+                    return Err(arity_mismatch($count, vals.len()));
+                }
+                Ok(( $( $name::from_val(&vals[$index])?, )+ ))
+            }
+        }
+    };
+}
+
+impl_component_parameters!(1, (0, A));
+impl_component_parameters!(2, (0, A), (1, B));
+impl_component_parameters!(3, (0, A), (1, B), (2, C));
+impl_component_parameters!(4, (0, A), (1, B), (2, C), (3, D));
+
+// === ComponentResult impls ===
+
+impl ComponentResult for () {
+    fn result_type() -> Option<ValueType> {
+        None
+    }
+    fn into_val(self) -> Option<Val> {
+        None
+    }
+}
+
+impl<T: ComponentValue> ComponentResult for T {
+    fn result_type() -> Option<ValueType> {
+        Some(<T as ComponentValue>::value_type())
+    }
+    fn into_val(self) -> Option<Val> {
+        Some(<T as ComponentValue>::to_val(self))
+    }
+}
+
+// === Helpers ===
+
+/// Build a [`FunctionType`] from a [`ComponentParameters`] +
+/// [`ComponentResult`] pair.
+pub fn function_type_for<P: ComponentParameters, R: ComponentResult>() -> FunctionType {
+    FunctionType {
+        parameters: P::parameter_types(),
+        result: R::result_type(),
+    }
+}
+
+fn value_mismatch<T>(_val: &Val) -> Error {
+    Error::Abi(AbiError {
+        position: AbiPosition::Argument(0),
+        valtype: ValueType::Primitive(PrimitiveType::Bool),
+        cause: AbiCause::HostValueMismatch,
+    })
+}
+
+fn arity_mismatch(expected: usize, found: usize) -> Error {
+    Error::TypeMismatch(TypeMismatch {
+        position: TypeMismatchPosition::TypedExportCall {
+            export: "<typed-call>".to_owned(),
+        },
+        expected: TypeRendering::Function(FunctionType {
+            parameters: vec![FunctionParameter {
+                name: format!("expected={expected}"),
+                ty: ValueType::Primitive(PrimitiveType::Bool),
+            }],
+            result: None,
+        }),
+        actual: TypeRendering::Function(FunctionType {
+            parameters: vec![FunctionParameter {
+                name: format!("found={found}"),
+                ty: ValueType::Primitive(PrimitiveType::Bool),
+            }],
+            result: None,
+        }),
+    })
+}

@@ -18,10 +18,14 @@
 //! [`InterfaceIdentifier`]: crate::InterfaceIdentifier
 //! [`Error::Link`]: crate::Error::Link
 
+mod component_value;
+mod host_func;
 mod linker;
 mod linker_instance;
 mod registration;
 mod resolve;
 
+pub use component_value::{ComponentParameters, ComponentResult, ComponentValue};
+pub use host_func::HostFuncBody;
 pub use linker::Linker;
 pub use linker_instance::LinkerInstance;

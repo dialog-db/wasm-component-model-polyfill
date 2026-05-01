@@ -19,8 +19,10 @@
 //! [`wasm_runtime_layer`]: https://docs.rs/wasm_runtime_layer
 
 mod instantiate;
-mod ir;
 mod translate;
+
+pub mod ir;
+pub mod trampoline;
 
 pub use instantiate::instantiate;
 pub use translate::translate;

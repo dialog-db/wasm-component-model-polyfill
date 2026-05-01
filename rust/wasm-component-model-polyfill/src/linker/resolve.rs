@@ -18,15 +18,27 @@
 //! compatibility range, resolution selects the *highest-versioned*
 //! candidate.
 //!
+//! Beyond identifier matching, the resolver also checks that each
+//! interface item the component imports has a registered host
+//! function whose declared signature is structurally equal to the
+//! item's. Missing items surface as
+//! [`LinkError::UnresolvedImport`]; signature mismatches surface as
+//! [`Error::TypeMismatch`].
+//!
 //! [`LinkerInstance`]: super::LinkerInstance
 
 use semver::Version;
 
-use crate::component::{Component, ComponentImport, ExternType, ExternalName};
-use crate::error::LinkError;
+use crate::component::{
+    Component, ComponentImport, ExternType, ExternalName, FunctionType, InstanceItem,
+};
+use crate::error::{
+    Error, LinkError, Result, TypeMismatch, TypeMismatchPosition, TypeRendering,
+};
 use crate::identifier::InterfaceIdentifier;
 
 use super::linker::Linker;
+use super::registration::InstanceRegistration;
 
 /// The outcome of resolving a single component import.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -55,14 +67,28 @@ pub struct Resolution {
 
 /// Walk the component's declared imports and resolve each against
 /// the linker's registered linker instances.
-pub fn resolve_imports<T>(
+///
+/// Failures fall into three categories: identifier-resolution
+/// failures (missing match, ambiguous match, unsatisfiable semver,
+/// plain-named imports the polyfill does not yet handle) surface as
+/// [`Error::Link`]; signature mismatches between a host registration
+/// and the component's declared item surface as
+/// [`Error::TypeMismatch`].
+pub fn resolve_imports<T: 'static>(
     component: &Component,
     linker: &Linker<T>,
-) -> Result<Resolution, LinkError> {
+) -> Result<Resolution> {
     let registered: Vec<&InterfaceIdentifier> = linker.registered_keys().collect();
     let mut bindings = Vec::with_capacity(component.imports.len());
     for import in component.imports.iter() {
-        bindings.push(resolve_one(import, &registered)?);
+        let binding = resolve_one(import, &registered).map_err(Error::Link)?;
+        if let ImportBinding::Resolved { chosen } = &binding {
+            // Item-level type check: every function item the
+            // import declares must have a registered host function
+            // whose signature matches structurally.
+            check_items(import, chosen, linker)?;
+        }
+        bindings.push(binding);
     }
     Ok(Resolution { bindings })
 }
@@ -70,7 +96,7 @@ pub fn resolve_imports<T>(
 fn resolve_one(
     import: &ComponentImport,
     registered: &[&InterfaceIdentifier],
-) -> Result<ImportBinding, LinkError> {
+) -> core::result::Result<ImportBinding, LinkError> {
     match (&import.name, &import.ty) {
         (ExternalName::Interface(id), ExternType::Instance(instance))
             if instance.items.is_empty() =>
@@ -95,6 +121,84 @@ fn resolve_one(
             reason: "plain-named imports require host-item registration",
         }),
     }
+}
+
+fn check_items<T: 'static>(
+    import: &ComponentImport,
+    chosen: &InterfaceIdentifier,
+    linker: &Linker<T>,
+) -> Result<()> {
+    let registration = linker
+        .registration_for(chosen)
+        .ok_or_else(|| Error::Link(LinkError::UnresolvedImport {
+            import: import.name.clone(),
+        }))?;
+    let items: &[InstanceItem] = match &import.ty {
+        ExternType::Instance(instance) => &instance.items,
+        // Non-instance interface-typed imports (e.g. an interface-
+        // named function or resource) don't have item lists; the
+        // identifier match alone is the contract for now.
+        _ => return Ok(()),
+    };
+    for item in items.iter() {
+        match &item.ty {
+            ExternType::Function(declared) => {
+                check_function_item(chosen, &item.name, declared, registration, &import.name)?;
+            }
+            ExternType::Resource(_) | ExternType::ResourceEquals(_) => {
+                // Host-resource registration is out of scope; let
+                // unsatisfied resource items pass for now. PDD009
+                // tightens this.
+            }
+            // Type, Instance, Module, Component, Value: the WIT shapes
+            // typical interfaces use are functions plus opaque types;
+            // anything else either has no runtime presence or is out
+            // of the synchronous baseline.
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn check_function_item<T: 'static>(
+    chosen: &InterfaceIdentifier,
+    item_name: &str,
+    declared: &FunctionType,
+    registration: &InstanceRegistration<T>,
+    import_name: &ExternalName,
+) -> Result<()> {
+    let host = registration.func(item_name).ok_or_else(|| {
+        Error::Link(LinkError::UnresolvedImport {
+            import: ExternalName::Interface(chosen.clone()),
+        })
+    })?;
+    let _ = import_name;
+    if !function_types_compatible(&host.signature, declared) {
+        return Err(Error::TypeMismatch(TypeMismatch {
+            position: TypeMismatchPosition::HostFunctionRegistration {
+                interface: chosen.clone(),
+                item: item_name.to_owned(),
+            },
+            expected: TypeRendering::Function(declared.clone()),
+            actual: TypeRendering::Function(host.signature.clone()),
+        }));
+    }
+    Ok(())
+}
+
+/// Two function types are compatible when their result types and
+/// parameter type lists match structurally. Parameter *names* are
+/// not load-bearing at the canonical-ABI level — they live in the
+/// component's WIT description for tooling but don't affect the
+/// wire format — so the resolver compares by position rather than
+/// by `PartialEq` on the full struct.
+fn function_types_compatible(a: &FunctionType, b: &FunctionType) -> bool {
+    a.result == b.result
+        && a.parameters.len() == b.parameters.len()
+        && a.parameters
+            .iter()
+            .zip(b.parameters.iter())
+            .all(|(a, b)| a.ty == b.ty)
 }
 
 fn unresolved_or_incompatible(

@@ -7,7 +7,8 @@
 #![cfg(test)]
 
 use wasm_component_model_polyfill::{
-    Component, Engine, ExternType, ExternalName, InterfaceIdentifier, Linker, Store, Val,
+    Component, Engine, Error, ExternType, ExternalName, FunctionParameter, FunctionType,
+    InterfaceIdentifier, Linker, PrimitiveType, Store, Val, ValueType,
 };
 use wcmp_macros::component;
 
@@ -219,18 +220,141 @@ async fn it_resolves_package_and_interface_identifiers_with_semver() {
 }
 
 #[wcmp_macros::test]
-#[ignore = "stub: polyfill implementation pending"]
 async fn it_defines_an_untyped_host_function() {
-    todo!(
-        "register a host function via the polyfill's untyped (`Val`-based) API, call it from a guest, and assert the values round-trip"
+    // The component imports a doubling function from
+    // `pdd008:host/maths@0.1.0` and re-exports a function that
+    // calls it. The host registers the doubler via the untyped
+    // (`Val`-based) API.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (type $iface (instance
+            (export "double" (func (param "n" s32) (result s32)))))
+          (import "pdd008:host/maths@0.1.0" (instance $imports (type $iface)))
+          (alias export $imports "double" (func $double))
+          (core func $core-double (canon lower (func $double)))
+          (core module $m
+            (func (import "host" "double") (param i32) (result i32))
+            (func (export "call-double") (param i32) (result i32)
+              local.get 0
+              call 0))
+          (core instance $i (instantiate $m
+            (with "host" (instance
+              (export "double" (func $core-double))))))
+          (func (export "do-double") (param "n" s32) (result s32)
+            (canon lift (core func $i "call-double"))))
+        "#
     );
+
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let iface: InterfaceIdentifier = "pdd008:host/maths@0.1.0".parse().expect("identifier parses");
+    let mut instance = linker.instance(&iface);
+    instance.func_new(
+        "double",
+        FunctionType {
+            parameters: vec![FunctionParameter {
+                name: "n".to_owned(),
+                ty: ValueType::Primitive(PrimitiveType::S32),
+            }],
+            result: Some(ValueType::Primitive(PrimitiveType::S32)),
+        },
+        |_data, args, results| {
+            let Val::S32(n) = args[0] else {
+                panic!("expected s32 arg");
+            };
+            results[0] = Val::S32(n * 2);
+            Ok(())
+        },
+    );
+
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let inst = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiation succeeds");
+    let do_double = inst
+        .get_func(&mut store, "do-double")
+        .expect("`do-double` export present");
+    let results = do_double
+        .call(&mut store, &[Val::S32(21)])
+        .expect("call succeeds");
+    assert_eq!(results.as_ref(), &[Val::S32(42)]);
 }
 
 #[wcmp_macros::test]
-#[ignore = "stub: polyfill implementation pending"]
 async fn it_defines_a_typed_host_function() {
-    todo!(
-        "register a host function via the polyfill's typed `func_wrap` equivalent and assert argument/return types are checked at link time"
+    // Same component shape as the untyped test, but the host
+    // registers via `func_wrap` with statically-typed Rust args and
+    // return. Mismatching the signature surfaces a `TypeMismatch`
+    // at link time.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (type $iface (instance
+            (export "double" (func (param "n" s32) (result s32)))))
+          (import "pdd008:host/maths@0.1.0" (instance $imports (type $iface)))
+          (alias export $imports "double" (func $double))
+          (core func $core-double (canon lower (func $double)))
+          (core module $m
+            (func (import "host" "double") (param i32) (result i32))
+            (func (export "call-double") (param i32) (result i32)
+              local.get 0
+              call 0))
+          (core instance $i (instantiate $m
+            (with "host" (instance
+              (export "double" (func $core-double))))))
+          (func (export "do-double") (param "n" s32) (result s32)
+            (canon lift (core func $i "call-double"))))
+        "#
+    );
+
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+
+    // Happy path: the typed registration agrees with the import.
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let iface: InterfaceIdentifier = "pdd008:host/maths@0.1.0".parse().expect("identifier parses");
+    let mut instance = linker.instance(&iface);
+    instance.func_wrap(
+        "double",
+        |_data: &mut (), (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> {
+            Ok(n * 2)
+        },
+    );
+
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let inst = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiation succeeds");
+    let do_double = inst
+        .get_func(&mut store, "do-double")
+        .expect("`do-double` export present");
+    let results = do_double
+        .call(&mut store, &[Val::S32(21)])
+        .expect("call succeeds");
+    assert_eq!(results.as_ref(), &[Val::S32(42)]);
+
+    // Type-mismatch path: registering an i64-returning closure
+    // against an s32-returning import surfaces a TypeMismatch at
+    // link time.
+    let mut bad_linker: Linker<()> = Linker::new(&engine);
+    let mut bad_instance = bad_linker.instance(&iface);
+    bad_instance.func_wrap(
+        "double",
+        |_data: &mut (), (n,): (i32,)| -> wasm_component_model_polyfill::Result<i64> {
+            Ok(i64::from(n * 2))
+        },
+    );
+
+    let mut bad_store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let err = match bad_linker.instantiate(&mut bad_store, &component) {
+        Ok(_) => panic!("type mismatch should have been caught at link time"),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(err, Error::TypeMismatch(_)),
+        "expected Error::TypeMismatch, got {err:?}",
     );
 }
 
@@ -243,9 +367,51 @@ async fn it_defines_a_host_resource_with_a_sync_destructor() {
 }
 
 #[wcmp_macros::test]
-#[ignore = "stub: polyfill implementation pending"]
 async fn it_invokes_an_exported_component_function() {
-    todo!(
-        "end-to-end: load → link → instantiate → call → assert; the canonical happy-path smoke test for the synchronous baseline"
+    // End-to-end smoke test exercising the canonical ABI's
+    // string round-trip on both argument and result. The component
+    // exports a function that takes a string and returns its
+    // length as an s32 — proving the polyfill can lower a host
+    // string into guest memory via cabi_realloc, hand it to the
+    // guest, lift the s32 result, and run post-return.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (core module $m
+            (memory (export "memory") 1)
+            (global $bump (mut i32) (i32.const 16))
+            (func (export "cabi_realloc")
+                  (param i32 i32 i32 i32) (result i32)
+              (local $ptr i32)
+              global.get $bump
+              local.set $ptr
+              global.get $bump
+              local.get 3
+              i32.add
+              global.set $bump
+              local.get $ptr)
+            (func (export "string-length") (param i32 i32) (result i32)
+              local.get 1))
+          (core instance $i (instantiate $m))
+          (func (export "string-length") (param "s" string) (result s32)
+            (canon lift (core func $i "string-length")
+                       (memory $i "memory")
+                       (realloc (func $i "cabi_realloc")))))
+        "#
     );
+
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiation succeeds");
+    let string_length = instance
+        .get_func(&mut store, "string-length")
+        .expect("`string-length` export present");
+    let results = string_length
+        .call(&mut store, &[Val::String("hello, world".to_owned())])
+        .expect("call succeeds");
+    assert_eq!(results.as_ref(), &[Val::S32(12)]);
 }
