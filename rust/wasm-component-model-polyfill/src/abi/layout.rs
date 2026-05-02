@@ -141,6 +141,7 @@ where
 /// pointer.
 pub fn flat_types(ty: &ValueType) -> Vec<FlatType> {
     match ty {
+        ValueType::Primitive(PrimitiveType::String) => vec![FlatType::I32, FlatType::I32],
         ValueType::Primitive(prim) => vec![flat_type_of_primitive(*prim)],
         ValueType::Record(record) => record
             .fields()
@@ -180,9 +181,9 @@ fn flat_type_of_primitive(prim: PrimitiveType) -> FlatType {
         PrimitiveType::S64 | PrimitiveType::U64 => FlatType::I64,
         PrimitiveType::F32 => FlatType::F32,
         PrimitiveType::F64 => FlatType::F64,
-        // `string` flattens to two slots; the Primitive(String)
-        // path is handled by `flat_types`'s top-level match, never
-        // reaching this leaf. Returning I32 here is dead-code-safe.
+        // `string` flattens to two slots and is intercepted by
+        // `flat_types`'s top-level match. Returning I32 here is
+        // dead-code-safe.
         PrimitiveType::String => FlatType::I32,
     }
 }

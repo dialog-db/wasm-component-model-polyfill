@@ -552,11 +552,95 @@ async fn it_dispatches_to_multiple_host_functions_in_one_interface() {
 }
 
 #[wcmp_macros::test]
-#[ignore = "stub: passing a string to a host function requires composing the canon lower options against the same core instance whose memory/realloc the trampoline reads, which produces a forward-reference in WAT that the upstream parser rejects without an aliasing dance the polyfill's tests do not yet exercise"]
+#[cfg_attr(
+    target_arch = "wasm32",
+    ignore = "the libc-shared-instance WAT pattern this test uses requires \
+              the user core module to import memory from a separate core \
+              instance (`(import \"libc\" \"memory\" (memory 1))`); the web \
+              target's substrate, `js_wasm_runtime_layer 0.7.0`, has not yet \
+              implemented core-module memory imports — its `Module::new` \
+              reaches `wasmparser::TypeRef::Memory(_) => todo!()` in \
+              `module.rs` and panics during instantiation. The polyfill \
+              itself is target-agnostic; the gap is upstream. The test runs \
+              on native where the substrate (wasmtime via \
+              `wasmtime_runtime_layer`) supports memory imports."
+)]
 async fn it_passes_a_string_argument_to_a_host_function() {
-    todo!(
-        "construct a component whose host import takes `string`, lower it via memory+realloc options bound to the importing core instance, and assert the host receives the lifted Rust String"
+    // The libc-shared-instance pattern (mirroring wasmtime's
+    // `tests/all/component_model/import.rs::simple`) sidesteps the
+    // forward-reference puzzle: a dedicated `(core module $libc)`
+    // is instantiated up front, providing memory and realloc; the
+    // `canon lower` reads from it, and the user core module
+    // imports its memory. The trampoline lifts the host's string
+    // out of `$libc.memory` after the guest writes (ptr, len) to
+    // the flat slots.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (type $iface (instance
+            (export "echo" (func (param "s" string)))))
+          (import "pdd-tests:host/io@0.1.0" (instance $imports (type $iface)))
+          (alias export $imports "echo" (func $echo))
+          (core module $libc
+            (memory (export "memory") 1)
+            (global $bump (mut i32) (i32.const 16))
+            (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+              (local $ptr i32)
+              global.get $bump local.set $ptr
+              global.get $bump local.get 3 i32.add global.set $bump
+              local.get $ptr))
+          (core instance $libc (instantiate $libc))
+          (core func $core-echo
+            (canon lower (func $echo) (memory $libc "memory") (realloc (func $libc "realloc"))))
+          (core module $m
+            (import "host" "echo" (func $echo (param i32) (param i32)))
+            (import "libc" "memory" (memory 1))
+            (func (export "send")
+              i32.const 5
+              i32.const 11
+              call $echo)
+            (data (i32.const 5) "hello world"))
+          (core instance $i (instantiate $m
+            (with "host" (instance (export "echo" (func $core-echo))))
+            (with "libc" (instance $libc))))
+          (func (export "send")
+            (canon lift (core func $i "send"))))
+        "#
     );
+
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let mut linker: Linker<Arc<Mutex<Option<String>>>> = Linker::new(&engine);
+    let iface: InterfaceIdentifier = "pdd-tests:host/io@0.1.0".parse().expect("identifier");
+    linker.instance(&iface).func_new(
+        "echo",
+        FunctionType {
+            parameters: vec![FunctionParameter {
+                name: "s".to_owned(),
+                ty: ValueType::Primitive(PrimitiveType::String),
+            }],
+            result: None,
+        },
+        |observed: &mut Arc<Mutex<Option<String>>>, args, _| {
+            let Val::String(s) = &args[0] else {
+                panic!("expected string");
+            };
+            *observed.lock().expect("lock") = Some(s.clone());
+            Ok(())
+        },
+    );
+
+    let observed = Arc::new(Mutex::new(None));
+    let mut store: Store<Arc<Mutex<Option<String>>>> =
+        Store::new(&engine, observed.clone()).expect("store");
+    let inst = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiate");
+    let send = inst.get_func(&mut store, "send").expect("`send` export");
+    let _ = send.call(&mut store, &[]).expect("call");
+
+    let observed = observed.lock().expect("lock").clone();
+    assert_eq!(observed.as_deref(), Some("hello world"));
 }
 
 #[wcmp_macros::test]

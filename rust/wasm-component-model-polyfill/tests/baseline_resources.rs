@@ -385,10 +385,112 @@ async fn it_lets_a_host_function_mint_a_resource_handle_during_a_guest_call() {
 }
 
 #[wcmp_macros::test]
-#[ignore = "stub: `[constructor]X` / `[method]X.fn` shaped exports — the resource constructor/method shape uses a name-mangling convention the polyfill does not yet route specially"]
 async fn it_supports_resource_constructor_and_method_shaped_exports() {
-    todo!(
-        "guest-defined resource exposed as `[constructor]bar` and `[method]bar.value` (mirrors WCL's guest_resource example); the polyfill currently surfaces these as plain functions but does not validate their constructor/method semantics"
+    // The component imports an interface declaring a resource and
+    // its `[constructor]`, `[method]`, and `[static]` shaped
+    // functions. Wasmtime's runtime treats these as plain functions
+    // with bracketed names; classification (`FunctionKind`) is a
+    // bindgen-time concern, not a runtime one. The polyfill mirrors
+    // that convention: the navigator addresses each shape by its
+    // literal wire-name.
+    use wasm_component_model_polyfill::{ExternType, PrimitiveType, ValueType};
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (type $iface (instance
+            (export "bar" (type $bar (sub resource)))
+            (type $ctor-ty (func (result (own $bar))))
+            (export "[constructor]bar" (func (type $ctor-ty)))
+            (type $method-ty (func (param "self" (borrow $bar)) (result u32)))
+            (export "[method]bar.value" (func (type $method-ty)))
+            (type $static-ty (func (result u32)))
+            (export "[static]bar.kind" (func (type $static-ty)))))
+          (import "test:host/things@0.1.0" (instance (type $iface))))
+        "#
+    );
+
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let import = component
+        .imports
+        .iter()
+        .find(|i| i.name.to_string() == "test:host/things@0.1.0")
+        .expect("`test:host/things` import present");
+    let ExternType::Instance(instance) = &import.ty else {
+        panic!("expected an instance import");
+    };
+
+    // The resource type itself is exposed alongside the bracketed
+    // function names; each one is addressable as a plain instance
+    // item.
+    let names: Vec<&str> = instance.items.iter().map(|i| i.name.as_str()).collect();
+    assert!(names.contains(&"bar"), "resource type `bar` is exported");
+    assert!(
+        names.contains(&"[constructor]bar"),
+        "constructor shape uses literal `[constructor]bar` name; got {names:?}",
+    );
+    assert!(
+        names.contains(&"[method]bar.value"),
+        "method shape uses literal `[method]bar.value` name; got {names:?}",
+    );
+    assert!(
+        names.contains(&"[static]bar.kind"),
+        "static-method shape uses literal `[static]bar.kind` name; got {names:?}",
+    );
+
+    // The constructor's projected signature returns `own<bar>` and
+    // takes no parameters.
+    let ctor = instance
+        .items
+        .iter()
+        .find(|i| i.name == "[constructor]bar")
+        .expect("constructor present");
+    let ExternType::Function(ctor_ty) = &ctor.ty else {
+        panic!("constructor should project to a function");
+    };
+    assert!(ctor_ty.parameters.is_empty());
+    let Some(ValueType::Own(_)) = &ctor_ty.result else {
+        panic!(
+            "constructor should return own<bar>, got {:?}",
+            ctor_ty.result
+        );
+    };
+
+    // The method takes `borrow<bar>` as its first parameter and
+    // returns `u32`.
+    let method = instance
+        .items
+        .iter()
+        .find(|i| i.name == "[method]bar.value")
+        .expect("method present");
+    let ExternType::Function(method_ty) = &method.ty else {
+        panic!("method should project to a function");
+    };
+    assert_eq!(method_ty.parameters.len(), 1);
+    let ValueType::Borrow(_) = &method_ty.parameters[0].ty else {
+        panic!(
+            "method's `self` should be borrow<bar>, got {:?}",
+            method_ty.parameters[0].ty
+        );
+    };
+    assert_eq!(
+        method_ty.result,
+        Some(ValueType::Primitive(PrimitiveType::U32))
+    );
+
+    // The static method takes no parameters and returns `u32`.
+    let static_fn = instance
+        .items
+        .iter()
+        .find(|i| i.name == "[static]bar.kind")
+        .expect("static method present");
+    let ExternType::Function(static_ty) = &static_fn.ty else {
+        panic!("static method should project to a function");
+    };
+    assert!(static_ty.parameters.is_empty());
+    assert_eq!(
+        static_ty.result,
+        Some(ValueType::Primitive(PrimitiveType::U32))
     );
 }
 

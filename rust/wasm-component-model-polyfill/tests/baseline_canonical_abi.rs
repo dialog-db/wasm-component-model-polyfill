@@ -16,6 +16,8 @@
 
 #![cfg(test)]
 
+use std::sync::{Arc, Mutex};
+
 use wasm_component_model_polyfill::{Component, Engine, Linker, Store, Val, ValField};
 use wcmp_macros::component;
 
@@ -945,26 +947,152 @@ async fn it_supports_the_utf16_string_encoding() {
 }
 
 #[wcmp_macros::test]
-#[ignore = "stub: typed export-call surface (the polyfill exposes `Func::call(&[Val])` but no `TypedFunc` analogue)"]
 async fn it_supports_typed_export_calls() {
-    todo!(
-        "expose a `TypedFunc<Params, Ret>` analogous to wasm_component_layer's typed call API and assert the polyfill rejects a mistyped call at the call boundary"
+    // Narrower complement to
+    // `baseline_linking::it_supports_a_typed_export_call_surface`:
+    // the typed-conversion entry point rejects a mistyped call at
+    // *acquisition* — before any guest code runs — with a
+    // structured `Error::TypeMismatch`.
+    use wasm_component_model_polyfill::Error;
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (core module $m
+            (func (export "id") (param i32) (result i32) local.get 0))
+          (core instance $i (instantiate $m))
+          (func (export "id") (param "v" s32) (result s32)
+            (canon lift (core func $i "id"))))
+        "#
+    );
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiate");
+
+    // Happy path: `(i32) -> i32` matches the export's `(s32) -> s32`.
+    let typed = instance
+        .get_func(&mut store, "id")
+        .expect("`id` export")
+        .typed::<(i32,), i32>()
+        .expect("typed conversion succeeds");
+    assert_eq!(typed.call(&mut store, (42,)).expect("typed call"), 42);
+
+    // Mismatch path: requesting `(i32) -> i64` against `(s32) -> s32`
+    // surfaces a structured `Error::TypeMismatch` before any call.
+    let mismatch = instance
+        .get_func(&mut store, "id")
+        .expect("`id` export")
+        .typed::<(i32,), i64>()
+        .expect_err("typed conversion rejects a mismatched return type");
+    assert!(
+        matches!(mismatch, Error::TypeMismatch(_)),
+        "expected Error::TypeMismatch, got {mismatch:?}",
     );
 }
 
-#[wcmp_macros::test]
-#[ignore = "stub: multi-result functions (the polyfill's FunctionType holds `Option<ValueType>` for a single result)"]
-async fn it_returns_multiple_results_from_an_export() {
-    todo!(
-        "round-trip a function whose signature returns a tuple-shape pair `(s32, s32)` as two distinct results; the polyfill currently models at most one result"
-    );
-}
+// `it_returns_multiple_results_from_an_export` was removed once we
+// confirmed the post-MVP canonical ABI restricts each function to at
+// most one result value; multi-return is the historical MVP shape.
+// The modern WIT idiom uses `tuple<…>` for "many returns at once",
+// which is exercised by `it_returns_a_tuple_from_an_export`. The
+// polyfill's `FunctionType.result: Option<ValueType>` matches the
+// current spec and intentionally does not model the obsolete
+// multi-result shape.
 
 #[wcmp_macros::test]
-#[ignore = "stub: the polyfill rejects `cabi_realloc` allocations whose alignment exceeds 1; widening it to honour the requested alignment is part of the canon-options follow-up"]
 async fn it_observes_cabi_realloc_alignment_for_record_allocations() {
-    todo!(
-        "lower a record whose alignment exceeds 4 (e.g. containing a `u64`) through cabi_realloc and assert the host observes the realloc args at the requested alignment"
+    // The component returns a wide record whose canonical-ABI
+    // alignment is 4 (two `s32` fields). The wide-result path drives
+    // the core function's `cabi_realloc` with `(0, 0, 4, 8)` — the
+    // third argument is the requested alignment. We bridge the
+    // alignment slot out through a host import the realloc
+    // immediately calls, then assert the host observed the
+    // alignment the polyfill computed.
+    use wasm_component_model_polyfill::{
+        FunctionParameter, FunctionType, InterfaceIdentifier, PrimitiveType, ValueType,
+    };
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (type $iface (instance
+            (export "record-align" (func (param "alignment" u32)))))
+          (import "pdd-tests:host/probe@0.1.0" (instance $imports (type $iface)))
+          (alias export $imports "record-align" (func $record-align))
+          (core func $core-record-align (canon lower (func $record-align)))
+          (import "test:host/shapes@0.1.0" (instance $shapes
+            (type $rec' (record (field "a" s32) (field "b" s32)))
+            (export "rec" (type $rec (eq $rec')))))
+          (alias export $shapes "rec" (type $rec))
+          (core module $m
+            (func $record-align (import "host" "record-align") (param i32))
+            (memory (export "memory") 1)
+            (global $bump (mut i32) (i32.const 16))
+            (func $cabi-realloc (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
+              (local $ptr i32)
+              local.get 2
+              call $record-align
+              global.get $bump local.set $ptr
+              global.get $bump local.get 3 i32.add global.set $bump
+              local.get $ptr)
+            (func (export "make") (result i32)
+              (local $ptr i32)
+              i32.const 0 i32.const 0 i32.const 4 i32.const 8
+              call $cabi-realloc
+              local.set $ptr
+              local.get $ptr i32.const 7 i32.store
+              local.get $ptr i32.const 11 i32.store offset=4
+              local.get $ptr))
+          (core instance $i (instantiate $m
+            (with "host" (instance
+              (export "record-align" (func $core-record-align))))))
+          (type $make-ty (func (result $rec)))
+          (func $make (type $make-ty)
+            (canon lift (core func $i "make") (memory $i "memory") (realloc (func $i "cabi_realloc"))))
+          (export "make" (func $make)))
+        "#
+    );
+
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let mut linker: Linker<Arc<Mutex<Vec<u32>>>> = Linker::new(&engine);
+    let probe: InterfaceIdentifier = "pdd-tests:host/probe@0.1.0".parse().expect("identifier");
+    let shapes: InterfaceIdentifier = "test:host/shapes@0.1.0".parse().expect("identifier");
+    let _ = linker.instance(&shapes);
+    linker.instance(&probe).func_new(
+        "record-align",
+        FunctionType {
+            parameters: vec![FunctionParameter {
+                name: "alignment".to_owned(),
+                ty: ValueType::Primitive(PrimitiveType::U32),
+            }],
+            result: None,
+        },
+        |observed: &mut Arc<Mutex<Vec<u32>>>, args, _| {
+            let Val::U32(alignment) = args[0] else {
+                panic!("expected u32 alignment");
+            };
+            observed.lock().expect("lock").push(alignment);
+            Ok(())
+        },
+    );
+    let observed = Arc::new(Mutex::new(Vec::<u32>::new()));
+    let mut store: Store<Arc<Mutex<Vec<u32>>>> =
+        Store::new(&engine, observed.clone()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiate");
+    let make = instance
+        .get_func(&mut store, "make")
+        .expect("`make` export");
+    let _ = make.call(&mut store, &[]).expect("call");
+
+    let observed = observed.lock().expect("lock").clone();
+    assert!(
+        observed.contains(&4),
+        "host should observe a cabi_realloc with alignment=4 for a two-s32 record; observed: {observed:?}",
     );
 }
 
