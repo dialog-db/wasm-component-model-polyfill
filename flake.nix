@@ -68,30 +68,18 @@
           };
         };
 
-        # Inline rumdl configuration for design-doc formatting. Materialised
-        # into the Nix store so the menu command can reference it via
-        # `--config` without checking a file into the repo.
-        rumdlConfig = (pkgs.formats.toml { }).generate "rumdl.toml" {
-          global = {
-            "respect-gitignore" = true;
-
-            # The config lives in /nix/store, so rumdl can't write its
-            # default cache next to it. Disable rather than redirect.
-            cache = false;
-
-            # MD013 (line-length) is noisy on prose; skip it on design docs.
-            # disable = [ "MD013" ];
-          };
-
-          # Line length
-          MD013 = {
-            reflow = true;
-          };
-
-          # Tables
-          MD060 = {
-            enabled = true;
-          };
+        # Markdown helpers: one Prettier configuration drives the `markdown`
+        # menu command (`format` / `lint` subcommands) and the check below.
+        # Scoped to the design corpus and the board README; the board file
+        # itself is machine-managed and stays out of the gate.
+        markdown = katsuobushi.lib.markdown {
+          inherit pkgs;
+          workspaceRoot = ./.;
+          include = [
+            "project/design/**/*.md"
+            "project/kanban/README.md"
+          ];
+          exclude = project.markdownExclude;
         };
 
         # Tools every Rust derivation in this workspace needs as
@@ -138,11 +126,11 @@
             cargo-nextest
             chrome
             chromedriver
-            rumdl
             rustToolchain
             wasm-bindgen-cli
           ])
           ++ [
+            markdown.prettier
             # Diagnostic: compares a Nix-built deps bundle's alignment
             # manifest against the live shell (`katsuobushi-check-artifact-
             # alignment <bundle>`), so a silent full rebuild has a named cause.
@@ -250,21 +238,18 @@
             command = "nix flake check";
           };
 
-          "format:design" = {
-            description = "Format PDD Markdown files in the project/design/ folder";
-            command = ''
-              root=$(git rev-parse --show-toplevel)
-              rumdl fmt --config ${rumdlConfig} "$root/project/design"
-            '';
-          };
         }
+        // markdown.menuCommands
         // project.menuCommands;
 
         # The polyfill crate itself, as a derivation per (target, profile).
         # Building an `rlib` installs no binary; the store path holds the
         # build log and proves the crate compiles for the target.
         polyfillCrate =
-          { target ? null, profile }:
+          {
+            target ? null,
+            profile,
+          }:
           buildCrate {
             pname = "wasm-component-model-polyfill";
             version = "0.1.0";
@@ -335,28 +320,26 @@
           workspace-deps-dev = testsNativeDebug.cargoArtifacts;
         };
 
-        checks = cargoChecks // project.checks // {
-          # The doctests are not in a nextest archive (nextest does not run
-          # them), so they get a derivation of their own: the workspace's
-          # `cargo test --doc` against the `dev` dependency bundle.
-          doctests = buildCrate {
-            pname = "wasm-component-model-polyfill-doctests";
-            version = "0.1.0";
-            profile = "dev";
-            buildPhaseCargoCommand = "cargo test --doc --workspace";
-            installPhaseCommand = "touch $out";
-            doInstallCargoArtifacts = false;
-            # Nothing to install: the build phase is a test run, not a
-            # build, so there is no cargo build log for crane's hook to read.
-            doNotPostBuildInstallCargoBinaries = true;
+        checks =
+          cargoChecks
+          // markdown.checks
+          // project.checks
+          // {
+            # The doctests are not in a nextest archive (nextest does not run
+            # them), so they get a derivation of their own: the workspace's
+            # `cargo test --doc` against the `dev` dependency bundle.
+            doctests = buildCrate {
+              pname = "wasm-component-model-polyfill-doctests";
+              version = "0.1.0";
+              profile = "dev";
+              buildPhaseCargoCommand = "cargo test --doc --workspace";
+              installPhaseCommand = "touch $out";
+              doInstallCargoArtifacts = false;
+              # Nothing to install: the build phase is a test run, not a
+              # build, so there is no cargo build log for crane's hook to read.
+              doNotPostBuildInstallCargoBinaries = true;
+            };
           };
-
-          design = pkgs.runCommand "lint-design" { } ''
-            set -e
-            ${pkgs.rumdl}/bin/rumdl check --config ${rumdlConfig} ${./.}/project/design
-            touch $out
-          '';
-        };
 
         devShells.default = pkgs.mkShell {
           name = "wcmp";
