@@ -228,7 +228,7 @@ async fn it_returns_a_record_from_an_export() {
           (core instance $i (instantiate $m))
           (type $make-ty (func (param "a" s32) (param "b" s32) (result $rec)))
           (func $make (type $make-ty)
-            (canon lift (core func $i "make") (memory $i "memory") (realloc (func $i "cabi_realloc"))))
+            (canon lift (core func $i "make") (memory (core memory $i "memory")) (realloc (core func $i "cabi_realloc"))))
           (export "make" (func $make)))
         "#
     );
@@ -319,7 +319,7 @@ async fn it_returns_a_tuple_from_an_export() {
               local.get $ptr))
           (core instance $i (instantiate $m))
           (func (export "make") (param "a" s32) (param "b" s32) (result (tuple s32 s32))
-            (canon lift (core func $i "make") (memory $i "memory") (realloc (func $i "cabi_realloc")))))
+            (canon lift (core func $i "make") (memory (core memory $i "memory")) (realloc (core func $i "cabi_realloc")))))
         "#
     );
 
@@ -663,8 +663,8 @@ async fn it_round_trips_list_of_signed_integers_through_an_export() {
           (core instance $i (instantiate $m))
           (func (export "third") (param "xs" (list s32)) (result s32)
             (canon lift (core func $i "third")
-                       (memory $i "memory")
-                       (realloc (func $i "cabi_realloc")))))
+                       (memory (core memory $i "memory"))
+                       (realloc (core func $i "cabi_realloc")))))
         "#
     );
     let (mut store, instance) = instantiate(COMPONENT);
@@ -707,8 +707,8 @@ async fn it_round_trips_list_of_bytes_through_an_export() {
           (core instance $i (instantiate $m))
           (func (export "byte-at") (param "xs" (list u8)) (param "i" u32) (result u8)
             (canon lift (core func $i "byte-at")
-                       (memory $i "memory")
-                       (realloc (func $i "cabi_realloc")))))
+                       (memory (core memory $i "memory"))
+                       (realloc (core func $i "cabi_realloc")))))
         "#
     );
     let (mut store, instance) = instantiate(COMPONENT);
@@ -759,8 +759,8 @@ async fn it_observes_cabi_realloc_during_string_lower() {
               (export "bump" (func $core-bump))))))
           (func (export "len") (param "s" string) (result s32)
             (canon lift (core func $i "len")
-                       (memory $i "memory")
-                       (realloc (func $i "cabi_realloc")))))
+                       (memory (core memory $i "memory"))
+                       (realloc (core func $i "cabi_realloc")))))
         "#
     );
     let engine = Engine::new().expect("engine");
@@ -827,9 +827,9 @@ async fn it_invokes_post_return_after_a_sync_lift() {
               (export "tick" (func $core-tick))))))
           (func (export "len") (param "s" string) (result s32)
             (canon lift (core func $i "len")
-                       (memory $i "memory")
-                       (realloc (func $i "cabi_realloc"))
-                       (post-return (func $i "after")))))
+                       (memory (core memory $i "memory"))
+                       (realloc (core func $i "cabi_realloc"))
+                       (post-return (core func $i "after")))))
         "#
     );
     let engine = Engine::new().expect("engine");
@@ -931,8 +931,8 @@ async fn it_supports_the_utf16_string_encoding() {
           (func (export "len") (param "s" string) (result s32)
             (canon lift (core func $i "len")
                        string-encoding=utf16
-                       (memory $i "memory")
-                       (realloc (func $i "cabi_realloc")))))
+                       (memory (core memory $i "memory"))
+                       (realloc (core func $i "cabi_realloc")))))
         "#
     );
 
@@ -1050,7 +1050,7 @@ async fn it_observes_cabi_realloc_alignment_for_record_allocations() {
               (export "record-align" (func $core-record-align))))))
           (type $make-ty (func (result $rec)))
           (func $make (type $make-ty)
-            (canon lift (core func $i "make") (memory $i "memory") (realloc (func $i "cabi_realloc"))))
+            (canon lift (core func $i "make") (memory (core memory $i "memory")) (realloc (core func $i "cabi_realloc"))))
           (export "make" (func $make)))
         "#
     );

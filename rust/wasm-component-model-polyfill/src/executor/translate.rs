@@ -260,7 +260,7 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
     }
 
     let mut exports: Vec<ExportSpec> = Vec::new();
-    for (name, export_index) in translation.component.exports.raw_iter() {
+    for (name, (export_index, _)) in translation.component.exports.raw_iter() {
         collect_export(
             &translation,
             component,
@@ -345,7 +345,7 @@ fn collect_export(
                     "instance-typed export name `{name}` does not parse as a WIT interface identifier: {err}"
                 ))
             })?;
-            for (item_name, inner_index) in exports.raw_iter() {
+            for (item_name, (inner_index, _)) in exports.raw_iter() {
                 collect_export(
                     translation,
                     component,

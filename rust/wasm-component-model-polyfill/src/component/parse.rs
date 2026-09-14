@@ -106,7 +106,7 @@ fn lower_world_item(
             external_name_for_key(resolve, key, None),
             ExternType::Instance(lower_interface(resolve, *id)),
         ),
-        WorldItem::Type(type_id) => {
+        WorldItem::Type { id: type_id, .. } => {
             let type_def = &resolve.types[*type_id];
             let name = external_name_for_key(resolve, key, type_def.name.as_deref());
             let ty = match &type_def.kind {
@@ -205,9 +205,9 @@ fn lower_function(resolve: &Resolve, func: &Function) -> FunctionType {
     let parameters = func
         .params
         .iter()
-        .map(|(name, ty)| FunctionParameter {
-            name: name.clone(),
-            ty: lower_type(resolve, *ty),
+        .map(|param| FunctionParameter {
+            name: param.name.clone(),
+            ty: lower_type(resolve, param.ty),
         })
         .collect();
     let result = func.result.map(|ty| lower_type(resolve, ty));
@@ -290,7 +290,7 @@ fn lower_type_id(resolve: &Resolve, id: TypeId) -> ValueType {
         TypeDefKind::Stream(_) => todo!("`stream<T>` type — async tier"),
         TypeDefKind::Unknown => todo!("`unknown` type — non-WIT-conformant import"),
         TypeDefKind::Map(_, _) => todo!("`map<K, V>` lowering — post-MVP roadmap"),
-        TypeDefKind::FixedSizeList(_, _) => {
+        TypeDefKind::FixedLengthList(_, _) => {
             todo!("fixed-length `list<T, N>` lowering — post-MVP roadmap")
         }
     }

@@ -102,8 +102,8 @@
 //! #       (func $select-nth
 //! #             (param "x" (list string)) (param "n" u32) (result string)
 //! #         (canon lift (core func $i "select-nth")
-//! #                    (memory $i "memory")
-//! #                    (realloc (func $i "cabi_realloc"))))
+//! #                    (memory (core memory $i "memory"))
+//! #                    (realloc (core func $i "cabi_realloc"))))
 //! #       (instance $foo (export "select-nth" (func $select-nth)))
 //! #       (export "test:guest/foo" (instance $foo)))
 //! # "#);

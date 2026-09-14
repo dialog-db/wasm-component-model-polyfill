@@ -477,8 +477,8 @@ async fn it_invokes_an_exported_component_function() {
           (core instance $i (instantiate $m))
           (func (export "string-length") (param "s" string) (result s32)
             (canon lift (core func $i "string-length")
-                       (memory $i "memory")
-                       (realloc (func $i "cabi_realloc")))))
+                       (memory (core memory $i "memory"))
+                       (realloc (core func $i "cabi_realloc")))))
         "#
     );
 
@@ -591,7 +591,7 @@ async fn it_passes_a_string_argument_to_a_host_function() {
               local.get $ptr))
           (core instance $libc (instantiate $libc))
           (core func $core-echo
-            (canon lower (func $echo) (memory $libc "memory") (realloc (func $libc "realloc"))))
+            (canon lower (func $echo) (memory (core memory $libc "memory")) (realloc (core func $libc "realloc"))))
           (core module $m
             (import "host" "echo" (func $echo (param i32) (param i32)))
             (import "libc" "memory" (memory 1))
@@ -1034,8 +1034,8 @@ async fn it_navigates_instance_typed_exports() {
           (func $select-nth
                 (param "x" (list string)) (param "n" u32) (result string)
             (canon lift (core func $i "select-nth")
-                       (memory $i "memory")
-                       (realloc (func $i "cabi_realloc"))))
+                       (memory (core memory $i "memory"))
+                       (realloc (core func $i "cabi_realloc"))))
           (instance $foo (export "select-nth" (func $select-nth)))
           (export "test:guest/foo" (instance $foo)))
         "#
@@ -1133,8 +1133,8 @@ async fn it_supports_a_typed_export_call_surface() {
           (func $select-nth
                 (param "x" (list string)) (param "n" u32) (result string)
             (canon lift (core func $i "select-nth")
-                       (memory $i "memory")
-                       (realloc (func $i "cabi_realloc"))))
+                       (memory (core memory $i "memory"))
+                       (realloc (core func $i "cabi_realloc"))))
           (instance $foo (export "select-nth" (func $select-nth)))
           (export "test:guest/foo" (instance $foo)))
         "#

@@ -116,7 +116,7 @@ async fn it_supports_primitive_value_types() {
           (func (export "take-f64")    (param "v" f64)    (canon lift (core func $i "noop1d")))
           (func (export "take-char")   (param "v" char)   (canon lift (core func $i "noop1")))
           (func (export "take-string") (param "v" string)
-            (canon lift (core func $i "noop2") (memory $i "memory") (realloc (func $i "cabi_realloc")))))
+            (canon lift (core func $i "noop2") (memory (core memory $i "memory")) (realloc (core func $i "cabi_realloc")))))
         "#
     );
 
@@ -230,7 +230,7 @@ async fn it_supports_list_types() {
             (func (export "make") (result i32) i32.const 0))
           (core instance $i (instantiate $m))
           (func (export "make") (result (list u8))
-            (canon lift (core func $i "make") (memory $i "memory") (realloc (func $i "cabi_realloc")))))
+            (canon lift (core func $i "make") (memory (core memory $i "memory")) (realloc (core func $i "cabi_realloc")))))
         "#
     );
 
@@ -258,7 +258,7 @@ async fn it_supports_option_types() {
             (func (export "make") (result i32) i32.const 0))
           (core instance $i (instantiate $m))
           (func (export "make") (result (option s32))
-            (canon lift (core func $i "make") (memory $i "memory") (realloc (func $i "cabi_realloc")))))
+            (canon lift (core func $i "make") (memory (core memory $i "memory")) (realloc (core func $i "cabi_realloc")))))
         "#
     );
 
@@ -289,7 +289,7 @@ async fn it_supports_result_types() {
             (func (export "make") (result i32) i32.const 0))
           (core instance $i (instantiate $m))
           (func (export "make") (result (result s32 (error string)))
-            (canon lift (core func $i "make") (memory $i "memory") (realloc (func $i "cabi_realloc")))))
+            (canon lift (core func $i "make") (memory (core memory $i "memory")) (realloc (core func $i "cabi_realloc")))))
         "#
     );
 
@@ -323,7 +323,7 @@ async fn it_supports_tuple_types() {
             (func (export "make") (result i32) i32.const 0))
           (core instance $i (instantiate $m))
           (func (export "make") (result (tuple s32 string))
-            (canon lift (core func $i "make") (memory $i "memory") (realloc (func $i "cabi_realloc")))))
+            (canon lift (core func $i "make") (memory (core memory $i "memory")) (realloc (core func $i "cabi_realloc")))))
         "#
     );
 
