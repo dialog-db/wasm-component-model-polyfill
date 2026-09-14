@@ -37,6 +37,15 @@
 
         inherit (pkgs.katsuobushi) makeMenu makeDevShellHook;
 
+        # The project board under `project/kanban/`, driven by `katsuctl
+        # project` and surfaced as the `project` menu command. The check
+        # keeps the board and its card notes consistent.
+        project = katsuobushi.lib.project {
+          inherit pkgs;
+          katsuctl = katsuobushi.packages.${system}.katsuctl;
+          workspaceRoot = ./.;
+        };
+
         # Chrome differs by platform: Darwin uses google-chrome (unfree)
         # because chromium is unmaintained there; everything else uses
         # chromium.
@@ -242,13 +251,14 @@
           };
 
           "format:design" = {
-            description = "Format PDD Markdown files in the design/ folder";
+            description = "Format PDD Markdown files in the project/design/ folder";
             command = ''
               root=$(git rev-parse --show-toplevel)
-              rumdl fmt --config ${rumdlConfig} "$root/design"
+              rumdl fmt --config ${rumdlConfig} "$root/project/design"
             '';
           };
-        };
+        }
+        // project.menuCommands;
 
         # The polyfill crate itself, as a derivation per (target, profile).
         # Building an `rlib` installs no binary; the store path holds the
@@ -325,7 +335,7 @@
           workspace-deps-dev = testsNativeDebug.cargoArtifacts;
         };
 
-        checks = cargoChecks // {
+        checks = cargoChecks // project.checks // {
           # The doctests are not in a nextest archive (nextest does not run
           # them), so they get a derivation of their own: the workspace's
           # `cargo test --doc` against the `dev` dependency bundle.
@@ -343,7 +353,7 @@
 
           design = pkgs.runCommand "lint-design" { } ''
             set -e
-            ${pkgs.rumdl}/bin/rumdl check --config ${rumdlConfig} ${./.}/design
+            ${pkgs.rumdl}/bin/rumdl check --config ${rumdlConfig} ${./.}/project/design
             touch $out
           '';
         };
