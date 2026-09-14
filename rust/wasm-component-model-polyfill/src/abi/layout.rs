@@ -300,14 +300,14 @@ where
 
 /// The canonical-ABI's `join` operation on flat slot types: when
 /// two variant arms disagree, widen to the type that admits both.
+/// Per the specification's `join`, `i32` and `f32` join to `i32`,
+/// and every other disagreement joins to `i64`.
 pub fn join_flat(a: FlatType, b: FlatType) -> FlatType {
     if a == b {
         return a;
     }
     match (a, b) {
         (FlatType::I32, FlatType::F32) | (FlatType::F32, FlatType::I32) => FlatType::I32,
-        (FlatType::I32, FlatType::I64) | (FlatType::I64, FlatType::I32) => FlatType::I64,
-        (FlatType::F32, FlatType::F64) | (FlatType::F64, FlatType::F32) => FlatType::F64,
         _ => FlatType::I64,
     }
 }

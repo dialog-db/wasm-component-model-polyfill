@@ -469,9 +469,11 @@ fn zero_of_flat(t: FlatType) -> RuntimeVal {
 }
 
 /// Convert a slot of one flat type to another per the canonical
-/// ABI's join rules. Identical types pass through; widening is
-/// zero-extension; bit-cast pairs (i32 ↔ f32, i64 ↔ f64) reinterpret
-/// the bits.
+/// ABI's variant rules. Lowering a case payload into the joined
+/// slot encodes a float as its bit pattern and zero-extends `i32`
+/// to `i64`; lifting reverses each step. The pairs are exactly the
+/// ones the specification's `lower_flat_variant` and
+/// `lift_flat_variant` name.
 fn reinterpret_flat(
     slot: &RuntimeVal,
     from: FlatType,
@@ -484,18 +486,24 @@ fn reinterpret_flat(
     }
     let mismatch = || invalid_encoding(ty, position, "flat slot reinterpretation not supported");
     Ok(match (slot, from, to) {
+        // Lowering into the joined slot.
+        (RuntimeVal::F32(v), FlatType::F32, FlatType::I32) => RuntimeVal::I32(v.to_bits() as i32),
+        (RuntimeVal::I32(v), FlatType::I32, FlatType::I64) => RuntimeVal::I64(i64::from(*v as u32)),
+        (RuntimeVal::F32(v), FlatType::F32, FlatType::I64) => {
+            RuntimeVal::I64(i64::from(v.to_bits()))
+        }
+        (RuntimeVal::F64(v), FlatType::F64, FlatType::I64) => RuntimeVal::I64(v.to_bits() as i64),
+        // Lifting out of the joined slot.
         (RuntimeVal::I32(v), FlatType::I32, FlatType::F32) => {
             RuntimeVal::F32(f32::from_bits(*v as u32))
         }
-        (RuntimeVal::F32(v), FlatType::F32, FlatType::I32) => RuntimeVal::I32(v.to_bits() as i32),
-        (RuntimeVal::I32(v), FlatType::I32, FlatType::I64) => RuntimeVal::I64(i64::from(*v as u32)),
         (RuntimeVal::I64(v), FlatType::I64, FlatType::I32) => RuntimeVal::I32(*v as i32),
-        (RuntimeVal::F32(v), FlatType::F32, FlatType::F64) => RuntimeVal::F64(f64::from(*v)),
-        (RuntimeVal::F64(v), FlatType::F64, FlatType::F32) => RuntimeVal::F32(*v as f32),
+        (RuntimeVal::I64(v), FlatType::I64, FlatType::F32) => {
+            RuntimeVal::F32(f32::from_bits(*v as u32))
+        }
         (RuntimeVal::I64(v), FlatType::I64, FlatType::F64) => {
             RuntimeVal::F64(f64::from_bits(*v as u64))
         }
-        (RuntimeVal::F64(v), FlatType::F64, FlatType::I64) => RuntimeVal::I64(v.to_bits() as i64),
         _ => return Err(mismatch()),
     })
 }
