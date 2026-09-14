@@ -4,7 +4,6 @@ kanban-plugin: basic
 
 ## To-do
 
-- [ ] [[78295c]]
 - [ ] [[2239fe]]
 - [ ] [[6ffdf7]]
 - [ ] [[e620cc]]
@@ -27,12 +26,13 @@ kanban-plugin: basic
 
 ## In Progress
 
-- [ ] [[710d2b]]
+- [ ] [[78295c]]
 
 ## Needs Review
 
 - [ ] [[35532a]]
 - [ ] [[c3b98b]]
+- [ ] [[710d2b]]
 
 ## Ready
 
