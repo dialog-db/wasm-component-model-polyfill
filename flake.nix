@@ -1,16 +1,14 @@
 {
   description = "Wasm Component Model Polyfill";
 
+  # Katsuobushi carries the Rust build infra (crane, nix-filter, rust-overlay)
+  # as transitive inputs, so this flake declares only nixpkgs, flake-utils, and
+  # katsuobushi. `nixpkgs.follows` unifies the dependency graph on one nixpkgs.
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    katsuobushi.url = "github:cdata/katsuobushi";
-    crane.url = "github:ipetkov/crane";
-    nix-filter.url = "github:numtide/nix-filter";
-    rust-overlay = {
-      url = "github:oxalica/rust-overlay";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    katsuobushi.url = "github:cdata/katsuobushi/v0.5.1";
+    katsuobushi.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
@@ -19,19 +17,15 @@
       nixpkgs,
       flake-utils,
       katsuobushi,
-      crane,
-      nix-filter,
-      rust-overlay,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = import nixpkgs {
           inherit system;
-          overlays = [
-            (import rust-overlay)
-            katsuobushi.overlays.default
-          ];
+          # The Rust helper applies rust-overlay internally, so only the
+          # katsuobushi overlay (menu helpers) is needed here.
+          overlays = [ katsuobushi.overlays.default ];
           config = {
             allowUnfreePredicate =
               pkg:
@@ -40,8 +34,6 @@
               ];
           };
         };
-
-        filter = nix-filter.lib;
 
         inherit (pkgs.katsuobushi) makeMenu makeDevShellHook;
 
@@ -99,17 +91,33 @@
           pkg-config
         ];
 
-        rustHelpers = (
-          import ./nix/rust.nix {
-            inherit pkgs filter crane;
-            buildInputs = commonBuildInputs;
-            workspaceRoot = ./.;
-          }
-        );
+        # Rust build helpers from katsuobushi, so upstream fixes propagate
+        # here without a local copy to maintain. crane, nix-filter, and
+        # rust-overlay are inherited from katsuobushi.
+        rustHelpers = katsuobushi.lib.rust {
+          inherit pkgs;
+          workspaceRoot = ./.;
+          # Owner-qualified identifier; namespaces the out-of-tree cargo
+          # target directory that `rustEnvironmentHook` points cargo at.
+          projectId = "cdata/wasm-component-model-polyfill";
+          nativeBuildInputs = commonBuildInputs;
+          # wasm-bindgen-cli must match the `wasm-bindgen` crate version that
+          # Cargo.lock resolves. The helper reads the version from the lock
+          # file; these are the fixed-output hashes for it. When the workspace
+          # bumps `wasm-bindgen`, add the new version here (bootstrap both
+          # fields with `pkgs.lib.fakeHash` and let the failing build report
+          # the real values).
+          wasmBindgenHashes."0.2.108" = {
+            hash = "sha256-UsuxILm1G6PkmVw0I/JF12CRltAfCJQFOaT4hFwvR8E=";
+            cargoHash = "sha256-iqQiWbsKlLBiJFeqIYiXo3cqxGLSjNM8SOWXGM9u43E=";
+          };
+        };
 
         inherit (rustHelpers)
           buildTestArchive
           cargoChecks
+          checkArtifactAlignment
+          rustEnvironmentHook
           rustToolchain
           wasm-bindgen-cli
           ;
@@ -123,7 +131,13 @@
             rumdl
             rustToolchain
             wasm-bindgen-cli
-          ]);
+          ])
+          ++ [
+            # Diagnostic: compares a Nix-built deps bundle's alignment
+            # manifest against the live shell (`katsuobushi-check-artifact-
+            # alignment <bundle>`), so a silent full rebuild has a named cause.
+            checkArtifactAlignment
+          ];
 
         developmentEnvVars = {
           # wasip3 component instantiation can be slow under headless Chrome;
@@ -207,6 +221,13 @@
           };
         };
 
+        # Bound here so the `workspace-deps-dev` package below can name the
+        # same derivation the archive builds against.
+        testsNativeDebug = buildTestArchive {
+          name = "native-debug";
+          profile = "dev";
+        };
+
         menu = makeMenu {
           title = "WCMP";
           graphic = ''
@@ -225,25 +246,31 @@
       in
       {
         packages = {
-          tests-native-debug = buildTestArchive {
-            name = "native-debug";
-          };
+          # `buildTestArchive` defaults its cargo profile to `release`; the
+          # debug archives name `dev` explicitly (Cargo's built-in unoptimized
+          # profile) so they are what their names promise.
+          tests-native-debug = testsNativeDebug;
 
           tests-native-release = buildTestArchive {
             name = "native-release";
-            args = "--release";
           };
 
           tests-web-debug = buildTestArchive {
             name = "web-debug";
             target = "wasm32-unknown-unknown";
+            profile = "dev";
           };
 
           tests-web-release = buildTestArchive {
             name = "web-release";
             target = "wasm32-unknown-unknown";
-            args = "--release";
           };
+
+          # The host-target `dev` dependency closure the debug archive and
+          # every other `dev` build compile against. Named so the alignment
+          # checker can be pointed at it: `katsuobushi-check-artifact-alignment
+          # --profile dev "$(nix build .#workspace-deps-dev --print-out-paths)"`.
+          workspace-deps-dev = testsNativeDebug.cargoArtifacts;
         };
 
         checks = cargoChecks // {
@@ -258,7 +285,7 @@
           name = "wcmp";
           env = developmentEnvVars;
           nativeBuildInputs = menu.commands ++ developmentBuildInputs;
-          shellHook = makeDevShellHook menu;
+          shellHook = rustEnvironmentHook + makeDevShellHook menu;
         };
       }
     );
