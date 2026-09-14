@@ -1,183 +1,127 @@
 # Host Registration: Root Namespace and Store Context
 
-[PDD008] introduced the polyfill's host-registration surface against
-*interface-typed* imports: a host attaches functions and resources
-to a borrowed view onto an interface's registration entry, and the
-linker resolves a component's interface-named imports against those
-entries at link time. Two real shapes that appear in WIT-conformant
-components fall outside that surface — a component that imports a
-*plain-named* function at the root of its import list, and a host
-function that needs to mint a fresh resource handle from within the
-body of a guest call. This PDD revises [PDD008]'s registration
-shape on both fronts: it adds a root namespace addressed without an
-interface identifier, and it widens the host-function callback's
-context so registered closures can read and mutate the per-store
-handle tables [PDD009] introduced.
+[PDD008] introduced host registration against interface-typed imports. A
+host attaches functions and resources to a view onto one interface's
+registration entry, and the linker resolves interface-named imports against
+those entries. Two shapes that WIT-conformant components produce fall
+outside that surface. The first is a component that imports a plain-named
+function at the root of its import list. The second is a host function that
+mints a fresh resource handle inside a guest call. This PDD revises
+[PDD008]'s registration shape on both fronts. It adds a root namespace that
+is addressed without an interface identifier, and it widens the host
+function context so that a registered closure can read and mutate the
+per-store handle tables of [PDD009].
 
 ## Goals
 
-- A `Linker` exposes a root-namespace registration entry point that
-  produces the same registration view shape [PDD008]'s interface
-  entry point returns. Plain-named imports resolve through it.
-- A registered host function's body can read and mutate the per-
-  store handle tables: minting a fresh `own<T>` from within a
-  registered closure returns a handle whose lift back into the
-  guest is observable as a live entry in the table.
-- The typed and untyped registration entry points
-  ([PDD008]'s `func_wrap` and its untyped sibling) agree on the
-  host-function context they pass — neither is more capable than
-  the other.
-- The polyfill's link-time and call-time error variants
-  ([PDD007]'s `Error::Link`, [PDD008]'s `Error::TypeMismatch`,
-  [PDD009]'s `Error::Abi`) cover the new failure modes introduced
-  here without parallel error hierarchies.
+- `Linker` exposes a root-namespace registration entry point that returns
+  the same registration view as the interface entry point. Plain-named
+  imports resolve through it.
+- A registered host function can mint a fresh `own<T>` handle in the
+  per-store table. The handle is live when the guest reads it.
+- The typed and untyped registration entry points pass the same host call
+  context. Neither is more capable than the other.
+- The link-time and call-time error variants of [PDD007], [PDD008], and
+  [PDD009] cover the new failure modes without parallel hierarchies.
 
 ## Non-goals
 
-- Asynchronous host functions or async resource destructors. Both
-  remain out of scope.
-- A host-binding code generator (a `wit-bindgen!` equivalent). The
-  registration surface is what a hand-written host calls; bindgen
-  consumes the same surface from generated code.
-- Borrow-lifetime tracking inside a host call. The host's view of
-  borrow handles remains the lift-only contract this PDD inherits.
-- Type-erasing the rep parameter or keying registrations by Rust
-  type identity. Reps remain `u32` opaque to the polyfill.
+- Asynchronous host functions and asynchronous destructors.
+- A host binding code generator. The registration surface is what a
+  hand-written host calls. A generator consumes the same surface.
+- Borrow lifetime tracking inside a host call.
+- Registrations keyed by Rust type identity. Reps stay `u32` and opaque to
+  the polyfill.
 
 ## The Root Namespace
 
-`Linker` gains a root accessor that returns a registration view
-whose entry map carries items addressed by the polyfill's root
-namespace rather than by an interface identifier. Calling the
-accessor twice returns a view onto the same registration entry,
-exactly as [PDD007]'s interface accessor does for interface
-identifiers. The accessor's return type is the polyfill's existing
-registration view — there is no parallel root-only view type,
-because the registration operations are identical regardless of
-where the items eventually get resolved against.
+`Linker` gains a root accessor. It returns a registration view whose entries
+are addressed by the root namespace rather than by an interface identifier.
+Calling the accessor twice returns a view onto the same entry, as [PDD007]'s
+interface accessor does. The return type is the existing registration view.
+There is no parallel root-only view type, because the registration
+operations are the same wherever the items resolve.
 
-The resolver's plain-named import branch consults the root
-registration before raising the unsupported-registration link
-error [PDD007] rejects with today. A plain-named function import
-whose item-name matches a root registration resolves; one without
-a match still surfaces as the polyfill's unresolved-import link
-error with the import's name carried through. The link-time
-signature check the resolver applies to interface-typed imports
-applies unchanged to root entries.
+The resolver's plain-named branch consults the root registration. A
+plain-named function import whose item name matches a root entry resolves.
+One without a match surfaces the unresolved-import link error of [PDD007],
+with the import's name carried through. The link-time signature check of
+interface-typed imports applies unchanged to root entries.
 
-## The Host-Call Context
+## The Host Call Context
 
-This PDD revises [PDD008]'s host-function callback contract. Where
-[PDD008] specified the closure's first parameter as `&mut T` (the
-host-data slot of the [PDD007]-introduced `Store<T>`), this PDD
-replaces it with a polyfill-owned context value named `HostCall`.
+This PDD revises the host function closure contract of [PDD008]. Where
+[PDD008] gave the closure a `&mut T` (the host data of the `Store<T>`), this
+PDD gives it a polyfill-owned context value named `HostCall`.
 
-`HostCall<'_, T>` is the host's view, scoped to one call, of the
-state the trampoline is invoking the closure against. Two
-surfaces are reachable on it: the host-data slot of type `T`
-(read via a polyfill-named accessor that mirrors [PDD007]'s
-`Store::data`/`data_mut` shape), and a polyfill accessor that
-mints a fresh resource handle for a registered resource-type
-identity ([PDD009]). The mint accessor mirrors the spelling
-[PDD009] established for `Store`'s own mint entry point — the
-host-call context is, structurally, a borrowed view onto the
-store the trampoline runs against. No upstream `StoreContextMut`
-or other substrate type appears at the boundary; the polyfill
-owns its host-context surface end-to-end.
+`HostCall<'_, T>` is the host's view, scoped to one call, of the state the
+trampoline invokes the closure against. Two surfaces are reachable on it.
+The first is the host data of type `T`, through accessors that mirror
+`Store::data` and `Store::data_mut`. The second is a mint accessor that
+creates a fresh resource handle for a registered resource type identity. The
+mint accessor has the same spelling as the mint entry point on `Store`,
+because the host call context is a borrowed view onto the store. No upstream
+`StoreContextMut` or other runtime layer type appears at the boundary.
 
-The typed entry point ([PDD008]'s `func_wrap`) follows
-symmetrically: the closure receives the same `HostCall<'_, T>`
-context with the typed argument tuple and return type erased into
-or projected out of the polyfill's `Val` slots by the
-implementation traits [PDD010]'s typed call surface introduced.
+The typed entry point follows the same contract. The closure receives the
+same `HostCall<'_, T>` context, with the typed argument tuple and return
+type erased into or projected out of `Val` slots by the traits [PDD010]
+introduced.
 
-This is a revision to the contract [PDD008] documented, not an
-extension of it: existing call sites are mechanically updated so
-the closure's first parameter takes a `HostCall<'_, T>` and host-
-data reads route through its accessor. The polyfill's tests
-exercise both shapes of update.
+This is a revision of [PDD008]'s contract, not an extension. Every call
+site takes a `HostCall<'_, T>` as the closure's first parameter, and host
+data reads route through its accessor.
 
 ## Error Model Growth
 
-The new failure modes are additive variants on the existing error
-hierarchy. A plain-named import that finds no root registration
-falls under [PDD007]'s unresolved-import link error with the
-import's name carried unchanged. A host function that mints a
-handle against a resource-type identity the store's tables do not
-recognise surfaces [PDD009]'s unregistered-resource-type ABI cause
-— the existing variant captures the failure shape without growth.
-
-A typed registration whose Rust signature does not satisfy a
-plain-named import surfaces [PDD008]'s `Error::TypeMismatch`. The
-position payload distinguishes the plain-named registration from
-the interface-named one [PDD008] documented; this PDD claims the
-plain-named position variant as its own, formalising what the
-codebase has reserved since [PDD008] landed.
+No new variants are introduced. A plain-named import with no root
+registration surfaces [PDD007]'s unresolved-import link error. A host
+function that mints a handle against a resource type identity the store
+does not recognize surfaces [PDD009]'s unregistered-resource-type ABI cause.
+A typed registration whose Rust signature does not satisfy a plain-named
+import surfaces [PDD008]'s `Error::TypeMismatch`, with a position that names
+the plain-named registration.
 
 ## User Stories
 
-**As a developer adopting the polyfill against a WIT-conformant
-component**, I want to register a top-level host function the
-component imports under a plain name (for example, `(import "log"
-(func ...))`), so that the registration surface mirrors the
-component's actual import shape rather than forcing every host item
-to live inside an interface.
+A developer adopting the polyfill against a WIT-conformant component wants
+to register a top-level host function that the component imports under a
+plain name, for example `(import "log" (func …))`.
 
-> The developer constructs a `Linker`, reaches for the root
-> registration entry point, and registers a typed `log` closure
-> that takes a `String` and returns nothing. Instantiating the
-> component succeeds; the guest's call to `log` reaches the
-> registered closure, which observes the lifted Rust string.
+> The developer reaches for the root registration entry point and registers
+> a typed `log` closure that takes a `String`. Instantiation succeeds. The
+> guest's call to `log` reaches the closure, which observes the lifted
+> string.
 
-**As a developer building a host that mints resources during guest
-calls**, I want a host function to be able to allocate a fresh
-`own<T>` handle in the per-store table from within its body, so
-that constructor-shaped imports and factory-shaped helpers can
-return live handles without leaving the host context.
+A developer builds a host that mints resources during guest calls and wants
+a host function to return a live handle.
 
-> The developer registers a host function whose declared return
-> type is `own<thing>`. Inside the closure, the `HostCall<'_, T>`
-> context exposes the per-store handle table; the closure mints a
-> handle for a host-side rep, returns it through the typed
-> surface, and the lifted handle is live in the table when the
-> guest reads it back.
+> The developer registers a host function whose declared return type is
+> `own<thing>`. Inside the closure, `HostCall<'_, T>` mints a handle for a
+> host-side rep. The closure returns it through the typed surface. The guest
+> reads a live handle.
 
 ## References
 
-- [PDD000] — product overview.
-- [PDD001] — development environment.
-- [PDD002] — ecosystem foundation.
-- [PDD003] — compatibility outlook. This PDD closes the
-  registration-surface rows of "Linking, Instantiation, and Host
-  Integration".
-- [PDD004] — test macros.
-- [PDD005] — library foundations.
-- [PDD007] — linking and instantiation; the PDD whose interface
-  registration entry point this PDD's root accessor parallels and
-  whose `Store<T>` the host-call context borrows from.
-- [PDD008] — canonical ABI and host functions; the PDD whose host-
-  function callback contract this PDD revises.
-- [PDD009] — resources; the PDD whose handle-table surface the
-  host-call context exposes through a polyfill accessor.
-- [PDD010] — pre-wasip3 public API; the PDD whose typed call
-  surface erases through the same context.
-- [`wasm_runtime_layer`] — the runtime substrate.
-- [`wasm_component_layer`] — prior art only.
-- [Wasmtime] — the reference runtime, whose `Linker::root()` and
-  `StoreContextMut`-flavoured callbacks shape this PDD's design.
-- [Explainer] — the canonical Component Model design document.
+- [PDD000], the product overview.
+- [PDD003], the compatibility outlook. This PDD closes the registration
+  surface rows of "Linking, Instantiation, and Host Integration".
+- [PDD005], the foundations and posture.
+- [PDD007], linking and instantiation. This PDD's root accessor parallels
+  its interface accessor.
+- [PDD008], the Canonical ABI and host functions. This PDD revises its
+  closure contract.
+- [PDD009], resources. This PDD exposes its handle table through the host
+  call context.
+- [PDD010], the typed call surface.
+- [Wasmtime], whose `Linker::root()` and store-context callbacks shape this
+  design.
 
 [PDD000]: ./PDD000%20Wasm%20Component%20Model%20Polyfill.md
-[PDD001]: ./PDD001%20Development%20Environment.md
-[PDD002]: ./PDD002%20Ecosystem%20Foundation.md
 [PDD003]: ./PDD003%20Compatibility%20Outlook.md
-[PDD004]: ./PDD004%20Test%20Macros.md
 [PDD005]: ./PDD005%20Library%20Foundations.md
 [PDD007]: ./PDD007%20Linking%20and%20Instantiation.md
 [PDD008]: ./PDD008%20Canonical%20ABI%20and%20Host%20Functions.md
 [PDD009]: ./PDD009%20Resources.md
 [PDD010]: ./PDD010%20Pre-wasip3%20Public%20API.md
-[`wasm_runtime_layer`]: https://github.com/DouglasDwyer/wasm_runtime_layer
-[`wasm_component_layer`]: https://github.com/DouglasDwyer/wasm_component_layer
 [Wasmtime]: https://github.com/bytecodealliance/wasmtime
-[Explainer]: https://github.com/WebAssembly/component-model/blob/main/design/mvp/Explainer.md

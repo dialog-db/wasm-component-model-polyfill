@@ -1,197 +1,134 @@
 # Development Environment
 
-Wasm Component Model Polyfill's development environment is designed to be fully
-reproducible, immediately productive, and honest about the multi-target nature
-of the stack. Because the polyfill is a Rust library compiled to Wasm and
-exercised in both native and browser-based Wasm environments, the developer
-experience must span those contexts without ceremony. A [Nix flake][Nix Flakes]
-encodes the complete environment, and a [katsuobushi]-powered menu system
-surfaces every workflow — from local builds to multi-platform testing — as a
-single, discoverable shell interface.
+The development environment of the polyfill is reproducible and spans the two
+targets the library supports. A [Nix flake][Nix Flakes] encodes every tool.
+A [katsuobushi] menu lists every workflow, from a native build to a test run
+in a real browser, as a single shell command.
 
 ## Goals
 
-- A developer can enter a fully-provisioned shell with a single command
-  (`nix develop`) and immediately build and test the polyfill without any
-  additional setup steps.
-- The Nix flake encodes all tool dependencies — Rust toolchain, wasm-bindgen,
-  binaryen, Chrome, ChromeDriver, and any auxiliary utilities — so that the
-  environment is reproducible across machines and CI.
-- Development and test workflows are surfaced through a katsuobushi menu so that
-  contributors do not need to memorize command-line incantations.
-- The test suite exercises polyfill logic across all relevant targets: native
-  (for fast iteration) and `wasm32-unknown-unknown` (for browser-fidelity),
-  authoring tests once and running them everywhere via a cross-target test
-  macro.
-- Browser automation is available as a first-class workflow, enabling
-  integration tests that load the polyfill in a real browser and validate
-  Component Model behavior end-to-end.
+- A developer enters a fully provisioned shell with one command
+  (`nix develop`) and can build and test the polyfill at once.
+- The flake encodes every tool dependency: the Rust toolchain,
+  `wasm-bindgen-cli`, Chrome, ChromeDriver, and the auxiliary utilities. The
+  environment is the same on every machine and in CI.
+- The menu lists every development and test workflow. A contributor does not
+  memorize command lines.
+- The test suite runs the same test source on the native target and on
+  `wasm32-unknown-unknown` in a real browser.
+- Browser tests run without manual setup on Linux and on Darwin.
 
 ## Non-goals
 
-- This document does not define how the polyfill is packaged for publication or
-  consumed by downstream projects. Packaging is out of scope here.
-- This document does not specify CI/CD pipeline configuration beyond noting that
-  the same Nix derivations used locally must also be usable in CI.
-- This document does not prescribe a specific editor or IDE setup, though the
-  Nix shell provides all tools needed by any language server.
+- Packaging or publication of the polyfill for downstream consumers.
+- CI pipeline configuration. The same Nix derivations that run locally must
+  also run in CI, and that is the whole requirement.
+- Editor or IDE setup. The shell provides every tool a language server needs.
 
-## Architecture Overview
+## Workspace Layout
 
-The polyfill is a Rust workspace defined by a top-level `Cargo.toml` at the
-repository root. All shared dependencies are declared in a
-`[workspace.dependencies]` section in that root manifest, and every crate in the
-workspace must inherit its dependencies from the workspace (i.e.,
-`dependency = { workspace = true }` in each crate's `Cargo.toml`). Crates must
-never pin their own version or source for a dependency that is available in the
-workspace table.
+The polyfill is a Rust workspace with a top-level `Cargo.toml`. The root
+manifest declares every shared dependency in `[workspace.dependencies]`.
+Every crate in the workspace inherits its dependencies from that table with
+`dependency = { workspace = true }`. A crate never pins its own version or
+source for a dependency that the workspace table provides.
 
-The primary artifact is a Rust library crate compiled to Wasm and post-processed
-with [wasm-bindgen] to produce a JavaScript-loadable module. Consumers of the
-polyfill — typically web applications — load the resulting Wasm module to gain
-Component Model capabilities (wasip3) on top of the browser's existing Wasm Core
-support.
+The polyfill is a Rust library crate (`rlib`). Its consumer is Rust code, so
+the workspace produces no JavaScript artifacts. The consumer compiles the
+polyfill into its own binary, natively or with `wasm-bindgen`.
 
-The Nix environment must therefore provide tooling for at least two compilation
-targets:
+The environment provides tooling for two compilation targets:
 
-- `<native target>` — for fast unit testing and any native tooling
-- `wasm32-unknown-unknown` — for browser-fidelity testing and the published
-  library artifacts
+- The native target of the host machine, for fast iteration.
+- `wasm32-unknown-unknown`, for browser-fidelity tests.
 
 ## User Stories
 
-**As a developer checking out the polyfill for the first time**, I want to run a
-single command and land in a shell where every build and test workflow is
-already available, so that I do not spend time debugging my local environment.
+A developer checks out the polyfill for the first time and wants one command
+that gives them a working shell.
 
-> A developer runs `nix develop` at the repository root. The shell hook prints a
-> formatted menu of available commands. They run `build` and the library
-> artifacts are produced under `dist/`.
+> The developer runs `nix develop` at the repository root. The shell hook
+> prints a menu of commands. They run `test:native:debug` and the native test
+> suite passes.
 
-**As a developer iterating on polyfill internals**, I want to run fast native
-tests against my changes, so that I get feedback in seconds rather than waiting
-for a Wasm compilation cycle.
+A developer iterates on polyfill internals and wants feedback in seconds.
 
-> The developer runs `test:native` from the menu. Cargo compiles and runs the
-> test suite for the host target using `cargo-nextest`. The cycle is fast enough
-> that it can be run on every save.
+> The developer runs `test:native:debug`. Cargo compiles and runs the test
+> suite for the host target with `cargo-nextest`. The cycle is fast enough to
+> run on every save.
 
-**As a developer working on Component Model semantics**, I want to run tests
-compiled to Wasm against a real browser, so that I can verify behavior in the
-environment where the polyfill actually runs.
+A developer works on Component Model semantics and wants to test in the
+environment where the polyfill runs.
 
-> The developer runs `test:web` from the menu. The Nix shell already has Chrome
-> and ChromeDriver installed and the relevant environment variables
-> (`CHROME_PATH`, `CHROMEDRIVER`) pre-set. `wasm-bindgen-test-runner` launches
-> the browser, executes the compiled test binary, and streams results back to
-> the terminal.
+> The developer runs `test:web:debug`. The shell already has Chrome and
+> ChromeDriver installed and the environment variables set.
+> `wasm-bindgen-test-runner` starts the browser, runs the compiled test
+> binary, and streams the results to the terminal.
 
-**As a developer writing a new test for a polyfill feature**, I want to author
-it once and have it run on both native and Wasm targets without manual
-duplication, so that coverage is always complete.
+A developer writes a new test and wants it to run on both targets without
+duplication.
 
-> The developer annotates their test with a cross-target `#[test]` macro that
-> conditionally expands to `#[tokio::test]` for native targets and
-> `#[wasm_bindgen_test]` for Wasm targets. The same source file is compiled and
-> exercised by both `test:native` and `test:web`. (See Dialog DB's
-> `dialog-common` crate for an upstream reference example of this pattern.)
+> The developer marks the test with the cross-target test attribute. The same
+> source file compiles and runs under `test:native:*` and `test:web:*`.
 
-**As a developer writing an integration test that loads the polyfill in a
-browser**, I want to drive a browser programmatically from Rust, so that I can
-assert on end-to-end behavior without leaving the language or the toolchain.
+## The Nix Shell and Menu
 
-> The developer writes a test that uses the `fantoccini` or equivalent WebDriver
-> client. The test is gated on a `web-integration-tests` Cargo feature so it is
-> excluded from routine unit test runs and included when the developer
-> explicitly invokes `test:browser:integration` from the menu.
+The flake at the repository root defines the development shell. The shell
+uses [katsuobushi] to print a structured command menu on entry. Each menu
+entry has a short name, a description, and a shell command.
 
-## The Nix Shell and Menu System
-
-The development shell is encoded in the repository's `flake.nix`. It consumes
-[katsuobushi] to produce a structured, colorized command menu that is printed on
-shell entry and re-printed on demand. Each menu entry has a short name, a
-human-readable description, and a shell command body.
-
-The menu surface for the polyfill's development environment includes at minimum:
+The menu contains at least these commands:
 
 | Command               | Description                                                    |
 | --------------------- | -------------------------------------------------------------- |
-| `build`               | Produce the Wasm library artifacts and JS bindings (debug)     |
-| `build:release`       | Produce a release-optimised library bundle                     |
+| `build`               | Compile the polyfill crate for `wasm32-unknown-unknown`        |
 | `test:native:debug`   | Unit and integration tests (host target, debug)                |
 | `test:native:release` | Unit and integration tests (host target, release)              |
 | `test:web:debug`      | Unit and integration tests (`wasm32-unknown-unknown`, debug)   |
 | `test:web:release`    | Unit and integration tests (`wasm32-unknown-unknown`, release) |
-| `test:all`            | Full suite across all configurations                           |
+| `test:all`            | The full suite across all configurations                       |
 | `lint`                | Clippy and format checks across the workspace                  |
+| `format:design`       | Format the Markdown files in `design/`                         |
 
-The shell hook is produced by katsuobushi's `makeDevShellHook` and the commands
-are registered via `makeMenu`. The flake exposes `buildTestArchive` and
-`menuTestCommand` helpers (following the pattern established in Dialog DB's
-`flake.nix`) so that test packages are first-class Nix derivations and can be
-cached and re-used in CI.
-
-## The Library Build
-
-The polyfill crate is compiled to `wasm32-unknown-unknown` and post-processed
-with [wasm-bindgen] to generate JavaScript glue. The Nix shell provides `cargo`,
-`wasm-bindgen-cli`, and `binaryen` (for `wasm-opt`) as build inputs. The `build`
-menu command drives the full pipeline:
-
-1. `cargo build --target wasm32-unknown-unknown` (release for `build:release`)
-2. `wasm-bindgen` to emit the JS module and `.wasm` artifact
-3. `wasm-opt` for size and performance optimisation (release builds only)
-
-Build output goes to a `dist/` directory at the repository root. Consumers of
-the polyfill load the produced module directly; how the library is packaged for
-publication is out of scope for this document.
+Test packages are Nix derivations, so a test archive is built once, cached,
+and replayed with `cargo nextest`. CI uses the same derivations.
 
 ## Multi-Platform Testing
 
-Tests that exercise logic shared between native and browser contexts are
-annotated with a cross-target `#[test]` macro that conditionally expands based
-on the compilation target:
+A test that exercises shared logic carries the cross-target test attribute.
+On the native target the attribute expands to an asynchronous test under
+`tokio`. On `wasm32-unknown-unknown` it expands to `#[wasm_bindgen_test]`,
+which makes the test visible to `wasm-bindgen-test-runner`. A test that is
+specific to the browser carries `#[wasm_bindgen_test]` directly.
 
-- On native targets it expands to `#[tokio::test]` (or a synchronous
-  equivalent), enabling async test bodies with no additional annotation.
-- On `wasm32-unknown-unknown` it expands to `#[wasm_bindgen_test]`, making the
-  test discoverable by `wasm-bindgen-test-runner`.
+`wasm-bindgen-test-runner` reads these environment variables. The shell sets
+them on every platform:
 
-Dialog DB's `dialog-common` crate provides a working implementation of this
-macro that the polyfill may consume directly or use as a reference. Tests that
-are inherently browser-specific (e.g. JS interop assertions, DOM-adjacent
-globals) are annotated directly with `#[wasm_bindgen_test]` and gated on the
-appropriate Cargo feature.
+- `CHROME_PATH`: the path to the Chrome or Chromium binary from Nix.
+- `CHROMEDRIVER`: the path to the ChromeDriver binary.
+- `WASM_BINDGEN_TEST_TIMEOUT`: the per-test timeout. Component instantiation
+  under headless Chrome is slow, so the shell sets 180 seconds.
+- `WASM_BINDGEN_TEST_WEBDRIVER_JSON`: the path to a WebDriver capabilities
+  file that the flake generates.
 
-`wasm-bindgen-test-runner` is configured by the following environment variables,
-which the Nix shell sets unconditionally:
-
-- `CHROME_PATH` — path to the Chrome or Chromium binary provided by Nix
-- `CHROMEDRIVER` — path to the ChromeDriver binary
-- `WASM_BINDGEN_TEST_TIMEOUT` — extended to accommodate slower Wasm
-  initialisation (180s is a reasonable default, consistent with Dialog DB's
-  configuration)
-
-On Darwin, a `webdriver.json` configuration file is generated by the Nix flake
-and pointed to by `WASM_BINDGEN_TEST_WEBDRIVER_JSON`, disabling the GPU and
-sandboxing flags that interfere with headless Chrome in that environment.
+The capabilities file starts Chrome with `--headless=new`, `--no-sandbox`,
+`--disable-gpu`, and `--disable-dev-shm-usage`. Headless Chrome needs these
+flags under the sandbox of a Nix build on Linux and under the default GPU
+configuration on Darwin. The flake generates the file on every platform.
 
 ## References
 
-- [Dialog DB] — upstream Nix flake patterns, `buildTestArchive`, menu system,
-  and multi-target test configuration
-- [Dialog DB `#[test]` macro] — cross-platform test annotation
-- [katsuobushi] — Nix flake template and menu helper library
-- [Nix Flakes] — reproducible development environment
-- [wasm-bindgen] — Rust ↔ JavaScript bindings generator
-- [wasm-bindgen-test] — browser-targeting test harness for Rust Wasm
-- [PDD000] — the Wasm Component Model Polyfill product overview
+- [Dialog DB], the source of the flake patterns, the test archive helper, the
+  menu system, and the multi-target test configuration.
+- [katsuobushi], the flake template and menu helper library.
+- [Nix Flakes], the reproducible environment mechanism.
+- [wasm-bindgen], the Rust to JavaScript bindings generator.
+- [wasm-bindgen-test], the browser test harness for Rust Wasm.
+- [PDD000], the product overview.
 
 [Nix Flakes]: https://nixos.wiki/wiki/flakes
 [katsuobushi]: https://github.com/cdata/katsuobushi
 [Dialog DB]: https://github.com/dialog-db/dialog-db
-[Dialog DB `#[test]` macro]: <https://github.com/dialog-db/dialog-db/blob/00c7bc5fa8ea187da7abda27c2a0a8edbd8c05ed/rust/dialog-common/src/lib.rs#L132>
 [wasm-bindgen]: https://rustwasm.github.io/docs/wasm-bindgen/
 [wasm-bindgen-test]: https://rustwasm.github.io/docs/wasm-bindgen/wasm-bindgen-test/index.html
 [PDD000]: ./PDD000%20Wasm%20Component%20Model%20Polyfill.md

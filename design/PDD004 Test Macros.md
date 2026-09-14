@@ -1,191 +1,129 @@
 # Test Macros
 
-The polyfill's test regime, as established by [PDD001], must run the same test
-source on two targets — a native host and `wasm32-unknown-unknown` inside a
-real browser — and must do so without ceremony at the call site. It must also
-let contributors describe Wasm and Component-format inputs *next to* the tests
-that exercise them, so that a test reads like an executable specification
-rather than a fixture-management exercise.
+The test regime of [PDD001] runs the same test source on two targets: a
+native host and `wasm32-unknown-unknown` inside a real browser. It must do so
+without ceremony at the call site. It must also let a contributor write Wasm
+and Component inputs next to the tests that use them, so that a test reads
+like an executable specification.
 
-This document describes a small family of macros that satisfy both
-requirements. Together they form the in-tree authoring surface that every
-other piece of the polyfill's test work — the wasip2 seed corpus, the
-wasip3 implementation backlog, the conformance suite — will be written
+This document describes a small family of macros that meet both needs. They
+form the authoring surface that every test in the polyfill is written
 against.
 
 ## Goals
 
-- A single attribute lets a contributor mark an `async` test as cross-target,
-  with no `cfg` boilerplate at the call site, so that the same source
-  participates in `test:native:*` and `test:web:*` without duplication.
-- Wasm Core modules and Component-format binaries can be expressed inline at
-  the test site in [WebAssembly Text Format][WAT], assembled at compile time,
-  and bound to ordinary Rust constants that flow into the polyfill's APIs.
-- Mistakes — a syntax error in the WAT, a `(module …)` passed to a macro
-  expecting a component, a sync function annotated with the async attribute —
-  surface as compile errors at the call site, not at runtime.
-- The macros are reusable across every crate in the workspace, so that future
-  test crates inherit the same vocabulary without re-inventing it.
+- One attribute marks an `async` test as cross-target. The same source runs
+  under `test:native:*` and `test:web:*` with no `cfg` code at the call site.
+- A contributor can write a Wasm Core module or a Component binary inline in
+  [WebAssembly Text Format][WAT]. The macro assembles it at compile time and
+  binds it to an ordinary Rust constant.
+- Mistakes surface as compile errors at the call site. Examples are a syntax
+  error in the WAT, a `(module …)` passed to the component macro, and a
+  synchronous function marked with the asynchronous attribute.
+- Every crate in the workspace can use the macros.
 
 ## Non-goals
 
-- This document does not establish a sync cross-target test attribute. Sync
-  tests use the language's built-in `#[test]`. The cross-target story exists
-  to handle the async runtime split between `tokio` and
-  `wasm_bindgen_test`; sync code does not need it.
-- This document does not establish a WIT-driven binding generator. WIT-aware
-  code generation is the subject of a separate workstream
-  ([PDD003]'s "host-binding code generation" item) and is out of scope here.
-- This document does not establish fixture-loading helpers — `include_bytes!`
-  and the inline-assembly macros below are sufficient for the testing the
-  polyfill needs at this stage. A larger fixture story may be revisited if
-  pre-built component binaries enter the corpus.
-- This document does not commit the inline-assembly macros to a public,
-  consumer-facing API. They are a workspace-internal authoring tool;
-  downstream exposure is out of scope here.
-- This document does not address how host-side Component Model behaviour is
-  asserted on (the polyfill's runtime APIs themselves are described in
-  [PDD002] and [PDD003]); it only addresses the macros that surround such
-  assertions.
+- A synchronous cross-target test attribute. Synchronous tests use the
+  built-in `#[test]`. The cross-target attribute exists to bridge the
+  asynchronous runtime split between `tokio` and `wasm_bindgen_test`.
+- A WIT-driven binding generator.
+- Fixture-loading helpers. `include_bytes!` and the inline macros are enough.
+- A public, consumer-facing API for the inline macros. They are a workspace
+  authoring tool.
+- The polyfill's runtime APIs. The macros only surround the assertions.
 
 ## The Cross-Target Test Attribute
 
-A single attribute marks a test as cross-target. The attribute takes no
-arguments. The annotated function must be `async`; the macro rejects sync
-functions with a clear compile error pointing the contributor at the
-language's built-in `#[test]`. On `cfg(not(target_arch = "wasm32"))` the
-expansion delegates to `tokio`'s async test attribute; on
-`cfg(target_arch = "wasm32")` it delegates to `wasm_bindgen_test`. The
-contributor never writes `cfg` themselves.
+One attribute marks a test as cross-target. The attribute takes no
+arguments. The marked function must be `async`. If the function is
+synchronous, the macro reports a compile error that points at the built-in
+`#[test]`. On `cfg(not(target_arch = "wasm32"))` the attribute expands to
+the `tokio` asynchronous test attribute. On `cfg(target_arch = "wasm32")` it
+expands to `wasm_bindgen_test`. The contributor never writes `cfg`.
 
-This attribute is intentionally narrower than upstream cross-target test
-helpers in the Rust Wasm ecosystem — it does not stand up servers, it does
-not allocate per-test resources, and it does not introduce custom timeouts.
-Those capabilities, when needed, are layered on top of the test body, not
-baked into the attribute.
+The attribute is narrower than similar helpers in the ecosystem. It does not
+start servers, allocate per-test resources, or set timeouts. A test body adds
+those when it needs them.
 
 ## Inline Wasm and Component Assembly
 
-The Component Model has two binary formats — Wasm Core and the Component
-format — that share an `\0asm` preamble and differ in the four-byte version
-word that follows it. The polyfill's tests need to author both. Two
-function-like macros cover the surface:
+The Component Model has two binary formats. Wasm Core and the Component
+format share the `\0asm` preamble and differ in the four-byte version word
+after it. Two function-like macros cover both:
 
-- A *core-module* macro accepts a string literal containing WAT for a
-  `(module …)` and returns a `&'static [u8]` of the assembled core-module
-  binary.
-- A *component* macro accepts a string literal containing WAT for a
-  `(component …)` and returns a `&'static [u8]` of the assembled
-  component binary.
+- A core-module macro accepts a string literal with the WAT of a
+  `(module …)` and returns a `&'static [u8]` with the assembled binary.
+- A component macro accepts a string literal with the WAT of a
+  `(component …)` and returns a `&'static [u8]` with the assembled binary.
 
-Both macros are backed by the upstream [`wat`] assembler, which already
-understands both grammars. Splitting the surface in two — rather than
-exposing a single overloaded macro — is a deliberate readability choice:
-the macro name documents the *intent* of the binary at the call site, and a
-contributor who accidentally pastes a `(module …)` into the component macro
-(or vice versa) gets a compile error rather than a binary that will fail
-mysteriously in the runtime.
+Both macros use the upstream [`wat`] assembler. Two macros instead of one
+overloaded macro is a readability choice. The macro name documents the intent
+of the binary at the call site.
 
-To make that guarantee concrete, the macros validate the assembled output
-against the binary header before emitting code: if the version word does
-not match the macro's declared kind, the compile error names both the
-expected kind and the actual kind, and points the contributor at the other
-macro. WAT parse errors are likewise surfaced as compile errors anchored at
-the macro call site, so that line/column information from the assembler is
-preserved in the contributor's editor.
+The macros validate the assembled bytes against the binary header before they
+emit code. If the version word does not match the declared kind, the compile
+error names the expected kind, the actual kind, and the other macro. A WAT
+parse error is a compile error at the macro call site, so the assembler's
+line and column reach the editor of the contributor.
 
-The macros run entirely at compile time. The assembled bytes are emitted
-into the binary as ordinary byte-array literals, so the produced constants
-can be used in `const` context and incur no runtime cost beyond a slice
-reference.
+The macros run at compile time. The assembled bytes are ordinary byte-array
+literals, so the constants work in `const` context and cost a slice reference
+at run time.
 
 ## Errors at the Source
 
-A design through-line of all three macros is that misuse surfaces at compile
-time, with the diagnostic anchored at the macro invocation. This applies to:
+Every misuse of the macros is a compile error at the invocation:
 
-- A syntax error in the WAT (assembler error preserved verbatim).
+- A syntax error in the WAT. The assembler error is kept verbatim.
 - A binary-kind mismatch between the macro and the assembled output.
-- A sync function annotated with the cross-target async attribute.
-- Any unexpected argument passed to the cross-target attribute, which takes
-  none.
+- A synchronous function marked with the cross-target attribute.
+- An argument passed to the cross-target attribute.
 
-This is what makes the macros suitable as the polyfill's authoring surface:
-contributors get the same feedback loop they expect from the rest of the
-Rust toolchain, and the test suite never grows fixtures whose existence
-depends on conventions a code review must enforce.
+Contributors get the same feedback loop they expect from the rest of the
+toolchain. The test suite does not grow fixtures whose correctness depends on
+review conventions.
 
 ## User Stories
 
-**As a contributor writing a new polyfill test**, I want to mark the test
-once and have it execute on both native and browser targets, so that I do
-not maintain two copies of the same test or remember which target a given
-test runs against.
+A contributor writes a new test and wants it to run on both targets.
 
-> The contributor writes `#[wcmp_macros::test] async fn …`. They run
-> `test:native:debug` and the test executes under `tokio`; they run
-> `test:web:debug` and the same source is compiled to
-> `wasm32-unknown-unknown`, bundled by `wasm-bindgen-test`, and executed
-> in a headless browser.
+> The contributor writes `#[wcmp_macros::test] async fn …`. `test:native:debug`
+> runs it under `tokio`. `test:web:debug` compiles it to
+> `wasm32-unknown-unknown`, bundles it with `wasm-bindgen-test`, and runs it
+> in headless Chrome.
 
-**As a contributor specifying a small, hand-written component for a
-focused test**, I want the component's source to live next to the
-assertions, so that a future reader can see the input and the expected
-behaviour without leaving the file.
+A contributor writes a small component for a focused test and wants the
+source next to the assertions.
 
-> The contributor writes the component's WAT inside a `component!(...)`
-> invocation bound to a `const`, then passes that constant into the
-> polyfill's `Component::new` (or equivalent) in the test body. No
-> `tests/fixtures/` lookup, no build-script step, no `.wasm` blob in the
-> repository — the byte string of the component is part of the test
-> source.
+> The contributor writes the WAT inside `component!(...)`, binds it to a
+> `const`, and passes the constant to `Component::new`. There is no fixture
+> directory, build script, or `.wasm` blob in the repository.
 
-**As a contributor catching themselves in a mistake**, I want to learn
-about the mistake from the compiler, not from a confusing runtime
-failure inside the polyfill.
+A contributor catches a mistake and wants the compiler to report it.
 
-> The contributor pastes a `(module …)` into `component!(...)`. The
-> compiler reports that the WAT assembled to a core module rather than a
-> component and points them at `wasm!`. They fix the call site without
-> ever building the test binary.
+> The contributor pastes a `(module …)` into `component!(...)`. The compiler
+> reports that the WAT assembled to a core module and points at `wasm!`.
 
-**As a maintainer reviewing a test added by someone else**, I want to
-read the test as a single self-contained artifact, so that I can judge
-its scope and correctness in one pass.
+A maintainer reviews a test and wants to read it as one artifact.
 
-> The maintainer opens a test file. The cross-target attribute, the
-> inline component definition, and the assertions are all visible
-> together. They do not have to cross-reference fixture directories,
-> build scripts, or `cfg`-guarded helpers to understand what the test
-> exercises.
+> The maintainer opens the file. The attribute, the inline component, and the
+> assertions are visible together.
 
 ## References
 
-- [PDD001] — the development environment that establishes cross-target
-  testing on native and `wasm32-unknown-unknown` and references the
-  upstream cross-target `#[test]` macro that inspired this document.
-- [PDD002] — the polyfill's relationship to [`wasm_runtime_layer`] and
-  [`wasm_component_layer`], whose APIs these macros exist to exercise in
-  tests.
-- [PDD003] — the compatibility outlook whose implementation checklist
-  these macros' tests will progressively turn green.
-- [WAT] — the WebAssembly Text Format the inline-assembly macros consume.
-- [`wat`] — the upstream assembler the inline-assembly macros invoke at
-  compile time.
-- [wasm-bindgen-test] — the browser-targeting test harness the
-  cross-target attribute delegates to on `wasm32-unknown-unknown`.
-- [tokio] — the async runtime the cross-target attribute delegates to on
-  native targets.
-- [Dialog DB `#[test]` macro] — the upstream cross-target test attribute
-  whose pattern this document's attribute is inspired by.
+- [PDD001], the development environment.
+- [PDD002], the ecosystem foundation.
+- [WAT], the WebAssembly Text Format.
+- [`wat`], the assembler the macros invoke at compile time.
+- [wasm-bindgen-test], the browser test harness.
+- [tokio], the native asynchronous runtime.
+- [Dialog DB `#[test]` macro], the pattern that inspired the attribute.
 
 [PDD001]: ./PDD001%20Development%20Environment.md
 [PDD002]: ./PDD002%20Ecosystem%20Foundation.md
-[PDD003]: ./PDD003%20Compatibility%20Outlook.md
 [WAT]: https://webassembly.github.io/spec/core/text/index.html
 [`wat`]: https://docs.rs/wat
-[`wasm_runtime_layer`]: https://github.com/DouglasDwyer/wasm_runtime_layer
-[`wasm_component_layer`]: https://github.com/DouglasDwyer/wasm_component_layer
 [wasm-bindgen-test]: https://rustwasm.github.io/docs/wasm-bindgen/wasm-bindgen-test/index.html
 [tokio]: https://tokio.rs
 [Dialog DB `#[test]` macro]: <https://github.com/dialog-db/dialog-db/blob/00c7bc5fa8ea187da7abda27c2a0a8edbd8c05ed/rust/dialog-common/src/lib.rs#L132>
