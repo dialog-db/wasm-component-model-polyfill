@@ -1,30 +1,30 @@
 # Project Design Documents
 
-This directory holds the Project Design Documents (PDDs) of the polyfill. A
-PDD is a record of one design decision. The documents are numbered in the
-order they were accepted.
+This directory holds the Project Design Documents (PDDs) of the polyfill. A PDD
+is a record of one design decision. The documents are numbered in the order they
+were accepted.
 
 ## Purpose
 
-A PDD records what is designed and why, before the implementation starts. It
-is the document that engineering plans and code changes refer back to.
+A PDD records what is designed and why, before the implementation starts. It is
+the document that engineering plans and code changes refer back to.
 
 ## Structure
 
 Every PDD has these sections, in this order:
 
 1. Introduction. A short summary of the design.
-2. Goals. What the design must achieve. Use one bullet per goal. Put the
-   detail in the body.
-3. Non-goals. What the design does not cover. List here anything that is out
-   of scope.
-4. Body. The substance of the design. Write features as user stories. Center
-   the stories on people, not on software.
+2. Goals. What the design must achieve. Use one bullet per goal. Put the detail
+   in the body.
+3. Non-goals. What the design does not cover. List here anything that is out of
+   scope.
+4. Body. The substance of the design. Write features as user stories. Center the
+   stories on people, not on software.
 5. Test Cases. Each test case is prose. It describes one facet of the design
-   that a test must cover for acceptance, and the criteria that make the
-   facet acceptable. Name the facet, not a test function.
-6. References. External links that the document cites. Link to the most
-   direct location of the referenced content.
+   that a test must cover for acceptance, and the criteria that make the facet
+   acceptable. Name the facet, not a test function.
+6. References. External links that the document cites. Link to the most direct
+   location of the referenced content.
 
 ## Writing Rules
 
@@ -49,8 +49,8 @@ Do:
 - Match the format, structure, and idioms of the accepted PDDs.
 - Use pseudocode and non-specific suggestions where they help the reader.
 - Resolve every open question before the document is accepted.
-- Write a revision so that it reads as the intended design. Do not narrate
-  the change.
+- Write a revision so that it reads as the intended design. Do not narrate the
+  change.
 
 Do not:
 
