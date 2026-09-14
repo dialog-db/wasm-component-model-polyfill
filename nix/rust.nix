@@ -68,8 +68,12 @@ let
       version = "0.1.0";
       buildInputs = [ rustToolchain ];
 
-      src = fetchCrate {
-        inherit pname version;
+      # crates.io's API download endpoint answers 403 to non-cargo
+      # clients, so fetch the tarball from the static mirror. The
+      # unpacked tree is identical, so the hash is unchanged.
+      src = fetchzip {
+        url = "https://static.crates.io/crates/${pname}/${pname}-${version}.crate";
+        extension = "tar.gz";
         sha256 = "sha256-XOdKeg9tNt/HT+WO9QKtdX3fUMUssVTlXRV0LOIMMzc=";
       };
 
@@ -122,23 +126,6 @@ let
       // {
         version = "0.1.0";
         cargoArtifacts = nativeArtifacts;
-      }
-      // attributes
-    );
-
-  buildWasmCrate =
-    attributes:
-    craneLib.buildPackage (
-      wasmAttributes
-      // {
-        cargoArtifacts = wasmArtifacts;
-
-        # These *_BIN envvars are conventional and consumed by build scripts
-        # such as `worker-build`; they are also a convenient way to surface
-        # the pinned tools to a custom buildPhase.
-        WASM_OPT_BIN = "${pkgs.binaryen}/bin/wasm-opt";
-        WASM_BINDGEN_BIN = "${wasm-bindgen-cli}/bin/wasm-bindgen";
-        ESBUILD_BIN = "${pkgs.esbuild}/bin/esbuild";
       }
       // attributes
     );
@@ -205,7 +192,6 @@ in
 {
   inherit
     buildCrate
-    buildWasmCrate
     buildTestArchive
     rustToolchain
     cargoChecks

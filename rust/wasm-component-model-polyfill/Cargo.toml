@@ -7,9 +7,6 @@ license.workspace = true
 edition.workspace = true
 repository.workspace = true
 
-[lib]
-crate-type = ["cdylib", "rlib"]
-
 [features]
 default = []
 # Integration tests that drive a real browser via WebDriver.
@@ -17,10 +14,8 @@ web-integration-tests = []
 
 [dependencies]
 anyhow = { workspace = true }
-futures = { workspace = true }
 semver = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 wasm_runtime_layer = { workspace = true }
 wasmparser = { workspace = true }
 # `wasmtime-environ`'s `compile` feature gates the component-IR
@@ -43,14 +38,15 @@ wasmtime = { workspace = true, features = ["gc-drc"] }
 wasmtime_runtime_layer = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-console_error_panic_hook = { workspace = true }
-js-sys = { workspace = true }
 js_wasm_runtime_layer = { workspace = true }
-wasm-bindgen = { workspace = true }
-wasm-bindgen-futures = { workspace = true }
-web-sys = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
-wasm-bindgen-test = { workspace = true }
 wcmp-macros = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+# `wasm-bindgen` is pinned so that the crate version the tests link
+# against matches the `wasm-bindgen-cli` the flake provides for
+# `wasm-bindgen-test-runner`.
+wasm-bindgen = { workspace = true }
+wasm-bindgen-test = { workspace = true }

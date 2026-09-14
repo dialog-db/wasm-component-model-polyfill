@@ -96,7 +96,6 @@
         # Tools every Rust derivation in this workspace needs as
         # `nativeBuildInputs`.
         commonBuildInputs = with pkgs; [
-          binaryen
           pkg-config
         ];
 
@@ -109,7 +108,6 @@
         );
 
         inherit (rustHelpers)
-          buildWasmCrate
           buildTestArchive
           cargoChecks
           rustToolchain
@@ -155,39 +153,9 @@
             '';
           };
 
-        # The polyfill's wasm artifact: cargo build → wasm-bindgen → wasm-opt.
-        wasm-component-model-polyfill-web = buildWasmCrate {
-          pname = "wasm-component-model-polyfill-web";
-
-          buildPhaseCargoCommand = ''
-            cargo build \
-              --profile wasm-release \
-              --package wasm-component-model-polyfill \
-              --target wasm32-unknown-unknown
-
-            mkdir -p ./pkg
-            "$WASM_BINDGEN_BIN" \
-              --target web \
-              --out-dir ./pkg \
-              --out-name wasm-component-model-polyfill \
-              ./target/wasm32-unknown-unknown/wasm-release/wasm_component_model_polyfill.wasm
-
-            "$WASM_OPT_BIN" -Oz \
-              -o ./pkg/wasm-component-model-polyfill_bg.wasm \
-              ./pkg/wasm-component-model-polyfill_bg.wasm
-          '';
-
-          installPhaseCommand = ''
-            mkdir -p $out
-            cp -r ./pkg/* $out/
-          '';
-
-          doInstallCargoArtifacts = false;
-        };
-
         commands = {
           "build" = {
-            description = "Produce the Wasm library artifacts and JS bindings (debug)";
+            description = "Compile the polyfill crate for wasm32-unknown-unknown";
             command = ''
               cargo build \
                 --package wasm-component-model-polyfill \
@@ -257,8 +225,6 @@
       in
       {
         packages = {
-          inherit wasm-component-model-polyfill-web;
-
           tests-native-debug = buildTestArchive {
             name = "native-debug";
           };
