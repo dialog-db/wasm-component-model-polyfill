@@ -16,7 +16,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::abi::layout::{align_to, alignment_of};
+use crate::abi::layout::alignment_of;
 use crate::backend::Backend;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::StringEncoding;
@@ -165,6 +165,20 @@ impl<'a, T: 'static> LowerContext<'a, T> {
         valtype: &ValueType,
         position: AbiPosition,
     ) -> Result<usize> {
+        self.allocate_aligned(size, alignment_of(valtype), valtype, position)
+    }
+
+    /// Allocate `size` bytes of guest memory at an explicit
+    /// `alignment` by invoking the guest's `cabi_realloc`. `valtype`
+    /// and `position` only label the error when the allocation
+    /// fails. Returns the new pointer (a guest-memory offset).
+    pub fn allocate_aligned(
+        &mut self,
+        size: usize,
+        alignment: usize,
+        valtype: &ValueType,
+        position: AbiPosition,
+    ) -> Result<usize> {
         let Some(realloc) = self.realloc.clone() else {
             return Err(Error::from(AbiError {
                 position,
@@ -172,8 +186,6 @@ impl<'a, T: 'static> LowerContext<'a, T> {
                 cause: AbiCause::ReallocUnavailable,
             }));
         };
-        let alignment = alignment_of(valtype);
-        let _ = align_to(size, alignment); // sanity-check power-of-two
         let args = [
             RuntimeVal::I32(0), // old_ptr
             RuntimeVal::I32(0), // old_size

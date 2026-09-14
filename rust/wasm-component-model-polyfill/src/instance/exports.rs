@@ -61,13 +61,7 @@ impl<'a> InstanceExports<'a> {
             .function_exports
             .iter()
             .find(|export| export.parent.is_none() && export.name == name)
-            .map(|export| Func {
-                name: export.name.clone(),
-                inner: export.func.clone(),
-                signature: export.signature.clone(),
-                options: export.options.clone(),
-                abi_state: self.instance.abi_state.clone(),
-            })
+            .map(|export| self.instance.func_for(export))
     }
 
     /// Look up an instance-typed export addressed by its

@@ -1,22 +1,19 @@
 //! Canonical ABI lift and lower for the synchronous baseline.
 //!
 //! This module realises the [Component Model Canonical ABI rules] for
-//! every baseline valtype the polyfill supports — every type
-//! [`crate::ValueType`] admits except `own<T>` and `borrow<T>`. The
-//! handle valtypes are accepted by the type-system data, but lifting
-//! or lowering them returns
-//! [`crate::AbiCause::Unimplemented`] so the public contract stays
-//! additive when handles land.
+//! every valtype [`crate::ValueType`] admits, including the handle
+//! valtypes `own<T>` and `borrow<T>`, which resolve against the
+//! per-store handle tables.
 //!
 //! The module is organised by concern. [`layout`] computes the
-//! size, alignment, flat-slot count, and variant-discriminant width
-//! every other path needs. [`lift`] and [`lower`] are the per-valtype
-//! recursions that read a [`crate::Val`] out of guest memory or
-//! flat core arguments, and write one back. [`context`] carries the
-//! per-call state — the runtime-layer memory the value sits in, the
-//! optional `cabi_realloc` for heap-allocating types, and the
-//! optional `post-return` the caller invokes after a sync lift —
-//! that the lift and lower paths read from.
+//! size, alignment, flat-slot count, variant-discriminant width, and
+//! the parameter-spill layout every other path needs. [`lift`] and
+//! [`lower`] are the per-valtype recursions that read a
+//! [`crate::Val`] out of guest memory and write one back. [`flatten`]
+//! is the counterpart for values that travel in flat core slots.
+//! [`context`] carries the per-call state — the runtime-layer memory
+//! the value sits in and the optional `cabi_realloc` for
+//! heap-allocating types — that the lift and lower paths read from.
 //!
 //! Workspace-internal: the surface is consumed by `Func::call` and
 //! by the host-trampoline path in [`crate::executor::instantiate`];

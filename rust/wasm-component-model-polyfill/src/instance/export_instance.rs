@@ -52,12 +52,6 @@ impl<'a> ExportInstance<'a> {
             .function_exports
             .iter()
             .find(|export| export.parent.as_ref() == Some(&self.identifier) && export.name == name)
-            .map(|export| Func {
-                name: export.name.clone(),
-                inner: export.func.clone(),
-                signature: export.signature.clone(),
-                options: export.options.clone(),
-                abi_state: self.instance.abi_state.clone(),
-            })
+            .map(|export| self.instance.func_for(export))
     }
 }

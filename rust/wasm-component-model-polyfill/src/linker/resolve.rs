@@ -140,7 +140,7 @@ fn check_items<T: 'static>(
     for item in items.iter() {
         match &item.ty {
             ExternType::Function(declared) => {
-                check_function_item(chosen, &item.name, declared, registration, &import.name)?;
+                check_function_item(chosen, &item.name, declared, registration)?;
             }
             ExternType::Resource(_) | ExternType::ResourceEquals(_) => {
                 check_resource_item(&item.name, registration, &import.name)?;
@@ -173,14 +173,12 @@ fn check_function_item<T: 'static>(
     item_name: &str,
     declared: &FunctionType,
     registration: &InstanceRegistration<T>,
-    import_name: &ExternalName,
 ) -> Result<()> {
     let host = registration.func(item_name).ok_or_else(|| {
         Error::from(LinkError::UnresolvedImport {
             import: ExternalName::Interface(chosen.clone()),
         })
     })?;
-    let _ = import_name;
     if !function_types_compatible(&host.signature, declared) {
         return Err(Error::from(TypeMismatch {
             position: TypeMismatchPosition::HostFunctionRegistration {

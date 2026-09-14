@@ -15,15 +15,92 @@ use wasmtime_environ::component::CanonicalAbiInfo;
 
 pub use wasmtime_environ::component::FlatType;
 
+use crate::component::FunctionType;
 use crate::types::{
     FlagsType, OptionType, PrimitiveType, RecordType, ResultType, TupleType, ValueType, VariantType,
 };
+
+/// The largest number of flat core-Wasm parameter slots a call
+/// passes directly. Beyond this the canonical ABI spills the whole
+/// parameter tuple into linear memory and passes one `i32` pointer.
+pub const MAX_FLAT_PARAMS: usize = 16;
+
+/// The largest number of flat core-Wasm result slots a call returns
+/// directly. Beyond this the canonical ABI returns the result
+/// through a pointer into linear memory.
+pub const MAX_FLAT_RESULTS: usize = 1;
 
 /// Round `offset` up to the next multiple of `alignment`. The
 /// alignment must be a power of two.
 pub fn align_to(offset: usize, alignment: usize) -> usize {
     debug_assert!(alignment.is_power_of_two());
     (offset + alignment - 1) & !(alignment - 1)
+}
+
+/// The total flat-slot count of a signature's parameter tuple, or
+/// `None` when the tuple must be spilled to memory because one
+/// parameter alone exceeds the flat limit.
+pub fn flat_param_count(signature: &FunctionType) -> Option<usize> {
+    signature
+        .parameters
+        .iter()
+        .try_fold(0usize, |acc, p| flat_count(&p.ty).map(|n| acc + n))
+}
+
+/// Whether the parameter tuple of `signature` is passed as flat
+/// slots (`false`) or spilled through one pointer (`true`).
+pub fn params_spill(signature: &FunctionType) -> bool {
+    !matches!(flat_param_count(signature), Some(n) if n <= MAX_FLAT_PARAMS)
+}
+
+/// Whether the result of `signature` is returned in flat slots
+/// (`false`) or through a pointer into memory (`true`). A signature
+/// without a result never spills.
+pub fn result_spills(signature: &FunctionType) -> bool {
+    match &signature.result {
+        None => false,
+        Some(ty) => !matches!(flat_count(ty), Some(n) if n <= MAX_FLAT_RESULTS),
+    }
+}
+
+/// The memory layout of a parameter tuple spilled to linear memory:
+/// the byte offset of each element, followed by the tuple's total
+/// size and alignment. The layout follows the canonical ABI's record
+/// rules, so the tuple is laid out exactly as `tuple<…>` of the
+/// parameter types would be.
+pub fn spill_layout(types: &[ValueType]) -> SpillLayout {
+    let mut offsets = Vec::with_capacity(types.len());
+    let mut offset = 0usize;
+    let mut alignment = 1usize;
+    for ty in types {
+        let align = alignment_of(ty);
+        alignment = alignment.max(align);
+        offset = align_to(offset, align);
+        offsets.push(offset);
+        offset += size_of(ty);
+    }
+    SpillLayout {
+        offsets,
+        size: align_to(offset, alignment),
+        alignment,
+    }
+}
+
+/// The layout [`spill_layout`] computes.
+pub struct SpillLayout {
+    /// The byte offset of each element from the start of the tuple.
+    pub offsets: Vec<usize>,
+    /// The total size in bytes, rounded up to the alignment.
+    pub size: usize,
+    /// The alignment in bytes: the largest element alignment.
+    pub alignment: usize,
+}
+
+/// The number of `i32` slots a `flags` value occupies in the flat
+/// representation: one per 32 flags, and zero for an empty set.
+pub fn flags_chunk_count(flags: &FlagsType) -> usize {
+    let n = flags.names().len();
+    if n == 0 { 0 } else { n.div_ceil(32) }
 }
 
 /// The canonical-ABI byte alignment for a value type, in 32-bit
@@ -159,10 +236,7 @@ pub fn flat_types(ty: &ValueType) -> Vec<FlatType> {
             flat_types_variant([result.ok().cloned(), result.err().cloned()].into_iter())
         }
         ValueType::Enum(_) => vec![FlatType::I32],
-        ValueType::Flags(flags) => {
-            let chunks = num_i32_flag_chunks(flags);
-            vec![FlatType::I32; chunks]
-        }
+        ValueType::Flags(flags) => vec![FlatType::I32; flags_chunk_count(flags)],
         ValueType::List(_) => vec![FlatType::I32, FlatType::I32],
         ValueType::Own(_) | ValueType::Borrow(_) => vec![FlatType::I32],
     }
@@ -188,11 +262,6 @@ fn flat_type_of_primitive(prim: PrimitiveType) -> FlatType {
     }
 }
 
-fn num_i32_flag_chunks(flags: &FlagsType) -> usize {
-    let n = flags.names().len();
-    if n == 0 { 0 } else { n.div_ceil(32) }
-}
-
 /// The flat-slot list for a discriminated union: one i32 for the
 /// discriminant followed by the per-case payload flat slots, joined
 /// with the spec's `join` operation.
@@ -201,27 +270,37 @@ where
     I: Iterator<Item = Option<ValueType>>,
 {
     let mut out: Vec<FlatType> = vec![FlatType::I32];
-    let mut payload_slots: Vec<FlatType> = Vec::new();
+    out.extend(join_flat_slots(payloads));
+    out
+}
+
+/// The joined payload slots of a discriminated union: the per-case
+/// payload flat slots combined position-wise with [`join_flat`].
+/// The discriminant slot is not included.
+pub fn join_flat_slots<I>(payloads: I) -> Vec<FlatType>
+where
+    I: Iterator<Item = Option<ValueType>>,
+{
+    let mut joined: Vec<FlatType> = Vec::new();
     for payload in payloads {
         let case = match payload {
             Some(ty) => flat_types(&ty),
             None => Vec::new(),
         };
-        for (i, slot) in case.iter().copied().enumerate() {
-            if i < payload_slots.len() {
-                payload_slots[i] = join_flat(payload_slots[i], slot);
+        for (i, slot) in case.into_iter().enumerate() {
+            if i < joined.len() {
+                joined[i] = join_flat(joined[i], slot);
             } else {
-                payload_slots.push(slot);
+                joined.push(slot);
             }
         }
     }
-    out.extend(payload_slots);
-    out
+    joined
 }
 
 /// The canonical-ABI's `join` operation on flat slot types: when
 /// two variant arms disagree, widen to the type that admits both.
-fn join_flat(a: FlatType, b: FlatType) -> FlatType {
+pub fn join_flat(a: FlatType, b: FlatType) -> FlatType {
     if a == b {
         return a;
     }

@@ -121,6 +121,17 @@ pub enum Error {
     #[error("canonical ABI error: {0}")]
     Abi(#[source] Box<AbiError>),
 
+    /// The component uses a Component Model feature the polyfill
+    /// does not implement yet. The feature is named so a caller can
+    /// tell "not built yet" from "broken". Reaching this variant is
+    /// never a bug in the caller's component.
+    #[error("unsupported component feature: {feature}")]
+    Unsupported {
+        /// A short description of the unsupported feature, for
+        /// example `locally-defined resources` or `stream<T>`.
+        feature: String,
+    },
+
     /// A polyfill-internal invariant that "shouldn't happen given
     /// upstream guarantees" was nevertheless violated. This
     /// variant exists so the polyfill never panics on inputs the
@@ -132,6 +143,26 @@ pub enum Error {
         /// where.
         message: String,
     },
+}
+
+impl Error {
+    /// Build an [`Error::Unsupported`] naming `feature`.
+    ///
+    /// Workspace-internal; not re-exported by `lib.rs`.
+    pub fn unsupported(feature: impl Into<String>) -> Self {
+        Error::Unsupported {
+            feature: feature.into(),
+        }
+    }
+
+    /// Build an [`Error::Internal`] carrying `message`.
+    ///
+    /// Workspace-internal; not re-exported by `lib.rs`.
+    pub fn internal(message: impl Into<String>) -> Self {
+        Error::Internal {
+            message: message.into(),
+        }
+    }
 }
 
 impl From<LinkError> for Error {
@@ -246,6 +277,16 @@ pub enum InstantiationError {
         /// The structural reason the signature is rejected.
         reason: &'static str,
     },
+
+    /// A function handle was called with a [`Store`] other than the
+    /// one its [`Instance`] was created in. An instance's core
+    /// state lives in exactly one store; the runtime substrate
+    /// cannot address it through another.
+    ///
+    /// [`Store`]: crate::Store
+    /// [`Instance`]: crate::Instance
+    #[error("the function handle belongs to an instance created in a different store")]
+    WrongStore,
 }
 
 /// A type-mismatch report.

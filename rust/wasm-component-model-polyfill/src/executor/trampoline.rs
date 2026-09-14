@@ -1,16 +1,19 @@
 //! Host trampoline construction.
 //!
-//! When the executor encounters an [`Initializer::LowerImport`]
-//! directive, it must build a runtime-layer [`Func`] that the guest
-//! calls as if it were a core-Wasm function. Inside that function:
+//! When the executor encounters a lowered import, it must build a
+//! runtime-layer [`Func`] that the guest calls as if it were a
+//! core-Wasm function. Inside that function:
 //!
 //! 1. The flat core-Wasm arguments are *lifted* through the canonical
 //!    ABI into polyfill [`Val`]s using the lowering's canon options.
+//!    When the parameter tuple is too wide for flat passing, the
+//!    guest passes one pointer and the arguments are lifted from
+//!    linear memory instead.
 //! 2. The host-registered [`HostFunc<T>`] payload is invoked with
 //!    those `Val`s.
-//! 3. The host's `Val` results are *lowered* back into core-Wasm
-//!    flat slots (or written into a result-area pointer the caller
-//!    supplied).
+//! 3. The host's `Val` result is *lowered* back into core-Wasm flat
+//!    slots, or written into the return area the caller supplied
+//!    when the result is too wide for flat passing.
 //!
 //! Memory, realloc, and post-return are looked up at call time from
 //! a shared [`AbiRuntimeState`] populated by the executor's
@@ -19,7 +22,8 @@
 //! module the lowered import is passed into, so the slots are filled
 //! between trampoline construction and the trampoline's first call.
 //!
-//! [`Initializer::LowerImport`]: super::ir::Initializer::LowerImport
+//! [`Func`]: wasm_runtime_layer::Func
+//! [`HostFunc<T>`]: crate::linker::HostFunc
 
 use std::sync::{Arc, Mutex};
 
@@ -29,9 +33,9 @@ use wasm_runtime_layer::{
 };
 
 use crate::abi::context::{LiftContext, LowerContext};
-use crate::abi::flatten::lift_from_flat_slots;
-use crate::abi::layout::{FlatType, align_to, alignment_of, flat_count, flat_types};
-use crate::abi::lower;
+use crate::abi::flatten::{lift_from_flat_slots, lower_into_flat_slots};
+use crate::abi::layout::{FlatType, flat_types, params_spill, result_spills, spill_layout};
+use crate::abi::{lift, lower};
 use crate::backend::Backend;
 use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
@@ -148,8 +152,8 @@ pub fn build_resource_new_trampoline<T: 'static>(
 
 /// Build a runtime-layer host function that implements the
 /// canonical `resource.rep` intrinsic for a single resource type.
-/// The returned function takes one i32 (the index) and returns the
-/// rep stored at that entry.
+/// The returned function takes one i32 (the handle index) and
+/// returns the rep stored at that entry.
 pub fn build_resource_rep_trampoline<T: 'static>(
     store: &mut Store<T>,
     runtime: ResourceRuntime<T>,
@@ -160,9 +164,9 @@ pub fn build_resource_rep_trampoline<T: 'static>(
         store.inner_mut(),
         func_type,
         move |_store_ctx, args, results| {
-            let rep = take_i32(args, 0).map_err(|err| anyhow!("resource.rep: {err}"))?;
-            let stored = read_handle(&tables, runtime.type_id, rep)?;
-            results[0] = RuntimeVal::I32(stored as i32);
+            let index = take_i32(args, 0).map_err(|err| anyhow!("resource.rep: {err}"))?;
+            let rep = read_handle(&tables, runtime.type_id, index)?;
+            results[0] = RuntimeVal::I32(rep as i32);
             Ok(())
         },
     )
@@ -171,9 +175,9 @@ pub fn build_resource_rep_trampoline<T: 'static>(
 fn take_i32(args: &[RuntimeVal], cursor: usize) -> Result<u32> {
     match args.get(cursor) {
         Some(RuntimeVal::I32(v)) => Ok(*v as u32),
-        _ => Err(Error::Internal {
-            message: "resource trampoline expected an i32 argument".to_owned(),
-        }),
+        _ => Err(Error::internal(
+            "resource trampoline expected an i32 argument",
+        )),
     }
 }
 
@@ -182,9 +186,9 @@ fn remove_handle(
     type_id: ResourceTypeId,
     index: u32,
 ) -> Result<u32> {
-    let mut guard = tables.lock().map_err(|_| Error::Internal {
-        message: "resource handle tables lock poisoned".to_owned(),
-    })?;
+    let mut guard = tables
+        .lock()
+        .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
     let table = guard.for_type_mut(type_id);
     table.remove(index).ok_or_else(|| invalid_handle(index))
 }
@@ -194,9 +198,9 @@ fn insert_handle(
     type_id: ResourceTypeId,
     rep: u32,
 ) -> Result<u32> {
-    let mut guard = tables.lock().map_err(|_| Error::Internal {
-        message: "resource handle tables lock poisoned".to_owned(),
-    })?;
+    let mut guard = tables
+        .lock()
+        .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
     Ok(guard.for_type_mut(type_id).insert(rep))
 }
 
@@ -205,9 +209,9 @@ fn read_handle(
     type_id: ResourceTypeId,
     index: u32,
 ) -> Result<u32> {
-    let guard = tables.lock().map_err(|_| Error::Internal {
-        message: "resource handle tables lock poisoned".to_owned(),
-    })?;
+    let guard = tables
+        .lock()
+        .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
     let table = guard
         .for_type(type_id)
         .ok_or_else(|| invalid_handle(index))?;
@@ -259,30 +263,29 @@ pub fn build_trampoline<T: 'static>(
 
 /// Derive the core-Wasm function type the lowered import presents
 /// to the guest. The signature's parameters and result are flattened
-/// per the canonical ABI; if the result's flat count exceeds
-/// `MAX_FLAT_RESULTS = 1`, an extra i32 pointer parameter is
-/// appended (the "return area").
+/// per the canonical ABI. A parameter tuple wider than
+/// `MAX_FLAT_PARAMS` collapses to one `i32` pointer; a result wider
+/// than `MAX_FLAT_RESULTS` adds an `i32` return-area pointer as the
+/// final parameter.
 fn derive_runtime_func_type(signature: &FunctionType) -> FuncType {
     let mut params: Vec<CoreType> = Vec::new();
-    for p in &signature.parameters {
-        for slot in flat_types(&p.ty) {
-            params.push(core_type_of_flat(slot));
+    if params_spill(signature) {
+        params.push(CoreType::I32);
+    } else {
+        for p in &signature.parameters {
+            for slot in flat_types(&p.ty) {
+                params.push(core_type_of_flat(slot));
+            }
         }
     }
 
     let mut results: Vec<CoreType> = Vec::new();
     if let Some(result_ty) = &signature.result {
-        let result_flat = flat_types(result_ty);
-        match flat_count(result_ty) {
-            Some(n) if n <= 1 => {
-                for slot in result_flat {
-                    results.push(core_type_of_flat(slot));
-                }
-            }
-            _ => {
-                // Result is too wide for flat — caller passes a
-                // return-area pointer as the final i32 parameter.
-                params.push(CoreType::I32);
+        if result_spills(signature) {
+            params.push(CoreType::I32);
+        } else {
+            for slot in flat_types(result_ty) {
+                results.push(core_type_of_flat(slot));
             }
         }
     }
@@ -313,320 +316,159 @@ fn invoke_trampoline<T: 'static>(
     args: &[RuntimeVal],
     results: &mut [RuntimeVal],
 ) -> Result<()> {
-    let (memory, realloc, _post_return) = {
-        let state = abi_state.lock().map_err(|_| Error::Internal {
-            message: "ABI runtime state lock poisoned".to_owned(),
-        })?;
+    let (memory, realloc) = {
+        let state = abi_state
+            .lock()
+            .map_err(|_| Error::internal("ABI runtime state lock poisoned"))?;
         let memory = options
             .memory
             .and_then(|s| state.memories.get(s).and_then(|m| m.clone()));
         let realloc = options
             .realloc
             .and_then(|s| state.reallocs.get(s).and_then(|r| r.clone()));
-        let post_return = options
-            .post_return
-            .and_then(|s| state.post_returns.get(s).and_then(|p| p.clone()));
-        (memory, realloc, post_return)
+        (memory, realloc)
     };
 
-    // Lift arguments. The synchronous-baseline tests this PDD
-    // un-stubs use signatures whose flat-parameter count is well
-    // under MAX_FLAT_PARAMS; we lift each argument one-by-one
-    // rather than the >MAX_FLAT_PARAMS memory-pointer path.
-    let mut lifted: Vec<Val> = Vec::with_capacity(signature.parameters.len());
     let mut cursor = 0usize;
-    let store_ctx_mut = store_ctx.as_context_mut();
     let mut lift_ctx = LiftContext::new(
-        store_ctx_mut,
+        store_ctx.as_context_mut(),
         memory.clone(),
         options.string_encoding,
         Some(tables.clone()),
     );
-    for (i, param) in signature.parameters.iter().enumerate() {
-        let position = AbiPosition::Argument(i);
-        let val = lift_argument(&mut lift_ctx, &param.ty, args, &mut cursor, position)?;
-        lifted.push(val);
-    }
-
-    // Result-area pointer (if the result is too wide to fit in the
-    // single MAX_FLAT_RESULTS=1 slot).
-    let result_ty = signature.result.clone();
-    let return_area_ptr = if let Some(ref ty) = result_ty {
-        match flat_count(ty) {
-            Some(n) if n <= 1 => None,
-            _ => {
-                let ptr = match args.get(cursor) {
-                    Some(RuntimeVal::I32(p)) => *p as usize,
-                    _ => {
-                        return Err(Error::from(AbiError {
-                            position: AbiPosition::Result,
-                            valtype: ty.clone(),
-                            cause: AbiCause::InvalidEncoding {
-                                message: "expected return-area pointer at the end of args"
-                                    .to_owned(),
-                            },
-                        }));
-                    }
-                };
-                cursor += 1;
-                Some(ptr)
-            }
-        }
+    let lifted = if params_spill(signature) {
+        lift_spilled_arguments(&mut lift_ctx, signature, args, &mut cursor)?
     } else {
-        None
+        let mut lifted: Vec<Val> = Vec::with_capacity(signature.parameters.len());
+        for (i, param) in signature.parameters.iter().enumerate() {
+            let position = AbiPosition::Argument(i);
+            lifted.push(lift_from_flat_slots(
+                &mut lift_ctx,
+                args,
+                &mut cursor,
+                &param.ty,
+                position,
+            )?);
+        }
+        lifted
     };
-    let _ = cursor;
+
+    // When the result is too wide for flat slots, the caller passes
+    // a return-area pointer as the final argument.
+    let return_area_ptr = match &signature.result {
+        Some(result_ty) if result_spills(signature) => Some(pointer_argument(
+            args,
+            &mut cursor,
+            result_ty,
+            AbiPosition::Result,
+        )?),
+        _ => None,
+    };
 
     // Drop the lift context borrow before invoking the host.
     drop(lift_ctx);
 
-    // Dispatch to the host function.
-    let host_arity = result_ty.is_some() as usize;
-    let mut host_results: Vec<Val> = if host_arity == 0 {
-        Vec::new()
-    } else {
-        vec![Val::Bool(false); host_arity]
+    let host_arity = usize::from(signature.result.is_some());
+    let mut host_results: Vec<Val> = vec![Val::Bool(false); host_arity];
+    host_func(store_ctx.data_mut(), &lifted, &mut host_results)?;
+
+    let Some(result_ty) = &signature.result else {
+        return Ok(());
     };
-    let data_ref = store_ctx.data_mut();
-    host_func(data_ref, &lifted, &mut host_results)?;
-
-    // Lower the host's return into the runtime's result slots (or
-    // memory).
-    if let Some(result_ty) = result_ty {
-        let host_val = host_results.into_iter().next().ok_or_else(|| {
-            Error::from(AbiError {
-                position: AbiPosition::Result,
-                valtype: result_ty.clone(),
-                cause: AbiCause::HostValueMismatch,
-            })
-        })?;
-        match return_area_ptr {
-            Some(ptr) => {
-                let store_ctx_mut = store_ctx.as_context_mut();
-                let mut lower_ctx = LowerContext::new(
-                    store_ctx_mut,
-                    memory,
-                    realloc,
-                    options.string_encoding,
-                    Some(tables.clone()),
-                );
-                lower(
-                    &mut lower_ctx,
-                    ptr,
-                    &host_val,
-                    &result_ty,
-                    AbiPosition::Result,
-                )?;
-                // Memory-resident result: no flat result slots.
-            }
-            None => {
-                let store_ctx_mut = store_ctx.as_context_mut();
-                let mut lower_ctx = LowerContext::new(
-                    store_ctx_mut,
-                    memory,
-                    realloc,
-                    options.string_encoding,
-                    Some(tables.clone()),
-                );
-                let core = lower_to_single_flat(
-                    &mut lower_ctx,
-                    &host_val,
-                    &result_ty,
-                    AbiPosition::Result,
-                )?;
-                if results.is_empty() {
-                    return Err(Error::from(AbiError {
-                        position: AbiPosition::Result,
-                        valtype: result_ty,
-                        cause: AbiCause::InvalidEncoding {
-                            message: "missing flat result slot".to_owned(),
-                        },
-                    }));
-                }
-                results[0] = core;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Lift a single argument from the flat-arg slice into a `Val`.
-/// Delegates to [`crate::abi::flatten::lift_from_flat_slots`] which
-/// implements the canonical ABI's per-slot flat-arg encoding for
-/// every value type.
-fn lift_argument<T: 'static>(
-    ctx: &mut LiftContext<'_, T>,
-    ty: &ValueType,
-    args: &[RuntimeVal],
-    cursor: &mut usize,
-    position: AbiPosition,
-) -> Result<Val> {
-    lift_from_flat_slots(ctx, args, cursor, ty, position)
-}
-
-#[allow(dead_code)]
-fn primitive_from_flat_unused(
-    prim: PrimitiveType,
-    args: &[RuntimeVal],
-    cursor: &mut usize,
-    position: AbiPosition,
-    ty: &ValueType,
-) -> Result<Val> {
-    let mismatch = || {
+    let host_val = host_results.into_iter().next().ok_or_else(|| {
         Error::from(AbiError {
-            position,
-            valtype: ty.clone(),
+            position: AbiPosition::Result,
+            valtype: result_ty.clone(),
             cause: AbiCause::HostValueMismatch,
         })
-    };
-    let take = |cursor: &mut usize| {
-        let v = args.get(*cursor).cloned();
-        *cursor += 1;
-        v
-    };
-    match prim {
-        PrimitiveType::Bool => match take(cursor) {
-            Some(RuntimeVal::I32(v)) => Ok(Val::Bool(v != 0)),
-            _ => Err(mismatch()),
-        },
-        PrimitiveType::S8 => match take(cursor) {
-            Some(RuntimeVal::I32(v)) => Ok(Val::S8(v as i8)),
-            _ => Err(mismatch()),
-        },
-        PrimitiveType::U8 => match take(cursor) {
-            Some(RuntimeVal::I32(v)) => Ok(Val::U8(v as u8)),
-            _ => Err(mismatch()),
-        },
-        PrimitiveType::S16 => match take(cursor) {
-            Some(RuntimeVal::I32(v)) => Ok(Val::S16(v as i16)),
-            _ => Err(mismatch()),
-        },
-        PrimitiveType::U16 => match take(cursor) {
-            Some(RuntimeVal::I32(v)) => Ok(Val::U16(v as u16)),
-            _ => Err(mismatch()),
-        },
-        PrimitiveType::S32 => match take(cursor) {
-            Some(RuntimeVal::I32(v)) => Ok(Val::S32(v)),
-            _ => Err(mismatch()),
-        },
-        PrimitiveType::U32 => match take(cursor) {
-            Some(RuntimeVal::I32(v)) => Ok(Val::U32(v as u32)),
-            _ => Err(mismatch()),
-        },
-        PrimitiveType::S64 => match take(cursor) {
-            Some(RuntimeVal::I64(v)) => Ok(Val::S64(v)),
-            _ => Err(mismatch()),
-        },
-        PrimitiveType::U64 => match take(cursor) {
-            Some(RuntimeVal::I64(v)) => Ok(Val::U64(v as u64)),
-            _ => Err(mismatch()),
-        },
-        PrimitiveType::F32 => match take(cursor) {
-            Some(RuntimeVal::F32(v)) => Ok(Val::F32(v)),
-            _ => Err(mismatch()),
-        },
-        PrimitiveType::F64 => match take(cursor) {
-            Some(RuntimeVal::F64(v)) => Ok(Val::F64(v)),
-            _ => Err(mismatch()),
-        },
-        PrimitiveType::Char => match take(cursor) {
-            Some(RuntimeVal::I32(v)) => char::from_u32(v as u32).map(Val::Char).ok_or_else(|| {
-                Error::from(AbiError {
-                    position,
-                    valtype: ty.clone(),
+    })?;
+    let mut lower_ctx = LowerContext::new(
+        store_ctx.as_context_mut(),
+        memory,
+        realloc,
+        options.string_encoding,
+        Some(tables.clone()),
+    );
+    match return_area_ptr {
+        Some(ptr) => lower(
+            &mut lower_ctx,
+            ptr,
+            &host_val,
+            result_ty,
+            AbiPosition::Result,
+        ),
+        None => {
+            let mut slots: Vec<RuntimeVal> = Vec::new();
+            lower_into_flat_slots(
+                &mut lower_ctx,
+                &host_val,
+                result_ty,
+                &mut slots,
+                AbiPosition::Result,
+            )?;
+            if slots.len() != results.len() {
+                return Err(Error::from(AbiError {
+                    position: AbiPosition::Result,
+                    valtype: result_ty.clone(),
                     cause: AbiCause::InvalidEncoding {
-                        message: "char arg is not a valid Unicode scalar".to_owned(),
+                        message: format!(
+                            "lowered {} flat result slots for a core signature with {}",
+                            slots.len(),
+                            results.len()
+                        ),
                     },
-                })
-            }),
-            _ => Err(mismatch()),
-        },
-        PrimitiveType::String => {
-            // `string` flattens to (ptr, len). Lift into Val::String.
-            // Two slots consumed.
-            let ptr = take_i32_arg(args, cursor, ty, position)? as usize;
-            let len = take_i32_arg(args, cursor, ty, position)? as usize;
-            // We need a LiftContext to read memory; the caller does
-            // not give us one because primitives normally need none.
-            // Surface a structured error so the caller (which has
-            // the lift context) handles strings via a dedicated
-            // path. But since this function returns a Val, returning
-            // an error here forces lift_argument to special-case
-            // strings. Actually: we *can* read here if we have
-            // memory; let me restructure to take the ctx.
-            let _ = (ptr, len);
-            Err(Error::from(AbiError {
-                position,
-                valtype: ty.clone(),
-                cause: AbiCause::InvalidEncoding {
-                    message: "string args follow a separate lift path; this is a polyfill bug"
-                        .to_owned(),
-                },
-            }))
+                }));
+            }
+            for (dst, src) in results.iter_mut().zip(slots) {
+                *dst = src;
+            }
+            Ok(())
         }
     }
 }
 
-fn take_i32_arg(
+/// Lift every parameter from the spilled tuple the guest wrote to
+/// linear memory. The single flat argument is the tuple's address;
+/// each parameter sits at the offset the canonical ABI's record
+/// layout gives it.
+fn lift_spilled_arguments<T: 'static>(
+    ctx: &mut LiftContext<'_, T>,
+    signature: &FunctionType,
+    args: &[RuntimeVal],
+    cursor: &mut usize,
+) -> Result<Vec<Val>> {
+    let types: Vec<ValueType> = signature.parameters.iter().map(|p| p.ty.clone()).collect();
+    let layout = spill_layout(&types);
+    let first = types
+        .first()
+        .cloned()
+        .unwrap_or(ValueType::Primitive(PrimitiveType::U32));
+    let base = pointer_argument(args, cursor, &first, AbiPosition::Argument(0))?;
+    let mut lifted = Vec::with_capacity(types.len());
+    for (i, (ty, offset)) in types.iter().zip(layout.offsets.iter()).enumerate() {
+        lifted.push(lift(ctx, base + offset, ty, AbiPosition::Argument(i))?);
+    }
+    Ok(lifted)
+}
+
+/// Read one `i32` pointer argument at `cursor` and advance it.
+fn pointer_argument(
     args: &[RuntimeVal],
     cursor: &mut usize,
     ty: &ValueType,
     position: AbiPosition,
-) -> Result<i32> {
+) -> Result<usize> {
     match args.get(*cursor) {
-        Some(RuntimeVal::I32(v)) => {
+        Some(RuntimeVal::I32(p)) => {
             *cursor += 1;
-            Ok(*v)
+            Ok(*p as u32 as usize)
         }
         _ => Err(Error::from(AbiError {
             position,
             valtype: ty.clone(),
-            cause: AbiCause::HostValueMismatch,
+            cause: AbiCause::InvalidEncoding {
+                message: "expected an i32 pointer argument".to_owned(),
+            },
         })),
-    }
-}
-
-/// Lower a host return into a single flat slot. This is the
-/// MAX_FLAT_RESULTS=1 path; wider results take the memory-pointer
-/// branch in [`invoke_trampoline`].
-fn lower_to_single_flat<T: 'static>(
-    ctx: &mut LowerContext<'_, T>,
-    val: &Val,
-    ty: &ValueType,
-    position: AbiPosition,
-) -> Result<RuntimeVal> {
-    match (ty, val) {
-        (ValueType::Primitive(PrimitiveType::Bool), Val::Bool(b)) => {
-            Ok(RuntimeVal::I32(i32::from(*b)))
-        }
-        (ValueType::Primitive(PrimitiveType::S8), Val::S8(v)) => Ok(RuntimeVal::I32(i32::from(*v))),
-        (ValueType::Primitive(PrimitiveType::U8), Val::U8(v)) => Ok(RuntimeVal::I32(i32::from(*v))),
-        (ValueType::Primitive(PrimitiveType::S16), Val::S16(v)) => {
-            Ok(RuntimeVal::I32(i32::from(*v)))
-        }
-        (ValueType::Primitive(PrimitiveType::U16), Val::U16(v)) => {
-            Ok(RuntimeVal::I32(i32::from(*v)))
-        }
-        (ValueType::Primitive(PrimitiveType::S32), Val::S32(v)) => Ok(RuntimeVal::I32(*v)),
-        (ValueType::Primitive(PrimitiveType::U32), Val::U32(v)) => Ok(RuntimeVal::I32(*v as i32)),
-        (ValueType::Primitive(PrimitiveType::S64), Val::S64(v)) => Ok(RuntimeVal::I64(*v)),
-        (ValueType::Primitive(PrimitiveType::U64), Val::U64(v)) => Ok(RuntimeVal::I64(*v as i64)),
-        (ValueType::Primitive(PrimitiveType::F32), Val::F32(v)) => Ok(RuntimeVal::F32(*v)),
-        (ValueType::Primitive(PrimitiveType::F64), Val::F64(v)) => Ok(RuntimeVal::F64(*v)),
-        (ValueType::Primitive(PrimitiveType::Char), Val::Char(c)) => Ok(RuntimeVal::I32(*c as i32)),
-        // Wider returns: the caller uses the memory-pointer branch,
-        // so reaching this with a string/list/compound is a polyfill
-        // bug.
-        _ => {
-            let _ = (ctx, align_to(0, alignment_of(ty)));
-            Err(Error::from(AbiError {
-                position,
-                valtype: ty.clone(),
-                cause: AbiCause::InvalidEncoding {
-                    message: "wide return passed through the single-flat-slot path".to_owned(),
-                },
-            }))
-        }
     }
 }

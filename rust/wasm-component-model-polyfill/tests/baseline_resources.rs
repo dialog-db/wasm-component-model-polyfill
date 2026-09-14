@@ -66,7 +66,7 @@ async fn it_runs_destructors_in_drop_order_for_multiple_handles() {
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let drop2 = inst.get_func(&mut store, "drop2").expect("drop2 export");
+    let drop2 = inst.get_func("drop2").expect("drop2 export");
     let h1 = store.resource_new(type_id, 1).expect("mint h1");
     let h2 = store.resource_new(type_id, 2).expect("mint h2");
     drop2
@@ -135,9 +135,7 @@ async fn it_rejects_a_handle_whose_type_id_is_not_registered_in_the_store() {
     let inst = linker
         .instantiate(&mut consumer, &component)
         .expect("instantiate");
-    let consume = inst
-        .get_func(&mut consumer, "consume")
-        .expect("consume export");
+    let consume = inst.get_func("consume").expect("consume export");
     let outcome = consume.call(&mut consumer, &[Val::Own(foreign_handle)]);
     assert!(
         matches!(outcome, Err(Error::Abi(_))),
@@ -180,9 +178,7 @@ async fn it_rejects_a_completely_fabricated_handle_index() {
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let consume = inst
-        .get_func(&mut store, "consume")
-        .expect("consume export");
+    let consume = inst.get_func("consume").expect("consume export");
     let bogus = ResourceHandle {
         type_id,
         index: 999,
@@ -250,8 +246,8 @@ async fn it_supports_two_distinct_resource_types_in_one_interface() {
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let drop_alpha = inst.get_func(&mut store, "drop-alpha").expect("drop-alpha");
-    let drop_beta = inst.get_func(&mut store, "drop-beta").expect("drop-beta");
+    let drop_alpha = inst.get_func("drop-alpha").expect("drop-alpha");
+    let drop_beta = inst.get_func("drop-beta").expect("drop-beta");
     let a = store.resource_new(alpha_id, 11).expect("mint alpha");
     let b = store.resource_new(beta_id, 22).expect("mint beta");
     drop_alpha
@@ -300,7 +296,7 @@ async fn it_reuses_freed_handle_indices_after_drop() {
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let consume = inst.get_func(&mut store, "consume").expect("consume");
+    let consume = inst.get_func("consume").expect("consume");
 
     let h0 = store.resource_new(type_id, 1).expect("h0");
     let h1 = store.resource_new(type_id, 2).expect("h1");

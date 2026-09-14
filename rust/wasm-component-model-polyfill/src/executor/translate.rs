@@ -7,7 +7,6 @@
 //! target — see [`super`] for why the `compile` feature builds
 //! cleanly on `wasm32-unknown-unknown`.
 
-use core::fmt::Display;
 use std::collections::HashMap;
 
 use wasm_runtime_layer::Module as RuntimeModule;
@@ -19,12 +18,13 @@ use wasmtime_environ::component::{
     StaticModuleIndex, StringEncoding as EnvironStringEncoding, Trampoline, TrampolineIndex,
     Translator, TypeResourceTable, TypeResourceTableIndex,
 };
+use wasmtime_environ::prelude::Error as TranslatorError;
 use wasmtime_environ::wasmparser::{Validator, WasmFeatures};
-use wasmtime_environ::{EntityIndex as EnvironEntityIndex, ScopeVec, Tunables};
+use wasmtime_environ::{EntityIndex as EnvironEntityIndex, ScopeVec, Tunables, WasmError};
 
 use crate::component::{Component, ExternType, ExternalName, FunctionType, InstanceItem};
 use crate::engine::Engine;
-use crate::error::{Error, Result};
+use crate::error::{Error, InstantiationError, Result};
 use crate::identifier::InterfaceIdentifier;
 
 use super::ir::{
@@ -56,7 +56,12 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
     let mut module_index_for_static: HashMap<StaticModuleIndex, usize> =
         HashMap::with_capacity(modules.len());
     for (static_idx, module) in modules {
-        let runtime = RuntimeModule::new(engine.inner(), module.wasm).map_err(translation_error)?;
+        // The translator already validated the module; a compile
+        // failure here means the runtime layer refused a valid
+        // module, which is a substrate concern.
+        let runtime = RuntimeModule::new(engine.inner(), module.wasm)
+            .map_err(InstantiationError::SubstrateFailure)
+            .map_err(Error::from)?;
         let imports = module
             .module
             .imports()
@@ -126,7 +131,7 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
                 ..
             } => {
                 let runtime_import = *lowered_to_import.get(lowered_idx).ok_or_else(|| {
-                    internal(
+                    Error::internal(
                         "Trampoline::LowerImport has no matching GlobalInitializer::LowerImport",
                     )
                 })?;
@@ -134,7 +139,7 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
                     .component
                     .options
                     .get(*options)
-                    .ok_or_else(|| internal("Trampoline OptionsIndex out of bounds"))?;
+                    .ok_or_else(|| Error::internal("Trampoline OptionsIndex out of bounds"))?;
                 let lowering = build_lowering_spec(
                     component,
                     &translation,
@@ -147,44 +152,30 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
                 trampoline_to_spec.insert(trampoline_idx, slot);
             }
             Trampoline::ResourceDrop { ty, .. } => {
-                let resource_index = resolve_resource_index(
-                    &component_types,
-                    &translation.component.imported_resources,
-                    &resource_to_spec,
-                    *ty,
-                )?;
+                let resource_index =
+                    resolve_resource_index(&component_types, &resource_to_spec, *ty)?;
                 let slot = trampoline_specs.len();
                 trampoline_specs.push(TrampolineSpec::ResourceDrop { resource_index });
                 trampoline_to_spec.insert(trampoline_idx, slot);
             }
             Trampoline::ResourceNew { ty, .. } => {
-                let resource_index = resolve_resource_index(
-                    &component_types,
-                    &translation.component.imported_resources,
-                    &resource_to_spec,
-                    *ty,
-                )?;
+                let resource_index =
+                    resolve_resource_index(&component_types, &resource_to_spec, *ty)?;
                 let slot = trampoline_specs.len();
                 trampoline_specs.push(TrampolineSpec::ResourceNew { resource_index });
                 trampoline_to_spec.insert(trampoline_idx, slot);
             }
             Trampoline::ResourceRep { ty, .. } => {
-                let resource_index = resolve_resource_index(
-                    &component_types,
-                    &translation.component.imported_resources,
-                    &resource_to_spec,
-                    *ty,
-                )?;
+                let resource_index =
+                    resolve_resource_index(&component_types, &resource_to_spec, *ty)?;
                 let slot = trampoline_specs.len();
                 trampoline_specs.push(TrampolineSpec::ResourceRep { resource_index });
                 trampoline_to_spec.insert(trampoline_idx, slot);
             }
-            // Other trampoline kinds — string transcoders, async
-            // intrinsics, futures, streams, etc. — fall outside the
-            // synchronous baseline. `CoreDef::Trampoline` references
-            // to one of these surface as the existing
-            // `internal("CoreDef::Trampoline references ...")`
-            // diagnostic at lift time.
+            // Other trampoline kinds (string transcoders, resource
+            // transfer between components, concurrency built-ins)
+            // are not built. A `CoreDef::Trampoline` that references
+            // one surfaces `Error::Unsupported` in `lift_core_def`.
             _ => {}
         }
     }
@@ -199,7 +190,7 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
                 _,
             ) => {
                 let module_index = *module_index_for_static.get(static_idx).ok_or_else(|| {
-                    internal("module index from translator missing from projection map")
+                    Error::internal("module index from translator missing from projection map")
                 })?;
                 let mut imports = Vec::with_capacity(defs.len());
                 for def in defs.iter() {
@@ -212,9 +203,9 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
                 });
             }
             GlobalInitializer::InstantiateModule(InstantiateModule::Import(_, _), _) => {
-                todo!(
-                    "import-style core-module instantiation: only Wasmtime's adapter pipeline emits this; not exercised by the synchronous baseline tests yet"
-                )
+                return Err(Error::unsupported(
+                    "instantiation of an imported core module",
+                ));
             }
             GlobalInitializer::LowerImport { .. } => {
                 // The trampoline's runtime-layer function is built
@@ -246,15 +237,14 @@ pub fn translate(engine: &Engine, component: &Component) -> Result<ExecutorIr> {
                     .initializers
                     .push(Initializer::ExtractPostReturn { slot, source });
             }
-            GlobalInitializer::ExtractCallback(_) | GlobalInitializer::ExtractTable(_) => {
-                todo!(
-                    "callback / table extraction is async-tier or thread.spawn-indirect machinery — out of the synchronous baseline"
-                )
+            GlobalInitializer::ExtractCallback(_) => {
+                return Err(Error::unsupported("asynchronous lifts (callback)"));
+            }
+            GlobalInitializer::ExtractTable(_) => {
+                return Err(Error::unsupported("thread built-ins (table extraction)"));
             }
             GlobalInitializer::Resource(_) => {
-                todo!(
-                    "locally-defined resources (with an in-binary destructor) are not exercised by the synchronous baseline tests this PDD un-stubs; only host-imported resources are covered"
-                )
+                return Err(Error::unsupported("locally-defined resources"));
             }
         }
     }
@@ -310,7 +300,7 @@ fn collect_export(
         .component
         .export_items
         .get(export_index)
-        .ok_or_else(|| internal("export index from translator missing from export_items"))?;
+        .ok_or_else(|| Error::internal("export index from translator missing from export_items"))?;
     match export {
         ComponentExport::LiftedFunction { func, options, .. } => {
             let source = state.lift_core_def(func, trampoline_to_spec)?;
@@ -319,7 +309,7 @@ fn collect_export(
                 .component
                 .options
                 .get(*options)
-                .ok_or_else(|| internal("export OptionsIndex out of bounds"))?;
+                .ok_or_else(|| Error::internal("export OptionsIndex out of bounds"))?;
             out.push(ExportSpec {
                 name: name.to_owned(),
                 parent: parent.cloned(),
@@ -330,19 +320,17 @@ fn collect_export(
             Ok(())
         }
         ComponentExport::ModuleStatic { .. } | ComponentExport::ModuleImport { .. } => {
-            todo!(
-                "module-typed component exports are out of scope for the synchronous baseline; see PDD003 checklist"
-            )
+            Err(Error::unsupported("module-typed exports"))
         }
         ComponentExport::Instance { exports, .. } => {
             if parent.is_some() {
-                todo!(
-                    "doubly-nested instance exports — only one level of nesting is exercised by the synchronous baseline"
-                );
+                return Err(Error::unsupported(
+                    "instance exports nested more than one level",
+                ));
             }
-            let identifier = name.parse::<InterfaceIdentifier>().map_err(|err| {
-                internal_msg(format!(
-                    "instance-typed export name `{name}` does not parse as a WIT interface identifier: {err}"
+            let identifier = name.parse::<InterfaceIdentifier>().map_err(|_| {
+                Error::unsupported(format!(
+                    "instance exports with a plain name (`{name}` is not a WIT interface identifier)"
                 ))
             })?;
             for (item_name, (inner_index, _)) in exports.raw_iter() {
@@ -373,7 +361,6 @@ fn collect_export(
 /// `imported_resources` map.
 fn resolve_resource_index(
     component_types: &ComponentTypes,
-    imported_resources: &wasmtime_environ::PrimaryMap<ResourceIndex, RuntimeImportIndex>,
     resource_to_spec: &HashMap<ResourceIndex, usize>,
     ty: TypeResourceTableIndex,
 ) -> Result<usize> {
@@ -381,17 +368,15 @@ fn resolve_resource_index(
     let resource_idx = match table {
         TypeResourceTable::Concrete { ty, .. } => *ty,
         TypeResourceTable::Abstract(_) => {
-            return Err(internal(
-                "resource trampoline references an abstract resource table — should not appear in a concrete instantiation",
+            return Err(Error::internal(
+                "resource trampoline references an abstract resource table in a concrete instantiation",
             ));
         }
     };
-    let _ = imported_resources; // arg kept for symmetry; lookup is via resource_to_spec.
-    resource_to_spec.get(&resource_idx).copied().ok_or_else(|| {
-        internal(
-            "resource trampoline references a defined (non-imported) resource — locally-defined resources are not yet supported",
-        )
-    })
+    resource_to_spec
+        .get(&resource_idx)
+        .copied()
+        .ok_or_else(|| Error::unsupported("locally-defined resources"))
 }
 
 /// Build a [`ResourceSpec`] from a [`RuntimeImportIndex`] into the
@@ -406,12 +391,12 @@ fn build_resource_spec(
         .component
         .imports
         .get(runtime_import)
-        .ok_or_else(|| internal("RuntimeImportIndex out of bounds"))?;
+        .ok_or_else(|| Error::internal("RuntimeImportIndex out of bounds"))?;
     let (top_name, _) = translation
         .component
         .import_types
         .get(*import_idx)
-        .ok_or_else(|| internal("ImportIndex out of bounds for import_types"))?;
+        .ok_or_else(|| Error::internal("ImportIndex out of bounds for import_types"))?;
 
     let (polyfill_idx, _polyfill_import) = component
         .imports
@@ -419,16 +404,18 @@ fn build_resource_spec(
         .enumerate()
         .find(|(_, imp)| matches_top_level_name(&imp.name, top_name))
         .ok_or_else(|| {
-            internal("wasmtime resource import has no matching polyfill Component import by name")
+            Error::internal(
+                "wasmtime resource import has no matching polyfill Component import by name",
+            )
         })?;
 
     let item_name = match path.len() {
         0 => None,
         1 => Some(path[0].clone()),
         _ => {
-            todo!(
-                "deeply-nested resource imports (path > 1) are not exercised by the synchronous baseline; the polyfill defers them until a test demands the shape"
-            )
+            return Err(Error::unsupported(
+                "resource imports nested more than one level",
+            ));
         }
     };
 
@@ -469,21 +456,17 @@ impl ProjectionState {
             CoreDef::Export(export) => self.lift_core_export(export),
             CoreDef::Trampoline(trampoline_idx) => {
                 let lowering_index = *trampoline_to_spec.get(trampoline_idx).ok_or_else(|| {
-                    internal(
-                        "CoreDef::Trampoline references a trampoline kind the polyfill defers (resource intrinsics, transcoders, async)",
+                    Error::unsupported(
+                        "string transcoders, resource transfer, and concurrency built-ins between components",
                     )
                 })?;
                 Ok(ImportSource::Trampoline(lowering_index))
             }
-            CoreDef::InstanceFlags(_) => todo!(
-                "component-instance flag globals are part of the canonical-ABI runtime state for asynchronous lifts; the synchronous baseline does not exercise them"
-            ),
-            CoreDef::UnsafeIntrinsic(_) => todo!(
-                "Wasmtime unsafe intrinsics are not part of the polyfill's surface — see PDD003"
-            ),
-            CoreDef::TaskMayBlock => {
-                todo!("task-may-block global is part of the async-tier runtime state — see PDD003")
+            CoreDef::InstanceFlags(_) => {
+                Err(Error::unsupported("component composition (instance flags)"))
             }
+            CoreDef::UnsafeIntrinsic(_) => Err(Error::unsupported("Wasmtime unsafe intrinsics")),
+            CoreDef::TaskMayBlock => Err(Error::unsupported("asynchronous lifts (task-may-block)")),
         }
     }
 
@@ -494,7 +477,9 @@ impl ProjectionState {
         let _ = self
             .runtime_instance_to_module
             .get(export.instance.as_u32() as usize)
-            .ok_or_else(|| internal("CoreExport instance index missing from projection map"))?;
+            .ok_or_else(|| {
+                Error::internal("CoreExport instance index missing from projection map")
+            })?;
         let item = match &export.item {
             ComponentExportItem::Name(s) => CoreSourceItem::Name(s.clone()),
             ComponentExportItem::Index(idx) => {
@@ -522,12 +507,12 @@ fn build_lowering_spec(
         .component
         .imports
         .get(runtime_import)
-        .ok_or_else(|| internal("RuntimeImportIndex out of bounds"))?;
+        .ok_or_else(|| Error::internal("RuntimeImportIndex out of bounds"))?;
     let (top_name, _) = translation
         .component
         .import_types
         .get(*import_idx)
-        .ok_or_else(|| internal("ImportIndex out of bounds for import_types"))?;
+        .ok_or_else(|| Error::internal("ImportIndex out of bounds for import_types"))?;
 
     let (polyfill_idx, polyfill_import) = component
         .imports
@@ -535,7 +520,7 @@ fn build_lowering_spec(
         .enumerate()
         .find(|(_, imp)| matches_top_level_name(&imp.name, top_name))
         .ok_or_else(|| {
-            internal("wasmtime import has no matching polyfill Component import by name")
+            Error::internal("wasmtime import has no matching polyfill Component import by name")
         })?;
 
     // Walk the path of inner-instance lookups to find the leaf item.
@@ -545,8 +530,8 @@ fn build_lowering_spec(
         let signature = match &polyfill_import.ty {
             ExternType::Function(ty) => ty.clone(),
             other => {
-                return Err(internal_msg(format!(
-                    "plain-named import is not a function: {other:?}"
+                return Err(Error::unsupported(format!(
+                    "lowering of a top-level import that is not a function ({other:?})"
                 )));
             }
         };
@@ -560,28 +545,26 @@ fn build_lowering_spec(
                     .iter()
                     .find(|InstanceItem { name, .. }| name == leaf)
                     .ok_or_else(|| {
-                        internal_msg(format!("imported instance has no item named `{leaf}`"))
+                        Error::internal(format!("imported instance has no item named `{leaf}`"))
                     })?;
                 match &item.ty {
                     ExternType::Function(ty) => ty.clone(),
                     other => {
-                        return Err(internal_msg(format!(
-                            "imported instance item `{leaf}` is not a function: {other:?}"
+                        return Err(Error::unsupported(format!(
+                            "lowering of an imported instance item that is not a function (`{leaf}` is {other:?})"
                         )));
                     }
                 }
             }
             other => {
-                return Err(internal_msg(format!(
+                return Err(Error::internal(format!(
                     "lowered import expects an interface-typed instance, found {other:?}"
                 )));
             }
         };
         (Some(leaf.clone()), signature)
     } else {
-        todo!(
-            "deeply-nested instance imports (path > 1) are not exercised by the synchronous baseline; the polyfill defers them until a test demands the shape"
-        )
+        return Err(Error::unsupported("imports nested more than one level"));
     };
 
     Ok(LoweringSpec {
@@ -625,7 +608,7 @@ fn lookup_leaf_signature(
                     let instance = match &export.ty {
                         ExternType::Instance(instance) => instance,
                         _ => {
-                            return Err(internal_msg(format!(
+                            return Err(Error::internal(format!(
                                 "export `{parent_wire}` is not an instance in the polyfill's parsed-component view"
                             )));
                         }
@@ -635,19 +618,19 @@ fn lookup_leaf_signature(
                         .iter()
                         .find(|InstanceItem { name, .. }| name == leaf)
                         .ok_or_else(|| {
-                            internal_msg(format!(
+                            Error::internal(format!(
                                 "instance export `{parent_wire}` has no item named `{leaf}`"
                             ))
                         })?;
                     return match &item.ty {
                         ExternType::Function(ty) => Ok(ty.clone()),
-                        _ => Err(internal_msg(format!(
+                        _ => Err(Error::internal(format!(
                             "instance export `{parent_wire}` item `{leaf}` is not a function"
                         ))),
                     };
                 }
             }
-            Err(internal_msg(format!(
+            Err(Error::internal(format!(
                 "instance export `{parent_wire}` not present in the polyfill's parsed-component view"
             )))
         }
@@ -660,13 +643,13 @@ fn lookup_leaf_signature(
                 if matches {
                     return match &export.ty {
                         ExternType::Function(ty) => Ok(ty.clone()),
-                        _ => Err(internal(
+                        _ => Err(Error::internal(
                             "lifted-function export's polyfill type is not a function",
                         )),
                     };
                 }
             }
-            Err(internal(
+            Err(Error::internal(
                 "lifted-function export not present in the polyfill's parsed-component view",
             ))
         }
@@ -705,19 +688,23 @@ fn lift_entity_index(idx: EnvironEntityIndex) -> EntityIndex {
     }
 }
 
-fn translation_error<E: Display>(err: E) -> Error {
-    Error::InvalidComponentBinary {
-        message: format!("{err}"),
-        offset: 0,
+/// Map a translator failure onto the polyfill's error model. A
+/// validation failure keeps the byte offset the translator reports;
+/// a feature the translator itself does not support is surfaced as
+/// [`Error::Unsupported`].
+fn translation_error(err: TranslatorError) -> Error {
+    match err.downcast::<WasmError>() {
+        Ok(WasmError::InvalidWebAssembly { message, offset }) => {
+            Error::InvalidComponentBinary { message, offset }
+        }
+        Ok(WasmError::Unsupported(feature)) => Error::unsupported(feature),
+        Ok(other) => Error::InvalidComponentBinary {
+            message: format!("{other}"),
+            offset: 0,
+        },
+        Err(other) => Error::InvalidComponentBinary {
+            message: format!("{other:#}"),
+            offset: 0,
+        },
     }
-}
-
-fn internal(message: &str) -> Error {
-    Error::Internal {
-        message: message.to_owned(),
-    }
-}
-
-fn internal_msg(message: String) -> Error {
-    Error::Internal { message }
 }

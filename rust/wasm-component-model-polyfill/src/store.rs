@@ -4,14 +4,34 @@
 //! isolation between independent component instances: the
 //! polyfill's analogue to `wasmtime::Store`. The store also owns the
 //! per-resource-type handle tables the canonical-ABI runtime-state
-//! rules require.
+//! rules require, and carries a process-unique identity so that an
+//! instance can refuse a call made through a different store.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::backend::Backend;
 use crate::engine::Engine;
 use crate::error::{Error, Result};
 use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId};
+
+/// A process-unique identity for one [`Store`].
+///
+/// Every store mints a fresh id at construction. An [`Instance`]
+/// records the id of the store it was created in, and a function
+/// handle compares that id with the store it is called with. The
+/// wrapped integer is opaque and not exposed.
+///
+/// [`Instance`]: crate::Instance
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct StoreId(u64);
+
+impl StoreId {
+    fn fresh() -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(1);
+        Self(COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
+}
 
 /// The polyfill's owner of guest state.
 ///
@@ -23,6 +43,9 @@ use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId};
 /// mutate its host data without leaving the polyfill's API.
 pub struct Store<T: 'static> {
     inner: wasm_runtime_layer::Store<T, Backend>,
+    /// The store's process-unique identity. Workspace-internal; not
+    /// re-exported by `lib.rs`.
+    pub id: StoreId,
     /// Per-resource-type handle tables. The `Arc<Mutex<...>>` shape
     /// lets resource trampolines and lift/lower contexts reach the
     /// tables from inside runtime-layer closures, where the
@@ -43,6 +66,7 @@ impl<T: 'static> Store<T> {
     pub fn new(engine: &Engine, data: T) -> Result<Self> {
         Ok(Self {
             inner: wasm_runtime_layer::Store::new(engine.inner(), data),
+            id: StoreId::fresh(),
             tables: Arc::new(Mutex::new(HandleTables::new())),
         })
     }
@@ -74,9 +98,10 @@ impl<T: 'static> Store<T> {
     ///
     /// [`Val::Own`]: crate::Val::Own
     pub fn resource_new(&self, type_id: ResourceTypeId, rep: u32) -> Result<ResourceHandle> {
-        let mut guard = self.tables.lock().map_err(|_| Error::Internal {
-            message: "resource handle tables lock poisoned".to_owned(),
-        })?;
+        let mut guard = self
+            .tables
+            .lock()
+            .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
         let table = guard.for_type_mut(type_id);
         let index = table.insert(rep);
         Ok(ResourceHandle { type_id, index })

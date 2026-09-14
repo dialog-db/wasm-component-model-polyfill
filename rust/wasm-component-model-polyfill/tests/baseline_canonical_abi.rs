@@ -18,29 +18,11 @@
 
 use std::sync::{Arc, Mutex};
 
-use wasm_component_model_polyfill::{Component, Engine, Linker, Store, Val, ValField};
+use wasm_component_model_polyfill::{Component, Engine, Linker, Store, Val};
 use wcmp_macros::component;
 
 #[cfg(target_arch = "wasm32")]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
-
-/// Bump-pointer `cabi_realloc` and a 1-page memory used by every
-/// export that needs to lower a heap-allocating value into guest
-/// memory. Inlined as a string so the per-test `component!` literal
-/// can include it without repetition.
-const REALLOC_AND_MEMORY: &str = r#"
-    (memory (export "memory") 1)
-    (global $bump (mut i32) (i32.const 16))
-    (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
-      (local $ptr i32)
-      global.get $bump
-      local.set $ptr
-      global.get $bump
-      local.get 3
-      i32.add
-      global.set $bump
-      local.get $ptr)
-"#;
 
 #[wcmp_macros::test]
 async fn it_round_trips_every_primitive_through_an_export() {
@@ -188,7 +170,7 @@ async fn it_passes_a_record_argument_to_a_host_function() {
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let go = inst.get_func(&mut store, "go").expect("go export");
+    let go = inst.get_func("go").expect("go export");
     let result = go
         .call(&mut store, &[Val::S32(7), Val::S32(35)])
         .expect("call");
@@ -243,9 +225,7 @@ async fn it_returns_a_record_from_an_export() {
     let instance = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let make = instance
-        .get_func(&mut store, "make")
-        .expect("`make` export");
+    let make = instance.get_func("make").expect("`make` export");
     let result = make
         .call(&mut store, &[Val::S32(7), Val::S32(11)])
         .expect("call");
@@ -405,7 +385,7 @@ async fn it_passes_a_variant_argument_to_a_host_function() {
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let go = inst.get_func(&mut store, "go").expect("go export");
+    let go = inst.get_func("go").expect("go export");
     // Invoke twice: once with the "none" tag, once with "value 99".
     assert_eq!(
         go.call(&mut store, &[Val::S32(0), Val::S32(0)])
@@ -554,7 +534,7 @@ async fn it_passes_an_enum_argument_to_a_host_function() {
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let go = inst.get_func(&mut store, "go").expect("go export");
+    let go = inst.get_func("go").expect("go export");
     assert_eq!(
         go.call(&mut store, &[Val::S32(1)]).expect("call").as_ref(),
         &[Val::S32(101)]
@@ -622,7 +602,7 @@ async fn it_passes_a_flags_argument_to_a_host_function() {
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let go = inst.get_func(&mut store, "go").expect("go export");
+    let go = inst.get_func("go").expect("go export");
     // Bits 0b101 = read + execute.
     assert_eq!(
         go.call(&mut store, &[Val::U32(0b101)])
@@ -779,9 +759,7 @@ async fn it_observes_cabi_realloc_during_string_lower() {
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let len = inst
-        .get_func(&mut store, "len")
-        .expect("len export present");
+    let len = inst.get_func("len").expect("len export present");
     let results = len
         .call(&mut store, &[Val::String("hello".to_owned())])
         .expect("call");
@@ -848,7 +826,7 @@ async fn it_invokes_post_return_after_a_sync_lift() {
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let len = inst.get_func(&mut store, "len").expect("len export");
+    let len = inst.get_func("len").expect("len export");
     assert_eq!(*store.data(), 0, "post-return has not run yet");
     let results = len
         .call(&mut store, &[Val::String("ab".to_owned())])
@@ -974,7 +952,7 @@ async fn it_supports_typed_export_calls() {
 
     // Happy path: `(i32) -> i32` matches the export's `(s32) -> s32`.
     let typed = instance
-        .get_func(&mut store, "id")
+        .get_func("id")
         .expect("`id` export")
         .typed::<(i32,), i32>()
         .expect("typed conversion succeeds");
@@ -983,7 +961,7 @@ async fn it_supports_typed_export_calls() {
     // Mismatch path: requesting `(i32) -> i64` against `(s32) -> s32`
     // surfaces a structured `Error::TypeMismatch` before any call.
     let mismatch = instance
-        .get_func(&mut store, "id")
+        .get_func("id")
         .expect("`id` export")
         .typed::<(i32,), i64>()
         .expect_err("typed conversion rejects a mismatched return type");
@@ -1084,9 +1062,7 @@ async fn it_observes_cabi_realloc_alignment_for_record_allocations() {
     let instance = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let make = instance
-        .get_func(&mut store, "make")
-        .expect("`make` export");
+    let make = instance.get_func("make").expect("`make` export");
     let _ = make.call(&mut store, &[]).expect("call");
 
     let observed = observed.lock().expect("lock").clone();
@@ -1118,18 +1094,147 @@ fn call(
     args: &[Val],
 ) -> Box<[Val]> {
     let func = instance
-        .get_func(store, name)
+        .get_func(name)
         .unwrap_or_else(|| panic!("`{name}` export present"));
     func.call(store, args).expect("call succeeds")
 }
 
-// Defeat dead-code on the helper constants; rust-analyzer otherwise
-// flags them when no test in this file references them.
-#[allow(dead_code)]
-fn _unused_fixtures() {
-    let _ = REALLOC_AND_MEMORY;
-    let _: ValField = ValField {
-        name: String::new(),
-        value: Val::Bool(false),
+#[wcmp_macros::test]
+async fn it_spills_a_wide_parameter_tuple_when_calling_an_export() {
+    // Seventeen `u32` parameters exceed `MAX_FLAT_PARAMS` (16), so
+    // the canonical ABI passes the whole tuple through one pointer
+    // into guest memory. The core function reads the seventeen
+    // values back and sums them.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (core module $m
+            (memory (export "memory") 1)
+            (global $bump (mut i32) (i32.const 1024))
+            (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
+              (local $ptr i32)
+              global.get $bump local.set $ptr
+              global.get $bump local.get 3 i32.add global.set $bump
+              local.get $ptr)
+            (func (export "sum17") (param $p i32) (result i32)
+              (local $i i32) (local $acc i32)
+              (loop $l
+                local.get $acc
+                local.get $p local.get $i i32.const 2 i32.shl i32.add i32.load
+                i32.add local.set $acc
+                local.get $i i32.const 1 i32.add local.tee $i
+                i32.const 17 i32.lt_u br_if $l)
+              local.get $acc))
+          (core instance $i (instantiate $m))
+          (func (export "sum17") (param "a0" u32) (param "a1" u32) (param "a2" u32) (param "a3" u32) (param "a4" u32) (param "a5" u32) (param "a6" u32) (param "a7" u32) (param "a8" u32) (param "a9" u32) (param "a10" u32) (param "a11" u32) (param "a12" u32) (param "a13" u32) (param "a14" u32) (param "a15" u32) (param "a16" u32) (result u32)
+            (canon lift (core func $i "sum17")
+                       (memory (core memory $i "memory"))
+                       (realloc (core func $i "cabi_realloc")))))
+        "#
+    );
+    let (mut store, instance) = instantiate(COMPONENT);
+    let args: Vec<Val> = (1u32..=17).map(Val::U32).collect();
+    let result = call(&instance, &mut store, "sum17", &args);
+    assert_eq!(result.as_ref(), &[Val::U32(153)]);
+}
+
+#[wcmp_macros::test]
+async fn it_spills_a_wide_parameter_tuple_when_calling_a_host_function() {
+    // The guest side of the same rule: a lowered import with
+    // seventeen parameters receives one pointer. The lowering needs
+    // the guest's own memory, and the guest module needs the
+    // lowered function, so the component uses the shim-and-fixups
+    // pattern wit-bindgen emits: a `$shim` module exports a funcref
+    // table and a function that calls through it, the main module
+    // imports that function, and a `$fixups` module fills the table
+    // with the lowered function once the main instance exists.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (type $iface (instance
+            (export "sum17" (func (param "a0" u32) (param "a1" u32) (param "a2" u32) (param "a3" u32) (param "a4" u32) (param "a5" u32) (param "a6" u32) (param "a7" u32) (param "a8" u32) (param "a9" u32) (param "a10" u32) (param "a11" u32) (param "a12" u32) (param "a13" u32) (param "a14" u32) (param "a15" u32) (param "a16" u32) (result u32)))))
+          (import "pdd-tests:host/wide@0.1.0" (instance $imports (type $iface)))
+          (alias export $imports "sum17" (func $sum17))
+          (core module $shim
+            (table (export "$imports") 1 1 funcref)
+            (func (export "0") (param i32) (result i32)
+              local.get 0
+              i32.const 0
+              call_indirect (param i32) (result i32)))
+          (core instance $shim (instantiate $shim))
+          (core module $m
+            (import "host" "sum17" (func $sum (param i32) (result i32)))
+            (memory (export "memory") 1)
+            (global $bump (mut i32) (i32.const 1024))
+            (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
+              (local $ptr i32)
+              global.get $bump local.set $ptr
+              global.get $bump local.get 3 i32.add global.set $bump
+              local.get $ptr)
+            (func (export "go") (result i32)
+              (local $i i32)
+              (loop $l
+                i32.const 512 local.get $i i32.const 2 i32.shl i32.add
+                local.get $i i32.const 1 i32.add
+                i32.store
+                local.get $i i32.const 1 i32.add local.tee $i
+                i32.const 17 i32.lt_u br_if $l)
+              i32.const 512
+              call $sum))
+          (core instance $i (instantiate $m
+            (with "host" (instance (export "sum17" (func $shim "0"))))))
+          (core func $core-sum
+            (canon lower (func $sum17)
+                         (memory (core memory $i "memory"))
+                         (realloc (core func $i "cabi_realloc"))))
+          (core module $fixups
+            (import "" "0" (func (param i32) (result i32)))
+            (import "" "$imports" (table 1 1 funcref))
+            (elem (i32.const 0) func 0))
+          (core instance (instantiate $fixups
+            (with "" (instance
+              (export "0" (func $core-sum))
+              (export "$imports" (table $shim "$imports"))))))
+          (func (export "go") (result u32)
+            (canon lift (core func $i "go"))))
+        "#
+    );
+    use wasm_component_model_polyfill::{
+        FunctionParameter, FunctionType, InterfaceIdentifier, PrimitiveType, ValueType,
     };
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let iface: InterfaceIdentifier = "pdd-tests:host/wide@0.1.0".parse().expect("identifier");
+    linker.instance(&iface).func_new(
+        "sum17",
+        FunctionType {
+            parameters: (0..17)
+                .map(|i| FunctionParameter {
+                    name: format!("a{i}"),
+                    ty: ValueType::Primitive(PrimitiveType::U32),
+                })
+                .collect(),
+            result: Some(ValueType::Primitive(PrimitiveType::U32)),
+        },
+        |_: &mut (), args, results| {
+            assert_eq!(args.len(), 17);
+            let mut sum = 0u32;
+            for arg in args {
+                let Val::U32(v) = arg else {
+                    panic!("expected u32, got {arg:?}");
+                };
+                sum += v;
+            }
+            results[0] = Val::U32(sum);
+            Ok(())
+        },
+    );
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let inst = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiate");
+    let go = inst.get_func("go").expect("go export");
+    let result = go.call(&mut store, &[]).expect("call");
+    assert_eq!(result.as_ref(), &[Val::U32(153)]);
 }

@@ -166,17 +166,10 @@ pub fn lift<T: 'static>(
             }
             Ok(Val::Flags(active.into_boxed_slice()))
         }
-        ValueType::Own(rt) | ValueType::Borrow(rt) => {
+        ValueType::Own(_) | ValueType::Borrow(_) => {
             let bytes = ctx.read_bytes(offset, 4, position, ty)?;
             let index = read_u32(&bytes);
-            lift_handle(
-                ctx,
-                rt.label(),
-                index,
-                ty,
-                position,
-                matches!(ty, ValueType::Own(_)),
-            )
+            lift_handle(ctx, index, ty, position, matches!(ty, ValueType::Own(_)))
         }
     }
 }
@@ -314,21 +307,20 @@ fn read_discriminant(bytes: &[u8]) -> usize {
 /// has already been read out of the flat slot or memory location.
 ///
 /// The lift cross-references the index against the per-store
-/// handle tables: the polyfill reuses one table per registered
+/// handle tables: the polyfill keeps one table per registered
 /// resource type, addressed by the registered
 /// [`ResourceTypeId`](crate::resource::ResourceTypeId). For an
 /// `own<T>` lift the entry is removed from the table — ownership
 /// transfers to the host. For `borrow<T>` the entry is left in
 /// place and the host receives a handle that aliases the live entry.
 ///
-/// The label argument is the resource-type label declared at the
-/// import site; it is used to locate the matching registered type
-/// identity by walking every table. This works because the lift
-/// runs only when the call's signature already named a resource type
-/// the executor resolved at instantiation time.
+/// The declared `ValueType` carries only the resource's label, not
+/// its registered identity, so the lift locates the entry by walking
+/// every table for a live entry at `index`. This is sound while the
+/// executor's resource trampolines and `Store::resource_new` are the
+/// only producers of live entries.
 pub fn lift_handle<T: 'static>(
     ctx: &mut LiftContext<'_, T>,
-    _label: &str,
     index: u32,
     ty: &ValueType,
     position: AbiPosition,
@@ -344,18 +336,10 @@ pub fn lift_handle<T: 'static>(
         })
     })?;
 
-    let mut guard = tables.lock().map_err(|_| Error::Internal {
-        message: "resource handle tables lock poisoned".to_owned(),
-    })?;
+    let mut guard = tables
+        .lock()
+        .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
 
-    // The polyfill currently uses one table per registered
-    // `ResourceTypeId`; the executor's resource trampolines and
-    // `Store::resource_new` are the only producers, so any live
-    // entry under a given resource label corresponds to exactly one
-    // type id. The lift walks the tables looking for a live entry
-    // at `index` — wasmtime's typed-by-`TypeResourceTableIndex`
-    // dispatch is replaced here by the per-store table's structural
-    // identity.
     let candidates: Vec<crate::resource::ResourceTypeId> =
         guard.iter().map(|(type_id, _)| type_id).collect();
     let mut found = None;

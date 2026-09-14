@@ -21,7 +21,7 @@
 use wasm_runtime_layer::Val as RuntimeVal;
 
 use super::context::{LiftContext, LowerContext};
-use super::layout::{FlatType, flat_types, size_of};
+use super::layout::{FlatType, flags_chunk_count, flat_types, join_flat_slots, size_of};
 use super::{lift, lower};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::StringEncoding;
@@ -159,9 +159,7 @@ pub fn lower_into_flat_slots<T: 'static>(
             Ok(())
         }
         (ValueType::Flags(flags_ty), Val::Flags(active)) => {
-            let n = flags_ty.names().len();
-            let chunks = if n == 0 { 0 } else { n.div_ceil(32) };
-            let mut bits = vec![0u32; chunks];
+            let mut bits = vec![0u32; flags_chunk_count(flags_ty)];
             for name in active.iter() {
                 let idx = flags_ty
                     .names()
@@ -339,8 +337,7 @@ pub fn lift_from_flat_slots<T: 'static>(
             Ok(Val::Enum(case.clone()))
         }
         ValueType::Flags(flags_ty) => {
-            let n = flags_ty.names().len();
-            let chunks = if n == 0 { 0 } else { n.div_ceil(32) };
+            let chunks = flags_chunk_count(flags_ty);
             let mut bits: Vec<u32> = Vec::with_capacity(chunks);
             for _ in 0..chunks {
                 bits.push(take_i32(args, cursor, ty, position)? as u32);
@@ -356,14 +353,7 @@ pub fn lift_from_flat_slots<T: 'static>(
         }
         ValueType::Own(_) | ValueType::Borrow(_) => {
             let index = take_i32(args, cursor, ty, position)? as u32;
-            crate::abi::lift_handle(
-                ctx,
-                "",
-                index,
-                ty,
-                position,
-                matches!(ty, ValueType::Own(_)),
-            )
+            crate::abi::lift_handle(ctx, index, ty, position, matches!(ty, ValueType::Own(_)))
         }
     }
 }
@@ -400,10 +390,9 @@ fn lower_variant_flat<T: 'static, I: Iterator<Item = Option<ValueType>>>(
         None => Vec::new(),
     };
     if active_slots.len() != active_types.len() {
-        return Err(Error::Internal {
-            message: "variant payload flat-slot count disagreed with declared flat shape"
-                .to_owned(),
-        });
+        return Err(Error::internal(
+            "variant payload flat-slot count disagreed with declared flat shape",
+        ));
     }
     for (i, joined_ty) in joined.iter().copied().enumerate() {
         match active_slots.get(i) {
@@ -468,36 +457,6 @@ fn lift_variant_payload_flat<T: 'static>(
     let mut sub_cursor = 0;
     let inner = lift_from_flat_slots(ctx, &decoded, &mut sub_cursor, payload_ty, position)?;
     Ok(Some(inner))
-}
-
-fn join_flat_slots<I: Iterator<Item = Option<ValueType>>>(cases: I) -> Vec<FlatType> {
-    let mut joined: Vec<FlatType> = Vec::new();
-    for payload in cases {
-        let case = match payload {
-            Some(ty) => flat_types(&ty),
-            None => Vec::new(),
-        };
-        for (i, slot) in case.into_iter().enumerate() {
-            if i < joined.len() {
-                joined[i] = join_flat(joined[i], slot);
-            } else {
-                joined.push(slot);
-            }
-        }
-    }
-    joined
-}
-
-fn join_flat(a: FlatType, b: FlatType) -> FlatType {
-    if a == b {
-        return a;
-    }
-    match (a, b) {
-        (FlatType::I32, FlatType::F32) | (FlatType::F32, FlatType::I32) => FlatType::I32,
-        (FlatType::I32, FlatType::I64) | (FlatType::I64, FlatType::I32) => FlatType::I64,
-        (FlatType::F32, FlatType::F64) | (FlatType::F64, FlatType::F32) => FlatType::F64,
-        _ => FlatType::I64,
-    }
 }
 
 fn zero_of_flat(t: FlatType) -> RuntimeVal {
@@ -571,9 +530,11 @@ fn primitive_to_flat(
         (PrimitiveType::F32, Val::F32(v)) => RuntimeVal::F32(*v),
         (PrimitiveType::F64, Val::F64(v)) => RuntimeVal::F64(*v),
         (PrimitiveType::Char, Val::Char(c)) => RuntimeVal::I32(*c as i32),
-        (PrimitiveType::String, _) => return Err(Error::Internal {
-            message: "primitive_to_flat reached the string arm; strings should be handled by lower_into_flat_slots's string branch".to_owned(),
-        }),
+        (PrimitiveType::String, _) => {
+            return Err(Error::internal(
+                "primitive_to_flat reached the string arm; strings are handled by lower_into_flat_slots",
+            ));
+        }
         _ => return Err(mismatch()),
     })
 }
@@ -642,9 +603,9 @@ fn primitive_from_flat(
             }),
             _ => Err(mismatch()),
         },
-        PrimitiveType::String => Err(Error::Internal {
-            message: "primitive_from_flat reached the string arm; strings are handled by lift_from_flat_slots's string branch".to_owned(),
-        }),
+        PrimitiveType::String => Err(Error::internal(
+            "primitive_from_flat reached the string arm; strings are handled by lift_from_flat_slots",
+        )),
     }
 }
 
@@ -733,9 +694,9 @@ fn validate_handle_in_table<T: 'static>(
             },
         })
     })?;
-    let guard = tables.lock().map_err(|_| Error::Internal {
-        message: "resource handle tables lock poisoned".to_owned(),
-    })?;
+    let guard = tables
+        .lock()
+        .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
     let table = guard.for_type(handle.type_id).ok_or_else(|| {
         Error::from(AbiError {
             position,

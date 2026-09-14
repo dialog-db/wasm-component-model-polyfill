@@ -159,6 +159,7 @@ pub fn instantiate<T: 'static>(
         core_instances: core_instances.into_boxed_slice(),
         function_exports,
         abi_state,
+        store_id: store.id,
     })
 }
 
@@ -413,7 +414,5 @@ fn collect_function_exports<T: 'static>(
 }
 
 fn internal(message: &str) -> Error {
-    Error::Internal {
-        message: message.to_owned(),
-    }
+    Error::internal(message)
 }

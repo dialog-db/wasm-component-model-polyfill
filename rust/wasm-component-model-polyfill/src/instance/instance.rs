@@ -6,7 +6,7 @@ use crate::component::FunctionType;
 use crate::executor::ir::CanonOptions;
 use crate::executor::trampoline::AbiRuntimeState;
 use crate::identifier::InterfaceIdentifier;
-use crate::store::Store;
+use crate::store::StoreId;
 
 use super::exports::InstanceExports;
 use super::func::Func;
@@ -74,6 +74,14 @@ pub struct Instance {
     /// closures.
     /// Workspace-internal; never re-exported through `lib.rs`.
     pub abi_state: Arc<Mutex<AbiRuntimeState>>,
+    /// The identity of the [`Store`] this instance was created in.
+    /// Every [`Func`] handed out by this instance carries it, so a
+    /// call through another store is rejected before it reaches
+    /// the runtime layer. Workspace-internal; never re-exported
+    /// through `lib.rs`.
+    ///
+    /// [`Store`]: crate::Store
+    pub store_id: StoreId,
 }
 
 impl Instance {
@@ -81,22 +89,26 @@ impl Instance {
     /// Returns `None` if the export is absent, not a function, or
     /// nested inside an instance-typed export. Use
     /// [`Self::exports`] to traverse instance-typed exports.
-    ///
-    /// `T` is the host-data type of the [`Store`] the instance was
-    /// created in. The store is taken so future work that needs to
-    /// realise lift/lower context for compound valtypes can do so
-    /// against the same store the instance lives in.
-    pub fn get_func<T>(&self, _store: &mut Store<T>, name: &str) -> Option<Func> {
+    pub fn get_func(&self, name: &str) -> Option<Func> {
         self.function_exports
             .iter()
             .find(|export| export.parent.is_none() && export.name == name)
-            .map(|export| Func {
-                name: export.name.clone(),
-                inner: export.func.clone(),
-                signature: export.signature.clone(),
-                options: export.options.clone(),
-                abi_state: self.abi_state.clone(),
-            })
+            .map(|export| self.func_for(export))
+    }
+
+    /// Build the caller-facing [`Func`] handle for one of this
+    /// instance's exported functions.
+    ///
+    /// Workspace-internal; not re-exported by `lib.rs`.
+    pub fn func_for(&self, export: &ExportedFunction) -> Func {
+        Func {
+            name: export.name.clone(),
+            inner: export.func.clone(),
+            signature: export.signature.clone(),
+            options: export.options.clone(),
+            abi_state: self.abi_state.clone(),
+            store_id: self.store_id,
+        }
     }
 
     /// The export navigator for this instance.

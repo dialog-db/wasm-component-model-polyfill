@@ -107,9 +107,7 @@ async fn it_instantiates_a_component_through_a_linker() {
     let instance = linker
         .instantiate(&mut store, &component)
         .expect("instantiation succeeds");
-    let add = instance
-        .get_func(&mut store, "add")
-        .expect("`add` export is present");
+    let add = instance.get_func("add").expect("`add` export is present");
 
     let results = add
         .call(&mut store, &[Val::S32(2), Val::S32(3)])
@@ -152,10 +150,10 @@ async fn it_supports_multiple_independent_instances() {
         .expect("second instantiation succeeds");
 
     let first_next = first
-        .get_func(&mut store, "next")
+        .get_func("next")
         .expect("`next` export present on first instance");
     let second_next = second
-        .get_func(&mut store, "next")
+        .get_func("next")
         .expect("`next` export present on second instance");
 
     assert_eq!(
@@ -221,7 +219,7 @@ async fn it_resolves_package_and_interface_identifiers_with_semver() {
         .instantiate(&mut store, &component)
         .expect("instantiation with semver-qualified import succeeds");
     let answer = instance
-        .get_func(&mut store, "answer")
+        .get_func("answer")
         .expect("`answer` export present");
     assert_eq!(
         answer
@@ -289,7 +287,7 @@ async fn it_defines_an_untyped_host_function() {
         .instantiate(&mut store, &component)
         .expect("instantiation succeeds");
     let do_double = inst
-        .get_func(&mut store, "do-double")
+        .get_func("do-double")
         .expect("`do-double` export present");
     let results = do_double
         .call(&mut store, &[Val::S32(21)])
@@ -343,7 +341,7 @@ async fn it_defines_a_typed_host_function() {
         .instantiate(&mut store, &component)
         .expect("instantiation succeeds");
     let do_double = inst
-        .get_func(&mut store, "do-double")
+        .get_func("do-double")
         .expect("`do-double` export present");
     let results = do_double
         .call(&mut store, &[Val::S32(21)])
@@ -428,7 +426,7 @@ async fn it_defines_a_host_resource_with_a_sync_destructor() {
         .instantiate(&mut store, &component)
         .expect("instantiation succeeds");
     let consume = instance
-        .get_func(&mut store, "consume")
+        .get_func("consume")
         .expect("`consume` export present");
 
     // Mint a handle for a host-side resource (rep `42` is opaque to
@@ -490,7 +488,7 @@ async fn it_invokes_an_exported_component_function() {
         .instantiate(&mut store, &component)
         .expect("instantiation succeeds");
     let string_length = instance
-        .get_func(&mut store, "string-length")
+        .get_func("string-length")
         .expect("`string-length` export present");
     let results = string_length
         .call(&mut store, &[Val::String("hello, world".to_owned())])
@@ -546,7 +544,7 @@ async fn it_dispatches_to_multiple_host_functions_in_one_interface() {
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let f = inst.get_func(&mut store, "incr-then-decr").expect("export");
+    let f = inst.get_func("incr-then-decr").expect("export");
     let result = f.call(&mut store, &[Val::S32(7)]).expect("call");
     assert_eq!(result.as_ref(), &[Val::S32(7)]);
 }
@@ -636,7 +634,7 @@ async fn it_passes_a_string_argument_to_a_host_function() {
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let send = inst.get_func(&mut store, "send").expect("`send` export");
+    let send = inst.get_func("send").expect("`send` export");
     let _ = send.call(&mut store, &[]).expect("call");
 
     let observed = observed.lock().expect("lock").clone();
@@ -687,9 +685,7 @@ async fn it_propagates_a_host_function_error_through_the_call() {
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let trigger = inst
-        .get_func(&mut store, "trigger")
-        .expect("trigger export");
+    let trigger = inst.get_func("trigger").expect("trigger export");
     let outcome = trigger.call(&mut store, &[]);
     let err = outcome.expect_err("call should fail");
     // The error is currently wrapped by the runtime substrate's
@@ -740,7 +736,7 @@ async fn it_supports_typed_host_function_with_unit_result() {
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let go = inst.get_func(&mut store, "go").expect("go export");
+    let go = inst.get_func("go").expect("go export");
     go.call(&mut store, &[]).expect("call");
     go.call(&mut store, &[]).expect("call again");
     assert_eq!(*store.data(), 2, "ping fired twice");
@@ -807,7 +803,7 @@ async fn it_rejects_a_call_whose_argument_count_disagrees_with_the_signature() {
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let id = inst.get_func(&mut store, "id").expect("id export");
+    let id = inst.get_func("id").expect("id export");
     let outcome = id.call(&mut store, &[Val::S32(1), Val::S32(2)]);
     let err = outcome.expect_err("call should fail");
     assert!(matches!(err, Error::Abi(_)), "got {err:?}");
@@ -834,7 +830,7 @@ async fn it_rejects_a_typed_export_call_whose_argument_type_disagrees() {
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let id = inst.get_func(&mut store, "id").expect("id export");
+    let id = inst.get_func("id").expect("id export");
     let outcome = id.call(&mut store, &[Val::S64(1)]);
     let err = outcome.expect_err("call should fail");
     assert!(matches!(err, Error::Abi(_)), "got {err:?}");
@@ -863,7 +859,7 @@ async fn it_resolves_an_unversioned_import_against_an_unversioned_registration()
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiate");
-    let ans = inst.get_func(&mut store, "answer").expect("answer export");
+    let ans = inst.get_func("answer").expect("answer export");
     let result = ans.call(&mut store, &[]).expect("call");
     assert_eq!(result.as_ref(), &[Val::S32(42)]);
 }
@@ -892,7 +888,7 @@ async fn it_treats_an_empty_unmatched_interface_import_as_vacuous() {
     let inst = linker
         .instantiate(&mut store, &component)
         .expect("instantiation succeeds — vacuous import");
-    let noop = inst.get_func(&mut store, "noop").expect("noop export");
+    let noop = inst.get_func("noop").expect("noop export");
     let result = noop.call(&mut store, &[]).expect("call");
     assert!(result.is_empty());
 }
@@ -1179,5 +1175,87 @@ async fn it_supports_a_typed_export_call_surface() {
     assert!(
         matches!(mismatch, Error::TypeMismatch(_)),
         "expected Error::TypeMismatch, got {mismatch:?}",
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_rejects_a_call_made_through_a_different_store() {
+    // An instance's core state lives in exactly one store. A
+    // handle called with another store is refused before the
+    // runtime layer sees it.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (core module $m
+            (func (export "one") (result i32) i32.const 1))
+          (core instance $i (instantiate $m))
+          (func (export "one") (result u32)
+            (canon lift (core func $i "one"))))
+        "#
+    );
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut owner: Store<()> = Store::new(&engine, ()).expect("store");
+    let mut other: Store<()> = Store::new(&engine, ()).expect("store");
+    let inst = linker
+        .instantiate(&mut owner, &component)
+        .expect("instantiate");
+    let one = inst.get_func("one").expect("one export");
+
+    let err = one
+        .call(&mut other, &[])
+        .expect_err("a call through a different store is rejected");
+    assert!(
+        matches!(
+            &err,
+            Error::Instantiation(cause)
+                if matches!(**cause, wasm_component_model_polyfill::InstantiationError::WrongStore)
+        ),
+        "expected InstantiationError::WrongStore, got {err:?}"
+    );
+
+    // The owning store still works.
+    let result = one.call(&mut owner, &[]).expect("call through the owner");
+    assert_eq!(result.as_ref(), &[Val::U32(1)]);
+}
+
+#[wcmp_macros::test]
+async fn it_reports_an_unsupported_feature_as_a_structured_error() {
+    // A component that defines its own resource type uses a
+    // feature the polyfill has not built. The failure is a
+    // structured `Error::Unsupported` naming the feature, never a
+    // panic.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (core module $d (func (export "dtor") (param i32)))
+          (core instance $d (instantiate $d))
+          (type $r (resource (rep i32) (dtor (core func $d "dtor"))))
+          (core func $new (canon resource.new $r))
+          (core module $m
+            (import "r" "new" (func $new (param i32) (result i32)))
+            (func (export "make") (result i32) i32.const 42 call $new))
+          (core instance $i (instantiate $m
+            (with "r" (instance (export "new" (func $new))))))
+          (func $make (result (own $r))
+            (canon lift (core func $i "make")))
+          (instance $things
+            (export "r" (type $r))
+            (export "make" (func $make)))
+          (export "pdd-tests:guest/things@0.1.0" (instance $things)))
+        "#
+    );
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let err = match linker.instantiate(&mut store, &component) {
+        Ok(_) => panic!("locally-defined resources are not supported yet"),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(&err, Error::Unsupported { feature } if feature.contains("locally-defined resources")),
+        "expected Error::Unsupported, got {err:?}"
     );
 }

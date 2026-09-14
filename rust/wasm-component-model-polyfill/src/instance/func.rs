@@ -7,19 +7,14 @@ use std::sync::{Arc, Mutex};
 use wasm_runtime_layer::{AsContextMut, Val as RuntimeVal};
 
 use crate::abi::context::{LiftContext, LowerContext};
-use crate::abi::flatten::lower_into_flat_slots;
-use crate::abi::layout::{FlatType, flat_count, flat_types};
-use crate::abi::lift;
-
-/// Per the canonical ABI, the maximum flat-slot count for the
-/// parameter tuple before the call switches to the wide-arg memory
-/// pointer path.
-const MAX_FLAT_PARAMS: usize = 16;
+use crate::abi::flatten::{lift_from_flat_slots, lower_into_flat_slots};
+use crate::abi::layout::{flat_types, params_spill, result_spills, spill_layout};
+use crate::abi::{lift, lower};
 use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result};
 use crate::executor::ir::CanonOptions;
 use crate::executor::trampoline::AbiRuntimeState;
-use crate::store::Store;
+use crate::store::{Store, StoreId};
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
 
@@ -27,9 +22,9 @@ use crate::value::Val;
 ///
 /// `Func` is obtained from [`Instance::get_func`] and is the unit a
 /// caller invokes through. Calling drives the canonical-ABI
-/// round-trip: lifts arguments through the export's canon options
+/// round-trip: lowers arguments through the export's canon options
 /// (calling `cabi_realloc` for heap-allocating values), passes them
-/// to the underlying core function, lowers the result back into the
+/// to the underlying core function, lifts the result back into the
 /// polyfill's [`Val`] enum, and runs the export's `post-return`
 /// after the caller observes the return.
 ///
@@ -60,6 +55,11 @@ pub struct Func {
     /// is taken briefly at the boundaries.
     /// Workspace-internal; never re-exported through `lib.rs`.
     pub abi_state: Arc<Mutex<AbiRuntimeState>>,
+    /// The identity of the [`Store`] the owning instance was
+    /// created in. A call made through any other store is rejected
+    /// before it reaches the runtime layer.
+    /// Workspace-internal; never re-exported through `lib.rs`.
+    pub store_id: StoreId,
 }
 
 impl Func {
@@ -71,8 +71,12 @@ impl Func {
     /// the caller has observed the return value.
     ///
     /// `T` is the host-data type of the [`Store`] the instance was
-    /// created in.
+    /// created in. Passing a different store returns
+    /// [`InstantiationError::WrongStore`].
     pub fn call<T: 'static>(&self, store: &mut Store<T>, args: &[Val]) -> Result<Box<[Val]>> {
+        if store.id != self.store_id {
+            return Err(Error::from(InstantiationError::WrongStore));
+        }
         if args.len() != self.signature.parameters.len() {
             return Err(Error::from(AbiError {
                 position: AbiPosition::Argument(0),
@@ -93,7 +97,7 @@ impl Func {
             let state = self
                 .abi_state
                 .lock()
-                .map_err(|_| internal("ABI runtime state lock poisoned"))?;
+                .map_err(|_| Error::internal("ABI runtime state lock poisoned"))?;
             let memory = self
                 .options
                 .memory
@@ -121,13 +125,10 @@ impl Func {
 
         // Run post-return (if any) after the caller has logically
         // observed the return; we hold the lifted value, so the
-        // post-return is safe to call now.
+        // post-return is safe to call now. Its arguments are the
+        // core results: the flat result slots, or the return-area
+        // pointer when the result spilled to memory.
         if let Some(post_return_func) = post_return {
-            // post-return takes the original core result values as
-            // its arguments. Mirror the canonical-ABI rule: when
-            // the result fits in MAX_FLAT_RESULTS=1, the core
-            // result slot is its argument; when it doesn't, the
-            // pointer slot the caller allocated is.
             let mut empty: [RuntimeVal; 0] = [];
             post_return_func
                 .call(store.inner_mut(), &core_results, &mut empty)
@@ -140,11 +141,7 @@ impl Func {
                 })?;
         }
 
-        let mut out: Vec<Val> = Vec::with_capacity(usize::from(self.signature.result.is_some()));
-        if let Some(val) = lifted_result {
-            out.push(val);
-        }
-        Ok(out.into_boxed_slice())
+        Ok(lifted_result.into_iter().collect())
     }
 
     /// The number of core-Wasm result slots the underlying core
@@ -154,10 +151,8 @@ impl Func {
     fn core_result_arity(&self) -> usize {
         match &self.signature.result {
             None => 0,
-            Some(result_ty) => match flat_count(result_ty) {
-                Some(n) if n <= 1 => flat_types(result_ty).len(),
-                _ => 1, // single result-area pointer
-            },
+            Some(_) if result_spills(&self.signature) => 1,
+            Some(result_ty) => flat_types(result_ty).len(),
         }
     }
 
@@ -178,46 +173,62 @@ impl Func {
             Some(tables),
         );
 
-        // Compute the total flat-slot count for the parameter
-        // tuple. The canonical ABI uses per-slot flat passing when
-        // it fits in `MAX_FLAT_PARAMS = 16`; otherwise the entire
-        // tuple is passed as a single memory pointer.
-        let total_flat: Option<usize> = self
+        if params_spill(&self.signature) {
+            // The whole parameter tuple is written into guest
+            // memory at the canonical ABI's record layout, and the
+            // core function receives its address.
+            let types: Vec<ValueType> = self
+                .signature
+                .parameters
+                .iter()
+                .map(|p| p.ty.clone())
+                .collect();
+            let layout = spill_layout(&types);
+            let spill_ty = ValueType::Primitive(PrimitiveType::U32);
+            let base = if layout.size == 0 {
+                0
+            } else {
+                lower_ctx.allocate_aligned(
+                    layout.size,
+                    layout.alignment,
+                    &spill_ty,
+                    AbiPosition::Argument(0),
+                )?
+            };
+            for (i, ((ty, val), offset)) in types
+                .iter()
+                .zip(args.iter())
+                .zip(layout.offsets.iter())
+                .enumerate()
+            {
+                lower(
+                    &mut lower_ctx,
+                    base + offset,
+                    val,
+                    ty,
+                    AbiPosition::Argument(i),
+                )?;
+            }
+            return Ok(vec![RuntimeVal::I32(base as i32)]);
+        }
+
+        let mut out: Vec<RuntimeVal> = Vec::new();
+        for (i, (param, val)) in self
             .signature
             .parameters
             .iter()
-            .try_fold(0usize, |acc, p| flat_count(&p.ty).map(|n| acc + n));
-
-        match total_flat {
-            Some(n) if n <= MAX_FLAT_PARAMS => {
-                let mut out: Vec<RuntimeVal> = Vec::new();
-                for (i, (param, val)) in self
-                    .signature
-                    .parameters
-                    .iter()
-                    .zip(args.iter())
-                    .enumerate()
-                {
-                    lower_into_flat_slots(
-                        &mut lower_ctx,
-                        val,
-                        &param.ty,
-                        &mut out,
-                        AbiPosition::Argument(i),
-                    )?;
-                }
-                Ok(out)
-            }
-            _ => Err(Error::from(AbiError {
-                position: AbiPosition::Argument(0),
-                valtype: ValueType::Primitive(PrimitiveType::Bool),
-                cause: AbiCause::InvalidEncoding {
-                    message: format!(
-                        "lifted-export call has more than {MAX_FLAT_PARAMS} flat parameter slots; the wide-arg memory-pointer path is not yet implemented"
-                    ),
-                },
-            })),
+            .zip(args.iter())
+            .enumerate()
+        {
+            lower_into_flat_slots(
+                &mut lower_ctx,
+                val,
+                &param.ty,
+                &mut out,
+                AbiPosition::Argument(i),
+            )?;
         }
+        Ok(out)
     }
 
     fn lift_result<T: 'static>(
@@ -238,92 +249,31 @@ impl Func {
             self.options.string_encoding,
             Some(tables),
         );
-        match flat_count(result_ty) {
-            Some(n) if n <= 1 => {
-                if core_results.is_empty() {
+        if result_spills(&self.signature) {
+            // Wide result: read from the pointer the core function
+            // returned.
+            let ptr = match core_results.first() {
+                Some(RuntimeVal::I32(p)) => *p as u32 as usize,
+                _ => {
                     return Err(Error::from(AbiError {
                         position,
                         valtype: result_ty.clone(),
                         cause: AbiCause::InvalidEncoding {
-                            message: "missing core result slot".to_owned(),
+                            message: "missing or non-i32 result-pointer slot".to_owned(),
                         },
                     }));
                 }
-                let val =
-                    lift_value_from_flat(&mut lift_ctx, &core_results[0], result_ty, position)?;
-                Ok(Some(val))
-            }
-            _ => {
-                // Wide result: read from the pointer the core
-                // function returned.
-                let ptr = match core_results.first() {
-                    Some(RuntimeVal::I32(p)) => *p as usize,
-                    _ => {
-                        return Err(Error::from(AbiError {
-                            position,
-                            valtype: result_ty.clone(),
-                            cause: AbiCause::InvalidEncoding {
-                                message: "missing or non-i32 result-pointer slot".to_owned(),
-                            },
-                        }));
-                    }
-                };
-                let val = lift(&mut lift_ctx, ptr, result_ty, position)?;
-                Ok(Some(val))
-            }
+            };
+            return Ok(Some(lift(&mut lift_ctx, ptr, result_ty, position)?));
         }
-    }
-}
-
-fn lift_value_from_flat<T: 'static>(
-    _ctx: &mut LiftContext<'_, T>,
-    core: &RuntimeVal,
-    ty: &ValueType,
-    position: AbiPosition,
-) -> Result<Val> {
-    let mismatch = || {
-        Error::from(AbiError {
+        let mut cursor = 0usize;
+        let val = lift_from_flat_slots(
+            &mut lift_ctx,
+            core_results,
+            &mut cursor,
+            result_ty,
             position,
-            valtype: ty.clone(),
-            cause: AbiCause::HostValueMismatch,
-        })
-    };
-    match (ty, core) {
-        (ValueType::Primitive(PrimitiveType::Bool), RuntimeVal::I32(v)) => Ok(Val::Bool(*v != 0)),
-        (ValueType::Primitive(PrimitiveType::S8), RuntimeVal::I32(v)) => Ok(Val::S8(*v as i8)),
-        (ValueType::Primitive(PrimitiveType::U8), RuntimeVal::I32(v)) => Ok(Val::U8(*v as u8)),
-        (ValueType::Primitive(PrimitiveType::S16), RuntimeVal::I32(v)) => Ok(Val::S16(*v as i16)),
-        (ValueType::Primitive(PrimitiveType::U16), RuntimeVal::I32(v)) => Ok(Val::U16(*v as u16)),
-        (ValueType::Primitive(PrimitiveType::S32), RuntimeVal::I32(v)) => Ok(Val::S32(*v)),
-        (ValueType::Primitive(PrimitiveType::U32), RuntimeVal::I32(v)) => Ok(Val::U32(*v as u32)),
-        (ValueType::Primitive(PrimitiveType::S64), RuntimeVal::I64(v)) => Ok(Val::S64(*v)),
-        (ValueType::Primitive(PrimitiveType::U64), RuntimeVal::I64(v)) => Ok(Val::U64(*v as u64)),
-        (ValueType::Primitive(PrimitiveType::F32), RuntimeVal::F32(v)) => Ok(Val::F32(*v)),
-        (ValueType::Primitive(PrimitiveType::F64), RuntimeVal::F64(v)) => Ok(Val::F64(*v)),
-        (ValueType::Primitive(PrimitiveType::Char), RuntimeVal::I32(v)) => {
-            char::from_u32(*v as u32).map(Val::Char).ok_or_else(|| {
-                Error::from(AbiError {
-                    position,
-                    valtype: ty.clone(),
-                    cause: AbiCause::InvalidEncoding {
-                        message: "core return is not a valid Unicode scalar for `char`".to_owned(),
-                    },
-                })
-            })
-        }
-        // Compound types and `string` whose flat count exceeds 1
-        // take the wide-result path; reaching here means the
-        // signature's flat-count agreed with the single-slot path,
-        // which only fits primitives non-string.
-        _ => {
-            let _ = FlatType::I32;
-            Err(mismatch())
-        }
-    }
-}
-
-fn internal(message: &str) -> Error {
-    Error::Internal {
-        message: message.to_owned(),
+        )?;
+        Ok(Some(val))
     }
 }

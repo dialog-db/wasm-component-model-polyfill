@@ -2,10 +2,9 @@
 //!
 //! The polyfill's executor consumes a small, polyfill-owned shape
 //! rather than `wasmtime_environ::component::Component` directly, so
-//! the same execution code drives every target. The native
-//! translator projects from `wasmtime_environ`'s rich
-//! `ComponentTranslation` into [`ExecutorIr`]; the web translator
-//! walks `wasmparser` payloads to build the same shape.
+//! the executor never names a translator type. One translator,
+//! `wasmtime_environ`'s component `Translator`, runs on every target
+//! and is projected into [`ExecutorIr`].
 
 use std::collections::HashMap;
 
@@ -77,10 +76,8 @@ pub struct ModuleEntry {
     /// from the core module's binary slice.
     pub runtime: wasm_runtime_layer::Module,
     /// The module's declared imports as `(host_namespace, name)`,
-    /// in declaration order. Native translation reads these from
-    /// `wasmtime_environ::Module::imports`; web translation reads
-    /// them by walking the inner `wasmparser` payloads of the core
-    /// module section.
+    /// in declaration order, read from
+    /// `wasmtime_environ::Module::imports`.
     pub imports: Box<[ModuleImport]>,
     /// Inverted export table: maps each export's slot
     /// (entity-index) to the name the module declares it under.
@@ -98,10 +95,8 @@ pub struct ModuleImport {
 }
 
 /// The kind of a core module's exported entity. Maps 1:1 onto
-/// `wasmtime_environ::EntityIndex` so the native translator can
-/// project from it without a name-mapping table; the web translator
-/// produces these directly while walking the module's own export
-/// section.
+/// `wasmtime_environ::EntityIndex` so the translator can project
+/// from it without a name-mapping table.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum EntityIndex {
     /// A function index inside the module.
@@ -194,14 +189,8 @@ pub enum CoreSourceItem {
     /// module. The executor turns this into a name through the
     /// owning module's [`ModuleEntry::entity_to_name`] table.
     ///
-    /// Only the native translator emits this variant (Wasmtime's
-    /// `Translator` resolves names to indices for static modules
-    /// to avoid runtime name lookups). The web translator only
-    /// emits [`CoreSourceItem::Name`] entries.
-    // Remove the `dead_code` allow once a target other than native
-    // (or a native code path other than the projection from
-    // `wasmtime_environ`) constructs this variant.
-    #[allow(dead_code)]
+    /// The translator resolves names to indices for static modules
+    /// to avoid runtime name lookups, so this is the common form.
     Index(EntityIndex),
 }
 
