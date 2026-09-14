@@ -500,6 +500,14 @@ fn check(path: &str, text: &str) {
 macro_rules! corpus_test {
     ($name:ident, $path:literal) => {
         #[wcmp_macros::test]
+        #[cfg_attr(
+            target_arch = "wasm32",
+            ignore = "the browser backend of the runtime layer (`js_wasm_runtime_layer`) \
+                      cannot load a core module that imports a global, a memory, or a \
+                      tag (`wasmparser::TypeRef::… => todo!()` in its module parser), \
+                      and the corpora are full of such modules; the gate lifts when \
+                      the patched backend lands"
+        )]
         async fn $name() {
             check($path, include_str!(concat!("../corpus/", $path)));
         }

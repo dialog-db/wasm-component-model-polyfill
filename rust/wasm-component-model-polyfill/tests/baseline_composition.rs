@@ -24,6 +24,14 @@ fn instantiate(bytes: &[u8]) -> (Store<()>, wasm_component_model_polyfill::Insta
 }
 
 #[wcmp_macros::test]
+#[cfg_attr(
+    target_arch = "wasm32",
+    ignore = "the browser backend of the runtime layer (`js_wasm_runtime_layer`) \
+              cannot load a core module that imports a global or a memory \
+              (`wasmparser::TypeRef::Global(_) => todo!()` in its module parser), \
+              and adapter modules import the instance-flag globals; the gate \
+              lifts when the patched backend lands"
+)]
 async fn it_links_two_inner_components_through_an_adapter() {
     // `$B` imports the function `$A` exports. The outer component
     // wires them together, so the call from `$B` to `$A` passes
@@ -61,6 +69,14 @@ async fn it_links_two_inner_components_through_an_adapter() {
 }
 
 #[wcmp_macros::test]
+#[cfg_attr(
+    target_arch = "wasm32",
+    ignore = "the browser backend of the runtime layer (`js_wasm_runtime_layer`) \
+              cannot load a core module that imports a global or a memory \
+              (`wasmparser::TypeRef::Global(_) => todo!()` in its module parser), \
+              and adapter modules import the instance-flag globals; the gate \
+              lifts when the patched backend lands"
+)]
 async fn it_copies_strings_between_inner_components_with_one_encoding() {
     // Both inner components use UTF-8. The adapter copies the string
     // from `$B`'s memory into `$A`'s memory through `$A`'s
@@ -181,6 +197,14 @@ async fn it_copies_strings_between_inner_components_with_one_encoding() {
 }
 
 #[wcmp_macros::test]
+#[cfg_attr(
+    target_arch = "wasm32",
+    ignore = "the browser backend of the runtime layer (`js_wasm_runtime_layer`) \
+              cannot load a core module that imports a global or a memory \
+              (`wasmparser::TypeRef::Global(_) => todo!()` in its module parser), \
+              and adapter modules import the instance-flag globals; the gate \
+              lifts when the patched backend lands"
+)]
 async fn it_transcodes_strings_between_inner_components() {
     // `$B` uses UTF-16 and `$A` uses UTF-8, so the adapter transcodes
     // in both directions through the polyfill's transcoder
