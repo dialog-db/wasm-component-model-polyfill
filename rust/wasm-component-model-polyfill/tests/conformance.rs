@@ -9,8 +9,17 @@
 //! `tests/corpus/expected-failures.txt`: a listed directive that now
 //! passes and an unlisted directive that fails both fail the test,
 //! so the list stays current.
+//!
+//! Every expectation carries a category, and one more test,
+//! `it_reports_conformance_progress`, runs every file in one process
+//! and prints a summary per corpus directory: directives, passes, and
+//! expected failures per category. When `WCMP_CONFORMANCE_SUMMARY`
+//! names a file, the test writes the same summary there as JSON.
 
 #![cfg(test)]
+
+#[path = "conformance/report.rs"]
+mod report;
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -23,6 +32,8 @@ use wast::parser::{self, ParseBuffer};
 use wast::token::Span;
 use wast::{Wast, WastArg, WastDirective, WastExecute, WastRet};
 
+use report::{Expectation, Failure, FileReport, Summary, parse_expectations};
+
 #[cfg(target_arch = "wasm32")]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
@@ -30,13 +41,6 @@ const EXPECTED_FAILURES: &str = include_str!("corpus/expected-failures.txt");
 
 /// The 4-byte version word after `\0asm` in a core module.
 const CORE_MODULE_VERSION: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
-
-/// One directive the harness could not satisfy.
-#[derive(Debug)]
-struct Failure {
-    line: usize,
-    reason: String,
-}
 
 /// The host state a `.wast` file runs against: one engine, one
 /// store, the components defined so far, and the instances created
@@ -72,7 +76,10 @@ impl Runner {
         }
     }
 
-    fn run(&mut self, path: &str, text: &str) -> Vec<Failure> {
+    /// Run one file. Returns the number of directives the file holds
+    /// and the failures. A file that does not lex or parse counts as
+    /// one directive that fails.
+    fn run(&mut self, text: &str) -> (usize, Vec<Failure>) {
         let mut failures = Vec::new();
         let buffer = match ParseBuffer::new(text) {
             Ok(buffer) => buffer,
@@ -81,7 +88,7 @@ impl Runner {
                     line: 1,
                     reason: format!("the file does not lex: {err}"),
                 });
-                return failures;
+                return (1, failures);
             }
         };
         let wast: Wast<'_> = match parser::parse(&buffer) {
@@ -92,10 +99,12 @@ impl Runner {
                     line: line + 1,
                     reason: format!("the file does not parse: {}", err.message()),
                 });
-                return failures;
+                return (1, failures);
             }
         };
+        let mut directives = 0;
         for directive in wast.directives {
+            directives += 1;
             let span = directive_span(&directive);
             let (line, _) = span.linecol_in(text);
             if let Err(reason) = self.directive(directive) {
@@ -105,8 +114,7 @@ impl Runner {
                 });
             }
         }
-        let _ = path;
-        failures
+        (directives, failures)
     }
 
     fn directive(&mut self, directive: WastDirective<'_>) -> Result<(), String> {
@@ -456,45 +464,72 @@ fn boxed_equal(a: Option<&Val>, b: Option<&Val>) -> bool {
     }
 }
 
-/// Run one corpus file and compare its failures with the expected
-/// list. Panics with every unexpected failure and every stale
-/// expectation, in the format the list uses.
-fn check(path: &str, text: &str) {
+/// Run one corpus file against the expectations that name it.
+fn report_file(path: &str, text: &str, expectations: &[Expectation]) -> FileReport {
     let mut runner = Runner::new();
-    let failures = runner.run(path, text);
-
-    let expected: Vec<usize> = EXPECTED_FAILURES
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                return None;
-            }
-            let (location, _) = line.split_once(' ').unwrap_or((line, ""));
-            let (file, number) = location.rsplit_once(':')?;
-            if file != path {
-                return None;
-            }
-            number.parse().ok()
+    let (directives, failures) = runner.run(text);
+    let expected = expectations
+        .iter()
+        .filter(|expectation| expectation.file == path)
+        .map(|expectation| Expectation {
+            file: expectation.file.clone(),
+            line: expectation.line,
+            category: expectation.category,
         })
         .collect();
+    FileReport {
+        path: path.to_owned(),
+        directives,
+        failures,
+        expected,
+    }
+}
 
-    let mut report = String::new();
-    for failure in &failures {
-        if !expected.contains(&failure.line) {
-            let _ = writeln!(
-                report,
-                "unexpected: {path}:{} {}",
-                failure.line, failure.reason
-            );
-        }
+/// Run one corpus file and compare its failures with the expected
+/// list. Panics with every unexpected failure and every stale
+/// expectation, in the format the list uses, and on a list line
+/// without a category.
+fn check(path: &str, text: &str) {
+    let expectations = parse_expectations(EXPECTED_FAILURES).unwrap_or_else(|err| panic!("{err}"));
+    let report = report_file(path, text, &expectations);
+
+    let mut out = String::new();
+    for failure in report.unexpected() {
+        let _ = writeln!(
+            out,
+            "unexpected: {path}:{} {}",
+            failure.line, failure.reason
+        );
     }
-    for line in &expected {
-        if !failures.iter().any(|f| f.line == *line) {
-            let _ = writeln!(report, "stale expectation: {path}:{line}");
-        }
+    for expectation in report.stale() {
+        let _ = writeln!(out, "stale expectation: {path}:{}", expectation.line);
     }
-    assert!(report.is_empty(), "\n{report}");
+    assert!(out.is_empty(), "\n{out}");
+}
+
+/// The progress metric: every corpus file in one process, summarized
+/// per corpus directory. The per-file tests judge pass or fail; this
+/// test only reports, and fails only when the expectation list itself
+/// is malformed.
+#[wcmp_macros::test]
+#[cfg_attr(
+    target_arch = "wasm32",
+    ignore = "the corpora do not run in the browser yet; see the `corpus_test!` gate"
+)]
+async fn it_reports_conformance_progress() {
+    let expectations = parse_expectations(EXPECTED_FAILURES).unwrap_or_else(|err| panic!("{err}"));
+    let reports: Vec<FileReport> = CORPUS_FILES
+        .iter()
+        .map(|(path, text)| report_file(path, text, &expectations))
+        .collect();
+    let summary = Summary::new(&reports);
+    println!("\n{}", summary.table());
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Ok(target) = std::env::var("WCMP_CONFORMANCE_SUMMARY") {
+        std::fs::write(&target, summary.json())
+            .unwrap_or_else(|err| panic!("cannot write the summary to {target}: {err}"));
+        println!("summary written to {target}");
+    }
 }
 
 macro_rules! corpus_test {

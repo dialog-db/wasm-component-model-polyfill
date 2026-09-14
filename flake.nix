@@ -153,8 +153,27 @@
         # replays the tests against the local workspace via
         # `--workspace-remap`. Anything the operator types after the leaf
         # (`tests native debug --no-fail-fast`) reaches nextest.
+        # The conformance progress summary: replays only the summary test
+        # from the native debug archive with its output shown, and writes
+        # the JSON copy under the cargo target directory.
+        conformanceSummaryCommand = ''
+          archive=$(nix build --no-link --print-out-paths .#tests-native-debug)
+          summary="''${CARGO_TARGET_DIR:-target}/conformance/summary.json"
+          mkdir -p "$(dirname "$summary")"
+          WCMP_CONFORMANCE_SUMMARY="$summary" cargo nextest run \
+            --workspace-remap ./ \
+            --archive-file "$archive/tests-native-debug.tar.zst" \
+            --no-capture \
+            -E 'test(it_reports_conformance_progress)'
+        '';
+
         menuTestCommand =
-          { description, package }:
+          {
+            description,
+            package,
+            # Print the conformance progress summary after the run.
+            summary ? false,
+          }:
           {
             inherit description;
             command = ''
@@ -163,7 +182,8 @@
                 --workspace-remap ./ \
                 --archive-file "$archive/${package}.tar.zst" \
                 "$@"
-            '';
+            ''
+            + pkgs.lib.optionalString summary conformanceSummaryCommand;
           };
 
         commands = {
@@ -194,10 +214,12 @@
                   debug = menuTestCommand {
                     description = "Unit and integration tests (${system}, debug)";
                     package = "tests-native-debug";
+                    summary = true;
                   };
                   release = menuTestCommand {
                     description = "Unit and integration tests (${system}, release)";
                     package = "tests-native-release";
+                    summary = true;
                   };
                 };
               };
@@ -213,6 +235,10 @@
                     package = "tests-web-release";
                   };
                 };
+              };
+              conformance = {
+                description = "Conformance progress per corpus (native, debug)";
+                command = conformanceSummaryCommand;
               };
               all = {
                 description = "Every archive, each reported (grab a coffee)";

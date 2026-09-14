@@ -57,10 +57,23 @@ reproducible and an upstream change is a deliberate update.
 ## Expected Failures
 
 An expected-failure file lists each failing case by corpus, file, and directive
-index, with one line of reason. The Component Model corpus keeps its own list in
-`nyi.txt`. The polyfill keeps a list in the same shape. A run compares its
-results with the list in both directions. A new pass removes its entry. A new
-failure adds one. Either change is a reviewed edit.
+index, with a category and one line of reason. The Component Model corpus keeps
+its own list in `nyi.txt`. The polyfill keeps a list in the same shape. A run
+compares its results with the list in both directions. A new pass removes its
+entry. A new failure adds one. Either change is a reviewed edit.
+
+The category names the cause of the failure. The vocabulary is fixed: a deferred
+feature, a limit of the runtime layer, a validation gap, a trap message that
+differs from Wasmtime, a wrong result, or a cascade from an earlier failure in
+the same file. The harness rejects an entry without a category.
+
+## Progress
+
+The run prints a summary per corpus: the number of directives, the number that
+pass, the pass percentage, and the expected failures per category. The summary
+is the progress metric of the polyfill against the specification. The run also
+writes the summary as JSON, so that tooling can track the metric over time. The
+menu has a command that prints only the summary.
 
 ## Real Guests
 
@@ -77,8 +90,8 @@ A contributor implements a Canonical ABI rule and wants evidence that the rule
 holds across every shape upstream enumerates.
 
 > The contributor runs the conformance command. The run reports which directives
-> pass and which are expected failures. They remove the entries their change
-> fixed.
+> pass and which are expected failures, and prints the summary per corpus. They
+> remove the entries their change fixed and watch the pass percentage rise.
 
 A maintainer updates the vendored corpora and wants to see what changed
 upstream.
