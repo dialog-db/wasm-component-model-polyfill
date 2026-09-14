@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 
+use crate::abi::layout::FlatType;
 use crate::component::FunctionType;
 use crate::identifier::InterfaceIdentifier;
 
@@ -61,6 +62,11 @@ pub struct ExecutorIr {
     /// The number of runtime post-return slots
     /// `Initializer::ExtractPostReturn` populates.
     pub num_runtime_post_returns: usize,
+    /// The number of component instances the component contains,
+    /// counting nested components. Each carries a `may_leave` flags
+    /// global that adapter modules import through
+    /// [`ImportSource::InstanceFlags`].
+    pub num_component_instances: usize,
 }
 
 /// One core module pre-translated to the runtime layer.
@@ -161,10 +167,20 @@ pub enum Initializer {
 pub enum ImportSource {
     /// An export of an already-instantiated core-Wasm instance.
     CoreInstanceExport(CoreInstanceExport),
-    /// A host trampoline produced by an
-    /// [`Initializer::LowerImport`] directive. The carried index is
-    /// into [`ExecutorIr::lowerings`].
+    /// A host trampoline. The carried index is into
+    /// [`ExecutorIr::trampoline_specs`].
     Trampoline(usize),
+    /// The `may_leave` flags global of the component instance at
+    /// the carried index. Adapter modules import it to clear the
+    /// flag while they translate arguments and results across a
+    /// component boundary, and to trap when a component that may
+    /// not be left is called.
+    InstanceFlags(usize),
+    /// The `task_may_block` global. A synchronous adapter clears it
+    /// around the callee and restores it afterwards; the polyfill
+    /// has no blocking tasks, so the global starts set and nothing
+    /// else reads it.
+    TaskMayBlock,
 }
 
 /// An export taken from a previously-instantiated core-Wasm
@@ -314,6 +330,103 @@ pub enum TrampolineSpec {
         /// Index into [`ExecutorIr::resources`].
         resource_index: usize,
     },
+    /// A string transcoder an adapter module imports to move a
+    /// string between two components' memories.
+    Transcoder {
+        /// Which conversion the transcoder performs.
+        op: TranscodeOp,
+        /// The runtime memory slot of the source memory.
+        from_memory: usize,
+        /// The runtime memory slot of the destination memory.
+        to_memory: usize,
+        /// The core signature the adapter imports.
+        signature: CoreSignature,
+    },
+    /// An adapter transfers an `own<T>` handle from one component
+    /// instance's table to another's.
+    ResourceTransferOwn {
+        /// The core signature the adapter imports.
+        signature: CoreSignature,
+    },
+    /// An adapter lends a `borrow<T>` handle from one component
+    /// instance's table to another's.
+    ResourceTransferBorrow {
+        /// The core signature the adapter imports.
+        signature: CoreSignature,
+    },
+    /// An adapter raises a trap with a Wasmtime trap code.
+    Trap {
+        /// The core signature the adapter imports.
+        signature: CoreSignature,
+    },
+    /// An adapter enters a synchronous call into another component
+    /// instance.
+    EnterSyncCall {
+        /// The core signature the adapter imports.
+        signature: CoreSignature,
+    },
+    /// An adapter leaves a synchronous call into another component
+    /// instance.
+    ExitSyncCall {
+        /// The core signature the adapter imports.
+        signature: CoreSignature,
+    },
+    /// An adapter reads one of the current task's context slots.
+    ContextGet {
+        /// Which slot, 0 or 1.
+        slot: usize,
+        /// The core signature the adapter imports.
+        signature: CoreSignature,
+    },
+    /// An adapter writes one of the current task's context slots.
+    ContextSet {
+        /// Which slot, 0 or 1.
+        slot: usize,
+        /// The core signature the adapter imports.
+        signature: CoreSignature,
+    },
+}
+
+/// The core-Wasm signature of an intrinsic an adapter module
+/// imports, as the translator declares it.
+#[derive(Clone, Debug)]
+pub struct CoreSignature {
+    /// The parameter types, in order.
+    pub params: Vec<FlatType>,
+    /// The result types, in order.
+    pub results: Vec<FlatType>,
+}
+
+/// The conversion a [`TrampolineSpec::Transcoder`] performs. The
+/// variants mirror the transcoders the fused adapter compiler emits;
+/// their argument and result conventions are documented on
+/// [`crate::executor::intrinsics`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TranscodeOp {
+    /// Validate and copy a UTF-8 string.
+    CopyUtf8,
+    /// Validate and copy a UTF-16 string.
+    CopyUtf16,
+    /// Copy a Latin-1 string.
+    CopyLatin1,
+    /// Inflate Latin-1 bytes to UTF-16 code units.
+    Latin1ToUtf16,
+    /// Convert Latin-1 bytes to UTF-8, possibly partially.
+    Latin1ToUtf8,
+    /// Copy UTF-16, deflating to Latin-1 when every code point fits.
+    Utf16ToCompactProbablyUtf16,
+    /// Finish a Latin-1-then-UTF-16 conversion from UTF-16 input.
+    Utf16ToCompactUtf16,
+    /// Deflate UTF-16 to Latin-1 as far as the code points allow.
+    Utf16ToLatin1,
+    /// Convert UTF-16 to UTF-8, possibly partially.
+    Utf16ToUtf8,
+    /// Finish a Latin-1-then-UTF-16 conversion from UTF-8 input.
+    Utf8ToCompactUtf16,
+    /// Deflate UTF-8 to Latin-1 as far as the code points allow.
+    Utf8ToLatin1,
+    /// Convert UTF-8 to UTF-16.
+    Utf8ToUtf16,
 }
 
 /// Per-resource metadata captured during translation.

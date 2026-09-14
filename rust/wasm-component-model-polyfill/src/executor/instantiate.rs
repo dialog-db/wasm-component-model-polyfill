@@ -11,7 +11,8 @@
 use std::sync::{Arc, Mutex};
 
 use wasm_runtime_layer::{
-    Extern as RuntimeExtern, Func as RuntimeFunc, Imports, Instance as RuntimeInstance,
+    Extern as RuntimeExtern, Func as RuntimeFunc, Global as RuntimeGlobal, Imports,
+    Instance as RuntimeInstance, Val as RuntimeVal,
 };
 
 use crate::component::Component;
@@ -20,6 +21,10 @@ use crate::instance::{ExportedFunction, Instance};
 use crate::linker::{HostFuncBody, ImportBinding, InstanceRegistration, Linker, Resolution};
 use crate::store::Store;
 
+use super::intrinsics::{
+    ContextSlots, build_context_get, build_context_set, build_enter_sync_call,
+    build_exit_sync_call, build_resource_transfer, build_transcoder, build_trap,
+};
 use super::ir::{
     CoreInstanceExport, CoreSourceItem, ExecutorIr, ExportSpec, ImportSource, Initializer,
     LoweringSpec, ModuleEntry, ResourceSpec, TrampolineSpec,
@@ -28,6 +33,17 @@ use super::trampoline::{
     AbiRuntimeState, ResourceRuntime, build_resource_drop_trampoline,
     build_resource_new_trampoline, build_resource_rep_trampoline, build_trampoline,
 };
+
+/// The runtime items the executor has produced so far while walking
+/// the plan: core instances in instantiation order, every trampoline
+/// (built upfront), and one `may_leave` flags global per component
+/// instance.
+struct RuntimeItems {
+    core_instances: Vec<RuntimeInstance>,
+    trampolines: Vec<RuntimeFunc>,
+    flags: Vec<RuntimeGlobal>,
+    task_may_block: RuntimeGlobal,
+}
 
 /// Drive instantiation of the component's plan against `store`.
 ///
@@ -69,7 +85,8 @@ pub fn instantiate<T: 'static>(
     // the resulting runtime-layer `Func`s can be slotted into the
     // import table for any module that references them via
     // `CoreDef::Trampoline`.
-    let mut trampolines: Vec<Option<RuntimeFunc>> = Vec::with_capacity(ir.trampoline_specs.len());
+    let context = ContextSlots::default();
+    let mut trampolines: Vec<RuntimeFunc> = Vec::with_capacity(ir.trampoline_specs.len());
     for spec in ir.trampoline_specs.iter() {
         let func = build_runtime_trampoline(
             spec,
@@ -79,11 +96,26 @@ pub fn instantiate<T: 'static>(
             store,
             &abi_state,
             &resource_runtimes,
+            &context,
         )?;
-        trampolines.push(Some(func));
+        trampolines.push(func);
     }
 
-    let mut core_instances: Vec<RuntimeInstance> = Vec::new();
+    // One `may_leave` flags global per component instance. Adapter
+    // modules import it; a fresh instantiation starts with the flag
+    // set, because every instance may be left until an adapter is
+    // in the middle of translating values across its boundary.
+    let flags: Vec<RuntimeGlobal> = (0..ir.num_component_instances)
+        .map(|_| RuntimeGlobal::new(store.inner_mut(), RuntimeVal::I32(1), true))
+        .collect();
+
+    let task_may_block = RuntimeGlobal::new(store.inner_mut(), RuntimeVal::I32(1), true);
+    let mut items = RuntimeItems {
+        core_instances: Vec::new(),
+        trampolines,
+        flags,
+        task_may_block,
+    };
 
     for initializer in ir.initializers.iter() {
         match initializer {
@@ -95,17 +127,15 @@ pub fn instantiate<T: 'static>(
                     .modules
                     .get(*module_index)
                     .ok_or_else(|| internal("module index in IR initializer is out of bounds"))?;
-                let runtime_imports =
-                    build_imports(ir, &core_instances, &trampolines, store, entry, imports)?;
+                let runtime_imports = build_imports(ir, &items, store, entry, imports)?;
                 let instance =
                     RuntimeInstance::new(store.inner_mut(), &entry.runtime, &runtime_imports)
                         .map_err(InstantiationError::SubstrateFailure)
                         .map_err(Error::from)?;
-                core_instances.push(instance);
+                items.core_instances.push(instance);
             }
             Initializer::ExtractMemory { slot, source } => {
-                let extern_value =
-                    resolve_source(ir, &core_instances, &trampolines, store, source)?;
+                let extern_value = resolve_source(ir, &items, store, source)?;
                 let RuntimeExtern::Memory(memory) = extern_value else {
                     return Err(internal(
                         "ExtractMemory directive resolved to a non-memory item",
@@ -121,8 +151,7 @@ pub fn instantiate<T: 'static>(
                 }
             }
             Initializer::ExtractRealloc { slot, source } => {
-                let extern_value =
-                    resolve_source(ir, &core_instances, &trampolines, store, source)?;
+                let extern_value = resolve_source(ir, &items, store, source)?;
                 let RuntimeExtern::Func(realloc) = extern_value else {
                     return Err(internal(
                         "ExtractRealloc directive resolved to a non-function item",
@@ -138,8 +167,7 @@ pub fn instantiate<T: 'static>(
                 }
             }
             Initializer::ExtractPostReturn { slot, source } => {
-                let extern_value =
-                    resolve_source(ir, &core_instances, &trampolines, store, source)?;
+                let extern_value = resolve_source(ir, &items, store, source)?;
                 let RuntimeExtern::Func(post_return) = extern_value else {
                     return Err(internal(
                         "ExtractPostReturn directive resolved to a non-function item",
@@ -157,9 +185,9 @@ pub fn instantiate<T: 'static>(
         }
     }
 
-    let function_exports = collect_function_exports(ir, &core_instances, &trampolines, store)?;
+    let function_exports = collect_function_exports(ir, &items, store)?;
     Ok(Instance {
-        core_instances: core_instances.into_boxed_slice(),
+        core_instances: items.core_instances.into_boxed_slice(),
         function_exports,
         abi_state,
         store_id: store.id,
@@ -179,6 +207,7 @@ fn build_runtime_trampoline<T: 'static>(
     store: &mut Store<T>,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     resource_runtimes: &[ResourceRuntime<T>],
+    context: &ContextSlots,
 ) -> Result<RuntimeFunc> {
     match spec {
         TrampolineSpec::LowerImport(lowering) => {
@@ -207,6 +236,32 @@ fn build_runtime_trampoline<T: 'static>(
                 .get(*resource_index)
                 .ok_or_else(|| internal("ResourceRep.resource_index out of bounds"))?;
             Ok(build_resource_rep_trampoline(store, runtime.clone()))
+        }
+        TrampolineSpec::Transcoder {
+            op,
+            from_memory,
+            to_memory,
+            signature,
+        } => Ok(build_transcoder(
+            store,
+            *op,
+            *from_memory,
+            *to_memory,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::ResourceTransferOwn { signature }
+        | TrampolineSpec::ResourceTransferBorrow { signature } => {
+            Ok(build_resource_transfer(store, signature))
+        }
+        TrampolineSpec::Trap { signature } => Ok(build_trap(store, signature)),
+        TrampolineSpec::EnterSyncCall { signature } => Ok(build_enter_sync_call(store, signature)),
+        TrampolineSpec::ExitSyncCall { signature } => Ok(build_exit_sync_call(store, signature)),
+        TrampolineSpec::ContextGet { slot, signature } => {
+            Ok(build_context_get(store, *slot, signature, context.clone()))
+        }
+        TrampolineSpec::ContextSet { slot, signature } => {
+            Ok(build_context_set(store, *slot, signature, context.clone()))
         }
     }
 }
@@ -293,8 +348,7 @@ fn lookup_host_func<T: 'static>(
 /// IR supplies for it.
 fn build_imports<T: 'static>(
     ir: &ExecutorIr,
-    core_instances: &[RuntimeInstance],
-    trampolines: &[Option<RuntimeFunc>],
+    items: &RuntimeItems,
     store: &mut Store<T>,
     entry: &ModuleEntry,
     sources: &[ImportSource],
@@ -306,7 +360,7 @@ fn build_imports<T: 'static>(
     }
     let mut imports = Imports::default();
     for (module_import, source) in entry.imports.iter().zip(sources.iter()) {
-        let value = resolve_source(ir, core_instances, trampolines, store, source)?;
+        let value = resolve_source(ir, items, store, source)?;
         imports.define(&module_import.host, &module_import.name, value);
     }
     Ok(imports)
@@ -316,24 +370,27 @@ fn build_imports<T: 'static>(
 /// import's slot accepts.
 fn resolve_source<T: 'static>(
     ir: &ExecutorIr,
-    core_instances: &[RuntimeInstance],
-    trampolines: &[Option<RuntimeFunc>],
+    items: &RuntimeItems,
     store: &mut Store<T>,
     source: &ImportSource,
 ) -> Result<RuntimeExtern> {
     match source {
         ImportSource::CoreInstanceExport(export) => {
-            resolve_core_instance_export(ir, core_instances, store, export)
+            resolve_core_instance_export(ir, &items.core_instances, store, export)
         }
-        ImportSource::Trampoline(idx) => {
-            let func = trampolines
-                .get(*idx)
-                .and_then(|slot| slot.clone())
-                .ok_or_else(|| {
-                    internal("ImportSource::Trampoline references a lowering not yet constructed")
-                })?;
-            Ok(RuntimeExtern::Func(func))
-        }
+        ImportSource::Trampoline(idx) => items
+            .trampolines
+            .get(*idx)
+            .cloned()
+            .map(RuntimeExtern::Func)
+            .ok_or_else(|| internal("ImportSource::Trampoline index is out of bounds")),
+        ImportSource::InstanceFlags(idx) => items
+            .flags
+            .get(*idx)
+            .cloned()
+            .map(RuntimeExtern::Global)
+            .ok_or_else(|| internal("ImportSource::InstanceFlags index is out of bounds")),
+        ImportSource::TaskMayBlock => Ok(RuntimeExtern::Global(items.task_may_block.clone())),
     }
 }
 
@@ -376,8 +433,7 @@ fn resolve_core_instance_export<T: 'static>(
 /// [`Func::call`]: crate::Func::call
 fn collect_function_exports<T: 'static>(
     ir: &ExecutorIr,
-    core_instances: &[RuntimeInstance],
-    trampolines: &[Option<RuntimeFunc>],
+    items: &RuntimeItems,
     store: &mut Store<T>,
 ) -> Result<Box<[ExportedFunction]>> {
     let mut out = Vec::with_capacity(ir.exports.len());
@@ -389,7 +445,7 @@ fn collect_function_exports<T: 'static>(
         options,
     } in ir.exports.iter()
     {
-        let extern_value = resolve_source(ir, core_instances, trampolines, store, source)?;
+        let extern_value = resolve_source(ir, items, store, source)?;
         let RuntimeExtern::Func(func) = extern_value else {
             return Err(internal(
                 "lifted-function export resolved to a non-function core item",

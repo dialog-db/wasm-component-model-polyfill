@@ -17,13 +17,18 @@ use wasmtime_environ::component::{
     CanonicalOptions as EnvironCanonOptions, CanonicalOptionsDataModel, ComponentTranslation,
     ComponentTypes, ComponentTypesBuilder, CoreDef, CoreExport, Export as EnvironExport,
     ExportIndex, ExportItem as EnvironExportItem, ExtractMemory, ExtractPostReturn, ExtractRealloc,
-    GlobalInitializer, InstantiateModule, LoweredIndex, ResourceIndex, RuntimeImportIndex,
-    StaticModuleIndex, StringEncoding as EnvironStringEncoding, Trampoline, TrampolineIndex,
-    Translator, TypeResourceTable, TypeResourceTableIndex,
+    FixedEncoding, GlobalInitializer, InstantiateModule, LoweredIndex, ResourceIndex,
+    RuntimeImportIndex, StaticModuleIndex, StringEncoding as EnvironStringEncoding, Trampoline,
+    TrampolineIndex, Transcode, Translator, TypeResourceTable, TypeResourceTableIndex,
+    UnsafeIntrinsic,
 };
 use wasmtime_environ::prelude::Error as TranslatorError;
 use wasmtime_environ::wasmparser::{Validator, WasmFeatures};
-use wasmtime_environ::{EntityIndex as EnvironEntityIndex, ScopeVec, Tunables, WasmError};
+use wasmtime_environ::{
+    EntityIndex as EnvironEntityIndex, ScopeVec, Tunables, WasmError, WasmValType,
+};
+
+use crate::abi::layout::FlatType;
 
 use crate::component::{ComponentExport, ComponentImport, ExternType, ExternalName, TypeProjector};
 use crate::engine::Engine;
@@ -31,9 +36,9 @@ use crate::error::{Error, InstantiationError, Result};
 use crate::identifier::InterfaceIdentifier;
 
 use super::ir::{
-    CanonOptions, CoreInstanceExport, CoreSourceItem, EntityIndex, ExecutorIr, ExportSpec,
-    ImportSource, Initializer, LoweringSpec, ModuleEntry, ModuleImport, ResourceSpec,
-    StringEncoding, TrampolineSpec,
+    CanonOptions, CoreInstanceExport, CoreSignature, CoreSourceItem, EntityIndex, ExecutorIr,
+    ExportSpec, ImportSource, Initializer, LoweringSpec, ModuleEntry, ModuleImport, ResourceSpec,
+    StringEncoding, TrampolineSpec, TranscodeOp,
 };
 
 /// Everything one translation of a component binary produces.
@@ -49,6 +54,11 @@ pub struct Translation {
 /// Translate `bytes` against `engine`.
 pub fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
     let scope = ScopeVec::new();
+    // The translator's defaults keep concurrency support on. Turning
+    // it off makes the fused adapter compiler assert on an `async`
+    // function instead of reporting it, so the polyfill leaves it on
+    // and provides the `task_may_block` global synchronous adapters
+    // import under that setting.
     let tunables = Tunables::default_u32();
     let mut validator = Validator::new_with_features(WasmFeatures::all());
     let mut types = ComponentTypesBuilder::new(&validator);
@@ -164,10 +174,41 @@ pub fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
             Trampoline::ResourceRep { ty, .. } => TrampolineSpec::ResourceRep {
                 resource_index: resolve_resource_index(&component_types, &resource_to_spec, *ty)?,
             },
-            // Other trampoline kinds (string transcoders, resource
-            // transfer between components, concurrency built-ins)
-            // are not built. A `CoreDef::Trampoline` that references
-            // one surfaces `Error::Unsupported` in `lift_core_def`.
+            Trampoline::Transcoder {
+                op,
+                from,
+                from64,
+                to,
+                to64,
+            } => {
+                if *from64 || *to64 {
+                    return Err(Error::unsupported("64-bit memories in adapter modules"));
+                }
+                TrampolineSpec::Transcoder {
+                    op: lift_transcode_op(*op),
+                    from_memory: from.as_u32() as usize,
+                    to_memory: to.as_u32() as usize,
+                    signature: core_signature(&component_types, &translation, trampoline_idx)?,
+                }
+            }
+            Trampoline::ResourceTransferOwn => TrampolineSpec::ResourceTransferOwn {
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::ResourceTransferBorrow => TrampolineSpec::ResourceTransferBorrow {
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::Trap => TrampolineSpec::Trap {
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::EnterSyncCall => TrampolineSpec::EnterSyncCall {
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::ExitSyncCall => TrampolineSpec::ExitSyncCall {
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            // Concurrency built-ins are not built. A
+            // `CoreDef::Trampoline` that references one surfaces
+            // `Error::Unsupported` in `lift_core_def`.
             _ => continue,
         };
         let slot = trampoline_specs.len();
@@ -175,8 +216,10 @@ pub fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
         trampoline_to_spec.insert(trampoline_idx, slot);
     }
 
-    // Main walk.
-    let mut state = ProjectionState::new();
+    // Main walk. Intrinsics that appear as `CoreDef`s rather than
+    // as trampolines get their specs appended after the pre-built
+    // ones, so the state knows where its own entries start.
+    let mut state = ProjectionState::new(trampoline_specs.len());
 
     for initializer in &translation.component.initializers {
         match initializer {
@@ -258,6 +301,8 @@ pub fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
         )?;
     }
 
+    trampoline_specs.append(&mut state.extra_specs);
+
     Ok(Translation {
         imports,
         exports,
@@ -271,8 +316,63 @@ pub fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
             num_runtime_memories: state.num_runtime_memories,
             num_runtime_reallocs: state.num_runtime_reallocs,
             num_runtime_post_returns: state.num_runtime_post_returns,
+            num_component_instances: translation.component.num_runtime_component_instances as usize,
         },
     })
+}
+
+/// The core signature the translator recorded for a trampoline.
+fn core_signature(
+    component_types: &ComponentTypes,
+    translation: &ComponentTranslation,
+    index: TrampolineIndex,
+) -> Result<CoreSignature> {
+    let interned = *translation
+        .component
+        .trampolines
+        .get(index)
+        .ok_or_else(|| Error::internal("trampoline index has no core type"))?;
+    let func = component_types.module_types()[interned].unwrap_func();
+    let mut params = Vec::with_capacity(func.params().len());
+    for ty in func.params() {
+        params.push(lift_core_val_type(ty)?);
+    }
+    let mut results = Vec::with_capacity(func.results().len());
+    for ty in func.results() {
+        results.push(lift_core_val_type(ty)?);
+    }
+    Ok(CoreSignature { params, results })
+}
+
+fn lift_core_val_type(ty: &WasmValType) -> Result<FlatType> {
+    Ok(match ty {
+        WasmValType::I32 => FlatType::I32,
+        WasmValType::I64 => FlatType::I64,
+        WasmValType::F32 => FlatType::F32,
+        WasmValType::F64 => FlatType::F64,
+        WasmValType::V128 | WasmValType::Ref(_) => {
+            return Err(Error::unsupported(
+                "vector or reference types in intrinsic signatures",
+            ));
+        }
+    })
+}
+
+fn lift_transcode_op(op: Transcode) -> TranscodeOp {
+    match op {
+        Transcode::Copy(FixedEncoding::Utf8) => TranscodeOp::CopyUtf8,
+        Transcode::Copy(FixedEncoding::Utf16) => TranscodeOp::CopyUtf16,
+        Transcode::Copy(FixedEncoding::Latin1) => TranscodeOp::CopyLatin1,
+        Transcode::Latin1ToUtf16 => TranscodeOp::Latin1ToUtf16,
+        Transcode::Latin1ToUtf8 => TranscodeOp::Latin1ToUtf8,
+        Transcode::Utf16ToCompactProbablyUtf16 => TranscodeOp::Utf16ToCompactProbablyUtf16,
+        Transcode::Utf16ToCompactUtf16 => TranscodeOp::Utf16ToCompactUtf16,
+        Transcode::Utf16ToLatin1 => TranscodeOp::Utf16ToLatin1,
+        Transcode::Utf16ToUtf8 => TranscodeOp::Utf16ToUtf8,
+        Transcode::Utf8ToCompactUtf16 => TranscodeOp::Utf8ToCompactUtf16,
+        Transcode::Utf8ToLatin1 => TranscodeOp::Utf8ToLatin1,
+        Transcode::Utf8ToUtf16 => TranscodeOp::Utf8ToUtf16,
+    }
 }
 
 /// Project the component's declared imports, in declaration order.
@@ -446,21 +546,65 @@ struct ProjectionState {
     num_runtime_memories: usize,
     num_runtime_reallocs: usize,
     num_runtime_post_returns: usize,
+    /// Trampoline specs created on demand for intrinsics that appear
+    /// as `CoreDef`s. Their indices start at `spec_base`.
+    extra_specs: Vec<TrampolineSpec>,
+    spec_base: usize,
+    intrinsic_to_spec: HashMap<UnsafeIntrinsic, usize>,
 }
 
 impl ProjectionState {
-    fn new() -> Self {
+    fn new(spec_base: usize) -> Self {
         Self {
             runtime_instance_to_module: Vec::new(),
             initializers: Vec::new(),
             num_runtime_memories: 0,
             num_runtime_reallocs: 0,
             num_runtime_post_returns: 0,
+            extra_specs: Vec::new(),
+            spec_base,
+            intrinsic_to_spec: HashMap::new(),
         }
     }
 
+    /// The trampoline index of the spec for `intrinsic`, creating
+    /// it on first use.
+    fn intrinsic(&mut self, intrinsic: UnsafeIntrinsic) -> Result<usize> {
+        if let Some(index) = self.intrinsic_to_spec.get(&intrinsic) {
+            return Ok(*index);
+        }
+        let signature = CoreSignature {
+            params: intrinsic
+                .core_params()
+                .iter()
+                .map(lift_core_val_type)
+                .collect::<Result<Vec<_>>>()?,
+            results: intrinsic
+                .core_results()
+                .iter()
+                .map(lift_core_val_type)
+                .collect::<Result<Vec<_>>>()?,
+        };
+        let spec = match intrinsic {
+            UnsafeIntrinsic::ContextGetI32_0 => TrampolineSpec::ContextGet { slot: 0, signature },
+            UnsafeIntrinsic::ContextGetI32_1 => TrampolineSpec::ContextGet { slot: 1, signature },
+            UnsafeIntrinsic::ContextSetI32_0 => TrampolineSpec::ContextSet { slot: 0, signature },
+            UnsafeIntrinsic::ContextSetI32_1 => TrampolineSpec::ContextSet { slot: 1, signature },
+            other => {
+                return Err(Error::unsupported(format!(
+                    "the `{}` intrinsic",
+                    other.name()
+                )));
+            }
+        };
+        let index = self.spec_base + self.extra_specs.len();
+        self.extra_specs.push(spec);
+        self.intrinsic_to_spec.insert(intrinsic, index);
+        Ok(index)
+    }
+
     fn lift_core_def(
-        &self,
+        &mut self,
         def: &CoreDef,
         trampoline_to_spec: &HashMap<TrampolineIndex, usize>,
     ) -> Result<ImportSource> {
@@ -474,11 +618,13 @@ impl ProjectionState {
                 })?;
                 Ok(ImportSource::Trampoline(lowering_index))
             }
-            CoreDef::InstanceFlags(_) => {
-                Err(Error::unsupported("component composition (instance flags)"))
+            CoreDef::InstanceFlags(instance) => {
+                Ok(ImportSource::InstanceFlags(instance.as_u32() as usize))
             }
-            CoreDef::UnsafeIntrinsic(_) => Err(Error::unsupported("Wasmtime unsafe intrinsics")),
-            CoreDef::TaskMayBlock => Err(Error::unsupported("asynchronous lifts (task-may-block)")),
+            CoreDef::UnsafeIntrinsic(intrinsic) => {
+                Ok(ImportSource::Trampoline(self.intrinsic(*intrinsic)?))
+            }
+            CoreDef::TaskMayBlock => Ok(ImportSource::TaskMayBlock),
         }
     }
 

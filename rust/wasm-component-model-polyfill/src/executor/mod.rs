@@ -21,6 +21,7 @@
 mod instantiate;
 mod translate;
 
+pub mod intrinsics;
 pub mod ir;
 pub mod trampoline;
 
