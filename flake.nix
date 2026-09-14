@@ -51,15 +51,18 @@
         chrome = if pkgs.stdenv.isDarwin then pkgs.google-chrome else pkgs.chromium;
         chromePath = "${chrome}/bin/${chrome.meta.mainProgram}";
 
-        # On Darwin, headless Chrome misbehaves under the default sandbox/GPU
-        # configuration. wasm-bindgen-test-runner reads this JSON to pass the
-        # necessary disable flags through ChromeDriver.
+        # Headless Chrome refuses to start under the Nix build sandbox on
+        # Linux and under the default sandbox/GPU configuration on Darwin.
+        # wasm-bindgen-test-runner reads this JSON and passes the flags
+        # through ChromeDriver on every platform.
         webdriverConfig = (pkgs.formats.json { }).generate "webdriver.json" {
           "goog:chromeOptions" = {
             binary = chromePath;
             args = [
+              "--headless=new"
               "--no-sandbox"
               "--disable-gpu"
+              "--disable-dev-shm-usage"
             ];
           };
         };
@@ -131,8 +134,6 @@
           "CHROME_PATH" = chromePath;
           "CHROME" = chromePath;
           "CHROMEDRIVER" = "${pkgs.chromedriver}/bin/chromedriver";
-        }
-        // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
           "WASM_BINDGEN_TEST_WEBDRIVER_JSON" = webdriverConfig;
         };
 
