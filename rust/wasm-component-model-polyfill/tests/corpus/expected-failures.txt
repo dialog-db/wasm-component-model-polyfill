@@ -1,0 +1,374 @@
+# Directives the polyfill does not pass yet, one per line:
+#   <path>:<line> <reason>
+# The harness fails when a listed directive passes or an unlisted one
+# fails. Regenerate a line when its reason changes.
+
+cm/binary/binary.wast:1186 expected rejection `non-zero reserved byte`, but the component parsed
+cm/binary/binary.wast:1208 expected rejection `non-zero reserved byte`, but the component parsed
+cm/binary/binary.wast:1230 expected rejection `non-zero reserved byte`, but the component parsed
+cm/binary/binary.wast:1239 expected rejection `non-zero reserved byte`, but the component parsed
+cm/binary/binary.wast:1248 expected rejection `non-zero reserved byte`, but the component parsed
+cm/binary/binary.wast:1257 expected rejection `non-zero reserved byte`, but the component parsed
+cm/binary/binary.wast:1266 expected rejection `non-zero reserved byte`, but the component parsed
+cm/binary/binary.wast:1275 expected rejection `non-zero reserved byte`, but the component parsed
+cm/binary/binary.wast:1533 component rejected: unsupported component feature: module-typed exports
+cm/binary/binary.wast:557 component rejected: unsupported component feature: locally-defined resources
+cm/binary/binary.wast:789 component rejected: unsupported component feature: locally-defined resources
+cm/binary/binary.wast:974 component rejected: unsupported component feature: locally-defined resources
+cm/linking/tags.wast:133 no instance to invoke
+cm/linking/tags.wast:134 no instance to invoke
+cm/linking/tags.wast:31 no instance to invoke
+cm/linking/tags.wast:32 no instance to invoke
+cm/linking/tags.wast:36 component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
+cm/linking/tags.wast:60 no instance to invoke
+cm/linking/tags.wast:64 component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
+cm/linking/tags.wast:7 component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
+cm/linking/tags.wast:89 no instance to invoke
+cm/linking/tags.wast:93 component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
+cm/linking/unit.wast:1003 component rejected: unsupported component feature: locally-defined resources
+cm/linking/unit.wast:1019 no function export named `make-1`
+cm/linking/unit.wast:1020 no function export named `make-1`
+cm/linking/unit.wast:1021 no function export named `make-2`
+cm/linking/unit.wast:1022 no function export named `make-1`
+cm/linking/unit.wast:1023 no function export named `make-2`
+cm/linking/unit.wast:1030 component rejected: unsupported component feature: locally-defined resources
+cm/linking/unit.wast:1094 no function export named `run`
+cm/linking/unit.wast:1095 no function export named `run`
+cm/linking/unit.wast:1096 no function export named `count-1`
+cm/linking/unit.wast:1097 no function export named `count-2`
+cm/linking/unit.wast:1103 component rejected: unsupported component feature: locally-defined resources
+cm/linking/unit.wast:1161 no function export named `run-1`
+cm/linking/unit.wast:1162 no function export named `run-2`
+cm/linking/unit.wast:1163 no function export named `count-1`
+cm/linking/unit.wast:1164 no function export named `count-2`
+cm/linking/unit.wast:1165 no function export named `run-1`
+cm/linking/unit.wast:1166 no function export named `run-1`
+cm/linking/unit.wast:1167 no function export named `count-1`
+cm/linking/unit.wast:1168 no function export named `count-2`
+cm/linking/unit.wast:655 component rejected: unsupported component feature: locally-defined resources
+cm/linking/unit.wast:725 no function export named `run-1`
+cm/linking/unit.wast:726 no function export named `run-2`
+cm/linking/unit.wast:727 no function export named `count1-1`
+cm/linking/unit.wast:728 no function export named `count2-1`
+cm/linking/unit.wast:729 no function export named `count1-2`
+cm/linking/unit.wast:730 no function export named `count2-2`
+cm/linking/unit.wast:736 component rejected: unsupported component feature: locally-defined resources
+cm/linking/unit.wast:788 no function export named `run-1`
+cm/linking/unit.wast:789 no function export named `run-2`
+cm/linking/unit.wast:790 no function export named `log-at-1`
+cm/linking/unit.wast:791 no function export named `log-at-1`
+cm/linking/unit.wast:792 no function export named `log-at-2`
+cm/linking/unit.wast:793 no function export named `log-at-2`
+cm/linking/unit.wast:800 component rejected: unsupported component feature: locally-defined resources
+cm/linking/unit.wast:864 no function export named `run-1`
+cm/linking/unit.wast:865 no function export named `run-2`
+cm/linking/unit.wast:866 no function export named `count-1`
+cm/linking/unit.wast:867 no function export named `count-2`
+cm/linking/unit.wast:873 component rejected: unsupported component feature: locally-defined resources
+cm/linking/unit.wast:931 no function export named `run-1`
+cm/linking/unit.wast:932 no function export named `run-2`
+cm/linking/unit.wast:933 no function export named `count-1`
+cm/linking/unit.wast:934 no function export named `count-2`
+cm/linking/unit.wast:940 component rejected: unsupported component feature: locally-defined resources
+cm/linking/unit.wast:995 no function export named `run`
+cm/linking/unit.wast:996 no function export named `run`
+cm/linking/unit.wast:997 no function export named `count-1`
+cm/linking/unit.wast:998 no function export named `count-2`
+cm/resources/borrows.wast:158 no definition named `BorrowTester`
+cm/resources/borrows.wast:159 no instance to invoke
+cm/resources/borrows.wast:161 no definition named `BorrowTester`
+cm/resources/borrows.wast:162 expected a trap `cannot remove owned resource while borrowed`, got `no instance to invoke`
+cm/resources/borrows.wast:4 component rejected: unsupported component feature: locally-defined resources
+cm/resources/handle-table.wast:106 no instance to invoke
+cm/resources/handle-table.wast:110 component rejected: unsupported component feature: locally-defined resources
+cm/resources/handle-table.wast:200 no definition named `Traps`
+cm/resources/handle-table.wast:201 expected a trap `unknown handle index 5`, got `no instance to invoke`
+cm/resources/handle-table.wast:202 no definition named `Traps`
+cm/resources/handle-table.wast:203 expected a trap `unknown handle index 5`, got `no instance to invoke`
+cm/resources/handle-table.wast:204 no definition named `Traps`
+cm/resources/handle-table.wast:205 expected a trap `unknown handle index 1`, got `no instance to invoke`
+cm/resources/handle-table.wast:206 no definition named `Traps`
+cm/resources/handle-table.wast:207 expected a trap `unknown handle index 0`, got `no instance to invoke`
+cm/resources/handle-table.wast:208 no definition named `Traps`
+cm/resources/handle-table.wast:209 expected a trap `unknown handle index 4294967295`, got `no instance to invoke`
+cm/resources/handle-table.wast:210 no definition named `Traps`
+cm/resources/handle-table.wast:211 expected a trap `unknown handle index 1`, got `no instance to invoke`
+cm/resources/handle-table.wast:212 no definition named `Traps`
+cm/resources/handle-table.wast:213 expected a trap `unknown handle index 3`, got `no instance to invoke`
+cm/resources/handle-table.wast:217 component rejected: unsupported component feature: locally-defined resources
+cm/resources/handle-table.wast:260 no instance to invoke
+cm/resources/handle-table.wast:261 expected a trap `unknown handle index 1`, got `no instance to invoke`
+cm/resources/handle-table.wast:265 component rejected: unsupported component feature: locally-defined resources
+cm/resources/handle-table.wast:293 expected a trap `unknown handle index 1`, got `no instance to invoke`
+cm/resources/handle-table.wast:297 component rejected: unsupported component feature: locally-defined resources
+cm/resources/handle-table.wast:321 no definition named `WrongType`
+cm/resources/handle-table.wast:322 expected a trap `handle index 1 used with the wrong type, expected guest-defined resource but found a different guest-defined resource`, got `no instance to invoke`
+cm/resources/handle-table.wast:323 no definition named `WrongType`
+cm/resources/handle-table.wast:324 expected a trap `handle index 1 used with the wrong type, expected guest-defined resource but found a different guest-defined resource`, got `no instance to invoke`
+cm/resources/handle-table.wast:49 no instance to invoke
+cm/resources/handle-table.wast:53 component rejected: unsupported component feature: locally-defined resources
+cm/resources/handle-table.wast:7 component rejected: unsupported component feature: locally-defined resources
+cm/resources/multiple-resources.wast:170 no instance to invoke
+cm/resources/multiple-resources.wast:4 component rejected: unsupported component feature: locally-defined resources
+cm/validation/attributes.wast:2 component rejected: unsupported component feature: instance exports with a plain name (`a` is not a WIT interface identifier)
+cm/validation/attributes.wast:30 component rejected: unsupported component feature: instance exports with a plain name (`a` is not a WIT interface identifier)
+cm/validation/external-visibility.wast:176 component rejected: unsupported component feature: locally-defined resources
+cm/validation/external-visibility.wast:410 component rejected: unsupported component feature: instance exports with a plain name (`i` is not a WIT interface identifier)
+cm/validation/external-visibility.wast:420 component rejected: unsupported component feature: instance exports with a plain name (`i` is not a WIT interface identifier)
+cm/validation/external-visibility.wast:511 component rejected: unsupported component feature: locally-defined resources
+cm/validation/external-visibility.wast:520 component rejected: unsupported component feature: locally-defined resources
+cm/validation/external-visibility.wast:531 component rejected: unsupported component feature: locally-defined resources
+cm/validation/external-visibility.wast:543 component rejected: unsupported component feature: locally-defined resources
+cm/validation/external-visibility.wast:563 component rejected: unsupported component feature: locally-defined resources
+cm/validation/external-visibility.wast:580 component rejected: unsupported component feature: instance exports with a plain name (`f2` is not a WIT interface identifier)
+cm/validation/external-visibility.wast:5 component rejected: unsupported component feature: locally-defined resources
+cm/validation/external-visibility.wast:80 component rejected: unsupported component feature: locally-defined resources
+cm/validation/extern-names.wast:53 expected rejection `expected `/` after package name`, but the component parsed
+cm/validation/extern-names.wast:56 expected rejection `trailing characters found: `/qux``, but the component parsed
+cm/validation/kebab.wast:149 expected rejection `import name `foobar` conflicts with previous name `foo-bar``, but the component parsed
+cm/validation/kebab.wast:154 expected rejection `import name `FOOBAR` conflicts with previous name `foo-bar``, but the component parsed
+cm/validation/kebab.wast:159 expected rejection `import name `foob-ar` conflicts with previous name `foo-bar``, but the component parsed
+cm/validation/kebab.wast:164 expected rejection `import name `[static]foo-bar.FO-ob-AR` conflicts with previous name `foo-bar``, but the component parsed
+cm/validation/kebab.wast:169 expected rejection `import name `[method]foo-bar.foobar` conflicts with previous name `foo-bar``, but the component parsed
+cm/validation/max-value-size.wast:25 expected rejection `exceeds maximum byte size`, but the component parsed
+cm/validation/max-value-size.wast:31 expected rejection `exceeds maximum byte size`, but the component parsed
+cm/validation/max-value-size.wast:37 expected rejection `exceeds maximum byte size`, but the component parsed
+cm/validation/max-value-size.wast:43 expected rejection `exceeds maximum byte size`, but the component parsed
+cm/validation/max-value-size.wast:48 expected rejection `exceeds maximum byte size`, but the component parsed
+cm/validation/max-value-size.wast:57 expected rejection `exceeds maximum byte size`, but the component parsed
+cm/validation/max-value-size.wast:63 expected rejection `exceeds maximum byte size`, but the component parsed
+cm/validation/outer-alias.wast:106 component rejected: unsupported component feature: locally-defined resources
+cm/validation/outer-alias.wast:98 component rejected: unsupported component feature: locally-defined resources
+cm/validation/resources.wast:271 component rejected: unsupported component feature: locally-defined resources
+cm/validation/resources.wast:292 component rejected: unsupported component feature: locally-defined resources
+cm/validation/resources.wast:313 component rejected: unsupported component feature: locally-defined resources
+cm/validation/resources.wast:427 component rejected: unsupported component feature: locally-defined resources
+cm/validation/resources.wast:531 component rejected: unsupported component feature: locally-defined resources
+cm/validation/resources.wast:564 component rejected: unsupported component feature: locally-defined resources
+cm/validation/resources.wast:607 component rejected: unsupported component feature: locally-defined resources
+cm/validation/resources.wast:623 component rejected: unsupported component feature: locally-defined resources
+cm/validation/resources.wast:743 component rejected: unsupported component feature: locally-defined resources
+cm/validation/resources.wast:814 component rejected: unsupported component feature: locally-defined resources
+cm/validation/resources.wast:824 component rejected: unsupported component feature: locally-defined resources
+cm/values/post-return.wast:201 no definition named `Tester`
+cm/values/post-return.wast:202 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:203 no definition named `Tester`
+cm/values/post-return.wast:204 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:205 no definition named `Tester`
+cm/values/post-return.wast:206 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:207 no definition named `Tester`
+cm/values/post-return.wast:208 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:209 no definition named `Tester`
+cm/values/post-return.wast:210 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:211 no definition named `Tester`
+cm/values/post-return.wast:212 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:213 no definition named `Tester`
+cm/values/post-return.wast:214 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:215 no definition named `Tester`
+cm/values/post-return.wast:216 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:217 no definition named `Tester`
+cm/values/post-return.wast:218 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:219 no definition named `Tester`
+cm/values/post-return.wast:220 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:221 no definition named `Tester`
+cm/values/post-return.wast:222 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:223 no definition named `Tester`
+cm/values/post-return.wast:224 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:225 no definition named `Tester`
+cm/values/post-return.wast:226 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:227 no definition named `Tester`
+cm/values/post-return.wast:228 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:229 no definition named `Tester`
+cm/values/post-return.wast:230 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:231 no definition named `Tester`
+cm/values/post-return.wast:232 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:233 no definition named `Tester`
+cm/values/post-return.wast:234 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:235 no definition named `Tester`
+cm/values/post-return.wast:236 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:237 no definition named `Tester`
+cm/values/post-return.wast:238 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:239 no definition named `Tester`
+cm/values/post-return.wast:240 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:241 no definition named `Tester`
+cm/values/post-return.wast:242 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:243 no definition named `Tester`
+cm/values/post-return.wast:244 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:245 no definition named `Tester`
+cm/values/post-return.wast:246 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:247 no definition named `Tester`
+cm/values/post-return.wast:248 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:249 no definition named `Tester`
+cm/values/post-return.wast:250 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:251 no definition named `Tester`
+cm/values/post-return.wast:252 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:253 no definition named `Tester`
+cm/values/post-return.wast:254 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:255 no definition named `Tester`
+cm/values/post-return.wast:256 expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:296 component rejected: unsupported component feature: locally-defined resources
+cm/values/post-return.wast:330 expected [U32(5)], got [U32(7)]
+cm/values/post-return.wast:331 expected [U32(123)], got [U32(42)]
+cm/values/post-return.wast:334 component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+cm/values/post-return.wast:358 expected [U32(11)], got [U32(7)]
+cm/values/post-return.wast:4 component rejected: unsupported component feature: locally-defined resources
+cm/values/realloc.wast:109 expected a trap `realloc return: beyond end of memory`, got `canonical ABI error: at argument 0 (type List(ListType { element: Primitive(U32) })): `cabi_realloc` invocation failed: at argument 0 (type List(ListTyp
+cm/values/realloc.wast:111 expected a trap `realloc return: beyond end of memory`, got []
+cm/values/realloc.wast:124 expected a trap `realloc return: result not aligned`, got `canonical ABI error: at argument 0 (type List(ListType { element: Primitive(U32) })): `cabi_realloc` invocation failed: at argument 0 (type List(ListType 
+cm/values/strings.wast:101 expected a trap `incomplete utf-8 byte sequence`, got `canonical ABI error: at result (type Primitive(String)): invalid encoding for value type: invalid UTF-8 string: at result (type Primitive(String)): invalid en
+cm/values/strings.wast:135 expected a trap `string pointer/length out of bounds of memory`, got `canonical ABI error: at result (type Primitive(String)): substrate-level memory access failed: at result (type Primitive(String)): substrate-le
+cm/values/strings.wast:69 expected a trap `string pointer/length out of bounds of memory`, got `canonical ABI error: at result (type Primitive(String)): substrate-level memory access failed: at result (type Primitive(String)): substrate-lev
+cm/values/strings.wast:85 expected a trap `invalid utf-8`, got `canonical ABI error: at result (type Primitive(String)): invalid encoding for value type: invalid UTF-8 string: at result (type Primitive(String)): invalid encoding for value t
+cm/values/variants.wast:183 no function export named `join-narrow`
+cm/values/variants.wast:184 no function export named `join-wide`
+cm/values/variants.wast:185 no function export named `join-f32`
+cm/values/variants.wast:186 no function export named `ret-f32`
+cm/values/variants.wast:83 component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/adapter.wast:136 expected a trap `realloc return: beyond end of memory`, got []
+wasmtime/adapter.wast:77 instantiation failed: link error: import `host-return-two` requires unsupported host registration: plain-named imports require host-item registration: import `host-return-two` requires unsupported host registration:
+wasmtime/adapter.wast:98 instantiation failed: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace:
+wasmtime/aliasing.wast:19 component rejected: unsupported component feature: module-typed exports
+wasmtime/aliasing.wast:1 component rejected: unsupported component feature: instance exports with a plain name (`a` is not a WIT interface identifier)
+wasmtime/alias-region-known-imported-entities.wast:13 component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref i31) is not s
+wasmtime/alias-region-known-imported-entities.wast:64 no instance to invoke
+wasmtime/alias-region-known-imported-entities.wast:65 no instance to invoke
+wasmtime/alias-region-known-imported-entities.wast:66 no instance to invoke
+wasmtime/alias-region-multiple-instantiations.wast:15 component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref i31) is not s
+wasmtime/alias-region-multiple-instantiations.wast:89 no instance to invoke
+wasmtime/alias-region-multiple-instantiations.wast:90 no instance to invoke
+wasmtime/alias-region-multiple-instantiations.wast:91 no instance to invoke
+wasmtime/alias-region-reexported-ambiguous-entities.wast:135 no instance to invoke
+wasmtime/alias-region-reexported-ambiguous-entities.wast:136 no instance to invoke
+wasmtime/alias-region-reexported-ambiguous-entities.wast:137 no instance to invoke
+wasmtime/alias-region-reexported-ambiguous-entities.wast:138 no instance to invoke
+wasmtime/alias-region-reexported-ambiguous-entities.wast:139 no instance to invoke
+wasmtime/alias-region-reexported-ambiguous-entities.wast:140 no instance to invoke
+wasmtime/alias-region-reexported-ambiguous-entities.wast:15 component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref i31) is
+wasmtime/alias-region-reexported-entities-to-imported-module.wast:101 no instance to invoke
+wasmtime/alias-region-reexported-entities-to-imported-module.wast:102 no instance to invoke
+wasmtime/alias-region-reexported-entities-to-imported-module.wast:103 no instance to invoke
+wasmtime/alias-region-reexported-entities-to-imported-module.wast:14 component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (re
+wasmtime/alias-region-reexported-known-entities.wast:14 component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref i31) is not
+wasmtime/alias-region-reexported-known-entities.wast:89 no instance to invoke
+wasmtime/alias-region-reexported-known-entities.wast:90 no instance to invoke
+wasmtime/alias-region-reexported-known-entities.wast:91 no instance to invoke
+wasmtime/error-context-trap-in-post-return.wast:3 component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/error-context-trap-in-post-return.wast:45 no definition named `Tester`
+wasmtime/error-context-trap-in-post-return.wast:46 expected a trap `cannot leave component instance`, got `no instance to invoke`
+wasmtime/error-context-trap-in-post-return.wast:47 no definition named `Tester`
+wasmtime/error-context-trap-in-post-return.wast:48 expected a trap `cannot leave component instance`, got `no instance to invoke`
+wasmtime/error-context-trap-in-post-return.wast:49 no definition named `Tester`
+wasmtime/error-context-trap-in-post-return.wast:50 expected a trap `cannot leave component instance`, got `no instance to invoke`
+wasmtime/exceptions.wast:168 component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref (concrete func VMSharedTypeIndex(2))) 
+wasmtime/implements-disabled.wast:3 expected rejection `the `cm-implements` feature is not active`, but the component parsed
+wasmtime/import.wast:15 instantiation failed: link error: import `not-provided-by-the-host` requires unsupported host registration: plain-named imports require host-item registration: import `not-provided-by-the-host` requires unsupported h
+wasmtime/instance.wast:161 instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named imports
+wasmtime/instance.wast:182 instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named imports
+wasmtime/instance.wast:191 component rejected: unsupported component feature: imports nested more than one level
+wasmtime/instance.wast:216 component rejected: unsupported component feature: instantiation of an imported core module
+wasmtime/instance.wast:224 component rejected: unsupported component feature: instantiation of an imported core module
+wasmtime/instance.wast:255 component rejected: unsupported component feature: instance exports with a plain name (`i` is not a WIT interface identifier)
+wasmtime/instance.wast:260 component rejected: unsupported component feature: instance exports with a plain name (`i` is not a WIT interface identifier)
+wasmtime/instance.wast:265 component rejected: unsupported component feature: instance exports with a plain name (`i` is not a WIT interface identifier)
+wasmtime/instance.wast:271 component rejected: unsupported component feature: locally-defined resources
+wasmtime/instance.wast:275 component rejected: unsupported component feature: locally-defined resources
+wasmtime/instance.wast:280 no definition named `C1`
+wasmtime/instance.wast:281 no definition named `C1`
+wasmtime/instance.wast:282 no definition named `C2`
+wasmtime/instance.wast:283 no definition named `C2`
+wasmtime/linking.wast:7 instantiation failed: link error: import `i` requires unsupported host registration: plain-named imports require host-item registration: import `i` requires unsupported host registration: plain-named imports require 
+wasmtime/memory64.wast:122 no instance to invoke
+wasmtime/memory64.wast:126 no instance to invoke
+wasmtime/memory64.wast:131 no instance to invoke
+wasmtime/memory64.wast:24 component rejected: unsupported component feature: 64-bit memories in adapter modules
+wasmtime/modules.wast:109 component rejected: unsupported component feature: module-typed exports
+wasmtime/modules.wast:16 instantiation failed: link error: import `foo` requires unsupported host registration: plain-named imports require host-item registration: import `foo` requires unsupported host registration: plain-named imports req
+wasmtime/modules.wast:193 instantiation failed: link error: import `foo` requires unsupported host registration: plain-named imports require host-item registration: import `foo` requires unsupported host registration: plain-named imports re
+wasmtime/modules.wast:202 component rejected: unsupported component feature: module-typed exports
+wasmtime/modules.wast:284 instantiation failed: link error: import `foo` requires unsupported host registration: plain-named imports require host-item registration: import `foo` requires unsupported host registration: plain-named imports re
+wasmtime/modules.wast:293 component rejected: unsupported component feature: module-typed exports
+wasmtime/modules.wast:299 component rejected: unsupported component feature: module-typed exports
+wasmtime/modules.wast:316 component rejected: unsupported component feature: instantiation of an imported core module
+wasmtime/modules.wast:35 component rejected: unsupported component feature: module-typed exports
+wasmtime/modules.wast:369 component rejected: unsupported component feature: module-typed exports
+wasmtime/modules.wast:417 component rejected: unsupported component feature: instantiation of an imported core module
+wasmtime/modules.wast:482 component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
+wasmtime/modules.wast:485 instantiation failed: link error: import `tag-module` requires unsupported host registration: plain-named imports require host-item registration: import `tag-module` requires unsupported host registration: plain-na
+wasmtime/modules.wast:4 component rejected: unsupported component feature: module-typed exports
+wasmtime/modules.wast:50 instantiation failed: link error: import `foo` requires unsupported host registration: plain-named imports require host-item registration: import `foo` requires unsupported host registration: plain-named imports req
+wasmtime/modules.wast:59 instantiation failed: link error: import `foo` requires unsupported host registration: plain-named imports require host-item registration: import `foo` requires unsupported host registration: plain-named imports req
+wasmtime/modules.wast:68 component rejected: unsupported component feature: module-typed exports
+wasmtime/modules.wast:75 instantiation failed: link error: import `foo` requires unsupported host registration: plain-named imports require host-item registration: import `foo` requires unsupported host registration: plain-named imports req
+wasmtime/modules.wast:81 instantiation failed: link error: import `foo` requires unsupported host registration: plain-named imports require host-item registration: import `foo` requires unsupported host registration: plain-named imports req
+wasmtime/modules.wast:9 instantiation failed: link error: import `foo` requires unsupported host registration: plain-named imports require host-item registration: import `foo` requires unsupported host registration: plain-named imports requ
+wasmtime/nested.wast:128 component rejected: unsupported component feature: module-typed exports
+wasmtime/nested.wast:149 component rejected: unsupported component feature: instantiation of an imported core module
+wasmtime/nested.wast:213 component rejected: unsupported component feature: module-typed exports
+wasmtime/nested.wast:219 component rejected: unsupported component feature: instantiation of an imported core module
+wasmtime/nested.wast:410 instantiation failed: link error: import `host-return-two` requires unsupported host registration: plain-named imports require host-item registration: import `host-return-two` requires unsupported host registration:
+wasmtime/resources.wast:1054 no instance to invoke
+wasmtime/resources.wast:1057 component rejected: unsupported component feature: locally-defined resources
+wasmtime/resources.wast:1090 no definition named `C`
+wasmtime/resources.wast:1091 expected a trap `handle index 1 used with the wrong type, expected guest-defined resource but found a different guest-defined resource`, got `no instance to invoke`
+wasmtime/resources.wast:1092 no definition named `C`
+wasmtime/resources.wast:1093 expected a trap `handle index 1 used with the wrong type, expected guest-defined resource but found a different guest-defined resource`, got `no instance to invoke`
+wasmtime/resources.wast:1096 component rejected: unsupported component feature: locally-defined resources
+wasmtime/resources.wast:1126 no instance to invoke
+wasmtime/resources.wast:182 instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
+wasmtime/resources.wast:191 instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
+wasmtime/resources.wast:211 instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
+wasmtime/resources.wast:220 instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
+wasmtime/resources.wast:271 instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
+wasmtime/resources.wast:296 expected a trap `unknown handle index`, got `no instance to invoke`
+wasmtime/resources.wast:299 instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
+wasmtime/resources.wast:337 no instance to invoke
+wasmtime/resources.wast:338 expected a trap `unknown handle index`, got `no instance to invoke`
+wasmtime/resources.wast:341 instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
+wasmtime/resources.wast:378 no instance to invoke
+wasmtime/resources.wast:379 expected a trap `unknown handle index`, got `no instance to invoke`
+wasmtime/resources.wast:37 component rejected: unsupported component feature: locally-defined resources
+wasmtime/resources.wast:383 instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
+wasmtime/resources.wast:435 expected a trap `unknown handle index`, got `no instance to invoke`
+wasmtime/resources.wast:438 component rejected: unsupported component feature: locally-defined resources
+wasmtime/resources.wast:481 expected a trap `unknown handle index 2`, got `no instance to invoke`
+wasmtime/resources.wast:485 component rejected: unsupported component feature: locally-defined resources
+wasmtime/resources.wast:4 component rejected: unsupported component feature: locally-defined resources
+wasmtime/resources.wast:526 no instance to invoke
+wasmtime/resources.wast:527 no instance to invoke
+wasmtime/resources.wast:528 no instance to invoke
+wasmtime/resources.wast:529 no instance to invoke
+wasmtime/resources.wast:530 no instance to invoke
+wasmtime/resources.wast:531 expected a trap `unknown handle index`, got `no instance to invoke`
+wasmtime/resources.wast:537 instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
+wasmtime/resources.wast:56 expected a trap `unknown handle index 0`, got `no instance to invoke`
+wasmtime/resources.wast:592 no instance to invoke
+wasmtime/resources.wast:593 no instance to invoke
+wasmtime/resources.wast:594 no instance to invoke
+wasmtime/resources.wast:595 no instance to invoke
+wasmtime/resources.wast:596 no instance to invoke
+wasmtime/resources.wast:597 expected a trap `unknown handle index`, got `no instance to invoke`
+wasmtime/resources.wast:59 component rejected: unsupported component feature: locally-defined resources
+wasmtime/resources.wast:600 component rejected: unsupported component feature: locally-defined resources
+wasmtime/resources.wast:645 component rejected: unsupported component feature: locally-defined resources
+wasmtime/resources.wast:665 expected a trap `unknown handle index`, got `no instance to invoke`
+wasmtime/resources.wast:668 component rejected: unsupported component feature: locally-defined resources
+wasmtime/resources.wast:748 instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
+wasmtime/resources.wast:78 expected a trap `unknown handle index 0`, got `no instance to invoke`
+wasmtime/resources.wast:812 instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
+wasmtime/resources.wast:81 component rejected: unsupported component feature: locally-defined resources
+wasmtime/resources.wast:889 instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
+wasmtime/resources.wast:927 expected a trap `cannot remove owned resource while borrowed`, got `no instance to invoke`
+wasmtime/resources.wast:930 instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
+wasmtime/resources.wast:961 expected a trap `unknown handle index 0`, got `no instance to invoke`
+wasmtime/resources.wast:963 component rejected: unsupported component feature: locally-defined resources
+wasmtime/strings.wast:21 expected a trap `string pointer not aligned to 2`, got [String("")]
+wasmtime/strings.wast:23 expected a trap `string pointer not aligned to 2`, got `canonical ABI error: at result (type Primitive(String)): invalid encoding for value type: Latin-1+UTF-16 string encoding is not yet implemented; the synchronou
+wasmtime/tags.wast:3 component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
+wasmtime/thread-transparency/blocks.wast:68 no definition named `Tester`
+wasmtime/thread-transparency/blocks.wast:69 expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
+wasmtime/thread-transparency/blocks.wast:8 component rejected: unsupported component feature: asynchronous functions
+wasmtime/thread-transparency/reentrancy.wast:113 no definition named `Tester`
+wasmtime/thread-transparency/reentrancy.wast:114 expected a trap `wasm `unreachable` instruction executed`, got `no instance to invoke`
+wasmtime/thread-transparency/reentrancy.wast:22 component rejected: unsupported component feature: asynchronous functions
+wasmtime/types.wast:331 instantiation failed: link error: import `a` requires unsupported host registration: plain-named imports require host-item registration: import `a` requires unsupported host registration: plain-named imports require 
+wasmtime/types.wast:378 expected a trap `discriminant 2 out of range [0..2)`, got `canonical ABI error: at result (type Variant(VariantType { cases: [VariantCase { name: "a", payload: Some(Primitive(U32)) }, VariantCase { name: "b", payload

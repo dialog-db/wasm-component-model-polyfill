@@ -39,6 +39,7 @@ js_wasm_runtime_layer = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
+wast = { workspace = true }
 wcmp-macros = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
