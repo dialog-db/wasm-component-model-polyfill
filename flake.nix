@@ -114,6 +114,7 @@
         };
 
         inherit (rustHelpers)
+          buildCrate
           buildTestArchive
           cargoChecks
           checkArtifactAlignment
@@ -150,65 +151,93 @@
         };
 
         # Wraps a Nix-built test archive (`buildTestArchive`) into a menu
-        # command. The dev-shell user runs e.g. `test:web:debug` and Nix
+        # command. The dev-shell user runs e.g. `tests web debug` and Nix
         # builds (or returns a cache hit for) the archive, then nextest
         # replays the tests against the local workspace via
-        # `--workspace-remap`. This is the same pattern PDD001 references.
+        # `--workspace-remap`. Anything the operator types after the leaf
+        # (`tests native debug --no-fail-fast`) reaches nextest.
         menuTestCommand =
           { description, package }:
           {
             inherit description;
             command = ''
-              nix build .#${package}
-              TESTS_PATH=$(nix eval .#${package}.outPath --raw)
+              archive=$(nix build --no-link --print-out-paths .#${package})
               cargo nextest run \
                 --workspace-remap ./ \
-                --archive-file "$TESTS_PATH/${package}.tar.zst"
+                --archive-file "$archive/${package}.tar.zst" \
+                "$@"
             '';
           };
 
         commands = {
           "build" = {
-            description = "Compile the polyfill crate for wasm32-unknown-unknown";
-            command = ''
-              cargo build \
-                --package wasm-component-model-polyfill \
-                --target wasm32-unknown-unknown
-            '';
+            description = "Build the polyfill crate for both targets as Nix derivations";
+            subcommands = {
+              debug = {
+                description = "Unoptimized build (prints the store paths)";
+                command = ''
+                  nix build --no-link --print-out-paths .#polyfill-native-debug .#polyfill-web-debug
+                '';
+              };
+              release = {
+                description = "Optimized build (prints the store paths)";
+                command = ''
+                  nix build --no-link --print-out-paths .#polyfill-native-release .#polyfill-web-release
+                '';
+              };
+            };
           };
 
-          "test:native:debug" = menuTestCommand {
-            description = "Unit and integration tests (${system}, debug)";
-            package = "tests-native-debug";
-          };
-
-          "test:native:release" = menuTestCommand {
-            description = "Unit and integration tests (${system}, release)";
-            package = "tests-native-release";
-          };
-
-          "test:web:debug" = menuTestCommand {
-            description = "Unit and integration tests (wasm32-unknown-unknown, debug)";
-            package = "tests-web-debug";
-          };
-
-          "test:web:release" = menuTestCommand {
-            description = "Unit and integration tests (wasm32-unknown-unknown, release)";
-            package = "tests-web-release";
-          };
-
-          "test:all" = {
-            description = "Full suite across all configurations (grab a coffee)";
-            command = ''
-              test:native:debug
-              test:native:release
-              test:web:debug
-              test:web:release
-            '';
+          "tests" = {
+            description = "Run the test suites from Nix-built archives";
+            subcommands = {
+              native = {
+                description = "Unit and integration tests on ${system}";
+                subcommands = {
+                  debug = menuTestCommand {
+                    description = "Unit and integration tests (${system}, debug)";
+                    package = "tests-native-debug";
+                  };
+                  release = menuTestCommand {
+                    description = "Unit and integration tests (${system}, release)";
+                    package = "tests-native-release";
+                  };
+                };
+              };
+              web = {
+                description = "Unit and integration tests in headless Chrome";
+                subcommands = {
+                  debug = menuTestCommand {
+                    description = "Unit and integration tests (wasm32-unknown-unknown, debug)";
+                    package = "tests-web-debug";
+                  };
+                  release = menuTestCommand {
+                    description = "Unit and integration tests (wasm32-unknown-unknown, release)";
+                    package = "tests-web-release";
+                  };
+                };
+              };
+              all = {
+                description = "Every archive, each reported (grab a coffee)";
+                command = ''
+                  status=0
+                  for suite in "native debug" "native release" "web debug" "web release"; do
+                    # shellcheck disable=SC2086
+                    if tests $suite "$@"; then
+                      echo "tests $suite: passed"
+                    else
+                      echo "tests $suite: FAILED"
+                      status=1
+                    fi
+                  done
+                  exit "$status"
+                '';
+              };
+            };
           };
 
           "lint" = {
-            description = "Clippy and format checks across the workspace";
+            description = "Every check the flake declares (nix flake check)";
             command = "nix flake check";
           };
 
@@ -220,6 +249,18 @@
             '';
           };
         };
+
+        # The polyfill crate itself, as a derivation per (target, profile).
+        # Building an `rlib` installs no binary; the store path holds the
+        # build log and proves the crate compiles for the target.
+        polyfillCrate =
+          { target ? null, profile }:
+          buildCrate {
+            pname = "wasm-component-model-polyfill";
+            version = "0.1.0";
+            cargoExtraArgs = "--package wasm-component-model-polyfill";
+            inherit target profile;
+          };
 
         # Bound here so the `workspace-deps-dev` package below can name the
         # same derivation the archive builds against.
@@ -246,6 +287,17 @@
       in
       {
         packages = {
+          polyfill-native-debug = polyfillCrate { profile = "dev"; };
+          polyfill-native-release = polyfillCrate { profile = "release"; };
+          polyfill-web-debug = polyfillCrate {
+            target = "wasm32-unknown-unknown";
+            profile = "dev";
+          };
+          polyfill-web-release = polyfillCrate {
+            target = "wasm32-unknown-unknown";
+            profile = "release";
+          };
+
           # `buildTestArchive` defaults its cargo profile to `release`; the
           # debug archives name `dev` explicitly (Cargo's built-in unoptimized
           # profile) so they are what their names promise.
