@@ -3,7 +3,7 @@ id: 6ffdf7
 title: Adopt lib.markdown for the design corpus
 type: chore
 blocked_by: [c3b98b]
-labels: [PDD001, katsuobushi]
+labels: [PDD001, katsuobushi, wave-0]
 created: 2026-09-14T19:34:54Z
 ---
 
