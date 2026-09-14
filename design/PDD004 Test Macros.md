@@ -13,7 +13,7 @@ against.
 ## Goals
 
 - One attribute marks an `async` test as cross-target. The same source runs
-  under `test:native:*` and `test:web:*` with no `cfg` code at the call site.
+  under `tests native` and `tests web` with no `cfg` code at the call site.
 - A contributor can write a Wasm Core module or a Component binary inline in
   [WebAssembly Text Format][WAT]. The macro assembles it at compile time and
   binds it to an ordinary Rust constant.
@@ -88,8 +88,8 @@ review conventions.
 
 A contributor writes a new test and wants it to run on both targets.
 
-> The contributor writes `#[wcmp_macros::test] async fn …`. `test:native:debug`
-> runs it under `tokio`. `test:web:debug` compiles it to
+> The contributor writes `#[wcmp_macros::test] async fn …`. `tests native debug`
+> runs it under `tokio`. `tests web debug` compiles it to
 > `wasm32-unknown-unknown`, bundles it with `wasm-bindgen-test`, and runs it
 > in headless Chrome.
 

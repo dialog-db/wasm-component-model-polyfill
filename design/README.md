@@ -20,7 +20,10 @@ Every PDD has these sections, in this order:
    of scope.
 4. Body. The substance of the design. Write features as user stories. Center
    the stories on people, not on software.
-5. References. External links that the document cites. Link to the most
+5. Test Cases. Each test case is prose. It describes one facet of the design
+   that a test must cover for acceptance, and the criteria that make the
+   facet acceptable. Name the facet, not a test function.
+6. References. External links that the document cites. Link to the most
    direct location of the referenced content.
 
 ## Writing Rules
