@@ -326,6 +326,21 @@
         };
 
         checks = cargoChecks // {
+          # The doctests are not in a nextest archive (nextest does not run
+          # them), so they get a derivation of their own: the workspace's
+          # `cargo test --doc` against the `dev` dependency bundle.
+          doctests = buildCrate {
+            pname = "wasm-component-model-polyfill-doctests";
+            version = "0.1.0";
+            profile = "dev";
+            buildPhaseCargoCommand = "cargo test --doc --workspace";
+            installPhaseCommand = "touch $out";
+            doInstallCargoArtifacts = false;
+            # Nothing to install: the build phase is a test run, not a
+            # build, so there is no cargo build log for crane's hook to read.
+            doNotPostBuildInstallCargoBinaries = true;
+          };
+
           design = pkgs.runCommand "lint-design" { } ''
             set -e
             ${pkgs.rumdl}/bin/rumdl check --config ${rumdlConfig} ${./.}/design
