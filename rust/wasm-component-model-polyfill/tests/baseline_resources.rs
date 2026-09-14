@@ -357,7 +357,7 @@ async fn it_rejects_a_component_that_imports_an_unsatisfied_resource() {
 // ----------------------------------------------------------------
 
 #[wcmp_macros::test]
-#[ignore = "stub: locally-defined resources (`(type (resource (rep i32) (dtor (func $f))))`) — `GlobalInitializer::Resource` is currently `todo!()`"]
+#[ignore = "stub: locally-defined resources (`(type (resource (rep i32) (dtor (core func $f))))`) — the translator reports them as `Error::Unsupported`"]
 async fn it_supports_a_locally_defined_resource_with_an_in_binary_destructor() {
     todo!(
         "load a component that defines its own resource with a destructor pointing at a core func, instantiate it, and assert the in-binary destructor runs synchronously when the handle is dropped"

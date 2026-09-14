@@ -45,8 +45,11 @@ async fn it_loads_a_component_from_bytes() {
           (type $iface (instance
             (export "greet" (func (param "who" string) (result string)))))
           (import "wasi:cli/run@0.2.0" (instance $i (type $iface)))
-          (alias export $i "greet" (func $g))
-          (export "do-greet" (func $g)))
+          (core module $m
+            (func (export "do-greet") (param i32) (result i32) local.get 0))
+          (core instance $c (instantiate $m))
+          (func (export "do-greet") (param "n" u32) (result u32)
+            (canon lift (core func $c "do-greet"))))
         "#
     );
 
@@ -78,8 +81,8 @@ async fn it_loads_a_component_from_bytes() {
     assert_eq!(instance.items[0].name, "greet");
     assert!(matches!(instance.items[0].ty, ExternType::Function(_)));
 
-    // The export aliases the imported function and re-exports it
-    // under a plain (kebab-case) name.
+    // The export is a lifted function published under a plain
+    // (kebab-case) name.
     let export = &component.exports[0];
     assert_eq!(export.name, ExternalName::Plain("do-greet".to_owned()));
     assert!(matches!(export.ty, ExternType::Function(_)));
@@ -1223,9 +1226,9 @@ async fn it_rejects_a_call_made_through_a_different_store() {
 #[wcmp_macros::test]
 async fn it_reports_an_unsupported_feature_as_a_structured_error() {
     // A component that defines its own resource type uses a
-    // feature the polyfill has not built. The failure is a
-    // structured `Error::Unsupported` naming the feature, never a
-    // panic.
+    // feature the polyfill has not built. The translator reports
+    // it at construction as a structured `Error::Unsupported`
+    // naming the feature, never as a panic.
     const COMPONENT: &[u8] = component!(
         r#"
         (component
@@ -1247,13 +1250,8 @@ async fn it_reports_an_unsupported_feature_as_a_structured_error() {
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
-    let linker: Linker<()> = Linker::new(&engine);
-    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    let err = match linker.instantiate(&mut store, &component) {
-        Ok(_) => panic!("locally-defined resources are not supported yet"),
-        Err(err) => err,
-    };
+    let err = Component::new(&engine, COMPONENT)
+        .expect_err("locally-defined resources are not supported yet");
     assert!(
         matches!(&err, Error::Unsupported { feature } if feature.contains("locally-defined resources")),
         "expected Error::Unsupported, got {err:?}"

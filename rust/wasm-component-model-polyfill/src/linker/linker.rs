@@ -131,8 +131,8 @@ impl<T: 'static> Linker<T> {
         &self,
         store: &mut Store<T>,
         component: &Component,
-        _resolution: &Resolution,
+        resolution: &Resolution,
     ) -> Result<Instance> {
-        crate::executor::instantiate(&self.engine, component, store, self)
+        crate::executor::instantiate(component, store, self, resolution)
     }
 }

@@ -20,12 +20,9 @@ tokio = "1"
 wasm-bindgen = "=0.2.108"
 wasm-bindgen-test = "0.3"
 wasm_runtime_layer = "0.7"
-wasmparser = { version = "0.259", default-features = false, features = ["component-model"] }
 wasmtime = "48"
 wasmtime-environ = { version = "48", default-features = false, features = ["component-model"] }
 wasmtime_runtime_layer = "48"
-wit-component = "0.259"
-wit-parser = "0.259"
 js_wasm_runtime_layer = "0.7"
 wat = "1"
 

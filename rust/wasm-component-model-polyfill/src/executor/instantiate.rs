@@ -14,11 +14,10 @@ use wasm_runtime_layer::{
     Extern as RuntimeExtern, Func as RuntimeFunc, Imports, Instance as RuntimeInstance,
 };
 
-use crate::component::{Component, ExternalName};
-use crate::engine::Engine;
+use crate::component::Component;
 use crate::error::{Error, InstantiationError, LinkError, Result};
 use crate::instance::{ExportedFunction, Instance};
-use crate::linker::{HostFuncBody, Linker};
+use crate::linker::{HostFuncBody, ImportBinding, InstanceRegistration, Linker, Resolution};
 use crate::store::Store;
 
 use super::ir::{
@@ -30,21 +29,22 @@ use super::trampoline::{
     build_resource_new_trampoline, build_resource_rep_trampoline, build_trampoline,
 };
 
-/// Translate the component's bytes into the executor's IR and drive
-/// instantiation against `store`.
+/// Drive instantiation of the component's plan against `store`.
 ///
 /// Takes the linker so host-function trampolines can dispatch to the
 /// registered [`HostFunc`](crate::linker::HostFunc) payloads at call
-/// time. The linker is borrowed only for the duration of
-/// instantiation; the trampolines hold `Arc` clones of the closures
-/// they need.
+/// time, and the linker's resolution of the component's imports so
+/// every lowered import and imported resource reaches the
+/// registration the resolver chose. The linker is borrowed only for
+/// the duration of instantiation; the trampolines hold `Arc` clones
+/// of the closures they need.
 pub fn instantiate<T: 'static>(
-    engine: &Engine,
     component: &Component,
     store: &mut Store<T>,
     linker: &Linker<T>,
+    resolution: &Resolution,
 ) -> Result<Instance> {
-    let ir = super::translate(engine, component)?;
+    let ir: &ExecutorIr = &component.ir;
 
     // Resolve each `ResourceSpec` against the linker's registered
     // host resources before building the runtime state. The host
@@ -52,7 +52,9 @@ pub fn instantiate<T: 'static>(
     // the executor builds for that resource.
     let mut resource_runtimes: Vec<ResourceRuntime<T>> = Vec::with_capacity(ir.resources.len());
     for spec in ir.resources.iter() {
-        resource_runtimes.push(resolve_resource_runtime(linker, component, spec)?);
+        resource_runtimes.push(resolve_resource_runtime(
+            linker, component, resolution, spec,
+        )?);
     }
 
     let abi_state = Arc::new(Mutex::new(AbiRuntimeState::with_slabs(
@@ -73,6 +75,7 @@ pub fn instantiate<T: 'static>(
             spec,
             component,
             linker,
+            resolution,
             store,
             &abi_state,
             &resource_runtimes,
@@ -93,7 +96,7 @@ pub fn instantiate<T: 'static>(
                     .get(*module_index)
                     .ok_or_else(|| internal("module index in IR initializer is out of bounds"))?;
                 let runtime_imports =
-                    build_imports(&ir, &core_instances, &trampolines, store, entry, imports)?;
+                    build_imports(ir, &core_instances, &trampolines, store, entry, imports)?;
                 let instance =
                     RuntimeInstance::new(store.inner_mut(), &entry.runtime, &runtime_imports)
                         .map_err(InstantiationError::SubstrateFailure)
@@ -102,7 +105,7 @@ pub fn instantiate<T: 'static>(
             }
             Initializer::ExtractMemory { slot, source } => {
                 let extern_value =
-                    resolve_source(&ir, &core_instances, &trampolines, store, source)?;
+                    resolve_source(ir, &core_instances, &trampolines, store, source)?;
                 let RuntimeExtern::Memory(memory) = extern_value else {
                     return Err(internal(
                         "ExtractMemory directive resolved to a non-memory item",
@@ -119,7 +122,7 @@ pub fn instantiate<T: 'static>(
             }
             Initializer::ExtractRealloc { slot, source } => {
                 let extern_value =
-                    resolve_source(&ir, &core_instances, &trampolines, store, source)?;
+                    resolve_source(ir, &core_instances, &trampolines, store, source)?;
                 let RuntimeExtern::Func(realloc) = extern_value else {
                     return Err(internal(
                         "ExtractRealloc directive resolved to a non-function item",
@@ -136,7 +139,7 @@ pub fn instantiate<T: 'static>(
             }
             Initializer::ExtractPostReturn { slot, source } => {
                 let extern_value =
-                    resolve_source(&ir, &core_instances, &trampolines, store, source)?;
+                    resolve_source(ir, &core_instances, &trampolines, store, source)?;
                 let RuntimeExtern::Func(post_return) = extern_value else {
                     return Err(internal(
                         "ExtractPostReturn directive resolved to a non-function item",
@@ -154,7 +157,7 @@ pub fn instantiate<T: 'static>(
         }
     }
 
-    let function_exports = collect_function_exports(&ir, &core_instances, &trampolines, store)?;
+    let function_exports = collect_function_exports(ir, &core_instances, &trampolines, store)?;
     Ok(Instance {
         core_instances: core_instances.into_boxed_slice(),
         function_exports,
@@ -167,17 +170,19 @@ pub fn instantiate<T: 'static>(
 /// [`ExecutorIr::trampoline_specs`]. Dispatches by variant: lowered
 /// imports become host-function trampolines, resource intrinsics
 /// become per-resource handle-table operations.
+#[allow(clippy::too_many_arguments)]
 fn build_runtime_trampoline<T: 'static>(
     spec: &TrampolineSpec,
     component: &Component,
     linker: &Linker<T>,
+    resolution: &Resolution,
     store: &mut Store<T>,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     resource_runtimes: &[ResourceRuntime<T>],
 ) -> Result<RuntimeFunc> {
     match spec {
         TrampolineSpec::LowerImport(lowering) => {
-            let host_func = lookup_host_func(linker, component, lowering)?;
+            let host_func = lookup_host_func(linker, component, resolution, lowering)?;
             Ok(build_trampoline(
                 store,
                 lowering,
@@ -206,43 +211,52 @@ fn build_runtime_trampoline<T: 'static>(
     }
 }
 
+/// The registration the resolver chose for the import at
+/// `import_index`, or the structured link error when the resolver
+/// recorded no registration for it.
+fn chosen_registration<'l, T: 'static>(
+    linker: &'l Linker<T>,
+    component: &Component,
+    resolution: &Resolution,
+    import_index: usize,
+) -> Result<&'l InstanceRegistration<T>> {
+    let import = component
+        .imports
+        .get(import_index)
+        .ok_or_else(|| internal("import index in executor spec out of bounds"))?;
+    let unresolved = || {
+        Error::from(LinkError::UnresolvedImport {
+            import: import.name.clone(),
+        })
+    };
+    let chosen = match resolution.bindings.get(import_index) {
+        Some(ImportBinding::Resolved { chosen }) => chosen,
+        Some(ImportBinding::Vacuous) | None => return Err(unresolved()),
+    };
+    linker.registration_for(chosen).ok_or_else(unresolved)
+}
+
 /// Look up a host-resource registration that satisfies the given
 /// [`ResourceSpec`]. Mirrors [`lookup_host_func`] but returns the
 /// destructor and identity for the resource.
 fn resolve_resource_runtime<T: 'static>(
     linker: &Linker<T>,
     component: &Component,
+    resolution: &Resolution,
     spec: &ResourceSpec,
 ) -> Result<ResourceRuntime<T>> {
-    let import = component
-        .imports
-        .get(spec.import_index)
-        .ok_or_else(|| internal("ResourceSpec.import_index out of bounds"))?;
-    let chosen = match &import.name {
-        ExternalName::Interface(id) => id,
-        ExternalName::Plain(_) => {
-            return Err(Error::from(LinkError::UnsupportedRegistration {
-                import: import.name.clone(),
-                reason: "plain-named imports require host-item registration",
-            }));
-        }
-    };
-    let registration = linker.registration_for(chosen).ok_or_else(|| {
-        Error::from(LinkError::UnresolvedImport {
-            import: import.name.clone(),
-        })
-    })?;
+    let registration = chosen_registration(linker, component, resolution, spec.import_index)?;
     let label = match &spec.item_name {
         Some(name) => name.as_str(),
         None => {
-            return Err(internal(
-                "top-level resource imports without an inner-instance path are not yet supported",
+            return Err(Error::unsupported(
+                "top-level resource imports outside an interface",
             ));
         }
     };
     let host = registration.resource(label).ok_or_else(|| {
         Error::from(LinkError::UnresolvedImport {
-            import: import.name.clone(),
+            import: component.imports[spec.import_index].name.clone(),
         })
     })?;
     Ok(ResourceRuntime::from_registration(host))
@@ -254,42 +268,21 @@ fn resolve_resource_runtime<T: 'static>(
 fn lookup_host_func<T: 'static>(
     linker: &Linker<T>,
     component: &Component,
+    resolution: &Resolution,
     spec: &LoweringSpec,
 ) -> Result<Arc<HostFuncBody<T>>> {
-    let import = component
-        .imports
-        .get(spec.import_index)
-        .ok_or_else(|| internal("LoweringSpec.import_index out of bounds"))?;
-    let chosen = match &import.name {
-        ExternalName::Interface(id) => id,
-        ExternalName::Plain(_) => {
-            return Err(Error::from(LinkError::UnsupportedRegistration {
-                import: import.name.clone(),
-                reason: "plain-named imports require host-item registration",
-            }));
-        }
-    };
-    let registration = linker.registration_for(chosen).ok_or_else(|| {
-        Error::from(LinkError::UnresolvedImport {
-            import: import.name.clone(),
-        })
-    })?;
+    let registration = chosen_registration(linker, component, resolution, spec.import_index)?;
     let item_name = match &spec.item_name {
         Some(name) => name.as_str(),
         None => {
-            // The import IS the function (top-level function
-            // import). The polyfill's resolver rejects plain-named
-            // imports above, so reaching here means an interface-
-            // typed import has no path leaf — which the
-            // synchronous baseline tests do not produce.
-            return Err(internal(
-                "interface-typed lowered import had no item-path leaf",
+            return Err(Error::unsupported(
+                "plain-named function imports outside an interface",
             ));
         }
     };
     let host = registration.func(item_name).ok_or_else(|| {
         Error::from(LinkError::UnresolvedImport {
-            import: import.name.clone(),
+            import: component.imports[spec.import_index].name.clone(),
         })
     })?;
     Ok(host.call.clone())

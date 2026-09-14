@@ -32,3 +32,5 @@ pub use host_func::HostFuncBody;
 pub use host_resource::{DestructorBody, HostResource};
 pub use linker::Linker;
 pub use linker_instance::LinkerInstance;
+pub use registration::InstanceRegistration;
+pub use resolve::{ImportBinding, Resolution};
