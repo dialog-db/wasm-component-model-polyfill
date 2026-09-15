@@ -29,9 +29,9 @@ kanban-plugin: basic
 
 ## In Progress
 
-- [ ] [[0280b2]]
-
 ## Needs Review
+
+- [ ] [[0280b2]]
 
 ## Ready
 
