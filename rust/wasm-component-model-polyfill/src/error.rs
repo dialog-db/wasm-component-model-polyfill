@@ -238,6 +238,23 @@ pub enum LinkError {
         available: Vec<Option<Version>>,
     },
 
+    /// The host registered an item of one kind under a name the
+    /// component imports as another kind: a function where an
+    /// instance is imported, an instance where a module is, and so
+    /// on. The kinds are named in Wasmtime's words.
+    #[error("import `{import}`: expected {expected} found {found}")]
+    KindMismatch {
+        /// The name of the import whose kind disagreed.
+        import: ExternalName,
+        /// The item inside an instance import whose kind disagreed,
+        /// or `None` when the import itself did.
+        item: Option<String>,
+        /// The kind the component declares.
+        expected: &'static str,
+        /// The kind the host registered.
+        found: &'static str,
+    },
+
     /// The core module registered for a module-typed import does not
     /// satisfy the module type the import declares: an export the
     /// type lists is missing or has the wrong type, or the module

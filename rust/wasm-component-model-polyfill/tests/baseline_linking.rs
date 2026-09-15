@@ -1764,3 +1764,109 @@ async fn it_links_a_recursively_empty_instance_import_without_a_registration() {
         .expect("parses");
     assert!(linker.instantiate(&mut store, &component).await.is_err());
 }
+
+#[wcmp_macros::test]
+async fn it_rejects_a_registration_of_the_wrong_kind() {
+    // Wasmtime's `import.wast`: a function registered under the name
+    // the component imports as an instance is a link failure,
+    // `expected instance found func`, not a vacuous match.
+    const IMPORTS_INSTANCE: &[u8] = component!(
+        r#"
+        (component (import "host-return-two" (instance)))
+        "#
+    );
+    const IMPORTS_FUNC: &[u8] = component!(
+        r#"
+        (component (import "host" (func (result u32))))
+        "#
+    );
+    const IMPORTS_ITEM: &[u8] = component!(
+        r#"
+        (component
+          (import "host" (instance
+            (export "f" (func (result u32))))))
+        "#
+    );
+    let engine = Engine::new().expect("engine construction succeeds");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker
+        .root()
+        .func_wrap("host-return-two", |_, (): ()| Ok(2u32));
+    linker.root().instance("host").resource("f", |_, _| Ok(()));
+
+    let kind_mismatch = |err: Error| match err {
+        Error::Link(inner) => match *inner {
+            LinkError::KindMismatch {
+                import,
+                item,
+                expected,
+                found,
+            } => (import, item, expected, found),
+            other => panic!("expected a kind mismatch, got {other:?}"),
+        },
+        other => panic!("expected a link error, got {other:?}"),
+    };
+
+    let component = Component::new(&engine, IMPORTS_INSTANCE)
+        .await
+        .expect("parses");
+    let err = match linker.instantiate(&mut store, &component).await {
+        Ok(_) => panic!("a function where an instance is imported must not link"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        kind_mismatch(err),
+        (
+            ExternalName::Plain("host-return-two".to_owned()),
+            None,
+            "instance",
+            "func"
+        )
+    );
+
+    // The reverse: an instance where a function is imported.
+    let component = Component::new(&engine, IMPORTS_FUNC).await.expect("parses");
+    let err = match linker.instantiate(&mut store, &component).await {
+        Ok(_) => panic!("an instance where a function is imported must not link"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        kind_mismatch(err),
+        (
+            ExternalName::Plain("host".to_owned()),
+            None,
+            "func",
+            "instance"
+        )
+    );
+
+    // An item inside an instance import names the item.
+    let component = Component::new(&engine, IMPORTS_ITEM).await.expect("parses");
+    let err = match linker.instantiate(&mut store, &component).await {
+        Ok(_) => panic!("a resource where a function item is imported must not link"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        kind_mismatch(err),
+        (
+            ExternalName::Plain("host".to_owned()),
+            Some("f".to_owned()),
+            "func",
+            "resource"
+        )
+    );
+
+    // A name with nothing registered is still a plain unresolved
+    // import.
+    let empty: Linker<()> = Linker::new(&engine);
+    let component = Component::new(&engine, IMPORTS_FUNC).await.expect("parses");
+    match empty.instantiate(&mut store, &component).await {
+        Err(Error::Link(inner)) => {
+            assert!(matches!(*inner, LinkError::UnresolvedImport { .. }));
+        }
+        Err(other) => panic!("expected an unresolved import, got {other:?}"),
+        Ok(_) => panic!("an import with nothing registered must not link"),
+    }
+}

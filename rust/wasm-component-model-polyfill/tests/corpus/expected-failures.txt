@@ -141,7 +141,6 @@ wasmtime/error-context-trap-in-post-return.wast:50 cascade expected a trap `cann
 wasmtime/exceptions.wast:168 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref (concrete func VMSharedTypeIndex(2))) is not su
 wasmtime/exceptions.wast:237 cascade expected a trap `uncaught exception propagated out of component`, got `no instance to invoke`
 wasmtime/implements-disabled.wast:3 validation expected rejection `the `cm-implements` feature is not active`, but the component parsed
-wasmtime/import.wast:7 validation expected link failure `expected instance found func`, but it linked
 wasmtime/memory64.wast:24 deferred-feature component rejected: unsupported component feature: 64-bit memories in adapter modules
 wasmtime/memory64.wast:122 cascade no instance to invoke
 wasmtime/memory64.wast:126 cascade no instance to invoke

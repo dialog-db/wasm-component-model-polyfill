@@ -253,6 +253,15 @@ impl<'a> ItemPosition<'a> {
             PositionRoot::Plain(name) => ExternalName::Plain(name.to_owned()),
         }
     }
+
+    /// The item name a kind-mismatch diagnostic carries: `None` when
+    /// the item is the plain-named import itself.
+    fn item(&self, item: &str) -> Option<String> {
+        match self.root {
+            PositionRoot::Plain(name) if self.nested.is_empty() && name == item => None,
+            _ => Some(self.qualified(item)),
+        }
+    }
 }
 
 /// Whether an instance type needs nothing from the host: every item
@@ -286,12 +295,12 @@ fn resolve_plain<T: 'static>(
             check_function_item(&ItemPosition::plain(name), name, declared, root)?;
             Ok(ImportBinding::Root)
         }
-        ExternType::Resource(_) | ExternType::ResourceEquals(_) => root
-            .resource(name)
-            .map(|_| ImportBinding::Root)
-            .ok_or_else(unresolved),
+        ExternType::Resource(_) | ExternType::ResourceEquals(_) => {
+            check_resource_item(name, root, &import.name, None)?;
+            Ok(ImportBinding::Root)
+        }
         ExternType::Module(declared) => {
-            check_module_item(&import.name, name, declared, root)?;
+            check_module_item(&import.name, name, declared, root, None)?;
             Ok(ImportBinding::Root)
         }
         ExternType::Instance(instance) => match root.instance(name) {
@@ -299,8 +308,14 @@ fn resolve_plain<T: 'static>(
                 check_items(import, registration, &ItemPosition::plain(name))?;
                 Ok(ImportBinding::Root)
             }
-            None if instance_is_vacuous(instance) => Ok(ImportBinding::Vacuous),
-            None => Err(unresolved()),
+            None => {
+                check_kind(root, name, "instance", &import.name, None)?;
+                if instance_is_vacuous(instance) {
+                    Ok(ImportBinding::Vacuous)
+                } else {
+                    Err(unresolved())
+                }
+            }
         },
         _ => Err(Error::from(LinkError::UnsupportedRegistration {
             import: import.name.clone(),
@@ -375,13 +390,31 @@ fn check_instance_items<T: 'static>(
                 // as in Wasmtime: the registration under the first
                 // name serves both.
                 if registration.resource(&item.name).is_none() && resource.label() != item.name {
-                    check_resource_item(resource.label(), registration, import_name)?;
+                    check_kind(
+                        registration,
+                        &item.name,
+                        "resource",
+                        import_name,
+                        Some(&item.name),
+                    )?;
+                    check_resource_item(
+                        resource.label(),
+                        registration,
+                        import_name,
+                        Some(&item.name),
+                    )?;
                 } else {
-                    check_resource_item(&item.name, registration, import_name)?;
+                    check_resource_item(&item.name, registration, import_name, Some(&item.name))?;
                 }
             }
             ExternType::Module(declared) => {
-                check_module_item(import_name, &item.name, declared, registration)?;
+                check_module_item(
+                    import_name,
+                    &item.name,
+                    declared,
+                    registration,
+                    Some(&item.name),
+                )?;
             }
             ExternType::Instance(inner) => match registration.instance(&item.name) {
                 Some(nested) => {
@@ -392,11 +425,19 @@ fn check_instance_items<T: 'static>(
                         &position.inside(&item.name),
                     )?;
                 }
-                None if instance_is_vacuous(inner) => {}
                 None => {
-                    return Err(Error::from(LinkError::UnresolvedImport {
-                        import: import_name.clone(),
-                    }));
+                    check_kind(
+                        registration,
+                        &item.name,
+                        "instance",
+                        import_name,
+                        Some(&item.name),
+                    )?;
+                    if !instance_is_vacuous(inner) {
+                        return Err(Error::from(LinkError::UnresolvedImport {
+                            import: import_name.clone(),
+                        }));
+                    }
                 }
             },
             // Type, Component, Value: the WIT shapes typical interfaces
@@ -413,13 +454,37 @@ fn check_resource_item<T: 'static>(
     item_name: &str,
     registration: &InstanceRegistration<T>,
     import_name: &ExternalName,
+    item: Option<&str>,
 ) -> Result<()> {
     if registration.resource(item_name).is_some() {
         return Ok(());
     }
+    check_kind(registration, item_name, "resource", import_name, item)?;
     Err(Error::from(LinkError::UnresolvedImport {
         import: import_name.clone(),
     }))
+}
+
+/// Reject a registration of another kind under `name`: the host put
+/// a function where the component imports an instance, say. A name
+/// with nothing registered under it passes, and the caller reports
+/// the missing item.
+fn check_kind<T: 'static>(
+    registration: &InstanceRegistration<T>,
+    name: &str,
+    expected: &'static str,
+    import_name: &ExternalName,
+    item: Option<&str>,
+) -> Result<()> {
+    match registration.kind_of(name) {
+        Some(found) if found != expected => Err(Error::from(LinkError::KindMismatch {
+            import: import_name.clone(),
+            item: item.map(str::to_owned),
+            expected,
+            found,
+        })),
+        _ => Ok(()),
+    }
 }
 
 /// A module-typed import, or a module item of an instance import,
@@ -430,12 +495,14 @@ fn check_module_item<T: 'static>(
     item_name: &str,
     declared: &ModuleType,
     registration: &InstanceRegistration<T>,
+    item: Option<&str>,
 ) -> Result<()> {
-    let module = registration.module(item_name).ok_or_else(|| {
-        Error::from(LinkError::UnresolvedImport {
+    let Some(module) = registration.module(item_name) else {
+        check_kind(registration, item_name, "module", import_name, item)?;
+        return Err(Error::from(LinkError::UnresolvedImport {
             import: import_name.clone(),
-        })
-    })?;
+        }));
+    };
     module_satisfies(declared, module).map_err(|reason| {
         Error::from(LinkError::IncompatibleModule {
             import: import_name.clone(),
@@ -451,11 +518,19 @@ fn check_function_item<T: 'static>(
     declared: &FunctionType,
     registration: &InstanceRegistration<T>,
 ) -> Result<()> {
-    let host = registration.func(item_name).ok_or_else(|| {
-        Error::from(LinkError::UnresolvedImport {
-            import: position.import_name(),
-        })
-    })?;
+    let Some(host) = registration.func(item_name) else {
+        let import_name = position.import_name();
+        check_kind(
+            registration,
+            item_name,
+            "func",
+            &import_name,
+            position.item(item_name).as_deref(),
+        )?;
+        return Err(Error::from(LinkError::UnresolvedImport {
+            import: import_name,
+        }));
+    };
     if !function_types_compatible(&host.signature, declared) {
         return Err(Error::from(TypeMismatch {
             position: position.for_item(item_name),

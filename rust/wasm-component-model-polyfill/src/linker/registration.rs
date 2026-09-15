@@ -75,6 +75,24 @@ impl<T> InstanceRegistration<T> {
     pub fn module(&self, name: &str) -> Option<&Module> {
         self.modules.get(name)
     }
+
+    /// The kind of the item registered under `name`, in Wasmtime's
+    /// words, or `None` when nothing is registered under it. Consulted
+    /// when a lookup of one kind misses, to tell a wrong-kind
+    /// registration from a missing one.
+    pub fn kind_of(&self, name: &str) -> Option<&'static str> {
+        if self.funcs.contains_key(name) {
+            Some("func")
+        } else if self.instances.contains_key(name) {
+            Some("instance")
+        } else if self.modules.contains_key(name) {
+            Some("module")
+        } else if self.resources.contains_key(name) {
+            Some("resource")
+        } else {
+            None
+        }
+    }
 }
 
 impl<T> Default for InstanceRegistration<T> {
