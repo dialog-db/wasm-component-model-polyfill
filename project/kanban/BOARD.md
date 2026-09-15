@@ -6,6 +6,7 @@ kanban-plugin: basic
 
 - [ ] [[4599cd]]
 - [ ] [[ec3a3d]]
+- [ ] [[3200e7]]
 
 ## In Progress
 
