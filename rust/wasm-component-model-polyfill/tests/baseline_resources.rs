@@ -1052,3 +1052,127 @@ async fn it_allocates_from_index_one_in_each_nested_instance() {
     assert_eq!(call(&mut store, "alloc-in2", &[]).as_ref(), &[Val::U32(1)]);
     assert_eq!(call(&mut store, "alloc-in2", &[]).as_ref(), &[Val::U32(2)]);
 }
+
+// ----------------------------------------------------------------
+// Disposal: releasing what the host holds.
+// ----------------------------------------------------------------
+
+/// A store whose host resource `thing` records every destructor run
+/// in the host data, plus the identity to mint with.
+fn disposal_store() -> (
+    Store<Vec<u32>>,
+    ResourceTypeId,
+    wasm_component_model_polyfill::Instance,
+) {
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, BORROWER).expect("component parses");
+    let mut linker: Linker<Vec<u32>> = Linker::new(&engine);
+    let iface: InterfaceIdentifier = "pdd014-tests:host/things@0.1.0"
+        .parse()
+        .expect("identifier");
+    let type_id = linker.instance(&iface).resource(
+        "thing",
+        |dropped: &mut Vec<u32>, rep: u32| -> wasm_component_model_polyfill::Result<()> {
+            dropped.push(rep);
+            Ok(())
+        },
+    );
+    linker.instance(&iface).func_new(
+        "rep",
+        FunctionType {
+            parameters: vec![FunctionParameter {
+                name: "h".to_owned(),
+                ty: ValueType::Borrow(ResourceType::new("thing")),
+            }],
+            result: Some(ValueType::Primitive(
+                wasm_component_model_polyfill::PrimitiveType::U32,
+            )),
+        },
+        |_: HostCall<'_, Vec<u32>>, args, results| {
+            let Val::Borrow(handle) = &args[0] else {
+                panic!("expected a borrowed handle, got {args:?}");
+            };
+            results[0] = Val::U32(handle.rep);
+            Ok(())
+        },
+    );
+    let mut store: Store<Vec<u32>> = Store::new(&engine, Vec::new()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiate");
+    (store, type_id, instance)
+}
+
+#[wcmp_macros::test]
+async fn it_releases_a_host_held_handle_and_runs_its_destructor_once() {
+    let (mut store, type_id, _instance) = disposal_store();
+    let handle = store.resource_new(type_id, 31).expect("mint");
+    store.resource_drop(handle).expect("release");
+    assert_eq!(
+        store.data(),
+        &vec![31],
+        "the destructor ran once with the rep"
+    );
+    let next = store.resource_new(type_id, 32).expect("mint again");
+    assert_eq!(next.index, handle.index, "the freed slot is reused");
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_to_release_a_handle_twice() {
+    let (mut store, type_id, _instance) = disposal_store();
+    let handle = store.resource_new(type_id, 5).expect("mint");
+    store.resource_drop(handle).expect("first release");
+    let err = store
+        .resource_drop(handle)
+        .expect_err("a released handle is not live");
+    assert!(
+        matches!(&err, Error::Abi(abi) if matches!(abi.cause, AbiCause::InvalidHandle { .. })),
+        "expected the invalid-handle cause, got {err:?}"
+    );
+    assert_eq!(store.data(), &vec![5], "the destructor did not run again");
+}
+
+#[wcmp_macros::test]
+async fn it_releases_a_locally_defined_resource_through_the_store() {
+    let (mut store, instance) = local_resource_instance();
+    let handle = make_handle(&mut store, &instance, 9);
+    store.resource_drop(handle).expect("release");
+    let dropped = instance.get_func("dropped").expect("dropped export");
+    let last = instance.get_func("last").expect("last export");
+    assert_eq!(
+        dropped.call(&mut store, &[]).expect("dropped").as_ref(),
+        &[Val::U32(1)],
+        "the component's in-binary destructor ran once"
+    );
+    assert_eq!(
+        last.call(&mut store, &[]).expect("last").as_ref(),
+        &[Val::U32(9)]
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_runs_no_destructor_when_a_store_is_dropped() {
+    let (store, type_id, instance) = disposal_store();
+    let _leaked = store.resource_new(type_id, 77).expect("mint");
+    // The host data is the only record the destructor writes to; take
+    // it out of the store before the store drops.
+    drop(instance);
+    let dropped = store.data().clone();
+    drop(store);
+    assert!(
+        dropped.is_empty(),
+        "a dropped store leaks live handles rather than running destructors"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_lets_an_instance_drop_before_its_store() {
+    let (mut store, instance) = local_resource_instance();
+    let handle = make_handle(&mut store, &instance, 4);
+    drop(instance);
+    // The store, its tables, and the destructor the dropped instance
+    // introduced all outlive the instance handle.
+    store
+        .resource_drop(handle)
+        .expect("a handle minted by a dropped instance still releases");
+}

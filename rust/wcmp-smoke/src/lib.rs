@@ -161,6 +161,7 @@ pub fn run() -> Vec<Step> {
             greeter(&engine)
         }),
         Step::run("host resource with a destructor", || dropper(&engine)),
+        Step::run("disposal from the host", || disposal(&engine)),
         composition(&engine),
     ]
 }
@@ -328,6 +329,49 @@ fn dropper(engine: &Engine) -> Result<String, String> {
         "destructor ran for reps {:?}, in drop order",
         store.data().dropped
     ))
+}
+
+/// The host releases a handle it never handed to the guest, watches
+/// the destructor run, then drops the instance and the store.
+fn disposal(engine: &Engine) -> Result<String, String> {
+    let component = Component::new(engine, DROPPER).map_err(fail)?;
+    let mut linker: Linker<HostState> = Linker::new(engine);
+    let resources: InterfaceIdentifier = "wcmp:smoke/resources@0.1.0".parse().map_err(fail)?;
+    let thing = linker.instance(&resources).resource(
+        "thing",
+        |state: &mut HostState, rep: u32| -> wasm_component_model_polyfill::Result<()> {
+            state.dropped.push(rep);
+            Ok(())
+        },
+    );
+    let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
+    let instance = linker.instantiate(&mut store, &component).map_err(fail)?;
+    let kept = store.resource_new(thing, 33).map_err(fail)?;
+    let leaked = store.resource_new(thing, 44).map_err(fail)?;
+    store.resource_drop(kept).map_err(fail)?;
+    expect(
+        "destructor after release",
+        store.data().dropped.as_slice(),
+        &[33],
+    )?;
+    let again = store.resource_drop(kept);
+    expect("a second release is refused", again.is_err(), true)?;
+    // The instance can go before the store; the store keeps the
+    // tables and the destructor.
+    drop(instance);
+    let _ = leaked;
+    let dropped = store.data().dropped.clone();
+    drop(store);
+    expect(
+        "a dropped store runs no destructor for the leaked handle",
+        dropped.as_slice(),
+        &[33],
+    )?;
+    Ok(
+        "release ran the destructor once; a second release was refused; the store dropped \
+        with one leaked handle and ran nothing"
+            .to_owned(),
+    )
 }
 
 /// A `wac` composition of two real guests runs through the adapter

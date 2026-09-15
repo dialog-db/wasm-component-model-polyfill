@@ -77,6 +77,12 @@ pub fn instantiate<T: 'static>(
         )?);
     }
 
+    // The store learns every destructor this instantiation introduces,
+    // so a handle the host holds can be released through the store.
+    for runtime in &resource_runtimes {
+        store.register_destructor(runtime.type_id, runtime.destructor.clone());
+    }
+
     // One fresh table per resource table of the component: the
     // canonical ABI keeps handles per component instance per resource,
     // and this instantiation's instances get tables of their own.
