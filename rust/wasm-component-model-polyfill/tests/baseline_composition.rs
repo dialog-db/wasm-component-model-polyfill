@@ -6,7 +6,7 @@
 
 #![cfg(test)]
 
-use wasm_component_model_polyfill::{Component, Engine, Linker, Store, Val};
+use wasm_component_model_polyfill::{Component, Engine, Error, Linker, Store, Val};
 use wcmp_macros::component;
 
 #[cfg(target_arch = "wasm32")]
@@ -367,4 +367,59 @@ async fn it_runs_the_defining_components_destructor_when_another_component_drops
         &[Val::U32(1)],
         "the defining component's destructor ran exactly once"
     );
+}
+
+#[wcmp_macros::test]
+async fn it_lowers_a_lifted_function_of_the_same_component() {
+    // A component may lift a core function and lower the result back
+    // into a core function of its own: valid, but odd. The lowered
+    // function is an adapter from the instance to itself.
+    const LOWERS_ITS_OWN_LIFT: &[u8] = component!(
+        r#"
+        (component
+          (core module $m (func (export "")))
+          (core instance $m (instantiate $m))
+          (func $f1 (canon lift (core func $m "")))
+          (core func $f2 (canon lower (func $f1))))
+        "#
+    );
+    instantiate(LOWERS_ITS_OWN_LIFT).await;
+
+    // Calling that adapter from the same instance is the reentrance
+    // the pinned translator (`wasmtime-environ` 48) refuses: it
+    // compiles the adapter to an unconditional `cannot enter
+    // component instance` trap, which the start function below
+    // reaches. Wasmtime 49 lets the call through, as the corpus
+    // expects (`wasmtime/adapter.wast:98`). Until the polyfill moves
+    // to that translator, the outcome is a structured instantiation
+    // error, never a panic.
+    const CALLS_ITS_OWN_LIFT: &[u8] = component!(
+        r#"
+        (component
+          (core module $m (func (export "")))
+          (core instance $m (instantiate $m))
+          (func $f1 (canon lift (core func $m "")))
+          (core func $f2 (canon lower (func $f1)))
+          (core module $m2
+            (import "" "" (func $f))
+            (func $start call $f)
+            (start $start))
+          (core instance (instantiate $m2
+            (with "" (instance (export "" (func $f2)))))))
+        "#
+    );
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, CALLS_ITS_OWN_LIFT)
+        .await
+        .expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    match linker.instantiate(&mut store, &component).await {
+        Err(Error::Instantiation(_)) => {}
+        Err(other) => panic!("expected an instantiation error, got {other:?}"),
+        Ok(_) => {
+            // The translator no longer refuses the reentrance: the
+            // corpus line can be removed from the expected failures.
+        }
+    }
 }

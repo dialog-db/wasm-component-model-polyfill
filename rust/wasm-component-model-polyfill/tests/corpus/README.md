@@ -69,5 +69,5 @@ lines of `expected-failures.web.txt`):
 | ---------- | ---------- | ------ | ------ | ---------------------------------------------------------------------- |
 | `cm`       | 1126       | 1030   | 91.5   | deferred-feature 3, substrate 4, validation 22, cascade 67             |
 | `fixtures` | 6          | 6      | 100.0  | none                                                                   |
-| `wasmtime` | 469        | 422    | 90.0   | deferred-feature 4, substrate 8, validation 1, defect 1, cascade 33    |
-| total      | 1601       | 1458   | 91.1   | deferred-feature 7, substrate 12, validation 23, defect 1, cascade 100  |
+| `wasmtime` | 469        | 422    | 90.0   | deferred-feature 4, substrate 9, validation 1, cascade 33              |
+| total      | 1601       | 1458   | 91.1   | deferred-feature 7, substrate 13, validation 23, cascade 100            |

@@ -107,7 +107,7 @@ cm/values/variants.wast:183 cascade no instance to invoke
 cm/values/variants.wast:184 cascade no instance to invoke
 cm/values/variants.wast:185 cascade no instance to invoke
 cm/values/variants.wast:186 cascade no instance to invoke
-wasmtime/adapter.wast:98 defect instantiation failed: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x62 - <unknown
+wasmtime/adapter.wast:98 substrate instantiation failed: wasm trap: cannot enter component instance (wasmtime-environ 48 compiles an adapter between a lift and a lower of one instance to an unconditional trap; Wasmtime 49 removed that in #14146)
 wasmtime/alias-region-known-imported-entities.wast:13 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref i31) is not supported in the wasm_runtime_layer
 wasmtime/alias-region-known-imported-entities.wast:64 cascade no instance to invoke
 wasmtime/alias-region-known-imported-entities.wast:65 cascade no instance to invoke
