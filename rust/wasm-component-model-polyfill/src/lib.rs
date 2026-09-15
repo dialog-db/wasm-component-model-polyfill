@@ -23,6 +23,11 @@
 //!   reaches function exports nested inside an instance-typed
 //!   export, whether the instance is published under a WIT interface
 //!   identifier or a plain name.
+//! - [`Module`], [`CoreInstance`], and [`CoreExtern`] — the handle
+//!   for a core module a component exports or the host loads from
+//!   bytes, described by [`ModuleImport`], [`ModuleExport`],
+//!   [`CoreExternType`], and [`CoreValueType`], and instantiated by
+//!   the host with imports it supplies.
 //! - [`TypedFunc`] — the typed counterpart to [`Func`] obtained
 //!   through [`Func::typed`], whose Rust parameter tuple and return
 //!   type are checked against the export's component-level
@@ -168,6 +173,7 @@ mod executor;
 mod identifier;
 mod instance;
 mod linker;
+mod module;
 mod resource;
 mod store;
 mod types;
@@ -175,7 +181,7 @@ mod value;
 
 pub use crate::component::{
     Component, ComponentExport, ComponentImport, ExternType, ExternalName, FunctionParameter,
-    FunctionType, InstanceItem, InstanceType,
+    FunctionType, InstanceItem, InstanceType, ModuleType,
 };
 pub use crate::engine::Engine;
 pub use crate::error::{
@@ -189,6 +195,9 @@ pub use crate::instance::{
 pub use crate::linker::{
     ComponentParameters, ComponentResult, ComponentValue, HostCall, HostResource, Linker,
     LinkerInstance,
+};
+pub use crate::module::{
+    CoreExtern, CoreExternType, CoreInstance, CoreValueType, Module, ModuleExport, ModuleImport,
 };
 pub use crate::resource::{ResourceHandle, ResourceTypeId};
 pub use crate::store::Store;

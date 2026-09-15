@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use crate::abi::layout::FlatType;
 use crate::component::{ExternalName, FunctionType};
+use crate::module::Module;
 
 /// The executor's IR for a single parsed component.
 ///
@@ -39,6 +40,9 @@ pub struct ExecutorIr {
     /// down to the instance itself. An instance is listed whether or
     /// not it holds a function.
     pub instance_exports: Box<[Box<[ExternalName]>]>,
+    /// The component's module-typed exports, at any depth, in
+    /// declaration order.
+    pub module_exports: Box<[ModuleExportSpec]>,
     /// One entry per trampoline the component requires, in the
     /// order [`Trampoline`]s are emitted by the upstream translator.
     /// Each entry names what the trampoline does — lower a host
@@ -81,20 +85,16 @@ pub struct ExecutorIr {
 
 /// One core module pre-translated to the runtime layer.
 ///
-/// Carries the runtime-layer handle the executor instantiates
-/// against alongside the module's import declarations (so the
-/// executor can pair them with each instantiation's
-/// [`ImportSource`] list) and an inverted export table (so an
+/// Carries the compiled module the executor instantiates against,
+/// whose import list the executor pairs with each instantiation's
+/// [`ImportSource`] list, and an inverted export table (so an
 /// `EntityIndex`-keyed lookup produces a name the runtime-layer
 /// instance's `get_export` accepts).
 pub struct ModuleEntry {
-    /// The runtime-layer Module. Constructed at translation time
-    /// from the core module's binary slice.
-    pub runtime: wasm_runtime_layer::Module,
-    /// The module's declared imports as `(host_namespace, name)`,
-    /// in declaration order, read from
-    /// `wasmtime_environ::Module::imports`.
-    pub imports: Box<[ModuleImport]>,
+    /// The compiled module. Constructed at translation time from the
+    /// core module's binary slice; the same handle a module-typed
+    /// export hands to the host.
+    pub module: Module,
     /// Inverted export table: maps each export's slot
     /// (entity-index) to the name the module declares it under.
     /// Used when a component's [`CoreSourceItem::Index`] resolves
@@ -102,12 +102,18 @@ pub struct ModuleEntry {
     pub entity_to_name: HashMap<EntityIndex, String>,
 }
 
-/// One declared import of a core module (`(import "host" "name" ...)`).
-pub struct ModuleImport {
-    /// The host (first-level) name.
-    pub host: String,
-    /// The item (second-level) name.
+/// One component-level module export the executor exposes to the
+/// caller through [`crate::Instance::get_module`] or through the
+/// [`crate::Instance::exports`] navigator.
+pub struct ModuleExportSpec {
+    /// The leaf name the export is declared under.
     pub name: String,
+    /// The names of the instance-typed exports that enclose this
+    /// module, from the root of the export tree inward, or empty for
+    /// a root-level module export.
+    pub path: Box<[ExternalName]>,
+    /// Index into [`ExecutorIr::modules`].
+    pub module_index: usize,
 }
 
 /// The kind of a core module's exported entity. Maps 1:1 onto

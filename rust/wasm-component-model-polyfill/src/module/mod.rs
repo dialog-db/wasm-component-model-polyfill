@@ -19,6 +19,7 @@ mod core_value_type;
 mod module;
 mod module_export;
 mod module_import;
+mod read;
 
 pub use core_extern::CoreExtern;
 pub use core_extern_type::CoreExternType;

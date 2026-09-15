@@ -1409,24 +1409,27 @@ async fn it_rejects_a_call_made_through_a_different_store() {
 
 #[wcmp_macros::test]
 async fn it_reports_an_unsupported_feature_as_a_structured_error() {
-    // A component that exports a core module uses a feature the
-    // polyfill has not built. The translator reports it at
+    // A component whose export takes a `stream<u8>` uses a feature
+    // the polyfill has not built. The translator reports it at
     // construction as a structured `Error::Unsupported` naming the
     // feature, never as a panic.
     const COMPONENT: &[u8] = component!(
         r#"
         (component
           (core module $m
-            (func (export "f") (result i32) i32.const 42))
-          (export "m" (core module $m)))
+            (func (export "f") (param i32)))
+          (core instance $i (instantiate $m))
+          (type $s (stream u8))
+          (func (export "f") (param "x" $s)
+            (canon lift (core func $i "f"))))
         "#
     );
     let engine = Engine::new().expect("engine");
     let err = Component::new(&engine, COMPONENT)
         .await
-        .expect_err("module-typed exports are not supported yet");
+        .expect_err("stream values are not supported yet");
     assert!(
-        matches!(&err, Error::Unsupported { feature } if feature.contains("module")),
+        matches!(&err, Error::Unsupported { feature } if feature.contains("stream")),
         "expected Error::Unsupported, got {err:?}"
     );
 }
@@ -1525,7 +1528,7 @@ async fn it_navigates_plain_named_instance_exports() {
     // An `ExternalName` from the component's export list is a key too.
     let by_name = instance
         .exports()
-        .instance(&ExternalName::Plain("a".to_owned()))
+        .instance(ExternalName::Plain("a".to_owned()))
         .expect("the export list's name addresses the same instance");
     assert!(by_name.func("f").is_some());
 

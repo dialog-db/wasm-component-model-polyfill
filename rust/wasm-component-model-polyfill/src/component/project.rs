@@ -21,14 +21,17 @@ use std::collections::HashMap;
 
 use wasmtime_environ::component::{
     Component as EnvironComponent, ComponentExtern, ComponentTypes, Export as EnvironExport,
-    InterfaceType, TypeComponentInstanceIndex, TypeDef, TypeFuncIndex, TypeResourceTable,
-    TypeResourceTableIndex,
+    InterfaceType, TypeComponentInstanceIndex, TypeDef, TypeFuncIndex, TypeModuleIndex,
+    TypeResourceTable, TypeResourceTableIndex,
 };
+use wasmtime_environ::{EngineOrModuleTypeIndex, EntityType};
 
 use super::extern_type::ExternType;
 use super::function_type::{FunctionParameter, FunctionType};
 use super::instance_type::{InstanceItem, InstanceType};
+use super::module_type::ModuleType;
 use crate::error::{Error, Result};
+use crate::module::{CoreExternType, CoreValueType, ModuleExport, ModuleImport};
 use crate::types::{
     EnumType, FlagsType, ListType, OptionType, PrimitiveType, RecordField, RecordType,
     ResourceType, ResultType, TupleType, ValueType, VariantCase, VariantType,
@@ -227,6 +230,91 @@ impl<'a> TypeProjector<'a> {
         Ok(InstanceType { items })
     }
 
+    /// Project one core module type: its imports and exports with
+    /// their core types.
+    pub fn module(&self, index: TypeModuleIndex) -> Result<ModuleType> {
+        let module = &self.types[index];
+        let mut imports = Vec::with_capacity(module.imports.len());
+        for ((namespace, name), entity) in module.imports.iter() {
+            imports.push(ModuleImport {
+                module: namespace.clone(),
+                name: name.clone(),
+                ty: self.entity_type(entity)?,
+            });
+        }
+        let mut exports = Vec::with_capacity(module.exports.len());
+        for (name, entity) in module.exports.iter() {
+            exports.push(ModuleExport {
+                name: name.clone(),
+                ty: self.entity_type(entity)?,
+            });
+        }
+        Ok(ModuleType { imports, exports })
+    }
+
+    /// Project the type of one core entity a module type names.
+    fn entity_type(&self, entity: &EntityType) -> Result<CoreExternType> {
+        Ok(match entity {
+            EntityType::Function(index) => {
+                let func = self.core_function(*index)?;
+                CoreExternType::Func {
+                    params: func
+                        .params()
+                        .iter()
+                        .map(CoreValueType::from_translator)
+                        .collect::<Result<Vec<_>>>()?,
+                    results: func
+                        .results()
+                        .iter()
+                        .map(CoreValueType::from_translator)
+                        .collect::<Result<Vec<_>>>()?,
+                }
+            }
+            EntityType::Global(global) => CoreExternType::Global {
+                content: CoreValueType::from_translator(&global.wasm_ty)?,
+                mutable: global.mutability,
+            },
+            EntityType::Memory(memory) => CoreExternType::Memory {
+                minimum_pages: memory.limits.min,
+                maximum_pages: memory.limits.max,
+                memory64: memory.idx_type == wasmtime_environ::IndexType::I64,
+                shared: memory.shared,
+            },
+            EntityType::Table(table) => CoreExternType::Table {
+                element: CoreValueType::from_translator(&wasmtime_environ::WasmValType::Ref(
+                    table.ref_type,
+                ))?,
+                minimum: table.limits.min,
+                maximum: table.limits.max,
+            },
+            EntityType::Tag(tag) => {
+                let func = self.core_function(tag.signature)?;
+                CoreExternType::Tag {
+                    params: func
+                        .params()
+                        .iter()
+                        .map(CoreValueType::from_translator)
+                        .collect::<Result<Vec<_>>>()?,
+                }
+            }
+        })
+    }
+
+    /// The core function type behind a module-level type index.
+    fn core_function(
+        &self,
+        index: EngineOrModuleTypeIndex,
+    ) -> Result<&wasmtime_environ::WasmFuncType> {
+        match index {
+            EngineOrModuleTypeIndex::Module(index) => {
+                Ok(self.types.module_types()[index].unwrap_func())
+            }
+            EngineOrModuleTypeIndex::Engine(_) | EngineOrModuleTypeIndex::RecGroup(_) => Err(
+                Error::internal("a core module type names a function type outside the module"),
+            ),
+        }
+    }
+
     /// Project the type of one import or export.
     pub fn extern_type(&self, name: &str, extern_: &ComponentExtern) -> Result<ExternType> {
         self.type_def(name, &extern_.ty)
@@ -248,7 +336,7 @@ impl<'a> TypeProjector<'a> {
                     ResourceType::new(self.labels.get(index).map(String::as_str).unwrap_or(name))
                 }
             }),
-            TypeDef::Module(_) => ExternType::Module,
+            TypeDef::Module(index) => ExternType::Module(self.module(*index)?),
             TypeDef::Component(_) => ExternType::Component,
             TypeDef::CoreFunc(_) => {
                 return Err(Error::unsupported(

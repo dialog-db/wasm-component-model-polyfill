@@ -3,6 +3,7 @@
 
 use super::function_type::FunctionType;
 use super::instance_type::InstanceType;
+use super::module_type::ModuleType;
 use crate::types::{ResourceType, ValueType};
 
 /// What an import or export of a component is, structurally.
@@ -22,9 +23,9 @@ pub enum ExternType {
     /// (the typical shape of an interface import or export).
     Instance(InstanceType),
     /// A core WebAssembly module imported or exported by the
-    /// component as an opaque unit. Its detailed shape is not
-    /// modelled by the polyfill at this stage.
-    Module,
+    /// component, with the imports and exports its module type
+    /// declares.
+    Module(ModuleType),
     /// A nested component imported or exported as an opaque unit.
     /// Its detailed shape is not modelled by the polyfill at this
     /// stage.

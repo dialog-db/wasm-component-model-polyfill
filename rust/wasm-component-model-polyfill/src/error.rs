@@ -279,14 +279,28 @@ pub enum InstantiationError {
     },
 
     /// A function handle was called with a [`Store`] other than the
-    /// one its [`Instance`] was created in. An instance's core
-    /// state lives in exactly one store; the runtime substrate
+    /// one its [`Instance`] was created in, or a core item from one
+    /// store was supplied as an import into another. An instance's
+    /// core state lives in exactly one store; the runtime substrate
     /// cannot address it through another.
     ///
     /// [`Store`]: crate::Store
     /// [`Instance`]: crate::Instance
-    #[error("the function handle belongs to an instance created in a different store")]
+    #[error("the handle belongs to an instance created in a different store")]
     WrongStore,
+
+    /// A core module was instantiated from the host with a different
+    /// number of imports than it declares. [`Module::instantiate`]
+    /// takes one value per declared import, in declaration order.
+    ///
+    /// [`Module::instantiate`]: crate::Module::instantiate
+    #[error("the module declares {expected} imports, but {found} were supplied")]
+    ImportCount {
+        /// The number of imports the module declares.
+        expected: usize,
+        /// The number of values the host supplied.
+        found: usize,
+    },
 }
 
 /// A type-mismatch report.

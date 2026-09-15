@@ -85,6 +85,8 @@ mod tests {
     #[test]
     fn it_passes_an_external_name_through() {
         let name = ExternalName::Plain("i".to_owned());
-        assert_eq!((&name).external_name(), name);
+        let borrowed: &ExternalName = &name;
+        assert_eq!(borrowed.external_name(), name);
+        assert_eq!(name.external_name(), name);
     }
 }

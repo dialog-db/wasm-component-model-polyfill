@@ -18,6 +18,8 @@
 //! [`Instance::exports`]: super::Instance::exports
 //! [`InterfaceIdentifier`]: crate::InterfaceIdentifier
 
+use crate::module::Module;
+
 use super::export_instance::ExportInstance;
 use super::export_lookup::ExportLookup;
 use super::func::Func;
@@ -27,10 +29,11 @@ use super::instance::Instance;
 /// [`Instance`].
 ///
 /// `InstanceExports` is obtained from [`Instance::exports`] and
-/// borrows from the instance for its lifetime. Two lookups are
-/// reachable here: [`Self::func`] for root-level function exports
-/// and [`Self::instance`] for instance-typed exports addressed by
-/// name. Nested function exports are reachable only through the
+/// borrows from the instance for its lifetime. Three lookups are
+/// reachable here: [`Self::func`] for root-level function exports,
+/// [`Self::module`] for root-level core module exports, and
+/// [`Self::instance`] for instance-typed exports addressed by name.
+/// Nested function and module exports are reachable only through the
 /// latter, and an instance nested inside an instance is reached
 /// through [`ExportInstance::instance`] on the outer view.
 ///
@@ -61,6 +64,13 @@ impl<'a> InstanceExports<'a> {
     /// export are reachable only through [`Self::instance`].
     pub fn func(&self, name: &str) -> Option<Func> {
         self.instance.function_export(&[], name)
+    }
+
+    /// Look up a root-level exported core module by its declared
+    /// name. Returns `None` if no root-level module export carries
+    /// the given name.
+    pub fn module(&self, name: &str) -> Option<Module> {
+        self.instance.module_export(&[], name)
     }
 
     /// Look up a root-level instance-typed export by name. The name

@@ -60,7 +60,7 @@ lines of `expected-failures.web.txt`):
 
 | Corpus     | Directives | Passed | Pass % | Expected failures by category                                          |
 | ---------- | ---------- | ------ | ------ | ---------------------------------------------------------------------- |
-| `cm`       | 1126       | 1029   | 91.4   | deferred-feature 4, substrate 4, validation 22, cascade 67             |
+| `cm`       | 1126       | 1030   | 91.5   | deferred-feature 3, substrate 4, validation 22, cascade 67             |
 | `fixtures` | 6          | 6      | 100.0  | none                                                                   |
-| `wasmtime` | 469        | 361    | 77.0   | deferred-feature 51, substrate 8, validation 2, defect 1, cascade 46   |
-| total      | 1601       | 1396   | 87.2   | deferred-feature 55, substrate 12, validation 24, defect 1, cascade 113 |
+| `wasmtime` | 469        | 372    | 79.3   | deferred-feature 40, substrate 8, validation 2, defect 1, cascade 46   |
+| total      | 1601       | 1408   | 87.9   | deferred-feature 43, substrate 12, validation 24, defect 1, cascade 113 |

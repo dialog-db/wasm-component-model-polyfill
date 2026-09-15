@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use crate::component::{ExternalName, FunctionType};
 use crate::executor::ir::CanonOptions;
 use crate::executor::trampoline::AbiRuntimeState;
+use crate::module::Module;
 use crate::store::StoreId;
 
 use super::exports::InstanceExports;
@@ -42,6 +43,20 @@ pub struct ExportedFunction {
     pub options: CanonOptions,
 }
 
+/// One exported core module of an instantiated component.
+///
+/// Workspace-internal; never re-exported through `lib.rs`.
+pub struct ExportedModule {
+    /// The export's leaf name.
+    pub name: String,
+    /// The names of the instance-typed exports that enclose this
+    /// module, from the root of the export tree inward, or empty for
+    /// a root-level module export.
+    pub path: Box<[ExternalName]>,
+    /// The compiled module the export hands to the host.
+    pub module: Module,
+}
+
 /// A successfully linked, instantiated component.
 ///
 /// `Instance` is produced by
@@ -71,6 +86,9 @@ pub struct Instance {
     /// instance. Workspace-internal; never re-exported through
     /// `lib.rs`.
     pub instance_exports: Box<[Box<[ExternalName]>]>,
+    /// The module-typed exports, at any depth, in declaration order.
+    /// Workspace-internal; never re-exported through `lib.rs`.
+    pub module_exports: Box<[ExportedModule]>,
     /// The canonical-ABI runtime state populated during
     /// instantiation: the per-component slabs of memories,
     /// reallocs, and post-returns. Held inside an `Arc<Mutex<…>>`
@@ -108,6 +126,25 @@ impl Instance {
             .iter()
             .find(|export| export.path.as_ref() == path && export.name == name)
             .map(|export| self.func_for(export))
+    }
+
+    /// Look up a root-level exported core module by its declared
+    /// name. Returns `None` if the export is absent, not a module, or
+    /// nested inside an instance-typed export. Use [`Self::exports`]
+    /// to traverse instance-typed exports.
+    pub fn get_module(&self, name: &str) -> Option<Module> {
+        self.module_export(&[], name)
+    }
+
+    /// The module export named `name` inside the instance-typed
+    /// export at `path`, or at the root when `path` is empty.
+    ///
+    /// Workspace-internal; not re-exported by `lib.rs`.
+    pub fn module_export(&self, path: &[ExternalName], name: &str) -> Option<Module> {
+        self.module_exports
+            .iter()
+            .find(|export| export.path.as_ref() == path && export.name == name)
+            .map(|export| export.module.clone())
     }
 
     /// Whether the component publishes an instance-typed export at

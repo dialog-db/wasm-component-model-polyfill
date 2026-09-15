@@ -11,6 +11,7 @@
 //! [`InstanceExports::instance`]: super::InstanceExports::instance
 
 use crate::component::ExternalName;
+use crate::module::Module;
 
 use super::export_lookup::ExportLookup;
 use super::func::Func;
@@ -58,6 +59,13 @@ impl<'a> ExportInstance<'a> {
     /// is present.
     pub fn func(&self, name: &str) -> Option<Func> {
         self.instance.function_export(&self.path, name)
+    }
+
+    /// Look up a core module export inside the addressed instance by
+    /// its declared item name. Returns `None` if no such module is
+    /// present.
+    pub fn module(&self, name: &str) -> Option<Module> {
+        self.instance.module_export(&self.path, name)
     }
 
     /// Look up an instance-typed export nested inside the addressed

@@ -14,15 +14,18 @@ use wcmp_macros::{component, wasm};
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 /// A provider module: one immutable global and one function.
-const PROVIDER: &str = r#"
+const PROVIDER: &[u8] = wasm!(
+    r#"
     (module
       (global (export "g") i32 i32.const 5)
       (func (export "f") (param i32) (result i32) local.get 0))
-"#;
+    "#
+);
 
 /// A consumer module whose start function traps unless the imported
 /// global holds 5.
-const CONSUMER: &str = r#"
+const CONSUMER: &[u8] = wasm!(
+    r#"
     (module
       (import "" "g" (global $g i32))
       (func $start
@@ -31,7 +34,8 @@ const CONSUMER: &str = r#"
         i32.ne
         if unreachable end)
       (start $start))
-"#;
+    "#
+);
 
 #[wcmp_macros::test]
 async fn it_exposes_a_module_typed_export_as_a_handle() {
@@ -165,10 +169,10 @@ async fn it_loads_a_core_module_from_bytes_and_instantiates_it() {
     let engine = Engine::new().expect("engine construction succeeds");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
 
-    let provider = Module::new(&engine, wasm!(PROVIDER))
+    let provider = Module::new(&engine, PROVIDER)
         .await
         .expect("a core module compiles from bytes");
-    let consumer = Module::new(&engine, wasm!(CONSUMER))
+    let consumer = Module::new(&engine, CONSUMER)
         .await
         .expect("a core module compiles from bytes");
     assert_eq!(consumer.imports().len(), 1);
@@ -190,7 +194,7 @@ async fn it_loads_a_core_module_from_bytes_and_instantiates_it() {
 
     // The right import satisfies the consumer's start function.
     consumer
-        .instantiate(&mut store, &[g.clone()])
+        .instantiate(&mut store, std::slice::from_ref(&g))
         .await
         .expect("the consumer instantiates");
 
@@ -220,8 +224,7 @@ async fn it_loads_a_core_module_from_bytes_and_instantiates_it() {
 
     // A value from another store is refused before the substrate
     // sees it.
-    let mut other_store: Store<()> =
-        Store::new(&engine, ()).expect("store construction succeeds");
+    let mut other_store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let err = consumer
         .instantiate(&mut other_store, &[g])
         .await
@@ -239,15 +242,17 @@ async fn it_reports_a_trapping_start_function_as_an_instantiation_error() {
     // A provider whose global holds the wrong value makes the
     // consumer's start function trap, so the import really flowed
     // through.
-    const WRONG_PROVIDER: &str = r#"
+    const WRONG_PROVIDER: &[u8] = wasm!(
+        r#"
         (module (global (export "g") i32 i32.const 6))
-    "#;
+        "#
+    );
     let engine = Engine::new().expect("engine construction succeeds");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
-    let provider = Module::new(&engine, wasm!(WRONG_PROVIDER))
+    let provider = Module::new(&engine, WRONG_PROVIDER)
         .await
         .expect("compiles");
-    let consumer = Module::new(&engine, wasm!(CONSUMER)).await.expect("compiles");
+    let consumer = Module::new(&engine, CONSUMER).await.expect("compiles");
     let provided = provider
         .instantiate(&mut store, &[])
         .await

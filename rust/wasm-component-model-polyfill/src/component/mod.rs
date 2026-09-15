@@ -17,6 +17,7 @@ mod extern_type;
 mod external_name;
 mod function_type;
 mod instance_type;
+mod module_type;
 mod project;
 
 pub use component_export::ComponentExport;
@@ -26,4 +27,5 @@ pub use extern_type::ExternType;
 pub use external_name::ExternalName;
 pub use function_type::{FunctionParameter, FunctionType};
 pub use instance_type::{InstanceItem, InstanceType};
+pub use module_type::ModuleType;
 pub use project::TypeProjector;

@@ -20,5 +20,5 @@ pub use export_instance::ExportInstance;
 pub use export_lookup::ExportLookup;
 pub use exports::InstanceExports;
 pub use func::Func;
-pub use instance::{ExportedFunction, Instance};
+pub use instance::{ExportedFunction, ExportedModule, Instance};
 pub use typed_func::TypedFunc;

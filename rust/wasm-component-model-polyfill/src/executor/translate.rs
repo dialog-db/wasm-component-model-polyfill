@@ -32,11 +32,12 @@ use crate::component::{ComponentExport, ComponentImport, ExternType, ExternalNam
 use crate::engine::Engine;
 use crate::error::{Error, Result};
 
-use super::compile_module::compile_module;
+use crate::module::Module;
+
 use super::ir::{
     CanonOptions, CoreInstanceExport, CoreSignature, CoreSourceItem, EntityIndex, ExecutorIr,
-    ExportSpec, ImportSource, Initializer, LoweringSpec, ModuleEntry, ModuleImport, ResourceSpec,
-    ResourceTableSpec, StringEncoding, TrampolineSpec, TranscodeOp,
+    ExportSpec, ImportSource, Initializer, LoweringSpec, ModuleEntry, ModuleExportSpec,
+    ResourceSpec, ResourceTableSpec, StringEncoding, TrampolineSpec, TranscodeOp,
 };
 
 /// Everything one translation of a component binary produces.
@@ -80,16 +81,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
     let mut module_index_for_static: HashMap<StaticModuleIndex, usize> =
         HashMap::with_capacity(modules.len());
     for (static_idx, module) in modules {
-        let runtime = compile_module(engine, module.wasm).await?;
-        let imports = module
-            .module
-            .imports()
-            .map(|(host, name, _)| ModuleImport {
-                host: host.to_owned(),
-                name: name.to_owned(),
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
+        let compiled = Module::new(engine, module.wasm).await?;
         let entity_to_name = module
             .module
             .exports
@@ -103,8 +95,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
             .collect();
         module_index_for_static.insert(static_idx, module_entries.len());
         module_entries.push(ModuleEntry {
-            runtime,
-            imports,
+            module: compiled,
             entity_to_name,
         });
     }
@@ -342,7 +333,12 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
         }
     }
 
-    let mut export_tree = ExportTree::default();
+    let mut export_tree = ExportTree {
+        functions: Vec::new(),
+        instances: Vec::new(),
+        modules: Vec::new(),
+        module_index_for_static: &module_index_for_static,
+    };
     for (name, (export_index, _)) in translation.component.exports.raw_iter() {
         collect_export_spec(
             &translation,
@@ -366,6 +362,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
             initializers: state.initializers.into_boxed_slice(),
             exports: export_tree.functions.into_boxed_slice(),
             instance_exports: export_tree.instances.into_boxed_slice(),
+            module_exports: export_tree.modules.into_boxed_slice(),
             trampoline_specs: trampoline_specs.into_boxed_slice(),
             resources: resources.into_boxed_slice(),
             resource_tables: resource_tables.into_boxed_slice(),
@@ -462,8 +459,8 @@ fn project_exports(
             }
             EnvironExport::Instance { ty, .. } => ExternType::Instance(projector.instance(*ty)?),
             EnvironExport::Type(def) => projector.type_def(name, def)?,
-            EnvironExport::ModuleStatic { .. } | EnvironExport::ModuleImport { .. } => {
-                ExternType::Module
+            EnvironExport::ModuleStatic { ty, .. } | EnvironExport::ModuleImport { ty, .. } => {
+                ExternType::Module(projector.module(*ty)?)
             }
         };
         exports.push(ComponentExport {
@@ -475,17 +472,21 @@ fn project_exports(
 }
 
 /// The export entries the translator collects: one [`ExportSpec`]
-/// per lifted function at any depth, and the path of every
-/// instance-typed export.
-#[derive(Default)]
-struct ExportTree {
+/// per lifted function at any depth, the path of every instance-typed
+/// export, and one [`ModuleExportSpec`] per module-typed export.
+struct ExportTree<'a> {
     functions: Vec<ExportSpec>,
     instances: Vec<Box<[ExternalName]>>,
+    modules: Vec<ModuleExportSpec>,
+    /// The polyfill's module slot for each static module the
+    /// translator numbered.
+    module_index_for_static: &'a HashMap<StaticModuleIndex, usize>,
 }
 
 /// Recursively project one component-level export into the
 /// [`ExportTree`]. A lifted function lands as one [`ExportSpec`]
-/// carrying the `path` of the instance exports that enclose it; an
+/// carrying the `path` of the instance exports that enclose it; a
+/// static core module lands as one [`ModuleExportSpec`]; an
 /// instance-typed export records its own path and recurses into its
 /// items with that path threaded through. Any name is accepted for an
 /// instance export, a WIT interface identifier or a plain label, as
@@ -496,7 +497,7 @@ fn collect_export_spec(
     projector: &TypeProjector<'_>,
     state: &mut ProjectionState,
     trampoline_to_spec: &HashMap<TrampolineIndex, usize>,
-    out: &mut ExportTree,
+    out: &mut ExportTree<'_>,
     path: &[ExternalName],
     name: &str,
     export_index: ExportIndex,
@@ -523,8 +524,19 @@ fn collect_export_spec(
             });
             Ok(())
         }
-        EnvironExport::ModuleStatic { .. } | EnvironExport::ModuleImport { .. } => {
-            Err(Error::unsupported("module-typed exports"))
+        EnvironExport::ModuleStatic { index, .. } => {
+            let module_index = *out.module_index_for_static.get(index).ok_or_else(|| {
+                Error::internal("module export names a static module the translator did not emit")
+            })?;
+            out.modules.push(ModuleExportSpec {
+                name: name.to_owned(),
+                path: path.into(),
+                module_index,
+            });
+            Ok(())
+        }
+        EnvironExport::ModuleImport { .. } => {
+            Err(Error::unsupported("re-exporting an imported core module"))
         }
         EnvironExport::Instance { exports, .. } => {
             let mut nested = path.to_vec();

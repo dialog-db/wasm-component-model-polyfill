@@ -19,7 +19,6 @@ cm/binary/binary.wast:1248 validation expected rejection `non-zero reserved byte
 cm/binary/binary.wast:1257 validation expected rejection `non-zero reserved byte`, but the component parsed
 cm/binary/binary.wast:1266 validation expected rejection `non-zero reserved byte`, but the component parsed
 cm/binary/binary.wast:1275 validation expected rejection `non-zero reserved byte`, but the component parsed
-cm/binary/binary.wast:1533 deferred-feature component rejected: unsupported component feature: module-typed exports
 cm/linking/tags.wast:7 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
 cm/linking/tags.wast:31 cascade no instance to invoke
 cm/linking/tags.wast:32 cascade no instance to invoke
@@ -133,7 +132,6 @@ wasmtime/alias-region-reexported-known-entities.wast:14 substrate component reje
 wasmtime/alias-region-reexported-known-entities.wast:89 cascade no instance to invoke
 wasmtime/alias-region-reexported-known-entities.wast:90 cascade no instance to invoke
 wasmtime/alias-region-reexported-known-entities.wast:91 cascade no instance to invoke
-wasmtime/aliasing.wast:19 deferred-feature component rejected: unsupported component feature: module-typed exports
 wasmtime/error-context-trap-in-post-return.wast:3 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
 wasmtime/error-context-trap-in-post-return.wast:45 cascade no definition named `Tester`
 wasmtime/error-context-trap-in-post-return.wast:46 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
@@ -151,34 +149,24 @@ wasmtime/instance.wast:182 deferred-feature instantiation failed: link error: no
 wasmtime/instance.wast:191 deferred-feature component rejected: unsupported component feature: imports nested more than one level
 wasmtime/instance.wast:216 deferred-feature component rejected: unsupported component feature: instantiation of an imported core module
 wasmtime/instance.wast:224 deferred-feature component rejected: unsupported component feature: instantiation of an imported core module
-wasmtime/instance.wast:255 deferred-feature component rejected: unsupported component feature: module-typed exports
 wasmtime/memory64.wast:24 deferred-feature component rejected: unsupported component feature: 64-bit memories in adapter modules
 wasmtime/memory64.wast:122 cascade no instance to invoke
 wasmtime/memory64.wast:126 cascade no instance to invoke
 wasmtime/memory64.wast:131 cascade no instance to invoke
-wasmtime/modules.wast:4 deferred-feature component rejected: unsupported component feature: module-typed exports
 wasmtime/modules.wast:9 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `foo`: no registered linker instance satisfies import `foo`
 wasmtime/modules.wast:16 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `foo`: no registered linker instance satisfies import `foo`
-wasmtime/modules.wast:35 deferred-feature component rejected: unsupported component feature: module-typed exports
 wasmtime/modules.wast:50 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `foo`: no registered linker instance satisfies import `foo`
 wasmtime/modules.wast:59 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `foo`: no registered linker instance satisfies import `foo`
-wasmtime/modules.wast:68 deferred-feature component rejected: unsupported component feature: module-typed exports
 wasmtime/modules.wast:75 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `foo`: no registered linker instance satisfies import `foo`
 wasmtime/modules.wast:81 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `foo`: no registered linker instance satisfies import `foo`
-wasmtime/modules.wast:109 deferred-feature component rejected: unsupported component feature: module-typed exports
 wasmtime/modules.wast:193 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `foo`: no registered linker instance satisfies import `foo`
-wasmtime/modules.wast:202 deferred-feature component rejected: unsupported component feature: module-typed exports
 wasmtime/modules.wast:284 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `foo`: no registered linker instance satisfies import `foo`
-wasmtime/modules.wast:293 deferred-feature component rejected: unsupported component feature: module-typed exports
-wasmtime/modules.wast:299 deferred-feature component rejected: unsupported component feature: module-typed exports
+wasmtime/modules.wast:299 deferred-feature component rejected: unsupported component feature: re-exporting an imported core module
 wasmtime/modules.wast:316 deferred-feature component rejected: unsupported component feature: instantiation of an imported core module
-wasmtime/modules.wast:369 deferred-feature component rejected: unsupported component feature: module-typed exports
 wasmtime/modules.wast:417 deferred-feature component rejected: unsupported component feature: instantiation of an imported core module
 wasmtime/modules.wast:482 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
 wasmtime/modules.wast:485 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `tag-module`: no registered linker instance satisfies import `tag-module`
-wasmtime/nested.wast:128 deferred-feature component rejected: unsupported component feature: module-typed exports
 wasmtime/nested.wast:149 deferred-feature component rejected: unsupported component feature: instantiation of an imported core module
-wasmtime/nested.wast:213 deferred-feature component rejected: unsupported component feature: module-typed exports
 wasmtime/nested.wast:219 deferred-feature component rejected: unsupported component feature: instantiation of an imported core module
 wasmtime/nested.wast:410 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host-return-two`: no registered linker instance satisfies import `host-return-two`
 wasmtime/resources.wast:182 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`

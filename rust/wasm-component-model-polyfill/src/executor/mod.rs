@@ -30,6 +30,7 @@ pub mod intrinsics;
 pub mod ir;
 pub mod trampoline;
 
+pub use compile_module::compile_module;
 pub use instantiate::instantiate;
 pub use resource_destructor::ResourceDestructor;
 pub use translate::translate;

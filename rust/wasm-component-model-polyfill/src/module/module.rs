@@ -11,10 +11,10 @@ use crate::error::{Error, InstantiationError, Result};
 use crate::store::Store;
 
 use super::core_extern::CoreExtern;
-use super::core_extern_type::CoreExternType;
 use super::core_instance::CoreInstance;
 use super::module_export::ModuleExport;
 use super::module_import::ModuleImport;
+use super::read;
 
 /// A compiled core WebAssembly module.
 ///
@@ -51,34 +51,12 @@ impl Module {
     /// [`Error::Instantiation`]: crate::Error::Instantiation
     pub async fn new(engine: &Engine, bytes: &[u8]) -> Result<Self> {
         let inner = crate::executor::compile_module(engine, bytes).await?;
-        Ok(Self::from_runtime(engine, inner))
-    }
-
-    /// Wrap a runtime-layer module the polyfill compiled, reading its
-    /// import and export types from the engine.
-    ///
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn from_runtime(engine: &Engine, inner: RuntimeModule) -> Self {
-        let imports = inner
-            .imports(engine.inner())
-            .map(|import| ModuleImport {
-                module: import.module.to_owned(),
-                name: import.name.to_owned(),
-                ty: CoreExternType::from_runtime(&import.ty),
-            })
-            .collect();
-        let exports = inner
-            .exports(engine.inner())
-            .map(|export| ModuleExport {
-                name: export.name.to_owned(),
-                ty: CoreExternType::from_runtime(&export.ty),
-            })
-            .collect();
-        Self {
+        let shape = read::read_shape(bytes)?;
+        Ok(Self {
             inner,
-            imports,
-            exports,
-        }
+            imports: shape.imports.into(),
+            exports: shape.exports.into(),
+        })
     }
 
     /// The imports the module declares, in declaration order.

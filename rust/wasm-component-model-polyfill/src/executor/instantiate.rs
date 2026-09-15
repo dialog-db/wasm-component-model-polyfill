@@ -20,7 +20,7 @@ use wasm_runtime_layer::{
 
 use crate::component::{Component, ExternType, ExternalName};
 use crate::error::{Error, InstantiationError, LinkError, Result};
-use crate::instance::{ExportedFunction, Instance};
+use crate::instance::{ExportedFunction, ExportedModule, Instance};
 use crate::linker::{HostFuncBody, ImportBinding, InstanceRegistration, Linker, Resolution};
 use crate::resource::{ResourceTableRuntime, TableId};
 use crate::store::Store;
@@ -166,7 +166,7 @@ pub fn instantiate<T: 'static>(
                     .ok_or_else(|| internal("module index in IR initializer is out of bounds"))?;
                 let runtime_imports = build_imports(ir, &items, store, entry, imports)?;
                 let instance =
-                    RuntimeInstance::new(store.inner_mut(), &entry.runtime, &runtime_imports)
+                    RuntimeInstance::new(store.inner_mut(), &entry.module.inner, &runtime_imports)
                         .map_err(InstantiationError::SubstrateFailure)
                         .map_err(Error::from)?;
                 items.core_instances.push(instance);
@@ -255,10 +255,12 @@ pub fn instantiate<T: 'static>(
     }
 
     let function_exports = collect_function_exports(ir, &items, store)?;
+    let module_exports = collect_module_exports(ir)?;
     Ok(Instance {
         core_instances: items.core_instances.into_boxed_slice(),
         function_exports,
         instance_exports: ir.instance_exports.clone(),
+        module_exports,
         abi_state,
         store_id: store.id,
     })
@@ -459,15 +461,16 @@ fn build_imports<T: 'static>(
     entry: &ModuleEntry,
     sources: &[ImportSource],
 ) -> Result<Imports> {
-    if entry.imports.len() != sources.len() {
+    let declared = entry.module.imports();
+    if declared.len() != sources.len() {
         return Err(internal(
             "module's declared import count does not match the IR's per-module import sources",
         ));
     }
     let mut imports = Imports::default();
-    for (module_import, source) in entry.imports.iter().zip(sources.iter()) {
+    for (module_import, source) in declared.iter().zip(sources.iter()) {
         let value = resolve_source(ir, items, store, source)?;
-        imports.define(&module_import.host, &module_import.name, value);
+        imports.define(&module_import.module, &module_import.name, value);
     }
     Ok(imports)
 }
@@ -563,6 +566,24 @@ fn collect_function_exports<T: 'static>(
             func,
             signature: signature.clone(),
             options: options.clone(),
+        });
+    }
+    Ok(out.into_boxed_slice())
+}
+
+/// Walk the IR's module exports and pair each with the compiled
+/// module the translator produced for it.
+fn collect_module_exports(ir: &ExecutorIr) -> Result<Box<[ExportedModule]>> {
+    let mut out = Vec::with_capacity(ir.module_exports.len());
+    for spec in ir.module_exports.iter() {
+        let entry = ir
+            .modules
+            .get(spec.module_index)
+            .ok_or_else(|| internal("module export names a module slot outside the IR"))?;
+        out.push(ExportedModule {
+            name: spec.name.clone(),
+            path: spec.path.clone(),
+            module: entry.module.clone(),
         });
     }
     Ok(out.into_boxed_slice())
