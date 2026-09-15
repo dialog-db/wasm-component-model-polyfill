@@ -10,9 +10,11 @@
 
 use std::sync::{Arc, Mutex};
 
+use anyhow::anyhow;
+
 use wasm_runtime_layer::{
     Extern as RuntimeExtern, Func as RuntimeFunc, Global as RuntimeGlobal, Imports,
-    Instance as RuntimeInstance, Val as RuntimeVal,
+    Instance as RuntimeInstance, Val as RuntimeVal, ValType as CoreType,
 };
 
 use crate::component::Component;
@@ -21,6 +23,7 @@ use crate::instance::{ExportedFunction, Instance};
 use crate::linker::{HostFuncBody, ImportBinding, InstanceRegistration, Linker, Resolution};
 use crate::store::Store;
 
+use super::ResourceDestructor;
 use super::intrinsics::{
     ContextSlots, build_context_get, build_context_set, build_enter_sync_call,
     build_exit_sync_call, build_resource_transfer, build_transcoder, build_trap,
@@ -77,6 +80,7 @@ pub fn instantiate<T: 'static>(
         ir.num_runtime_memories,
         ir.num_runtime_reallocs,
         ir.num_runtime_post_returns,
+        resource_runtimes.iter().map(|r| r.type_id).collect(),
     )));
 
     // Build every trampoline upfront. Trampolines never depend on
@@ -148,6 +152,38 @@ pub fn instantiate<T: 'static>(
                     *s = Some(memory);
                 } else {
                     return Err(internal("ExtractMemory slot out of bounds"));
+                }
+            }
+            Initializer::DefineResource { resource_index } => {
+                let (runtime, spec) = resource_runtimes
+                    .get(*resource_index)
+                    .zip(ir.resources.get(*resource_index))
+                    .ok_or_else(|| internal("DefineResource resource_index out of bounds"))?;
+                let (ResourceSpec::Local { destructor, .. }, ResourceDestructor::Local(slot)) =
+                    (spec, &runtime.destructor)
+                else {
+                    return Err(internal(
+                        "DefineResource directive names a resource that is not locally defined",
+                    ));
+                };
+                if let Some(source) = destructor {
+                    let extern_value = resolve_source(ir, &items, store, source)?;
+                    let RuntimeExtern::Func(function) = extern_value else {
+                        return Err(internal(
+                            "DefineResource directive resolved to a non-function item",
+                        ));
+                    };
+                    let ty = function.ty(store.inner());
+                    if ty.params() != [CoreType::I32] || !ty.results().is_empty() {
+                        return Err(Error::from(InstantiationError::SubstrateFailure(anyhow!(
+                            "the destructor of a locally-defined resource must have the core type \
+                             (func (param i32)), found {ty:?}"
+                        ))));
+                    }
+                    *slot
+                        .lock()
+                        .map_err(|_| internal("resource destructor slot poisoned"))? =
+                        Some(function);
                 }
             }
             Initializer::ExtractRealloc { slot, source } => {
@@ -300,8 +336,15 @@ fn resolve_resource_runtime<T: 'static>(
     resolution: &Resolution,
     spec: &ResourceSpec,
 ) -> Result<ResourceRuntime<T>> {
-    let registration = chosen_registration(linker, component, resolution, spec.import_index)?;
-    let label = match &spec.item_name {
+    let (import_index, item_name) = match spec {
+        ResourceSpec::Local { .. } => return Ok(ResourceRuntime::local()),
+        ResourceSpec::Imported {
+            import_index,
+            item_name,
+        } => (*import_index, item_name),
+    };
+    let registration = chosen_registration(linker, component, resolution, import_index)?;
+    let label = match item_name {
         Some(name) => name.as_str(),
         None => {
             return Err(Error::unsupported(
@@ -311,7 +354,7 @@ fn resolve_resource_runtime<T: 'static>(
     };
     let host = registration.resource(label).ok_or_else(|| {
         Error::from(LinkError::UnresolvedImport {
-            import: component.imports[spec.import_index].name.clone(),
+            import: component.imports[import_index].name.clone(),
         })
     })?;
     Ok(ResourceRuntime::from_registration(host))

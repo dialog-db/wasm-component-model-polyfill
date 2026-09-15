@@ -141,6 +141,14 @@ pub enum Initializer {
         source: ImportSource,
     },
 
+    /// Define a locally-defined resource: bind its destructor, if it
+    /// has one, to the core function the earlier directives produced.
+    /// The resource's [`ResourceSpec::Local`] entry names the source.
+    DefineResource {
+        /// Index into [`ExecutorIr::resources`].
+        resource_index: usize,
+    },
+
     /// Extract a core function and bind it to the next runtime-
     /// realloc slot. Used to resolve `cabi_realloc` references in
     /// canonical-ABI lowering.
@@ -429,24 +437,36 @@ pub enum TranscodeOp {
     Utf8ToUtf16,
 }
 
-/// Per-resource metadata captured during translation.
-///
-/// Identifies a host-imported resource type by the polyfill import
-/// index of the enclosing imported instance and the resource's
-/// label within that instance. The executor resolves this at
-/// instantiation time against the [`Linker`]'s registered host
-/// resources.
-///
-/// [`Linker`]: crate::Linker
-#[derive(Clone, Debug)]
-pub struct ResourceSpec {
-    /// Index into the polyfill component's imports
-    /// (`Component::imports`). Identifies the imported instance the
-    /// resource lives in, or — when `item_name` is `None` — the
-    /// import that is itself a resource type.
-    pub import_index: usize,
-    /// The resource's label within the imported instance. `None`
-    /// when the import is itself the resource type (top-level
-    /// resource import).
-    pub item_name: Option<String>,
+/// Per-resource metadata captured during translation, indexed by the
+/// translator's resource index: the component's imported resources
+/// first, in import order, then the resources it defines.
+pub enum ResourceSpec {
+    /// A resource type the component imports. The executor resolves
+    /// it at instantiation time against the [`Linker`]'s registered
+    /// host resources.
+    ///
+    /// [`Linker`]: crate::Linker
+    Imported {
+        /// Index into the polyfill component's imports
+        /// (`Component::imports`). Identifies the imported instance
+        /// the resource lives in, or — when `item_name` is `None` —
+        /// the import that is itself a resource type.
+        import_index: usize,
+        /// The resource's label within the imported instance. `None`
+        /// when the import is itself the resource type (top-level
+        /// resource import).
+        item_name: Option<String>,
+    },
+    /// A resource type the component defines. Its identity is minted
+    /// fresh at every instantiation, and its destructor, when it has
+    /// one, is a core function of the defining component instance.
+    Local {
+        /// The component instance (by runtime index) that defines the
+        /// resource.
+        instance: usize,
+        /// Where the destructor comes from, or `None` for a resource
+        /// without one. Bound when the [`Initializer::DefineResource`]
+        /// directive runs, after the defining core instance exists.
+        destructor: Option<ImportSource>,
+    },
 }

@@ -20,9 +20,6 @@ cm/binary/binary.wast:1257 validation expected rejection `non-zero reserved byte
 cm/binary/binary.wast:1266 validation expected rejection `non-zero reserved byte`, but the component parsed
 cm/binary/binary.wast:1275 validation expected rejection `non-zero reserved byte`, but the component parsed
 cm/binary/binary.wast:1533 deferred-feature component rejected: unsupported component feature: module-typed exports
-cm/binary/binary.wast:557 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/binary/binary.wast:789 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/binary/binary.wast:974 deferred-feature component rejected: unsupported component feature: locally-defined resources
 cm/linking/tags.wast:133 cascade no instance to invoke
 cm/linking/tags.wast:134 cascade no instance to invoke
 cm/linking/tags.wast:31 cascade no instance to invoke
@@ -33,104 +30,40 @@ cm/linking/tags.wast:64 substrate component rejected: instantiation error: the r
 cm/linking/tags.wast:7 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
 cm/linking/tags.wast:89 cascade no instance to invoke
 cm/linking/tags.wast:93 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
-cm/linking/unit.wast:1003 deferred-feature component rejected: unsupported component feature: locally-defined resources
 cm/linking/unit.wast:1019 cascade no function export named `make-1`
 cm/linking/unit.wast:1020 cascade no function export named `make-1`
 cm/linking/unit.wast:1021 cascade no function export named `make-2`
 cm/linking/unit.wast:1022 cascade no function export named `make-1`
 cm/linking/unit.wast:1023 cascade no function export named `make-2`
-cm/linking/unit.wast:1030 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/linking/unit.wast:1094 cascade no function export named `run`
-cm/linking/unit.wast:1095 cascade no function export named `run`
-cm/linking/unit.wast:1096 cascade no function export named `count-1`
-cm/linking/unit.wast:1097 cascade no function export named `count-2`
-cm/linking/unit.wast:1103 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/linking/unit.wast:1161 cascade no function export named `run-1`
-cm/linking/unit.wast:1162 cascade no function export named `run-2`
-cm/linking/unit.wast:1163 cascade no function export named `count-1`
-cm/linking/unit.wast:1164 cascade no function export named `count-2`
-cm/linking/unit.wast:1165 cascade no function export named `run-1`
-cm/linking/unit.wast:1166 cascade no function export named `run-1`
-cm/linking/unit.wast:1167 cascade no function export named `count-1`
-cm/linking/unit.wast:1168 cascade no function export named `count-2`
-cm/linking/unit.wast:655 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/linking/unit.wast:725 cascade no function export named `run-1`
-cm/linking/unit.wast:726 cascade no function export named `run-2`
-cm/linking/unit.wast:727 cascade no function export named `count1-1`
-cm/linking/unit.wast:728 cascade no function export named `count2-1`
-cm/linking/unit.wast:729 cascade no function export named `count1-2`
-cm/linking/unit.wast:730 cascade no function export named `count2-2`
-cm/linking/unit.wast:736 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/linking/unit.wast:788 cascade no function export named `run-1`
-cm/linking/unit.wast:789 cascade no function export named `run-2`
-cm/linking/unit.wast:790 cascade no function export named `log-at-1`
-cm/linking/unit.wast:791 cascade no function export named `log-at-1`
-cm/linking/unit.wast:792 cascade no function export named `log-at-2`
-cm/linking/unit.wast:793 cascade no function export named `log-at-2`
-cm/linking/unit.wast:800 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/linking/unit.wast:864 cascade no function export named `run-1`
-cm/linking/unit.wast:865 cascade no function export named `run-2`
-cm/linking/unit.wast:866 cascade no function export named `count-1`
-cm/linking/unit.wast:867 cascade no function export named `count-2`
-cm/linking/unit.wast:873 deferred-feature component rejected: unsupported component feature: locally-defined resources
 cm/linking/unit.wast:931 cascade no function export named `run-1`
 cm/linking/unit.wast:932 cascade no function export named `run-2`
-cm/linking/unit.wast:933 cascade no function export named `count-1`
-cm/linking/unit.wast:934 cascade no function export named `count-2`
-cm/linking/unit.wast:940 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/linking/unit.wast:995 cascade no function export named `run`
-cm/linking/unit.wast:996 cascade no function export named `run`
-cm/linking/unit.wast:997 cascade no function export named `count-1`
-cm/linking/unit.wast:998 cascade no function export named `count-2`
-cm/resources/borrows.wast:158 cascade no definition named `BorrowTester`
 cm/resources/borrows.wast:159 cascade no instance to invoke
-cm/resources/borrows.wast:161 cascade no definition named `BorrowTester`
 cm/resources/borrows.wast:162 cascade expected a trap `cannot remove owned resource while borrowed`, got `no instance to invoke`
-cm/resources/borrows.wast:4 deferred-feature component rejected: unsupported component feature: locally-defined resources
 cm/resources/handle-table.wast:106 cascade no instance to invoke
-cm/resources/handle-table.wast:110 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/resources/handle-table.wast:200 cascade no definition named `Traps`
 cm/resources/handle-table.wast:201 cascade expected a trap `unknown handle index 5`, got `no instance to invoke`
-cm/resources/handle-table.wast:202 cascade no definition named `Traps`
 cm/resources/handle-table.wast:203 cascade expected a trap `unknown handle index 5`, got `no instance to invoke`
-cm/resources/handle-table.wast:204 cascade no definition named `Traps`
 cm/resources/handle-table.wast:205 cascade expected a trap `unknown handle index 1`, got `no instance to invoke`
-cm/resources/handle-table.wast:206 cascade no definition named `Traps`
 cm/resources/handle-table.wast:207 cascade expected a trap `unknown handle index 0`, got `no instance to invoke`
-cm/resources/handle-table.wast:208 cascade no definition named `Traps`
 cm/resources/handle-table.wast:209 cascade expected a trap `unknown handle index 4294967295`, got `no instance to invoke`
-cm/resources/handle-table.wast:210 cascade no definition named `Traps`
 cm/resources/handle-table.wast:211 cascade expected a trap `unknown handle index 1`, got `no instance to invoke`
-cm/resources/handle-table.wast:212 cascade no definition named `Traps`
 cm/resources/handle-table.wast:213 cascade expected a trap `unknown handle index 3`, got `no instance to invoke`
-cm/resources/handle-table.wast:217 deferred-feature component rejected: unsupported component feature: locally-defined resources
 cm/resources/handle-table.wast:260 cascade no instance to invoke
 cm/resources/handle-table.wast:261 cascade expected a trap `unknown handle index 1`, got `no instance to invoke`
 cm/resources/handle-table.wast:265 deferred-feature component rejected: unsupported component feature: locally-defined resources
 cm/resources/handle-table.wast:293 cascade expected a trap `unknown handle index 1`, got `no instance to invoke`
-cm/resources/handle-table.wast:297 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/resources/handle-table.wast:321 cascade no definition named `WrongType`
 cm/resources/handle-table.wast:322 cascade expected a trap `handle index 1 used with the wrong type, expected guest-defined resource but found a different guest-defined resource`, got `no instance to invoke`
-cm/resources/handle-table.wast:323 cascade no definition named `WrongType`
 cm/resources/handle-table.wast:324 cascade expected a trap `handle index 1 used with the wrong type, expected guest-defined resource but found a different guest-defined resource`, got `no instance to invoke`
 cm/resources/handle-table.wast:49 cascade no instance to invoke
-cm/resources/handle-table.wast:53 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/resources/handle-table.wast:7 deferred-feature component rejected: unsupported component feature: locally-defined resources
 cm/resources/multiple-resources.wast:170 cascade no instance to invoke
-cm/resources/multiple-resources.wast:4 deferred-feature component rejected: unsupported component feature: locally-defined resources
 cm/validation/attributes.wast:2 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`a` is not a WIT interface identifier)
 cm/validation/attributes.wast:30 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`a` is not a WIT interface identifier)
-cm/validation/external-visibility.wast:176 deferred-feature component rejected: unsupported component feature: locally-defined resources
 cm/validation/external-visibility.wast:410 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`i` is not a WIT interface identifier)
 cm/validation/external-visibility.wast:420 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`i` is not a WIT interface identifier)
 cm/validation/external-visibility.wast:511 deferred-feature component rejected: unsupported component feature: locally-defined resources
 cm/validation/external-visibility.wast:520 deferred-feature component rejected: unsupported component feature: locally-defined resources
 cm/validation/external-visibility.wast:531 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/validation/external-visibility.wast:543 deferred-feature component rejected: unsupported component feature: locally-defined resources
 cm/validation/external-visibility.wast:563 deferred-feature component rejected: unsupported component feature: locally-defined resources
 cm/validation/external-visibility.wast:580 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`f2` is not a WIT interface identifier)
-cm/validation/external-visibility.wast:5 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/validation/external-visibility.wast:80 deferred-feature component rejected: unsupported component feature: locally-defined resources
 cm/validation/extern-names.wast:53 validation expected rejection `expected `/` after package name`, but the component parsed
 cm/validation/extern-names.wast:56 validation expected rejection `trailing characters found: `/qux``, but the component parsed
 cm/validation/kebab.wast:149 validation expected rejection `import name `foobar` conflicts with previous name `foo-bar``, but the component parsed
@@ -145,19 +78,6 @@ cm/validation/max-value-size.wast:43 validation expected rejection `exceeds maxi
 cm/validation/max-value-size.wast:48 validation expected rejection `exceeds maximum byte size`, but the component parsed
 cm/validation/max-value-size.wast:57 validation expected rejection `exceeds maximum byte size`, but the component parsed
 cm/validation/max-value-size.wast:63 validation expected rejection `exceeds maximum byte size`, but the component parsed
-cm/validation/outer-alias.wast:106 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/validation/outer-alias.wast:98 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/validation/resources.wast:271 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/validation/resources.wast:292 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/validation/resources.wast:313 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/validation/resources.wast:427 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/validation/resources.wast:531 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/validation/resources.wast:564 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/validation/resources.wast:607 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/validation/resources.wast:623 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/validation/resources.wast:743 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/validation/resources.wast:814 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/validation/resources.wast:824 deferred-feature component rejected: unsupported component feature: locally-defined resources
 cm/values/post-return.wast:201 cascade no definition named `Tester`
 cm/values/post-return.wast:202 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
 cm/values/post-return.wast:203 cascade no definition named `Tester`
@@ -214,9 +134,6 @@ cm/values/post-return.wast:253 cascade no definition named `Tester`
 cm/values/post-return.wast:254 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
 cm/values/post-return.wast:255 cascade no definition named `Tester`
 cm/values/post-return.wast:256 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:296 deferred-feature component rejected: unsupported component feature: locally-defined resources
-cm/values/post-return.wast:330 defect expected [U32(5)], got [U32(7)]
-cm/values/post-return.wast:331 defect expected [U32(123)], got [U32(42)]
 cm/values/post-return.wast:334 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
 cm/values/post-return.wast:358 defect expected [U32(11)], got [U32(7)]
 cm/values/post-return.wast:4 deferred-feature component rejected: unsupported component feature: locally-defined resources
@@ -278,12 +195,6 @@ wasmtime/instance.wast:224 deferred-feature component rejected: unsupported comp
 wasmtime/instance.wast:255 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`i` is not a WIT interface identifier)
 wasmtime/instance.wast:260 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`i` is not a WIT interface identifier)
 wasmtime/instance.wast:265 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`i` is not a WIT interface identifier)
-wasmtime/instance.wast:271 deferred-feature component rejected: unsupported component feature: locally-defined resources
-wasmtime/instance.wast:275 deferred-feature component rejected: unsupported component feature: locally-defined resources
-wasmtime/instance.wast:280 cascade no definition named `C1`
-wasmtime/instance.wast:281 cascade no definition named `C1`
-wasmtime/instance.wast:282 cascade no definition named `C2`
-wasmtime/instance.wast:283 cascade no definition named `C2`
 wasmtime/linking.wast:7 deferred-feature instantiation failed: link error: import `i` requires unsupported host registration: plain-named imports require host-item registration: import `i` requires unsupported host registration: plain-named imports require
 wasmtime/memory64.wast:122 cascade no instance to invoke
 wasmtime/memory64.wast:126 cascade no instance to invoke
@@ -315,13 +226,8 @@ wasmtime/nested.wast:213 deferred-feature component rejected: unsupported compon
 wasmtime/nested.wast:219 deferred-feature component rejected: unsupported component feature: instantiation of an imported core module
 wasmtime/nested.wast:410 deferred-feature instantiation failed: link error: import `host-return-two` requires unsupported host registration: plain-named imports require host-item registration: import `host-return-two` requires unsupported host registration:
 wasmtime/resources.wast:1054 cascade no instance to invoke
-wasmtime/resources.wast:1057 deferred-feature component rejected: unsupported component feature: locally-defined resources
-wasmtime/resources.wast:1090 cascade no definition named `C`
 wasmtime/resources.wast:1091 cascade expected a trap `handle index 1 used with the wrong type, expected guest-defined resource but found a different guest-defined resource`, got `no instance to invoke`
-wasmtime/resources.wast:1092 cascade no definition named `C`
 wasmtime/resources.wast:1093 cascade expected a trap `handle index 1 used with the wrong type, expected guest-defined resource but found a different guest-defined resource`, got `no instance to invoke`
-wasmtime/resources.wast:1096 deferred-feature component rejected: unsupported component feature: locally-defined resources
-wasmtime/resources.wast:1126 cascade no instance to invoke
 wasmtime/resources.wast:182 deferred-feature instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
 wasmtime/resources.wast:191 deferred-feature instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
 wasmtime/resources.wast:211 deferred-feature instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
@@ -334,30 +240,21 @@ wasmtime/resources.wast:338 cascade expected a trap `unknown handle index`, got 
 wasmtime/resources.wast:341 deferred-feature instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
 wasmtime/resources.wast:378 cascade no instance to invoke
 wasmtime/resources.wast:379 cascade expected a trap `unknown handle index`, got `no instance to invoke`
-wasmtime/resources.wast:37 deferred-feature component rejected: unsupported component feature: locally-defined resources
 wasmtime/resources.wast:383 deferred-feature instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
 wasmtime/resources.wast:435 cascade expected a trap `unknown handle index`, got `no instance to invoke`
 wasmtime/resources.wast:438 deferred-feature component rejected: unsupported component feature: locally-defined resources
 wasmtime/resources.wast:481 cascade expected a trap `unknown handle index 2`, got `no instance to invoke`
-wasmtime/resources.wast:485 deferred-feature component rejected: unsupported component feature: locally-defined resources
 wasmtime/resources.wast:4 deferred-feature component rejected: unsupported component feature: locally-defined resources
 wasmtime/resources.wast:526 cascade no instance to invoke
 wasmtime/resources.wast:527 cascade no instance to invoke
-wasmtime/resources.wast:528 cascade no instance to invoke
 wasmtime/resources.wast:529 cascade no instance to invoke
 wasmtime/resources.wast:530 cascade no instance to invoke
 wasmtime/resources.wast:531 cascade expected a trap `unknown handle index`, got `no instance to invoke`
 wasmtime/resources.wast:537 deferred-feature instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
 wasmtime/resources.wast:56 cascade expected a trap `unknown handle index 0`, got `no instance to invoke`
 wasmtime/resources.wast:592 cascade no instance to invoke
-wasmtime/resources.wast:593 cascade no instance to invoke
-wasmtime/resources.wast:594 cascade no instance to invoke
-wasmtime/resources.wast:595 cascade no instance to invoke
-wasmtime/resources.wast:596 cascade no instance to invoke
 wasmtime/resources.wast:597 cascade expected a trap `unknown handle index`, got `no instance to invoke`
-wasmtime/resources.wast:59 deferred-feature component rejected: unsupported component feature: locally-defined resources
 wasmtime/resources.wast:600 deferred-feature component rejected: unsupported component feature: locally-defined resources
-wasmtime/resources.wast:645 deferred-feature component rejected: unsupported component feature: locally-defined resources
 wasmtime/resources.wast:665 cascade expected a trap `unknown handle index`, got `no instance to invoke`
 wasmtime/resources.wast:668 deferred-feature component rejected: unsupported component feature: locally-defined resources
 wasmtime/resources.wast:748 deferred-feature instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
@@ -368,7 +265,6 @@ wasmtime/resources.wast:889 deferred-feature instantiation failed: link error: i
 wasmtime/resources.wast:927 cascade expected a trap `cannot remove owned resource while borrowed`, got `no instance to invoke`
 wasmtime/resources.wast:930 deferred-feature instantiation failed: link error: import `host` requires unsupported host registration: plain-named imports require host-item registration: import `host` requires unsupported host registration: plain-named import
 wasmtime/resources.wast:961 cascade expected a trap `unknown handle index 0`, got `no instance to invoke`
-wasmtime/resources.wast:963 deferred-feature component rejected: unsupported component feature: locally-defined resources
 wasmtime/strings.wast:21 trap-message expected a trap `string pointer not aligned to 2`, got [String("")]
 wasmtime/strings.wast:23 trap-message expected a trap `string pointer not aligned to 2`, got `canonical ABI error: at result (type Primitive(String)): invalid encoding for value type: Latin-1+UTF-16 string encoding is not yet implemented; the synchronou
 wasmtime/tags.wast:3 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer

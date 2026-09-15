@@ -352,6 +352,96 @@ async fn it_rejects_a_component_that_imports_an_unsatisfied_resource() {
     );
 }
 
+/// A component that defines its own resource type with an in-binary
+/// destructor. The destructor lives in a first core instance so the
+/// resource type can name it; the second core instance mints and
+/// drops handles through `resource.new` and `resource.drop`.
+const LOCAL_RESOURCE: &[u8] = component!(
+    r#"
+    (component
+      (core module $d
+        (global $dropped (mut i32) (i32.const 0))
+        (global $last (mut i32) (i32.const 0))
+        (func (export "dtor") (param i32)
+          global.get $dropped i32.const 1 i32.add global.set $dropped
+          local.get 0 global.set $last)
+        (func (export "dropped") (result i32) global.get $dropped)
+        (func (export "last") (result i32) global.get $last))
+      (core instance $di (instantiate $d))
+      (type $thing (resource (rep i32) (dtor (core func $di "dtor"))))
+      (core func $new (canon resource.new $thing))
+      (core func $drop (canon resource.drop $thing))
+      (core module $m
+        (import "" "new" (func $new (param i32) (result i32)))
+        (import "" "drop" (func $drop (param i32)))
+        (func (export "make") (param i32) (result i32) local.get 0 call $new)
+        (func (export "dispose") (param i32) local.get 0 call $drop))
+      (core instance $i (instantiate $m
+        (with "" (instance (export "new" (func $new)) (export "drop" (func $drop))))))
+      (export $thing' "thing" (type $thing))
+      (func (export "make") (param "rep" u32) (result (own $thing'))
+        (canon lift (core func $i "make")))
+      (func (export "dispose") (param "h" (own $thing'))
+        (canon lift (core func $i "dispose")))
+      (func (export "dropped") (result u32) (canon lift (core func $di "dropped")))
+      (func (export "last") (result u32) (canon lift (core func $di "last"))))
+    "#
+);
+
+fn local_resource_instance() -> (Store<()>, wasm_component_model_polyfill::Instance) {
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, LOCAL_RESOURCE).expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiate");
+    (store, instance)
+}
+
+fn make_handle(
+    store: &mut Store<()>,
+    instance: &wasm_component_model_polyfill::Instance,
+    rep: u32,
+) -> ResourceHandle {
+    let make = instance.get_func("make").expect("make export");
+    let results = make.call(store, &[Val::U32(rep)]).expect("make call");
+    match results.as_ref() {
+        [Val::Own(handle)] => *handle,
+        other => panic!("expected an owned handle, got {other:?}"),
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_translates_and_instantiates_a_locally_defined_resource() {
+    let (mut store, instance) = local_resource_instance();
+    let handle = make_handle(&mut store, &instance, 7);
+    assert_eq!(
+        handle.index, 0,
+        "the first handle takes the first table slot"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_mints_a_distinct_resource_type_identity_per_instantiation() {
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, LOCAL_RESOURCE).expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let first = linker
+        .instantiate(&mut store, &component)
+        .expect("first instantiation");
+    let second = linker
+        .instantiate(&mut store, &component)
+        .expect("second instantiation");
+    let a = make_handle(&mut store, &first, 1);
+    let b = make_handle(&mut store, &second, 2);
+    assert_ne!(
+        a.type_id, b.type_id,
+        "each instantiation carries its own resource type identity"
+    );
+}
+
 // ----------------------------------------------------------------
 // Stubs: capabilities the polyfill does not yet realise.
 // ----------------------------------------------------------------

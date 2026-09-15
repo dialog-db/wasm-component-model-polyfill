@@ -40,7 +40,9 @@ use crate::backend::Backend;
 use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::{CanonOptions, LoweringSpec};
-use crate::linker::{DestructorBody, HostFuncBody, HostResource};
+use crate::linker::{HostFuncBody, HostResource};
+
+use super::ResourceDestructor;
 use crate::resource::{HandleTables, ResourceTypeId};
 use crate::store::Store;
 use crate::types::{PrimitiveType, ValueType};
@@ -54,6 +56,11 @@ pub struct AbiRuntimeState {
     pub memories: Vec<Option<Memory>>,
     pub reallocs: Vec<Option<RuntimeFunc>>,
     pub post_returns: Vec<Option<RuntimeFunc>>,
+    /// The handle-table identity of every resource of the component,
+    /// by the translator's resource index. Imported resources carry
+    /// the identity of their host registration; locally-defined ones
+    /// carry an identity minted for this instantiation.
+    pub resource_types: Vec<ResourceTypeId>,
 }
 
 /// Per-resource runtime data captured by every resource trampoline.
@@ -63,12 +70,14 @@ pub struct AbiRuntimeState {
 /// preserved so the resource trampolines for `new`/`drop`/`rep` —
 /// which all touch the same handle table — share one ledger.
 pub struct ResourceRuntime<T> {
-    /// The engine-issued identity for the registered resource type.
-    /// Used as the key into [`HandleTables`](crate::resource::HandleTables).
+    /// The identity of the resource type: the host registration's
+    /// for an imported resource, a fresh one per instantiation for a
+    /// locally-defined resource. Used as the key into
+    /// [`HandleTables`](crate::resource::HandleTables).
     pub type_id: ResourceTypeId,
-    /// The host destructor closure invoked when the guest drops the
-    /// last handle to a resource.
-    pub destructor: Arc<DestructorBody<T>>,
+    /// The destructor invoked when the guest drops the last handle
+    /// to a resource.
+    pub destructor: ResourceDestructor<T>,
 }
 
 impl<T> ResourceRuntime<T> {
@@ -76,7 +85,17 @@ impl<T> ResourceRuntime<T> {
     pub fn from_registration(host: &HostResource<T>) -> Self {
         Self {
             type_id: host.type_id,
-            destructor: host.destructor.clone(),
+            destructor: ResourceDestructor::Host(host.destructor.clone()),
+        }
+    }
+
+    /// Construct a runtime bundle for a locally-defined resource: a
+    /// fresh identity and an empty destructor slot that the
+    /// `DefineResource` directive fills.
+    pub fn local() -> Self {
+        Self {
+            type_id: ResourceTypeId::fresh(),
+            destructor: ResourceDestructor::Local(Arc::new(Mutex::new(None))),
         }
     }
 }
@@ -93,11 +112,17 @@ impl<T> Clone for ResourceRuntime<T> {
 impl AbiRuntimeState {
     /// Construct a state with the requested slab sizes, every slot
     /// initially empty.
-    pub fn with_slabs(num_memories: usize, num_reallocs: usize, num_post_returns: usize) -> Self {
+    pub fn with_slabs(
+        num_memories: usize,
+        num_reallocs: usize,
+        num_post_returns: usize,
+        resource_types: Vec<ResourceTypeId>,
+    ) -> Self {
         Self {
             memories: vec![None; num_memories],
             reallocs: vec![None; num_reallocs],
             post_returns: vec![None; num_post_returns],
+            resource_types,
         }
     }
 }
@@ -121,8 +146,21 @@ pub fn build_resource_drop_trampoline<T: 'static>(
         move |mut store_ctx, args, _results| {
             let index = take_i32(args, 0).map_err(|err| anyhow!("resource.drop: {err}"))?;
             let rep = remove_handle(&tables, runtime.type_id, index)?;
-            (runtime.destructor)(store_ctx.data_mut(), rep)
-                .map_err(|err| anyhow!("resource destructor failed: {err}"))?;
+            match &runtime.destructor {
+                ResourceDestructor::Host(body) => body(store_ctx.data_mut(), rep)
+                    .map_err(|err| anyhow!("resource destructor failed: {err}"))?,
+                ResourceDestructor::Local(slot) => {
+                    let destructor = slot
+                        .lock()
+                        .map_err(|_| anyhow!("resource destructor slot poisoned"))?
+                        .clone();
+                    if let Some(destructor) = destructor {
+                        destructor
+                            .call(&mut store_ctx, &[RuntimeVal::I32(rep as i32)], &mut [])
+                            .map_err(|err| anyhow!("resource destructor failed: {err}"))?;
+                    }
+                }
+            }
             Ok(())
         },
     )

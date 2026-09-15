@@ -1211,35 +1211,23 @@ async fn it_rejects_a_call_made_through_a_different_store() {
 
 #[wcmp_macros::test]
 async fn it_reports_an_unsupported_feature_as_a_structured_error() {
-    // A component that defines its own resource type uses a
-    // feature the polyfill has not built. The translator reports
-    // it at construction as a structured `Error::Unsupported`
-    // naming the feature, never as a panic.
+    // A component that exports a core module uses a feature the
+    // polyfill has not built. The translator reports it at
+    // construction as a structured `Error::Unsupported` naming the
+    // feature, never as a panic.
     const COMPONENT: &[u8] = component!(
         r#"
         (component
-          (core module $d (func (export "dtor") (param i32)))
-          (core instance $d (instantiate $d))
-          (type $r (resource (rep i32) (dtor (core func $d "dtor"))))
-          (core func $new (canon resource.new $r))
           (core module $m
-            (import "r" "new" (func $new (param i32) (result i32)))
-            (func (export "make") (result i32) i32.const 42 call $new))
-          (core instance $i (instantiate $m
-            (with "r" (instance (export "new" (func $new))))))
-          (func $make (result (own $r))
-            (canon lift (core func $i "make")))
-          (instance $things
-            (export "r" (type $r))
-            (export "make" (func $make)))
-          (export "pdd-tests:guest/things@0.1.0" (instance $things)))
+            (func (export "f") (result i32) i32.const 42))
+          (export "m" (core module $m)))
         "#
     );
     let engine = Engine::new().expect("engine");
-    let err = Component::new(&engine, COMPONENT)
-        .expect_err("locally-defined resources are not supported yet");
+    let err =
+        Component::new(&engine, COMPONENT).expect_err("module-typed exports are not supported yet");
     assert!(
-        matches!(&err, Error::Unsupported { feature } if feature.contains("locally-defined resources")),
+        matches!(&err, Error::Unsupported { feature } if feature.contains("module")),
         "expected Error::Unsupported, got {err:?}"
     );
 }

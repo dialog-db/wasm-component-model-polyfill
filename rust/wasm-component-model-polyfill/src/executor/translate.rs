@@ -17,10 +17,9 @@ use wasmtime_environ::component::{
     CanonicalOptions as EnvironCanonOptions, CanonicalOptionsDataModel, ComponentTranslation,
     ComponentTypes, ComponentTypesBuilder, CoreDef, CoreExport, Export as EnvironExport,
     ExportIndex, ExportItem as EnvironExportItem, ExtractMemory, ExtractPostReturn, ExtractRealloc,
-    FixedEncoding, GlobalInitializer, InstantiateModule, LoweredIndex, ResourceIndex,
-    RuntimeImportIndex, StaticModuleIndex, StringEncoding as EnvironStringEncoding, Trampoline,
-    TrampolineIndex, Transcode, Translator, TypeResourceTable, TypeResourceTableIndex,
-    UnsafeIntrinsic,
+    FixedEncoding, GlobalInitializer, InstantiateModule, LoweredIndex, RuntimeImportIndex,
+    StaticModuleIndex, StringEncoding as EnvironStringEncoding, Trampoline, TrampolineIndex,
+    Transcode, Translator, TypeResourceTable, TypeResourceTableIndex, UnsafeIntrinsic,
 };
 use wasmtime_environ::prelude::Error as TranslatorError;
 use wasmtime_environ::wasmparser::{Validator, WasmFeatures};
@@ -121,18 +120,23 @@ pub fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
         }
     }
 
-    // Pre-walk #2: project every imported resource into a
-    // `ResourceSpec`.
+    // Pre-walk #2: one `ResourceSpec` per resource, at the
+    // translator's resource index: imported resources first, then the
+    // ones the component defines. A defined resource's destructor is
+    // filled in when its initializer is reached below.
     let mut resources: Vec<ResourceSpec> = Vec::new();
-    let mut resource_to_spec: HashMap<ResourceIndex, usize> = HashMap::new();
-    for (resource_idx, runtime_import) in translation.component.imported_resources.iter() {
+    for (_, runtime_import) in translation.component.imported_resources.iter() {
         let (import_index, item_name) = import_path(&translation, *runtime_import)?;
-        let slot = resources.len();
-        resources.push(ResourceSpec {
+        resources.push(ResourceSpec::Imported {
             import_index,
             item_name,
         });
-        resource_to_spec.insert(resource_idx, slot);
+    }
+    for (_, instance) in translation.component.defined_resource_instances.iter() {
+        resources.push(ResourceSpec::Local {
+            instance: instance.as_u32() as usize,
+            destructor: None,
+        });
     }
 
     // Pre-walk #3: build a `TrampolineSpec` for every trampoline
@@ -166,13 +170,13 @@ pub fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 })
             }
             Trampoline::ResourceDrop { ty, .. } => TrampolineSpec::ResourceDrop {
-                resource_index: resolve_resource_index(&component_types, &resource_to_spec, *ty)?,
+                resource_index: resolve_resource_index(&component_types, resources.len(), *ty)?,
             },
             Trampoline::ResourceNew { ty, .. } => TrampolineSpec::ResourceNew {
-                resource_index: resolve_resource_index(&component_types, &resource_to_spec, *ty)?,
+                resource_index: resolve_resource_index(&component_types, resources.len(), *ty)?,
             },
             Trampoline::ResourceRep { ty, .. } => TrampolineSpec::ResourceRep {
-                resource_index: resolve_resource_index(&component_types, &resource_to_spec, *ty)?,
+                resource_index: resolve_resource_index(&component_types, resources.len(), *ty)?,
             },
             Trampoline::Transcoder {
                 op,
@@ -281,8 +285,35 @@ pub fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
             GlobalInitializer::ExtractTable(_) => {
                 return Err(Error::unsupported("thread built-ins (table extraction)"));
             }
-            GlobalInitializer::Resource(_) => {
-                return Err(Error::unsupported("locally-defined resources"));
+            GlobalInitializer::Resource(resource) => {
+                if resource.rep != WasmValType::I32 {
+                    return Err(Error::unsupported(
+                        "resource representations other than i32",
+                    ));
+                }
+                let slot = translation
+                    .component
+                    .resource_index(resource.index)
+                    .as_u32() as usize;
+                let destructor = resource
+                    .dtor
+                    .as_ref()
+                    .map(|def| state.lift_core_def(def, &trampoline_to_spec))
+                    .transpose()?;
+                match resources.get_mut(slot) {
+                    Some(ResourceSpec::Local {
+                        destructor: slot_destructor,
+                        ..
+                    }) => *slot_destructor = destructor,
+                    _ => {
+                        return Err(Error::internal(
+                            "resource initializer names a resource the pre-walk did not define",
+                        ));
+                    }
+                }
+                state.initializers.push(Initializer::DefineResource {
+                    resource_index: slot,
+                });
             }
         }
     }
@@ -496,7 +527,7 @@ fn collect_export_spec(
 /// `imported_resources` map.
 fn resolve_resource_index(
     component_types: &ComponentTypes,
-    resource_to_spec: &HashMap<ResourceIndex, usize>,
+    num_resources: usize,
     ty: TypeResourceTableIndex,
 ) -> Result<usize> {
     let table = &component_types[ty];
@@ -508,10 +539,14 @@ fn resolve_resource_index(
             ));
         }
     };
-    resource_to_spec
-        .get(&resource_idx)
-        .copied()
-        .ok_or_else(|| Error::unsupported("locally-defined resources"))
+    let slot = resource_idx.as_u32() as usize;
+    if slot < num_resources {
+        Ok(slot)
+    } else {
+        Err(Error::internal(
+            "resource trampoline references a resource index outside the component's resources",
+        ))
+    }
 }
 
 /// Resolve a runtime import to the polyfill import index and the

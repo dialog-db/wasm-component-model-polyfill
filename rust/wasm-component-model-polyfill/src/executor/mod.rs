@@ -19,6 +19,7 @@
 //! [`wasm_runtime_layer`]: https://docs.rs/wasm_runtime_layer
 
 mod instantiate;
+mod resource_destructor;
 mod translate;
 
 pub mod intrinsics;
@@ -26,4 +27,5 @@ pub mod ir;
 pub mod trampoline;
 
 pub use instantiate::instantiate;
+pub use resource_destructor::ResourceDestructor;
 pub use translate::translate;
