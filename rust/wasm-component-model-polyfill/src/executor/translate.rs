@@ -117,11 +117,8 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
     // filled in when its initializer is reached below.
     let mut resources: Vec<ResourceSpec> = Vec::new();
     for (_, runtime_import) in translation.component.imported_resources.iter() {
-        let (import_index, item_name) = import_path(&translation, *runtime_import)?;
-        resources.push(ResourceSpec::Imported {
-            import_index,
-            item_name,
-        });
+        let (import_index, path) = import_path(&translation, *runtime_import)?;
+        resources.push(ResourceSpec::Imported { import_index, path });
     }
     for (_, instance) in translation.component.defined_resource_instances.iter() {
         resources.push(ResourceSpec::Local {
@@ -177,10 +174,10 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                     .options
                     .get(*options)
                     .ok_or_else(|| Error::internal("Trampoline OptionsIndex out of bounds"))?;
-                let (import_index, item_name) = import_path(&translation, runtime_import)?;
+                let (import_index, path) = import_path(&translation, runtime_import)?;
                 TrampolineSpec::LowerImport(LoweringSpec {
                     import_index,
-                    item_name,
+                    path,
                     signature: projector.function(*lower_ty)?,
                     options: lift_canon_options(canon),
                 })
@@ -261,7 +258,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 });
             }
             GlobalInitializer::InstantiateModule(InstantiateModule::Import(import, args), _) => {
-                let (import_index, item_name) = import_path(&translation, *import)?;
+                let (import_index, path) = import_path(&translation, *import)?;
                 let mut imports = Vec::new();
                 for (module, items) in args.iter() {
                     for (name, def) in items.iter() {
@@ -276,10 +273,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 state
                     .initializers
                     .push(Initializer::InstantiateImportedModule {
-                        source: ModuleSource::Import {
-                            import_index,
-                            item_name,
-                        },
+                        source: ModuleSource::Import { import_index, path },
                         imports: imports.into_boxed_slice(),
                     });
             }
@@ -555,13 +549,13 @@ fn collect_export_spec(
             Ok(())
         }
         EnvironExport::ModuleImport { import, .. } => {
-            let (import_index, item_name) = import_path(translation, *import)?;
+            let (import_index, item_path) = import_path(translation, *import)?;
             out.modules.push(ModuleExportSpec {
                 name: name.to_owned(),
                 path: path.into(),
                 source: ModuleSource::Import {
                     import_index,
-                    item_name,
+                    path: item_path,
                 },
             });
             Ok(())
@@ -614,26 +608,23 @@ fn resolve_table_index(
 }
 
 /// Resolve a runtime import to the polyfill import index and the
-/// item path inside it. The polyfill's import list is the
-/// translator's `import_types` in order, so the import index is the
-/// translator's.
+/// item path inside it: one name per nesting level from the imported
+/// instance down to the item, or empty when the import is the item.
+/// The polyfill's import list is the translator's `import_types` in
+/// order, so the import index is the translator's.
 fn import_path(
     translation: &ComponentTranslation,
     runtime_import: RuntimeImportIndex,
-) -> Result<(usize, Option<String>)> {
+) -> Result<(usize, Box<[String]>)> {
     let (import_idx, path) = translation
         .component
         .imports
         .get(runtime_import)
         .ok_or_else(|| Error::internal("RuntimeImportIndex out of bounds"))?;
-    let item_name = match path.len() {
-        0 => None,
-        1 => Some(path[0].clone()),
-        _ => {
-            return Err(Error::unsupported("imports nested more than one level"));
-        }
-    };
-    Ok((import_idx.as_u32() as usize, item_name))
+    Ok((
+        import_idx.as_u32() as usize,
+        path.clone().into_boxed_slice(),
+    ))
 }
 
 /// Working state for the main initializer walk. Carries only the

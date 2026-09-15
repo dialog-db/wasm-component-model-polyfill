@@ -143,10 +143,8 @@ wasmtime/exceptions.wast:168 substrate component rejected: instantiation error: 
 wasmtime/exceptions.wast:237 cascade expected a trap `uncaught exception propagated out of component`, got `no instance to invoke`
 wasmtime/implements-disabled.wast:3 validation expected rejection `the `cm-implements` feature is not active`, but the component parsed
 wasmtime/import.wast:7 validation expected link failure `expected instance found func`, but it linked
-wasmtime/import.wast:15 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `not-provided-by-the-host2`: no registered linker instance satisfies import `not-provided-by-the-host2`
 wasmtime/instance.wast:161 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/instance.wast:182 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/instance.wast:191 deferred-feature component rejected: unsupported component feature: imports nested more than one level
+wasmtime/instance.wast:191 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
 wasmtime/instance.wast:216 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
 wasmtime/instance.wast:224 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
 wasmtime/memory64.wast:24 deferred-feature component rejected: unsupported component feature: 64-bit memories in adapter modules
@@ -203,4 +201,3 @@ wasmtime/thread-transparency/blocks.wast:69 cascade expected a trap `cannot bloc
 wasmtime/thread-transparency/reentrancy.wast:22 deferred-feature component rejected: unsupported component feature: asynchronous functions
 wasmtime/thread-transparency/reentrancy.wast:113 cascade no definition named `Tester`
 wasmtime/thread-transparency/reentrancy.wast:114 cascade expected a trap `wasm `unreachable` instruction executed`, got `no instance to invoke`
-wasmtime/types.wast:331 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `a`: no registered linker instance satisfies import `a`

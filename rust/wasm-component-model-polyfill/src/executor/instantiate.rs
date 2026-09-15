@@ -361,21 +361,21 @@ fn build_runtime_trampoline<T: 'static>(
     }
 }
 
-/// The registration the resolver chose for the import at
-/// `import_index`, or the structured link error when the resolver
-/// recorded no registration for it.
 /// The registration an import resolved to, and the item name to
-/// look up in it. An interface-named import resolves to the chosen
-/// interface entry and names its item; a plain-named function or
-/// resource import resolves to the root entry under the import's
-/// own name; a plain-named instance import resolves to the nested
-/// root entry under its name.
+/// look up in it, or the structured link error when the resolver
+/// recorded no registration for it. An interface-named import
+/// resolves to the chosen interface entry; a plain-named instance
+/// import resolves to the nested root entry under its name; either
+/// is then walked one nested registration per leading segment of
+/// `path`, and the last segment is the item. A plain-named function,
+/// resource, or module import resolves to the root entry under the
+/// import's own name, with an empty `path`.
 fn registration_and_item<'l, T: 'static>(
     linker: &'l Linker<T>,
     component: &Component,
     resolution: &Resolution,
     import_index: usize,
-    item_name: Option<&str>,
+    path: &[String],
 ) -> Result<(&'l InstanceRegistration<T>, String)> {
     let import = component
         .imports
@@ -386,28 +386,27 @@ fn registration_and_item<'l, T: 'static>(
             import: import.name.clone(),
         })
     };
-    match resolution.bindings.get(import_index) {
+    let mut registration = match resolution.bindings.get(import_index) {
         Some(ImportBinding::Resolved { chosen }) => {
-            let registration = linker.registration_for(chosen).ok_or_else(unresolved)?;
-            let item = item_name.ok_or_else(unresolved)?;
-            Ok((registration, item.to_owned()))
+            linker.registration_for(chosen).ok_or_else(unresolved)?
         }
         Some(ImportBinding::Root) => {
             let ExternalName::Plain(name) = &import.name else {
                 return Err(internal("a root binding on an interface-named import"));
             };
             let root = linker.root_registration();
-            match (&import.ty, item_name) {
-                (ExternType::Instance(_), Some(item)) => {
-                    let registration = root.instance(name).ok_or_else(unresolved)?;
-                    Ok((registration, item.to_owned()))
-                }
-                (ExternType::Instance(_), None) => Err(unresolved()),
-                (_, _) => Ok((root, name.clone())),
+            match &import.ty {
+                ExternType::Instance(_) => root.instance(name).ok_or_else(unresolved)?,
+                _ => return Ok((root, name.clone())),
             }
         }
-        Some(ImportBinding::Vacuous) | None => Err(unresolved()),
+        Some(ImportBinding::Vacuous) | None => return Err(unresolved()),
+    };
+    let (item, parents) = path.split_last().ok_or_else(unresolved)?;
+    for segment in parents {
+        registration = registration.instance(segment).ok_or_else(unresolved)?;
     }
+    Ok((registration, item.clone()))
 }
 
 /// Look up a host-resource registration that satisfies the given
@@ -419,20 +418,12 @@ fn resolve_resource_runtime<T: 'static>(
     resolution: &Resolution,
     spec: &ResourceSpec,
 ) -> Result<ResourceRuntime<T>> {
-    let (import_index, item_name) = match spec {
+    let (import_index, path) = match spec {
         ResourceSpec::Local { .. } => return Ok(ResourceRuntime::local()),
-        ResourceSpec::Imported {
-            import_index,
-            item_name,
-        } => (*import_index, item_name),
+        ResourceSpec::Imported { import_index, path } => (*import_index, path),
     };
-    let (registration, label) = registration_and_item(
-        linker,
-        component,
-        resolution,
-        import_index,
-        item_name.as_deref(),
-    )?;
+    let (registration, label) =
+        registration_and_item(linker, component, resolution, import_index, path)?;
     let host = registration.resource(&label).ok_or_else(|| {
         Error::from(LinkError::UnresolvedImport {
             import: component.imports[import_index].name.clone(),
@@ -456,17 +447,9 @@ fn lookup_module<T: 'static>(
             .get(*index)
             .map(|entry| entry.module.clone())
             .ok_or_else(|| internal("module source names a module slot outside the IR")),
-        ModuleSource::Import {
-            import_index,
-            item_name,
-        } => {
-            let (registration, item) = registration_and_item(
-                linker,
-                component,
-                resolution,
-                *import_index,
-                item_name.as_deref(),
-            )?;
+        ModuleSource::Import { import_index, path } => {
+            let (registration, item) =
+                registration_and_item(linker, component, resolution, *import_index, path)?;
             registration.module(&item).cloned().ok_or_else(|| {
                 Error::from(LinkError::UnresolvedImport {
                     import: component.imports[*import_index].name.clone(),
@@ -485,13 +468,8 @@ fn lookup_host_func<T: 'static>(
     resolution: &Resolution,
     spec: &LoweringSpec,
 ) -> Result<Arc<HostFuncBody<T>>> {
-    let (registration, item_name) = registration_and_item(
-        linker,
-        component,
-        resolution,
-        spec.import_index,
-        spec.item_name.as_deref(),
-    )?;
+    let (registration, item_name) =
+        registration_and_item(linker, component, resolution, spec.import_index, &spec.path)?;
     let host = registration.func(&item_name).ok_or_else(|| {
         Error::from(LinkError::UnresolvedImport {
             import: component.imports[spec.import_index].name.clone(),

@@ -32,7 +32,8 @@ use std::collections::HashMap;
 use semver::Version;
 
 use crate::component::{
-    Component, ComponentImport, ExternType, ExternalName, FunctionType, InstanceItem, ModuleType,
+    Component, ComponentImport, ExternType, ExternalName, FunctionType, InstanceItem, InstanceType,
+    ModuleType,
 };
 use crate::error::{Error, LinkError, Result, TypeMismatch, TypeMismatchPosition, TypeRendering};
 use crate::identifier::InterfaceIdentifier;
@@ -102,7 +103,7 @@ pub fn resolve_imports<T: 'static>(
                             import: import.name.clone(),
                         })
                     })?;
-                    check_items(import, registration, &ItemPosition::Interface(chosen))?;
+                    check_items(import, registration, &ItemPosition::interface(chosen))?;
                 }
                 binding
             }
@@ -133,13 +134,13 @@ fn check_shared_identities<T: 'static>(
                 let Some(registration) = linker.registration_for(chosen) else {
                     continue;
                 };
-                (registration, ItemPosition::Interface(chosen))
+                (registration, ItemPosition::interface(chosen))
             }
             (ImportBinding::Root, ExternalName::Plain(name)) => {
                 let Some(registration) = linker.root_registration().instance(name) else {
                     continue;
                 };
-                (registration, ItemPosition::Plain(name))
+                (registration, ItemPosition::plain(name))
             }
             _ => continue,
         };
@@ -173,8 +174,15 @@ fn check_shared_identities<T: 'static>(
 }
 
 /// How a type-mismatch diagnostic names the registration an item
-/// belongs to.
-enum ItemPosition<'a> {
+/// belongs to: the import, and the nested instances walked from it.
+struct ItemPosition<'a> {
+    root: PositionRoot<'a>,
+    /// The names of the nested instance items walked from the
+    /// import, outermost first.
+    nested: Vec<String>,
+}
+
+enum PositionRoot<'a> {
     /// An item of an interface-named import.
     Interface(&'a InterfaceIdentifier),
     /// An item of a plain-named import: the function itself, or an
@@ -182,29 +190,80 @@ enum ItemPosition<'a> {
     Plain(&'a str),
 }
 
-impl ItemPosition<'_> {
-    fn for_item(&self, item: &str) -> TypeMismatchPosition {
-        match self {
-            ItemPosition::Interface(interface) => TypeMismatchPosition::HostFunctionRegistration {
-                interface: (*interface).clone(),
-                item: item.to_owned(),
+impl<'a> ItemPosition<'a> {
+    fn interface(interface: &'a InterfaceIdentifier) -> Self {
+        Self {
+            root: PositionRoot::Interface(interface),
+            nested: Vec::new(),
+        }
+    }
+
+    fn plain(name: &'a str) -> Self {
+        Self {
+            root: PositionRoot::Plain(name),
+            nested: Vec::new(),
+        }
+    }
+
+    /// The position of the items inside the nested instance item
+    /// `name`.
+    fn inside(&self, name: &str) -> Self {
+        let mut nested = self.nested.clone();
+        nested.push(name.to_owned());
+        Self {
+            root: match self.root {
+                PositionRoot::Interface(interface) => PositionRoot::Interface(interface),
+                PositionRoot::Plain(plain) => PositionRoot::Plain(plain),
             },
-            ItemPosition::Plain(name) => TypeMismatchPosition::HostFunctionRegistrationPlain {
-                name: if *name == item {
+            nested,
+        }
+    }
+
+    /// The item's name with the nested instances it sits inside,
+    /// joined with dots.
+    fn qualified(&self, item: &str) -> String {
+        let mut out = String::new();
+        for segment in &self.nested {
+            out.push_str(segment);
+            out.push('.');
+        }
+        out.push_str(item);
+        out
+    }
+
+    fn for_item(&self, item: &str) -> TypeMismatchPosition {
+        match self.root {
+            PositionRoot::Interface(interface) => TypeMismatchPosition::HostFunctionRegistration {
+                interface: interface.clone(),
+                item: self.qualified(item),
+            },
+            PositionRoot::Plain(name) => TypeMismatchPosition::HostFunctionRegistrationPlain {
+                name: if self.nested.is_empty() && name == item {
                     item.to_owned()
                 } else {
-                    format!("{name}.{item}")
+                    format!("{name}.{}", self.qualified(item))
                 },
             },
         }
     }
 
     fn import_name(&self) -> ExternalName {
-        match self {
-            ItemPosition::Interface(chosen) => ExternalName::Interface((*chosen).clone()),
-            ItemPosition::Plain(name) => ExternalName::Plain((*name).to_owned()),
+        match self.root {
+            PositionRoot::Interface(chosen) => ExternalName::Interface(chosen.clone()),
+            PositionRoot::Plain(name) => ExternalName::Plain(name.to_owned()),
         }
     }
+}
+
+/// Whether an instance type needs nothing from the host: every item
+/// is a type, or an instance that itself needs nothing. Wasmtime
+/// links such an import with no definition at all.
+fn instance_is_vacuous(instance: &InstanceType) -> bool {
+    instance.items.iter().all(|item| match &item.ty {
+        ExternType::Instance(inner) => instance_is_vacuous(inner),
+        ExternType::Value(_) => true,
+        _ => false,
+    })
 }
 
 /// Resolve a plain-named import through the root namespace. A
@@ -224,7 +283,7 @@ fn resolve_plain<T: 'static>(
     };
     match &import.ty {
         ExternType::Function(declared) => {
-            check_function_item(&ItemPosition::Plain(name), name, declared, root)?;
+            check_function_item(&ItemPosition::plain(name), name, declared, root)?;
             Ok(ImportBinding::Root)
         }
         ExternType::Resource(_) | ExternType::ResourceEquals(_) => root
@@ -237,10 +296,10 @@ fn resolve_plain<T: 'static>(
         }
         ExternType::Instance(instance) => match root.instance(name) {
             Some(registration) => {
-                check_items(import, registration, &ItemPosition::Plain(name))?;
+                check_items(import, registration, &ItemPosition::plain(name))?;
                 Ok(ImportBinding::Root)
             }
-            None if instance.items.is_empty() => Ok(ImportBinding::Vacuous),
+            None if instance_is_vacuous(instance) => Ok(ImportBinding::Vacuous),
             None => Err(unresolved()),
         },
         _ => Err(Error::from(LinkError::UnsupportedRegistration {
@@ -257,7 +316,7 @@ fn resolve_one(
 ) -> core::result::Result<ImportBinding, LinkError> {
     match (&import.name, &import.ty) {
         (ExternalName::Interface(id), ExternType::Instance(instance))
-            if instance.items.is_empty() =>
+            if instance_is_vacuous(instance) =>
         {
             match find_match(id, registered.iter().copied()) {
                 Some(chosen) => Ok(ImportBinding::Resolved {
@@ -291,21 +350,50 @@ fn check_items<T: 'static>(
         // identifier match alone is the contract for now.
         _ => return Ok(()),
     };
+    check_instance_items(&import.name, items, registration, position)
+}
+
+/// Check the items of one instance type against the registration
+/// that satisfies it. A nested instance item is checked against the
+/// nested registration under its name, and needs none when it is
+/// vacuous.
+fn check_instance_items<T: 'static>(
+    import_name: &ExternalName,
+    items: &[InstanceItem],
+    registration: &InstanceRegistration<T>,
+    position: &ItemPosition<'_>,
+) -> Result<()> {
     for item in items.iter() {
         match &item.ty {
             ExternType::Function(declared) => {
                 check_function_item(position, &item.name, declared, registration)?;
             }
             ExternType::Resource(_) | ExternType::ResourceEquals(_) => {
-                check_resource_item(&item.name, registration, &import.name)?;
+                check_resource_item(&item.name, registration, import_name)?;
             }
             ExternType::Module(declared) => {
-                check_module_item(&import.name, &item.name, declared, registration)?;
+                check_module_item(import_name, &item.name, declared, registration)?;
             }
-            // Type, Instance, Component, Value: the WIT shapes typical
-            // interfaces use are functions plus opaque types; anything
-            // else either has no runtime presence or is out of the
-            // synchronous baseline.
+            ExternType::Instance(inner) => match registration.instance(&item.name) {
+                Some(nested) => {
+                    check_instance_items(
+                        import_name,
+                        &inner.items,
+                        nested,
+                        &position.inside(&item.name),
+                    )?;
+                }
+                None if instance_is_vacuous(inner) => {}
+                None => {
+                    return Err(Error::from(LinkError::UnresolvedImport {
+                        import: import_name.clone(),
+                    }));
+                }
+            },
+            // Type, Component, Value: the WIT shapes typical interfaces
+            // use are functions plus opaque types; anything else either
+            // has no runtime presence or is out of the synchronous
+            // baseline.
             _ => {}
         }
     }

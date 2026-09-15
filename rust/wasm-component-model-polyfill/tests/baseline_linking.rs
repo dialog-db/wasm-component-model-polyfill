@@ -9,7 +9,7 @@
 use std::sync::{Arc, Mutex};
 use wasm_component_model_polyfill::{
     Component, Engine, Error, ExternType, ExternalName, FunctionParameter, FunctionType, HostCall,
-    InterfaceIdentifier, LinkError, Linker, PrimitiveType, Store, Val, ValueType,
+    InterfaceIdentifier, LinkError, Linker, PrimitiveType, ResourceType, Store, Val, ValueType,
 };
 use wcmp_macros::component;
 
@@ -1540,4 +1540,227 @@ async fn it_navigates_plain_named_instance_exports() {
     assert!(e.func("f").is_none());
     assert!(instance.exports().instance("missing").is_none());
     assert!(instance.exports().instance("f").is_none());
+}
+
+/// A component whose import `a` holds an instance `b` that holds the
+/// function `f`: an import path two levels deep.
+const NESTED_IMPORT: &[u8] = component!(
+    r#"
+    (component
+      (import "a" (instance $a
+        (export "b" (instance
+          (export "f" (func (result u32)))))))
+      (alias export $a "b" (instance $b))
+      (core func $f (canon lower (func $b "f")))
+      (core module $m
+        (import "" "f" (func $f (result i32)))
+        (func (export "run") (result i32) call $f))
+      (core instance $i (instantiate $m
+        (with "" (instance (export "f" (func $f))))))
+      (func (export "run") (result u32) (canon lift (core func $i "run"))))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_links_an_import_nested_two_levels() {
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, NESTED_IMPORT)
+        .await
+        .expect("a component with a two-level import parses");
+
+    // The type projection describes the nesting.
+    assert_eq!(component.imports.len(), 1);
+    assert_eq!(
+        component.imports[0].name,
+        ExternalName::Plain("a".to_owned())
+    );
+    let ExternType::Instance(a) = &component.imports[0].ty else {
+        panic!(
+            "expected an instance import, got {:?}",
+            component.imports[0].ty
+        );
+    };
+    assert_eq!(a.items.len(), 1);
+    assert_eq!(a.items[0].name, "b");
+    let ExternType::Instance(b) = &a.items[0].ty else {
+        panic!("expected a nested instance, got {:?}", a.items[0].ty);
+    };
+    assert_eq!(b.items.len(), 1);
+    assert_eq!(b.items[0].name, "f");
+    assert!(matches!(b.items[0].ty, ExternType::Function(_)));
+
+    // Nested `instance` calls register the item where the component
+    // looks for it, as in Wasmtime.
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker
+        .root()
+        .instance("a")
+        .instance("b")
+        .func_wrap("f", |_, (): ()| Ok(7u32));
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the nested registration satisfies the import");
+    let run = instance
+        .get_func("run")
+        .expect("`run` is exported")
+        .typed::<(), u32>()
+        .expect("typed");
+    assert_eq!(run.call(&mut store, ()).await.expect("call succeeds"), 7);
+
+    // The function registered one level up does not satisfy it, and
+    // the error names the import.
+    let mut wrong_level: Linker<()> = Linker::new(&engine);
+    wrong_level
+        .root()
+        .instance("a")
+        .func_wrap("f", |_, (): ()| Ok(7u32));
+    let err = match wrong_level.instantiate(&mut store, &component).await {
+        Ok(_) => panic!("a function at the wrong level must not link"),
+        Err(err) => err,
+    };
+    match err {
+        Error::Link(inner) => match *inner {
+            LinkError::UnresolvedImport { import } => {
+                assert_eq!(import, ExternalName::Plain("a".to_owned()));
+            }
+            other => panic!("expected an unresolved import, got {other:?}"),
+        },
+        other => panic!("expected a link error, got {other:?}"),
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_links_a_resource_nested_two_levels() {
+    // The resource `r` and its constructor live inside `a.b`; the
+    // component mints a handle through the constructor and drops it,
+    // which runs the host destructor registered at the nested level.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (import "a" (instance $a
+            (export "b" (instance
+              (export "r" (type $r (sub resource)))
+              (export "make" (func (result (own $r))))))))
+          (alias export $a "b" (instance $b))
+          (alias export $b "r" (type $r))
+          (core func $make (canon lower (func $b "make")))
+          (core func $drop (canon resource.drop $r))
+          (core module $m
+            (import "" "make" (func $make (result i32)))
+            (import "" "drop" (func $drop (param i32)))
+            (func (export "run") call $make call $drop))
+          (core instance $i (instantiate $m
+            (with "" (instance
+              (export "make" (func $make))
+              (export "drop" (func $drop))))))
+          (func (export "run") (canon lift (core func $i "run"))))
+        "#
+    );
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
+    let mut linker: Linker<u32> = Linker::new(&engine);
+    let mut root = linker.root();
+    let mut a = root.instance("a");
+    let mut b = a.instance("b");
+    let r = b.resource("r", |drops, _rep| {
+        *drops += 1;
+        Ok(())
+    });
+    b.func_new(
+        "make",
+        FunctionType {
+            parameters: vec![],
+            result: Some(ValueType::Own(ResourceType::new("r"))),
+        },
+        move |call, _, results| {
+            results[0] = Val::Own(call.resource_new(r, 42)?);
+            Ok(())
+        },
+    );
+    let mut store: Store<u32> = Store::new(&engine, 0).expect("store construction succeeds");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the nested resource registration satisfies the import");
+    instance
+        .get_func("run")
+        .expect("`run` is exported")
+        .call(&mut store, &[])
+        .await
+        .expect("call succeeds");
+    assert_eq!(*store.data(), 1, "the nested destructor ran once");
+}
+
+#[wcmp_macros::test]
+async fn it_links_an_interface_named_import_with_a_nested_instance() {
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (import "test:guest/host" (instance $h
+            (export "nested" (instance
+              (export "f" (func (result u32)))))))
+          (alias export $h "nested" (instance $n))
+          (core func $f (canon lower (func $n "f")))
+          (core module $m
+            (import "" "f" (func $f (result i32)))
+            (func (export "run") (result i32) call $f))
+          (core instance $i (instantiate $m
+            (with "" (instance (export "f" (func $f))))))
+          (func (export "run") (result u32) (canon lift (core func $i "run"))))
+        "#
+    );
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
+    let host: InterfaceIdentifier = "test:guest/host".parse().expect("identifier parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker
+        .instance(&host)
+        .instance("nested")
+        .func_wrap("f", |_, (): ()| Ok(4u32));
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the nested registration under the interface satisfies the import");
+    let run = instance
+        .get_func("run")
+        .expect("`run` is exported")
+        .typed::<(), u32>()
+        .expect("typed");
+    assert_eq!(run.call(&mut store, ()).await.expect("call succeeds"), 4);
+}
+
+#[wcmp_macros::test]
+async fn it_links_a_recursively_empty_instance_import_without_a_registration() {
+    // Wasmtime needs no definition for an instance whose items are
+    // themselves empty instances, at any depth.
+    const EMPTY: &[u8] = component!(
+        r#"
+        (component
+          (import "not-provided" (instance))
+          (import "not-provided2" (instance
+            (export "x" (instance
+              (export "y" (instance)))))))
+        "#
+    );
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, EMPTY).await.expect("parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("recursively empty instance imports link with nothing registered");
+
+    // An item that needs a definition still needs one.
+    let component = Component::new(&engine, NESTED_IMPORT)
+        .await
+        .expect("parses");
+    assert!(linker.instantiate(&mut store, &component).await.is_err());
 }

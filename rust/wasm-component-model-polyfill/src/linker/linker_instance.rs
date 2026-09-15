@@ -69,10 +69,14 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
         }
     }
 
-    /// Address (creating if absent) the nested registration for a
-    /// plain-named instance import, `(import "name" (instance …))`.
-    /// Meaningful on the root view a [`Linker::root`] returns: an
-    /// interface-named import has no nested instances.
+    /// Address (creating if absent) the nested registration for an
+    /// instance item under `name`: a plain-named instance import,
+    /// `(import "name" (instance …))`, on the root view a
+    /// [`Linker::root`] returns, or an instance exported by the
+    /// instance this view addresses, at any depth. A component that
+    /// imports `a` whose `b` instance exports `f` links against
+    /// `root().instance("a").instance("b").func_wrap("f", …)`, as it
+    /// does in Wasmtime.
     ///
     /// [`Linker::root`]: super::Linker::root
     pub fn instance(&mut self, name: impl Into<String>) -> LinkerInstance<'_, T> {

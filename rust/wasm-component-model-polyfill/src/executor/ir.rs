@@ -130,9 +130,10 @@ pub enum ModuleSource {
         /// (`Component::imports`): the import that is the module, or
         /// the imported instance that holds it.
         import_index: usize,
-        /// The module's name within the imported instance, or `None`
-        /// when the import is itself the module.
-        item_name: Option<String>,
+        /// The names from the imported instance down to the module,
+        /// one per nesting level. Empty when the import is itself
+        /// the module.
+        path: Box<[String]>,
     },
 }
 
@@ -347,11 +348,10 @@ pub struct LoweringSpec {
     /// Index into the resolved component imports — the same indexing
     /// `Component::imports` and `Resolution::bindings` use.
     pub import_index: usize,
-    /// For interface-typed imports, the item name within the
-    /// imported instance the lowered function targets. `None` when
-    /// the import itself is the target (a plain-named function
-    /// import).
-    pub item_name: Option<String>,
+    /// The names from the imported instance down to the function
+    /// the lowering targets, one per nesting level. Empty when the
+    /// import itself is the target (a plain-named function import).
+    pub path: Box<[String]>,
     /// The host-side function type the registration must declare.
     pub signature: FunctionType,
     /// The canon options the lower uses to translate between the
@@ -522,10 +522,10 @@ pub enum ResourceSpec {
         /// the resource lives in, or — when `item_name` is `None` —
         /// the import that is itself a resource type.
         import_index: usize,
-        /// The resource's label within the imported instance. `None`
-        /// when the import is itself the resource type (top-level
-        /// resource import).
-        item_name: Option<String>,
+        /// The names from the imported instance down to the resource,
+        /// one per nesting level. Empty when the import is itself the
+        /// resource type (a top-level resource import).
+        path: Box<[String]>,
     },
     /// A resource type the component defines. Its identity is minted
     /// fresh at every instantiation, and its destructor, when it has
