@@ -2,10 +2,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::component::FunctionType;
+use crate::component::{ExternalName, FunctionType};
 use crate::executor::ir::CanonOptions;
 use crate::executor::trampoline::AbiRuntimeState;
-use crate::identifier::InterfaceIdentifier;
 use crate::store::StoreId;
 
 use super::exports::InstanceExports;
@@ -25,11 +24,12 @@ pub struct ExportedFunction {
     /// name the component publishes; for instance-typed exports
     /// this is the item name inside the enclosing instance.
     pub name: String,
-    /// The enclosing instance-typed export's identifier when this
-    /// function is nested inside one, or `None` for a root-level
-    /// function export. Used by the [`InstanceExports`] navigator
-    /// to scope `func` lookups to the addressed instance.
-    pub parent: Option<InterfaceIdentifier>,
+    /// The names of the instance-typed exports that enclose this
+    /// function, from the root of the export tree inward, or empty
+    /// for a root-level function export. Used by the
+    /// [`InstanceExports`] navigator to scope `func` lookups to the
+    /// addressed instance.
+    pub path: Box<[ExternalName]>,
     /// The runtime-layer core-Wasm function that backs this export.
     pub func: wasm_runtime_layer::Func,
     /// The polyfill's component-level signature for this export.
@@ -65,6 +65,12 @@ pub struct Instance {
     /// when wiring the component. Workspace-internal; never
     /// re-exported through `lib.rs`.
     pub function_exports: Box<[ExportedFunction]>,
+    /// The path of every instance-typed export, at any depth, in
+    /// declaration order. An instance export is listed whether or
+    /// not it holds a function, so the navigator can reach an empty
+    /// instance. Workspace-internal; never re-exported through
+    /// `lib.rs`.
+    pub instance_exports: Box<[Box<[ExternalName]>]>,
     /// The canonical-ABI runtime state populated during
     /// instantiation: the per-component slabs of memories,
     /// reallocs, and post-returns. Held inside an `Arc<Mutex<…>>`
@@ -90,10 +96,28 @@ impl Instance {
     /// nested inside an instance-typed export. Use
     /// [`Self::exports`] to traverse instance-typed exports.
     pub fn get_func(&self, name: &str) -> Option<Func> {
+        self.function_export(&[], name)
+    }
+
+    /// The function export named `name` inside the instance-typed
+    /// export at `path`, or at the root when `path` is empty.
+    ///
+    /// Workspace-internal; not re-exported by `lib.rs`.
+    pub fn function_export(&self, path: &[ExternalName], name: &str) -> Option<Func> {
         self.function_exports
             .iter()
-            .find(|export| export.parent.is_none() && export.name == name)
+            .find(|export| export.path.as_ref() == path && export.name == name)
             .map(|export| self.func_for(export))
+    }
+
+    /// Whether the component publishes an instance-typed export at
+    /// `path`.
+    ///
+    /// Workspace-internal; not re-exported by `lib.rs`.
+    pub fn has_instance_export(&self, path: &[ExternalName]) -> bool {
+        self.instance_exports
+            .iter()
+            .any(|export| export.as_ref() == path)
     }
 
     /// Build the caller-facing [`Func`] handle for one of this

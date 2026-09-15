@@ -31,7 +31,6 @@ use crate::abi::layout::FlatType;
 use crate::component::{ComponentExport, ComponentImport, ExternType, ExternalName, TypeProjector};
 use crate::engine::Engine;
 use crate::error::{Error, Result};
-use crate::identifier::InterfaceIdentifier;
 
 use super::compile_module::compile_module;
 use super::ir::{
@@ -343,17 +342,17 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
         }
     }
 
-    let mut export_specs: Vec<ExportSpec> = Vec::new();
+    let mut export_tree = ExportTree::default();
     for (name, (export_index, _)) in translation.component.exports.raw_iter() {
         collect_export_spec(
             &translation,
             &projector,
             &mut state,
             &trampoline_to_spec,
-            &mut export_specs,
+            &mut export_tree,
+            &[],
             name,
             *export_index,
-            None,
         )?;
     }
 
@@ -365,7 +364,8 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
         ir: ExecutorIr {
             modules: module_entries.into_boxed_slice(),
             initializers: state.initializers.into_boxed_slice(),
-            exports: export_specs.into_boxed_slice(),
+            exports: export_tree.functions.into_boxed_slice(),
+            instance_exports: export_tree.instances.into_boxed_slice(),
             trampoline_specs: trampoline_specs.into_boxed_slice(),
             resources: resources.into_boxed_slice(),
             resource_tables: resource_tables.into_boxed_slice(),
@@ -474,21 +474,32 @@ fn project_exports(
     Ok(exports.into_boxed_slice())
 }
 
-/// Recursively project one component-level export into
-/// [`ExportSpec`] entries. Root-level functions land as a single
-/// entry with no parent; instance-typed exports recurse into their
-/// inner exports with the enclosing instance's
-/// [`InterfaceIdentifier`] threaded through as the `parent`.
+/// The export entries the translator collects: one [`ExportSpec`]
+/// per lifted function at any depth, and the path of every
+/// instance-typed export.
+#[derive(Default)]
+struct ExportTree {
+    functions: Vec<ExportSpec>,
+    instances: Vec<Box<[ExternalName]>>,
+}
+
+/// Recursively project one component-level export into the
+/// [`ExportTree`]. A lifted function lands as one [`ExportSpec`]
+/// carrying the `path` of the instance exports that enclose it; an
+/// instance-typed export records its own path and recurses into its
+/// items with that path threaded through. Any name is accepted for an
+/// instance export, a WIT interface identifier or a plain label, as
+/// Wasmtime accepts it.
 #[allow(clippy::too_many_arguments)]
 fn collect_export_spec(
     translation: &ComponentTranslation,
     projector: &TypeProjector<'_>,
     state: &mut ProjectionState,
     trampoline_to_spec: &HashMap<TrampolineIndex, usize>,
-    out: &mut Vec<ExportSpec>,
+    out: &mut ExportTree,
+    path: &[ExternalName],
     name: &str,
     export_index: ExportIndex,
-    parent: Option<&InterfaceIdentifier>,
 ) -> Result<()> {
     let export = translation
         .component
@@ -503,9 +514,9 @@ fn collect_export_spec(
                 .options
                 .get(*options)
                 .ok_or_else(|| Error::internal("export OptionsIndex out of bounds"))?;
-            out.push(ExportSpec {
+            out.functions.push(ExportSpec {
                 name: name.to_owned(),
-                parent: parent.cloned(),
+                path: path.into(),
                 source,
                 signature: projector.function(*ty)?,
                 options: lift_canon_options(canon),
@@ -516,16 +527,9 @@ fn collect_export_spec(
             Err(Error::unsupported("module-typed exports"))
         }
         EnvironExport::Instance { exports, .. } => {
-            if parent.is_some() {
-                return Err(Error::unsupported(
-                    "instance exports nested more than one level",
-                ));
-            }
-            let identifier = name.parse::<InterfaceIdentifier>().map_err(|_| {
-                Error::unsupported(format!(
-                    "instance exports with a plain name (`{name}` is not a WIT interface identifier)"
-                ))
-            })?;
+            let mut nested = path.to_vec();
+            nested.push(ExternalName::from_raw(name));
+            out.instances.push(nested.clone().into_boxed_slice());
             for (item_name, (inner_index, _)) in exports.raw_iter() {
                 collect_export_spec(
                     translation,
@@ -533,9 +537,9 @@ fn collect_export_spec(
                     state,
                     trampoline_to_spec,
                     out,
+                    &nested,
                     item_name,
                     *inner_index,
-                    Some(&identifier),
                 )?;
             }
             Ok(())

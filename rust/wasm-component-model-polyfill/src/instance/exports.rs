@@ -2,22 +2,24 @@
 //!
 //! [`InstanceExports`] is the value [`Instance::exports`] returns. It
 //! borrows from the instance and exposes two lookups: one keyed by
-//! function-name that returns the polyfill's [`Func`] for a root-
-//! level function export, and one keyed by [`InterfaceIdentifier`]
+//! function name that returns the polyfill's [`Func`] for a root-
+//! level function export, and one keyed by an [`ExportLookup`] name
 //! that returns an [`ExportInstance`] view onto a single instance-
-//! typed export.
+//! typed export, whether the component published it under a WIT
+//! interface identifier or under a plain name.
 //!
 //! The navigator is the polyfill's own type — no upstream type
-//! appears at the navigation boundary. The instance lookup uses the
-//! polyfill's own [`InterfaceIdentifier`] so traversal threads
-//! through the identifier surface introduced earlier in the project.
+//! appears at the navigation boundary. An instance lookup accepts
+//! the polyfill's own [`InterfaceIdentifier`] as well as a string, so
+//! traversal threads through the identifier surface introduced
+//! earlier in the project without forcing a parse on a plain name.
 //!
 //! [`Instance`]: super::Instance
 //! [`Instance::exports`]: super::Instance::exports
-
-use crate::identifier::InterfaceIdentifier;
+//! [`InterfaceIdentifier`]: crate::InterfaceIdentifier
 
 use super::export_instance::ExportInstance;
+use super::export_lookup::ExportLookup;
 use super::func::Func;
 use super::instance::Instance;
 
@@ -28,8 +30,9 @@ use super::instance::Instance;
 /// borrows from the instance for its lifetime. Two lookups are
 /// reachable here: [`Self::func`] for root-level function exports
 /// and [`Self::instance`] for instance-typed exports addressed by
-/// the polyfill's [`InterfaceIdentifier`]. Nested function exports
-/// are reachable only through the latter.
+/// name. Nested function exports are reachable only through the
+/// latter, and an instance nested inside an instance is reached
+/// through [`ExportInstance::instance`] on the outer view.
 ///
 /// The flat-name shorthand [`Instance::get_func`] is preserved
 /// unchanged; it is the same root-level lookup [`Self::func`]
@@ -57,26 +60,23 @@ impl<'a> InstanceExports<'a> {
     /// given name; nested function exports inside an instance-typed
     /// export are reachable only through [`Self::instance`].
     pub fn func(&self, name: &str) -> Option<Func> {
-        self.instance
-            .function_exports
-            .iter()
-            .find(|export| export.parent.is_none() && export.name == name)
-            .map(|export| self.instance.func_for(export))
+        self.instance.function_export(&[], name)
     }
 
-    /// Look up an instance-typed export addressed by its
-    /// [`InterfaceIdentifier`]. Returns `None` if the instance is
-    /// absent. The returned [`ExportInstance`] reaches the
-    /// instance's nested function exports through its own
-    /// [`ExportInstance::func`] accessor.
-    pub fn instance(&self, identifier: &InterfaceIdentifier) -> Option<ExportInstance<'a>> {
-        let any_match = self
-            .instance
-            .function_exports
-            .iter()
-            .any(|export| export.parent.as_ref() == Some(identifier));
-        if any_match {
-            Some(ExportInstance::new(self.instance, identifier.clone()))
+    /// Look up a root-level instance-typed export by name. The name
+    /// is anything that implements [`ExportLookup`]: a plain string
+    /// such as `"a"`, a string in WIT interface-name syntax such as
+    /// `"test:guest/foo"`, or a parsed [`InterfaceIdentifier`].
+    /// Returns `None` if no instance-typed export carries the name.
+    /// The returned [`ExportInstance`] reaches the instance's nested
+    /// function exports through [`ExportInstance::func`] and its
+    /// nested instance exports through [`ExportInstance::instance`].
+    ///
+    /// [`InterfaceIdentifier`]: crate::InterfaceIdentifier
+    pub fn instance(&self, name: impl ExportLookup) -> Option<ExportInstance<'a>> {
+        let path = vec![name.external_name()].into_boxed_slice();
+        if self.instance.has_instance_export(&path) {
+            Some(ExportInstance::new(self.instance, path))
         } else {
             None
         }

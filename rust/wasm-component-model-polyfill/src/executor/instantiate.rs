@@ -258,6 +258,7 @@ pub fn instantiate<T: 'static>(
     Ok(Instance {
         core_instances: items.core_instances.into_boxed_slice(),
         function_exports,
+        instance_exports: ir.instance_exports.clone(),
         abi_state,
         store_id: store.id,
     })
@@ -544,7 +545,7 @@ fn collect_function_exports<T: 'static>(
     let mut out = Vec::with_capacity(ir.exports.len());
     for ExportSpec {
         name,
-        parent,
+        path,
         source,
         signature,
         options,
@@ -558,7 +559,7 @@ fn collect_function_exports<T: 'static>(
         };
         out.push(ExportedFunction {
             name: name.clone(),
-            parent: parent.clone(),
+            path: path.clone(),
             func,
             signature: signature.clone(),
             options: options.clone(),

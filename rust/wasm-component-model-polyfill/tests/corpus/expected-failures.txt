@@ -30,17 +30,8 @@ cm/linking/tags.wast:89 cascade no instance to invoke
 cm/linking/tags.wast:93 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
 cm/linking/tags.wast:133 cascade no instance to invoke
 cm/linking/tags.wast:134 cascade no instance to invoke
-cm/validation/attributes.wast:2 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`a` is not a WIT interface identifier)
-cm/validation/attributes.wast:30 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`a` is not a WIT interface identifier)
 cm/validation/extern-names.wast:53 validation expected rejection `expected `/` after package name`, but the component parsed
 cm/validation/extern-names.wast:56 validation expected rejection `trailing characters found: `/qux``, but the component parsed
-cm/validation/external-visibility.wast:410 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`i` is not a WIT interface identifier)
-cm/validation/external-visibility.wast:420 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`i` is not a WIT interface identifier)
-cm/validation/external-visibility.wast:511 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`i` is not a WIT interface identifier)
-cm/validation/external-visibility.wast:520 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`i2` is not a WIT interface identifier)
-cm/validation/external-visibility.wast:531 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`c` is not a WIT interface identifier)
-cm/validation/external-visibility.wast:563 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`c` is not a WIT interface identifier)
-cm/validation/external-visibility.wast:580 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`f2` is not a WIT interface identifier)
 cm/validation/kebab.wast:149 validation expected rejection `import name `foobar` conflicts with previous name `foo-bar``, but the component parsed
 cm/validation/kebab.wast:154 validation expected rejection `import name `FOOBAR` conflicts with previous name `foo-bar``, but the component parsed
 cm/validation/kebab.wast:159 validation expected rejection `import name `foob-ar` conflicts with previous name `foo-bar``, but the component parsed
@@ -142,7 +133,6 @@ wasmtime/alias-region-reexported-known-entities.wast:14 substrate component reje
 wasmtime/alias-region-reexported-known-entities.wast:89 cascade no instance to invoke
 wasmtime/alias-region-reexported-known-entities.wast:90 cascade no instance to invoke
 wasmtime/alias-region-reexported-known-entities.wast:91 cascade no instance to invoke
-wasmtime/aliasing.wast:1 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`a` is not a WIT interface identifier)
 wasmtime/aliasing.wast:19 deferred-feature component rejected: unsupported component feature: module-typed exports
 wasmtime/error-context-trap-in-post-return.wast:3 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
 wasmtime/error-context-trap-in-post-return.wast:45 cascade no definition named `Tester`
@@ -161,9 +151,7 @@ wasmtime/instance.wast:182 deferred-feature instantiation failed: link error: no
 wasmtime/instance.wast:191 deferred-feature component rejected: unsupported component feature: imports nested more than one level
 wasmtime/instance.wast:216 deferred-feature component rejected: unsupported component feature: instantiation of an imported core module
 wasmtime/instance.wast:224 deferred-feature component rejected: unsupported component feature: instantiation of an imported core module
-wasmtime/instance.wast:255 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`i` is not a WIT interface identifier)
-wasmtime/instance.wast:260 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`i` is not a WIT interface identifier)
-wasmtime/instance.wast:265 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`i` is not a WIT interface identifier)
+wasmtime/instance.wast:255 deferred-feature component rejected: unsupported component feature: module-typed exports
 wasmtime/memory64.wast:24 deferred-feature component rejected: unsupported component feature: 64-bit memories in adapter modules
 wasmtime/memory64.wast:122 cascade no instance to invoke
 wasmtime/memory64.wast:126 cascade no instance to invoke

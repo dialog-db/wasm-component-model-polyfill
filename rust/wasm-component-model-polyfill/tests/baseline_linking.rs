@@ -1430,3 +1430,111 @@ async fn it_reports_an_unsupported_feature_as_a_structured_error() {
         "expected Error::Unsupported, got {err:?}"
     );
 }
+
+#[wcmp_macros::test]
+async fn it_navigates_plain_named_instance_exports() {
+    // A component may publish an instance under a plain name rather
+    // than a WIT interface identifier, and an instance may nest
+    // another. The navigator reaches every level by name, and an
+    // instance with no items is still reachable.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (core module $m
+            (func (export "f") (result i32) i32.const 42)
+            (func (export "g") (param i32) (result i32)
+              local.get 0 i32.const 1 i32.add))
+          (core instance $i (instantiate $m))
+          (func $f (result u32) (canon lift (core func $i "f")))
+          (func $g (param "x" u32) (result u32) (canon lift (core func $i "g")))
+          (instance $b (export "g" (func $g)))
+          (instance $a
+            (export "f" (func $f))
+            (export "b" (instance $b)))
+          (export "a" (instance $a))
+          (instance $e)
+          (export "e" (instance $e)))
+        "#
+    );
+
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("a component with plain-named instance exports parses");
+
+    // The type projection keeps the nested shape.
+    let a = component
+        .exports
+        .iter()
+        .find(|export| export.name == ExternalName::Plain("a".to_owned()))
+        .expect("`a` is a declared export");
+    let ExternType::Instance(a_type) = &a.ty else {
+        panic!("expected `a` to be an instance export, got {:?}", a.ty);
+    };
+    assert_eq!(a_type.items.len(), 2);
+    assert_eq!(a_type.items[0].name, "f");
+    assert!(matches!(a_type.items[0].ty, ExternType::Function(_)));
+    assert_eq!(a_type.items[1].name, "b");
+    let ExternType::Instance(b_type) = &a_type.items[1].ty else {
+        panic!(
+            "expected `b` to be a nested instance, got {:?}",
+            a_type.items[1].ty
+        );
+    };
+    assert_eq!(b_type.items.len(), 1);
+    assert_eq!(b_type.items[0].name, "g");
+
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiation succeeds");
+
+    // The functions live inside the instances, not at the root.
+    assert!(instance.get_func("f").is_none());
+    assert!(instance.exports().func("g").is_none());
+
+    let a = instance
+        .exports()
+        .instance("a")
+        .expect("the plain-named instance export `a` is present");
+    assert_eq!(*a.name(), ExternalName::Plain("a".to_owned()));
+    let f = a.func("f").expect("`f` is exported by `a`");
+    assert_eq!(
+        f.call(&mut store, &[])
+            .await
+            .expect("call succeeds")
+            .as_ref(),
+        &[Val::U32(42)]
+    );
+
+    // A nested instance is reached through the enclosing view.
+    let b = a.instance("b").expect("`b` is nested inside `a`");
+    assert_eq!(*b.name(), ExternalName::Plain("b".to_owned()));
+    let g = b
+        .func("g")
+        .expect("`g` is exported by `b`")
+        .typed::<(u32,), u32>()
+        .expect("typed conversion succeeds");
+    assert_eq!(g.call(&mut store, (41,)).await.expect("call succeeds"), 42);
+    assert!(a.func("g").is_none());
+    assert!(b.func("f").is_none());
+    assert!(b.instance("b").is_none());
+
+    // An `ExternalName` from the component's export list is a key too.
+    let by_name = instance
+        .exports()
+        .instance(&ExternalName::Plain("a".to_owned()))
+        .expect("the export list's name addresses the same instance");
+    assert!(by_name.func("f").is_some());
+
+    // An empty instance export is reachable; an absent one is not.
+    let e = instance
+        .exports()
+        .instance("e")
+        .expect("the empty instance export `e` is present");
+    assert!(e.func("f").is_none());
+    assert!(instance.exports().instance("missing").is_none());
+    assert!(instance.exports().instance("f").is_none());
+}

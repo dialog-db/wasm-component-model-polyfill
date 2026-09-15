@@ -9,6 +9,7 @@
 //! created in and refuses a call through any other store.
 
 mod export_instance;
+mod export_lookup;
 mod exports;
 mod func;
 #[allow(clippy::module_inception)]
@@ -16,6 +17,7 @@ mod instance;
 mod typed_func;
 
 pub use export_instance::ExportInstance;
+pub use export_lookup::ExportLookup;
 pub use exports::InstanceExports;
 pub use func::Func;
 pub use instance::{ExportedFunction, Instance};

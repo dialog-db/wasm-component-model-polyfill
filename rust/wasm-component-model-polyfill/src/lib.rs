@@ -18,9 +18,11 @@
 //!   the build-up and runtime surface for linking a component
 //!   against a host environment, instantiating it into a [`Store`],
 //!   and calling its exports.
-//! - [`InstanceExports`] and [`ExportInstance`] — the export
-//!   navigator that walks a component's export tree and reaches
-//!   function exports nested inside an instance-typed export.
+//! - [`InstanceExports`], [`ExportInstance`], and [`ExportLookup`] —
+//!   the export navigator that walks a component's export tree and
+//!   reaches function exports nested inside an instance-typed
+//!   export, whether the instance is published under a WIT interface
+//!   identifier or a plain name.
 //! - [`TypedFunc`] — the typed counterpart to [`Func`] obtained
 //!   through [`Func::typed`], whose Rust parameter tuple and return
 //!   type are checked against the export's component-level
@@ -135,7 +137,7 @@
 //!     // Get the interface that the component exports.
 //!     let interface = instance
 //!         .exports()
-//!         .instance(&"test:guest/foo".parse().unwrap())
+//!         .instance("test:guest/foo")
 //!         .unwrap();
 //!     // Get the function for selecting a list element.
 //!     let select_nth = interface
@@ -181,7 +183,9 @@ pub use crate::error::{
     TypeMismatchPosition, TypeRendering,
 };
 pub use crate::identifier::{IdentifierParseError, InterfaceIdentifier, PackageName};
-pub use crate::instance::{ExportInstance, Func, Instance, InstanceExports, TypedFunc};
+pub use crate::instance::{
+    ExportInstance, ExportLookup, Func, Instance, InstanceExports, TypedFunc,
+};
 pub use crate::linker::{
     ComponentParameters, ComponentResult, ComponentValue, HostCall, HostResource, Linker,
     LinkerInstance,

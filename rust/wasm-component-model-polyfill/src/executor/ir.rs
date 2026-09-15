@@ -9,8 +9,7 @@
 use std::collections::HashMap;
 
 use crate::abi::layout::FlatType;
-use crate::component::FunctionType;
-use crate::identifier::InterfaceIdentifier;
+use crate::component::{ExternalName, FunctionType};
 
 /// The executor's IR for a single parsed component.
 ///
@@ -32,8 +31,14 @@ pub struct ExecutorIr {
     /// executor performs to produce the runtime state of an
     /// instantiated component.
     pub initializers: Box<[Initializer]>,
-    /// The component's function exports, in declaration order.
+    /// The component's function exports, in declaration order,
+    /// including the functions nested inside instance-typed exports.
     pub exports: Box<[ExportSpec]>,
+    /// The path of every instance-typed export, at any depth, in
+    /// declaration order: the names from the root of the export tree
+    /// down to the instance itself. An instance is listed whether or
+    /// not it holds a function.
+    pub instance_exports: Box<[Box<[ExternalName]>]>,
     /// One entry per trampoline the component requires, in the
     /// order [`Trampoline`]s are emitted by the upstream translator.
     /// Each entry names what the trampoline does — lower a host
@@ -232,10 +237,10 @@ pub struct ExportSpec {
     /// instance-typed exports this is the item name inside the
     /// enclosing instance.
     pub name: String,
-    /// The enclosing instance-typed export's identifier when this
-    /// function is nested inside one, or `None` for a root-level
-    /// function export.
-    pub parent: Option<InterfaceIdentifier>,
+    /// The names of the instance-typed exports that enclose this
+    /// function, from the root of the export tree inward, or empty
+    /// for a root-level function export.
+    pub path: Box<[ExternalName]>,
     /// Where the underlying core-Wasm function lives.
     pub source: ImportSource,
     /// The component-level signature the lift produced.
