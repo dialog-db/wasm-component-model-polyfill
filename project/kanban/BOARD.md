@@ -23,18 +23,18 @@ kanban-plugin: basic
 
 ## Needs Review
 
+## Ready
+
 - [ ] [[35532a]]
 - [ ] [[c3b98b]]
+- [ ] [[2239fe]]
+- [ ] [[2dc024]]
+- [ ] [[6ffdf7]]
 - [ ] [[710d2b]]
 - [ ] [[78295c]]
-- [ ] [[2239fe]]
-- [ ] [[6ffdf7]]
-- [ ] [[e620cc]]
-- [ ] [[2dc024]]
-- [ ] [[f4d51a]]
 - [ ] [[b84270]]
-
-## Ready
+- [ ] [[e620cc]]
+- [ ] [[f4d51a]]
 
 %% kanban:settings
 
