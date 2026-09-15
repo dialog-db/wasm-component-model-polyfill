@@ -9,7 +9,7 @@ use crate::abi::context::LiftContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
 use crate::abi::strings;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
-use crate::resource::{HandleEntry, ResourceHandle};
+use crate::resource::{HandleKind, ResourceHandle};
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::{Val, ValField};
 
@@ -32,6 +32,16 @@ pub fn lift<T: 'static>(
             let ptr = read_u32(&ptr_bytes) as usize;
             let len = read_u32(&len_bytes) as usize;
             let element_size = size_of(&element_ty);
+            let byte_len = len
+                .checked_mul(element_size)
+                .ok_or_else(|| invalid_encoding(ty, position, "list length overflow"))?;
+            if !ctx.in_bounds(ptr, byte_len) {
+                return Err(invalid_encoding(
+                    ty,
+                    position,
+                    "list pointer/length out of bounds of memory",
+                ));
+            }
             let mut out = Vec::with_capacity(len);
             for i in 0..len {
                 let elem = lift(ctx, ptr + i * element_size, &element_ty, position)?;
@@ -69,7 +79,11 @@ pub fn lift<T: 'static>(
             let disc_bytes = ctx.read_bytes(offset, disc_size, position, ty)?;
             let discriminant = read_discriminant(&disc_bytes);
             let case = variant.cases().get(discriminant).ok_or_else(|| {
-                invalid_encoding(ty, position, "variant discriminant out of range")
+                invalid_encoding(
+                    ty,
+                    position,
+                    &format!("discriminant {discriminant} out of range [0..{case_count})"),
+                )
             })?;
             let payload_align = variant
                 .cases()
@@ -263,6 +277,13 @@ fn lift_string<T: 'static>(
     }
     let byte_len = strings::byte_length(encoding, units)
         .ok_or_else(|| invalid_encoding(ty, position, "string length overflow"))?;
+    if !ctx.in_bounds(ptr, byte_len) {
+        return Err(invalid_encoding(
+            ty,
+            position,
+            "string pointer/length out of bounds of memory",
+        ));
+    }
     let raw = ctx.read_bytes(ptr, byte_len, position, ty)?;
     strings::decode(encoding, units, &raw)
         .map(Val::String)
@@ -342,13 +363,11 @@ pub fn lift_handle<T: 'static>(
                 },
             })
         })?;
-    let disappeared = || {
+    let invalid = |reason: String| {
         Error::from(AbiError {
             position,
             valtype: ty.clone(),
-            cause: AbiCause::InvalidHandle {
-                reason: format!("handle index {index} is not live in the resource table"),
-            },
+            cause: AbiCause::InvalidHandle { reason },
         })
     };
 
@@ -357,34 +376,11 @@ pub fn lift_handle<T: 'static>(
         // away and the host's table for the type takes the resource.
         // An entry that is lent out as a borrow cannot leave until the
         // borrow returns.
-        let entry = guard
-            .for_table(table.table)
-            .and_then(|t| t.entry(index))
-            .copied()
-            .ok_or_else(disappeared)?;
-        let rep = match entry {
-            HandleEntry::Own { rep, lend_count: 0 } => rep,
-            HandleEntry::Own { .. } => {
-                return Err(Error::from(AbiError {
-                    position,
-                    valtype: ty.clone(),
-                    cause: AbiCause::InvalidHandle {
-                        reason: "cannot remove owned resource while borrowed".to_owned(),
-                    },
-                }));
-            }
-            HandleEntry::Borrow { .. } => {
-                return Err(Error::from(AbiError {
-                    position,
-                    valtype: ty.clone(),
-                    cause: AbiCause::InvalidHandle {
-                        reason: format!("handle index {index} is a borrow, not an owned resource"),
-                    },
-                }));
-            }
-        };
-        guard.for_table_mut(table.table).remove(index);
-        let host_index = guard.for_type_mut(table.type_id).insert_own(rep);
+        let rep = guard
+            .remove_own(table.table, index, table.type_id, table.guest_defined)
+            .map_err(|e| invalid(e.to_string()))?;
+        let host_index = guard.host_table(table.type_id);
+        let host_index = guard.insert_own(host_index, table.type_id, table.guest_defined, rep);
         Ok(Val::Own(ResourceHandle {
             type_id: table.type_id,
             index: host_index,
@@ -403,17 +399,15 @@ pub fn lift_handle<T: 'static>(
         // the host for the rest of the call; a borrow of a borrow
         // needs no bookkeeping of its own.
         let entry = guard
-            .for_table(table.table)
-            .and_then(|t| t.entry(index))
-            .copied()
-            .ok_or_else(disappeared)?;
-        if matches!(entry, HandleEntry::Own { .. }) {
+            .lookup(table.table, index, table.type_id, table.guest_defined)
+            .map_err(|e| invalid(e.to_string()))?;
+        if matches!(entry.kind, HandleKind::Own { .. }) {
             guard.lend(table.table, index);
         }
         Ok(Val::Borrow(ResourceHandle {
             type_id: table.type_id,
             index,
-            rep: entry.rep(),
+            rep: entry.rep,
         }))
     }
 }

@@ -38,7 +38,7 @@ use crate::backend::Backend;
 use crate::error::{Error, Result};
 use crate::executor::ir::{CoreSignature, TranscodeOp};
 use crate::executor::trampoline::AbiRuntimeState;
-use crate::resource::{HandleEntry, HandleTables, ResourceTableRuntime};
+use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime};
 use crate::store::Store;
 
 /// The tag a "compact UTF-16" length carries when the string was
@@ -244,26 +244,10 @@ fn transfer_own(
     let mut guard = tables
         .lock()
         .map_err(|_| anyhow!("resource handle tables lock poisoned"))?;
-    let entry = guard
-        .for_table(src.table)
-        .and_then(|t| t.entry(index))
-        .copied()
-        .ok_or_else(|| anyhow!("wasm trap: unknown handle index {index}"))?;
-    let rep = match entry {
-        HandleEntry::Own { rep, lend_count: 0 } => rep,
-        HandleEntry::Own { .. } => {
-            return Err(anyhow!(
-                "wasm trap: cannot remove owned resource while borrowed"
-            ));
-        }
-        HandleEntry::Borrow { .. } => {
-            return Err(anyhow!(
-                "wasm trap: handle index {index} used with the wrong type, expected own but found borrow"
-            ));
-        }
-    };
-    guard.for_table_mut(src.table).remove(index);
-    Ok(guard.for_table_mut(dst.table).insert_own(rep))
+    let rep = guard
+        .remove_own(src.table, index, src.type_id, src.guest_defined)
+        .map_err(|e| anyhow!("wasm trap: {e}"))?;
+    Ok(guard.insert_own(dst.table, dst.type_id, dst.guest_defined, rep))
 }
 
 fn transfer_borrow(
@@ -282,14 +266,12 @@ fn transfer_borrow(
         index
     } else {
         let entry = guard
-            .for_table(src.table)
-            .and_then(|t| t.entry(index))
-            .copied()
-            .ok_or_else(|| anyhow!("wasm trap: unknown handle index {index}"))?;
-        if matches!(entry, HandleEntry::Own { .. }) {
+            .lookup(src.table, index, src.type_id, src.guest_defined)
+            .map_err(|e| anyhow!("wasm trap: {e}"))?;
+        if matches!(entry.kind, HandleKind::Own { .. }) {
             guard.lend(src.table, index);
         }
-        entry.rep()
+        entry.rep
     };
     // Lower it into the callee: the defining instance receives the
     // rep; anyone else receives a borrow entry owed to the call.
@@ -297,7 +279,7 @@ fn transfer_borrow(
         Ok(rep)
     } else {
         guard
-            .insert_borrow(dst.table, rep)
+            .insert_borrow(dst.table, dst.type_id, dst.guest_defined, rep)
             .ok_or_else(|| anyhow!("wasm trap: a borrow can only be transferred during a call"))
     }
 }

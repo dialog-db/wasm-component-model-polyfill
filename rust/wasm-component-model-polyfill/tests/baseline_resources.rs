@@ -993,9 +993,12 @@ async fn it_leaves_the_owning_handle_live_after_a_borrow_is_dropped_in_the_call(
         &[Val::U32(7)],
         "the host read the rep through the borrow"
     );
-    let tables = store.tables.lock().expect("tables");
+    let mut tables = store.tables.lock().expect("tables");
+    let host_table = tables.host_table(type_id);
     assert_eq!(
-        tables.for_type(type_id).and_then(|t| t.get(handle.index)),
+        tables
+            .for_table(host_table)
+            .and_then(|t| t.get(handle.index)),
         Some(7),
         "the owning entry is live after the call"
     );

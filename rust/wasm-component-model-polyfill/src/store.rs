@@ -17,7 +17,7 @@ use crate::backend::Backend;
 use crate::engine::Engine;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ResourceDestructor;
-use crate::resource::{HandleEntry, HandleTables, ResourceHandle, ResourceTypeId};
+use crate::resource::{HandleLookupError, HandleTables, ResourceHandle, ResourceTypeId};
 use crate::types::{ResourceType, ValueType};
 
 /// A process-unique identity for one [`Store`].
@@ -113,13 +113,23 @@ impl<T: 'static> Store<T> {
             .tables
             .lock()
             .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
-        let table = guard.for_type_mut(type_id);
-        let index = table.insert_own(rep);
+        let table = guard.host_table(type_id);
+        let index = guard.insert_own(table, type_id, self.is_guest_defined(type_id), rep);
         Ok(ResourceHandle {
             type_id,
             index,
             rep,
         })
+    }
+
+    /// Whether a component defines the resource type, as far as the
+    /// store knows: an instance registered an in-binary destructor
+    /// for it. Read for the wrong-type trap message.
+    fn is_guest_defined(&self, type_id: ResourceTypeId) -> bool {
+        matches!(
+            self.destructors.get(&type_id),
+            Some(ResourceDestructor::Local(_))
+        )
     }
 
     /// Record the destructor of a resource type an instance
@@ -157,33 +167,24 @@ impl<T: 'static> Store<T> {
                 .lock()
                 .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
             let table = guard.host_table(handle.type_id);
-            let entry = guard
-                .for_table(table)
-                .and_then(|t| t.entry(handle.index))
-                .copied()
-                .ok_or_else(|| {
-                    invalid(format!(
-                        "handle index {} is not live in the host's resource table",
-                        handle.index
-                    ))
-                })?;
-            match entry {
-                HandleEntry::Own { rep, lend_count: 0 } => {
-                    guard.for_table_mut(table).remove(handle.index);
-                    rep
-                }
-                HandleEntry::Own { .. } => {
-                    return Err(invalid(
-                        "cannot remove owned resource while borrowed".to_owned(),
-                    ));
-                }
-                HandleEntry::Borrow { .. } => {
-                    return Err(invalid(format!(
-                        "handle index {} is a borrow, which returns with its call",
-                        handle.index
-                    )));
-                }
-            }
+            guard
+                .remove_own(
+                    table,
+                    handle.index,
+                    handle.type_id,
+                    self.is_guest_defined(handle.type_id),
+                )
+                .map_err(|e| {
+                    invalid(match e {
+                        HandleLookupError::Unknown { index } => {
+                            format!("handle index {index} is not live in the host's resource table")
+                        }
+                        HandleLookupError::NotOwned { index } => {
+                            format!("handle index {index} is a borrow, which returns with its call")
+                        }
+                        other => other.to_string(),
+                    })
+                })?
         };
         let Some(destructor) = self.destructors.get(&handle.type_id).cloned() else {
             return Ok(());

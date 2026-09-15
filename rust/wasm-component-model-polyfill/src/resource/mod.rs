@@ -23,6 +23,8 @@
 mod call_scope;
 mod handle;
 mod handle_entry;
+mod handle_kind;
+mod handle_lookup_error;
 mod identity;
 mod table;
 mod table_id;
@@ -30,7 +32,8 @@ mod table_runtime;
 mod tables;
 
 pub use handle::ResourceHandle;
-pub use handle_entry::HandleEntry;
+pub use handle_kind::HandleKind;
+pub use handle_lookup_error::HandleLookupError;
 pub use identity::ResourceTypeId;
 pub use table_id::TableId;
 pub use table_runtime::ResourceTableRuntime;

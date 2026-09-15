@@ -869,11 +869,12 @@ async fn it_tracks_resource_handles_in_a_handle_table() {
     // here, a structural assertion via the registered type id is
     // enough.
     let mut tables = store.tables.lock().expect("tables");
+    let host_table = tables.host_table(type_a);
     assert_eq!(
         tables
-            .for_type_mut(type_a)
+            .for_table_mut(host_table)
             .remove(h1.index)
-            .map(|e| e.rep()),
+            .map(|e| e.rep),
         Some(101)
     );
     drop(tables);

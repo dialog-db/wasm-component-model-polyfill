@@ -1,24 +1,41 @@
 //! One live entry of a handle table.
 
-/// What a live handle-table index refers to: a resource the table
-/// owns, or a borrow of one lent for the duration of a call.
+use super::handle_kind::HandleKind;
+use super::identity::ResourceTypeId;
+
+/// A live handle-table entry: the resource it refers to, the
+/// resource's type, and whether the entry owns or borrows it. A
+/// component instance keeps one table for all of its resource types,
+/// so every access checks the type against the one the caller
+/// expects.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HandleEntry {
-    /// An owning entry. `lend_count` counts the borrows currently
-    /// lifted out of it into a host call; an owned entry cannot be
-    /// removed while that count is above zero.
-    Own { rep: u32, lend_count: u32 },
-    /// A borrow lowered into the guest for one call. `scope` is the
-    /// position on the store's call stack the borrow belongs to; the
-    /// call cannot end until the guest drops the borrow.
-    Borrow { rep: u32, scope: usize },
+pub struct HandleEntry {
+    /// The resource's 32-bit representation.
+    pub rep: u32,
+    /// The identity of the resource's type.
+    pub type_id: ResourceTypeId,
+    /// Whether a component defines the type (`true`) or the host does.
+    /// Only the trap message reads it.
+    pub guest_defined: bool,
+    /// Owned or borrowed.
+    pub kind: HandleKind,
 }
 
 impl HandleEntry {
-    /// The resource's 32-bit representation.
-    pub fn rep(&self) -> u32 {
-        match self {
-            HandleEntry::Own { rep, .. } | HandleEntry::Borrow { rep, .. } => *rep,
+    /// The lend count of an owning entry, or `None` for a borrow.
+    pub fn lend_count(&self) -> Option<u32> {
+        match self.kind {
+            HandleKind::Own { lend_count } => Some(lend_count),
+            HandleKind::Borrow { .. } => None,
+        }
+    }
+
+    /// The Wasmtime word for who defines the resource.
+    pub fn definer(&self) -> &'static str {
+        if self.guest_defined {
+            "guest-defined"
+        } else {
+            "host-defined"
         }
     }
 }

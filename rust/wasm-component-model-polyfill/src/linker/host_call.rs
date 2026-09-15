@@ -66,19 +66,21 @@ impl<'a, T> HostCall<'a, T> {
             .resource_tables
             .iter()
             .flatten()
-            .any(|table| table.type_id == type_id);
-        if !known {
+            .find(|table| table.type_id == type_id)
+            .copied();
+        let Some(known) = known else {
             return Err(Error::from(AbiError {
                 position: AbiPosition::Result,
                 valtype: ValueType::Own(ResourceType::new("resource")),
                 cause: AbiCause::UnregisteredResourceType,
             }));
-        }
+        };
         let mut guard = self
             .tables
             .lock()
             .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
-        let index = guard.for_type_mut(type_id).insert_own(rep);
+        let table = guard.host_table(type_id);
+        let index = guard.insert_own(table, type_id, known.guest_defined, rep);
         Ok(ResourceHandle {
             type_id,
             index,

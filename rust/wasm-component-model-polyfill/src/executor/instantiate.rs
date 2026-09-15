@@ -8,6 +8,7 @@
 //! agnostic: native and web differ only in how the IR is produced
 //! (see [`super::translate`]).
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
@@ -83,9 +84,11 @@ pub fn instantiate<T: 'static>(
         store.register_destructor(runtime.type_id, runtime.destructor.clone());
     }
 
-    // One fresh table per resource table of the component: the
-    // canonical ABI keeps handles per component instance per resource,
-    // and this instantiation's instances get tables of their own.
+    // One fresh handle table per component instance, shared by every
+    // resource type the instance uses: the canonical ABI keeps handles
+    // per instance, and an index of one type can name an entry of
+    // another, which the typed lookups reject.
+    let mut instance_tables: HashMap<usize, TableId> = HashMap::new();
     let resource_tables: Vec<Option<ResourceTableRuntime>> = ir
         .resource_tables
         .iter()
@@ -94,10 +97,13 @@ pub fn instantiate<T: 'static>(
                 resource_runtimes
                     .get(spec.resource_index)
                     .map(|runtime| ResourceTableRuntime {
-                        table: TableId::fresh(),
+                        table: *instance_tables
+                            .entry(spec.instance)
+                            .or_insert_with(TableId::fresh),
                         type_id: runtime.type_id,
                         resource_index: spec.resource_index,
                         defining: spec.defining,
+                        guest_defined: matches!(runtime.destructor, ResourceDestructor::Local(_)),
                     })
             })
         })

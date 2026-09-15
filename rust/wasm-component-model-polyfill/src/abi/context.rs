@@ -16,7 +16,6 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::abi::layout::alignment_of;
 use crate::backend::Backend;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::StringEncoding;
@@ -64,6 +63,23 @@ impl<'a, T: 'static> LiftContext<'a, T> {
             string_encoding,
             tables,
             resource_tables,
+        }
+    }
+
+    /// The size of the guest memory in bytes, when the context has
+    /// one.
+    pub fn memory_size(&mut self) -> Option<usize> {
+        let memory = self.memory.clone()?;
+        Some(memory.current_pages(&self.store) as usize * 65536)
+    }
+
+    /// Whether `length` bytes at `offset` lie inside the guest memory.
+    /// `true` when the context has no memory, so the read reports
+    /// the absence itself.
+    pub fn in_bounds(&mut self, offset: usize, length: usize) -> bool {
+        match self.memory_size() {
+            Some(size) => offset.checked_add(length).is_some_and(|end| end <= size),
+            None => true,
         }
     }
 
@@ -168,18 +184,6 @@ impl<'a, T: 'static> LowerContext<'a, T> {
             })
     }
 
-    /// Allocate `size` bytes of guest memory aligned to the value
-    /// type's alignment by invoking the guest's `cabi_realloc`.
-    /// Returns the new pointer (a guest-memory offset).
-    pub fn allocate(
-        &mut self,
-        size: usize,
-        valtype: &ValueType,
-        position: AbiPosition,
-    ) -> Result<usize> {
-        self.allocate_aligned(size, alignment_of(valtype), valtype, position)
-    }
-
     /// Allocate `size` bytes of guest memory at an explicit
     /// `alignment` by invoking the guest's `cabi_realloc`. `valtype`
     /// and `position` only label the error when the allocation
@@ -214,15 +218,47 @@ impl<'a, T: 'static> LowerContext<'a, T> {
                     cause: AbiCause::ReallocFailed(cause),
                 })
             })?;
-        match results[0] {
-            RuntimeVal::I32(ptr) if ptr >= 0 => Ok(ptr as usize),
-            _ => Err(Error::from(AbiError {
+        let ptr = match results[0] {
+            RuntimeVal::I32(ptr) => ptr as u32 as usize,
+            _ => {
+                return Err(Error::from(AbiError {
+                    position,
+                    valtype: valtype.clone(),
+                    cause: AbiCause::ReallocFailed(anyhow::anyhow!(
+                        "cabi_realloc returned a non-i32 pointer"
+                    )),
+                }));
+            }
+        };
+        // The pointer must be usable: aligned as asked and inside
+        // memory, as Wasmtime checks after every realloc.
+        let realloc_return = |reason: &str| {
+            Error::from(AbiError {
                 position,
                 valtype: valtype.clone(),
-                cause: AbiCause::ReallocFailed(anyhow::anyhow!(
-                    "cabi_realloc returned a non-i32 or negative pointer"
-                )),
-            })),
+                cause: AbiCause::ReallocReturn {
+                    reason: reason.to_owned(),
+                },
+            })
+        };
+        if alignment > 1 && !ptr.is_multiple_of(alignment) {
+            return Err(realloc_return("result not aligned"));
         }
+        if let Some(size_of_memory) = self.memory_size() {
+            let end = ptr
+                .checked_add(size)
+                .ok_or_else(|| realloc_return("beyond end of memory"))?;
+            if end > size_of_memory {
+                return Err(realloc_return("beyond end of memory"));
+            }
+        }
+        Ok(ptr)
+    }
+
+    /// The size of the guest memory in bytes, when the context has
+    /// one.
+    pub fn memory_size(&mut self) -> Option<usize> {
+        let memory = self.memory.clone()?;
+        Some(memory.current_pages(&self.store) as usize * 65536)
     }
 }

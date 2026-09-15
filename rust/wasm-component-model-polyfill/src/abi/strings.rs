@@ -39,7 +39,7 @@ pub fn byte_length(encoding: StringEncoding, units: u32) -> Option<usize> {
 /// error names what was wrong with the bytes.
 pub fn decode(encoding: StringEncoding, units: u32, raw: &[u8]) -> Result<String, &'static str> {
     match encoding {
-        StringEncoding::Utf8 => String::from_utf8(raw.to_vec()).map_err(|_| "invalid UTF-8 string"),
+        StringEncoding::Utf8 => decode_utf8(raw),
         StringEncoding::Utf16 => decode_utf16(raw),
         StringEncoding::CompactUtf16 => {
             if units & UTF16_TAG != 0 {
@@ -48,6 +48,16 @@ pub fn decode(encoding: StringEncoding, units: u32, raw: &[u8]) -> Result<String
                 Ok(raw.iter().map(|byte| char::from(*byte)).collect())
             }
         }
+    }
+}
+
+/// Decode UTF-8 with Wasmtime's two diagnoses: bytes that are not
+/// UTF-8, and a sequence the string ends in the middle of.
+fn decode_utf8(raw: &[u8]) -> Result<String, &'static str> {
+    match std::str::from_utf8(raw) {
+        Ok(text) => Ok(text.to_owned()),
+        Err(err) if err.error_len().is_none() => Err("incomplete utf-8 byte sequence"),
+        Err(_) => Err("invalid utf-8"),
     }
 }
 

@@ -73,15 +73,9 @@ impl HandleTable {
 
     /// Insert a fresh `own<T>` entry carrying the given host
     /// representation. Returns the table index.
-    /// Insert an owning entry and return its index.
-    pub fn insert_own(&mut self, rep: u32) -> u32 {
-        self.insert(HandleEntry::Own { rep, lend_count: 0 })
-    }
-
-    /// Insert a borrow entry for the call scope at `scope` and return
-    /// its index.
-    pub fn insert_borrow(&mut self, rep: u32, scope: usize) -> u32 {
-        self.insert(HandleEntry::Borrow { rep, scope })
+    /// Insert an entry and return its index.
+    pub fn insert_entry(&mut self, entry: HandleEntry) -> u32 {
+        self.insert(entry)
     }
 
     fn insert(&mut self, entry: HandleEntry) -> u32 {
@@ -104,7 +98,7 @@ impl HandleTable {
 
     /// The rep at a live index.
     pub fn get(&self, index: u32) -> Option<u32> {
-        self.entry(index).map(|entry| entry.rep())
+        self.entry(index).map(|entry| entry.rep)
     }
 
     /// The entry at a live index.
@@ -148,11 +142,20 @@ impl Default for HandleTable {
 mod tests {
     use super::*;
 
+    fn own(rep: u32) -> HandleEntry {
+        HandleEntry {
+            rep,
+            type_id: crate::resource::ResourceTypeId::fresh(),
+            guest_defined: false,
+            kind: crate::resource::HandleKind::Own { lend_count: 0 },
+        }
+    }
+
     #[test]
     fn it_mints_distinct_indices_while_live() {
         let mut table = HandleTable::new();
-        let a = table.insert_own(10);
-        let b = table.insert_own(20);
+        let a = table.insert_entry(own(10));
+        let b = table.insert_entry(own(20));
         assert_ne!(a, b);
         assert_eq!(table.get(a), Some(10));
         assert_eq!(table.get(b), Some(20));
@@ -161,12 +164,12 @@ mod tests {
     #[test]
     fn it_reuses_freed_indices_deterministically() {
         let mut table = HandleTable::new();
-        let a = table.insert_own(1);
-        let _b = table.insert_own(2);
-        assert_eq!(table.remove(a).map(|e| e.rep()), Some(1));
+        let a = table.insert_entry(own(1));
+        let _b = table.insert_entry(own(2));
+        assert_eq!(table.remove(a).map(|e| e.rep), Some(1));
 
         // The next insert reuses the freshly-freed slot.
-        let c = table.insert_own(3);
+        let c = table.insert_entry(own(3));
         assert_eq!(c, a);
         assert_eq!(table.get(c), Some(3));
     }
@@ -174,8 +177,8 @@ mod tests {
     #[test]
     fn it_rejects_stale_indices_after_remove() {
         let mut table = HandleTable::new();
-        let idx = table.insert_own(7);
-        assert_eq!(table.remove(idx).map(|e| e.rep()), Some(7));
+        let idx = table.insert_entry(own(7));
+        assert_eq!(table.remove(idx).map(|e| e.rep), Some(7));
         assert_eq!(table.get(idx), None);
         assert_eq!(table.remove(idx), None);
     }
@@ -183,7 +186,7 @@ mod tests {
     #[test]
     fn it_never_hands_out_index_zero() {
         let mut table = HandleTable::new();
-        assert_eq!(table.insert_own(5), 1, "the first allocation is 1");
+        assert_eq!(table.insert_entry(own(5)), 1, "the first allocation is 1");
         assert_eq!(table.get(0), None);
         assert_eq!(table.remove(0), None);
     }

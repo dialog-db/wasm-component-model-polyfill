@@ -21,7 +21,9 @@
 use wasm_runtime_layer::Val as RuntimeVal;
 
 use super::context::{LiftContext, LowerContext};
-use super::layout::{FlatType, flags_chunk_count, flat_types, join_flat_slots, size_of};
+use super::layout::{
+    FlatType, alignment_of, flags_chunk_count, flat_types, join_flat_slots, size_of,
+};
 use super::{lift, lower, strings};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::types::{PrimitiveType, ValueType};
@@ -51,11 +53,9 @@ pub fn lower_into_flat_slots<T: 'static>(
             let element_ty = list.element().clone();
             let element_size = size_of(&element_ty);
             let total_size = element_size.saturating_mul(elements.len());
-            let ptr = if total_size == 0 {
-                0
-            } else {
-                ctx.allocate(total_size, ty, position)?
-            };
+            // `cabi_realloc` runs even for an empty list, as the canonical
+            // ABI prescribes, so a guest allocator that misbehaves traps.
+            let ptr = ctx.allocate_aligned(total_size, alignment_of(&element_ty), ty, position)?;
             for (i, elem) in elements.iter().enumerate() {
                 lower(ctx, ptr + i * element_size, elem, &element_ty, position)?;
             }
@@ -230,7 +230,14 @@ pub fn lift_from_flat_slots<T: 'static>(
         ValueType::Variant(variant) => {
             let tag = take_i32(args, cursor, ty, position)? as usize;
             let case = variant.cases().get(tag).ok_or_else(|| {
-                invalid_encoding(ty, position, "variant discriminant out of range")
+                invalid_encoding(
+                    ty,
+                    position,
+                    &format!(
+                        "discriminant {tag} out of range [0..{})",
+                        variant.cases().len()
+                    ),
+                )
             })?;
             let payload_ty = case.payload().cloned();
             let case_name = case.name().to_owned();
@@ -635,6 +642,13 @@ fn lift_string_from_memory<T: 'static>(
     }
     let byte_len = strings::byte_length(encoding, units)
         .ok_or_else(|| invalid_encoding(ty, position, "string length overflow"))?;
+    if !ctx.in_bounds(ptr, byte_len) {
+        return Err(invalid_encoding(
+            ty,
+            position,
+            "string pointer/length out of bounds of memory",
+        ));
+    }
     let raw = ctx.read_bytes(ptr, byte_len, position, ty)?;
     strings::decode(encoding, units, &raw)
         .map(Val::String)
@@ -649,14 +663,10 @@ fn lower_string<T: 'static>(
 ) -> Result<(usize, usize)> {
     let encoding = ctx.string_encoding;
     let (bytes, units) = strings::encode(encoding, s);
-    let ptr = if bytes.is_empty() {
-        0
-    } else {
-        ctx.allocate_aligned(bytes.len(), strings::alignment(encoding), ty, position)?
-    };
-    if !bytes.is_empty() {
-        ctx.write_bytes(ptr, &bytes, position, ty)?;
-    }
+    // `cabi_realloc` runs even for an empty string, as the canonical
+    // ABI prescribes, so a guest allocator that misbehaves traps.
+    let ptr = ctx.allocate_aligned(bytes.len(), strings::alignment(encoding), ty, position)?;
+    ctx.write_bytes(ptr, &bytes, position, ty)?;
     Ok((ptr, units as usize))
 }
 

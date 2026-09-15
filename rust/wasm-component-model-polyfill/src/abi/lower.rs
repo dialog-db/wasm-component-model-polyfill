@@ -10,7 +10,7 @@ use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
 use crate::abi::lift::declared_resource_index;
 use crate::abi::strings;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
-use crate::resource::{HandleEntry, ResourceHandle};
+use crate::resource::{HandleLookupError, ResourceHandle};
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
 
@@ -30,11 +30,9 @@ pub fn lower<T: 'static>(
             let element_ty = list.element();
             let element_size = size_of(element_ty);
             let total_size = element_size.saturating_mul(elements.len());
-            let ptr = if total_size == 0 {
-                0
-            } else {
-                ctx.allocate(total_size, ty, position)?
-            };
+            // `cabi_realloc` runs even for an empty list, as the canonical
+            // ABI prescribes, so a guest allocator that misbehaves traps.
+            let ptr = ctx.allocate_aligned(total_size, alignment_of(element_ty), ty, position)?;
             for (i, element) in elements.iter().enumerate() {
                 lower(ctx, ptr + i * element_size, element, element_ty, position)?;
             }
@@ -238,14 +236,10 @@ fn lower_string<T: 'static>(
 ) -> Result<()> {
     let encoding = ctx.string_encoding;
     let (bytes, units) = strings::encode(encoding, s);
-    let ptr = if bytes.is_empty() {
-        0
-    } else {
-        ctx.allocate_aligned(bytes.len(), strings::alignment(encoding), ty, position)?
-    };
-    if !bytes.is_empty() {
-        ctx.write_bytes(ptr, &bytes, position, ty)?;
-    }
+    // `cabi_realloc` runs even for an empty string, as the canonical
+    // ABI prescribes, so a guest allocator that misbehaves traps.
+    let ptr = ctx.allocate_aligned(bytes.len(), strings::alignment(encoding), ty, position)?;
+    ctx.write_bytes(ptr, &bytes, position, ty)?;
     ctx.write_bytes(offset, &(ptr as u32).to_le_bytes(), position, ty)?;
     ctx.write_bytes(offset + 4, &units.to_le_bytes(), position, ty)?;
     Ok(())
@@ -328,39 +322,43 @@ pub fn lower_handle<T: 'static>(
         if table.defining {
             return Ok(handle.rep);
         }
-        return guard.insert_borrow(table.table, handle.rep).ok_or_else(|| {
-            Error::from(AbiError {
-                position,
-                valtype: ty.clone(),
-                cause: AbiCause::InvalidHandle {
-                    reason: "a borrow can only be lowered during a call".to_owned(),
-                },
-            })
-        });
+        return guard
+            .insert_borrow(table.table, table.type_id, table.guest_defined, handle.rep)
+            .ok_or_else(|| {
+                Error::from(AbiError {
+                    position,
+                    valtype: ty.clone(),
+                    cause: AbiCause::InvalidHandle {
+                        reason: "a borrow can only be lowered during a call".to_owned(),
+                    },
+                })
+            });
     }
     // Ownership moves from the host's table into the instance's: the
     // handle must name a live owning entry the host holds.
     let host_table = guard.host_table(handle.type_id);
-    let live = matches!(
-        guard
-            .for_table(host_table)
-            .and_then(|t| t.entry(handle.index)),
-        Some(HandleEntry::Own { .. })
-    );
-    if !live {
-        return Err(Error::from(AbiError {
-            position,
-            valtype: ty.clone(),
-            cause: AbiCause::InvalidHandle {
-                reason: format!(
-                    "handle index {} is not live in the host's resource table",
-                    handle.index
-                ),
-            },
-        }));
-    }
-    guard.for_table_mut(host_table).remove(handle.index);
-    Ok(guard.for_table_mut(table.table).insert_own(handle.rep))
+    let rep = guard
+        .remove_own(
+            host_table,
+            handle.index,
+            handle.type_id,
+            table.guest_defined,
+        )
+        .map_err(|e| {
+            Error::from(AbiError {
+                position,
+                valtype: ty.clone(),
+                cause: AbiCause::InvalidHandle {
+                    reason: match e {
+                        HandleLookupError::Unknown { index } => {
+                            format!("handle index {index} is not live in the host's resource table")
+                        }
+                        other => other.to_string(),
+                    },
+                },
+            })
+        })?;
+    Ok(guard.insert_own(table.table, table.type_id, table.guest_defined, rep))
 }
 
 fn host_value_mismatch(ty: &ValueType, position: AbiPosition) -> Error {

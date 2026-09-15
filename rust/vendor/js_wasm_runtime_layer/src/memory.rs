@@ -102,8 +102,13 @@ impl WasmMemory<Engine> for Memory {
         Ok(inner.value.grow(additional))
     }
 
-    fn current_pages(&self, _: impl AsContext<Engine>) -> u32 {
-        todo!("Memory::current_pages is not yet supported in the js_wasm_runtime_layer backend")
+    // PATCH (wcmp): the page count is the buffer's length in pages.
+    fn current_pages(&self, ctx: impl AsContext<Engine>) -> u32 {
+        let ctx: &StoreInner<_> = &*ctx.as_context();
+        let memory = &ctx.memories[self.id];
+        let buffer = memory.value.buffer();
+        let buffer = buffer.dyn_ref::<ArrayBuffer>().unwrap();
+        (buffer.byte_length() as usize / 65536) as u32
     }
 
     fn read(&self, ctx: impl AsContext<Engine>, offset: usize, buffer: &mut [u8]) -> Result<()> {

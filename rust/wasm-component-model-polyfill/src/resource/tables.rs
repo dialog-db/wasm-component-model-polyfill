@@ -18,6 +18,8 @@ use std::collections::HashMap;
 
 use super::call_scope::CallScope;
 use super::handle_entry::HandleEntry;
+use super::handle_kind::HandleKind;
+use super::handle_lookup_error::HandleLookupError;
 use super::identity::ResourceTypeId;
 use super::table::HandleTable;
 use super::table_id::TableId;
@@ -67,8 +69,10 @@ impl HandleTables {
             return Ok(());
         };
         for (table, index) in scope.lenders {
-            if let Some(HandleEntry::Own { lend_count, .. }) =
-                self.for_table_mut(table).entry_mut(index)
+            if let Some(HandleEntry {
+                kind: HandleKind::Own { lend_count },
+                ..
+            }) = self.for_table_mut(table).entry_mut(index)
             {
                 *lend_count = lend_count.saturating_sub(1);
             }
@@ -96,7 +100,10 @@ impl HandleTables {
             return false;
         };
         match self.for_table_mut(table).entry_mut(index) {
-            Some(HandleEntry::Own { lend_count, .. }) => {
+            Some(HandleEntry {
+                kind: HandleKind::Own { lend_count },
+                ..
+            }) => {
                 *lend_count += 1;
                 self.scopes[scope].lenders.push((table, index));
                 true
@@ -105,13 +112,88 @@ impl HandleTables {
         }
     }
 
-    /// Insert a borrow of `rep` into `table`, owed to the current
-    /// call. Returns the new index, or `None` when no call is in
-    /// flight.
-    pub fn insert_borrow(&mut self, table: TableId, rep: u32) -> Option<u32> {
+    /// Insert an owning entry for `rep` of resource type `type_id`
+    /// into `table` and return its index.
+    pub fn insert_own(
+        &mut self,
+        table: TableId,
+        type_id: ResourceTypeId,
+        guest_defined: bool,
+        rep: u32,
+    ) -> u32 {
+        self.for_table_mut(table).insert_entry(HandleEntry {
+            rep,
+            type_id,
+            guest_defined,
+            kind: HandleKind::Own { lend_count: 0 },
+        })
+    }
+
+    /// Insert a borrow of `rep` of resource type `type_id` into
+    /// `table`, owed to the current call. Returns the new index, or
+    /// `None` when no call is in flight.
+    pub fn insert_borrow(
+        &mut self,
+        table: TableId,
+        type_id: ResourceTypeId,
+        guest_defined: bool,
+        rep: u32,
+    ) -> Option<u32> {
         let scope = self.current_scope()?;
         self.scopes[scope].borrow_count += 1;
-        Some(self.for_table_mut(table).insert_borrow(rep, scope))
+        Some(self.for_table_mut(table).insert_entry(HandleEntry {
+            rep,
+            type_id,
+            guest_defined,
+            kind: HandleKind::Borrow { scope },
+        }))
+    }
+
+    /// Read the entry at `index` of `table`, checking that it holds a
+    /// resource of type `type_id`. A component instance keeps one
+    /// table for every resource type it uses, so an index of one type
+    /// can name an entry of another; that is the wrong-type trap.
+    pub fn lookup(
+        &self,
+        table: TableId,
+        index: u32,
+        type_id: ResourceTypeId,
+        guest_defined: bool,
+    ) -> Result<HandleEntry, HandleLookupError> {
+        let entry = self
+            .for_table(table)
+            .and_then(|t| t.entry(index))
+            .copied()
+            .ok_or(HandleLookupError::Unknown { index })?;
+        if entry.type_id != type_id {
+            return Err(HandleLookupError::WrongType {
+                index,
+                expected_guest: guest_defined,
+                found_guest: entry.guest_defined,
+            });
+        }
+        Ok(entry)
+    }
+
+    /// Remove the owning entry at `index` of `table` and return its
+    /// rep. The entry must hold a resource of type `type_id`, must
+    /// own it, and must not be lent out as a borrow.
+    pub fn remove_own(
+        &mut self,
+        table: TableId,
+        index: u32,
+        type_id: ResourceTypeId,
+        guest_defined: bool,
+    ) -> Result<u32, HandleLookupError> {
+        let entry = self.lookup(table, index, type_id, guest_defined)?;
+        match entry.kind {
+            HandleKind::Own { lend_count: 0 } => {
+                self.for_table_mut(table).remove(index);
+                Ok(entry.rep)
+            }
+            HandleKind::Own { .. } => Err(HandleLookupError::Lent),
+            HandleKind::Borrow { .. } => Err(HandleLookupError::NotOwned { index }),
+        }
     }
 
     /// Drop a borrow entry: the guest returned the handle it was
@@ -148,25 +230,63 @@ impl HandleTables {
             .entry(type_id)
             .or_insert_with(TableId::fresh)
     }
-
-    /// Borrow the host's table for a resource type, creating it on
-    /// first access.
-    pub fn for_type_mut(&mut self, type_id: ResourceTypeId) -> &mut HandleTable {
-        let table = self.host_table(type_id);
-        self.for_table_mut(table)
-    }
-
-    /// Borrow the host's table for a resource type, or `None` if the
-    /// host holds nothing of that type yet.
-    pub fn for_type(&self, type_id: ResourceTypeId) -> Option<&HandleTable> {
-        self.host_tables
-            .get(&type_id)
-            .and_then(|table| self.tables.get(table))
-    }
 }
 
 impl Default for HandleTables {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn it_rejects_an_index_of_another_resource_type() {
+        let mut tables = HandleTables::new();
+        let table = TableId::fresh();
+        let first = ResourceTypeId::fresh();
+        let second = ResourceTypeId::fresh();
+        let index = tables.insert_own(table, first, true, 7);
+        assert_eq!(
+            tables.lookup(table, index, second, true),
+            Err(HandleLookupError::WrongType {
+                index,
+                expected_guest: true,
+                found_guest: true,
+            })
+        );
+        assert_eq!(
+            tables
+                .lookup(table, index, second, true)
+                .unwrap_err()
+                .to_string(),
+            "handle index 1 used with the wrong type, expected guest-defined resource but found a different guest-defined resource"
+        );
+        assert_eq!(
+            tables.lookup(table, index, first, true).map(|e| e.rep),
+            Ok(7)
+        );
+    }
+
+    #[test]
+    fn it_refuses_to_remove_a_lent_entry_until_the_call_ends() {
+        let mut tables = HandleTables::new();
+        let table = TableId::fresh();
+        let ty = ResourceTypeId::fresh();
+        let index = tables.insert_own(table, ty, false, 3);
+        tables.enter_call();
+        assert!(tables.lend(table, index));
+        assert_eq!(
+            tables.remove_own(table, index, ty, false),
+            Err(HandleLookupError::Lent)
+        );
+        assert_eq!(tables.exit_call(), Ok(()));
+        assert_eq!(tables.remove_own(table, index, ty, false), Ok(3));
+        assert_eq!(
+            tables.remove_own(table, index, ty, false),
+            Err(HandleLookupError::Unknown { index })
+        );
     }
 }

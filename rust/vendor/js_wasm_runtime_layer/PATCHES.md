@@ -52,3 +52,10 @@ does not replace it), and a failed export call or instantiation reports that
 recorded error in place of the JS exception that ended the call. A call that returns
 normally clears the slot, so a guest that handles the exception and continues
 is not reported as failed.
+
+## 5. `Memory::current_pages` (`src/memory.rs`)
+
+Upstream's `current_pages` is a `todo!()`. The polyfill reads the memory size
+to bound-check `cabi_realloc` results and string and list pointers before it
+touches memory, as Wasmtime does. The patch computes the page count from the
+underlying `ArrayBuffer`'s byte length.

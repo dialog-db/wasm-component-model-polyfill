@@ -510,6 +510,14 @@ pub enum AbiCause {
     #[error("no host registration matches the transferred resource type")]
     UnregisteredResourceType,
 
+    /// The guest's `cabi_realloc` returned a pointer the polyfill
+    /// cannot use: past the end of memory, or not aligned as asked.
+    #[error("realloc return: {reason}")]
+    ReallocReturn {
+        /// What was wrong with the pointer, in Wasmtime's words.
+        reason: String,
+    },
+
     /// A host call returned with `borrow<T>` handles still
     /// outstanding. The canonical-ABI runtime-state rules forbid
     /// this; the count is the number of borrows the lift recorded

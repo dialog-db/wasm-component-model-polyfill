@@ -43,7 +43,7 @@ use crate::executor::ir::{CanonOptions, LoweringSpec};
 use crate::linker::{HostCall, HostFuncBody, HostResource};
 
 use super::ResourceDestructor;
-use crate::resource::{HandleEntry, HandleTables, ResourceTableRuntime, ResourceTypeId, TableId};
+use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime, ResourceTypeId};
 use crate::store::Store;
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
@@ -149,7 +149,7 @@ pub fn build_resource_drop_trampoline<T: 'static>(
             // Dropping a borrow returns it to its call and runs no
             // destructor; dropping an owned entry runs the destructor,
             // unless a borrow of it is still lent to the host.
-            let Some(rep) = drop_handle(&tables, table.table, index)? else {
+            let Some(rep) = drop_handle(&tables, table, index)? else {
                 return Ok(());
             };
             match &runtime.destructor {
@@ -187,7 +187,7 @@ pub fn build_resource_new_trampoline<T: 'static>(
         func_type,
         move |_store_ctx, args, results| {
             let rep = take_i32(args, 0).map_err(|err| anyhow!("resource.new: {err}"))?;
-            let index = insert_handle(&tables, table.table, rep)?;
+            let index = insert_handle(&tables, table, rep)?;
             results[0] = RuntimeVal::I32(index as i32);
             Ok(())
         },
@@ -209,7 +209,7 @@ pub fn build_resource_rep_trampoline<T: 'static>(
         func_type,
         move |_store_ctx, args, results| {
             let index = take_i32(args, 0).map_err(|err| anyhow!("resource.rep: {err}"))?;
-            let rep = read_handle(&tables, table.table, index)?;
+            let rep = read_handle(&tables, table, index)?;
             results[0] = RuntimeVal::I32(rep as i32);
             Ok(())
         },
@@ -230,54 +230,64 @@ fn take_i32(args: &[RuntimeVal], cursor: usize) -> Result<u32> {
 /// for a borrow, which is handed back to the call it belongs to.
 pub fn drop_handle(
     tables: &Arc<Mutex<HandleTables>>,
-    table: TableId,
+    table: ResourceTableRuntime,
     index: u32,
 ) -> Result<Option<u32>> {
     let mut guard = tables
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
     let entry = guard
-        .for_table(table)
-        .and_then(|t| t.entry(index))
-        .copied()
-        .ok_or_else(|| invalid_handle(index))?;
-    match entry {
-        HandleEntry::Own { rep, lend_count: 0 } => {
-            guard.for_table_mut(table).remove(index);
-            Ok(Some(rep))
+        .lookup(table.table, index, table.type_id, table.guest_defined)
+        .map_err(|e| invalid_handle_reason(e.to_string()))?;
+    match entry.kind {
+        HandleKind::Own { lend_count: 0 } => {
+            guard.for_table_mut(table.table).remove(index);
+            Ok(Some(entry.rep))
         }
-        HandleEntry::Own { .. } => Err(Error::from(AbiError {
-            position: AbiPosition::Argument(0),
-            valtype: ValueType::Primitive(PrimitiveType::U32),
-            cause: AbiCause::InvalidHandle {
-                reason: "cannot remove owned resource while borrowed".to_owned(),
-            },
-        })),
-        HandleEntry::Borrow { scope, .. } => {
+        HandleKind::Own { .. } => Err(invalid_handle_reason(
+            "cannot remove owned resource while borrowed".to_owned(),
+        )),
+        HandleKind::Borrow { scope } => {
             if !guard.return_borrow(scope) {
                 return Err(invalid_handle(index));
             }
-            guard.for_table_mut(table).remove(index);
+            guard.for_table_mut(table.table).remove(index);
             Ok(None)
         }
     }
 }
 
-pub fn insert_handle(tables: &Arc<Mutex<HandleTables>>, table: TableId, rep: u32) -> Result<u32> {
+pub fn insert_handle(
+    tables: &Arc<Mutex<HandleTables>>,
+    table: ResourceTableRuntime,
+    rep: u32,
+) -> Result<u32> {
     let mut guard = tables
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
-    Ok(guard.for_table_mut(table).insert_own(rep))
+    Ok(guard.insert_own(table.table, table.type_id, table.guest_defined, rep))
 }
 
-fn read_handle(tables: &Arc<Mutex<HandleTables>>, table: TableId, index: u32) -> Result<u32> {
+fn read_handle(
+    tables: &Arc<Mutex<HandleTables>>,
+    table: ResourceTableRuntime,
+    index: u32,
+) -> Result<u32> {
     let guard = tables
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
-    let table = guard
-        .for_table(table)
-        .ok_or_else(|| invalid_handle(index))?;
-    table.get(index).ok_or_else(|| invalid_handle(index))
+    guard
+        .lookup(table.table, index, table.type_id, table.guest_defined)
+        .map(|entry| entry.rep)
+        .map_err(|e| invalid_handle_reason(e.to_string()))
+}
+
+fn invalid_handle_reason(reason: String) -> Error {
+    Error::from(AbiError {
+        position: AbiPosition::Argument(0),
+        valtype: ValueType::Primitive(PrimitiveType::U32),
+        cause: AbiCause::InvalidHandle { reason },
+    })
 }
 
 fn invalid_handle(index: u32) -> Error {
@@ -285,7 +295,7 @@ fn invalid_handle(index: u32) -> Error {
         position: AbiPosition::Argument(0),
         valtype: ValueType::Primitive(PrimitiveType::U32),
         cause: AbiCause::InvalidHandle {
-            reason: format!("handle index {index} is not live in the resource table"),
+            reason: format!("unknown handle index {index}"),
         },
     })
 }
