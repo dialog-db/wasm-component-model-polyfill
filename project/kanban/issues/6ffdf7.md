@@ -5,6 +5,8 @@ type: chore
 blocked_by: [c3b98b]
 labels: [PDD001, katsuobushi, wave-0]
 created: 2026-09-14T19:34:54Z
+disposition: accepted
+disposition_at: 2026-09-15T06:09:01Z
 ---
 
 ## What to build
@@ -15,4 +17,3 @@ Replace the inline rumdl configuration and the `format:design` command with `kat
 - [ ] The `markdown` flake check passes on a clean tree.
 - [ ] rumdl and its inline configuration are gone from `flake.nix`.
 - [ ] The corpus README's writing rules are unchanged in substance.
-
