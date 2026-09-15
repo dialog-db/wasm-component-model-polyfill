@@ -17,7 +17,7 @@ use wasm_runtime_layer::{
     Instance as RuntimeInstance, Val as RuntimeVal, ValType as CoreType,
 };
 
-use crate::component::Component;
+use crate::component::{Component, ExternType, ExternalName};
 use crate::error::{Error, InstantiationError, LinkError, Result};
 use crate::instance::{ExportedFunction, Instance};
 use crate::linker::{HostFuncBody, ImportBinding, InstanceRegistration, Linker, Resolution};
@@ -305,12 +305,19 @@ fn build_runtime_trampoline<T: 'static>(
 /// The registration the resolver chose for the import at
 /// `import_index`, or the structured link error when the resolver
 /// recorded no registration for it.
-fn chosen_registration<'l, T: 'static>(
+/// The registration an import resolved to, and the item name to
+/// look up in it. An interface-named import resolves to the chosen
+/// interface entry and names its item; a plain-named function or
+/// resource import resolves to the root entry under the import's
+/// own name; a plain-named instance import resolves to the nested
+/// root entry under its name.
+fn registration_and_item<'l, T: 'static>(
     linker: &'l Linker<T>,
     component: &Component,
     resolution: &Resolution,
     import_index: usize,
-) -> Result<&'l InstanceRegistration<T>> {
+    item_name: Option<&str>,
+) -> Result<(&'l InstanceRegistration<T>, String)> {
     let import = component
         .imports
         .get(import_index)
@@ -320,11 +327,28 @@ fn chosen_registration<'l, T: 'static>(
             import: import.name.clone(),
         })
     };
-    let chosen = match resolution.bindings.get(import_index) {
-        Some(ImportBinding::Resolved { chosen }) => chosen,
-        Some(ImportBinding::Vacuous) | None => return Err(unresolved()),
-    };
-    linker.registration_for(chosen).ok_or_else(unresolved)
+    match resolution.bindings.get(import_index) {
+        Some(ImportBinding::Resolved { chosen }) => {
+            let registration = linker.registration_for(chosen).ok_or_else(unresolved)?;
+            let item = item_name.ok_or_else(unresolved)?;
+            Ok((registration, item.to_owned()))
+        }
+        Some(ImportBinding::Root) => {
+            let ExternalName::Plain(name) = &import.name else {
+                return Err(internal("a root binding on an interface-named import"));
+            };
+            let root = linker.root_registration();
+            match (&import.ty, item_name) {
+                (ExternType::Instance(_), Some(item)) => {
+                    let registration = root.instance(name).ok_or_else(unresolved)?;
+                    Ok((registration, item.to_owned()))
+                }
+                (ExternType::Instance(_), None) => Err(unresolved()),
+                (_, _) => Ok((root, name.clone())),
+            }
+        }
+        Some(ImportBinding::Vacuous) | None => Err(unresolved()),
+    }
 }
 
 /// Look up a host-resource registration that satisfies the given
@@ -343,16 +367,14 @@ fn resolve_resource_runtime<T: 'static>(
             item_name,
         } => (*import_index, item_name),
     };
-    let registration = chosen_registration(linker, component, resolution, import_index)?;
-    let label = match item_name {
-        Some(name) => name.as_str(),
-        None => {
-            return Err(Error::unsupported(
-                "top-level resource imports outside an interface",
-            ));
-        }
-    };
-    let host = registration.resource(label).ok_or_else(|| {
+    let (registration, label) = registration_and_item(
+        linker,
+        component,
+        resolution,
+        import_index,
+        item_name.as_deref(),
+    )?;
+    let host = registration.resource(&label).ok_or_else(|| {
         Error::from(LinkError::UnresolvedImport {
             import: component.imports[import_index].name.clone(),
         })
@@ -369,16 +391,14 @@ fn lookup_host_func<T: 'static>(
     resolution: &Resolution,
     spec: &LoweringSpec,
 ) -> Result<Arc<HostFuncBody<T>>> {
-    let registration = chosen_registration(linker, component, resolution, spec.import_index)?;
-    let item_name = match &spec.item_name {
-        Some(name) => name.as_str(),
-        None => {
-            return Err(Error::unsupported(
-                "plain-named function imports outside an interface",
-            ));
-        }
-    };
-    let host = registration.func(item_name).ok_or_else(|| {
+    let (registration, item_name) = registration_and_item(
+        linker,
+        component,
+        resolution,
+        spec.import_index,
+        spec.item_name.as_deref(),
+    )?;
+    let host = registration.func(&item_name).ok_or_else(|| {
         Error::from(LinkError::UnresolvedImport {
             import: component.imports[spec.import_index].name.clone(),
         })

@@ -66,6 +66,17 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
         }
     }
 
+    /// Address (creating if absent) the nested registration for a
+    /// plain-named instance import, `(import "name" (instance …))`.
+    /// Meaningful on the root view a [`Linker::root`] returns: an
+    /// interface-named import has no nested instances.
+    ///
+    /// [`Linker::root`]: super::Linker::root
+    pub fn instance(&mut self, name: impl Into<String>) -> LinkerInstance<'_, T> {
+        let entry = self.registration.instances.entry(name.into()).or_default();
+        LinkerInstance::new(entry)
+    }
+
     /// Register an *untyped* host function. The caller supplies the
     /// declared [`FunctionType`] explicitly; the closure takes the
     /// store's host-data slot, a slice of polyfill [`Val`]

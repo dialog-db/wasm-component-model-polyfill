@@ -26,11 +26,9 @@ use super::resolve::{Resolution, resolve_imports};
 /// single interface's worth of host items," addressed by a
 /// [`PackageName`] and an [`InterfaceIdentifier`].
 ///
-/// At present the registration surface is empty by design — a
-/// `LinkerInstance` constructed today carries no host items. The
-/// linker still resolves a component's imports against its
-/// registered instances; components whose imports require host items
-/// fail cleanly with [`Error::Link`].
+/// Plain-named imports resolve through the root namespace,
+/// addressed with [`Linker::root`]. A component whose imports have
+/// no matching registration fails cleanly with [`Error::Link`].
 ///
 /// [`Component`]: crate::Component
 /// [`PackageName`]: crate::PackageName
@@ -38,6 +36,9 @@ use super::resolve::{Resolution, resolve_imports};
 pub struct Linker<T> {
     engine: Engine,
     instances: HashMap<InterfaceIdentifier, InstanceRegistration<T>>,
+    /// The root namespace: host items a component imports under a
+    /// plain name rather than an interface identifier.
+    root: InstanceRegistration<T>,
     _phantom: PhantomData<fn(T) -> T>,
 }
 
@@ -47,6 +48,7 @@ impl<T: 'static> Linker<T> {
         Self {
             engine: engine.clone(),
             instances: HashMap::new(),
+            root: InstanceRegistration::new(),
             _phantom: PhantomData,
         }
     }
@@ -76,6 +78,27 @@ impl<T: 'static> Linker<T> {
     /// Workspace-internal; not re-exported by `lib.rs`.
     pub fn registration_for(&self, id: &InterfaceIdentifier) -> Option<&InstanceRegistration<T>> {
         self.instances.get(id)
+    }
+
+    /// The root namespace's registration entry. Consulted by the
+    /// resolver for plain-named imports.
+    ///
+    /// Workspace-internal; not re-exported by `lib.rs`.
+    pub fn root_registration(&self) -> &InstanceRegistration<T> {
+        &self.root
+    }
+
+    /// Address the root namespace: the host items a component
+    /// imports under a plain name, for example
+    /// `(import "log" (func …))`. The view is the same
+    /// [`LinkerInstance`] an interface accessor returns, so the
+    /// registration operations are the same. A plain-named instance
+    /// import, `(import "host" (instance …))`, is addressed through
+    /// [`LinkerInstance::instance`] on this view.
+    ///
+    /// Calling `root` twice returns a view onto the same entry.
+    pub fn root(&mut self) -> LinkerInstance<'_, T> {
+        LinkerInstance::new(&mut self.root)
     }
 
     /// Address (creating if absent) the [`LinkerInstance`] keyed by

@@ -33,6 +33,11 @@ pub struct InstanceRegistration<T> {
     /// The host-resource registrations keyed by the resource-type
     /// label the component-side import declares.
     pub resources: BTreeMap<String, HostResource<T>>,
+    /// Nested registrations for plain-named instance imports, keyed
+    /// by the plain name. Only the root registration holds these: a
+    /// component that imports `(instance)` under a plain name finds
+    /// its items here.
+    pub instances: BTreeMap<String, InstanceRegistration<T>>,
 }
 
 impl<T> InstanceRegistration<T> {
@@ -41,7 +46,13 @@ impl<T> InstanceRegistration<T> {
         Self {
             funcs: BTreeMap::new(),
             resources: BTreeMap::new(),
+            instances: BTreeMap::new(),
         }
+    }
+
+    /// Look up the nested registration for a plain-named instance.
+    pub fn instance(&self, name: &str) -> Option<&InstanceRegistration<T>> {
+        self.instances.get(name)
     }
 
     /// Look up a registered host function by its item-name.

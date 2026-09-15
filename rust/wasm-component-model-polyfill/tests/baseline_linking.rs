@@ -9,7 +9,7 @@
 use std::sync::{Arc, Mutex};
 use wasm_component_model_polyfill::{
     Component, Engine, Error, ExternType, ExternalName, FunctionParameter, FunctionType,
-    InterfaceIdentifier, Linker, PrimitiveType, Store, Val, ValueType,
+    InterfaceIdentifier, LinkError, Linker, PrimitiveType, Store, Val, ValueType,
 };
 use wcmp_macros::component;
 
@@ -958,12 +958,114 @@ async fn it_inspects_a_components_imports_and_exports() {
 // Stubs: capabilities not yet realised.
 // ----------------------------------------------------------------
 
+/// A component that imports `log` under a plain name and calls it
+/// with a string from its data segment. The memory lives in a
+/// separate core instance so the lowered import can name it.
+const PLAIN_LOG: &[u8] = component!(
+    r#"
+    (component
+      (import "log" (func $log (param "message" string)))
+      (core module $libc (memory (export "memory") 1))
+      (core instance $libc (instantiate $libc))
+      (core func $core-log (canon lower (func $log) (memory (core memory $libc "memory"))))
+      (core module $m
+        (import "libc" "memory" (memory 1))
+        (import "host" "log" (func $log (param i32 i32)))
+        (data (i32.const 8) "hello from the guest")
+        (func (export "run") i32.const 8 i32.const 20 call $log))
+      (core instance $i (instantiate $m
+        (with "libc" (instance $libc))
+        (with "host" (instance (export "log" (func $core-log))))))
+      (func (export "run") (canon lift (core func $i "run"))))
+    "#
+);
+
 #[wcmp_macros::test]
-#[ignore = "stub: plain-named (root-level) imports — the resolver currently rejects these with `LinkError::UnsupportedRegistration`"]
 async fn it_supports_a_plain_named_top_level_import() {
-    todo!(
-        "register a top-level (plain-named) host function `(import \"log\" (func ...))` mirroring wasm_component_layer's `Linker::root_mut().define_func` capability"
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, PLAIN_LOG).expect("component parses");
+    let mut linker: Linker<Vec<String>> = Linker::new(&engine);
+    linker.root().func_wrap(
+        "log",
+        |messages: &mut Vec<String>,
+         (message,): (String,)|
+         -> wasm_component_model_polyfill::Result<()> {
+            messages.push(message);
+            Ok(())
+        },
     );
+    let mut store: Store<Vec<String>> = Store::new(&engine, Vec::new()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("a plain-named import resolves through the root namespace");
+    let run = instance.get_func("run").expect("run export");
+    run.call(&mut store, &[]).expect("run");
+    assert_eq!(store.data(), &vec!["hello from the guest".to_owned()]);
+}
+
+#[wcmp_macros::test]
+async fn it_reports_an_unregistered_plain_named_import_as_unresolved() {
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, PLAIN_LOG).expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let err = match linker.instantiate(&mut store, &component) {
+        Ok(_) => panic!("nothing is registered under `log`, so instantiation must fail"),
+        Err(err) => err,
+    };
+    let names_log = match &err {
+        Error::Link(link) => matches!(
+            link.as_ref(),
+            LinkError::UnresolvedImport {
+                import: ExternalName::Plain(name)
+            } if name == "log"
+        ),
+        _ => false,
+    };
+    assert!(
+        names_log,
+        "expected an unresolved-import link error naming `log`, got {err:?}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_supports_a_plain_named_instance_import() {
+    // `(import "host" (instance …))`: the instance's items live in
+    // the root namespace under the plain name.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (import "host" (instance $host
+            (export "double" (func (param "x" u32) (result u32)))))
+          (alias export $host "double" (func $double))
+          (core func $core-double (canon lower (func $double)))
+          (core module $m
+            (import "host" "double" (func $double (param i32) (result i32)))
+            (func (export "run") (param i32) (result i32)
+              local.get 0 call $double i32.const 1 i32.add))
+          (core instance $i (instantiate $m
+            (with "host" (instance (export "double" (func $core-double))))))
+          (func (export "run") (param "x" u32) (result u32)
+            (canon lift (core func $i "run"))))
+        "#
+    );
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker.root().instance("host").func_wrap(
+        "double",
+        |_: &mut (), (x,): (u32,)| -> wasm_component_model_polyfill::Result<u32> { Ok(x * 2) },
+    );
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("a plain-named instance import resolves through the root namespace");
+    let run = instance
+        .get_func("run")
+        .expect("run export")
+        .typed::<(u32,), u32>()
+        .expect("typed");
+    assert_eq!(run.call(&mut store, (20,)).expect("run"), 41);
 }
 
 #[wcmp_macros::test]

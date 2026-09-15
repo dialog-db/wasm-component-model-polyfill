@@ -52,6 +52,11 @@ pub enum ImportBinding {
     /// The linker may still have had a matching entry; this variant
     /// records that it was not consulted.
     Vacuous,
+    /// The import is plain-named and was satisfied through the root
+    /// namespace: the root entry itself for a function or resource
+    /// import, or the nested entry under the plain name for an
+    /// instance import.
+    Root,
 }
 
 /// The outcome of resolving every import of a component, in
@@ -67,8 +72,8 @@ pub struct Resolution {
 /// the linker's registered linker instances.
 ///
 /// Failures fall into three categories: identifier-resolution
-/// failures (missing match, ambiguous match, unsatisfiable semver,
-/// plain-named imports the polyfill does not yet handle) surface as
+/// failures (missing match, ambiguous match, unsatisfiable semver)
+/// and root-namespace misses for plain-named imports surface as
 /// [`Error::Link`]; signature mismatches between a host registration
 /// and the component's declared item surface as
 /// [`Error::TypeMismatch`].
@@ -79,16 +84,101 @@ pub fn resolve_imports<T: 'static>(
     let registered: Vec<&InterfaceIdentifier> = linker.registered_keys().collect();
     let mut bindings = Vec::with_capacity(component.imports.len());
     for import in component.imports.iter() {
-        let binding = resolve_one(import, &registered).map_err(Error::from)?;
-        if let ImportBinding::Resolved { chosen } = &binding {
-            // Item-level type check: every function item the
-            // import declares must have a registered host function
-            // whose signature matches structurally.
-            check_items(import, chosen, linker)?;
-        }
+        let binding = match &import.name {
+            ExternalName::Plain(name) => resolve_plain(import, name, linker)?,
+            ExternalName::Interface(_) => {
+                let binding = resolve_one(import, &registered).map_err(Error::from)?;
+                if let ImportBinding::Resolved { chosen } = &binding {
+                    // Item-level type check: every function item the
+                    // import declares must have a registered host function
+                    // whose signature matches structurally.
+                    let registration = linker.registration_for(chosen).ok_or_else(|| {
+                        Error::from(LinkError::UnresolvedImport {
+                            import: import.name.clone(),
+                        })
+                    })?;
+                    check_items(import, registration, &ItemPosition::Interface(chosen))?;
+                }
+                binding
+            }
+        };
         bindings.push(binding);
     }
     Ok(Resolution { bindings })
+}
+
+/// How a type-mismatch diagnostic names the registration an item
+/// belongs to.
+enum ItemPosition<'a> {
+    /// An item of an interface-named import.
+    Interface(&'a InterfaceIdentifier),
+    /// An item of a plain-named import: the function itself, or an
+    /// item of a plain-named instance.
+    Plain(&'a str),
+}
+
+impl ItemPosition<'_> {
+    fn for_item(&self, item: &str) -> TypeMismatchPosition {
+        match self {
+            ItemPosition::Interface(interface) => TypeMismatchPosition::HostFunctionRegistration {
+                interface: (*interface).clone(),
+                item: item.to_owned(),
+            },
+            ItemPosition::Plain(name) => TypeMismatchPosition::HostFunctionRegistrationPlain {
+                name: if *name == item {
+                    item.to_owned()
+                } else {
+                    format!("{name}.{item}")
+                },
+            },
+        }
+    }
+
+    fn import_name(&self) -> ExternalName {
+        match self {
+            ItemPosition::Interface(chosen) => ExternalName::Interface((*chosen).clone()),
+            ItemPosition::Plain(name) => ExternalName::Plain((*name).to_owned()),
+        }
+    }
+}
+
+/// Resolve a plain-named import through the root namespace. A
+/// function or resource import is an item of the root entry under
+/// its own name; an instance import is the nested entry under its
+/// name, whose items are checked as an interface's would be.
+fn resolve_plain<T: 'static>(
+    import: &ComponentImport,
+    name: &str,
+    linker: &Linker<T>,
+) -> Result<ImportBinding> {
+    let root = linker.root_registration();
+    let unresolved = || {
+        Error::from(LinkError::UnresolvedImport {
+            import: import.name.clone(),
+        })
+    };
+    match &import.ty {
+        ExternType::Function(declared) => {
+            check_function_item(&ItemPosition::Plain(name), name, declared, root)?;
+            Ok(ImportBinding::Root)
+        }
+        ExternType::Resource(_) | ExternType::ResourceEquals(_) => root
+            .resource(name)
+            .map(|_| ImportBinding::Root)
+            .ok_or_else(unresolved),
+        ExternType::Instance(instance) => match root.instance(name) {
+            Some(registration) => {
+                check_items(import, registration, &ItemPosition::Plain(name))?;
+                Ok(ImportBinding::Root)
+            }
+            None if instance.items.is_empty() => Ok(ImportBinding::Vacuous),
+            None => Err(unresolved()),
+        },
+        _ => Err(Error::from(LinkError::UnsupportedRegistration {
+            import: import.name.clone(),
+            reason: "plain-named imports of types, modules, components, or values",
+        })),
+    }
 }
 
 #[allow(clippy::result_large_err)]
@@ -115,21 +205,16 @@ fn resolve_one(
         },
         (ExternalName::Plain(_), _) => Err(LinkError::UnsupportedRegistration {
             import: import.name.clone(),
-            reason: "plain-named imports require host-item registration",
+            reason: "plain-named imports resolve through the root namespace",
         }),
     }
 }
 
 fn check_items<T: 'static>(
     import: &ComponentImport,
-    chosen: &InterfaceIdentifier,
-    linker: &Linker<T>,
+    registration: &InstanceRegistration<T>,
+    position: &ItemPosition<'_>,
 ) -> Result<()> {
-    let registration = linker.registration_for(chosen).ok_or_else(|| {
-        Error::from(LinkError::UnresolvedImport {
-            import: import.name.clone(),
-        })
-    })?;
     let items: &[InstanceItem] = match &import.ty {
         ExternType::Instance(instance) => &instance.items,
         // Non-instance interface-typed imports (e.g. an interface-
@@ -140,7 +225,7 @@ fn check_items<T: 'static>(
     for item in items.iter() {
         match &item.ty {
             ExternType::Function(declared) => {
-                check_function_item(chosen, &item.name, declared, registration)?;
+                check_function_item(position, &item.name, declared, registration)?;
             }
             ExternType::Resource(_) | ExternType::ResourceEquals(_) => {
                 check_resource_item(&item.name, registration, &import.name)?;
@@ -169,22 +254,19 @@ fn check_resource_item<T: 'static>(
 }
 
 fn check_function_item<T: 'static>(
-    chosen: &InterfaceIdentifier,
+    position: &ItemPosition<'_>,
     item_name: &str,
     declared: &FunctionType,
     registration: &InstanceRegistration<T>,
 ) -> Result<()> {
     let host = registration.func(item_name).ok_or_else(|| {
         Error::from(LinkError::UnresolvedImport {
-            import: ExternalName::Interface(chosen.clone()),
+            import: position.import_name(),
         })
     })?;
     if !function_types_compatible(&host.signature, declared) {
         return Err(Error::from(TypeMismatch {
-            position: TypeMismatchPosition::HostFunctionRegistration {
-                interface: chosen.clone(),
-                item: item_name.to_owned(),
-            },
+            position: position.for_item(item_name),
             expected: TypeRendering::Function(declared.clone()),
             actual: TypeRendering::Function(host.signature.clone()),
         }));
