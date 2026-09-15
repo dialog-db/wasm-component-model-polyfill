@@ -9,7 +9,7 @@ use crate::abi::context::LiftContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::StringEncoding;
-use crate::resource::ResourceHandle;
+use crate::resource::{HandleEntry, ResourceHandle};
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::{Val, ValField};
 
@@ -373,25 +373,12 @@ pub fn lift_handle<T: 'static>(
 
     if is_own {
         // Ownership transfers to the host: the guest's entry goes
-        // away and the handle carries the rep itself.
-        let rep = guard.for_type_mut(type_id).remove(index).ok_or_else(|| {
-            Error::from(AbiError {
-                position,
-                valtype: ty.clone(),
-                cause: AbiCause::InvalidHandle {
-                    reason: format!("handle index {index} disappeared during lift"),
-                },
-            })
-        })?;
-        Ok(Val::Own(ResourceHandle {
-            type_id,
-            index,
-            rep,
-        }))
-    } else {
-        let rep = guard
+        // away and the handle carries the rep itself. An entry that is
+        // lent out as a borrow cannot leave until the borrow returns.
+        let entry = guard
             .for_type(type_id)
-            .and_then(|t| t.get(index))
+            .and_then(|t| t.entry(index))
+            .copied()
             .ok_or_else(|| {
                 Error::from(AbiError {
                     position,
@@ -401,14 +388,60 @@ pub fn lift_handle<T: 'static>(
                     },
                 })
             })?;
-        Ok(Val::Borrow(ResourceHandle {
+        let rep = match entry {
+            HandleEntry::Own { rep, lend_count: 0 } => rep,
+            HandleEntry::Own { .. } => {
+                return Err(Error::from(AbiError {
+                    position,
+                    valtype: ty.clone(),
+                    cause: AbiCause::InvalidHandle {
+                        reason: "cannot remove owned resource while borrowed".to_owned(),
+                    },
+                }));
+            }
+            HandleEntry::Borrow { .. } => {
+                return Err(Error::from(AbiError {
+                    position,
+                    valtype: ty.clone(),
+                    cause: AbiCause::InvalidHandle {
+                        reason: format!("handle index {index} is a borrow, not an owned resource"),
+                    },
+                }));
+            }
+        };
+        guard.for_type_mut(type_id).remove(index);
+        Ok(Val::Own(ResourceHandle {
             type_id,
             index,
             rep,
         }))
+    } else {
+        // A borrow lifted out of an owning entry lends that entry to
+        // the host for the rest of the call; a borrow of a borrow
+        // needs no bookkeeping of its own.
+        let entry = guard
+            .for_type(type_id)
+            .and_then(|t| t.entry(index))
+            .copied()
+            .ok_or_else(|| {
+                Error::from(AbiError {
+                    position,
+                    valtype: ty.clone(),
+                    cause: AbiCause::InvalidHandle {
+                        reason: format!("handle index {index} disappeared during lift"),
+                    },
+                })
+            })?;
+        if matches!(entry, HandleEntry::Own { .. }) {
+            guard.lend(type_id, index);
+        }
+        Ok(Val::Borrow(ResourceHandle {
+            type_id,
+            index,
+            rep: entry.rep(),
+        }))
     }
 }
-
 fn invalid_encoding(ty: &ValueType, position: AbiPosition, message: &str) -> Error {
     Error::from(AbiError {
         position,

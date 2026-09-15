@@ -114,6 +114,41 @@ impl Func {
             (memory, realloc, post_return)
         };
 
+        // A call from the host into the guest opens a scope: borrows
+        // the host lowers in are owed to it and must be dropped by
+        // the guest before the call ends; borrows the guest lifts out
+        // in results lend to the host until the call ends.
+        store.enter_call()?;
+        let outcome = self.call_in_scope(store, args, memory, realloc, post_return);
+        match outcome {
+            Ok(result) => {
+                if let Err(count) = store.exit_call()? {
+                    return Err(Error::from(AbiError {
+                        position: AbiPosition::Result,
+                        valtype: ValueType::Primitive(PrimitiveType::Bool),
+                        cause: AbiCause::OutstandingBorrows {
+                            count: count as usize,
+                        },
+                    }));
+                }
+                Ok(result)
+            }
+            Err(err) => {
+                store.abandon_call()?;
+                Err(err)
+            }
+        }
+    }
+
+    /// The body of [`Self::call`] inside its call scope.
+    fn call_in_scope<T: 'static>(
+        &self,
+        store: &mut Store<T>,
+        args: &[Val],
+        memory: Option<wasm_runtime_layer::Memory>,
+        realloc: Option<wasm_runtime_layer::Func>,
+        post_return: Option<wasm_runtime_layer::Func>,
+    ) -> Result<Box<[Val]>> {
         let core_args = self.lower_args(store, args, memory.clone(), realloc.clone())?;
         let result_arity = self.core_result_arity();
         let mut core_results = vec![RuntimeVal::I32(0); result_arity];

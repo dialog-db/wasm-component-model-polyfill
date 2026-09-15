@@ -16,17 +16,20 @@
 //!   pointing at a slot that has since been reused is rejected. The
 //!   generation is opaque and not exposed.
 //!
-//! Borrow tracking is per-call: a `borrow<T>` lifted from the guest
-//! lives on a per-call ledger rather than mutating the table; only
-//! `own<T>` allocations and drops touch this slab.
+//! Borrows live in the table too: a `borrow<T>` lowered into the
+//! guest is an entry owed to the call it was lowered in, and an
+//! owning entry lent to the host as a borrow counts its lends so it
+//! cannot be removed before the call ends.
 //!
 //! [`Store`]: crate::Store
+
+use super::handle_entry::HandleEntry;
 
 /// One entry in the slab.
 ///
 /// Free entries form a singly-linked list; occupied entries carry
-/// the host's representation of the resource alongside the slot's
-/// generation.
+/// the resource's entry: its rep and whether it is owned or a
+/// borrow.
 enum Slot {
     Free {
         /// Index of the next free slot, or `None` if this is the
@@ -34,9 +37,9 @@ enum Slot {
         next: Option<u32>,
     },
     Occupied {
-        /// The host-supplied 32-bit representation of the resource —
-        /// typically an index into a host-managed table.
-        rep: u32,
+        /// The entry: the resource's rep and whether the slot owns
+        /// it or borrows it for a call.
+        entry: HandleEntry,
     },
 }
 
@@ -64,7 +67,18 @@ impl HandleTable {
 
     /// Insert a fresh `own<T>` entry carrying the given host
     /// representation. Returns the table index.
-    pub fn insert(&mut self, rep: u32) -> u32 {
+    /// Insert an owning entry and return its index.
+    pub fn insert_own(&mut self, rep: u32) -> u32 {
+        self.insert(HandleEntry::Own { rep, lend_count: 0 })
+    }
+
+    /// Insert a borrow entry for the call scope at `scope` and return
+    /// its index.
+    pub fn insert_borrow(&mut self, rep: u32, scope: usize) -> u32 {
+        self.insert(HandleEntry::Borrow { rep, scope })
+    }
+
+    fn insert(&mut self, entry: HandleEntry) -> u32 {
         if let Some(idx) = self.free_head {
             let next = match self.slots[idx as usize] {
                 Slot::Free { next } => next,
@@ -73,39 +87,48 @@ impl HandleTable {
                 }
             };
             self.free_head = next;
-            self.slots[idx as usize] = Slot::Occupied { rep };
+            self.slots[idx as usize] = Slot::Occupied { entry };
             idx
         } else {
             let idx = self.slots.len() as u32;
-            self.slots.push(Slot::Occupied { rep });
+            self.slots.push(Slot::Occupied { entry });
             idx
         }
     }
 
-    /// Read the host representation behind the given index without
-    /// removing it. Returns `None` for stale or never-allocated
-    /// indices.
+    /// The rep at a live index.
     pub fn get(&self, index: u32) -> Option<u32> {
+        self.entry(index).map(|entry| entry.rep())
+    }
+
+    /// The entry at a live index.
+    pub fn entry(&self, index: u32) -> Option<&HandleEntry> {
         match self.slots.get(index as usize)? {
-            Slot::Occupied { rep } => Some(*rep),
+            Slot::Occupied { entry } => Some(entry),
             Slot::Free { .. } => None,
         }
     }
 
-    /// Remove the entry at `index` and return its representation, or
-    /// `None` if the index is stale or never-allocated. The freed
-    /// slot is pushed onto the free list for deterministic reuse.
-    pub fn remove(&mut self, index: u32) -> Option<u32> {
+    /// The entry at a live index, mutably.
+    pub fn entry_mut(&mut self, index: u32) -> Option<&mut HandleEntry> {
+        match self.slots.get_mut(index as usize)? {
+            Slot::Occupied { entry } => Some(entry),
+            Slot::Free { .. } => None,
+        }
+    }
+
+    /// Free a live index and return its entry.
+    pub fn remove(&mut self, index: u32) -> Option<HandleEntry> {
         let slot = self.slots.get_mut(index as usize)?;
-        let rep = match slot {
-            Slot::Occupied { rep } => *rep,
+        let entry = match slot {
+            Slot::Occupied { entry } => *entry,
             Slot::Free { .. } => return None,
         };
         *slot = Slot::Free {
             next: self.free_head,
         };
         self.free_head = Some(index);
-        Some(rep)
+        Some(entry)
     }
 }
 
@@ -122,8 +145,8 @@ mod tests {
     #[test]
     fn it_mints_distinct_indices_while_live() {
         let mut table = HandleTable::new();
-        let a = table.insert(10);
-        let b = table.insert(20);
+        let a = table.insert_own(10);
+        let b = table.insert_own(20);
         assert_ne!(a, b);
         assert_eq!(table.get(a), Some(10));
         assert_eq!(table.get(b), Some(20));
@@ -132,12 +155,12 @@ mod tests {
     #[test]
     fn it_reuses_freed_indices_deterministically() {
         let mut table = HandleTable::new();
-        let a = table.insert(1);
-        let _b = table.insert(2);
-        assert_eq!(table.remove(a), Some(1));
+        let a = table.insert_own(1);
+        let _b = table.insert_own(2);
+        assert_eq!(table.remove(a).map(|e| e.rep()), Some(1));
 
         // The next insert reuses the freshly-freed slot.
-        let c = table.insert(3);
+        let c = table.insert_own(3);
         assert_eq!(c, a);
         assert_eq!(table.get(c), Some(3));
     }
@@ -145,8 +168,8 @@ mod tests {
     #[test]
     fn it_rejects_stale_indices_after_remove() {
         let mut table = HandleTable::new();
-        let idx = table.insert(7);
-        assert_eq!(table.remove(idx), Some(7));
+        let idx = table.insert_own(7);
+        assert_eq!(table.remove(idx).map(|e| e.rep()), Some(7));
         assert_eq!(table.get(idx), None);
         assert_eq!(table.remove(idx), None);
     }

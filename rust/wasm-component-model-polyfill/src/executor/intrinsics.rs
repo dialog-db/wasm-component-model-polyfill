@@ -134,29 +134,50 @@ pub fn build_trap<T: 'static>(store: &mut Store<T>, signature: &CoreSignature) -
 
 /// Build the `enter-sync-call` intrinsic. The adapter passes the
 /// caller instance, whether the callee is asynchronous, and the
-/// callee instance. The polyfill does not track per-call borrow
-/// scopes yet, so entering always succeeds.
+/// callee instance. A call between two components opens a call
+/// scope like a call across the host boundary does.
 pub fn build_enter_sync_call<T: 'static>(
     store: &mut Store<T>,
     signature: &CoreSignature,
 ) -> RuntimeFunc {
+    let tables = store.tables_handle();
     RuntimeFunc::new(
         store.inner_mut(),
         core_func_type(signature),
-        move |_store_ctx, _args, _results| Ok(()),
+        move |_store_ctx, _args, _results| {
+            tables
+                .lock()
+                .map_err(|_| anyhow!("resource handle tables lock poisoned"))?
+                .enter_call();
+            Ok(())
+        },
     )
 }
 
 /// Build the `exit-sync-call` intrinsic. See
-/// [`build_enter_sync_call`].
+/// [`build_enter_sync_call`]: the scope is validated and closed, and
+/// a borrow the callee did not drop traps with the message Wasmtime
+/// uses.
 pub fn build_exit_sync_call<T: 'static>(
     store: &mut Store<T>,
     signature: &CoreSignature,
 ) -> RuntimeFunc {
+    let tables = store.tables_handle();
     RuntimeFunc::new(
         store.inner_mut(),
         core_func_type(signature),
-        move |_store_ctx, _args, _results| Ok(()),
+        move |_store_ctx, _args, _results| {
+            let outcome = tables
+                .lock()
+                .map_err(|_| anyhow!("resource handle tables lock poisoned"))?
+                .exit_call();
+            match outcome {
+                Ok(()) => Ok(()),
+                Err(_) => Err(anyhow!(
+                    "wasm trap: borrow handles still remain at the end of the call"
+                )),
+            }
+        },
     )
 }
 

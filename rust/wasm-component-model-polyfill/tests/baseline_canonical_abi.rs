@@ -869,7 +869,13 @@ async fn it_tracks_resource_handles_in_a_handle_table() {
     // here, a structural assertion via the registered type id is
     // enough.
     let mut tables = store.tables.lock().expect("tables");
-    assert_eq!(tables.for_type_mut(type_a).remove(h1.index), Some(101));
+    assert_eq!(
+        tables
+            .for_type_mut(type_a)
+            .remove(h1.index)
+            .map(|e| e.rep()),
+        Some(101)
+    );
     drop(tables);
 
     let h3 = store.resource_new(type_a, 103).expect("mint a3 reuses h1");

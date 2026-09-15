@@ -43,7 +43,7 @@ use crate::executor::ir::{CanonOptions, LoweringSpec};
 use crate::linker::{HostCall, HostFuncBody, HostResource};
 
 use super::ResourceDestructor;
-use crate::resource::{HandleTables, ResourceTypeId};
+use crate::resource::{HandleEntry, HandleTables, ResourceTypeId};
 use crate::store::Store;
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
@@ -145,7 +145,12 @@ pub fn build_resource_drop_trampoline<T: 'static>(
         func_type,
         move |mut store_ctx, args, _results| {
             let index = take_i32(args, 0).map_err(|err| anyhow!("resource.drop: {err}"))?;
-            let rep = remove_handle(&tables, runtime.type_id, index)?;
+            // Dropping a borrow returns it to its call and runs no
+            // destructor; dropping an owned entry runs the destructor,
+            // unless a borrow of it is still lent to the host.
+            let Some(rep) = drop_handle(&tables, runtime.type_id, index)? else {
+                return Ok(());
+            };
             match &runtime.destructor {
                 ResourceDestructor::Host(body) => body(store_ctx.data_mut(), rep)
                     .map_err(|err| anyhow!("resource destructor failed: {err}"))?,
@@ -219,16 +224,42 @@ fn take_i32(args: &[RuntimeVal], cursor: usize) -> Result<u32> {
     }
 }
 
-fn remove_handle(
+/// Remove the entry at `index` for a `resource.drop`. Returns the rep
+/// of an owned entry, whose destructor the caller runs, or `None`
+/// for a borrow, which is handed back to the call it belongs to.
+fn drop_handle(
     tables: &Arc<Mutex<HandleTables>>,
     type_id: ResourceTypeId,
     index: u32,
-) -> Result<u32> {
+) -> Result<Option<u32>> {
     let mut guard = tables
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
-    let table = guard.for_type_mut(type_id);
-    table.remove(index).ok_or_else(|| invalid_handle(index))
+    let entry = guard
+        .for_type(type_id)
+        .and_then(|t| t.entry(index))
+        .copied()
+        .ok_or_else(|| invalid_handle(index))?;
+    match entry {
+        HandleEntry::Own { rep, lend_count: 0 } => {
+            guard.for_type_mut(type_id).remove(index);
+            Ok(Some(rep))
+        }
+        HandleEntry::Own { .. } => Err(Error::from(AbiError {
+            position: AbiPosition::Argument(0),
+            valtype: ValueType::Primitive(PrimitiveType::U32),
+            cause: AbiCause::InvalidHandle {
+                reason: "cannot remove owned resource while borrowed".to_owned(),
+            },
+        })),
+        HandleEntry::Borrow { scope, .. } => {
+            if !guard.return_borrow(scope) {
+                return Err(invalid_handle(index));
+            }
+            guard.for_type_mut(type_id).remove(index);
+            Ok(None)
+        }
+    }
 }
 
 fn insert_handle(
@@ -239,7 +270,7 @@ fn insert_handle(
     let mut guard = tables
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
-    Ok(guard.for_type_mut(type_id).insert(rep))
+    Ok(guard.for_type_mut(type_id).insert_own(rep))
 }
 
 fn read_handle(
@@ -367,6 +398,11 @@ fn invoke_trampoline<T: 'static>(
         (memory, realloc, state.resource_types.clone())
     };
 
+    // A call from the guest into the host opens a scope: borrows the
+    // guest lends in are recorded against it, and borrows the host
+    // lowers back out are owed to it.
+    lock_tables(tables)?.enter_call();
+
     let mut cursor = 0usize;
     let mut lift_ctx = LiftContext::new(
         store_ctx.as_context_mut(),
@@ -410,7 +446,24 @@ fn invoke_trampoline<T: 'static>(
     let host_arity = usize::from(signature.result.is_some());
     let mut host_results: Vec<Val> = vec![Val::Bool(false); host_arity];
     let call = HostCall::new(store_ctx.data_mut(), tables.clone(), resource_types.clone());
-    host_func(call, &lifted, &mut host_results)?;
+    if let Err(err) = host_func(call, &lifted, &mut host_results) {
+        // The failure path pops the scope without the borrow check:
+        // the error already says the call failed.
+        lock_tables(tables)?.abandon_call();
+        return Err(err);
+    }
+    // The success path validates the scope before results are
+    // written back: every borrow lowered into the guest during the
+    // call must have been dropped, and each lend is undone.
+    if let Err(count) = lock_tables(tables)?.exit_call() {
+        return Err(Error::from(AbiError {
+            position: AbiPosition::Result,
+            valtype: ValueType::Primitive(PrimitiveType::Bool),
+            cause: AbiCause::OutstandingBorrows {
+                count: count as usize,
+            },
+        }));
+    }
 
     let Some(result_ty) = &signature.result else {
         return Ok(());
@@ -512,4 +565,12 @@ fn pointer_argument(
             },
         })),
     }
+}
+
+fn lock_tables(
+    tables: &Arc<Mutex<HandleTables>>,
+) -> Result<std::sync::MutexGuard<'_, HandleTables>> {
+    tables
+        .lock()
+        .map_err(|_| Error::internal("resource handle tables lock poisoned"))
 }

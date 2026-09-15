@@ -73,7 +73,7 @@ impl<'a, T> HostCall<'a, T> {
             .tables
             .lock()
             .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
-        let index = guard.for_type_mut(type_id).insert(rep);
+        let index = guard.for_type_mut(type_id).insert_own(rep);
         Ok(ResourceHandle {
             type_id,
             index,

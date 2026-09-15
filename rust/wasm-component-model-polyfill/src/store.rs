@@ -103,12 +103,42 @@ impl<T: 'static> Store<T> {
             .lock()
             .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
         let table = guard.for_type_mut(type_id);
-        let index = table.insert(rep);
+        let index = table.insert_own(rep);
         Ok(ResourceHandle {
             type_id,
             index,
             rep,
         })
+    }
+
+    /// Open a call scope on the handle tables. Workspace-internal.
+    pub fn enter_call(&self) -> Result<()> {
+        self.tables
+            .lock()
+            .map_err(|_| Error::internal("resource handle tables lock poisoned"))?
+            .enter_call();
+        Ok(())
+    }
+
+    /// Close the innermost call scope on its success path. The inner
+    /// `Err` carries the count of borrows the guest did not drop.
+    /// Workspace-internal.
+    pub fn exit_call(&self) -> Result<core::result::Result<(), u32>> {
+        Ok(self
+            .tables
+            .lock()
+            .map_err(|_| Error::internal("resource handle tables lock poisoned"))?
+            .exit_call())
+    }
+
+    /// Close the innermost call scope on its failure path.
+    /// Workspace-internal.
+    pub fn abandon_call(&self) -> Result<()> {
+        self.tables
+            .lock()
+            .map_err(|_| Error::internal("resource handle tables lock poisoned"))?
+            .abandon_call();
+        Ok(())
     }
 
     /// Borrow the wrapped runtime-layer store.

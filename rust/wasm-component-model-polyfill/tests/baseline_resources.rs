@@ -892,10 +892,111 @@ async fn it_supports_resource_constructor_and_method_shaped_exports() {
     );
 }
 
+/// A component that imports a resource type and exports two
+/// functions over a borrow of it: `hold` keeps the borrow (never
+/// drops it) and `peek` reads its rep through the host and drops it.
+const BORROWER: &[u8] = component!(
+    r#"
+    (component
+      (import "pdd014-tests:host/things@0.1.0" (instance $i
+        (export "thing" (type $thing (sub resource)))
+        (export "rep" (func (param "h" (borrow $thing)) (result u32)))))
+      (alias export $i "thing" (type $thing))
+      (alias export $i "rep" (func $rep))
+      (core func $core-rep (canon lower (func $rep)))
+      (core func $drop (canon resource.drop $thing))
+      (core module $m
+        (import "host" "rep" (func $rep (param i32) (result i32)))
+        (import "host" "drop" (func $drop (param i32)))
+        (func (export "hold") (param i32))
+        (func (export "peek") (param i32) (result i32)
+          (local $v i32)
+          local.get 0 call $rep local.set $v
+          local.get 0 call $drop
+          local.get $v))
+      (core instance $c (instantiate $m
+        (with "host" (instance
+          (export "rep" (func $core-rep))
+          (export "drop" (func $drop))))))
+      (func (export "hold") (param "h" (borrow $thing))
+        (canon lift (core func $c "hold")))
+      (func (export "peek") (param "h" (borrow $thing)) (result u32)
+        (canon lift (core func $c "peek"))))
+    "#
+);
+
+fn borrower_instance() -> (
+    Store<()>,
+    wasm_component_model_polyfill::Instance,
+    ResourceTypeId,
+) {
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, BORROWER).expect("component parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let iface: InterfaceIdentifier = "pdd014-tests:host/things@0.1.0"
+        .parse()
+        .expect("identifier");
+    let type_id = linker.instance(&iface).resource(
+        "thing",
+        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
+    );
+    linker.instance(&iface).func_new(
+        "rep",
+        FunctionType {
+            parameters: vec![FunctionParameter {
+                name: "h".to_owned(),
+                ty: ValueType::Borrow(ResourceType::new("thing")),
+            }],
+            result: Some(ValueType::Primitive(
+                wasm_component_model_polyfill::PrimitiveType::U32,
+            )),
+        },
+        |_: HostCall<'_, ()>, args, results| {
+            let Val::Borrow(handle) = &args[0] else {
+                panic!("expected a borrowed handle, got {args:?}");
+            };
+            results[0] = Val::U32(handle.rep);
+            Ok(())
+        },
+    );
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiate");
+    (store, instance, type_id)
+}
+
 #[wcmp_macros::test]
-#[ignore = "stub: borrow lifetime tracking at host-call return — `AbiCause::OutstandingBorrows` is reserved but not yet emitted"]
 async fn it_rejects_a_host_call_that_leaves_outstanding_borrows() {
-    todo!(
-        "the canonical ABI's runtime-state rules require that no `borrow<T>` lifted in for the call remain live at return; the polyfill defers tracking this counter until borrows are exercised by a test that requires the enforcement"
+    let (mut store, instance, type_id) = borrower_instance();
+    let handle = store.resource_new(type_id, 5).expect("mint");
+    let hold = instance.get_func("hold").expect("hold export");
+    let err = hold
+        .call(&mut store, &[Val::Borrow(handle)])
+        .expect_err("the guest kept the borrow, so the call must fail");
+    assert!(
+        matches!(&err, Error::Abi(abi) if matches!(abi.cause, AbiCause::OutstandingBorrows { count: 1 })),
+        "expected one outstanding borrow, got {err:?}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_leaves_the_owning_handle_live_after_a_borrow_is_dropped_in_the_call() {
+    let (mut store, instance, type_id) = borrower_instance();
+    let handle = store.resource_new(type_id, 7).expect("mint");
+    let peek = instance.get_func("peek").expect("peek export");
+    let results = peek
+        .call(&mut store, &[Val::Borrow(handle)])
+        .expect("the guest dropped its borrow before returning");
+    assert_eq!(
+        results.as_ref(),
+        &[Val::U32(7)],
+        "the host read the rep through the borrow"
+    );
+    let tables = store.tables.lock().expect("tables");
+    assert_eq!(
+        tables.for_type(type_id).and_then(|t| t.get(handle.index)),
+        Some(7),
+        "the owning entry is live after the call"
     );
 }

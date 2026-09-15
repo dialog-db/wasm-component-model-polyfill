@@ -300,11 +300,13 @@ fn write_discriminant<T: 'static>(
 /// uses for that resource (one minted by another instance of the
 /// same component, say) is rejected with the unregistered-resource-
 /// type cause. A handle whose entry is live in the table lowers as
-/// that index: the host minted it with `Store::resource_new`, or
-/// lends it as a borrow. A handle whose entry is gone is one the
+/// that index when the parameter is `own<T>`: the host minted it with
+/// `Store::resource_new`. A handle whose entry is gone is one the
 /// host owns outright (an `own<T>` lifted out of a guest); its rep
 /// is inserted again and the fresh index is written, which is the
-/// canonical ABI's transfer of ownership back into the guest.
+/// canonical ABI's transfer of ownership back into the guest. For a
+/// `borrow<T>` parameter the guest receives a borrow entry owed to
+/// the current call, whatever the handle's own entry is.
 pub fn lower_handle<T: 'static>(
     ctx: &LowerContext<'_, T>,
     handle: &ResourceHandle,
@@ -340,11 +342,27 @@ pub fn lower_handle<T: 'static>(
             cause: AbiCause::UnregisteredResourceType,
         }));
     }
+    if matches!(ty, ValueType::Borrow(_)) {
+        // The guest receives a borrow for this call only: a fresh
+        // entry owed to the current scope, which the guest must drop
+        // before the call ends.
+        return guard
+            .insert_borrow(handle.type_id, handle.rep)
+            .ok_or_else(|| {
+                Error::from(AbiError {
+                    position,
+                    valtype: ty.clone(),
+                    cause: AbiCause::InvalidHandle {
+                        reason: "a borrow can only be lowered during a call".to_owned(),
+                    },
+                })
+            });
+    }
     let table = guard.for_type_mut(handle.type_id);
     if table.get(handle.index).is_some() {
         Ok(handle.index)
     } else {
-        Ok(table.insert(handle.rep))
+        Ok(table.insert_own(handle.rep))
     }
 }
 

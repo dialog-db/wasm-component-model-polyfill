@@ -20,11 +20,14 @@
 //! [`Val::Own`]: crate::Val::Own
 //! [`Val::Borrow`]: crate::Val::Borrow
 
+mod call_scope;
 mod handle;
+mod handle_entry;
 mod identity;
 mod table;
 mod tables;
 
 pub use handle::ResourceHandle;
+pub use handle_entry::HandleEntry;
 pub use identity::ResourceTypeId;
 pub use tables::HandleTables;
