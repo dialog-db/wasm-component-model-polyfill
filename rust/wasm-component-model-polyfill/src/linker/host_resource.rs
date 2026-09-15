@@ -18,9 +18,10 @@ use crate::resource::ResourceTypeId;
 /// One registered host resource inside a [`crate::LinkerInstance`].
 ///
 /// Wraps the engine-issued identity and the destructor closure.
-/// Both registration paths (today there is only one — `resource`)
-/// produce this single shape so the executor sees one carrier.
-#[derive(Clone)]
+/// Both registration paths (`resource` and `resource_with`) produce
+/// this single shape so the executor sees one carrier. Cloning shares
+/// the identity, so one value registers the same resource type under
+/// several interfaces.
 pub struct HostResource<T> {
     /// The engine-issued identity for this registration. Used by
     /// the per-store handle table to disambiguate handles that
@@ -49,6 +50,17 @@ impl<T> HostResource<T> {
         Self {
             type_id: ResourceTypeId::fresh(),
             destructor: Arc::new(destructor),
+        }
+    }
+}
+
+impl<T> Clone for HostResource<T> {
+    /// A clone shares the identity and the destructor, so one value
+    /// registers the same resource type under several interfaces.
+    fn clone(&self) -> Self {
+        Self {
+            type_id: self.type_id,
+            destructor: self.destructor.clone(),
         }
     }
 }

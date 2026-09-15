@@ -27,6 +27,8 @@
 //!
 //! [`LinkerInstance`]: super::LinkerInstance
 
+use std::collections::HashMap;
+
 use semver::Version;
 
 use crate::component::{
@@ -34,6 +36,8 @@ use crate::component::{
 };
 use crate::error::{Error, LinkError, Result, TypeMismatch, TypeMismatchPosition, TypeRendering};
 use crate::identifier::InterfaceIdentifier;
+use crate::resource::ResourceTypeId;
+use crate::types::{ResourceType, ValueType};
 
 use super::linker::Linker;
 use super::registration::InstanceRegistration;
@@ -104,7 +108,67 @@ pub fn resolve_imports<T: 'static>(
         };
         bindings.push(binding);
     }
+    check_shared_identities(component, linker, &bindings)?;
     Ok(Resolution { bindings })
+}
+
+/// A component that declares one resource type in several imports
+/// (an instance whose item is `(type (eq $r))` of another's) needs
+/// one identity behind all of them. Every registration for the same
+/// resource must carry the same identity, or a handle minted under
+/// one interface could not lower through the other.
+fn check_shared_identities<T: 'static>(
+    component: &Component,
+    linker: &Linker<T>,
+    bindings: &[ImportBinding],
+) -> Result<()> {
+    let mut seen: HashMap<usize, (ResourceTypeId, TypeMismatchPosition)> = HashMap::new();
+    for (import, binding) in component.imports.iter().zip(bindings) {
+        let ExternType::Instance(instance) = &import.ty else {
+            continue;
+        };
+        let (registration, position) = match (binding, &import.name) {
+            (ImportBinding::Resolved { chosen }, _) => {
+                let Some(registration) = linker.registration_for(chosen) else {
+                    continue;
+                };
+                (registration, ItemPosition::Interface(chosen))
+            }
+            (ImportBinding::Root, ExternalName::Plain(name)) => {
+                let Some(registration) = linker.root_registration().instance(name) else {
+                    continue;
+                };
+                (registration, ItemPosition::Plain(name))
+            }
+            _ => continue,
+        };
+        for item in instance.items.iter() {
+            let (ExternType::Resource(resource) | ExternType::ResourceEquals(resource)) = &item.ty
+            else {
+                continue;
+            };
+            let (Some(index), Some(host)) = (resource.index(), registration.resource(&item.name))
+            else {
+                continue;
+            };
+            match seen.get(&index) {
+                None => {
+                    seen.insert(index, (host.type_id, position.for_item(&item.name)));
+                }
+                Some((first, _)) if *first == host.type_id => {}
+                Some(_) => {
+                    return Err(Error::from(TypeMismatch {
+                        position: position.for_item(&item.name),
+                        expected: TypeRendering::Value(ValueType::Own(resource.clone())),
+                        actual: TypeRendering::Value(ValueType::Own(ResourceType::new(
+                            item.name.clone(),
+                        ))),
+                    }));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// How a type-mismatch diagnostic names the registration an item

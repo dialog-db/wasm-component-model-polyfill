@@ -116,9 +116,24 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
         label: impl Into<String>,
         destructor: impl Fn(&mut T, u32) -> Result<()> + Send + Sync + 'static,
     ) -> ResourceTypeId {
-        let host = HostResource::new(destructor);
-        let type_id = host.type_id;
-        self.registration.resources.insert(label.into(), host);
+        self.resource_with(label, HostResource::new(destructor))
+    }
+
+    /// Register a host resource type by value. A [`HostResource`]
+    /// carries its identity and its destructor, so one value, cloned,
+    /// registers the same resource type under several interfaces: a
+    /// handle minted under one lowers through the other, and the
+    /// resolver accepts a component that declares the two as equal.
+    /// Returns the identity for [`Store::resource_new`].
+    ///
+    /// [`Store::resource_new`]: crate::Store::resource_new
+    pub fn resource_with(
+        &mut self,
+        label: impl Into<String>,
+        resource: HostResource<T>,
+    ) -> ResourceTypeId {
+        let type_id = resource.type_id;
+        self.registration.resources.insert(label.into(), resource);
         type_id
     }
 

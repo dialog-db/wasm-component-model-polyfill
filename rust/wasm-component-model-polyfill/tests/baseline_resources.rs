@@ -13,8 +13,9 @@
 use std::sync::{Arc, Mutex};
 
 use wasm_component_model_polyfill::{
-    AbiCause, Component, Engine, Error, FunctionType, HostCall, InterfaceIdentifier, Linker,
-    ResourceHandle, ResourceType, ResourceTypeId, Store, Val, ValueType,
+    AbiCause, Component, Engine, Error, FunctionParameter, FunctionType, HostCall, HostResource,
+    InterfaceIdentifier, Linker, ResourceHandle, ResourceType, ResourceTypeId, Store, Val,
+    ValueType,
 };
 use wcmp_macros::component;
 
@@ -548,11 +549,136 @@ async fn it_rejects_a_local_destructor_with_the_wrong_signature() {
     );
 }
 
+/// A component that imports one resource type through two
+/// interfaces: `a` declares `thing` and `make`, `b` declares its
+/// `thing` equal to `a`'s and takes one by value in `consume`.
+const SHARED: &[u8] = component!(
+    r#"
+    (component
+      (import "pdd013-tests:host/a@0.1.0" (instance $a
+        (export "thing" (type $thing (sub resource)))
+        (export "make" (func (result (own $thing))))))
+      (alias export $a "thing" (type $thing))
+      (import "pdd013-tests:host/b@0.1.0" (instance $b
+        (alias outer 1 $thing (type $outer))
+        (export "thing" (type (eq $outer)))
+        (export "consume" (func (param "h" (own $outer))))))
+      (alias export $a "make" (func $make))
+      (alias export $b "consume" (func $consume))
+      (core func $core-make (canon lower (func $make)))
+      (core func $core-consume (canon lower (func $consume)))
+      (core module $m
+        (import "host" "make" (func $make (result i32)))
+        (import "host" "consume" (func $consume (param i32)))
+        (func (export "run") call $make call $consume))
+      (core instance $c (instantiate $m
+        (with "host" (instance
+          (export "make" (func $core-make))
+          (export "consume" (func $core-consume))))))
+      (func (export "run") (canon lift (core func $c "run"))))
+    "#
+);
+
 #[wcmp_macros::test]
-#[ignore = "stub: multi-level resource sharing — a single resource type imported by two interfaces and used in both"]
 async fn it_shares_a_single_resource_type_across_two_imported_interfaces() {
-    todo!(
-        "import the same resource type via two separate interface imports (mirrors wasm_component_layer's multilevel_resource example) and assert handles minted under one interface lower correctly through the other"
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, SHARED).expect("component parses");
+    let mut linker: Linker<Vec<u32>> = Linker::new(&engine);
+    let a: InterfaceIdentifier = "pdd013-tests:host/a@0.1.0".parse().expect("identifier");
+    let b: InterfaceIdentifier = "pdd013-tests:host/b@0.1.0".parse().expect("identifier");
+    let thing: HostResource<Vec<u32>> = HostResource::new(
+        |dropped: &mut Vec<u32>, rep: u32| -> wasm_component_model_polyfill::Result<()> {
+            dropped.push(rep);
+            Ok(())
+        },
+    );
+    let type_id = linker.instance(&a).resource_with("thing", thing.clone());
+    linker.instance(&b).resource_with("thing", thing);
+    linker.instance(&a).func_new(
+        "make",
+        FunctionType {
+            parameters: Vec::new(),
+            result: Some(ValueType::Own(ResourceType::new("thing"))),
+        },
+        move |call: HostCall<'_, Vec<u32>>, _args, results| {
+            results[0] = Val::Own(call.resource_new(type_id, 9)?);
+            Ok(())
+        },
+    );
+    linker.instance(&b).func_new(
+        "consume",
+        FunctionType {
+            parameters: vec![FunctionParameter {
+                name: "h".to_owned(),
+                ty: ValueType::Own(ResourceType::new("thing")),
+            }],
+            result: None,
+        },
+        |mut call: HostCall<'_, Vec<u32>>, args, _results| {
+            let Val::Own(handle) = &args[0] else {
+                panic!("expected an owned handle, got {args:?}");
+            };
+            // The handle minted under `a` arrives through `b` with the
+            // same identity; record the rep the host gave it.
+            call.data_mut().push(handle.rep);
+            Ok(())
+        },
+    );
+    let mut store: Store<Vec<u32>> = Store::new(&engine, Vec::new()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("one identity behind both interfaces links");
+    let run = instance.get_func("run").expect("run export");
+    run.call(&mut store, &[]).expect("run");
+    assert_eq!(store.data(), &vec![9]);
+}
+
+#[wcmp_macros::test]
+async fn it_rejects_two_identities_for_one_declared_resource_type() {
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, SHARED).expect("component parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let a: InterfaceIdentifier = "pdd013-tests:host/a@0.1.0".parse().expect("identifier");
+    let b: InterfaceIdentifier = "pdd013-tests:host/b@0.1.0".parse().expect("identifier");
+    let type_id = linker.instance(&a).resource(
+        "thing",
+        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
+    );
+    linker.instance(&b).resource(
+        "thing",
+        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
+    );
+    linker.instance(&a).func_new(
+        "make",
+        FunctionType {
+            parameters: Vec::new(),
+            result: Some(ValueType::Own(ResourceType::new("thing"))),
+        },
+        move |call: HostCall<'_, ()>, _args, results| {
+            results[0] = Val::Own(call.resource_new(type_id, 1)?);
+            Ok(())
+        },
+    );
+    linker.instance(&b).func_new(
+        "consume",
+        FunctionType {
+            parameters: vec![FunctionParameter {
+                name: "h".to_owned(),
+                ty: ValueType::Own(ResourceType::new("thing")),
+            }],
+            result: None,
+        },
+        |_: HostCall<'_, ()>, _args, _results| Ok(()),
+    );
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let err = match linker.instantiate(&mut store, &component) {
+        Ok(_) => panic!("two identities for one declared resource type must not link"),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(&err, Error::TypeMismatch(mismatch)
+            if matches!(mismatch.position, wasm_component_model_polyfill::TypeMismatchPosition::HostFunctionRegistration { ref item, .. } if item == "thing")),
+        "expected a type mismatch naming the `thing` registration, got {err:?}"
     );
 }
 
@@ -763,14 +889,6 @@ async fn it_supports_resource_constructor_and_method_shaped_exports() {
     assert_eq!(
         static_ty.result,
         Some(ValueType::Primitive(PrimitiveType::U32))
-    );
-}
-
-#[wcmp_macros::test]
-#[ignore = "stub: typed strongly-shaped host resources — wasm_component_layer's `ResourceType::new::<T>(name)` keys the resource type by Rust `TypeId` and rejects mismatched reps at registration time"]
-async fn it_rejects_a_destructor_registered_against_a_mismatched_rust_type() {
-    todo!(
-        "the polyfill currently passes `u32` reps; if and when we adopt a strongly-typed resource API, this test should fail to compile or fail at registration when the destructor's parameter type disagrees with the registration type"
     );
 }
 
