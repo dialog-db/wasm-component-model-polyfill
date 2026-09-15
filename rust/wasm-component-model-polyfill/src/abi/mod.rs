@@ -27,6 +27,7 @@ pub mod flatten;
 pub mod layout;
 mod lift;
 mod lower;
+pub mod strings;
 
 pub use lift::{lift, lift_handle};
 pub use lower::lower;

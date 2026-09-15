@@ -8,8 +8,8 @@
 use crate::abi::context::LowerContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
 use crate::abi::lift::declared_resource_index;
+use crate::abi::strings;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
-use crate::executor::ir::StringEncoding;
 use crate::resource::{HandleEntry, ResourceHandle};
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
@@ -236,38 +236,18 @@ fn lower_string<T: 'static>(
     position: AbiPosition,
     ty: &ValueType,
 ) -> Result<()> {
-    let (bytes, units) = match ctx.string_encoding {
-        StringEncoding::Utf8 => (s.as_bytes().to_vec(), s.len()),
-        StringEncoding::Utf16 => {
-            let units: Vec<u16> = s.encode_utf16().collect();
-            let mut bytes = Vec::with_capacity(units.len() * 2);
-            for u in &units {
-                bytes.extend_from_slice(&u.to_le_bytes());
-            }
-            (bytes, units.len())
-        }
-        StringEncoding::CompactUtf16 => {
-            return Err(Error::from(AbiError {
-                position,
-                valtype: ty.clone(),
-                cause: AbiCause::InvalidEncoding {
-                    message:
-                        "Latin-1+UTF-16 string encoding is not yet implemented; the synchronous baseline tests use UTF-8"
-                            .to_owned(),
-                },
-            }));
-        }
-    };
+    let encoding = ctx.string_encoding;
+    let (bytes, units) = strings::encode(encoding, s);
     let ptr = if bytes.is_empty() {
         0
     } else {
-        ctx.allocate(bytes.len(), ty, position)?
+        ctx.allocate_aligned(bytes.len(), strings::alignment(encoding), ty, position)?
     };
     if !bytes.is_empty() {
         ctx.write_bytes(ptr, &bytes, position, ty)?;
     }
     ctx.write_bytes(offset, &(ptr as u32).to_le_bytes(), position, ty)?;
-    ctx.write_bytes(offset + 4, &(units as u32).to_le_bytes(), position, ty)?;
+    ctx.write_bytes(offset + 4, &units.to_le_bytes(), position, ty)?;
     Ok(())
 }
 

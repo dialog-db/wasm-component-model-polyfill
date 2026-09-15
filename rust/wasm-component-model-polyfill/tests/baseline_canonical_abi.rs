@@ -931,6 +931,77 @@ async fn it_supports_the_utf16_string_encoding() {
 }
 
 #[wcmp_macros::test]
+async fn it_round_trips_strings_through_the_latin1_utf16_encoding() {
+    // `echo` returns the lowered string as-is, so a round trip walks
+    // the lower (host picks a representation) and the lift (guest's
+    // length word says which) for both representations of the
+    // `latin1+utf16` encoding.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (core module $m
+            (memory (export "memory") 1)
+            (global $bump (mut i32) (i32.const 1024))
+            (func $realloc (export "cabi_realloc")
+                  (param $old i32) (param $old-size i32) (param $align i32) (param $size i32)
+                  (result i32)
+              (local $ptr i32)
+              global.get $bump local.get $align i32.add i32.const 1 i32.sub
+              local.get $align i32.const 1 i32.sub i32.const -1 i32.xor i32.and
+              local.set $ptr
+              local.get $ptr local.get $size i32.add global.set $bump
+              local.get $ptr)
+            (func (export "echo") (param i32 i32) (result i32)
+              (local $ret i32)
+              i32.const 0 i32.const 0 i32.const 4 i32.const 8 call $realloc local.set $ret
+              local.get $ret local.get 0 i32.store
+              local.get $ret local.get 1 i32.store offset=4
+              local.get $ret)
+            (func (export "units") (param i32 i32) (result i32)
+              local.get 1))
+          (core instance $i (instantiate $m))
+          (func (export "echo") (param "s" string) (result string)
+            (canon lift (core func $i "echo")
+                       string-encoding=latin1+utf16
+                       (memory (core memory $i "memory"))
+                       (realloc (core func $i "cabi_realloc"))))
+          (func (export "units") (param "s" string) (result u32)
+            (canon lift (core func $i "units")
+                       string-encoding=latin1+utf16
+                       (memory (core memory $i "memory"))
+                       (realloc (core func $i "cabi_realloc")))))
+        "#
+    );
+    let (mut store, instance) = instantiate(COMPONENT);
+    for text in ["héllo", "cake 🍰", ""] {
+        let result = call(
+            &instance,
+            &mut store,
+            "echo",
+            &[Val::String(text.to_owned())],
+        );
+        assert_eq!(result.as_ref(), &[Val::String(text.to_owned())], "{text:?}");
+    }
+    // The length word tells the representation apart: Latin-1 counts
+    // bytes with the high bit clear, UTF-16 counts code units with it
+    // set.
+    let latin1 = call(
+        &instance,
+        &mut store,
+        "units",
+        &[Val::String("héllo".to_owned())],
+    );
+    assert_eq!(latin1.as_ref(), &[Val::U32(5)]);
+    let utf16 = call(
+        &instance,
+        &mut store,
+        "units",
+        &[Val::String("cake 🍰".to_owned())],
+    );
+    assert_eq!(utf16.as_ref(), &[Val::U32(7 | (1 << 31))]);
+}
+
+#[wcmp_macros::test]
 async fn it_supports_typed_export_calls() {
     // Narrower complement to
     // `baseline_linking::it_supports_a_typed_export_call_surface`:

@@ -246,8 +246,6 @@ wasmtime/resources.wast:930 deferred-feature instantiation failed: link error: n
 wasmtime/resources.wast:961 cascade expected a trap `unknown handle index 0`, got `no instance to invoke`
 wasmtime/resources.wast:1091 trap-message expected a trap `handle index 1 used with the wrong type, expected guest-defined resource but found a different guest-defined resource`, got `instantiation error: the runtime substrate failed to instantiate the component
 wasmtime/resources.wast:1093 trap-message expected a trap `handle index 1 used with the wrong type, expected guest-defined resource but found a different guest-defined resource`, got `canonical ABI error: at result (type Own(ResourceType { label: "r2", index: So
-wasmtime/strings.wast:21 trap-message expected a trap `string pointer not aligned to 2`, got [String("")]
-wasmtime/strings.wast:23 deferred-feature expected a trap `string pointer not aligned to 2`, got `canonical ABI error: at result (type Primitive(String)): invalid encoding for value type: Latin-1+UTF-16 string encoding is not yet implemented; the synchronous bas
 wasmtime/tags.wast:3 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
 wasmtime/thread-transparency/blocks.wast:8 deferred-feature component rejected: unsupported component feature: asynchronous functions
 wasmtime/thread-transparency/blocks.wast:68 cascade no definition named `Tester`

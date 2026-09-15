@@ -7,8 +7,8 @@
 
 use crate::abi::context::LiftContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
+use crate::abi::strings;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
-use crate::executor::ir::StringEncoding;
 use crate::resource::{HandleEntry, ResourceHandle};
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::{Val, ValField};
@@ -250,32 +250,23 @@ fn lift_string<T: 'static>(
     position: AbiPosition,
     ty: &ValueType,
 ) -> Result<Val> {
-    let bytes = match ctx.string_encoding {
-        StringEncoding::Utf8 => ctx.read_bytes(ptr, units, position, ty)?,
-        StringEncoding::Utf16 => {
-            let byte_len = units
-                .checked_mul(2)
-                .ok_or_else(|| invalid_encoding(ty, position, "utf16 length overflow"))?;
-            let raw = ctx.read_bytes(ptr, byte_len, position, ty)?;
-            let units_vec: Vec<u16> = raw
-                .chunks_exact(2)
-                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-                .collect();
-            return String::from_utf16(&units_vec)
-                .map(Val::String)
-                .map_err(|_| invalid_encoding(ty, position, "invalid UTF-16 string"));
-        }
-        StringEncoding::CompactUtf16 => {
-            return Err(invalid_encoding(
-                ty,
-                position,
-                "Latin-1+UTF-16 string encoding is not yet implemented; the synchronous baseline tests use UTF-8",
-            ));
-        }
-    };
-    String::from_utf8(bytes)
+    let encoding = ctx.string_encoding;
+    let units = u32::try_from(units)
+        .map_err(|_| invalid_encoding(ty, position, "string length overflow"))?;
+    let alignment = strings::alignment(encoding);
+    if !ptr.is_multiple_of(alignment) {
+        return Err(invalid_encoding(
+            ty,
+            position,
+            &format!("string pointer not aligned to {alignment}"),
+        ));
+    }
+    let byte_len = strings::byte_length(encoding, units)
+        .ok_or_else(|| invalid_encoding(ty, position, "string length overflow"))?;
+    let raw = ctx.read_bytes(ptr, byte_len, position, ty)?;
+    strings::decode(encoding, units, &raw)
         .map(Val::String)
-        .map_err(|_| invalid_encoding(ty, position, "invalid UTF-8 string"))
+        .map_err(|message| invalid_encoding(ty, position, message))
 }
 
 fn read_u32(bytes: &[u8]) -> u32 {

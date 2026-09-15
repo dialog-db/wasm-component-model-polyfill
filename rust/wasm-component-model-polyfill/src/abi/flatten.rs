@@ -22,9 +22,8 @@ use wasm_runtime_layer::Val as RuntimeVal;
 
 use super::context::{LiftContext, LowerContext};
 use super::layout::{FlatType, flags_chunk_count, flat_types, join_flat_slots, size_of};
-use super::{lift, lower};
+use super::{lift, lower, strings};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
-use crate::executor::ir::StringEncoding;
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::{Val, ValField};
 
@@ -623,32 +622,23 @@ fn lift_string_from_memory<T: 'static>(
     ty: &ValueType,
     position: AbiPosition,
 ) -> Result<Val> {
-    match ctx.string_encoding {
-        StringEncoding::Utf8 => {
-            let bytes = ctx.read_bytes(ptr, units, position, ty)?;
-            String::from_utf8(bytes)
-                .map(Val::String)
-                .map_err(|_| invalid_encoding(ty, position, "invalid UTF-8 string"))
-        }
-        StringEncoding::Utf16 => {
-            let byte_len = units
-                .checked_mul(2)
-                .ok_or_else(|| invalid_encoding(ty, position, "utf16 length overflow"))?;
-            let raw = ctx.read_bytes(ptr, byte_len, position, ty)?;
-            let units_vec: Vec<u16> = raw
-                .chunks_exact(2)
-                .map(|p| u16::from_le_bytes([p[0], p[1]]))
-                .collect();
-            String::from_utf16(&units_vec)
-                .map(Val::String)
-                .map_err(|_| invalid_encoding(ty, position, "invalid UTF-16 string"))
-        }
-        StringEncoding::CompactUtf16 => Err(invalid_encoding(
+    let encoding = ctx.string_encoding;
+    let units = u32::try_from(units)
+        .map_err(|_| invalid_encoding(ty, position, "string length overflow"))?;
+    let alignment = strings::alignment(encoding);
+    if !ptr.is_multiple_of(alignment) {
+        return Err(invalid_encoding(
             ty,
             position,
-            "Latin-1+UTF-16 string encoding is not yet implemented; the synchronous baseline tests use UTF-8",
-        )),
+            &format!("string pointer not aligned to {alignment}"),
+        ));
     }
+    let byte_len = strings::byte_length(encoding, units)
+        .ok_or_else(|| invalid_encoding(ty, position, "string length overflow"))?;
+    let raw = ctx.read_bytes(ptr, byte_len, position, ty)?;
+    strings::decode(encoding, units, &raw)
+        .map(Val::String)
+        .map_err(|message| invalid_encoding(ty, position, message))
 }
 
 fn lower_string<T: 'static>(
@@ -657,33 +647,17 @@ fn lower_string<T: 'static>(
     position: AbiPosition,
     ty: &ValueType,
 ) -> Result<(usize, usize)> {
-    let (bytes, units) = match ctx.string_encoding {
-        StringEncoding::Utf8 => (s.as_bytes().to_vec(), s.len()),
-        StringEncoding::Utf16 => {
-            let units: Vec<u16> = s.encode_utf16().collect();
-            let mut bytes = Vec::with_capacity(units.len() * 2);
-            for u in &units {
-                bytes.extend_from_slice(&u.to_le_bytes());
-            }
-            (bytes, units.len())
-        }
-        StringEncoding::CompactUtf16 => {
-            return Err(invalid_encoding(
-                ty,
-                position,
-                "Latin-1+UTF-16 string encoding is not yet implemented; the synchronous baseline tests use UTF-8",
-            ));
-        }
-    };
+    let encoding = ctx.string_encoding;
+    let (bytes, units) = strings::encode(encoding, s);
     let ptr = if bytes.is_empty() {
         0
     } else {
-        ctx.allocate(bytes.len(), ty, position)?
+        ctx.allocate_aligned(bytes.len(), strings::alignment(encoding), ty, position)?
     };
     if !bytes.is_empty() {
         ctx.write_bytes(ptr, &bytes, position, ty)?;
     }
-    Ok((ptr, units))
+    Ok((ptr, units as usize))
 }
 
 fn take_i32(
