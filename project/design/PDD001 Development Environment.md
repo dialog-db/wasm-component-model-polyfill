@@ -148,6 +148,9 @@ The menu contains at least these commands:
 | `markdown format`      | Format the Markdown documents with Prettier                           |
 | `markdown lint`        | Check that the Markdown documents are formatted                       |
 | `project`              | Manage the project board (`project status`, `project new`, and so on) |
+| `fixtures`             | Rebuild the conformance fixtures with `wasm-tools` and `wac`          |
+| `smoke native`         | Run the end-to-end smoke test host as a native binary                 |
+| `smoke web`            | Serve the same smoke test compiled for the browser                    |
 
 Each build and test command runs a Nix derivation. `build` builds the crate
 derivation and prints its store path. A `tests` command builds a test archive

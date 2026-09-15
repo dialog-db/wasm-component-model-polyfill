@@ -1868,6 +1868,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcmp-smoke"
+version = "0.1.0"
+dependencies = [
+ "wasm-bindgen",
+ "wasm-component-model-polyfill",
+ "wcmp-macros",
+]
+
+[[package]]
 name = "web-sys"
 version = "0.3.85"
 source = "registry+https://github.com/rust-lang/crates.io-index"

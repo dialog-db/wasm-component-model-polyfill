@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>wcmp smoke</title>
+<style>
+  body { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 2rem; }
+  pre { white-space: pre-wrap; }
+</style>
+<h1>Wasm Component Model Polyfill smoke test</h1>
+<p>The same host program as <code>smoke native</code>, compiled to <code>wasm32-unknown-unknown</code> and running in this page.</p>
+<pre id="out">loading…</pre>
+<script type="module">
+  import init from "./wcmp-smoke.js";
+  const out = document.getElementById("out");
+  out.textContent = "";
+  window.report = (line) => {
+    out.textContent += line + "\n";
+    console.log(line);
+  };
+  await init();
+</script>

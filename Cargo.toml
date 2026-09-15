@@ -1,5 +1,9 @@
 [workspace]
-members = ["rust/wasm-component-model-polyfill", "rust/wcmp-macros"]
+members = [
+  "rust/wasm-component-model-polyfill",
+  "rust/wcmp-macros",
+  "rust/wcmp-smoke",
+]
 resolver = "2"
 
 [workspace.package]

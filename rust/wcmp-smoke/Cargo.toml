@@ -1,0 +1,16 @@
+[package]
+name = "wcmp-smoke"
+description = "One host program that walks the polyfill end to end, natively and in the browser"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+wasm-component-model-polyfill = { workspace = true }
+wcmp-macros = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { workspace = true }

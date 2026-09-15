@@ -114,6 +114,7 @@
         inherit (rustHelpers)
           buildCrate
           buildTestArchive
+          buildWasmCrate
           cargoChecks
           checkArtifactAlignment
           rustEnvironmentHook
@@ -265,6 +266,27 @@
             command = "nix flake check";
           };
 
+          "smoke" = {
+            description = "Run the end-to-end smoke test natively or in the browser";
+            subcommands = {
+              native = {
+                description = "Build the smoke test host as a derivation and run it";
+                command = ''
+                  "$(nix build --no-link --print-out-paths .#smoke-native)"/bin/wcmp-smoke
+                '';
+              };
+              web = {
+                description = "Build the smoke test page as a derivation and serve it";
+                command = ''
+                  site=$(nix build --no-link --print-out-paths .#smoke-web)
+                  port="''${1:-8765}"
+                  echo "smoke test page: http://127.0.0.1:$port/  (Ctrl-C stops the server)"
+                  ${pkgs.python3}/bin/python3 -m http.server --bind 127.0.0.1 --directory "$site" "$port"
+                '';
+              };
+            };
+          };
+
           # The real-guest fixtures under the conformance corpus, rebuilt
           # from their WIT and WAT sources with the flake's pinned
           # `wasm-tools` and `wac`, so a rebuild is byte-for-byte stable
@@ -280,6 +302,29 @@
         }
         // markdown.menuCommands
         // project.menuCommands;
+
+        # The smoke test host (`rust/wcmp-smoke`): one program that walks
+        # the polyfill end to end. Natively it is a binary; for the browser
+        # the same binary crate goes through `wasm-bindgen --target web` and
+        # ships with its page.
+        smokeNative = buildCrate {
+          pname = "wcmp-smoke";
+          version = "0.1.0";
+          cargoExtraArgs = "--package wcmp-smoke";
+        };
+        smokeWeb = buildWasmCrate {
+          pname = "wcmp-smoke-web";
+          version = "0.1.0";
+          cargoExtraArgs = "--package wcmp-smoke --bin wcmp-smoke";
+          doInstallCargoArtifacts = false;
+          doNotPostBuildInstallCargoBinaries = true;
+          installPhaseCommand = ''
+            mkdir -p $out
+            $WASM_BINDGEN_BIN --target web --no-typescript \
+              --out-dir $out target/wasm32-unknown-unknown/release/wcmp-smoke.wasm
+            cp ${./rust/wcmp-smoke/web/index.html} $out/index.html
+          '';
+        };
 
         # The polyfill crate itself, as a derivation per (target, profile).
         # Building an `rlib` installs no binary; the store path holds the
@@ -325,6 +370,9 @@
           # the pinned versions are one `nix build` away.
           wasm-tools = pkgs.wasm-tools;
           wac = pkgs.wac-cli;
+
+          smoke-native = smokeNative;
+          smoke-web = smokeWeb;
 
           polyfill-native-debug = polyfillCrate { profile = "dev"; };
           polyfill-native-release = polyfillCrate { profile = "release"; };
