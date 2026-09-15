@@ -40,7 +40,7 @@ use crate::backend::Backend;
 use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::{CanonOptions, LoweringSpec};
-use crate::linker::{HostFuncBody, HostResource};
+use crate::linker::{HostCall, HostFuncBody, HostResource};
 
 use super::ResourceDestructor;
 use crate::resource::{HandleTables, ResourceTypeId};
@@ -409,7 +409,8 @@ fn invoke_trampoline<T: 'static>(
 
     let host_arity = usize::from(signature.result.is_some());
     let mut host_results: Vec<Val> = vec![Val::Bool(false); host_arity];
-    host_func(store_ctx.data_mut(), &lifted, &mut host_results)?;
+    let call = HostCall::new(store_ctx.data_mut(), tables.clone(), resource_types.clone());
+    host_func(call, &lifted, &mut host_results)?;
 
     let Some(result_ty) = &signature.result else {
         return Ok(());

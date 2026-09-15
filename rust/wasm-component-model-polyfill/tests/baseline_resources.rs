@@ -13,8 +13,8 @@
 use std::sync::{Arc, Mutex};
 
 use wasm_component_model_polyfill::{
-    AbiCause, Component, Engine, Error, InterfaceIdentifier, Linker, ResourceHandle,
-    ResourceTypeId, Store, Val,
+    AbiCause, Component, Engine, Error, FunctionType, HostCall, InterfaceIdentifier, Linker,
+    ResourceHandle, ResourceType, ResourceTypeId, Store, Val, ValueType,
 };
 use wcmp_macros::component;
 
@@ -556,11 +556,103 @@ async fn it_shares_a_single_resource_type_across_two_imported_interfaces() {
     );
 }
 
+/// A component that imports a resource type and a `make` function
+/// returning `own<thing>`, and re-exports what `make` returns.
+const MINTER: &[u8] = component!(
+    r#"
+    (component
+      (import "pdd011-tests:host/things@0.1.0" (instance $i
+        (export "thing" (type $thing (sub resource)))
+        (export "make" (func (result (own $thing))))))
+      (alias export $i "make" (func $make))
+      (alias export $i "thing" (type $thing))
+      (core func $core-make (canon lower (func $make)))
+      (core module $m
+        (import "host" "make" (func $make (result i32)))
+        (func (export "run") (result i32) call $make))
+      (core instance $c (instantiate $m
+        (with "host" (instance (export "make" (func $core-make))))))
+      (func (export "run") (result (own $thing)) (canon lift (core func $c "run"))))
+    "#
+);
+
 #[wcmp_macros::test]
-#[ignore = "stub: the polyfill's host-function callback signature `Fn(&mut T, &[Val], &mut [Val])` does not give the host access to the per-store handle tables, so a host function cannot mint a fresh resource handle from inside a guest call (wasm_component_layer's `Func::new` passes a `StoreContextMut` that does)"]
 async fn it_lets_a_host_function_mint_a_resource_handle_during_a_guest_call() {
-    todo!(
-        "register a host function that returns `own<thing>`, where the function body mints a fresh handle from within the closure; today the closure has no path to `Store::resource_new`"
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, MINTER).expect("component parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let iface: InterfaceIdentifier = "pdd011-tests:host/things@0.1.0"
+        .parse()
+        .expect("identifier");
+    let type_id = linker.instance(&iface).resource(
+        "thing",
+        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
+    );
+    linker.instance(&iface).func_new(
+        "make",
+        FunctionType {
+            parameters: Vec::new(),
+            result: Some(ValueType::Own(ResourceType::new("thing"))),
+        },
+        move |call: HostCall<'_, ()>, _args, results| {
+            results[0] = Val::Own(call.resource_new(type_id, 42)?);
+            Ok(())
+        },
+    );
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiate");
+    let run = instance.get_func("run").expect("run export");
+    let results = run.call(&mut store, &[]).expect("run");
+    let [Val::Own(handle)] = results.as_ref() else {
+        panic!("expected an owned handle, got {results:?}");
+    };
+    assert_eq!(
+        handle.type_id, type_id,
+        "the handle carries the registered identity"
+    );
+    assert_eq!(handle.rep, 42, "the handle carries the rep the host minted");
+}
+
+#[wcmp_macros::test]
+async fn it_rejects_a_host_mint_against_an_unknown_resource_type() {
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, MINTER).expect("component parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let iface: InterfaceIdentifier = "pdd011-tests:host/things@0.1.0"
+        .parse()
+        .expect("identifier");
+    linker.instance(&iface).resource(
+        "thing",
+        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
+    );
+    let stranger = ResourceTypeId::fresh();
+    linker.instance(&iface).func_new(
+        "make",
+        FunctionType {
+            parameters: Vec::new(),
+            result: Some(ValueType::Own(ResourceType::new("thing"))),
+        },
+        move |call: HostCall<'_, ()>, _args, results| {
+            results[0] = Val::Own(call.resource_new(stranger, 1)?);
+            Ok(())
+        },
+    );
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiate");
+    let run = instance.get_func("run").expect("run export");
+    let err = run
+        .call(&mut store, &[])
+        .expect_err("minting against an unknown identity fails the call");
+    // The host error crosses the substrate as a trap, so the cause
+    // is read off the error chain's text.
+    let text = format!("{err:?}");
+    assert!(
+        text.contains("no host registration matches the transferred resource type"),
+        "expected the unregistered-resource-type cause in the error, got {text}"
     );
 }
 

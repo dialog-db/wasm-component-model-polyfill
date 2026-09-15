@@ -17,6 +17,8 @@ use crate::component::FunctionType;
 use crate::error::Result;
 use crate::value::Val;
 
+use super::host_call::HostCall;
+
 /// One registered host function inside an [`crate::LinkerInstance`].
 ///
 /// Wraps the `Fn`-trait-object closure and the declared
@@ -36,19 +38,20 @@ pub struct HostFunc<T> {
 
 /// The closure type a [`HostFunc`] holds.
 ///
-/// The closure takes a `&mut T` (the store's host-data slot), a
+/// The closure takes a ```HostCall` (the host's view of the call), a
 /// slice of host-lifted [`Val`] arguments, and a mutable slice the
 /// implementation fills with the host's `Val` results. The result
 /// slice is sized by the polyfill from the registration's declared
 /// signature.
-pub type HostFuncBody<T> = dyn Fn(&mut T, &[Val], &mut [Val]) -> Result<()> + Send + Sync + 'static;
+pub type HostFuncBody<T> =
+    dyn for<'a> Fn(HostCall<'a, T>, &[Val], &mut [Val]) -> Result<()> + Send + Sync + 'static;
 
 impl<T> HostFunc<T> {
     /// Construct a host-function payload from its signature and a
     /// closure.
     pub fn new(
         signature: FunctionType,
-        call: impl Fn(&mut T, &[Val], &mut [Val]) -> Result<()> + Send + Sync + 'static,
+        call: impl for<'a> Fn(HostCall<'a, T>, &[Val], &mut [Val]) -> Result<()> + Send + Sync + 'static,
     ) -> Self {
         Self {
             signature,

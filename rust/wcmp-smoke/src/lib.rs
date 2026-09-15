@@ -14,7 +14,9 @@ mod step;
 
 use std::fmt::Write as _;
 
-use wasm_component_model_polyfill::{Component, Engine, InterfaceIdentifier, Linker, Store, Val};
+use wasm_component_model_polyfill::{
+    Component, Engine, HostCall, InterfaceIdentifier, Linker, Store, Val,
+};
 use wcmp_macros::component;
 
 pub use crate::host_state::HostState;
@@ -246,8 +248,10 @@ fn greeter(engine: &Engine) -> Result<String, String> {
     let host: InterfaceIdentifier = "wcmp:smoke/host@0.1.0".parse().map_err(fail)?;
     linker.instance(&host).func_wrap(
         "tally",
-        |state: &mut HostState, (n,): (u32,)| -> wasm_component_model_polyfill::Result<()> {
-            state.tallies.push(n);
+        |mut state: HostCall<'_, HostState>,
+         (n,): (u32,)|
+         -> wasm_component_model_polyfill::Result<()> {
+            state.data_mut().tallies.push(n);
             Ok(())
         },
     );

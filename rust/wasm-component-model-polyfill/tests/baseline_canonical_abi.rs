@@ -18,7 +18,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use wasm_component_model_polyfill::{Component, Engine, Linker, Store, Val};
+use wasm_component_model_polyfill::{Component, Engine, HostCall, Linker, Store, Val};
 use wcmp_macros::component;
 
 #[cfg(target_arch = "wasm32")]
@@ -152,7 +152,7 @@ async fn it_passes_a_record_argument_to_a_host_function() {
             }],
             result: Some(ValueType::Primitive(PrimitiveType::S32)),
         },
-        |_: &mut (), args, results| {
+        |_: HostCall<'_, ()>, args, results| {
             let Val::Record(fields) = &args[0] else {
                 panic!("expected record");
             };
@@ -360,7 +360,7 @@ async fn it_passes_a_variant_argument_to_a_host_function() {
             }],
             result: Some(ValueType::Primitive(PrimitiveType::S32)),
         },
-        |_: &mut (), args, results| {
+        |_: HostCall<'_, ()>, args, results| {
             let Val::Variant {
                 discriminant,
                 payload,
@@ -516,7 +516,7 @@ async fn it_passes_an_enum_argument_to_a_host_function() {
             }],
             result: Some(ValueType::Primitive(PrimitiveType::S32)),
         },
-        |_: &mut (), args, results| {
+        |_: HostCall<'_, ()>, args, results| {
             let Val::Enum(case) = &args[0] else {
                 panic!("expected enum");
             };
@@ -590,7 +590,7 @@ async fn it_passes_a_flags_argument_to_a_host_function() {
             }],
             result: Some(ValueType::Primitive(PrimitiveType::U32)),
         },
-        |_: &mut (), args, results| {
+        |_: HostCall<'_, ()>, args, results| {
             let Val::Flags(active) = &args[0] else {
                 panic!("expected flags");
             };
@@ -750,8 +750,8 @@ async fn it_observes_cabi_realloc_during_string_lower() {
         "pdd-tests:host/probe@0.1.0".parse().expect("identifier");
     linker.instance(&iface).func_wrap(
         "bump",
-        |data: &mut i32, (n,): (i32,)| -> wasm_component_model_polyfill::Result<()> {
-            *data += n;
+        |mut data: HostCall<'_, i32>, (n,): (i32,)| -> wasm_component_model_polyfill::Result<()> {
+            *data.data_mut() += n;
             Ok(())
         },
     );
@@ -817,8 +817,8 @@ async fn it_invokes_post_return_after_a_sync_lift() {
         "pdd-tests:host/probe@0.1.0".parse().expect("identifier");
     linker.instance(&iface).func_wrap(
         "tick",
-        |data: &mut u32, (): ()| -> wasm_component_model_polyfill::Result<()> {
-            *data += 1;
+        |mut data: HostCall<'_, u32>, (): ()| -> wasm_component_model_polyfill::Result<()> {
+            *data.data_mut() += 1;
             Ok(())
         },
     );
@@ -1048,11 +1048,11 @@ async fn it_observes_cabi_realloc_alignment_for_record_allocations() {
             }],
             result: None,
         },
-        |observed: &mut Arc<Mutex<Vec<u32>>>, args, _| {
+        |mut observed: HostCall<'_, Arc<Mutex<Vec<u32>>>>, args, _| {
             let Val::U32(alignment) = args[0] else {
                 panic!("expected u32 alignment");
             };
-            observed.lock().expect("lock").push(alignment);
+            observed.data_mut().lock().expect("lock").push(alignment);
             Ok(())
         },
     );
@@ -1217,7 +1217,7 @@ async fn it_spills_a_wide_parameter_tuple_when_calling_a_host_function() {
                 .collect(),
             result: Some(ValueType::Primitive(PrimitiveType::U32)),
         },
-        |_: &mut (), args, results| {
+        |_: HostCall<'_, ()>, args, results| {
             assert_eq!(args.len(), 17);
             let mut sum = 0u32;
             for arg in args {

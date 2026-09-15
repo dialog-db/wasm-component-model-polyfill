@@ -8,7 +8,7 @@
 
 use std::sync::{Arc, Mutex};
 use wasm_component_model_polyfill::{
-    Component, Engine, Error, ExternType, ExternalName, FunctionParameter, FunctionType,
+    Component, Engine, Error, ExternType, ExternalName, FunctionParameter, FunctionType, HostCall,
     InterfaceIdentifier, LinkError, Linker, PrimitiveType, Store, Val, ValueType,
 };
 use wcmp_macros::component;
@@ -336,7 +336,9 @@ async fn it_defines_a_typed_host_function() {
     let mut instance = linker.instance(&iface);
     instance.func_wrap(
         "double",
-        |_data: &mut (), (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> { Ok(n * 2) },
+        |_data: HostCall<'_, ()>, (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> {
+            Ok(n * 2)
+        },
     );
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
@@ -358,7 +360,7 @@ async fn it_defines_a_typed_host_function() {
     let mut bad_instance = bad_linker.instance(&iface);
     bad_instance.func_wrap(
         "double",
-        |_data: &mut (), (n,): (i32,)| -> wasm_component_model_polyfill::Result<i64> {
+        |_data: HostCall<'_, ()>, (n,): (i32,)| -> wasm_component_model_polyfill::Result<i64> {
             Ok(i64::from(n * 2))
         },
     );
@@ -537,11 +539,15 @@ async fn it_dispatches_to_multiple_host_functions_in_one_interface() {
     let mut iface_view = linker.instance(&iface);
     iface_view.func_wrap(
         "incr",
-        |_: &mut (), (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> { Ok(n + 1) },
+        |_: HostCall<'_, ()>, (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> {
+            Ok(n + 1)
+        },
     );
     iface_view.func_wrap(
         "decr",
-        |_: &mut (), (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> { Ok(n - 1) },
+        |_: HostCall<'_, ()>, (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> {
+            Ok(n - 1)
+        },
     );
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
@@ -609,11 +615,11 @@ async fn it_passes_a_string_argument_to_a_host_function() {
             }],
             result: None,
         },
-        |observed: &mut Arc<Mutex<Option<String>>>, args, _| {
+        |mut observed: HostCall<'_, Arc<Mutex<Option<String>>>>, args, _| {
             let Val::String(s) = &args[0] else {
                 panic!("expected string");
             };
-            *observed.lock().expect("lock") = Some(s.clone());
+            *observed.data_mut().lock().expect("lock") = Some(s.clone());
             Ok(())
         },
     );
@@ -664,7 +670,7 @@ async fn it_propagates_a_host_function_error_through_the_call() {
             parameters: Vec::new(),
             result: None,
         },
-        |_: &mut (), _args, _results| {
+        |_: HostCall<'_, ()>, _args, _results| {
             Err(Error::Internal {
                 message: "host refused".to_owned(),
             })
@@ -716,8 +722,8 @@ async fn it_supports_typed_host_function_with_unit_result() {
     let iface: InterfaceIdentifier = "pdd008-tests:host/io@0.1.0".parse().expect("identifier");
     linker.instance(&iface).func_wrap(
         "ping",
-        |data: &mut u32, (): ()| -> wasm_component_model_polyfill::Result<()> {
-            *data += 1;
+        |mut data: HostCall<'_, u32>, (): ()| -> wasm_component_model_polyfill::Result<()> {
+            *data.data_mut() += 1;
             Ok(())
         },
     );
@@ -760,7 +766,7 @@ async fn it_rejects_a_component_whose_import_signature_disagrees_with_the_regist
     let iface: InterfaceIdentifier = "pdd008:host/maths@0.1.0".parse().expect("identifier");
     linker.instance(&iface).func_wrap(
         "double",
-        |_: &mut (), (n,): (i32,)| -> wasm_component_model_polyfill::Result<i64> {
+        |_: HostCall<'_, ()>, (n,): (i32,)| -> wasm_component_model_polyfill::Result<i64> {
             Ok(i64::from(n) * 2)
         },
     );
@@ -912,7 +918,9 @@ async fn it_rejects_an_import_with_a_required_item_when_the_registration_version
     let too_old: InterfaceIdentifier = "pdd008-tests:host/maths@0.1.0".parse().expect("identifier");
     linker.instance(&too_old).func_wrap(
         "double",
-        |_: &mut (), (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> { Ok(n * 2) },
+        |_: HostCall<'_, ()>, (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> {
+            Ok(n * 2)
+        },
     );
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let Err(err) = linker.instantiate(&mut store, &component) else {
@@ -987,10 +995,10 @@ async fn it_supports_a_plain_named_top_level_import() {
     let mut linker: Linker<Vec<String>> = Linker::new(&engine);
     linker.root().func_wrap(
         "log",
-        |messages: &mut Vec<String>,
+        |mut messages: HostCall<'_, Vec<String>>,
          (message,): (String,)|
          -> wasm_component_model_polyfill::Result<()> {
-            messages.push(message);
+            messages.data_mut().push(message);
             Ok(())
         },
     );
@@ -1054,7 +1062,9 @@ async fn it_supports_a_plain_named_instance_import() {
     let mut linker: Linker<()> = Linker::new(&engine);
     linker.root().instance("host").func_wrap(
         "double",
-        |_: &mut (), (x,): (u32,)| -> wasm_component_model_polyfill::Result<u32> { Ok(x * 2) },
+        |_: HostCall<'_, ()>, (x,): (u32,)| -> wasm_component_model_polyfill::Result<u32> {
+            Ok(x * 2)
+        },
     );
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker

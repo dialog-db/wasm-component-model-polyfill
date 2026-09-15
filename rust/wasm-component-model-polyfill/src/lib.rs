@@ -179,7 +179,7 @@ pub use crate::error::{
 pub use crate::identifier::{IdentifierParseError, InterfaceIdentifier, PackageName};
 pub use crate::instance::{ExportInstance, Func, Instance, InstanceExports, TypedFunc};
 pub use crate::linker::{
-    ComponentParameters, ComponentResult, ComponentValue, Linker, LinkerInstance,
+    ComponentParameters, ComponentResult, ComponentValue, HostCall, Linker, LinkerInstance,
 };
 pub use crate::resource::{ResourceHandle, ResourceTypeId};
 pub use crate::store::Store;

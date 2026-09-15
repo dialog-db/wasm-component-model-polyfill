@@ -19,6 +19,7 @@
 //! [`Error::Link`]: crate::Error::Link
 
 mod component_value;
+mod host_call;
 mod host_func;
 mod host_resource;
 #[allow(clippy::module_inception)]
@@ -28,6 +29,7 @@ mod registration;
 mod resolve;
 
 pub use component_value::{ComponentParameters, ComponentResult, ComponentValue};
+pub use host_call::HostCall;
 pub use host_func::HostFuncBody;
 pub use host_resource::{DestructorBody, HostResource};
 pub use linker::Linker;

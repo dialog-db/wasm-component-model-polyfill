@@ -10,6 +10,7 @@ use crate::resource::ResourceTypeId;
 use crate::value::Val;
 
 use super::component_value::{ComponentParameters, ComponentResult, function_type_for};
+use super::host_call::HostCall;
 use super::host_func::HostFunc;
 use super::host_resource::HostResource;
 use super::registration::InstanceRegistration;
@@ -24,7 +25,7 @@ use super::registration::InstanceRegistration;
 /// Two registration modes are exposed:
 ///
 /// - [`Self::func_new`] (untyped): take an explicit
-///   [`FunctionType`] and a closure over `&mut T`,
+///   [`FunctionType`] and a closure over [`HostCall`],
 ///   `&[Val]`, `&mut [Val]`.
 /// - [`Self::func_wrap`] (typed): take a closure with statically-
 ///   typed Rust arguments and return; the polyfill derives the
@@ -79,7 +80,7 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
 
     /// Register an *untyped* host function. The caller supplies the
     /// declared [`FunctionType`] explicitly; the closure takes the
-    /// store's host-data slot, a slice of polyfill [`Val`]
+    /// [`HostCall`] context, a slice of polyfill [`Val`]
     /// arguments, and a slice the implementation fills with the
     /// returned values. The result slice's length is one if the
     /// signature declares a result, zero otherwise.
@@ -92,7 +93,7 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
         &mut self,
         name: impl Into<String>,
         ty: FunctionType,
-        func: impl Fn(&mut T, &[Val], &mut [Val]) -> Result<()> + Send + Sync + 'static,
+        func: impl for<'c> Fn(HostCall<'c, T>, &[Val], &mut [Val]) -> Result<()> + Send + Sync + 'static,
     ) {
         let host = HostFunc::new(ty, func);
         self.registration.funcs.insert(name.into(), host);
@@ -130,12 +131,12 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
     where
         Params: ComponentParameters,
         Ret: ComponentResult,
-        F: Fn(&mut T, Params) -> Result<Ret> + Send + Sync + 'static,
+        F: for<'c> Fn(HostCall<'c, T>, Params) -> Result<Ret> + Send + Sync + 'static,
     {
         let signature = function_type_for::<Params, Ret>();
-        let host = HostFunc::new(signature, move |data, args, results| {
+        let host = HostFunc::new(signature, move |call, args, results| {
             let params = Params::from_vals(args)?;
-            let ret = func(data, params)?;
+            let ret = func(call, params)?;
             if let Some(val) = ret.into_val()
                 && !results.is_empty()
             {
