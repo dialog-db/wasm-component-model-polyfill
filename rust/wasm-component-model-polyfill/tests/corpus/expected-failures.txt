@@ -147,8 +147,8 @@ wasmtime/import.wast:15 deferred-feature instantiation failed: link error: no re
 wasmtime/instance.wast:161 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
 wasmtime/instance.wast:182 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
 wasmtime/instance.wast:191 deferred-feature component rejected: unsupported component feature: imports nested more than one level
-wasmtime/instance.wast:216 deferred-feature component rejected: unsupported component feature: instantiation of an imported core module
-wasmtime/instance.wast:224 deferred-feature component rejected: unsupported component feature: instantiation of an imported core module
+wasmtime/instance.wast:216 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
+wasmtime/instance.wast:224 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
 wasmtime/memory64.wast:24 deferred-feature component rejected: unsupported component feature: 64-bit memories in adapter modules
 wasmtime/memory64.wast:122 cascade no instance to invoke
 wasmtime/memory64.wast:126 cascade no instance to invoke
@@ -161,13 +161,13 @@ wasmtime/modules.wast:75 deferred-feature instantiation failed: link error: no r
 wasmtime/modules.wast:81 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `foo`: no registered linker instance satisfies import `foo`
 wasmtime/modules.wast:193 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `foo`: no registered linker instance satisfies import `foo`
 wasmtime/modules.wast:284 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `foo`: no registered linker instance satisfies import `foo`
-wasmtime/modules.wast:299 deferred-feature component rejected: unsupported component feature: re-exporting an imported core module
-wasmtime/modules.wast:316 deferred-feature component rejected: unsupported component feature: instantiation of an imported core module
-wasmtime/modules.wast:417 deferred-feature component rejected: unsupported component feature: instantiation of an imported core module
+wasmtime/modules.wast:299 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `src`: no registered linker instance satisfies import `src`
+wasmtime/modules.wast:316 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `reexport`: no registered linker instance satisfies import `reexport`
+wasmtime/modules.wast:417 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `provider`: no registered linker instance satisfies import `provider`
 wasmtime/modules.wast:482 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
 wasmtime/modules.wast:485 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `tag-module`: no registered linker instance satisfies import `tag-module`
-wasmtime/nested.wast:149 deferred-feature component rejected: unsupported component feature: instantiation of an imported core module
-wasmtime/nested.wast:219 deferred-feature component rejected: unsupported component feature: instantiation of an imported core module
+wasmtime/nested.wast:149 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `c`: no registered linker instance satisfies import `c`
+wasmtime/nested.wast:219 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `c`: no registered linker instance satisfies import `c`
 wasmtime/nested.wast:410 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host-return-two`: no registered linker instance satisfies import `host-return-two`
 wasmtime/resources.wast:182 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
 wasmtime/resources.wast:191 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`

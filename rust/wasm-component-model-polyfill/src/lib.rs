@@ -26,8 +26,9 @@
 //! - [`Module`], [`CoreInstance`], and [`CoreExtern`] — the handle
 //!   for a core module a component exports or the host loads from
 //!   bytes, described by [`ModuleImport`], [`ModuleExport`],
-//!   [`CoreExternType`], and [`CoreValueType`], and instantiated by
-//!   the host with imports it supplies.
+//!   [`CoreExternType`], and [`CoreValueType`], instantiated by the
+//!   host with imports it supplies, or registered through
+//!   [`LinkerInstance::module`] for a component that imports it.
 //! - [`TypedFunc`] — the typed counterpart to [`Func`] obtained
 //!   through [`Func::typed`], whose Rust parameter tuple and return
 //!   type are checked against the export's component-level

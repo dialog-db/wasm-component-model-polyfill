@@ -37,7 +37,8 @@ use crate::module::Module;
 use super::ir::{
     CanonOptions, CoreInstanceExport, CoreSignature, CoreSourceItem, EntityIndex, ExecutorIr,
     ExportSpec, ImportSource, Initializer, LoweringSpec, ModuleEntry, ModuleExportSpec,
-    ResourceSpec, ResourceTableSpec, StringEncoding, TrampolineSpec, TranscodeOp,
+    ModuleSource, NamedImportSource, ResourceSpec, ResourceTableSpec, StringEncoding,
+    TrampolineSpec, TranscodeOp,
 };
 
 /// Everything one translation of a component binary produces.
@@ -253,16 +254,34 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 for def in defs.iter() {
                     imports.push(state.lift_core_def(def, &trampoline_to_spec)?);
                 }
-                state.runtime_instance_to_module.push(module_index);
+                state.runtime_instance_to_module.push(Some(module_index));
                 state.initializers.push(Initializer::InstantiateModule {
                     module_index,
                     imports: imports.into_boxed_slice(),
                 });
             }
-            GlobalInitializer::InstantiateModule(InstantiateModule::Import(_, _), _) => {
-                return Err(Error::unsupported(
-                    "instantiation of an imported core module",
-                ));
+            GlobalInitializer::InstantiateModule(InstantiateModule::Import(import, args), _) => {
+                let (import_index, item_name) = import_path(&translation, *import)?;
+                let mut imports = Vec::new();
+                for (module, items) in args.iter() {
+                    for (name, def) in items.iter() {
+                        imports.push(NamedImportSource {
+                            module: module.clone(),
+                            name: name.clone(),
+                            source: state.lift_core_def(def, &trampoline_to_spec)?,
+                        });
+                    }
+                }
+                state.runtime_instance_to_module.push(None);
+                state
+                    .initializers
+                    .push(Initializer::InstantiateImportedModule {
+                        source: ModuleSource::Import {
+                            import_index,
+                            item_name,
+                        },
+                        imports: imports.into_boxed_slice(),
+                    });
             }
             GlobalInitializer::LowerImport { .. } => {
                 // The trampoline's runtime-layer function is built
@@ -531,12 +550,21 @@ fn collect_export_spec(
             out.modules.push(ModuleExportSpec {
                 name: name.to_owned(),
                 path: path.into(),
-                module_index,
+                source: ModuleSource::Static(module_index),
             });
             Ok(())
         }
-        EnvironExport::ModuleImport { .. } => {
-            Err(Error::unsupported("re-exporting an imported core module"))
+        EnvironExport::ModuleImport { import, .. } => {
+            let (import_index, item_name) = import_path(translation, *import)?;
+            out.modules.push(ModuleExportSpec {
+                name: name.to_owned(),
+                path: path.into(),
+                source: ModuleSource::Import {
+                    import_index,
+                    item_name,
+                },
+            });
+            Ok(())
         }
         EnvironExport::Instance { exports, .. } => {
             let mut nested = path.to_vec();
@@ -612,7 +640,7 @@ fn import_path(
 /// data the main walk produces; trampoline/lowering tables are
 /// pre-built and read-only at this stage.
 struct ProjectionState {
-    runtime_instance_to_module: Vec<usize>,
+    runtime_instance_to_module: Vec<Option<usize>>,
     initializers: Vec<Initializer>,
     num_runtime_memories: usize,
     num_runtime_reallocs: usize,

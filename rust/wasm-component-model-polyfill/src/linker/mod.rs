@@ -25,6 +25,7 @@ mod host_resource;
 #[allow(clippy::module_inception)]
 mod linker;
 mod linker_instance;
+mod module_matching;
 mod registration;
 mod resolve;
 

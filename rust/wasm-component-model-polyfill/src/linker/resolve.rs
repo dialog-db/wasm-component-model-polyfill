@@ -32,7 +32,7 @@ use std::collections::HashMap;
 use semver::Version;
 
 use crate::component::{
-    Component, ComponentImport, ExternType, ExternalName, FunctionType, InstanceItem,
+    Component, ComponentImport, ExternType, ExternalName, FunctionType, InstanceItem, ModuleType,
 };
 use crate::error::{Error, LinkError, Result, TypeMismatch, TypeMismatchPosition, TypeRendering};
 use crate::identifier::InterfaceIdentifier;
@@ -40,6 +40,7 @@ use crate::resource::ResourceTypeId;
 use crate::types::{ResourceType, ValueType};
 
 use super::linker::Linker;
+use super::module_matching::module_satisfies;
 use super::registration::InstanceRegistration;
 
 /// The outcome of resolving a single component import.
@@ -230,6 +231,10 @@ fn resolve_plain<T: 'static>(
             .resource(name)
             .map(|_| ImportBinding::Root)
             .ok_or_else(unresolved),
+        ExternType::Module(declared) => {
+            check_module_item(&import.name, name, declared, root)?;
+            Ok(ImportBinding::Root)
+        }
         ExternType::Instance(instance) => match root.instance(name) {
             Some(registration) => {
                 check_items(import, registration, &ItemPosition::Plain(name))?;
@@ -240,7 +245,7 @@ fn resolve_plain<T: 'static>(
         },
         _ => Err(Error::from(LinkError::UnsupportedRegistration {
             import: import.name.clone(),
-            reason: "plain-named imports of types, modules, components, or values",
+            reason: "plain-named imports of types, components, or values",
         })),
     }
 }
@@ -294,10 +299,13 @@ fn check_items<T: 'static>(
             ExternType::Resource(_) | ExternType::ResourceEquals(_) => {
                 check_resource_item(&item.name, registration, &import.name)?;
             }
-            // Type, Instance, Module, Component, Value: the WIT shapes
-            // typical interfaces use are functions plus opaque types;
-            // anything else either has no runtime presence or is out
-            // of the synchronous baseline.
+            ExternType::Module(declared) => {
+                check_module_item(&import.name, &item.name, declared, registration)?;
+            }
+            // Type, Instance, Component, Value: the WIT shapes typical
+            // interfaces use are functions plus opaque types; anything
+            // else either has no runtime presence or is out of the
+            // synchronous baseline.
             _ => {}
         }
     }
@@ -315,6 +323,29 @@ fn check_resource_item<T: 'static>(
     Err(Error::from(LinkError::UnresolvedImport {
         import: import_name.clone(),
     }))
+}
+
+/// A module-typed import, or a module item of an instance import,
+/// needs a registered module under its name that satisfies the
+/// declared module type.
+fn check_module_item<T: 'static>(
+    import_name: &ExternalName,
+    item_name: &str,
+    declared: &ModuleType,
+    registration: &InstanceRegistration<T>,
+) -> Result<()> {
+    let module = registration.module(item_name).ok_or_else(|| {
+        Error::from(LinkError::UnresolvedImport {
+            import: import_name.clone(),
+        })
+    })?;
+    module_satisfies(declared, module).map_err(|reason| {
+        Error::from(LinkError::IncompatibleModule {
+            import: import_name.clone(),
+            item: item_name.to_owned(),
+            reason,
+        })
+    })
 }
 
 fn check_function_item<T: 'static>(

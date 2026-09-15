@@ -60,12 +60,14 @@ pub struct ExecutorIr {
     pub resource_tables: Box<[Option<ResourceTableSpec>]>,
     /// Maps each runtime-instance position (the index a
     /// [`CoreInstanceExport`] uses) to the polyfill's `modules`
-    /// slot the instance was instantiated against. The runtime-
-    /// instance position is the count of preceding
-    /// [`Initializer::InstantiateModule`] directives, so the n-th
-    /// entry here is the owning module of the n-th instance the
-    /// executor builds.
-    pub runtime_instance_to_module: Box<[usize]>,
+    /// slot the instance was instantiated against, or `None` for an
+    /// instance of an imported module, whose exports the translator
+    /// names rather than indexes. The runtime-instance position is
+    /// the count of preceding [`Initializer::InstantiateModule`] and
+    /// [`Initializer::InstantiateImportedModule`] directives, so the
+    /// n-th entry here describes the n-th instance the executor
+    /// builds.
+    pub runtime_instance_to_module: Box<[Option<usize>]>,
     /// The number of runtime memory slots `Initializer::ExtractMemory`
     /// populates. Slot 0 corresponds to the first directive, slot 1
     /// to the second, and so on.
@@ -112,8 +114,26 @@ pub struct ModuleExportSpec {
     /// module, from the root of the export tree inward, or empty for
     /// a root-level module export.
     pub path: Box<[ExternalName]>,
-    /// Index into [`ExecutorIr::modules`].
-    pub module_index: usize,
+    /// Where the module comes from.
+    pub source: ModuleSource,
+}
+
+/// Where a core module the component names comes from.
+pub enum ModuleSource {
+    /// A module the component binary contains: an index into
+    /// [`ExecutorIr::modules`].
+    Static(usize),
+    /// A module the component imports, resolved at instantiation
+    /// time against the linker's registered modules.
+    Import {
+        /// Index into the polyfill component's imports
+        /// (`Component::imports`): the import that is the module, or
+        /// the imported instance that holds it.
+        import_index: usize,
+        /// The module's name within the imported instance, or `None`
+        /// when the import is itself the module.
+        item_name: Option<String>,
+    },
 }
 
 /// The kind of a core module's exported entity. Maps 1:1 onto
@@ -144,6 +164,16 @@ pub enum Initializer {
         /// in the same declaration order
         /// [`ModuleEntry::imports`] enumerates.
         imports: Box<[ImportSource]>,
+    },
+
+    /// Instantiate a core module the component imports, with the
+    /// imports the component supplies by name. The registered module
+    /// decides the order it takes them in.
+    InstantiateImportedModule {
+        /// Where the module comes from; always [`ModuleSource::Import`].
+        source: ModuleSource,
+        /// The items the component supplies, by two-level name.
+        imports: Box<[NamedImportSource]>,
     },
 
     /// Extract a core memory from a previously-instantiated core
@@ -184,6 +214,17 @@ pub enum Initializer {
         /// Where the underlying core function comes from.
         source: ImportSource,
     },
+}
+
+/// One import an imported core module receives, by the two-level
+/// name the module asks for it under.
+pub struct NamedImportSource {
+    /// The first-level name.
+    pub module: String,
+    /// The second-level name.
+    pub name: String,
+    /// Where the item comes from.
+    pub source: ImportSource,
 }
 
 /// Where a single core-Wasm item comes from when satisfying a

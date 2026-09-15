@@ -12,6 +12,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::module::Module;
+
 use super::host_func::HostFunc;
 use super::host_resource::HostResource;
 
@@ -33,6 +35,9 @@ pub struct InstanceRegistration<T> {
     /// The host-resource registrations keyed by the resource-type
     /// label the component-side import declares.
     pub resources: BTreeMap<String, HostResource<T>>,
+    /// The core modules registered for module-typed imports, keyed
+    /// by the name the component-side import declares.
+    pub modules: BTreeMap<String, Module>,
     /// Nested registrations for plain-named instance imports, keyed
     /// by the plain name. Only the root registration holds these: a
     /// component that imports `(instance)` under a plain name finds
@@ -46,6 +51,7 @@ impl<T> InstanceRegistration<T> {
         Self {
             funcs: BTreeMap::new(),
             resources: BTreeMap::new(),
+            modules: BTreeMap::new(),
             instances: BTreeMap::new(),
         }
     }
@@ -63,6 +69,11 @@ impl<T> InstanceRegistration<T> {
     /// Look up a registered host resource by its label.
     pub fn resource(&self, label: &str) -> Option<&HostResource<T>> {
         self.resources.get(label)
+    }
+
+    /// Look up a registered core module by its name.
+    pub fn module(&self, name: &str) -> Option<&Module> {
+        self.modules.get(name)
     }
 }
 

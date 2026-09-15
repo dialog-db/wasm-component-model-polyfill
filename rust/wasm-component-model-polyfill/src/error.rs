@@ -238,6 +238,22 @@ pub enum LinkError {
         available: Vec<Option<Version>>,
     },
 
+    /// The core module registered for a module-typed import does not
+    /// satisfy the module type the import declares: an export the
+    /// type lists is missing or has the wrong type, or the module
+    /// asks for an import the type does not list. The reason is in
+    /// Wasmtime's wording.
+    #[error("the module registered as `{item}` for import `{import}` has the wrong type: {reason}")]
+    IncompatibleModule {
+        /// The name of the import the module was registered for.
+        import: ExternalName,
+        /// The name the module was registered under: the import's
+        /// own name, or the item's name inside an instance import.
+        item: String,
+        /// Why the module does not satisfy the declared type.
+        reason: String,
+    },
+
     /// The import's shape requires host-item registration the
     /// polyfill does not yet support (any host function or host
     /// resource). The structured reason names which capability is

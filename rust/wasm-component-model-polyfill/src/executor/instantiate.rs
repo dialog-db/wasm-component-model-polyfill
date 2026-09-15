@@ -22,6 +22,7 @@ use crate::component::{Component, ExternType, ExternalName};
 use crate::error::{Error, InstantiationError, LinkError, Result};
 use crate::instance::{ExportedFunction, ExportedModule, Instance};
 use crate::linker::{HostFuncBody, ImportBinding, InstanceRegistration, Linker, Resolution};
+use crate::module::Module;
 use crate::resource::{ResourceTableRuntime, TableId};
 use crate::store::Store;
 
@@ -32,7 +33,7 @@ use super::intrinsics::{
 };
 use super::ir::{
     CoreInstanceExport, CoreSourceItem, ExecutorIr, ExportSpec, ImportSource, Initializer,
-    LoweringSpec, ModuleEntry, ResourceSpec, TrampolineSpec,
+    LoweringSpec, ModuleEntry, ModuleSource, ResourceSpec, TrampolineSpec,
 };
 use super::trampoline::{
     AbiRuntimeState, ResourceRuntime, build_resource_drop_trampoline,
@@ -171,6 +172,19 @@ pub fn instantiate<T: 'static>(
                         .map_err(Error::from)?;
                 items.core_instances.push(instance);
             }
+            Initializer::InstantiateImportedModule { source, imports } => {
+                let module = lookup_module(linker, component, resolution, source)?;
+                let mut runtime_imports = Imports::default();
+                for import in imports.iter() {
+                    let value = resolve_source(ir, &items, store, &import.source)?;
+                    runtime_imports.define(&import.module, &import.name, value);
+                }
+                let instance =
+                    RuntimeInstance::new(store.inner_mut(), &module.inner, &runtime_imports)
+                        .map_err(InstantiationError::SubstrateFailure)
+                        .map_err(Error::from)?;
+                items.core_instances.push(instance);
+            }
             Initializer::ExtractMemory { slot, source } => {
                 let extern_value = resolve_source(ir, &items, store, source)?;
                 let RuntimeExtern::Memory(memory) = extern_value else {
@@ -255,7 +269,7 @@ pub fn instantiate<T: 'static>(
     }
 
     let function_exports = collect_function_exports(ir, &items, store)?;
-    let module_exports = collect_module_exports(ir)?;
+    let module_exports = collect_module_exports(ir, linker, component, resolution)?;
     Ok(Instance {
         core_instances: items.core_instances.into_boxed_slice(),
         function_exports,
@@ -427,6 +441,41 @@ fn resolve_resource_runtime<T: 'static>(
     Ok(ResourceRuntime::from_registration(host))
 }
 
+/// The module a [`ModuleSource`] names: a compiled module of the
+/// component, or the module the linker registered for the import.
+fn lookup_module<T: 'static>(
+    linker: &Linker<T>,
+    component: &Component,
+    resolution: &Resolution,
+    source: &ModuleSource,
+) -> Result<Module> {
+    match source {
+        ModuleSource::Static(index) => component
+            .ir
+            .modules
+            .get(*index)
+            .map(|entry| entry.module.clone())
+            .ok_or_else(|| internal("module source names a module slot outside the IR")),
+        ModuleSource::Import {
+            import_index,
+            item_name,
+        } => {
+            let (registration, item) = registration_and_item(
+                linker,
+                component,
+                resolution,
+                *import_index,
+                item_name.as_deref(),
+            )?;
+            registration.module(&item).cloned().ok_or_else(|| {
+                Error::from(LinkError::UnresolvedImport {
+                    import: component.imports[*import_index].name.clone(),
+                })
+            })
+        }
+    }
+}
+
 /// Look up the host-function payload registered against the import
 /// the lowering targets. Returns the closure as an `Arc` for the
 /// trampoline to capture.
@@ -516,16 +565,20 @@ fn resolve_core_instance_export<T: 'static>(
         .runtime_instance_to_module
         .get(export.instance_index)
         .ok_or_else(|| internal("instance_index out of bounds for runtime_instance_to_module"))?;
-    let owning_module = ir.modules.get(module_index).ok_or_else(|| {
-        internal("module index in runtime_instance_to_module is out of bounds for ir.modules")
-    })?;
     let name: &str = match &export.item {
         CoreSourceItem::Name(s) => s.as_str(),
-        CoreSourceItem::Index(entity) => owning_module
-            .entity_to_name
-            .get(entity)
-            .map(String::as_str)
-            .ok_or_else(|| internal("CoreSourceItem::Index has no corresponding export name"))?,
+        CoreSourceItem::Index(entity) => {
+            let owning_module = module_index
+                .and_then(|index| ir.modules.get(index))
+                .ok_or_else(|| {
+                    internal("an indexed core export names an instance of an imported module")
+                })?;
+            owning_module
+                .entity_to_name
+                .get(entity)
+                .map(String::as_str)
+                .ok_or_else(|| internal("CoreSourceItem::Index has no corresponding export name"))?
+        }
     };
     runtime_instance
         .get_export(store.inner(), name)
@@ -571,19 +624,21 @@ fn collect_function_exports<T: 'static>(
     Ok(out.into_boxed_slice())
 }
 
-/// Walk the IR's module exports and pair each with the compiled
-/// module the translator produced for it.
-fn collect_module_exports(ir: &ExecutorIr) -> Result<Box<[ExportedModule]>> {
+/// Walk the IR's module exports and pair each with the module it
+/// names: one the translator compiled, or one the linker registered
+/// for an import the component re-exports.
+fn collect_module_exports<T: 'static>(
+    ir: &ExecutorIr,
+    linker: &Linker<T>,
+    component: &Component,
+    resolution: &Resolution,
+) -> Result<Box<[ExportedModule]>> {
     let mut out = Vec::with_capacity(ir.module_exports.len());
     for spec in ir.module_exports.iter() {
-        let entry = ir
-            .modules
-            .get(spec.module_index)
-            .ok_or_else(|| internal("module export names a module slot outside the IR"))?;
         out.push(ExportedModule {
             name: spec.name.clone(),
             path: spec.path.clone(),
-            module: entry.module.clone(),
+            module: lookup_module(linker, component, resolution, &spec.source)?,
         });
     }
     Ok(out.into_boxed_slice())

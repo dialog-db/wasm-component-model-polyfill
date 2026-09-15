@@ -6,7 +6,7 @@
 
 use wasm_component_model_polyfill::{
     Component, CoreExternType, CoreValueType, Engine, Error, ExternType, ExternalName,
-    InstantiationError, Linker, Module, Store,
+    InstantiationError, LinkError, Linker, Module, Store,
 };
 use wcmp_macros::{component, wasm};
 
@@ -276,4 +276,259 @@ async fn it_refuses_bytes_that_are_not_a_core_module() {
     let engine = Engine::new().expect("engine construction succeeds");
     assert!(Module::new(&engine, COMPONENT).await.is_err());
     assert!(Module::new(&engine, b"not wasm").await.is_err());
+}
+
+/// A component that imports a core module under a plain name,
+/// instantiates it, and lifts the module's `f`.
+const IMPORTS_MODULE: &[u8] = component!(
+    r#"
+    (component
+      (import "m" (core module $m
+        (export "f" (func (result i32)))))
+      (core instance $i (instantiate $m))
+      (func (export "f") (result u32) (canon lift (core func $i "f"))))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_instantiates_a_core_module_the_host_registered() {
+    const PROVIDES_F: &[u8] = wasm!(
+        r#"
+        (module (func (export "f") (result i32) i32.const 101))
+        "#
+    );
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, IMPORTS_MODULE)
+        .await
+        .expect("a component importing a core module parses");
+    let module = Module::new(&engine, PROVIDES_F)
+        .await
+        .expect("the module compiles");
+
+    // The import is described with its module type.
+    assert_eq!(component.imports.len(), 1);
+    assert_eq!(
+        component.imports[0].name,
+        ExternalName::Plain("m".to_owned())
+    );
+    let ExternType::Module(module_type) = &component.imports[0].ty else {
+        panic!(
+            "expected a module import, got {:?}",
+            component.imports[0].ty
+        );
+    };
+    assert_eq!(module_type.exports.len(), 1);
+    assert_eq!(module_type.exports[0].name, "f");
+
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker.root().module("m", &module);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the component instantiates the registered module");
+    let f = instance
+        .get_func("f")
+        .expect("`f` is exported")
+        .typed::<(), u32>()
+        .expect("typed conversion succeeds");
+    assert_eq!(f.call(&mut store, ()).await.expect("call succeeds"), 101);
+}
+
+#[wcmp_macros::test]
+async fn it_reports_a_missing_module_import_as_a_link_error() {
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, IMPORTS_MODULE)
+        .await
+        .expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let err = match linker.instantiate(&mut store, &component).await {
+        Ok(_) => panic!("an unregistered module import must not link"),
+        Err(err) => err,
+    };
+    match err {
+        Error::Link(inner) => match *inner {
+            LinkError::UnresolvedImport { import } => {
+                assert_eq!(import, ExternalName::Plain("m".to_owned()));
+            }
+            other => panic!("expected an unresolved import, got {other:?}"),
+        },
+        other => panic!("expected a link error, got {other:?}"),
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_rejects_a_registered_module_that_does_not_satisfy_the_declared_type() {
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, IMPORTS_MODULE)
+        .await
+        .expect("component parses");
+
+    /// Link the component against `module` and return the reason
+    /// the resolver rejected it.
+    async fn reason(engine: &Engine, component: &Component, module: &Module) -> String {
+        let mut linker: Linker<()> = Linker::new(engine);
+        linker.root().module("m", module);
+        let mut store: Store<()> = Store::new(engine, ()).expect("store");
+        match linker.instantiate(&mut store, component).await {
+            Err(Error::Link(inner)) => match *inner {
+                LinkError::IncompatibleModule {
+                    import,
+                    item,
+                    reason,
+                } => {
+                    assert_eq!(import, ExternalName::Plain("m".to_owned()));
+                    assert_eq!(item, "m");
+                    reason
+                }
+                other => panic!("expected an incompatible module, got {other:?}"),
+            },
+            Err(other) => panic!("expected a link error, got {other:?}"),
+            Ok(_) => panic!("a module that does not satisfy the type must not link"),
+        }
+    }
+
+    // A missing export.
+    let empty = Module::new(&engine, wasm!("(module)"))
+        .await
+        .expect("compiles");
+    assert_eq!(
+        reason(&engine, &component, &empty).await,
+        "module export `f` not defined"
+    );
+
+    // An export of the wrong type.
+    let wrong_type = Module::new(
+        &engine,
+        wasm!(r#"(module (func (export "f") (param i32) (result i32) local.get 0))"#),
+    )
+    .await
+    .expect("compiles");
+    assert_eq!(
+        reason(&engine, &component, &wrong_type).await,
+        "module export `f` has the wrong type: expected type `(func (result i32))`, \
+         found type `(func (param i32) (result i32))`"
+    );
+
+    // An export of the wrong kind.
+    let wrong_kind = Module::new(
+        &engine,
+        wasm!(r#"(module (global (export "f") i32 i32.const 0))"#),
+    )
+    .await
+    .expect("compiles");
+    assert_eq!(
+        reason(&engine, &component, &wrong_kind).await,
+        "module export `f` has the wrong type: expected func found global"
+    );
+
+    // An import the declared type does not list.
+    let extra_import = Module::new(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (import "env" "something" (func))
+              (func (export "f") (result i32) i32.const 1))
+            "#
+        ),
+    )
+    .await
+    .expect("compiles");
+    assert_eq!(
+        reason(&engine, &component, &extra_import).await,
+        "module import `env::something` not defined"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_instantiates_a_module_registered_inside_an_instance_import() {
+    // Wasmtime's wast runner shape: the host registers a module as
+    // an item of the `host` instance, and the component reaches it
+    // through the instance.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (import "host" (instance $host
+            (export "simple-module" (core module
+              (export "f" (func (result i32)))
+              (export "g" (global i32))))))
+          (core instance $i (instantiate (module $host "simple-module")))
+          (core module $verify
+            (import "host" "f" (func $f (result i32)))
+            (import "host" "g" (global $g i32))
+            (func (export "sum") (result i32)
+              call $f
+              global.get $g
+              i32.add))
+          (core instance $v (instantiate $verify (with "host" (instance $i))))
+          (func (export "sum") (result u32) (canon lift (core func $v "sum"))))
+        "#
+    );
+    const SIMPLE: &[u8] = wasm!(
+        r#"
+        (module
+          (global (export "g") i32 i32.const 100)
+          (func (export "f") (result i32) i32.const 101))
+        "#
+    );
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
+    let simple = Module::new(&engine, SIMPLE).await.expect("compiles");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker
+        .root()
+        .instance("host")
+        .module("simple-module", &simple);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the component instantiates the module through the instance import");
+    let sum = instance
+        .get_func("sum")
+        .expect("`sum` is exported")
+        .typed::<(), u32>()
+        .expect("typed");
+    assert_eq!(sum.call(&mut store, ()).await.expect("call succeeds"), 201);
+}
+
+#[wcmp_macros::test]
+async fn it_re_exports_an_imported_module() {
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (import "m" (core module $m (export "f" (func (result i32)))))
+          (export "m2" (core module $m)))
+        "#
+    );
+    const PROVIDES_F: &[u8] = wasm!(
+        r#"
+        (module (func (export "f") (result i32) i32.const 7))
+        "#
+    );
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
+    let module = Module::new(&engine, PROVIDES_F).await.expect("compiles");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker.root().module("m", &module);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiation succeeds");
+    let re_exported = instance
+        .get_module("m2")
+        .expect("`m2` is the re-exported module");
+    assert_eq!(re_exported.exports().len(), 1);
+    assert_eq!(re_exported.exports()[0].name, "f");
+    re_exported
+        .instantiate(&mut store, &[])
+        .await
+        .expect("the re-exported module instantiates");
 }

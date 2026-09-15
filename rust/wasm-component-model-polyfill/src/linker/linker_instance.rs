@@ -6,6 +6,7 @@ use core::marker::PhantomData;
 
 use crate::component::FunctionType;
 use crate::error::Result;
+use crate::module::Module;
 use crate::resource::ResourceTypeId;
 use crate::value::Val;
 
@@ -39,7 +40,8 @@ use super::registration::InstanceRegistration;
 /// A third mode, [`Self::resource`], registers a host-owned
 /// resource type with a synchronous destructor closure. It produces
 /// a [`HostResource<T>`] that the linker stores against the
-/// resource's label.
+/// resource's label. A fourth, [`Self::module`], registers a core
+/// [`Module`] for a module-typed import.
 ///
 /// [`Linker`]: super::Linker
 /// [`Linker::instance`]: super::Linker::instance
@@ -135,6 +137,23 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
         let type_id = resource.type_id;
         self.registration.resources.insert(label.into(), resource);
         type_id
+    }
+
+    /// Register a core module for a module-typed import,
+    /// `(import "name" (core module …))` on the root view or an
+    /// `(export "name" (core module …))` item of an instance import
+    /// on an interface or nested view. The component instantiates
+    /// the module itself, with the imports it names, and can
+    /// re-export it. At link time the resolver checks that the
+    /// module provides every export the import's module type
+    /// declares and asks for no import the type does not list.
+    ///
+    /// Calling `module` twice with the same name replaces the prior
+    /// registration.
+    pub fn module(&mut self, name: impl Into<String>, module: &Module) {
+        self.registration
+            .modules
+            .insert(name.into(), module.clone());
     }
 
     /// Register a *typed* host function. The closure's argument
