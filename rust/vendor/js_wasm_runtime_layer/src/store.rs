@@ -104,6 +104,7 @@ impl<T: 'static> WasmStore<T, Engine> for Store<T> {
             memories: Slab::new(),
             drop_resources: Vec::new(),
             data,
+            pending_host_error: None,
         }))
     }
 
@@ -179,6 +180,15 @@ pub struct StoreInner<T: 'static> {
     /// Dropping a resource too early is safe, but the resulting behavior is not specified and may
     /// include incorrect results, memory leaks or panics, etc.
     drop_resources: Vec<DropResource>,
+
+    /// PATCH (wcmp): the error a host function returned during the
+    /// current guest call, if any. A host error is thrown into the guest
+    /// as a JS exception, which a guest `catch_all` can intercept and
+    /// replace (an adapter re-traps with "uncaught exception"). The
+    /// native backend surfaces the host's own error on the outer call
+    /// because a trap there is not catchable; this slot restores that:
+    /// the outer call reports the first host error when the guest fails.
+    pub(crate) pending_host_error: Option<anyhow::Error>,
 }
 
 impl<T: 'static> StoreInner<T> {

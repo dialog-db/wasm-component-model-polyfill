@@ -92,7 +92,17 @@ macro_rules! func_wrapper {
                 Err(err) => {
                     #[cfg(feature = "tracing")]
                     tracing::error!("{err:?}");
-                    Err(js_sys::Error::new(&format!("host function failed: {err:#}")).into())
+                    let message = format!("host function failed: {err:#}");
+                    // Keep the host's own error for the outer call; see
+                    // `StoreInner::pending_host_error`.
+                    let store: &mut StoreInner<T> = unsafe { &mut *($store as *mut StoreInner<T>) };
+                    // The first error wins: an adapter that catches this
+                    // exception re-traps through the same shim, and that
+                    // second error must not replace the cause.
+                    if store.pending_host_error.is_none() {
+                        store.pending_host_error = Some(err);
+                    }
+                    Err(js_sys::Error::new(&message).into())
                 }
             }
         });
@@ -210,6 +220,7 @@ impl WasmFunc<Engine> for Func {
         let ctx: &mut StoreInner<_> = &mut *ctx.as_context_mut();
         let inner: &FuncInner = &ctx.funcs[self.id];
         let ty = inner.ty.clone();
+        let func = inner.func.clone();
 
         #[cfg(feature = "tracing")]
         let _span = tracing::debug_span!("call_guest", ?args, %ty).entered();
@@ -219,11 +230,21 @@ impl WasmFunc<Engine> for Func {
             .map(|v| v.to_stored_js(ctx))
             .collect::<Result<Array>>()?;
 
-        let res = inner
-            .func
-            .apply(&JsValue::UNDEFINED, &args)
-            .map_err(JsErrorMsg::from)
-            .context("Guest function threw an error")?;
+        // PATCH (wcmp): a failed call reports the host's own error when a
+        // host function failed during it; see `StoreInner::pending_host_error`.
+        let res = match func.apply(&JsValue::UNDEFINED, &args) {
+            Ok(res) => {
+                ctx.pending_host_error = None;
+                res
+            }
+            Err(js_error) => {
+                return Err(match ctx.pending_host_error.take() {
+                    Some(err) => err.context("Guest function threw an error"),
+                    None => anyhow::Error::from(JsErrorMsg::from(js_error))
+                        .context("Guest function threw an error"),
+                });
+            }
+        };
 
         #[cfg(feature = "tracing")]
         tracing::debug!(?res,ty=?inner.ty);

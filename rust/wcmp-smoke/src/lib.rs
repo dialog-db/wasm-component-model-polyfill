@@ -141,6 +141,28 @@ const DROPPER: &[u8] = component!(
     "#
 );
 
+/// Run every step and return the report.
+pub fn run() -> Vec<Step> {
+    let engine = match Engine::new() {
+        Ok(engine) => engine,
+        Err(err) => {
+            return vec![Step {
+                name: "foundations",
+                outcome: Outcome::Failed(format!("Engine::new failed: {err}")),
+            }];
+        }
+    };
+    vec![
+        Step::run("foundations", || foundations(&engine)),
+        Step::run("real guest from wasm-tools", || real_guest(&engine)),
+        Step::run("host function and canonical ABI values", || {
+            greeter(&engine)
+        }),
+        Step::run("host resource with a destructor", || dropper(&engine)),
+        composition(&engine),
+    ]
+}
+
 /// The report as text: one line per step and a summary line.
 pub fn render(steps: &[Step]) -> String {
     let mut out = String::new();
@@ -306,7 +328,6 @@ fn dropper(engine: &Engine) -> Result<String, String> {
 
 /// A `wac` composition of two real guests runs through the adapter
 /// the translator emits between them.
-#[cfg(not(target_arch = "wasm32"))]
 fn composition(engine: &Engine) -> Step {
     Step::run("wac composition through an adapter", || {
         let component = Component::new(engine, COMPOSITION).map_err(fail)?;
@@ -325,40 +346,4 @@ fn composition(engine: &Engine) -> Step {
             COMPOSITION.len()
         ))
     })
-}
-
-/// The browser backend of the runtime layer cannot yet load the adapter
-/// modules a composition needs (they import the instance-flag globals,
-/// and its module parser stops at `TypeRef::Global`). The patched
-/// backend lifts this.
-#[cfg(target_arch = "wasm32")]
-fn composition(_engine: &Engine) -> Step {
-    let _ = COMPOSITION;
-    Step::skipped(
-        "wac composition through an adapter",
-        "the browser backend cannot load a core module that imports a global yet; \
-         see the patched-backend work",
-    )
-}
-
-/// Run every step and return the report.
-pub fn run() -> Vec<Step> {
-    let engine = match Engine::new() {
-        Ok(engine) => engine,
-        Err(err) => {
-            return vec![Step {
-                name: "foundations",
-                outcome: Outcome::Failed(format!("Engine::new failed: {err}")),
-            }];
-        }
-    };
-    vec![
-        Step::run("foundations", || foundations(&engine)),
-        Step::run("real guest from wasm-tools", || real_guest(&engine)),
-        Step::run("host function and canonical ABI values", || {
-            greeter(&engine)
-        }),
-        Step::run("host resource with a destructor", || dropper(&engine)),
-        composition(&engine),
-    ]
 }

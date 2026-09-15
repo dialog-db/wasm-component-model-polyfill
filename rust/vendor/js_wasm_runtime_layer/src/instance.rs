@@ -1,6 +1,6 @@
 use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use fxhash::FxHashMap;
 use js_sys::{JsString, Object, Reflect, WebAssembly};
 use wasm_bindgen::{JsCast, JsValue};
@@ -41,7 +41,7 @@ impl WasmInstance<Engine> for Instance {
         let _span = tracing::debug_span!("Instance::new").entered();
         let store: &mut StoreInner<_> = &mut *store.as_context_mut();
 
-        let instance;
+        let instantiated;
         let parsed;
         let imports_object;
 
@@ -55,9 +55,24 @@ impl WasmInstance<Engine> for Instance {
             // TODO: async instantiation, possibly through a `.ready().await` call on the returned
             // module
             // let instance = WebAssembly::instantiate_module(&module.module, &imports);
-            instance = WebAssembly::Instance::new(&module.module, &imports_object)
-                .map_err(JsErrorMsg::from)
-                .with_context(|| "Failed to instantiate module")?;
+            instantiated = WebAssembly::Instance::new(&module.module, &imports_object);
+        };
+
+        // PATCH (wcmp): a start function can call a host function; report
+        // the host's own error when it failed. See
+        // `StoreInner::pending_host_error`.
+        let instance = match instantiated {
+            Ok(instance) => {
+                store.pending_host_error = None;
+                instance
+            }
+            Err(js_error) => {
+                return Err(match store.pending_host_error.take() {
+                    Some(err) => err.context("Failed to instantiate module"),
+                    None => anyhow::Error::from(JsErrorMsg::from(js_error))
+                        .context("Failed to instantiate module"),
+                });
+            }
         };
 
         #[cfg(feature = "tracing")]
