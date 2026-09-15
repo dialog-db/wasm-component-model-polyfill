@@ -51,3 +51,16 @@ generated and runs under the harness like the vendored corpora.
 
 `build.sh` records the exact commands. The `.wasm` binaries are checked
 in next to their sources.
+
+## Baseline
+
+The progress summary on the native target, as of 2026-09-15 (`tests
+conformance` prints the current one; the browser differs by the three
+lines of `expected-failures.web.txt`):
+
+| Corpus     | Directives | Passed | Pass % | Expected failures by category                                                             |
+| ---------- | ---------- | ------ | ------ | ----------------------------------------------------------------------------------------- |
+| `cm`       | 1126       | 988    | 87.7   | deferred-feature 14, substrate 4, validation 22, trap-message 18, defect 14, cascade 66   |
+| `fixtures` | 6          | 6      | 100.0  | none                                                                                      |
+| `wasmtime` | 469        | 342    | 72.9   | deferred-feature 57, substrate 8, validation 1, trap-message 16, defect 12, cascade 33    |
+| total      | 1601       | 1336   | 83.4   | deferred-feature 71, substrate 12, validation 23, trap-message 34, defect 26, cascade 99  |

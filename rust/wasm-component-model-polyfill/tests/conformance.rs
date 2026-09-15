@@ -357,7 +357,9 @@ fn chain(err: &Error) -> String {
         let _ = write!(out, "{e}");
         current = e.source();
     }
-    out
+    // One line per reason: a substrate trap carries a multi-line
+    // backtrace, and the expectation list is line-oriented.
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn directive_span(directive: &WastDirective<'_>) -> Span {
