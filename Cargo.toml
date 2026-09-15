@@ -4,6 +4,9 @@ members = [
   "rust/wcmp-macros",
   "rust/wcmp-smoke",
 ]
+# The vendored backend keeps its own dependency table (it is upstream's
+# crate with two patches), so it is not a member.
+exclude = ["rust/vendor/js_wasm_runtime_layer"]
 resolver = "2"
 
 [workspace.package]
@@ -52,3 +55,9 @@ inherits = "release"
 opt-level = "s"
 debug = 0
 strip = "debuginfo"
+
+# The browser backend of the runtime layer, patched for memory and global
+# imports and for host error propagation. See
+# rust/vendor/js_wasm_runtime_layer/PATCHES.md.
+[patch.crates-io]
+js_wasm_runtime_layer = { path = "rust/vendor/js_wasm_runtime_layer" }

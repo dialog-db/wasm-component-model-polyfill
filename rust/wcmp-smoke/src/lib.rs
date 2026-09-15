@@ -141,27 +141,7 @@ const DROPPER: &[u8] = component!(
     "#
 );
 
-/// Run every step and return the report.
-pub fn run() -> Vec<Step> {
-    let engine = match Engine::new() {
-        Ok(engine) => engine,
-        Err(err) => {
-            return vec![Step {
-                name: "foundations",
-                outcome: Outcome::Failed(format!("Engine::new failed: {err}")),
-            }];
-        }
-    };
-    vec![
-        Step::run("foundations", || foundations(&engine)),
-        Step::run("real guest from wasm-tools", || real_guest(&engine)),
-        Step::run("host function and canonical ABI values", || {
-            greeter(&engine)
-        }),
-        Step::run("host resource with a destructor", || dropper(&engine)),
-        composition(&engine),
-    ]
-}
+
 
 /// The report as text: one line per step and a summary line.
 pub fn render(steps: &[Step]) -> String {
@@ -361,4 +341,26 @@ fn composition(_engine: &Engine) -> Step {
         "the browser backend cannot load a core module that imports a global yet; \
          see the patched-backend work",
     )
+}
+
+/// Run every step and return the report.
+pub fn run() -> Vec<Step> {
+    let engine = match Engine::new() {
+        Ok(engine) => engine,
+        Err(err) => {
+            return vec![Step {
+                name: "foundations",
+                outcome: Outcome::Failed(format!("Engine::new failed: {err}")),
+            }];
+        }
+    };
+    vec![
+        Step::run("foundations", || foundations(&engine)),
+        Step::run("real guest from wasm-tools", || real_guest(&engine)),
+        Step::run("host function and canonical ABI values", || {
+            greeter(&engine)
+        }),
+        Step::run("host resource with a destructor", || dropper(&engine)),
+        composition(&engine),
+    ]
 }

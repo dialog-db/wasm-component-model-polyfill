@@ -1,0 +1,303 @@
+use alloc::{
+    boxed::Box,
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
+
+use anyhow::{bail, Result};
+use fxhash::FxHashMap;
+use js_sys::{Uint8Array, WebAssembly};
+use wasm_runtime_layer::{
+    backend::WasmModule, ExportType, ExternType, FuncType, GlobalType, ImportType, MemoryType,
+    RefType, TableType, ValType,
+};
+
+use crate::{ArgumentVec, Engine, JsErrorMsg};
+
+#[derive(Debug, Clone)]
+/// A WebAssembly Module.
+pub struct Module {
+    /// The id of the module
+    pub(crate) id: usize,
+    /// The imports of the module
+    pub(crate) parsed: Arc<ParsedModule>,
+}
+
+/// A WebAssembly Module.
+#[derive(Debug)]
+pub(crate) struct ModuleInner {
+    /// The inner module
+    pub(crate) module: js_sys::WebAssembly::Module,
+    /// The parsed module, containing import and export signatures
+    pub(crate) parsed: Arc<ParsedModule>,
+}
+
+impl WasmModule<Engine> for Module {
+    fn new(engine: &Engine, bytes: &[u8]) -> Result<Self> {
+        let parsed = parse_module(bytes)?;
+
+        let module =
+            WebAssembly::Module::new(&Uint8Array::from(bytes).into()).map_err(JsErrorMsg::from)?;
+
+        let parsed = Arc::new(parsed);
+
+        let module = ModuleInner {
+            module,
+            parsed: parsed.clone(),
+        };
+
+        let module = engine.borrow_mut().insert_module(module, parsed);
+
+        Ok(module)
+    }
+
+    fn exports(&self) -> Box<dyn '_ + Iterator<Item = ExportType<'_>>> {
+        Box::new(self.parsed.exports.iter().map(|(name, ty)| ExportType {
+            name: name.as_str(),
+            ty: ty.clone(),
+        }))
+    }
+
+    fn get_export(&self, name: &str) -> Option<ExternType> {
+        self.parsed.exports.get(name).cloned()
+    }
+
+    fn imports(&self) -> Box<dyn '_ + Iterator<Item = ImportType<'_>>> {
+        Box::new(
+            self.parsed
+                .imports
+                .iter()
+                .map(|((module, name), kind)| ImportType {
+                    module,
+                    name,
+                    ty: kind.clone(),
+                }),
+        )
+    }
+}
+
+/// Convert a [`wasmparser::ValType`] to a [`ValType`].
+fn value_type_from(ty: &wasmparser::ValType) -> Result<ValType> {
+    match ty {
+        wasmparser::ValType::I32 => Ok(ValType::I32),
+        wasmparser::ValType::I64 => Ok(ValType::I64),
+        wasmparser::ValType::F32 => Ok(ValType::F32),
+        wasmparser::ValType::F64 => Ok(ValType::F64),
+        wasmparser::ValType::V128 => Ok(ValType::V128),
+        wasmparser::ValType::Ref(ty) => Ok(ref_type_from(ty)?.into()),
+    }
+}
+
+/// Convert a [`wasmparser::RefType`] to a [`RefType`].
+fn ref_type_from(ty: &wasmparser::RefType) -> Result<RefType> {
+    if ty.is_func_ref() {
+        Ok(RefType::FuncRef)
+    } else if ty.is_extern_ref() {
+        Ok(RefType::ExternRef)
+    } else {
+        bail!("reference type {ty:?} is not supported in the wasm_runtime_layer")
+    }
+}
+
+/// Convert a [`wasmparser::TableType`] to a [`TableType`].
+fn table_type_from(ty: &wasmparser::TableType) -> Result<TableType> {
+    Ok(TableType::new(
+        ref_type_from(&ty.element_type)?,
+        ty.initial.try_into().expect("table size"),
+        ty.maximum.map(|v| v.try_into().expect("table size")),
+    ))
+}
+
+#[derive(Debug)]
+/// A parsed core module with imports and exports
+pub(crate) struct ParsedModule {
+    /// Import signatures
+    pub(crate) imports: FxHashMap<(String, String), ExternType>,
+    /// Export signatures
+    pub(crate) exports: FxHashMap<String, ExternType>,
+}
+
+/// Parses a module from bytes and extracts import and export signatures
+pub(crate) fn parse_module(bytes: &[u8]) -> Result<ParsedModule> {
+    let parser = wasmparser::Parser::new(0);
+
+    let mut imports = FxHashMap::default();
+    let mut exports = FxHashMap::default();
+
+    let mut types = Vec::new();
+
+    let mut functions = Vec::new();
+    let mut memories = Vec::new();
+    let mut tables = Vec::new();
+    let mut globals = Vec::new();
+
+    parser.parse_all(bytes).try_for_each(|payload| {
+        match payload? {
+            wasmparser::Payload::TypeSection(section) => {
+                for ty in section {
+                    let ty = ty?;
+
+                    let mut subtypes = ty.types();
+                    let subtype = subtypes.next();
+
+                    let ty = match (subtype, subtypes.next()) {
+                        (Some(subtype), None) => match &subtype.composite_type {
+                            wasmparser::CompositeType {
+                                inner: wasmparser::CompositeInnerType::Func(func_type),
+                                shared: false,
+                                describes_idx: None,
+                                descriptor_idx: None,
+                            } => {
+                                let params = func_type
+                                    .params()
+                                    .iter()
+                                    .map(value_type_from)
+                                    .collect::<Result<ArgumentVec<_>>>()?;
+                                let results = func_type
+                                    .results()
+                                    .iter()
+                                    .map(value_type_from)
+                                    .collect::<Result<ArgumentVec<_>>>()?;
+                                FuncType::new(params, results)
+                            }
+                            _ => unreachable!(),
+                        },
+                        _ => unimplemented!(),
+                    };
+
+                    types.push(ty);
+                }
+            }
+            wasmparser::Payload::FunctionSection(section) => {
+                for type_index in section {
+                    let type_index = type_index?;
+
+                    let ty = &types[type_index as usize];
+
+                    functions.push(ty.clone());
+                }
+            }
+            wasmparser::Payload::TableSection(section) => {
+                for table in section {
+                    let table = table?;
+
+                    tables.push(table_type_from(&table.ty)?);
+                }
+            }
+            wasmparser::Payload::MemorySection(section) => {
+                for memory in section {
+                    let memory = memory?;
+
+                    memories.push(MemoryType::new(
+                        memory.initial.try_into().expect("memory size"),
+                        memory.maximum.map(|v| v.try_into().expect("memory size")),
+                    ))
+                }
+            }
+            wasmparser::Payload::GlobalSection(section) => {
+                for global in section {
+                    let global = global?;
+
+                    let ty = value_type_from(&global.ty.content_type)?;
+                    let mutable = global.ty.mutable;
+
+                    globals.push(GlobalType::new(ty, mutable));
+                }
+            }
+            wasmparser::Payload::TagSection(_section) =>
+            {
+                #[cfg(feature = "tracing")]
+                for tag in _section {
+                    let tag = tag?;
+
+                    tracing::trace!(?tag, "tag");
+                }
+            }
+            wasmparser::Payload::ImportSection(section) => {
+                for import in section.into_imports() {
+                    let import = import?;
+                    let ty = match import.ty {
+                        wasmparser::TypeRef::Func(index) => {
+                            let sig = types[index as usize].clone().with_name(import.name);
+                            functions.push(sig.clone());
+                            ExternType::Func(sig)
+                        }
+                        wasmparser::TypeRef::Table(ty) => {
+                            // functions.push(sig.clone());
+                            tables.push(table_type_from(&ty)?);
+                            ExternType::Table(table_type_from(&ty)?)
+                        }
+                        // PATCH (wcmp): imported memories and globals take
+                        // their index slot exactly as defined ones do, so a
+                        // later export by index resolves.
+                        wasmparser::TypeRef::Memory(memory) => {
+                            let ty = MemoryType::new(
+                                memory.initial.try_into().expect("memory size"),
+                                memory.maximum.map(|v| v.try_into().expect("memory size")),
+                            );
+                            memories.push(ty);
+                            ExternType::Memory(ty)
+                        }
+                        wasmparser::TypeRef::Global(global) => {
+                            let ty = GlobalType::new(
+                                value_type_from(&global.content_type)?,
+                                global.mutable,
+                            );
+                            globals.push(ty);
+                            ExternType::Global(ty)
+                        }
+                        wasmparser::TypeRef::Tag(_) => {
+                            bail!("tags are not supported in the js_wasm_runtime_layer backend")
+                        }
+                        wasmparser::TypeRef::FuncExact(_) => {
+                            bail!("exact function references are not supported in the js_wasm_runtime_layer backend")
+                        }
+                    };
+
+                    imports.insert((import.module.to_string(), import.name.to_string()), ty);
+                }
+            }
+            wasmparser::Payload::ExportSection(section) => {
+                for export in section {
+                    let export = export?;
+                    let index = export.index as usize;
+                    let ty = match export.kind {
+                        wasmparser::ExternalKind::Func => {
+                            ExternType::Func(functions[index].clone().with_name(export.name))
+                        }
+                        wasmparser::ExternalKind::Table => ExternType::Table(tables[index]),
+                        wasmparser::ExternalKind::Memory => ExternType::Memory(memories[index]),
+                        wasmparser::ExternalKind::Global => ExternType::Global(globals[index]),
+                        // PATCH (wcmp): an error instead of a panic.
+                        wasmparser::ExternalKind::Tag => {
+                            bail!("tags are not supported in the js_wasm_runtime_layer backend")
+                        }
+                        wasmparser::ExternalKind::FuncExact => {
+                            bail!("exact function references are not supported in the js_wasm_runtime_layer backend")
+                        }
+                    };
+
+                    exports.insert(export.name.to_string(), ty);
+                }
+            }
+            wasmparser::Payload::ElementSection(_section) =>
+            {
+                #[cfg(feature = "tracing")]
+                for element in _section {
+                    let element = element?;
+                    match element.kind {
+                        wasmparser::ElementKind::Passive => tracing::debug!("passive"),
+                        wasmparser::ElementKind::Active { .. } => tracing::debug!("active"),
+                        wasmparser::ElementKind::Declared => tracing::debug!("declared"),
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        anyhow::Ok(())
+    })?;
+
+    Ok(ParsedModule { imports, exports })
+}

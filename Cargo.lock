@@ -695,8 +695,6 @@ dependencies = [
 [[package]]
 name = "js_wasm_runtime_layer"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c941213dde43e9cd2d9299a8340bce147d6841b873a638179ee816e3ee00d4e"
 dependencies = [
  "anyhow",
  "fxhash",

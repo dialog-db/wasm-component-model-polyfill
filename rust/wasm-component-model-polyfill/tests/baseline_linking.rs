@@ -553,19 +553,6 @@ async fn it_dispatches_to_multiple_host_functions_in_one_interface() {
 }
 
 #[wcmp_macros::test]
-#[cfg_attr(
-    target_arch = "wasm32",
-    ignore = "the libc-shared-instance WAT pattern this test uses requires \
-              the user core module to import memory from a separate core \
-              instance (`(import \"libc\" \"memory\" (memory 1))`); the web \
-              target's substrate, `js_wasm_runtime_layer 0.7.0`, has not yet \
-              implemented core-module memory imports — its `Module::new` \
-              reaches `wasmparser::TypeRef::Memory(_) => todo!()` in \
-              `module.rs` and panics during instantiation. The polyfill \
-              itself is target-agnostic; the gap is upstream. The test runs \
-              on native where the substrate (wasmtime via \
-              `wasmtime_runtime_layer`) supports memory imports."
-)]
 async fn it_passes_a_string_argument_to_a_host_function() {
     // The libc-shared-instance pattern (mirroring wasmtime's
     // `tests/all/component_model/import.rs::simple`) sidesteps the
@@ -645,7 +632,6 @@ async fn it_passes_a_string_argument_to_a_host_function() {
 }
 
 #[wcmp_macros::test]
-#[ignore = "stub: `js_wasm_runtime_layer`'s host-function shim (the `func_wrapper!` macro in `backends/js_wasm_runtime_layer/src/func.rs`) swallows host-returned `Err(_)` results — it returns `JsValue::UNDEFINED` instead of propagating a trap, so the polyfill's `Func::call` returns `Ok(_)` on the web target. The trampoline correctly returns `Err(_)` from its runtime-layer closure; the substrate drops it. Until upstream surfaces host errors as traps, this test cannot run unconditionally on every supported target — see PDD006's `Web Parity Per PDD` discipline"]
 async fn it_propagates_a_host_function_error_through_the_call() {
     // A host function returns Err(_); the polyfill surfaces it as
     // an Error wrapping the runtime substrate's trap (the runtime
