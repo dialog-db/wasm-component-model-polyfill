@@ -14,7 +14,6 @@ kanban-plugin: basic
 - [ ] [[360f52]]
 - [ ] [[ff5733]]
 - [ ] [[5d61b2]]
-- [ ] [[4d69c2]]
 - [ ] [[0ed715]]
 - [ ] [[657c60]]
 - [ ] [[3dd184]]
@@ -26,6 +25,8 @@ kanban-plugin: basic
 - [ ] [[392746]]
 
 ## In Progress
+
+- [ ] [[4d69c2]]
 
 ## Needs Review
 

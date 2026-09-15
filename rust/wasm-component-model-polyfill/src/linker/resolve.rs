@@ -368,8 +368,17 @@ fn check_instance_items<T: 'static>(
             ExternType::Function(declared) => {
                 check_function_item(position, &item.name, declared, registration)?;
             }
-            ExternType::Resource(_) | ExternType::ResourceEquals(_) => {
-                check_resource_item(&item.name, registration, import_name)?;
+            ExternType::Resource(resource) | ExternType::ResourceEquals(resource) => {
+                // An item declared equal to a resource the instance
+                // names elsewhere carries that resource's first name
+                // as its label. It needs no registration of its own,
+                // as in Wasmtime: the registration under the first
+                // name serves both.
+                if registration.resource(&item.name).is_none() && resource.label() != item.name {
+                    check_resource_item(resource.label(), registration, import_name)?;
+                } else {
+                    check_resource_item(&item.name, registration, import_name)?;
+                }
             }
             ExternType::Module(declared) => {
                 check_module_item(import_name, &item.name, declared, registration)?;

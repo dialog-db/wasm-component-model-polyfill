@@ -26,6 +26,13 @@ holds only differences of the substrate (the browser's engine against
 Wasmtime), so a polyfill gap is recorded once, in the shared list, and
 counts on both targets.
 
+The harness links every file against the host environment Wasmtime's
+wast runner provides: the `host` instance, `host-return-two`, and
+the rest of its component spectest (`crates/wast/src/spectest.rs`
+upstream), less the asynchronous items, plus the module exports of
+every named component a file instantiates, reflected under the
+component's name as the runner does.
+
 The test `it_reports_conformance_progress` runs every file in one
 process and prints a summary per corpus directory: directives, passes,
 the pass percentage, and the expected failures per category. The
@@ -62,5 +69,5 @@ lines of `expected-failures.web.txt`):
 | ---------- | ---------- | ------ | ------ | ---------------------------------------------------------------------- |
 | `cm`       | 1126       | 1030   | 91.5   | deferred-feature 3, substrate 4, validation 22, cascade 67             |
 | `fixtures` | 6          | 6      | 100.0  | none                                                                   |
-| `wasmtime` | 469        | 375    | 80.0   | deferred-feature 37, substrate 8, validation 2, defect 1, cascade 46   |
-| total      | 1601       | 1411   | 88.1   | deferred-feature 40, substrate 12, validation 24, defect 1, cascade 113 |
+| `wasmtime` | 469        | 421    | 89.8   | deferred-feature 4, substrate 8, validation 2, defect 1, cascade 33    |
+| total      | 1601       | 1457   | 91.0   | deferred-feature 7, substrate 12, validation 24, defect 1, cascade 100  |

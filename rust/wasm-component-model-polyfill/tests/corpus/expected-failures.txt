@@ -107,7 +107,6 @@ cm/values/variants.wast:183 cascade no instance to invoke
 cm/values/variants.wast:184 cascade no instance to invoke
 cm/values/variants.wast:185 cascade no instance to invoke
 cm/values/variants.wast:186 cascade no instance to invoke
-wasmtime/adapter.wast:77 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host-return-two`: no registered linker instance satisfies import `host-return-two`
 wasmtime/adapter.wast:98 defect instantiation failed: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x62 - <unknown
 wasmtime/alias-region-known-imported-entities.wast:13 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref i31) is not supported in the wasm_runtime_layer
 wasmtime/alias-region-known-imported-entities.wast:64 cascade no instance to invoke
@@ -143,57 +142,12 @@ wasmtime/exceptions.wast:168 substrate component rejected: instantiation error: 
 wasmtime/exceptions.wast:237 cascade expected a trap `uncaught exception propagated out of component`, got `no instance to invoke`
 wasmtime/implements-disabled.wast:3 validation expected rejection `the `cm-implements` feature is not active`, but the component parsed
 wasmtime/import.wast:7 validation expected link failure `expected instance found func`, but it linked
-wasmtime/instance.wast:161 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/instance.wast:191 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/instance.wast:216 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/instance.wast:224 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
 wasmtime/memory64.wast:24 deferred-feature component rejected: unsupported component feature: 64-bit memories in adapter modules
 wasmtime/memory64.wast:122 cascade no instance to invoke
 wasmtime/memory64.wast:126 cascade no instance to invoke
 wasmtime/memory64.wast:131 cascade no instance to invoke
-wasmtime/modules.wast:9 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `foo`: no registered linker instance satisfies import `foo`
-wasmtime/modules.wast:16 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `foo`: no registered linker instance satisfies import `foo`
-wasmtime/modules.wast:50 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `foo`: no registered linker instance satisfies import `foo`
-wasmtime/modules.wast:59 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `foo`: no registered linker instance satisfies import `foo`
-wasmtime/modules.wast:75 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `foo`: no registered linker instance satisfies import `foo`
-wasmtime/modules.wast:81 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `foo`: no registered linker instance satisfies import `foo`
-wasmtime/modules.wast:193 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `foo`: no registered linker instance satisfies import `foo`
-wasmtime/modules.wast:284 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `foo`: no registered linker instance satisfies import `foo`
-wasmtime/modules.wast:299 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `src`: no registered linker instance satisfies import `src`
-wasmtime/modules.wast:316 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `reexport`: no registered linker instance satisfies import `reexport`
-wasmtime/modules.wast:417 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `provider`: no registered linker instance satisfies import `provider`
 wasmtime/modules.wast:482 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
-wasmtime/modules.wast:485 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `tag-module`: no registered linker instance satisfies import `tag-module`
-wasmtime/nested.wast:149 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `c`: no registered linker instance satisfies import `c`
-wasmtime/nested.wast:219 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `c`: no registered linker instance satisfies import `c`
-wasmtime/nested.wast:410 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host-return-two`: no registered linker instance satisfies import `host-return-two`
-wasmtime/resources.wast:182 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/resources.wast:191 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/resources.wast:211 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/resources.wast:220 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/resources.wast:271 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/resources.wast:296 cascade expected a trap `unknown handle index`, got `no instance to invoke`
-wasmtime/resources.wast:299 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/resources.wast:337 cascade no instance to invoke
-wasmtime/resources.wast:338 cascade expected a trap `unknown handle index`, got `no instance to invoke`
-wasmtime/resources.wast:341 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/resources.wast:378 cascade no instance to invoke
-wasmtime/resources.wast:379 cascade expected a trap `unknown handle index`, got `no instance to invoke`
-wasmtime/resources.wast:383 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/resources.wast:435 cascade expected a trap `unknown handle index`, got `no instance to invoke`
-wasmtime/resources.wast:537 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/resources.wast:592 cascade no instance to invoke
-wasmtime/resources.wast:593 cascade no instance to invoke
-wasmtime/resources.wast:594 cascade no instance to invoke
-wasmtime/resources.wast:595 cascade no instance to invoke
-wasmtime/resources.wast:596 cascade no instance to invoke
-wasmtime/resources.wast:597 cascade expected a trap `unknown handle index`, got `no instance to invoke`
-wasmtime/resources.wast:748 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/resources.wast:812 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/resources.wast:889 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/resources.wast:927 cascade expected a trap `cannot remove owned resource while borrowed`, got `no instance to invoke`
-wasmtime/resources.wast:930 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/resources.wast:961 cascade expected a trap `unknown handle index 0`, got `no instance to invoke`
+wasmtime/modules.wast:485 cascade no registered linker instance satisfies import `tag-module` (the component at line 482 did not instantiate)
 wasmtime/tags.wast:3 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
 wasmtime/thread-transparency/blocks.wast:8 deferred-feature component rejected: unsupported component feature: asynchronous functions
 wasmtime/thread-transparency/blocks.wast:68 cascade no definition named `Tester`

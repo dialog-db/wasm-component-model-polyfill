@@ -15,6 +15,12 @@
 //! and prints a summary per corpus directory: directives, passes, and
 //! expected failures per category. When `WCMP_CONFORMANCE_SUMMARY`
 //! names a file, the test writes the same summary there as JSON.
+//!
+//! The host environment is the one Wasmtime's wast runner provides:
+//! the fixed set of `host` items its component spectest registers,
+//! and the module exports of every named component a file
+//! instantiates, reflected into the linker under the component's
+//! name.
 
 #![cfg(test)]
 
@@ -23,9 +29,13 @@ mod report;
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use wasm_component_model_polyfill::{
-    Component, Engine, Error, Instance, Linker, Store, Val, ValField,
+    Component, Engine, Error, ExternType, ExternalName, FunctionParameter, FunctionType,
+    HostResource, Instance, Linker, Module, PrimitiveType, ResourceType, Store, Val, ValField,
+    ValueType,
 };
 use wast::component::WastVal;
 use wast::parser::{self, ParseBuffer};
@@ -84,10 +94,11 @@ struct Runner {
 }
 
 impl Runner {
-    fn new() -> Self {
+    async fn new() -> Self {
         let engine = Engine::new().expect("engine");
         let store = Store::new(&engine, ()).expect("store");
-        let linker = Linker::new(&engine);
+        let mut linker = Linker::new(&engine);
+        link_spectest(&engine, &mut linker).await;
         Self {
             engine,
             store,
@@ -153,6 +164,7 @@ impl Runner {
                 let component = self.component(&bytes).await?;
                 let index = self.instantiate(&component).await?;
                 if let Some(name) = name {
+                    self.register_named(&name, &component, index);
                     self.named.insert(name, index);
                 }
                 self.current = Some(index);
@@ -309,6 +321,26 @@ impl Runner {
         Ok(self.instances.len() - 1)
     }
 
+    /// Reflect a named component's module exports into the linker
+    /// under the component's name, as Wasmtime's runner does, so a
+    /// later directive can import them. Functions are not reflected
+    /// there either.
+    fn register_named(&mut self, name: &str, component: &Component, index: usize) {
+        let instance = &self.instances[index];
+        let mut root = self.linker.root();
+        let mut registration = root.instance(name);
+        for export in component.exports.iter() {
+            let (ExternType::Module(_), ExternalName::Plain(export_name)) =
+                (&export.ty, &export.name)
+            else {
+                continue;
+            };
+            if let Some(module) = instance.get_module(export_name) {
+                registration.module(export_name, &module);
+            }
+        }
+    }
+
     async fn execute(&mut self, exec: WastExecute<'_>) -> Result<Box<[Val]>, String> {
         match exec {
             WastExecute::Invoke(invoke) => {
@@ -354,6 +386,143 @@ impl Runner {
             .await
             .map_err(|err| chain(&err))
     }
+}
+
+/// The core module Wasmtime's wast runner registers as
+/// `host.simple-module`.
+const SIMPLE_MODULE: &[u8] = wcmp_macros::wasm!(
+    r#"
+    (module
+      (global (export "g") i32 i32.const 100)
+      (func (export "f") (result i32) i32.const 101))
+    "#
+);
+
+/// The drop bookkeeping behind `host.resource1`, read back through
+/// `[static]resource1.drops` and `[static]resource1.last-drop`.
+#[derive(Default)]
+struct ResourceState {
+    drops: AtomicU32,
+    last_drop: AtomicU32,
+}
+
+/// Register the host items Wasmtime's wast runner provides for its
+/// component tests (`crates/wast/src/spectest.rs`,
+/// `link_component_spectest`), so the directives that import them
+/// run as they do there. The asynchronous items (`host-echo-u32`,
+/// `never-return`, `return-two-slowly`, `echo-slowly`, and
+/// `[method]resource1.never-return`) are left out: the corpus files
+/// that use them are not vendored.
+async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
+    linker
+        .root()
+        .func_wrap("host-return-two", |_, (): ()| Ok(2u32));
+
+    let simple_module = Module::new(engine, SIMPLE_MODULE)
+        .await
+        .expect("the spectest module compiles");
+    let state = Arc::new(ResourceState::default());
+    let resource1 = HostResource::new({
+        let state = state.clone();
+        move |_, rep| {
+            state.drops.fetch_add(1, Ordering::SeqCst);
+            state.last_drop.store(rep, Ordering::SeqCst);
+            Ok(())
+        }
+    });
+
+    let mut root = linker.root();
+    let mut host = root.instance("host");
+    host.func_wrap("return-three", |_, (): ()| Ok(3u32));
+    host.instance("nested")
+        .func_wrap("return-four", |_, (): ()| Ok(4u32));
+    host.module("simple-module", &simple_module);
+
+    let resource1_id = host.resource_with("resource1", resource1.clone());
+    host.resource("resource2", |_, _| Ok(()));
+    // The same resource type under a second name, as the runner
+    // registers it.
+    host.resource_with("resource1-again", resource1);
+
+    let own = || ValueType::Own(ResourceType::new("resource1"));
+    let borrow = || ValueType::Borrow(ResourceType::new("resource1"));
+    let u32_ty = || ValueType::Primitive(PrimitiveType::U32);
+    let signature = |params: &[(&str, ValueType)], result: Option<ValueType>| FunctionType {
+        parameters: params
+            .iter()
+            .map(|(name, ty)| FunctionParameter {
+                name: (*name).to_owned(),
+                ty: ty.clone(),
+            })
+            .collect(),
+        result,
+    };
+
+    host.func_new(
+        "[constructor]resource1",
+        signature(&[("r", u32_ty())], Some(own())),
+        move |call, args, results| {
+            let Some(Val::U32(rep)) = args.first() else {
+                panic!("[constructor]resource1: expected a u32 rep, got {args:?}");
+            };
+            results[0] = Val::Own(call.resource_new(resource1_id, *rep)?);
+            Ok(())
+        },
+    );
+    host.func_new(
+        "[static]resource1.assert",
+        signature(&[("r", own()), ("rep", u32_ty())], None),
+        |_, args, _| {
+            let (Some(Val::Own(handle)), Some(Val::U32(rep))) = (args.first(), args.get(1)) else {
+                panic!("[static]resource1.assert: expected (own, u32), got {args:?}");
+            };
+            assert_eq!(handle.rep, *rep, "[static]resource1.assert: rep mismatch");
+            Ok(())
+        },
+    );
+    host.func_wrap("[static]resource1.last-drop", {
+        let state = state.clone();
+        move |_, (): ()| Ok(state.last_drop.load(Ordering::SeqCst))
+    });
+    host.func_wrap("[static]resource1.drops", {
+        let state = state.clone();
+        move |_, (): ()| Ok(state.drops.load(Ordering::SeqCst))
+    });
+    host.func_new(
+        "[method]resource1.simple",
+        signature(&[("self", borrow()), ("rep", u32_ty())], None),
+        |_, args, _| {
+            let (Some(Val::Borrow(handle)), Some(Val::U32(rep))) = (args.first(), args.get(1))
+            else {
+                panic!("[method]resource1.simple: expected (borrow, u32), got {args:?}");
+            };
+            assert_eq!(handle.rep, *rep, "[method]resource1.simple: rep mismatch");
+            Ok(())
+        },
+    );
+    host.func_new(
+        "[method]resource1.take-borrow",
+        signature(&[("self", borrow()), ("b", borrow())], None),
+        |_, args, _| {
+            assert!(
+                matches!(args, [Val::Borrow(_), Val::Borrow(_)]),
+                "[method]resource1.take-borrow: expected two borrows, got {args:?}"
+            );
+            Ok(())
+        },
+    );
+    host.func_new(
+        "[method]resource1.take-own",
+        signature(&[("self", borrow()), ("b", own())], None),
+        |_, args, _| {
+            assert!(
+                matches!(args, [Val::Borrow(_), Val::Own(_)]),
+                "[method]resource1.take-own: expected a borrow and an own, got {args:?}"
+            );
+            Ok(())
+        },
+    );
+    host.func_wrap("return-hi", |_, (): ()| Ok("hi".to_owned()));
 }
 
 /// Every message in an error's source chain, joined so a trap
@@ -503,7 +672,7 @@ fn boxed_equal(a: Option<&Val>, b: Option<&Val>) -> bool {
 
 /// Run one corpus file against the expectations that name it.
 async fn report_file(path: &str, text: &str, expectations: &[Expectation]) -> FileReport {
-    let mut runner = Runner::new();
+    let mut runner = Runner::new().await;
     let (directives, failures) = runner.run(text).await;
     let expected = expectations
         .iter()
