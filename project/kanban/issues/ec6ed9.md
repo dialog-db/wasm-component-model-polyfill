@@ -5,6 +5,8 @@ type: bug
 blocked_by: [852821]
 labels: [PDD015, PDD012, wave-2]
 created: 2026-09-15T07:41:01Z
+disposition: accepted
+disposition_at: 2026-09-15T17:04:24Z
 ---
 
 ## What to build
@@ -14,4 +16,3 @@ The polyfill keeps one handle table per resource *type* (the translator's resour
 - [ ] `cm/linking/unit.wast:931-1023` pass and leave the expectation list.
 - [ ] A test proves an `own<T>` returned by one inner component and dropped by another runs the first component's destructor exactly once (the PDD015 story).
 - [ ] The smoke test's composition step still passes on both targets.
-
