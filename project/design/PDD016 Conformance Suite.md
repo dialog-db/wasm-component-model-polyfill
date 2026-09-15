@@ -105,6 +105,23 @@ A developer wants to trust that a component from a real toolchain runs.
 > The developer reads the fixtures directory and sees a `wit-bindgen` guest and
 > a `wac` composition run on every target in CI.
 
+## Test Cases
+
+A `.wast` file runs through the harness. Every vendored file becomes one test,
+and each directive maps onto the public API with the result the directive
+asserts.
+
+The expected-failure list stays current. A run fails when a listed directive
+passes, when an unlisted directive fails, or when a list entry has no category.
+
+The progress summary is complete. The run prints one row per corpus with the
+directive count, the pass count, the pass percentage, and the expected failures
+per category, and writes the same summary as JSON.
+
+Real guests run under the harness. Each checked-in fixture loads, instantiates,
+and answers its assertions on the native target, and the fixtures regenerate
+byte-for-byte from their sources and recorded commands.
+
 ## References
 
 - [PDD000], the product overview.

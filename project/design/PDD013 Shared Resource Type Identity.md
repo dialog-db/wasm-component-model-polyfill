@@ -78,6 +78,23 @@ A developer registers against one interface and wants the one-liner to stay.
 > The developer calls `instance.resource("name", |state, rep| { … })`. The
 > polyfill mints a fresh identity inline and returns it.
 
+## Test Cases
+
+A resource type carries an opaque identity. Two constructions yield two
+identities, a clone compares equal to its source, and equality is identity
+equality only.
+
+One resource type serves two interfaces. A handle minted under one interface's
+registration lowers through the other interface's registration, and the handle
+table holds one live entry for it.
+
+A mismatched identity fails at link time. A registration whose resource type
+identity differs from the import's expected identity is rejected with the
+type-mismatch error and a position that names the interface and the item.
+
+The single-interface registration stays a one-liner. A resource call with a
+destructor and no explicit type mints a fresh identity inline.
+
 ## References
 
 - [PDD000], the product overview.

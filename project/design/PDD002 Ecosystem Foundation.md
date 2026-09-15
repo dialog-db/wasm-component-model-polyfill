@@ -165,6 +165,19 @@ A maintainer of an upstream project wants a constructive downstream.
 > The polyfill's contributors open issues and pull requests upstream when a fix
 > is general. A local divergence carries a note that explains why.
 
+## Test Cases
+
+The public API exposes no upstream type. No type from the runtime layer, from
+Wasmtime, or from the translator appears in a public signature of the polyfill.
+
+One translator serves both targets. The plan the translator produces for a
+component is the same on the native target and in the browser, and a component
+that instantiates on one target instantiates on the other.
+
+Every local divergence from an upstream project is recorded. A patched
+dependency or a carried workaround has an in-tree note that names the upstream
+issue.
+
 ## References
 
 - [PDD000], the product overview.

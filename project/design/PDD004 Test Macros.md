@@ -109,6 +109,20 @@ A maintainer reviews a test and wants to read it as one artifact.
 > The maintainer opens the file. The attribute, the inline component, and the
 > assertions are visible together.
 
+## Test Cases
+
+The cross-target attribute runs one test on both targets. A test marked with the
+attribute runs under `tokio` on the native target and in headless Chrome on
+`wasm32-unknown-unknown` with no `cfg` code in the test.
+
+The inline assembly macros produce binaries. A WAT module inside the core macro
+and a WAT component inside the component macro assemble at compile time into
+constants that the polyfill loads.
+
+Mistakes are compile errors. A syntax error in the WAT, a module passed to the
+component macro, and a synchronous function under the asynchronous attribute
+each fail compilation with a message that points at the call site.
+
 ## References
 
 - [PDD001], the development environment.

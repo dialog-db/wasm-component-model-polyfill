@@ -143,6 +143,22 @@ A reviewer evaluating a PDD wants a documented scope discipline.
 > The reviewer makes sure that the PDD lands its tests on both targets, extends
 > the public API additively, and stays within its goals.
 
+## Test Cases
+
+The foundation constructs through the public API. A host creates an `Engine` and
+a `Store<T>` with the documented constructors on both targets and reads the
+store's data back.
+
+The foundational types wrap the runtime layer. No public signature of `Engine`
+or `Store<T>` names a runtime layer type.
+
+One error type covers the library. Every fallible entry point returns
+`wcmp::Error`, and each subsystem adds variants to it rather than a type of its
+own.
+
+Guest entry points are awaitable. Compiling a component, instantiating it, and
+calling an export each return a future the host awaits, on both targets.
+
 ## References
 
 - [PDD000], the product overview.

@@ -15,10 +15,6 @@ posture of [PDD005].
   `Component` into a `Store<T>` through the linker, and calls an exported
   function whose signature uses only primitive value types, on every supported
   target.
-- The tests `it_instantiates_a_component_through_a_linker`,
-  `it_supports_multiple_independent_instances`, and
-  `it_resolves_package_and_interface_identifiers_with_semver` pass on every
-  supported target.
 - `Linker<T>`, `LinkerInstance<'_, T>`, and `Instance` live at the crate root
   and wrap, rather than re-export, any runtime layer type they use.
 - Identifier resolution operates on [PDD006]'s identifier types only.
@@ -141,8 +137,25 @@ in place.
 
 A reviewer evaluating a PDD wants a readable scope.
 
-> The reviewer makes sure that the PDD lands only the three named tests, on both
+> The reviewer makes sure that the PDD lands only the test cases, on both
 > targets, and adds only link and instantiation error variants.
+
+## Test Cases
+
+A component instantiates through a linker. A host builds a `Linker<T>`,
+instantiates a component with no imports into a `Store<T>`, and calls an export
+that takes and returns primitive values.
+
+Instances are independent. Two instantiations of one component into one store
+hold separate state: a counter export advanced in one instance does not move in
+the other.
+
+Identifiers resolve with semver. A registration under
+`namespace:package/interface@1.2.0` satisfies an import of the same interface at
+a compatible version and does not satisfy an incompatible one.
+
+Resolution happens once. Instantiation consumes the resolution the linker
+produced and does not consult the registrations again.
 
 ## References
 

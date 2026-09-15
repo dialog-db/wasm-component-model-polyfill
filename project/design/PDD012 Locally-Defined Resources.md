@@ -77,6 +77,20 @@ guest-defined resources.
 > instance, and attempts to lift it through the other. The lift surfaces the
 > unregistered-resource-type ABI cause.
 
+## Test Cases
+
+A locally-defined resource runs its destructor once. A component that declares a
+resource with an in-binary destructor instantiates, and the destructor runs
+exactly once when the guest drops the last live handle.
+
+Instances hold distinct resource types. A handle minted through one
+instantiation is rejected when lifted through a second instantiation of the same
+component, with the unregistered-resource-type ABI cause.
+
+The local and the host-imported paths share one table. A locally-defined
+resource and a host resource in the same store use the same handle table
+machinery and the same mint entry point.
+
 ## References
 
 - [PDD000], the product overview.

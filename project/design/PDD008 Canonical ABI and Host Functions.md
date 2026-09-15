@@ -19,9 +19,6 @@ posture of [PDD005].
   except `own<T>` and `borrow<T>`. Arguments and results round-trip through the
   Canonical ABI: lift, lower, `cabi_realloc`, the parameter and result spill to
   memory, and synchronous `post-return`.
-- The tests `it_defines_an_untyped_host_function`,
-  `it_defines_a_typed_host_function`, and
-  `it_invokes_an_exported_component_function` pass on every supported target.
 - `Val` lives at the crate root (`wcmp::Val`) and carries polyfill-owned data.
 - `wcmp::Error` grows with type-mismatch and ABI variants.
 - The Canonical ABI surface accepts the handle types later without reshaping.
@@ -125,9 +122,24 @@ place except for handle types.
 
 A reviewer evaluating a PDD wants a readable scope.
 
-> The reviewer makes sure that the PDD lands only the three named tests, on both
+> The reviewer makes sure that the PDD lands only the test cases, on both
 > targets, and that no handle-type lift or lower and no resource registration
 > appears.
+
+## Test Cases
+
+An untyped host function round-trips values. A host registers a closure that
+receives and returns `Val` against the interface a component imports, and the
+guest's call reaches it with lifted arguments and observes lowered results.
+
+A typed host function round-trips values. A host registers a closure with a
+native Rust signature, and the linker rejects a signature that does not match
+the import's type at link time with the type-mismatch error.
+
+An exported function round-trips every baseline value type. A call with strings,
+lists, records, variants, options, results, flags, enums, and tuples returns the
+values the guest computed, including arguments and results that spill to memory
+and a synchronous `post-return`.
 
 ## References
 

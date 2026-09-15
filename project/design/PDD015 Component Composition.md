@@ -122,6 +122,27 @@ corruption.
 > A test composes two components that call each other in a cycle. The second
 > call into the same instance traps with the message Wasmtime uses.
 
+## Test Cases
+
+A composed component instantiates through the existing linker. A component built
+from two inner components instantiates with no composition-specific API and its
+outer export returns the value the inner components compute together.
+
+Strings cross an adapter in each encoding. A call from a UTF-8 component into a
+UTF-16 component passes a string through the adapter and the callee reads the
+same text, and the reverse direction transcodes back.
+
+Instance flags are enforced. A reentrant call into an inner instance traps with
+the message Wasmtime uses.
+
+A handle transfers between inner components. An `own<T>` returned by one inner
+component and dropped by the other runs the first component's destructor exactly
+once.
+
+The upstream linking cases pass. The `linking` directory of the Component Model
+corpus and the adapter, aliasing, linking, nested, and string-transcode files of
+the Wasmtime corpus pass except for the cases the expected-failure list records.
+
 ## References
 
 - [PDD000], the product overview.

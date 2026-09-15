@@ -109,6 +109,22 @@ behind the lift and lower paths.
 > The contributor adds a new resource shape and threads it through the existing
 > paths. Borrow tracking applies without further wiring.
 
+## Test Cases
+
+A leaked borrow is detected. A guest hands a borrow into a host function that
+does not drop it, and the call's return surfaces the outstanding-borrows ABI
+cause with a count of one.
+
+A returned borrow is accepted. A guest hands a borrow into a host function that
+drops it before returning, and the call returns normally with the counter at
+zero.
+
+A lent handle is restored. A borrow lifted from an owning handle records its
+lender, and scope exit returns the owning handle to its previous state.
+
+The hooks are transparent. A new resource shape threaded through the existing
+lift and lower paths participates in borrow tracking with no further wiring.
+
 ## References
 
 - [PDD000], the product overview.

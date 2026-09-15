@@ -21,8 +21,6 @@ signature at acquisition.
 - A function handle exposes a typed conversion that produces a handle whose Rust
   parameter tuple and return type are checked at acquisition.
 - The flat-name `Instance::get_func` accessor is preserved unchanged.
-- The tests `it_navigates_instance_typed_exports` and
-  `it_supports_a_typed_export_call_surface` pass on every supported target.
 
 ## Non-goals
 
@@ -88,6 +86,20 @@ complete and stable.
 
 > The contributor writes the concurrency surface against the navigator and the
 > typed call surface additively.
+
+## Test Cases
+
+The export navigator reaches nested exports. A host navigates from an `Instance`
+to an instance-typed export and to a function inside it, and the flat-name
+accessor still finds a root-level function.
+
+The typed call surface checks the signature at acquisition. A typed handle for a
+parameter tuple and return type that match the export succeeds, and one that
+does not match fails with the type-mismatch error before any call.
+
+A typed call passes native values. A call through a typed handle with native
+Rust arguments returns a native Rust result equal to the value the guest
+computed.
 
 ## References
 

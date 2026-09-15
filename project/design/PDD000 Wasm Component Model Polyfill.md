@@ -70,6 +70,20 @@ I/O uses `stream<T>`.
 > guest task, delivers stream data, and resolves the host's future when the
 > guest returns.
 
+## Test Cases
+
+The polyfill runs a component the same way on both targets. A host loads a
+component from bytes, links it against host functions, instantiates it, and
+calls an export. The same host code passes natively and in headless Chrome.
+
+The public API mirrors Wasmtime. A host written against `Engine`, `Store`,
+`Component`, `Linker`, and `Instance` compiles against the polyfill with the
+same names and call shapes.
+
+A composed component runs. A component built with `wac` from two inner
+components instantiates through the same linker and its outer exports return the
+values the inner components compute.
+
 ## References
 
 - [Wasm Components] and the [Canonical ABI] in the Component Model repository.

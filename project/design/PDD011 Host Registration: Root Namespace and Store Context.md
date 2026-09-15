@@ -97,6 +97,19 @@ host function to return a live handle.
 > host-side rep. The closure returns it through the typed surface. The guest
 > reads a live handle.
 
+## Test Cases
+
+A plain-named import resolves through the root namespace. A host registers a
+typed closure under a plain name, a component that imports that name
+instantiates, and the guest's call reaches the closure.
+
+A host function mints a live handle. A closure whose return type is `own<T>`
+mints a handle through the host call context, and the guest reads a handle the
+handle table holds as live.
+
+Both registration entry points carry the same context. The typed and the untyped
+entry points give the closure access to the store data and to the handle table.
+
 ## References
 
 - [PDD000], the product overview.

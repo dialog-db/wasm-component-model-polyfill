@@ -15,10 +15,6 @@ polyfill. Later PDDs measure themselves against it.
 - A developer constructs a `Component` from bytes through the public API and
   reads its declared imports and exports (package name, interface identifier,
   value type shape) without reaching for an upstream type.
-- The tests `it_parses_the_component_preamble`,
-  `it_decodes_top_level_component_sections`,
-  `it_rejects_a_malformed_component_binary`, and
-  `it_loads_a_component_from_bytes` pass on every supported target.
 - `Component` lives at the crate root (`wcmp::Component`) and wraps the
   translation it holds. No upstream type appears in the public API.
 - The identifier model (`PackageName`, `InterfaceIdentifier`, semver
@@ -152,7 +148,7 @@ A contributor opening a PDD that needs the parsing surface wants it in place.
 
 A reviewer evaluating a PDD wants a readable scope.
 
-> The reviewer makes sure that the PDD lands only the named tests, on both
+> The reviewer makes sure that the PDD lands only the test cases, on both
 > targets, and that no concurrency surface appears alongside the synchronous
 > baseline.
 
@@ -161,6 +157,23 @@ A maintainer auditing the lineage of the component layer wants a clear answer to
 
 > The maintainer reads [PDD002] and finds an in-tree comment at every place a
 > design choice came from the prior art.
+
+## Test Cases
+
+The preamble is recognized. A byte sequence with the component preamble
+constructs a `Component`, and a byte sequence with the core module preamble is
+rejected with the not-a-component error.
+
+The top-level sections decode. A component with imports and exports yields their
+names, package names, interface identifiers, and value type shapes through
+polyfill-owned types.
+
+A malformed binary is rejected. A truncated or corrupted component fails
+construction with the parse error variant and a message that names the cause.
+
+A component loads from bytes on both targets. The same bytes construct a
+`Component` natively and in headless Chrome, and the declared imports and
+exports match on both.
 
 ## References
 

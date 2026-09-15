@@ -18,8 +18,6 @@ posture of [PDD005].
 - A developer calls an export whose signature uses `own<T>` or `borrow<T>`. The
   round trip follows the runtime-state rules of the Canonical ABI: no aliasing
   while live, deterministic index reuse.
-- The test `it_defines_a_host_resource_with_a_sync_destructor` passes on every
-  supported target.
 - The handle representation does not expose a runtime layer type.
 - `wcmp::Error::Abi` grows with handle-specific causes. No new top-level variant
   is added.
@@ -93,8 +91,21 @@ complete on every target.
 
 A reviewer evaluating a PDD wants a readable scope.
 
-> The reviewer makes sure that the PDD lands only the named test, on both
+> The reviewer makes sure that the PDD lands only the test cases, on both
 > targets, and that no asynchronous destructor surface appears.
+
+## Test Cases
+
+A host resource with a synchronous destructor runs it once. A host registers a
+resource type with a destructor, mints a handle, passes ownership to the guest,
+and the destructor runs exactly once when the guest drops the handle.
+
+Handles follow the runtime-state rules. A handle that is live cannot be lifted
+twice, an index freed by a drop is reused deterministically, and a borrow passed
+into the guest is not consumed.
+
+The handle representation is polyfill-owned. No public signature that carries a
+handle names a runtime layer type.
 
 ## References
 
