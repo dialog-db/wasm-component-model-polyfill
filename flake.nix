@@ -158,16 +158,21 @@
         # The conformance progress summary: replays only the summary test
         # from the native debug archive with its output shown, and writes
         # the JSON copy under the cargo target directory.
-        conformanceSummaryCommand = ''
-          archive=$(nix build --no-link --print-out-paths .#tests-native-debug)
+        # The conformance progress summary on one target: replays only the
+        # summary test from the archive with its output shown. The native
+        # run also writes the JSON copy under the cargo target directory.
+        conformanceSummaryFor = package: ''
+          echo "== conformance progress: ${package}"
+          archive=$(nix build --no-link --print-out-paths .#${package})
           summary="''${CARGO_TARGET_DIR:-target}/conformance/summary.json"
           mkdir -p "$(dirname "$summary")"
           WCMP_CONFORMANCE_SUMMARY="$summary" cargo nextest run \
             --workspace-remap ./ \
-            --archive-file "$archive/tests-native-debug.tar.zst" \
+            --archive-file "$archive/${package}.tar.zst" \
             --no-capture \
             -E 'test(it_reports_conformance_progress)'
         '';
+        conformanceSummaryCommand = conformanceSummaryFor "tests-native-debug";
 
         menuTestCommand =
           {
@@ -239,8 +244,8 @@
                 };
               };
               conformance = {
-                description = "Conformance progress per corpus (native, debug)";
-                command = conformanceSummaryCommand;
+                description = "Conformance progress per corpus on both targets (debug)";
+                command = conformanceSummaryCommand + conformanceSummaryFor "tests-web-debug";
               };
               all = {
                 description = "Every archive, each reported (grab a coffee)";

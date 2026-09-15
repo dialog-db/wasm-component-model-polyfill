@@ -39,6 +39,30 @@ wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 const EXPECTED_FAILURES: &str = include_str!("corpus/expected-failures.txt");
 
+/// The browser-only delta, applied on top of the shared list on
+/// `wasm32-unknown-unknown`: differences of the substrate, not of the
+/// polyfill. The native progress run reads it too, to project the
+/// browser's summary.
+const EXPECTED_FAILURES_WEB: &str = include_str!("corpus/expected-failures.web.txt");
+
+/// Parse the expectations that apply on this target.
+fn expectations() -> Vec<Expectation> {
+    let shared = parse_expectations(EXPECTED_FAILURES).unwrap_or_else(|err| panic!("{err}"));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        shared
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut all = shared;
+        all.extend(
+            parse_expectations(EXPECTED_FAILURES_WEB)
+                .unwrap_or_else(|err| panic!("expected-failures.web.txt: {err}")),
+        );
+        all
+    }
+}
+
 /// The 4-byte version word after `\0asm` in a core module.
 const CORE_MODULE_VERSION: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
 
@@ -490,7 +514,7 @@ fn report_file(path: &str, text: &str, expectations: &[Expectation]) -> FileRepo
 /// expectation, in the format the list uses, and on a list line
 /// without a category.
 fn check(path: &str, text: &str) {
-    let expectations = parse_expectations(EXPECTED_FAILURES).unwrap_or_else(|err| panic!("{err}"));
+    let expectations = expectations();
     let report = report_file(path, text, &expectations);
 
     let mut out = String::new();
@@ -513,18 +537,35 @@ fn check(path: &str, text: &str) {
 /// is malformed.
 #[wcmp_macros::test]
 async fn it_reports_conformance_progress() {
-    let expectations = parse_expectations(EXPECTED_FAILURES).unwrap_or_else(|err| panic!("{err}"));
+    let expectations = expectations();
     let reports: Vec<FileReport> = CORPUS_FILES
         .iter()
         .map(|(path, text)| report_file(path, text, &expectations))
         .collect();
     let summary = Summary::new(&reports);
-    println!("\n{}", summary.table());
+    #[cfg(target_arch = "wasm32")]
+    println!("\nwasm32-unknown-unknown\n{}", summary.table());
     #[cfg(not(target_arch = "wasm32"))]
-    if let Ok(target) = std::env::var("WCMP_CONFORMANCE_SUMMARY") {
-        std::fs::write(&target, summary.json())
-            .unwrap_or_else(|err| panic!("cannot write the summary to {target}: {err}"));
-        println!("summary written to {target}");
+    {
+        println!("\nnative\n{}", summary.table());
+        // The browser's run cannot print for a passing test, so its
+        // summary is projected here from the delta it applies. The
+        // projection is exact while `tests web debug` passes.
+        let delta = parse_expectations(EXPECTED_FAILURES_WEB)
+            .unwrap_or_else(|err| panic!("expected-failures.web.txt: {err}"));
+        let web = Summary::new(&report::project(&reports, &delta));
+        println!(
+            "wasm32-unknown-unknown (projected: these results plus expected-failures.web.txt)\n{}",
+            web.table()
+        );
+        if let Ok(target) = std::env::var("WCMP_CONFORMANCE_SUMMARY") {
+            std::fs::write(&target, summary.json())
+                .unwrap_or_else(|err| panic!("cannot write the summary to {target}: {err}"));
+            let web_target = target.replace(".json", ".web.json");
+            std::fs::write(&web_target, web.json())
+                .unwrap_or_else(|err| panic!("cannot write the summary to {web_target}: {err}"));
+            println!("summary written to {target} and {web_target}");
+        }
     }
 }
 

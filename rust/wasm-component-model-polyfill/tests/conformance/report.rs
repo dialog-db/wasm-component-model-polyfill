@@ -143,6 +143,56 @@ impl FileReport {
     }
 }
 
+/// Project another target's results from these results and that
+/// target's expectation delta: every delta line that passed here is
+/// counted as failing there, under the delta's category. The
+/// projection is exact when that target's own run reports no
+/// unexpected failure and no stale expectation, which its test suite
+/// enforces.
+pub fn project(reports: &[FileReport], delta: &[Expectation]) -> Vec<FileReport> {
+    reports
+        .iter()
+        .map(|report| {
+            let mut failures: Vec<Failure> = report
+                .failures
+                .iter()
+                .map(|failure| Failure {
+                    line: failure.line,
+                    reason: failure.reason.clone(),
+                })
+                .collect();
+            let mut expected: Vec<Expectation> = report
+                .expected
+                .iter()
+                .map(|expectation| Expectation {
+                    file: expectation.file.clone(),
+                    line: expectation.line,
+                    category: expectation.category,
+                })
+                .collect();
+            for line in delta.iter().filter(|e| e.file == report.path) {
+                if !failures.iter().any(|f| f.line == line.line) {
+                    failures.push(Failure {
+                        line: line.line,
+                        reason: "projected from the target's expectation delta".to_owned(),
+                    });
+                }
+                expected.push(Expectation {
+                    file: line.file.clone(),
+                    line: line.line,
+                    category: line.category,
+                });
+            }
+            FileReport {
+                path: report.path.clone(),
+                directives: report.directives,
+                failures,
+                expected,
+            }
+        })
+        .collect()
+}
+
 /// The counts for one corpus directory, or for every corpus together.
 #[derive(Debug, Default)]
 pub struct Tally {
