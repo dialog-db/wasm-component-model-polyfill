@@ -15,7 +15,9 @@ use core::{
 use smallvec::SmallVec;
 
 use anyhow::{bail, Result};
-use js_sys::{JsString, Object, Reflect, WebAssembly};
+use fxhash::FxHashMap;
+use js_sys::{JsString, Object, Reflect, Uint8Array, WebAssembly};
+use wasm_bindgen_futures::JsFuture;
 use slab::Slab;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_runtime_layer::{
@@ -148,6 +150,25 @@ impl Engine {
     pub(crate) fn borrow_mut(&self) -> RefMut<'_, EngineInner> {
         self.inner.borrow_mut()
     }
+
+    /// PATCH (wcmp): compile `bytes` with `WebAssembly.compile`, the
+    /// browser's asynchronous path, and keep the result so that the next
+    /// `Module::new` on this engine with the same bytes uses it instead of
+    /// the synchronous `WebAssembly.Module` constructor. The synchronous
+    /// constructor is refused on the main thread above a size limit in
+    /// some browsers; the asynchronous path has no such limit.
+    pub async fn precompile(&self, bytes: &[u8]) -> Result<()> {
+        let promise = WebAssembly::compile(&Uint8Array::from(bytes).into());
+        let module = JsFuture::from(promise)
+            .await
+            .map_err(JsErrorMsg::from)?
+            .dyn_into::<WebAssembly::Module>()
+            .map_err(JsErrorMsg::from)?;
+        self.borrow_mut()
+            .precompiled
+            .insert(bytes.into(), module);
+        Ok(())
+    }
 }
 
 /// Holds the inner mutable state of the engine
@@ -158,6 +179,10 @@ pub(crate) struct EngineInner {
     /// This is a slab since the WasmModule needs to be `Send`, but the WebAssembly::Module is not.
     /// The engine is not `Send` or `Sync` so they are stored here instead.
     pub(crate) modules: Slab<ModuleInner>,
+    /// PATCH (wcmp): modules compiled ahead of time through
+    /// [`Engine::precompile`], keyed by their bytes. `Module::new` takes
+    /// the entry for the same bytes instead of compiling synchronously.
+    pub(crate) precompiled: FxHashMap<Box<[u8]>, WebAssembly::Module>,
 }
 
 impl EngineInner {

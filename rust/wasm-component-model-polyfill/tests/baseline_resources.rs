@@ -50,7 +50,9 @@ async fn it_runs_destructors_in_drop_order_for_multiple_handles() {
     let dropped: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
     let log = dropped.clone();
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<Arc<Mutex<Vec<u32>>>> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd009-tests:host/resources@0.1.0"
         .parse()
@@ -66,12 +68,14 @@ async fn it_runs_destructors_in_drop_order_for_multiple_handles() {
     let mut store: Store<Arc<Mutex<Vec<u32>>>> = Store::new(&engine, log).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let drop2 = inst.get_func("drop2").expect("drop2 export");
     let h1 = store.resource_new(type_id, 1).expect("mint h1");
     let h2 = store.resource_new(type_id, 2).expect("mint h2");
     drop2
         .call(&mut store, &[Val::Own(h1), Val::Own(h2)])
+        .await
         .expect("call drop2");
     assert_eq!(*dropped.lock().expect("read"), vec![1, 2]);
 }
@@ -120,7 +124,9 @@ async fn it_rejects_a_handle_whose_type_id_is_not_registered_in_the_store() {
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd009-tests:host/resources@0.1.0"
         .parse()
@@ -135,9 +141,12 @@ async fn it_rejects_a_handle_whose_type_id_is_not_registered_in_the_store() {
     let foreign_handle = producer.resource_new(type_id, 99).expect("mint foreign");
     let inst = linker
         .instantiate(&mut consumer, &component)
+        .await
         .expect("instantiate");
     let consume = inst.get_func("consume").expect("consume export");
-    let outcome = consume.call(&mut consumer, &[Val::Own(foreign_handle)]);
+    let outcome = consume
+        .call(&mut consumer, &[Val::Own(foreign_handle)])
+        .await;
     assert!(
         matches!(outcome, Err(Error::Abi(_))),
         "expected Error::Abi for cross-store handle, got {outcome:?}"
@@ -166,7 +175,9 @@ async fn it_rejects_a_completely_fabricated_handle_index() {
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd009-tests:host/resources@0.1.0"
         .parse()
@@ -178,6 +189,7 @@ async fn it_rejects_a_completely_fabricated_handle_index() {
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let consume = inst.get_func("consume").expect("consume export");
     let bogus = ResourceHandle {
@@ -185,7 +197,7 @@ async fn it_rejects_a_completely_fabricated_handle_index() {
         index: 999,
         rep: 0,
     };
-    let outcome = consume.call(&mut store, &[Val::Own(bogus)]);
+    let outcome = consume.call(&mut store, &[Val::Own(bogus)]).await;
     assert!(matches!(outcome, Err(Error::Abi(_))));
 }
 
@@ -226,7 +238,9 @@ async fn it_supports_two_distinct_resource_types_in_one_interface() {
         betas: Vec<u32>,
     }
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<Counters> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd009-tests:host/multi@0.1.0".parse().expect("identifier");
     let mut iface_view = linker.instance(&iface);
@@ -247,6 +261,7 @@ async fn it_supports_two_distinct_resource_types_in_one_interface() {
     let mut store: Store<Counters> = Store::new(&engine, Counters::default()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let drop_alpha = inst.get_func("drop-alpha").expect("drop-alpha");
     let drop_beta = inst.get_func("drop-beta").expect("drop-beta");
@@ -254,9 +269,11 @@ async fn it_supports_two_distinct_resource_types_in_one_interface() {
     let b = store.resource_new(beta_id, 22).expect("mint beta");
     drop_alpha
         .call(&mut store, &[Val::Own(a)])
+        .await
         .expect("call drop-alpha");
     drop_beta
         .call(&mut store, &[Val::Own(b)])
+        .await
         .expect("call drop-beta");
     assert_eq!(store.data().alphas, vec![11]);
     assert_eq!(store.data().betas, vec![22]);
@@ -285,7 +302,9 @@ async fn it_reuses_freed_handle_indices_after_drop() {
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd009-tests:host/resources@0.1.0"
         .parse()
@@ -297,6 +316,7 @@ async fn it_reuses_freed_handle_indices_after_drop() {
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let consume = inst.get_func("consume").expect("consume");
 
@@ -306,6 +326,7 @@ async fn it_reuses_freed_handle_indices_after_drop() {
     let h1_index = h1.index;
     consume
         .call(&mut store, &[Val::Own(h1)])
+        .await
         .expect("drop middle");
     // The middle slot is free; minting again reuses it.
     let h3 = store.resource_new(type_id, 4).expect("h3");
@@ -338,7 +359,9 @@ async fn it_rejects_a_component_that_imports_an_unsatisfied_resource() {
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     // Register the interface but no `thing` resource.
     let iface: InterfaceIdentifier = "pdd009-tests:host/resources@0.1.0"
@@ -346,7 +369,7 @@ async fn it_rejects_a_component_that_imports_an_unsatisfied_resource() {
         .expect("identifier");
     let _ = linker.instance(&iface);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    let outcome = linker.instantiate(&mut store, &component);
+    let outcome = linker.instantiate(&mut store, &component).await;
     let err = outcome.err().expect("instantiation should fail");
     assert!(
         matches!(err, Error::Link(_)),
@@ -390,24 +413,27 @@ const LOCAL_RESOURCE: &[u8] = component!(
     "#
 );
 
-fn local_resource_instance() -> (Store<()>, wasm_component_model_polyfill::Instance) {
+async fn local_resource_instance() -> (Store<()>, wasm_component_model_polyfill::Instance) {
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, LOCAL_RESOURCE).expect("component parses");
+    let component = Component::new(&engine, LOCAL_RESOURCE)
+        .await
+        .expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     (store, instance)
 }
 
-fn make_handle(
+async fn make_handle(
     store: &mut Store<()>,
     instance: &wasm_component_model_polyfill::Instance,
     rep: u32,
 ) -> ResourceHandle {
     let make = instance.get_func("make").expect("make export");
-    let results = make.call(store, &[Val::U32(rep)]).expect("make call");
+    let results = make.call(store, &[Val::U32(rep)]).await.expect("make call");
     match results.as_ref() {
         [Val::Own(handle)] => *handle,
         other => panic!("expected an owned handle, got {other:?}"),
@@ -416,8 +442,8 @@ fn make_handle(
 
 #[wcmp_macros::test]
 async fn it_translates_and_instantiates_a_locally_defined_resource() {
-    let (mut store, instance) = local_resource_instance();
-    let handle = make_handle(&mut store, &instance, 7);
+    let (mut store, instance) = local_resource_instance().await;
+    let handle = make_handle(&mut store, &instance, 7).await;
     assert_eq!(
         handle.index, 1,
         "the first handle takes the first table slot"
@@ -427,17 +453,21 @@ async fn it_translates_and_instantiates_a_locally_defined_resource() {
 #[wcmp_macros::test]
 async fn it_mints_a_distinct_resource_type_identity_per_instantiation() {
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, LOCAL_RESOURCE).expect("component parses");
+    let component = Component::new(&engine, LOCAL_RESOURCE)
+        .await
+        .expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let first = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("first instantiation");
     let second = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("second instantiation");
-    let a = make_handle(&mut store, &first, 1);
-    let b = make_handle(&mut store, &second, 2);
+    let a = make_handle(&mut store, &first, 1).await;
+    let b = make_handle(&mut store, &second, 2).await;
     assert_ne!(
         a.type_id, b.type_id,
         "each instantiation carries its own resource type identity"
@@ -450,21 +480,26 @@ async fn it_mints_a_distinct_resource_type_identity_per_instantiation() {
 
 #[wcmp_macros::test]
 async fn it_supports_a_locally_defined_resource_with_an_in_binary_destructor() {
-    let (mut store, instance) = local_resource_instance();
-    let handle = make_handle(&mut store, &instance, 7);
+    let (mut store, instance) = local_resource_instance().await;
+    let handle = make_handle(&mut store, &instance, 7).await;
     let dispose = instance.get_func("dispose").expect("dispose export");
     dispose
         .call(&mut store, &[Val::Own(handle)])
+        .await
         .expect("dispose call");
     let dropped = instance.get_func("dropped").expect("dropped export");
     let last = instance.get_func("last").expect("last export");
     assert_eq!(
-        dropped.call(&mut store, &[]).expect("dropped").as_ref(),
+        dropped
+            .call(&mut store, &[])
+            .await
+            .expect("dropped")
+            .as_ref(),
         &[Val::U32(1)],
         "the in-binary destructor ran when the guest dropped the handle"
     );
     assert_eq!(
-        last.call(&mut store, &[]).expect("last").as_ref(),
+        last.call(&mut store, &[]).await.expect("last").as_ref(),
         &[Val::U32(7)],
         "the destructor received the dropped entry's rep"
     );
@@ -472,18 +507,23 @@ async fn it_supports_a_locally_defined_resource_with_an_in_binary_destructor() {
 
 #[wcmp_macros::test]
 async fn it_runs_the_in_binary_destructor_exactly_once_per_dropped_handle() {
-    let (mut store, instance) = local_resource_instance();
+    let (mut store, instance) = local_resource_instance().await;
     let dispose = instance.get_func("dispose").expect("dispose export");
     let dropped = instance.get_func("dropped").expect("dropped export");
-    let kept = make_handle(&mut store, &instance, 1);
+    let kept = make_handle(&mut store, &instance, 1).await;
     for rep in [2, 3] {
-        let handle = make_handle(&mut store, &instance, rep);
+        let handle = make_handle(&mut store, &instance, rep).await;
         dispose
             .call(&mut store, &[Val::Own(handle)])
+            .await
             .expect("dispose call");
     }
     assert_eq!(
-        dropped.call(&mut store, &[]).expect("dropped").as_ref(),
+        dropped
+            .call(&mut store, &[])
+            .await
+            .expect("dropped")
+            .as_ref(),
         &[Val::U32(2)],
         "two handles dropped, two destructor runs; the kept handle ran none"
     );
@@ -493,19 +533,24 @@ async fn it_runs_the_in_binary_destructor_exactly_once_per_dropped_handle() {
 #[wcmp_macros::test]
 async fn it_rejects_a_handle_from_another_instance_of_the_same_component() {
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, LOCAL_RESOURCE).expect("component parses");
+    let component = Component::new(&engine, LOCAL_RESOURCE)
+        .await
+        .expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let first = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("first instantiation");
     let second = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("second instantiation");
-    let handle = make_handle(&mut store, &first, 1);
+    let handle = make_handle(&mut store, &first, 1).await;
     let dispose = second.get_func("dispose").expect("dispose export");
     let err = dispose
         .call(&mut store, &[Val::Own(handle)])
+        .await
         .expect_err("a handle from another instance must not lower");
     assert!(
         matches!(&err, Error::Abi(abi) if matches!(abi.cause, AbiCause::UnregisteredResourceType)),
@@ -534,11 +579,14 @@ async fn it_rejects_a_local_destructor_with_the_wrong_signature() {
         "#
     );
     let engine = Engine::new().expect("engine");
-    let outcome = Component::new(&engine, COMPONENT).and_then(|component| {
-        let linker: Linker<()> = Linker::new(&engine);
-        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-        linker.instantiate(&mut store, &component).map(|_| ())
-    });
+    let outcome = match Component::new(&engine, COMPONENT).await {
+        Ok(component) => {
+            let linker: Linker<()> = Linker::new(&engine);
+            let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+            linker.instantiate(&mut store, &component).await.map(|_| ())
+        }
+        Err(err) => Err(err),
+    };
     let err = outcome.expect_err("a destructor that returns a value is refused");
     assert!(
         matches!(
@@ -582,7 +630,9 @@ const SHARED: &[u8] = component!(
 #[wcmp_macros::test]
 async fn it_shares_a_single_resource_type_across_two_imported_interfaces() {
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, SHARED).expect("component parses");
+    let component = Component::new(&engine, SHARED)
+        .await
+        .expect("component parses");
     let mut linker: Linker<Vec<u32>> = Linker::new(&engine);
     let a: InterfaceIdentifier = "pdd013-tests:host/a@0.1.0".parse().expect("identifier");
     let b: InterfaceIdentifier = "pdd013-tests:host/b@0.1.0".parse().expect("identifier");
@@ -627,16 +677,19 @@ async fn it_shares_a_single_resource_type_across_two_imported_interfaces() {
     let mut store: Store<Vec<u32>> = Store::new(&engine, Vec::new()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("one identity behind both interfaces links");
     let run = instance.get_func("run").expect("run export");
-    run.call(&mut store, &[]).expect("run");
+    run.call(&mut store, &[]).await.expect("run");
     assert_eq!(store.data(), &vec![9]);
 }
 
 #[wcmp_macros::test]
 async fn it_rejects_two_identities_for_one_declared_resource_type() {
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, SHARED).expect("component parses");
+    let component = Component::new(&engine, SHARED)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let a: InterfaceIdentifier = "pdd013-tests:host/a@0.1.0".parse().expect("identifier");
     let b: InterfaceIdentifier = "pdd013-tests:host/b@0.1.0".parse().expect("identifier");
@@ -671,7 +724,7 @@ async fn it_rejects_two_identities_for_one_declared_resource_type() {
         |_: HostCall<'_, ()>, _args, _results| Ok(()),
     );
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    let err = match linker.instantiate(&mut store, &component) {
+    let err = match linker.instantiate(&mut store, &component).await {
         Ok(_) => panic!("two identities for one declared resource type must not link"),
         Err(err) => err,
     };
@@ -705,7 +758,9 @@ const MINTER: &[u8] = component!(
 #[wcmp_macros::test]
 async fn it_lets_a_host_function_mint_a_resource_handle_during_a_guest_call() {
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, MINTER).expect("component parses");
+    let component = Component::new(&engine, MINTER)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd011-tests:host/things@0.1.0"
         .parse()
@@ -728,9 +783,10 @@ async fn it_lets_a_host_function_mint_a_resource_handle_during_a_guest_call() {
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let run = instance.get_func("run").expect("run export");
-    let results = run.call(&mut store, &[]).expect("run");
+    let results = run.call(&mut store, &[]).await.expect("run");
     let [Val::Own(handle)] = results.as_ref() else {
         panic!("expected an owned handle, got {results:?}");
     };
@@ -744,7 +800,9 @@ async fn it_lets_a_host_function_mint_a_resource_handle_during_a_guest_call() {
 #[wcmp_macros::test]
 async fn it_rejects_a_host_mint_against_an_unknown_resource_type() {
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, MINTER).expect("component parses");
+    let component = Component::new(&engine, MINTER)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd011-tests:host/things@0.1.0"
         .parse()
@@ -768,10 +826,12 @@ async fn it_rejects_a_host_mint_against_an_unknown_resource_type() {
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let run = instance.get_func("run").expect("run export");
     let err = run
         .call(&mut store, &[])
+        .await
         .expect_err("minting against an unknown identity fails the call");
     // The host error crosses the substrate as a trap, so the cause
     // is read off the error chain's text.
@@ -808,7 +868,9 @@ async fn it_supports_resource_constructor_and_method_shaped_exports() {
     );
 
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let import = component
         .imports
         .iter()
@@ -925,13 +987,15 @@ const BORROWER: &[u8] = component!(
     "#
 );
 
-fn borrower_instance() -> (
+async fn borrower_instance() -> (
     Store<()>,
     wasm_component_model_polyfill::Instance,
     ResourceTypeId,
 ) {
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, BORROWER).expect("component parses");
+    let component = Component::new(&engine, BORROWER)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd014-tests:host/things@0.1.0"
         .parse()
@@ -962,17 +1026,19 @@ fn borrower_instance() -> (
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     (store, instance, type_id)
 }
 
 #[wcmp_macros::test]
 async fn it_rejects_a_host_call_that_leaves_outstanding_borrows() {
-    let (mut store, instance, type_id) = borrower_instance();
+    let (mut store, instance, type_id) = borrower_instance().await;
     let handle = store.resource_new(type_id, 5).expect("mint");
     let hold = instance.get_func("hold").expect("hold export");
     let err = hold
         .call(&mut store, &[Val::Borrow(handle)])
+        .await
         .expect_err("the guest kept the borrow, so the call must fail");
     assert!(
         matches!(&err, Error::Abi(abi) if matches!(abi.cause, AbiCause::OutstandingBorrows { count: 1 })),
@@ -982,11 +1048,12 @@ async fn it_rejects_a_host_call_that_leaves_outstanding_borrows() {
 
 #[wcmp_macros::test]
 async fn it_leaves_the_owning_handle_live_after_a_borrow_is_dropped_in_the_call() {
-    let (mut store, instance, type_id) = borrower_instance();
+    let (mut store, instance, type_id) = borrower_instance().await;
     let handle = store.resource_new(type_id, 7).expect("mint");
     let peek = instance.get_func("peek").expect("peek export");
     let results = peek
         .call(&mut store, &[Val::Borrow(handle)])
+        .await
         .expect("the guest dropped its borrow before returning");
     assert_eq!(
         results.as_ref(),
@@ -1036,24 +1103,45 @@ async fn it_allocates_from_index_one_in_each_nested_instance() {
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
-    let call = |store: &mut Store<()>, name: &str, args: &[Val]| {
+    async fn call(
+        instance: &wasm_component_model_polyfill::Instance,
+        store: &mut Store<()>,
+        name: &str,
+        args: &[Val],
+    ) -> Box<[Val]> {
         instance
             .get_func(name)
             .unwrap_or_else(|| panic!("{name} export"))
             .call(store, args)
+            .await
             .unwrap_or_else(|err| panic!("{name}: {err}"))
-    };
-    assert_eq!(call(&mut store, "alloc-in1", &[]).as_ref(), &[Val::U32(1)]);
-    call(&mut store, "dealloc-in1", &[Val::U32(1)]);
-    assert_eq!(call(&mut store, "alloc-in1", &[]).as_ref(), &[Val::U32(1)]);
-    assert_eq!(call(&mut store, "alloc-in2", &[]).as_ref(), &[Val::U32(1)]);
-    assert_eq!(call(&mut store, "alloc-in2", &[]).as_ref(), &[Val::U32(2)]);
+    }
+    assert_eq!(
+        call(&instance, &mut store, "alloc-in1", &[]).await.as_ref(),
+        &[Val::U32(1)]
+    );
+    call(&instance, &mut store, "dealloc-in1", &[Val::U32(1)]).await;
+    assert_eq!(
+        call(&instance, &mut store, "alloc-in1", &[]).await.as_ref(),
+        &[Val::U32(1)]
+    );
+    assert_eq!(
+        call(&instance, &mut store, "alloc-in2", &[]).await.as_ref(),
+        &[Val::U32(1)]
+    );
+    assert_eq!(
+        call(&instance, &mut store, "alloc-in2", &[]).await.as_ref(),
+        &[Val::U32(2)]
+    );
 }
 
 // ----------------------------------------------------------------
@@ -1062,13 +1150,15 @@ async fn it_allocates_from_index_one_in_each_nested_instance() {
 
 /// A store whose host resource `thing` records every destructor run
 /// in the host data, plus the identity to mint with.
-fn disposal_store() -> (
+async fn disposal_store() -> (
     Store<Vec<u32>>,
     ResourceTypeId,
     wasm_component_model_polyfill::Instance,
 ) {
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, BORROWER).expect("component parses");
+    let component = Component::new(&engine, BORROWER)
+        .await
+        .expect("component parses");
     let mut linker: Linker<Vec<u32>> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd014-tests:host/things@0.1.0"
         .parse()
@@ -1102,13 +1192,14 @@ fn disposal_store() -> (
     let mut store: Store<Vec<u32>> = Store::new(&engine, Vec::new()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     (store, type_id, instance)
 }
 
 #[wcmp_macros::test]
 async fn it_releases_a_host_held_handle_and_runs_its_destructor_once() {
-    let (mut store, type_id, _instance) = disposal_store();
+    let (mut store, type_id, _instance) = disposal_store().await;
     let handle = store.resource_new(type_id, 31).expect("mint");
     store.resource_drop(handle).expect("release");
     assert_eq!(
@@ -1122,7 +1213,7 @@ async fn it_releases_a_host_held_handle_and_runs_its_destructor_once() {
 
 #[wcmp_macros::test]
 async fn it_refuses_to_release_a_handle_twice() {
-    let (mut store, type_id, _instance) = disposal_store();
+    let (mut store, type_id, _instance) = disposal_store().await;
     let handle = store.resource_new(type_id, 5).expect("mint");
     store.resource_drop(handle).expect("first release");
     let err = store
@@ -1137,25 +1228,29 @@ async fn it_refuses_to_release_a_handle_twice() {
 
 #[wcmp_macros::test]
 async fn it_releases_a_locally_defined_resource_through_the_store() {
-    let (mut store, instance) = local_resource_instance();
-    let handle = make_handle(&mut store, &instance, 9);
+    let (mut store, instance) = local_resource_instance().await;
+    let handle = make_handle(&mut store, &instance, 9).await;
     store.resource_drop(handle).expect("release");
     let dropped = instance.get_func("dropped").expect("dropped export");
     let last = instance.get_func("last").expect("last export");
     assert_eq!(
-        dropped.call(&mut store, &[]).expect("dropped").as_ref(),
+        dropped
+            .call(&mut store, &[])
+            .await
+            .expect("dropped")
+            .as_ref(),
         &[Val::U32(1)],
         "the component's in-binary destructor ran once"
     );
     assert_eq!(
-        last.call(&mut store, &[]).expect("last").as_ref(),
+        last.call(&mut store, &[]).await.expect("last").as_ref(),
         &[Val::U32(9)]
     );
 }
 
 #[wcmp_macros::test]
 async fn it_runs_no_destructor_when_a_store_is_dropped() {
-    let (store, type_id, instance) = disposal_store();
+    let (store, type_id, instance) = disposal_store().await;
     let _leaked = store.resource_new(type_id, 77).expect("mint");
     // The host data is the only record the destructor writes to; take
     // it out of the store before the store drops.
@@ -1170,8 +1265,8 @@ async fn it_runs_no_destructor_when_a_store_is_dropped() {
 
 #[wcmp_macros::test]
 async fn it_lets_an_instance_drop_before_its_store() {
-    let (mut store, instance) = local_resource_instance();
-    let handle = make_handle(&mut store, &instance, 4);
+    let (mut store, instance) = local_resource_instance().await;
+    let handle = make_handle(&mut store, &instance, 4).await;
     drop(instance);
     // The store, its tables, and the destructor the dropped instance
     // introduced all outlive the instance handle.

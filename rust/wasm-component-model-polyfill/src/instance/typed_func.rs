@@ -83,15 +83,15 @@ where
     ///
     /// [`Func::call`]: super::Func::call
     /// [`Instance`]: super::Instance
-    pub fn call<T: 'static>(&self, store: &mut Store<T>, args: P) -> Result<R> {
+    pub async fn call<T: 'static>(&self, store: &mut Store<T>, args: P) -> Result<R> {
         let lowered = args.into_vals();
-        let results = self.inner.call(store, &lowered)?;
+        let results = self.inner.call(store, &lowered).await?;
         match results.len() {
             0 => R::from_val(None),
             1 => R::from_val(Some(&results[0])),
             n => Err(Error::Internal {
                 message: format!(
-                    "typed export call observed {n} return values; the synchronous baseline admits at most one"
+                    "typed export call observed {n} return values; an export admits at most one"
                 ),
             }),
         }

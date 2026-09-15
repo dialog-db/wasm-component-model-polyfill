@@ -2,9 +2,9 @@
 
 This directory is `js_wasm_runtime_layer` 0.7.0 from crates.io, which is
 identical to upstream `main` at commit `d4c702c` (2026-09-02) for this crate,
-with two patches. The workspace routes the registry name here through
+with the patches listed below. The workspace routes the registry name here through
 `[patch.crates-io]` in the root `Cargo.toml`. Drop the directory and the patch
-entry when upstream ships both fixes. The licenses are upstream's.
+entry when upstream ships the fixes. The licenses are upstream's.
 
 Each patch is marked `PATCH (wcmp)` in the source.
 
@@ -59,3 +59,17 @@ Upstream's `current_pages` is a `todo!()`. The polyfill reads the memory size
 to bound-check `cabi_realloc` results and string and list pointers before it
 touches memory, as Wasmtime does. The patch computes the page count from the
 underlying `ArrayBuffer`'s byte length.
+
+## 6. Asynchronous compilation (`src/lib.rs`, `src/module.rs`, `Cargo.toml`)
+
+Upstream compiles every module with the synchronous `WebAssembly.Module`
+constructor, which some browsers refuse on the main thread above a size limit.
+The runtime layer's `WasmModule::new` is synchronous, so the patch adds
+`Engine::precompile`, an `async fn` that compiles the bytes with
+`WebAssembly.compile` and keeps the result on the engine, keyed by the bytes.
+The next `Module::new` on that engine with the same bytes takes the compiled
+module instead of compiling again. The polyfill awaits `precompile` for every
+core module of a component before it constructs the runtime layer's `Module`.
+The patch adds `wasm-bindgen-futures` for the promise-to-future bridge. The
+proposal for upstream is an asynchronous constructor on `WasmModule` itself, so
+the handoff through the engine becomes unnecessary.

@@ -74,7 +74,11 @@ impl Func {
     /// `T` is the host-data type of the [`Store`] the instance was
     /// created in. Passing a different store returns
     /// [`InstantiationError::WrongStore`].
-    pub fn call<T: 'static>(&self, store: &mut Store<T>, args: &[Val]) -> Result<Box<[Val]>> {
+    ///
+    /// The future completes without suspending on both targets
+    /// today; it is awaited so that an export which yields to the
+    /// host can do so without a change of signature.
+    pub async fn call<T: 'static>(&self, store: &mut Store<T>, args: &[Val]) -> Result<Box<[Val]>> {
         if store.id != self.store_id {
             return Err(Error::from(InstantiationError::WrongStore));
         }

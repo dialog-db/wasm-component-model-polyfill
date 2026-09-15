@@ -12,7 +12,6 @@
 
 use std::collections::HashMap;
 
-use wasm_runtime_layer::Module as RuntimeModule;
 use wasmtime_environ::component::{
     CanonicalOptions as EnvironCanonOptions, CanonicalOptionsDataModel, ComponentTranslation,
     ComponentTypes, ComponentTypesBuilder, CoreDef, CoreExport, Export as EnvironExport,
@@ -31,9 +30,10 @@ use crate::abi::layout::FlatType;
 
 use crate::component::{ComponentExport, ComponentImport, ExternType, ExternalName, TypeProjector};
 use crate::engine::Engine;
-use crate::error::{Error, InstantiationError, Result};
+use crate::error::{Error, Result};
 use crate::identifier::InterfaceIdentifier;
 
+use super::compile_module::compile_module;
 use super::ir::{
     CanonOptions, CoreInstanceExport, CoreSignature, CoreSourceItem, EntityIndex, ExecutorIr,
     ExportSpec, ImportSource, Initializer, LoweringSpec, ModuleEntry, ModuleImport, ResourceSpec,
@@ -50,8 +50,10 @@ pub struct Translation {
     pub ir: ExecutorIr,
 }
 
-/// Translate `bytes` against `engine`.
-pub fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
+/// Translate `bytes` against `engine`. The future suspends only while
+/// the browser compiles a core module; on native it completes without
+/// suspending.
+pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
     let scope = ScopeVec::new();
     // The translator's defaults keep concurrency support on. Turning
     // it off makes the fused adapter compiler assert on an `async`
@@ -79,12 +81,7 @@ pub fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
     let mut module_index_for_static: HashMap<StaticModuleIndex, usize> =
         HashMap::with_capacity(modules.len());
     for (static_idx, module) in modules {
-        // The translator already validated the module; a compile
-        // failure here means the runtime layer refused a valid
-        // module, which is a substrate concern.
-        let runtime = RuntimeModule::new(engine.inner(), module.wasm)
-            .map_err(InstantiationError::SubstrateFailure)
-            .map_err(Error::from)?;
+        let runtime = compile_module(engine, module.wasm).await?;
         let imports = module
             .module
             .imports()

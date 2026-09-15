@@ -143,8 +143,10 @@ const DROPPER: &[u8] = component!(
     "#
 );
 
-/// Run every step and return the report.
-pub fn run() -> Vec<Step> {
+/// Run every step and return the report. Compiling, instantiating,
+/// and calling are awaited, so the browser can compile through its
+/// asynchronous API; natively the futures complete at once.
+pub async fn run() -> Vec<Step> {
     let engine = match Engine::new() {
         Ok(engine) => engine,
         Err(err) => {
@@ -155,14 +157,12 @@ pub fn run() -> Vec<Step> {
         }
     };
     vec![
-        Step::run("foundations", || foundations(&engine)),
-        Step::run("real guest from wasm-tools", || real_guest(&engine)),
-        Step::run("host function and canonical ABI values", || {
-            greeter(&engine)
-        }),
-        Step::run("host resource with a destructor", || dropper(&engine)),
-        Step::run("disposal from the host", || disposal(&engine)),
-        composition(&engine),
+        Step::run("foundations", foundations(&engine)).await,
+        Step::run("real guest from wasm-tools", real_guest(&engine)).await,
+        Step::run("host function and canonical ABI values", greeter(&engine)).await,
+        Step::run("host resource with a destructor", dropper(&engine)).await,
+        Step::run("disposal from the host", disposal(&engine)).await,
+        composition(&engine).await,
     ]
 }
 
@@ -214,7 +214,7 @@ fn expect<T: PartialEq + std::fmt::Debug>(what: &str, got: T, wanted: T) -> Resu
 
 /// An engine and a store construct through the public API and the
 /// store hands its data back.
-fn foundations(engine: &Engine) -> Result<String, String> {
+async fn foundations(engine: &Engine) -> Result<String, String> {
     let mut store: Store<HostState> = Store::new(engine, HostState::default()).map_err(fail)?;
     store.data_mut().tallies.push(7);
     expect("store data", store.data().tallies.as_slice(), &[7])?;
@@ -223,17 +223,20 @@ fn foundations(engine: &Engine) -> Result<String, String> {
 
 /// A component built by a real toolchain loads, instantiates, and
 /// answers a typed call.
-fn real_guest(engine: &Engine) -> Result<String, String> {
-    let component = Component::new(engine, GUEST).map_err(fail)?;
+async fn real_guest(engine: &Engine) -> Result<String, String> {
+    let component = Component::new(engine, GUEST).await.map_err(fail)?;
     let linker: Linker<HostState> = Linker::new(engine);
     let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
-    let instance = linker.instantiate(&mut store, &component).map_err(fail)?;
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .map_err(fail)?;
     let double = instance
         .get_func("double")
         .ok_or("no `double` export")?
         .typed::<(u32,), u32>()
         .map_err(fail)?;
-    let result = double.call(&mut store, (21,)).map_err(fail)?;
+    let result = double.call(&mut store, (21,)).await.map_err(fail)?;
     expect("double(21)", result, 42)?;
     Ok(format!(
         "{} bytes of wasm-tools output; double(21) = {result}",
@@ -243,8 +246,8 @@ fn real_guest(engine: &Engine) -> Result<String, String> {
 
 /// Strings and a list lower into guest memory, a string lifts back
 /// out, and a typed host function receives what the guest sends.
-fn greeter(engine: &Engine) -> Result<String, String> {
-    let component = Component::new(engine, GREETER).map_err(fail)?;
+async fn greeter(engine: &Engine) -> Result<String, String> {
+    let component = Component::new(engine, GREETER).await.map_err(fail)?;
     let mut linker: Linker<HostState> = Linker::new(engine);
     let host: InterfaceIdentifier = "wcmp:smoke/host@0.1.0".parse().map_err(fail)?;
     linker.instance(&host).func_wrap(
@@ -257,14 +260,20 @@ fn greeter(engine: &Engine) -> Result<String, String> {
         },
     );
     let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
-    let instance = linker.instantiate(&mut store, &component).map_err(fail)?;
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .map_err(fail)?;
 
     let len = instance
         .get_func("len")
         .ok_or("no `len` export")?
         .typed::<(String,), i32>()
         .map_err(fail)?;
-    let length = len.call(&mut store, ("héllo".to_owned(),)).map_err(fail)?;
+    let length = len
+        .call(&mut store, ("héllo".to_owned(),))
+        .await
+        .map_err(fail)?;
     expect("len(\"héllo\") in UTF-8 bytes", length, 6)?;
 
     let echo = instance
@@ -274,6 +283,7 @@ fn greeter(engine: &Engine) -> Result<String, String> {
         .map_err(fail)?;
     let echoed = echo
         .call(&mut store, ("round trip".to_owned(),))
+        .await
         .map_err(fail)?;
     expect("echo", echoed.as_str(), "round trip")?;
 
@@ -282,7 +292,10 @@ fn greeter(engine: &Engine) -> Result<String, String> {
         .ok_or("no `sum` export")?
         .typed::<(Vec<u32>,), u32>()
         .map_err(fail)?;
-    let total = sum.call(&mut store, (vec![1, 2, 3, 4, 5],)).map_err(fail)?;
+    let total = sum
+        .call(&mut store, (vec![1, 2, 3, 4, 5],))
+        .await
+        .map_err(fail)?;
     expect("sum([1..5])", total, 15)?;
 
     let notify = instance
@@ -290,7 +303,7 @@ fn greeter(engine: &Engine) -> Result<String, String> {
         .ok_or("no `notify` export")?
         .typed::<(u32,), ()>()
         .map_err(fail)?;
-    notify.call(&mut store, (21,)).map_err(fail)?;
+    notify.call(&mut store, (21,)).await.map_err(fail)?;
     expect("tallies", store.data().tallies.as_slice(), &[42])?;
 
     Ok(format!(
@@ -301,8 +314,8 @@ fn greeter(engine: &Engine) -> Result<String, String> {
 
 /// A host resource's destructor runs exactly once per handle the guest
 /// drops, in drop order.
-fn dropper(engine: &Engine) -> Result<String, String> {
-    let component = Component::new(engine, DROPPER).map_err(fail)?;
+async fn dropper(engine: &Engine) -> Result<String, String> {
+    let component = Component::new(engine, DROPPER).await.map_err(fail)?;
     let mut linker: Linker<HostState> = Linker::new(engine);
     let resources: InterfaceIdentifier = "wcmp:smoke/resources@0.1.0".parse().map_err(fail)?;
     let thing = linker.instance(&resources).resource(
@@ -313,12 +326,16 @@ fn dropper(engine: &Engine) -> Result<String, String> {
         },
     );
     let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
-    let instance = linker.instantiate(&mut store, &component).map_err(fail)?;
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .map_err(fail)?;
     let first = store.resource_new(thing, 11).map_err(fail)?;
     let second = store.resource_new(thing, 22).map_err(fail)?;
     let drop2 = instance.get_func("drop2").ok_or("no `drop2` export")?;
     drop2
         .call(&mut store, &[Val::Own(first), Val::Own(second)])
+        .await
         .map_err(fail)?;
     expect(
         "destructor order",
@@ -333,8 +350,8 @@ fn dropper(engine: &Engine) -> Result<String, String> {
 
 /// The host releases a handle it never handed to the guest, watches
 /// the destructor run, then drops the instance and the store.
-fn disposal(engine: &Engine) -> Result<String, String> {
-    let component = Component::new(engine, DROPPER).map_err(fail)?;
+async fn disposal(engine: &Engine) -> Result<String, String> {
+    let component = Component::new(engine, DROPPER).await.map_err(fail)?;
     let mut linker: Linker<HostState> = Linker::new(engine);
     let resources: InterfaceIdentifier = "wcmp:smoke/resources@0.1.0".parse().map_err(fail)?;
     let thing = linker.instance(&resources).resource(
@@ -345,7 +362,10 @@ fn disposal(engine: &Engine) -> Result<String, String> {
         },
     );
     let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
-    let instance = linker.instantiate(&mut store, &component).map_err(fail)?;
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .map_err(fail)?;
     let kept = store.resource_new(thing, 33).map_err(fail)?;
     let leaked = store.resource_new(thing, 44).map_err(fail)?;
     store.resource_drop(kept).map_err(fail)?;
@@ -376,22 +396,26 @@ fn disposal(engine: &Engine) -> Result<String, String> {
 
 /// A `wac` composition of two real guests runs through the adapter
 /// the translator emits between them.
-fn composition(engine: &Engine) -> Step {
-    Step::run("wac composition through an adapter", || {
-        let component = Component::new(engine, COMPOSITION).map_err(fail)?;
+async fn composition(engine: &Engine) -> Step {
+    Step::run("wac composition through an adapter", async {
+        let component = Component::new(engine, COMPOSITION).await.map_err(fail)?;
         let linker: Linker<HostState> = Linker::new(engine);
         let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
-        let instance = linker.instantiate(&mut store, &component).map_err(fail)?;
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .await
+            .map_err(fail)?;
         let run = instance
             .get_func("run")
             .ok_or("no `run` export")?
             .typed::<(u32,), u32>()
             .map_err(fail)?;
-        let result = run.call(&mut store, (20,)).map_err(fail)?;
+        let result = run.call(&mut store, (20,)).await.map_err(fail)?;
         expect("run(20) = double(20) + 1", result, 41)?;
         Ok(format!(
             "{} bytes of wac output; socket.run(20) -> plug.double -> {result}",
             COMPOSITION.len()
         ))
     })
+    .await
 }

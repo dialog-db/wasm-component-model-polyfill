@@ -22,9 +22,11 @@ wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 /// Resolve the [`FunctionType`] for the export named `wire_name` on
 /// the component the bytes parse to. Panics if the export is absent
 /// or not a function.
-fn export_signature(bytes: &[u8], wire_name: &str) -> FunctionType {
+async fn export_signature(bytes: &[u8], wire_name: &str) -> FunctionType {
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, bytes).expect("component parses");
+    let component = Component::new(&engine, bytes)
+        .await
+        .expect("component parses");
     let export = component
         .exports
         .iter()
@@ -40,16 +42,19 @@ fn export_signature(bytes: &[u8], wire_name: &str) -> FunctionType {
 }
 
 /// Resolve the result [`ValueType`] of the named export.
-fn export_result(bytes: &[u8], wire_name: &str) -> ValueType {
+async fn export_result(bytes: &[u8], wire_name: &str) -> ValueType {
     export_signature(bytes, wire_name)
+        .await
         .result
         .unwrap_or_else(|| panic!("export `{wire_name}` declares no result"))
 }
 
 /// Resolve the [`InstanceType`] of an interface-typed import.
-fn import_instance(bytes: &[u8], wire_name: &str) -> InstanceType {
+async fn import_instance(bytes: &[u8], wire_name: &str) -> InstanceType {
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, bytes).expect("component parses");
+    let component = Component::new(&engine, bytes)
+        .await
+        .expect("component parses");
     let import = component
         .imports
         .iter()
@@ -66,8 +71,8 @@ fn import_instance(bytes: &[u8], wire_name: &str) -> InstanceType {
 
 /// Resolve the [`FunctionType`] of an item inside an interface-typed
 /// import.
-fn import_function(bytes: &[u8], iface: &str, item: &str) -> FunctionType {
-    let instance = import_instance(bytes, iface);
+async fn import_function(bytes: &[u8], iface: &str, item: &str) -> FunctionType {
+    let instance = import_instance(bytes, iface).await;
     let entry = instance
         .items
         .iter()
@@ -137,7 +142,7 @@ async fn it_supports_primitive_value_types() {
     ];
 
     for (name, expected) in cases {
-        let signature = export_signature(COMPONENT, name);
+        let signature = export_signature(COMPONENT, name).await;
         assert_eq!(
             signature.parameters.len(),
             1,
@@ -168,7 +173,7 @@ async fn it_supports_record_types() {
         "#
     );
 
-    let signature = import_function(COMPONENT, "test:host/shapes@0.1.0", "make");
+    let signature = import_function(COMPONENT, "test:host/shapes@0.1.0", "make").await;
     let result = signature.result.expect("`make` declares a result");
     let ValueType::Record(record) = result else {
         panic!("expected record result, got {result:?}");
@@ -197,7 +202,7 @@ async fn it_supports_variant_types() {
         "#
     );
 
-    let signature = import_function(COMPONENT, "test:host/shapes@0.1.0", "make");
+    let signature = import_function(COMPONENT, "test:host/shapes@0.1.0", "make").await;
     let result = signature.result.expect("`make` declares a result");
     let ValueType::Variant(variant) = result else {
         panic!("expected variant result, got {result:?}");
@@ -234,7 +239,7 @@ async fn it_supports_list_types() {
         "#
     );
 
-    let result = export_result(COMPONENT, "make");
+    let result = export_result(COMPONENT, "make").await;
     let ValueType::List(list) = result else {
         panic!("expected list result, got {result:?}");
     };
@@ -262,7 +267,7 @@ async fn it_supports_option_types() {
         "#
     );
 
-    let result = export_result(COMPONENT, "make");
+    let result = export_result(COMPONENT, "make").await;
     let ValueType::Option(option) = result else {
         panic!("expected option result, got {result:?}");
     };
@@ -293,7 +298,7 @@ async fn it_supports_result_types() {
         "#
     );
 
-    let result = export_result(COMPONENT, "make");
+    let result = export_result(COMPONENT, "make").await;
     let ValueType::Result(result_ty) = result else {
         panic!("expected result-type result, got {result:?}");
     };
@@ -327,7 +332,7 @@ async fn it_supports_tuple_types() {
         "#
     );
 
-    let result = export_result(COMPONENT, "make");
+    let result = export_result(COMPONENT, "make").await;
     let ValueType::Tuple(tuple) = result else {
         panic!("expected tuple result, got {result:?}");
     };
@@ -355,7 +360,7 @@ async fn it_supports_flags_types() {
         "#
     );
 
-    let signature = import_function(COMPONENT, "test:host/perms@0.1.0", "take");
+    let signature = import_function(COMPONENT, "test:host/perms@0.1.0", "take").await;
     assert_eq!(signature.parameters.len(), 1);
     let ValueType::Flags(flags) = &signature.parameters[0].ty else {
         panic!(
@@ -384,7 +389,7 @@ async fn it_supports_enum_types() {
         "#
     );
 
-    let signature = import_function(COMPONENT, "test:host/levels@0.1.0", "take");
+    let signature = import_function(COMPONENT, "test:host/levels@0.1.0", "take").await;
     assert_eq!(signature.parameters.len(), 1);
     let ValueType::Enum(en) = &signature.parameters[0].ty else {
         panic!(
@@ -428,9 +433,11 @@ async fn it_compares_types_structurally() {
     );
 
     let first = import_function(FIRST, "test:host/shapes@0.1.0", "make")
+        .await
         .result
         .expect("first declares result");
     let second = import_function(SECOND, "test:host/vectors@0.1.0", "make")
+        .await
         .result
         .expect("second declares result");
     assert_eq!(first, second);
@@ -459,7 +466,7 @@ async fn it_supports_own_resource_handles() {
         "#
     );
 
-    let signature = export_signature(COMPONENT, "consume");
+    let signature = export_signature(COMPONENT, "consume").await;
     assert_eq!(signature.parameters.len(), 1);
     let ValueType::Own(rt) = &signature.parameters[0].ty else {
         panic!(
@@ -488,7 +495,7 @@ async fn it_supports_borrow_resource_handles() {
         "#
     );
 
-    let signature = export_signature(COMPONENT, "inspect");
+    let signature = export_signature(COMPONENT, "inspect").await;
     assert_eq!(signature.parameters.len(), 1);
     let ValueType::Borrow(rt) = &signature.parameters[0].ty else {
         panic!(
@@ -527,7 +534,7 @@ async fn it_runs_sync_resource_destructors() {
         "#
     );
 
-    let signature = export_signature(COMPONENT, "consume");
+    let signature = export_signature(COMPONENT, "consume").await;
     let ValueType::Own(rt) = &signature.parameters[0].ty else {
         panic!("expected own<thing> parameter");
     };

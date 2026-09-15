@@ -60,6 +60,11 @@ default-features = false
 version = "0.2"
 default-features = false
 
+# PATCH (wcmp): asynchronous compilation through `WebAssembly.compile`.
+[dependencies.wasm-bindgen-futures]
+version = "0.4"
+default-features = false
+
 [dependencies.wasm_runtime_layer]
 version = "0.7"
 default-features = false

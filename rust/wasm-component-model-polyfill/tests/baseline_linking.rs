@@ -54,7 +54,9 @@ async fn it_loads_a_component_from_bytes() {
     );
 
     let engine = Engine::new().expect("engine construction succeeds");
-    let component = Component::new(&engine, GREETER).expect("component parses");
+    let component = Component::new(&engine, GREETER)
+        .await
+        .expect("component parses");
 
     assert_eq!(component.imports.len(), 1);
     assert_eq!(component.exports.len(), 1);
@@ -103,17 +105,21 @@ async fn it_instantiates_a_component_through_a_linker() {
     );
 
     let engine = Engine::new().expect("engine construction succeeds");
-    let component = Component::new(&engine, ADDER).expect("component parses");
+    let component = Component::new(&engine, ADDER)
+        .await
+        .expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
 
     let instance = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiation succeeds");
     let add = instance.get_func("add").expect("`add` export is present");
 
     let results = add
         .call(&mut store, &[Val::S32(2), Val::S32(3)])
+        .await
         .expect("call succeeds");
     assert_eq!(results.as_ref(), &[Val::S32(5)]);
 }
@@ -141,15 +147,19 @@ async fn it_supports_multiple_independent_instances() {
     );
 
     let engine = Engine::new().expect("engine construction succeeds");
-    let component = Component::new(&engine, COUNTER).expect("component parses");
+    let component = Component::new(&engine, COUNTER)
+        .await
+        .expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
 
     let first = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("first instantiation succeeds");
     let second = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("second instantiation succeeds");
 
     let first_next = first
@@ -162,6 +172,7 @@ async fn it_supports_multiple_independent_instances() {
     assert_eq!(
         first_next
             .call(&mut store, &[])
+            .await
             .expect("first call")
             .as_ref(),
         &[Val::S32(1)],
@@ -169,6 +180,7 @@ async fn it_supports_multiple_independent_instances() {
     assert_eq!(
         first_next
             .call(&mut store, &[])
+            .await
             .expect("second call")
             .as_ref(),
         &[Val::S32(2)],
@@ -179,6 +191,7 @@ async fn it_supports_multiple_independent_instances() {
     assert_eq!(
         second_next
             .call(&mut store, &[])
+            .await
             .expect("third call")
             .as_ref(),
         &[Val::S32(1)],
@@ -208,7 +221,9 @@ async fn it_resolves_package_and_interface_identifiers_with_semver() {
     );
 
     let engine = Engine::new().expect("engine construction succeeds");
-    let component = Component::new(&engine, HARNESS).expect("component parses");
+    let component = Component::new(&engine, HARNESS)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
 
     // Register a candidate whose patch version is higher than the
@@ -220,6 +235,7 @@ async fn it_resolves_package_and_interface_identifiers_with_semver() {
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let instance = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiation with semver-qualified import succeeds");
     let answer = instance
         .get_func("answer")
@@ -227,6 +243,7 @@ async fn it_resolves_package_and_interface_identifiers_with_semver() {
     assert_eq!(
         answer
             .call(&mut store, &[])
+            .await
             .expect("call succeeds")
             .as_ref(),
         &[Val::S32(42)],
@@ -261,7 +278,9 @@ async fn it_defines_an_untyped_host_function() {
     );
 
     let engine = Engine::new().expect("engine construction succeeds");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd008:host/maths@0.1.0"
         .parse()
@@ -288,12 +307,14 @@ async fn it_defines_an_untyped_host_function() {
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiation succeeds");
     let do_double = inst
         .get_func("do-double")
         .expect("`do-double` export present");
     let results = do_double
         .call(&mut store, &[Val::S32(21)])
+        .await
         .expect("call succeeds");
     assert_eq!(results.as_ref(), &[Val::S32(42)]);
 }
@@ -326,7 +347,9 @@ async fn it_defines_a_typed_host_function() {
     );
 
     let engine = Engine::new().expect("engine construction succeeds");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
 
     // Happy path: the typed registration agrees with the import.
     let mut linker: Linker<()> = Linker::new(&engine);
@@ -344,12 +367,14 @@ async fn it_defines_a_typed_host_function() {
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiation succeeds");
     let do_double = inst
         .get_func("do-double")
         .expect("`do-double` export present");
     let results = do_double
         .call(&mut store, &[Val::S32(21)])
+        .await
         .expect("call succeeds");
     assert_eq!(results.as_ref(), &[Val::S32(42)]);
 
@@ -366,7 +391,7 @@ async fn it_defines_a_typed_host_function() {
     );
 
     let mut bad_store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
-    let err = match bad_linker.instantiate(&mut bad_store, &component) {
+    let err = match bad_linker.instantiate(&mut bad_store, &component).await {
         Ok(_) => panic!("type mismatch should have been caught at link time"),
         Err(err) => err,
     };
@@ -415,7 +440,9 @@ async fn it_defines_a_host_resource_with_a_sync_destructor() {
     };
 
     let engine = Engine::new().expect("engine construction succeeds");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<HostData> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd009:host/resources@0.1.0"
         .parse()
@@ -429,6 +456,7 @@ async fn it_defines_a_host_resource_with_a_sync_destructor() {
     let mut store: Store<HostData> = Store::new(&engine, host_data).expect("store construction");
     let instance = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiation succeeds");
     let consume = instance
         .get_func("consume")
@@ -442,6 +470,7 @@ async fn it_defines_a_host_resource_with_a_sync_destructor() {
         .expect("resource_new succeeds");
     let results = consume
         .call(&mut store, &[Val::Own(handle)])
+        .await
         .expect("call succeeds");
     assert!(results.is_empty(), "consume returns no values");
 
@@ -486,17 +515,21 @@ async fn it_invokes_an_exported_component_function() {
     );
 
     let engine = Engine::new().expect("engine construction succeeds");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let instance = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiation succeeds");
     let string_length = instance
         .get_func("string-length")
         .expect("`string-length` export present");
     let results = string_length
         .call(&mut store, &[Val::String("hello, world".to_owned())])
+        .await
         .expect("call succeeds");
     assert_eq!(results.as_ref(), &[Val::S32(12)]);
 }
@@ -533,7 +566,9 @@ async fn it_dispatches_to_multiple_host_functions_in_one_interface() {
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd008-tests:host/maths@0.1.0".parse().expect("identifier");
     let mut iface_view = linker.instance(&iface);
@@ -552,9 +587,10 @@ async fn it_dispatches_to_multiple_host_functions_in_one_interface() {
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let f = inst.get_func("incr-then-decr").expect("export");
-    let result = f.call(&mut store, &[Val::S32(7)]).expect("call");
+    let result = f.call(&mut store, &[Val::S32(7)]).await.expect("call");
     assert_eq!(result.as_ref(), &[Val::S32(7)]);
 }
 
@@ -603,7 +639,9 @@ async fn it_passes_a_string_argument_to_a_host_function() {
     );
 
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<Arc<Mutex<Option<String>>>> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd-tests:host/io@0.1.0".parse().expect("identifier");
     linker.instance(&iface).func_new(
@@ -629,9 +667,10 @@ async fn it_passes_a_string_argument_to_a_host_function() {
         Store::new(&engine, observed.clone()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let send = inst.get_func("send").expect("`send` export");
-    let _ = send.call(&mut store, &[]).expect("call");
+    let _ = send.call(&mut store, &[]).await.expect("call");
 
     let observed = observed.lock().expect("lock").clone();
     assert_eq!(observed.as_deref(), Some("hello world"));
@@ -661,7 +700,9 @@ async fn it_propagates_a_host_function_error_through_the_call() {
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd008-tests:host/io@0.1.0".parse().expect("identifier");
     linker.instance(&iface).func_new(
@@ -679,9 +720,10 @@ async fn it_propagates_a_host_function_error_through_the_call() {
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let trigger = inst.get_func("trigger").expect("trigger export");
-    let outcome = trigger.call(&mut store, &[]);
+    let outcome = trigger.call(&mut store, &[]).await;
     let err = outcome.expect_err("call should fail");
     // The error is currently wrapped by the runtime substrate's
     // trap surface; the structured polyfill error is preserved as
@@ -717,7 +759,9 @@ async fn it_supports_typed_host_function_with_unit_result() {
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<u32> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd008-tests:host/io@0.1.0".parse().expect("identifier");
     linker.instance(&iface).func_wrap(
@@ -730,10 +774,11 @@ async fn it_supports_typed_host_function_with_unit_result() {
     let mut store: Store<u32> = Store::new(&engine, 0).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let go = inst.get_func("go").expect("go export");
-    go.call(&mut store, &[]).expect("call");
-    go.call(&mut store, &[]).expect("call again");
+    go.call(&mut store, &[]).await.expect("call");
+    go.call(&mut store, &[]).await.expect("call again");
     assert_eq!(*store.data(), 2, "ping fired twice");
 }
 
@@ -761,7 +806,9 @@ async fn it_rejects_a_component_whose_import_signature_disagrees_with_the_regist
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd008:host/maths@0.1.0".parse().expect("identifier");
     linker.instance(&iface).func_wrap(
@@ -771,7 +818,7 @@ async fn it_rejects_a_component_whose_import_signature_disagrees_with_the_regist
         },
     );
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    let Err(err) = linker.instantiate(&mut store, &component) else {
+    let Err(err) = linker.instantiate(&mut store, &component).await else {
         panic!("link should fail");
     };
     assert!(matches!(err, Error::TypeMismatch(_)), "got {err:?}");
@@ -792,14 +839,17 @@ async fn it_rejects_a_call_whose_argument_count_disagrees_with_the_signature() {
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let id = inst.get_func("id").expect("id export");
-    let outcome = id.call(&mut store, &[Val::S32(1), Val::S32(2)]);
+    let outcome = id.call(&mut store, &[Val::S32(1), Val::S32(2)]).await;
     let err = outcome.expect_err("call should fail");
     assert!(matches!(err, Error::Abi(_)), "got {err:?}");
 }
@@ -819,14 +869,17 @@ async fn it_rejects_a_typed_export_call_whose_argument_type_disagrees() {
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let id = inst.get_func("id").expect("id export");
-    let outcome = id.call(&mut store, &[Val::S64(1)]);
+    let outcome = id.call(&mut store, &[Val::S64(1)]).await;
     let err = outcome.expect_err("call should fail");
     assert!(matches!(err, Error::Abi(_)), "got {err:?}");
 }
@@ -846,16 +899,19 @@ async fn it_resolves_an_unversioned_import_against_an_unversioned_registration()
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd008-tests:host/empty".parse().expect("identifier");
     let _ = linker.instance(&iface);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let ans = inst.get_func("answer").expect("answer export");
-    let result = ans.call(&mut store, &[]).expect("call");
+    let result = ans.call(&mut store, &[]).await.expect("call");
     assert_eq!(result.as_ref(), &[Val::S32(42)]);
 }
 
@@ -877,14 +933,17 @@ async fn it_treats_an_empty_unmatched_interface_import_as_vacuous() {
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiation succeeds — vacuous import");
     let noop = inst.get_func("noop").expect("noop export");
-    let result = noop.call(&mut store, &[]).expect("call");
+    let result = noop.call(&mut store, &[]).await.expect("call");
     assert!(result.is_empty());
 }
 
@@ -913,7 +972,9 @@ async fn it_rejects_an_import_with_a_required_item_when_the_registration_version
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let too_old: InterfaceIdentifier = "pdd008-tests:host/maths@0.1.0".parse().expect("identifier");
     linker.instance(&too_old).func_wrap(
@@ -923,7 +984,7 @@ async fn it_rejects_an_import_with_a_required_item_when_the_registration_version
         },
     );
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    let Err(err) = linker.instantiate(&mut store, &component) else {
+    let Err(err) = linker.instantiate(&mut store, &component).await else {
         panic!("link should fail");
     };
     assert!(matches!(err, Error::Link(_)), "got {err:?}");
@@ -947,7 +1008,9 @@ async fn it_inspects_a_components_imports_and_exports() {
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     assert_eq!(component.imports.len(), 1);
     assert_eq!(component.exports.len(), 1);
     let import = &component.imports[0];
@@ -991,7 +1054,9 @@ const PLAIN_LOG: &[u8] = component!(
 #[wcmp_macros::test]
 async fn it_supports_a_plain_named_top_level_import() {
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, PLAIN_LOG).expect("component parses");
+    let component = Component::new(&engine, PLAIN_LOG)
+        .await
+        .expect("component parses");
     let mut linker: Linker<Vec<String>> = Linker::new(&engine);
     linker.root().func_wrap(
         "log",
@@ -1005,19 +1070,22 @@ async fn it_supports_a_plain_named_top_level_import() {
     let mut store: Store<Vec<String>> = Store::new(&engine, Vec::new()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("a plain-named import resolves through the root namespace");
     let run = instance.get_func("run").expect("run export");
-    run.call(&mut store, &[]).expect("run");
+    run.call(&mut store, &[]).await.expect("run");
     assert_eq!(store.data(), &vec!["hello from the guest".to_owned()]);
 }
 
 #[wcmp_macros::test]
 async fn it_reports_an_unregistered_plain_named_import_as_unresolved() {
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, PLAIN_LOG).expect("component parses");
+    let component = Component::new(&engine, PLAIN_LOG)
+        .await
+        .expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    let err = match linker.instantiate(&mut store, &component) {
+    let err = match linker.instantiate(&mut store, &component).await {
         Ok(_) => panic!("nothing is registered under `log`, so instantiation must fail"),
         Err(err) => err,
     };
@@ -1058,7 +1126,9 @@ async fn it_supports_a_plain_named_instance_import() {
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     linker.root().instance("host").func_wrap(
         "double",
@@ -1069,13 +1139,14 @@ async fn it_supports_a_plain_named_instance_import() {
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("a plain-named instance import resolves through the root namespace");
     let run = instance
         .get_func("run")
         .expect("run export")
         .typed::<(u32,), u32>()
         .expect("typed");
-    assert_eq!(run.call(&mut store, (20,)).expect("run"), 41);
+    assert_eq!(run.call(&mut store, (20,)).await.expect("run"), 41);
 }
 
 #[wcmp_macros::test]
@@ -1139,11 +1210,14 @@ async fn it_navigates_instance_typed_exports() {
     );
 
     let engine = Engine::new().expect("engine construction succeeds");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let instance = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiation succeeds");
 
     // Root-level `func` is empty — the function lives nested inside
@@ -1170,6 +1244,7 @@ async fn it_navigates_instance_typed_exports() {
             &mut store,
             &[Val::List(example.into_boxed_slice()), Val::U32(1)],
         )
+        .await
         .expect("call succeeds");
     assert_eq!(results.as_ref(), &[Val::String("b".to_owned())]);
 
@@ -1238,11 +1313,14 @@ async fn it_supports_a_typed_export_call_surface() {
     );
 
     let engine = Engine::new().expect("engine construction succeeds");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let instance = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiation succeeds");
     let interface: InterfaceIdentifier = "test:guest/foo"
         .parse()
@@ -1262,6 +1340,7 @@ async fn it_supports_a_typed_export_call_surface() {
     let example: Vec<String> = ["a", "b", "c"].iter().map(|s| (*s).to_owned()).collect();
     let result = select_nth
         .call(&mut store, (example.clone(), 1))
+        .await
         .expect("typed call succeeds");
     assert_eq!(result, "b");
 
@@ -1295,17 +1374,21 @@ async fn it_rejects_a_call_made_through_a_different_store() {
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut owner: Store<()> = Store::new(&engine, ()).expect("store");
     let mut other: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut owner, &component)
+        .await
         .expect("instantiate");
     let one = inst.get_func("one").expect("one export");
 
     let err = one
         .call(&mut other, &[])
+        .await
         .expect_err("a call through a different store is rejected");
     assert!(
         matches!(
@@ -1317,7 +1400,10 @@ async fn it_rejects_a_call_made_through_a_different_store() {
     );
 
     // The owning store still works.
-    let result = one.call(&mut owner, &[]).expect("call through the owner");
+    let result = one
+        .call(&mut owner, &[])
+        .await
+        .expect("call through the owner");
     assert_eq!(result.as_ref(), &[Val::U32(1)]);
 }
 
@@ -1336,8 +1422,9 @@ async fn it_reports_an_unsupported_feature_as_a_structured_error() {
         "#
     );
     let engine = Engine::new().expect("engine");
-    let err =
-        Component::new(&engine, COMPONENT).expect_err("module-typed exports are not supported yet");
+    let err = Component::new(&engine, COMPONENT)
+        .await
+        .expect_err("module-typed exports are not supported yet");
     assert!(
         matches!(&err, Error::Unsupported { feature } if feature.contains("module")),
         "expected Error::Unsupported, got {err:?}"

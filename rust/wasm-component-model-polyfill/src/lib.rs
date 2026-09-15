@@ -109,7 +109,11 @@
 //! # "#);
 //! use wasm_component_model_polyfill::*;
 //!
-//! fn main() {
+//! // Compiling, instantiating, and calling are awaited: the browser
+//! // compiles large modules only asynchronously, and the same
+//! // signatures serve native, where the futures complete at once.
+//! #[tokio::main(flavor = "current_thread")]
+//! async fn main() {
 //!     // Create a new engine for instantiating a component. The
 //!     // polyfill owns its substrate selection, so there is no
 //!     // per-target engine type to thread in.
@@ -121,12 +125,12 @@
 //!
 //!     // Parse the component bytes (assembled above) and load its
 //!     // imports and exports.
-//!     let component = Component::new(&engine, WASM).unwrap();
+//!     let component = Component::new(&engine, WASM).await.unwrap();
 //!     // Create a linker that will be used to resolve the component's
 //!     // imports, if any.
 //!     let linker: Linker<()> = Linker::new(&engine);
 //!     // Create an instance of the component using the linker.
-//!     let instance = linker.instantiate(&mut store, &component).unwrap();
+//!     let instance = linker.instantiate(&mut store, &component).await.unwrap();
 //!
 //!     // Get the interface that the component exports.
 //!     let interface = instance
@@ -147,7 +151,7 @@
 //!         .collect::<Vec<_>>();
 //!
 //!     assert_eq!(
-//!         select_nth.call(&mut store, (example.clone(), 1)).unwrap(),
+//!         select_nth.call(&mut store, (example.clone(), 1)).await.unwrap(),
 //!         "b",
 //!     );
 //! }

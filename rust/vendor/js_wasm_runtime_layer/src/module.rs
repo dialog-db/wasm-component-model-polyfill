@@ -37,8 +37,15 @@ impl WasmModule<Engine> for Module {
     fn new(engine: &Engine, bytes: &[u8]) -> Result<Self> {
         let parsed = parse_module(bytes)?;
 
-        let module =
-            WebAssembly::Module::new(&Uint8Array::from(bytes).into()).map_err(JsErrorMsg::from)?;
+        // PATCH (wcmp): a module compiled ahead of time through
+        // `Engine::precompile` is taken from the engine; anything else
+        // compiles synchronously as upstream does.
+        let precompiled = engine.borrow_mut().precompiled.remove(bytes);
+        let module = match precompiled {
+            Some(module) => module,
+            None => WebAssembly::Module::new(&Uint8Array::from(bytes).into())
+                .map_err(JsErrorMsg::from)?,
+        };
 
         let parsed = Arc::new(parsed);
 

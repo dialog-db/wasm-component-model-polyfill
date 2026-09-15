@@ -12,13 +12,16 @@ use wcmp_macros::component;
 #[cfg(target_arch = "wasm32")]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
-fn instantiate(bytes: &[u8]) -> (Store<()>, wasm_component_model_polyfill::Instance) {
+async fn instantiate(bytes: &[u8]) -> (Store<()>, wasm_component_model_polyfill::Instance) {
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, bytes).expect("component parses");
+    let component = Component::new(&engine, bytes)
+        .await
+        .expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     (store, instance)
 }
@@ -54,9 +57,9 @@ async fn it_links_two_inner_components_through_an_adapter() {
           (export "run" (func $b "run")))
         "#
     );
-    let (mut store, instance) = instantiate(COMPONENT);
+    let (mut store, instance) = instantiate(COMPONENT).await;
     let run = instance.get_func("run").expect("run export");
-    let result = run.call(&mut store, &[Val::U32(20)]).expect("call");
+    let result = run.call(&mut store, &[Val::U32(20)]).await.expect("call");
     assert_eq!(result.as_ref(), &[Val::U32(41)]);
 }
 
@@ -171,11 +174,12 @@ async fn it_copies_strings_between_inner_components_with_one_encoding() {
           (export "run" (func $b "run")))
         "#
     );
-    let (mut store, instance) = instantiate(COMPONENT);
+    let (mut store, instance) = instantiate(COMPONENT).await;
     let run = instance.get_func("run").expect("run export");
     let text = "hello, composed world".to_owned();
     let result = run
         .call(&mut store, &[Val::String(text.clone())])
+        .await
         .expect("call");
     assert_eq!(result.as_ref(), &[Val::String(text)]);
 }
@@ -293,11 +297,12 @@ async fn it_transcodes_strings_between_inner_components() {
           (export "run" (func $b "run")))
         "#
     );
-    let (mut store, instance) = instantiate(COMPONENT);
+    let (mut store, instance) = instantiate(COMPONENT).await;
     let run = instance.get_func("run").expect("run export");
     let text = "héllo wörld — ünïcødé ✓".to_owned();
     let result = run
         .call(&mut store, &[Val::String(text.clone())])
+        .await
         .expect("call");
     assert_eq!(result.as_ref(), &[Val::String(text)]);
 }
@@ -353,12 +358,12 @@ async fn it_runs_the_defining_components_destructor_when_another_component_drops
           (export "drops" (func $a "drops")))
         "#
     );
-    let (mut store, instance) = instantiate(COMPONENT);
+    let (mut store, instance) = instantiate(COMPONENT).await;
     let run = instance.get_func("run").expect("run export");
-    run.call(&mut store, &[]).expect("run");
+    run.call(&mut store, &[]).await.expect("run");
     let drops = instance.get_func("drops").expect("drops export");
     assert_eq!(
-        drops.call(&mut store, &[]).expect("drops").as_ref(),
+        drops.call(&mut store, &[]).await.expect("drops").as_ref(),
         &[Val::U32(1)],
         "the defining component's destructor ran exactly once"
     );

@@ -54,13 +54,18 @@ impl Component {
     /// call. The translator runs once, every core module is
     /// compiled against the engine, and the resulting plan lives
     /// inside the returned [`Component`].
-    pub fn new(engine: &Engine, bytes: &[u8]) -> Result<Self> {
+    ///
+    /// The future suspends only while the browser compiles a core
+    /// module through its asynchronous API, which is the only way a
+    /// large module loads on the main thread. On native it completes
+    /// without suspending.
+    pub async fn new(engine: &Engine, bytes: &[u8]) -> Result<Self> {
         if bytes.len() >= CORE_MODULE_PREAMBLE.len()
             && bytes[..CORE_MODULE_PREAMBLE.len()] == CORE_MODULE_PREAMBLE
         {
             return Err(Error::NotAComponent);
         }
-        let translation = translate(engine, bytes)?;
+        let translation = translate(engine, bytes).await?;
         Ok(Self {
             imports: translation.imports,
             exports: translation.exports,

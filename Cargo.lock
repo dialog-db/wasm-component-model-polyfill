@@ -702,6 +702,7 @@ dependencies = [
  "slab",
  "smallvec",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm_runtime_layer",
  "wasmparser 0.244.0",
 ]
@@ -1869,7 +1870,9 @@ dependencies = [
 name = "wcmp-smoke"
 version = "0.1.0"
 dependencies = [
+ "tokio",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-component-model-polyfill",
  "wcmp-macros",
 ]

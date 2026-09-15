@@ -103,7 +103,7 @@ impl Runner {
     /// Run one file. Returns the number of directives the file holds
     /// and the failures. A file that does not lex or parse counts as
     /// one directive that fails.
-    fn run(&mut self, text: &str) -> (usize, Vec<Failure>) {
+    async fn run(&mut self, text: &str) -> (usize, Vec<Failure>) {
         let mut failures = Vec::new();
         let buffer = match ParseBuffer::new(text) {
             Ok(buffer) => buffer,
@@ -131,7 +131,7 @@ impl Runner {
             directives += 1;
             let span = directive_span(&directive);
             let (line, _) = span.linecol_in(text);
-            if let Err(reason) = self.directive(directive) {
+            if let Err(reason) = self.directive(directive).await {
                 failures.push(Failure {
                     line: line + 1,
                     reason,
@@ -141,7 +141,7 @@ impl Runner {
         (directives, failures)
     }
 
-    fn directive(&mut self, directive: WastDirective<'_>) -> Result<(), String> {
+    async fn directive(&mut self, directive: WastDirective<'_>) -> Result<(), String> {
         match directive {
             WastDirective::Module(mut quote) => {
                 // A directive that fails leaves no current instance, so
@@ -150,8 +150,8 @@ impl Runner {
                 self.current = None;
                 let name = quote.name().map(|id| id.name().to_owned());
                 let bytes = quote.encode().map_err(|err| format!("encode: {err}"))?;
-                let component = self.component(&bytes)?;
-                let index = self.instantiate(&component)?;
+                let component = self.component(&bytes).await?;
+                let index = self.instantiate(&component).await?;
                 if let Some(name) = name {
                     self.named.insert(name, index);
                 }
@@ -161,7 +161,7 @@ impl Runner {
             WastDirective::ModuleDefinition(mut quote) => {
                 let name = quote.name().map(|id| id.name().to_owned());
                 let bytes = quote.encode().map_err(|err| format!("encode: {err}"))?;
-                let component = self.component(&bytes)?;
+                let component = self.component(&bytes).await?;
                 if let Some(name) = name {
                     self.definitions.insert(name, component.clone());
                 }
@@ -183,7 +183,7 @@ impl Runner {
                         .clone()
                         .ok_or_else(|| "no definition to instantiate".to_owned())?,
                 };
-                let index = self.instantiate(&component)?;
+                let index = self.instantiate(&component).await?;
                 if let Some(id) = instance {
                     self.named.insert(id.name().to_owned(), index);
                 }
@@ -195,9 +195,10 @@ impl Runner {
             }
             WastDirective::Invoke(invoke) => self
                 .invoke(invoke.module, invoke.name, invoke.args)
+                .await
                 .map(|_| ()),
             WastDirective::AssertReturn { exec, results, .. } => {
-                let actual = self.execute(exec)?;
+                let actual = self.execute(exec).await?;
                 let mut expected = Vec::with_capacity(results.len());
                 for ret in results {
                     match ret {
@@ -215,7 +216,7 @@ impl Runner {
                 }
                 Ok(())
             }
-            WastDirective::AssertTrap { exec, message, .. } => match self.execute(exec) {
+            WastDirective::AssertTrap { exec, message, .. } => match self.execute(exec).await {
                 Ok(values) => Err(format!("expected a trap `{message}`, got {values:?}")),
                 Err(err) => {
                     if err.contains(message) {
@@ -251,7 +252,7 @@ impl Runner {
                     // polyfill sees it, which satisfies the assertion.
                     Err(_) => return Ok(()),
                 };
-                match self.component(&bytes) {
+                match self.component(&bytes).await {
                     Ok(_) => Err(format!(
                         "expected rejection `{message}`, but the component parsed"
                     )),
@@ -264,11 +265,11 @@ impl Runner {
                 ..
             } => {
                 let bytes = module.encode().map_err(|err| format!("encode: {err}"))?;
-                let component = match self.component(&bytes) {
+                let component = match self.component(&bytes).await {
                     Ok(component) => component,
                     Err(_) => return Ok(()),
                 };
-                match self.instantiate(&component) {
+                match self.instantiate(&component).await {
                     Ok(_) => Err(format!("expected link failure `{message}`, but it linked")),
                     Err(_) => Ok(()),
                 }
@@ -288,38 +289,42 @@ impl Runner {
         }
     }
 
-    fn component(&self, bytes: &[u8]) -> Result<Component, String> {
+    async fn component(&self, bytes: &[u8]) -> Result<Component, String> {
         if bytes.len() >= 8 && bytes[4..8] == CORE_MODULE_VERSION {
             return Err("core module directives are not supported".into());
         }
         Component::new(&self.engine, bytes)
+            .await
             .map_err(|err| format!("component rejected: {}", chain(&err)))
     }
 
     /// Instantiate `component` and return its index in `instances`.
-    fn instantiate(&mut self, component: &Component) -> Result<usize, String> {
+    async fn instantiate(&mut self, component: &Component) -> Result<usize, String> {
         let instance = self
             .linker
             .instantiate(&mut self.store, component)
+            .await
             .map_err(|err| format!("instantiation failed: {}", chain(&err)))?;
         self.instances.push(instance);
         Ok(self.instances.len() - 1)
     }
 
-    fn execute(&mut self, exec: WastExecute<'_>) -> Result<Box<[Val]>, String> {
+    async fn execute(&mut self, exec: WastExecute<'_>) -> Result<Box<[Val]>, String> {
         match exec {
-            WastExecute::Invoke(invoke) => self.invoke(invoke.module, invoke.name, invoke.args),
+            WastExecute::Invoke(invoke) => {
+                self.invoke(invoke.module, invoke.name, invoke.args).await
+            }
             WastExecute::Wat(mut wat) => {
                 let bytes = wat.encode().map_err(|err| format!("encode: {err}"))?;
-                let component = self.component(&bytes)?;
-                self.instantiate(&component)?;
+                let component = self.component(&bytes).await?;
+                self.instantiate(&component).await?;
                 Ok(Box::new([]))
             }
             WastExecute::Get { .. } => Err("the `get` directive is not supported".into()),
         }
     }
 
-    fn invoke(
+    async fn invoke(
         &mut self,
         module: Option<wast::token::Id<'_>>,
         name: &str,
@@ -346,6 +351,7 @@ impl Runner {
             }
         }
         func.call(&mut self.store, &values)
+            .await
             .map_err(|err| chain(&err))
     }
 }
@@ -496,9 +502,9 @@ fn boxed_equal(a: Option<&Val>, b: Option<&Val>) -> bool {
 }
 
 /// Run one corpus file against the expectations that name it.
-fn report_file(path: &str, text: &str, expectations: &[Expectation]) -> FileReport {
+async fn report_file(path: &str, text: &str, expectations: &[Expectation]) -> FileReport {
     let mut runner = Runner::new();
-    let (directives, failures) = runner.run(text);
+    let (directives, failures) = runner.run(text).await;
     let expected = expectations
         .iter()
         .filter(|expectation| expectation.file == path)
@@ -520,9 +526,9 @@ fn report_file(path: &str, text: &str, expectations: &[Expectation]) -> FileRepo
 /// list. Panics with every unexpected failure and every stale
 /// expectation, in the format the list uses, and on a list line
 /// without a category.
-fn check(path: &str, text: &str) {
+async fn check(path: &str, text: &str) {
     let expectations = expectations();
-    let report = report_file(path, text, &expectations);
+    let report = report_file(path, text, &expectations).await;
 
     let mut out = String::new();
     for failure in report.unexpected() {
@@ -545,10 +551,10 @@ fn check(path: &str, text: &str) {
 #[wcmp_macros::test]
 async fn it_reports_conformance_progress() {
     let expectations = expectations();
-    let reports: Vec<FileReport> = CORPUS_FILES
-        .iter()
-        .map(|(path, text)| report_file(path, text, &expectations))
-        .collect();
+    let mut reports: Vec<FileReport> = Vec::with_capacity(CORPUS_FILES.len());
+    for (path, text) in CORPUS_FILES {
+        reports.push(report_file(path, text, &expectations).await);
+    }
     let summary = Summary::new(&reports);
     #[cfg(target_arch = "wasm32")]
     println!("\nwasm32-unknown-unknown\n{}", summary.table());
@@ -580,7 +586,7 @@ macro_rules! corpus_test {
     ($name:ident, $path:literal) => {
         #[wcmp_macros::test]
         async fn $name() {
-            check($path, include_str!(concat!("../corpus/", $path)));
+            check($path, include_str!(concat!("../corpus/", $path))).await;
         }
     };
 }

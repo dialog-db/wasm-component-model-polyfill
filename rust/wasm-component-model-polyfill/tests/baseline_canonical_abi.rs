@@ -49,21 +49,29 @@ async fn it_round_trips_every_primitive_through_an_export() {
             (canon lift (core func $i "id-f64"))))
         "#
     );
-    let (mut store, instance) = instantiate(COMPONENT);
+    let (mut store, instance) = instantiate(COMPONENT).await;
     assert_eq!(
-        call(&instance, &mut store, "id-s32", &[Val::S32(-7)]).as_ref(),
+        call(&instance, &mut store, "id-s32", &[Val::S32(-7)])
+            .await
+            .as_ref(),
         &[Val::S32(-7)]
     );
     assert_eq!(
-        call(&instance, &mut store, "id-u64", &[Val::U64(u64::MAX - 3)]).as_ref(),
+        call(&instance, &mut store, "id-u64", &[Val::U64(u64::MAX - 3)])
+            .await
+            .as_ref(),
         &[Val::U64(u64::MAX - 3)]
     );
     assert_eq!(
-        call(&instance, &mut store, "id-f32", &[Val::F32(1.5)]).as_ref(),
+        call(&instance, &mut store, "id-f32", &[Val::F32(1.5)])
+            .await
+            .as_ref(),
         &[Val::F32(1.5)]
     );
     assert_eq!(
-        call(&instance, &mut store, "id-f64", &[Val::F64(-2.25)]).as_ref(),
+        call(&instance, &mut store, "id-f64", &[Val::F64(-2.25)])
+            .await
+            .as_ref(),
         &[Val::F64(-2.25)]
     );
 }
@@ -83,19 +91,25 @@ async fn it_round_trips_bool_and_char_values_through_an_export() {
             (canon lift (core func $i "id-char"))))
         "#
     );
-    let (mut store, instance) = instantiate(COMPONENT);
+    let (mut store, instance) = instantiate(COMPONENT).await;
     assert_eq!(
-        call(&instance, &mut store, "id-bool", &[Val::Bool(true)]).as_ref(),
+        call(&instance, &mut store, "id-bool", &[Val::Bool(true)])
+            .await
+            .as_ref(),
         &[Val::Bool(true)]
     );
     assert_eq!(
-        call(&instance, &mut store, "id-bool", &[Val::Bool(false)]).as_ref(),
+        call(&instance, &mut store, "id-bool", &[Val::Bool(false)])
+            .await
+            .as_ref(),
         &[Val::Bool(false)]
     );
     // U+1F4A1 LIGHT BULB — a 4-byte UTF-8 / surrogate-pair UTF-16
     // scalar that catches sloppy width handling.
     assert_eq!(
-        call(&instance, &mut store, "id-char", &[Val::Char('💡')]).as_ref(),
+        call(&instance, &mut store, "id-char", &[Val::Char('💡')])
+            .await
+            .as_ref(),
         &[Val::Char('💡')]
     );
 }
@@ -136,7 +150,9 @@ async fn it_passes_a_record_argument_to_a_host_function() {
         RecordType, ValField, ValueType,
     };
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd-tests:host/maths@0.1.0".parse().expect("identifier");
     let record_ty = ValueType::Record(RecordType::new([
@@ -169,10 +185,12 @@ async fn it_passes_a_record_argument_to_a_host_function() {
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let go = inst.get_func("go").expect("go export");
     let result = go
         .call(&mut store, &[Val::S32(7), Val::S32(35)])
+        .await
         .expect("call");
     assert_eq!(result.as_ref(), &[Val::S32(42)]);
 }
@@ -217,17 +235,21 @@ async fn it_returns_a_record_from_an_export() {
 
     use wasm_component_model_polyfill::{InterfaceIdentifier, ValField};
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "test:host/shapes@0.1.0".parse().expect("identifier");
     let _ = linker.instance(&iface);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let make = instance.get_func("make").expect("`make` export");
     let result = make
         .call(&mut store, &[Val::S32(7), Val::S32(11)])
+        .await
         .expect("call");
     let [Val::Record(fields)] = result.as_ref() else {
         panic!("expected a single record result, got {result:?}");
@@ -262,7 +284,7 @@ async fn it_passes_a_tuple_argument_to_an_export() {
             (canon lift (core func $i "second"))))
         "#
     );
-    let (mut store, instance) = instantiate(COMPONENT);
+    let (mut store, instance) = instantiate(COMPONENT).await;
     let result = call(
         &instance,
         &mut store,
@@ -270,7 +292,8 @@ async fn it_passes_a_tuple_argument_to_an_export() {
         &[Val::Tuple(
             vec![Val::S32(11), Val::S32(22)].into_boxed_slice(),
         )],
-    );
+    )
+    .await;
     assert_eq!(result.as_ref(), &[Val::S32(22)]);
 }
 
@@ -303,8 +326,8 @@ async fn it_returns_a_tuple_from_an_export() {
         "#
     );
 
-    let (mut store, instance) = instantiate(COMPONENT);
-    let result = call(&instance, &mut store, "make", &[Val::S32(13), Val::S32(17)]);
+    let (mut store, instance) = instantiate(COMPONENT).await;
+    let result = call(&instance, &mut store, "make", &[Val::S32(13), Val::S32(17)]).await;
     let [Val::Tuple(elements)] = result.as_ref() else {
         panic!("expected a single tuple result, got {result:?}");
     };
@@ -344,7 +367,9 @@ async fn it_passes_a_variant_argument_to_a_host_function() {
         VariantCase, VariantType,
     };
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd-tests:host/maths@0.1.0".parse().expect("identifier");
     let variant_ty = ValueType::Variant(VariantType::new([
@@ -384,17 +409,20 @@ async fn it_passes_a_variant_argument_to_a_host_function() {
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let go = inst.get_func("go").expect("go export");
     // Invoke twice: once with the "none" tag, once with "value 99".
     assert_eq!(
         go.call(&mut store, &[Val::S32(0), Val::S32(0)])
+            .await
             .expect("call none")
             .as_ref(),
         &[Val::S32(0)]
     );
     assert_eq!(
         go.call(&mut store, &[Val::S32(1), Val::S32(99)])
+            .await
             .expect("call value")
             .as_ref(),
         &[Val::S32(99)]
@@ -418,9 +446,11 @@ async fn it_passes_an_option_argument_to_an_export() {
             (canon lift (core func $i "or-default"))))
         "#
     );
-    let (mut store, instance) = instantiate(COMPONENT);
+    let (mut store, instance) = instantiate(COMPONENT).await;
     assert_eq!(
-        call(&instance, &mut store, "or-default", &[Val::Option(None)]).as_ref(),
+        call(&instance, &mut store, "or-default", &[Val::Option(None)])
+            .await
+            .as_ref(),
         &[Val::S32(-1)]
     );
     assert_eq!(
@@ -430,6 +460,7 @@ async fn it_passes_an_option_argument_to_an_export() {
             "or-default",
             &[Val::Option(Some(Box::new(Val::S32(7))))]
         )
+        .await
         .as_ref(),
         &[Val::S32(7)]
     );
@@ -452,7 +483,7 @@ async fn it_passes_a_result_argument_to_an_export() {
             (canon lift (core func $i "decode"))))
         "#
     );
-    let (mut store, instance) = instantiate(COMPONENT);
+    let (mut store, instance) = instantiate(COMPONENT).await;
     assert_eq!(
         call(
             &instance,
@@ -460,6 +491,7 @@ async fn it_passes_a_result_argument_to_an_export() {
             "decode",
             &[Val::Result(Ok(Some(Box::new(Val::S32(11)))))]
         )
+        .await
         .as_ref(),
         &[Val::S32(11)]
     );
@@ -470,6 +502,7 @@ async fn it_passes_a_result_argument_to_an_export() {
             "decode",
             &[Val::Result(Err(Some(Box::new(Val::S32(11)))))]
         )
+        .await
         .as_ref(),
         &[Val::S32(-11)]
     );
@@ -504,7 +537,9 @@ async fn it_passes_an_enum_argument_to_a_host_function() {
         EnumType, FunctionParameter, FunctionType, InterfaceIdentifier, PrimitiveType, ValueType,
     };
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd-tests:host/probe@0.1.0".parse().expect("identifier");
     linker.instance(&iface).func_new(
@@ -533,14 +568,21 @@ async fn it_passes_an_enum_argument_to_a_host_function() {
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let go = inst.get_func("go").expect("go export");
     assert_eq!(
-        go.call(&mut store, &[Val::S32(1)]).expect("call").as_ref(),
+        go.call(&mut store, &[Val::S32(1)])
+            .await
+            .expect("call")
+            .as_ref(),
         &[Val::S32(101)]
     );
     assert_eq!(
-        go.call(&mut store, &[Val::S32(2)]).expect("call").as_ref(),
+        go.call(&mut store, &[Val::S32(2)])
+            .await
+            .expect("call")
+            .as_ref(),
         &[Val::S32(102)]
     );
 }
@@ -574,7 +616,9 @@ async fn it_passes_a_flags_argument_to_a_host_function() {
         FlagsType, FunctionParameter, FunctionType, InterfaceIdentifier, PrimitiveType, ValueType,
     };
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd-tests:host/probe@0.1.0".parse().expect("identifier");
     linker.instance(&iface).func_new(
@@ -601,11 +645,13 @@ async fn it_passes_a_flags_argument_to_a_host_function() {
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let go = inst.get_func("go").expect("go export");
     // Bits 0b101 = read + execute.
     assert_eq!(
         go.call(&mut store, &[Val::U32(0b101)])
+            .await
             .expect("call")
             .as_ref(),
         &[Val::U32(2)]
@@ -647,7 +693,7 @@ async fn it_round_trips_list_of_signed_integers_through_an_export() {
                        (realloc (core func $i "cabi_realloc")))))
         "#
     );
-    let (mut store, instance) = instantiate(COMPONENT);
+    let (mut store, instance) = instantiate(COMPONENT).await;
     let result = call(
         &instance,
         &mut store,
@@ -655,7 +701,8 @@ async fn it_round_trips_list_of_signed_integers_through_an_export() {
         &[Val::List(
             vec![Val::S32(10), Val::S32(20), Val::S32(30), Val::S32(40)].into_boxed_slice(),
         )],
-    );
+    )
+    .await;
     assert_eq!(result.as_ref(), &[Val::S32(30)]);
 }
 
@@ -691,14 +738,15 @@ async fn it_round_trips_list_of_bytes_through_an_export() {
                        (realloc (core func $i "cabi_realloc")))))
         "#
     );
-    let (mut store, instance) = instantiate(COMPONENT);
+    let (mut store, instance) = instantiate(COMPONENT).await;
     let bytes: Vec<Val> = (0u8..=4).map(Val::U8).collect();
     let result = call(
         &instance,
         &mut store,
         "byte-at",
         &[Val::List(bytes.into_boxed_slice()), Val::U32(2)],
-    );
+    )
+    .await;
     assert_eq!(result.as_ref(), &[Val::U8(2)]);
 }
 
@@ -744,7 +792,9 @@ async fn it_observes_cabi_realloc_during_string_lower() {
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<i32> = Linker::new(&engine);
     let iface: wasm_component_model_polyfill::InterfaceIdentifier =
         "pdd-tests:host/probe@0.1.0".parse().expect("identifier");
@@ -758,10 +808,12 @@ async fn it_observes_cabi_realloc_during_string_lower() {
     let mut store: Store<i32> = Store::new(&engine, 0).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let len = inst.get_func("len").expect("len export present");
     let results = len
         .call(&mut store, &[Val::String("hello".to_owned())])
+        .await
         .expect("call");
     assert_eq!(results.as_ref(), &[Val::S32(5)]);
     // The realloc fired once for the 5-byte UTF-8 payload.
@@ -811,7 +863,9 @@ async fn it_invokes_post_return_after_a_sync_lift() {
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<u32> = Linker::new(&engine);
     let iface: wasm_component_model_polyfill::InterfaceIdentifier =
         "pdd-tests:host/probe@0.1.0".parse().expect("identifier");
@@ -825,11 +879,13 @@ async fn it_invokes_post_return_after_a_sync_lift() {
     let mut store: Store<u32> = Store::new(&engine, 0).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let len = inst.get_func("len").expect("len export");
     assert_eq!(*store.data(), 0, "post-return has not run yet");
     let results = len
         .call(&mut store, &[Val::String("ab".to_owned())])
+        .await
         .expect("call");
     assert_eq!(results.as_ref(), &[Val::S32(2)]);
     // After the call returns, post-return has been invoked exactly
@@ -921,13 +977,14 @@ async fn it_supports_the_utf16_string_encoding() {
         "#
     );
 
-    let (mut store, instance) = instantiate(COMPONENT);
+    let (mut store, instance) = instantiate(COMPONENT).await;
     let result = call(
         &instance,
         &mut store,
         "len",
         &[Val::String("café".to_owned())],
-    );
+    )
+    .await;
     assert_eq!(result.as_ref(), &[Val::S32(4)]);
 }
 
@@ -973,14 +1030,15 @@ async fn it_round_trips_strings_through_the_latin1_utf16_encoding() {
                        (realloc (core func $i "cabi_realloc")))))
         "#
     );
-    let (mut store, instance) = instantiate(COMPONENT);
+    let (mut store, instance) = instantiate(COMPONENT).await;
     for text in ["héllo", "cake 🍰", ""] {
         let result = call(
             &instance,
             &mut store,
             "echo",
             &[Val::String(text.to_owned())],
-        );
+        )
+        .await;
         assert_eq!(result.as_ref(), &[Val::String(text.to_owned())], "{text:?}");
     }
     // The length word tells the representation apart: Latin-1 counts
@@ -991,14 +1049,16 @@ async fn it_round_trips_strings_through_the_latin1_utf16_encoding() {
         &mut store,
         "units",
         &[Val::String("héllo".to_owned())],
-    );
+    )
+    .await;
     assert_eq!(latin1.as_ref(), &[Val::U32(5)]);
     let utf16 = call(
         &instance,
         &mut store,
         "units",
         &[Val::String("cake 🍰".to_owned())],
-    );
+    )
+    .await;
     assert_eq!(utf16.as_ref(), &[Val::U32(7 | (1 << 31))]);
 }
 
@@ -1021,11 +1081,14 @@ async fn it_supports_typed_export_calls() {
         "#
     );
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
 
     // Happy path: `(i32) -> i32` matches the export's `(s32) -> s32`.
@@ -1034,7 +1097,7 @@ async fn it_supports_typed_export_calls() {
         .expect("`id` export")
         .typed::<(i32,), i32>()
         .expect("typed conversion succeeds");
-    assert_eq!(typed.call(&mut store, (42,)).expect("typed call"), 42);
+    assert_eq!(typed.call(&mut store, (42,)).await.expect("typed call"), 42);
 
     // Mismatch path: requesting `(i32) -> i64` against `(s32) -> s32`
     // surfaces a structured `Error::TypeMismatch` before any call.
@@ -1112,7 +1175,9 @@ async fn it_observes_cabi_realloc_alignment_for_record_allocations() {
     );
 
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<Arc<Mutex<Vec<u32>>>> = Linker::new(&engine);
     let probe: InterfaceIdentifier = "pdd-tests:host/probe@0.1.0".parse().expect("identifier");
     let shapes: InterfaceIdentifier = "test:host/shapes@0.1.0".parse().expect("identifier");
@@ -1139,9 +1204,10 @@ async fn it_observes_cabi_realloc_alignment_for_record_allocations() {
         Store::new(&engine, observed.clone()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let make = instance.get_func("make").expect("`make` export");
-    let _ = make.call(&mut store, &[]).expect("call");
+    let _ = make.call(&mut store, &[]).await.expect("call");
 
     let observed = observed.lock().expect("lock").clone();
     assert!(
@@ -1154,18 +1220,21 @@ async fn it_observes_cabi_realloc_alignment_for_record_allocations() {
 // Helpers
 // --------------------------------------------------------------
 
-fn instantiate(component: &[u8]) -> (Store<()>, wasm_component_model_polyfill::Instance) {
+async fn instantiate(component: &[u8]) -> (Store<()>, wasm_component_model_polyfill::Instance) {
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, component).expect("component parses");
+    let component = Component::new(&engine, component)
+        .await
+        .expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     (store, instance)
 }
 
-fn call(
+async fn call(
     instance: &wasm_component_model_polyfill::Instance,
     store: &mut Store<()>,
     name: &str,
@@ -1174,7 +1243,7 @@ fn call(
     let func = instance
         .get_func(name)
         .unwrap_or_else(|| panic!("`{name}` export present"));
-    func.call(store, args).expect("call succeeds")
+    func.call(store, args).await.expect("call succeeds")
 }
 
 #[wcmp_macros::test]
@@ -1210,9 +1279,9 @@ async fn it_spills_a_wide_parameter_tuple_when_calling_an_export() {
                        (realloc (core func $i "cabi_realloc")))))
         "#
     );
-    let (mut store, instance) = instantiate(COMPONENT);
+    let (mut store, instance) = instantiate(COMPONENT).await;
     let args: Vec<Val> = (1u32..=17).map(Val::U32).collect();
-    let result = call(&instance, &mut store, "sum17", &args);
+    let result = call(&instance, &mut store, "sum17", &args).await;
     assert_eq!(result.as_ref(), &[Val::U32(153)]);
 }
 
@@ -1281,7 +1350,9 @@ async fn it_spills_a_wide_parameter_tuple_when_calling_a_host_function() {
         FunctionParameter, FunctionType, InterfaceIdentifier, PrimitiveType, ValueType,
     };
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd-tests:host/wide@0.1.0".parse().expect("identifier");
     linker.instance(&iface).func_new(
@@ -1311,8 +1382,9 @@ async fn it_spills_a_wide_parameter_tuple_when_calling_a_host_function() {
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
+        .await
         .expect("instantiate");
     let go = inst.get_func("go").expect("go export");
-    let result = go.call(&mut store, &[]).expect("call");
+    let result = go.call(&mut store, &[]).await.expect("call");
     assert_eq!(result.as_ref(), &[Val::U32(153)]);
 }

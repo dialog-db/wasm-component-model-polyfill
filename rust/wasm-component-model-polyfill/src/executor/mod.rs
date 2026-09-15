@@ -7,7 +7,10 @@
 //! `wasmtime_environ::component::Component` carries) and drives
 //! `wasm_runtime_layer::Module::new` and
 //! `wasm_runtime_layer::Instance::new` per `(core module ...)` and
-//! `(core instance N (instantiate $module ...))` directive.
+//! `(core instance N (instantiate $module ...))` directive. Compiling
+//! a core module is awaited, because the browser compiles large
+//! modules only through its asynchronous API; instantiating and
+//! calling complete without suspending on both targets today.
 //!
 //! IR construction is shared across targets: `wasmtime_environ`'s
 //! component `Translator` runs on every supported target, including
@@ -18,6 +21,7 @@
 //!
 //! [`wasm_runtime_layer`]: https://docs.rs/wasm_runtime_layer
 
+mod compile_module;
 mod instantiate;
 mod resource_destructor;
 mod translate;

@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use crate::Outcome;
 
 /// One step of the smoke test: what it exercises and how it went.
@@ -10,8 +12,11 @@ pub struct Step {
 impl Step {
     /// Run a step body and record its outcome. The body returns the
     /// evidence on success and the reason on failure.
-    pub fn run(name: &'static str, body: impl FnOnce() -> Result<String, String>) -> Self {
-        let outcome = match body() {
+    pub async fn run(
+        name: &'static str,
+        body: impl Future<Output = Result<String, String>>,
+    ) -> Self {
+        let outcome = match body.await {
             Ok(evidence) => Outcome::Passed(evidence),
             Err(reason) => Outcome::Failed(reason),
         };

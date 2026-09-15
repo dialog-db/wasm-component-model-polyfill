@@ -139,7 +139,15 @@ impl<T: 'static> Linker<T> {
     ///
     /// [`Error::Link`]: crate::Error::Link
     /// [`Error::Instantiation`]: crate::Error::Instantiation
-    pub fn instantiate(&self, store: &mut Store<T>, component: &Component) -> Result<Instance> {
+    ///
+    /// The future completes without suspending on both targets today;
+    /// it is awaited so that a guest whose instantiation must yield
+    /// to the host can do so without a change of signature.
+    pub async fn instantiate(
+        &self,
+        store: &mut Store<T>,
+        component: &Component,
+    ) -> Result<Instance> {
         let resolution = resolve_imports(component, self)?;
         self.instantiate_resolved(store, component, &resolution)
     }
