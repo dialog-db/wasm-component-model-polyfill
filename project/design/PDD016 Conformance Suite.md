@@ -18,7 +18,7 @@ suites part of the polyfill's test regime.
   for a different reason, fails the run. Stale expectations do not accumulate.
 - The polyfill reports a trap with the message Wasmtime uses, so that
   `assert_trap` directives match exactly.
-- A small set of real guest components, built with `wit-bindgen` and composed
+- A small set of real guest components, built with `wasm-tools` and composed
   with `wac`, lives in the repository with its WIT and runs under the same
   harness.
 
@@ -77,12 +77,18 @@ menu has a command that prints only the summary.
 
 ## Real Guests
 
-A fixtures directory holds a few components built from real toolchains: a Rust
-guest from `wit-bindgen`, a guest that exports a resource, and a composition of
-two guests from `wac`. Each fixture carries its WIT and the command that built
-it. The fixtures are binary files checked into the repository, because a build
-from source needs toolchains the flake does not provide. A fixture is updated
-when its toolchain is updated, and the update records the new version.
+A fixtures directory holds a few components built with the component toolchain:
+a guest built from a core module and its WIT with `wasm-tools`, and a
+composition of two such guests built with `wac`. Each fixture carries its WIT,
+its core modules in text format, its assertions, and the script that builds it.
+The flake provides both tools at pinned versions, and one menu command rebuilds
+every fixture from its sources. A rebuild is byte-for-byte identical until a
+tool is updated on purpose, and the update records the new version.
+
+The build writes each fixture as a script for the harness: the component as a
+binary directive, followed by the assertions. The fixtures run under the same
+harness as the vendored corpora and appear in the progress summary as a corpus
+of their own.
 
 ## User Stories
 
@@ -102,8 +108,8 @@ upstream.
 
 A developer wants to trust that a component from a real toolchain runs.
 
-> The developer reads the fixtures directory and sees a `wit-bindgen` guest and
-> a `wac` composition run on every target in CI.
+> The developer reads the fixtures directory and sees a `wasm-tools` guest and a
+> `wac` composition run under the harness in CI.
 
 ## Test Cases
 
@@ -135,7 +141,7 @@ byte-for-byte from their sources and recorded commands.
 - The [Component Model test corpus] and its `nyi.txt`.
 - The [Wasmtime component tests].
 - [`wast`], the crate that parses the script format.
-- [`wit-bindgen`] and [`wac`], the toolchains that build the fixtures.
+- [`wasm-tools`] and [`wac`], the toolchain that builds the fixtures.
 
 [PDD000]: ./PDD000%20Wasm%20Component%20Model%20Polyfill.md
 [PDD001]: ./PDD001%20Development%20Environment.md
@@ -149,5 +155,5 @@ byte-for-byte from their sources and recorded commands.
 [Wasmtime component tests]:
   https://github.com/bytecodealliance/wasmtime/tree/main/tests/misc_testsuite/component-model
 [`wast`]: https://docs.rs/wast
-[`wit-bindgen`]: https://github.com/bytecodealliance/wit-bindgen
+[`wasm-tools`]: https://github.com/bytecodealliance/wasm-tools
 [`wac`]: https://github.com/bytecodealliance/wac

@@ -265,6 +265,18 @@
             command = "nix flake check";
           };
 
+          # The real-guest fixtures under the conformance corpus, rebuilt
+          # from their WIT and WAT sources with the flake's pinned
+          # `wasm-tools` and `wac`, so a rebuild is byte-for-byte stable
+          # until one of the tools is bumped on purpose.
+          "fixtures" = {
+            description = "Regenerate the conformance fixtures with wasm-tools and wac";
+            command = ''
+              export PATH=${pkgs.wasm-tools}/bin:${pkgs.wac-cli}/bin:$PATH
+              "$(git rev-parse --show-toplevel)"/rust/wasm-component-model-polyfill/tests/corpus/fixtures/build.sh
+            '';
+          };
+
         }
         // markdown.menuCommands
         // project.menuCommands;
@@ -309,6 +321,11 @@
       in
       {
         packages = {
+          # The component toolchain the `fixtures` command runs, exposed so
+          # the pinned versions are one `nix build` away.
+          wasm-tools = pkgs.wasm-tools;
+          wac = pkgs.wac-cli;
+
           polyfill-native-debug = polyfillCrate { profile = "dev"; };
           polyfill-native-release = polyfillCrate { profile = "release"; };
           polyfill-web-debug = polyfillCrate {

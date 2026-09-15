@@ -25,3 +25,20 @@ process and prints a summary per corpus directory: directives, passes,
 the pass percentage, and the expected failures per category. The
 `tests conformance` menu command runs only that test and writes the
 summary as JSON to `$CARGO_TARGET_DIR/conformance/summary.json`.
+
+## Fixtures
+
+`fixtures/` holds components built with the component toolchain rather
+than written as `.wast` by hand. The `fixtures` menu command runs
+`fixtures/build.sh` with the flake's pinned `wasm-tools` and `wac` and
+regenerates every output byte for byte, including the harness manifest.
+Each fixture directory holds the sources; the `.wast` next to it is
+generated and runs under the harness like the vendored corpora.
+
+| Fixture       | Sources                                                                       | Build                                                                       |
+| ------------- | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `guest`       | `guest/guest.wit` (world `guest`), `guest/guest.wat`                          | `wasm-tools component embed --world guest`, then `wasm-tools component new` |
+| `composition` | `composition/math.wit` (worlds `plug` and `socket`), `plug.wat`, `socket.wat` | each world as above, then `wac plug --plug plug.wasm socket.wasm`           |
+
+`build.sh` records the exact commands. The `.wasm` binaries are checked
+in next to their sources.

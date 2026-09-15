@@ -1,0 +1,5 @@
+package wcmp:fixtures;
+
+world guest {
+  export double: func(x: u32) -> u32;
+}

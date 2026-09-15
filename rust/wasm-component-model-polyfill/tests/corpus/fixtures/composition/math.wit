@@ -1,0 +1,14 @@
+package wcmp:fixtures;
+
+interface math {
+  double: func(x: u32) -> u32;
+}
+
+world plug {
+  export math;
+}
+
+world socket {
+  import math;
+  export run: func(x: u32) -> u32;
+}
