@@ -144,6 +144,10 @@ impl Runner {
     fn directive(&mut self, directive: WastDirective<'_>) -> Result<(), String> {
         match directive {
             WastDirective::Module(mut quote) => {
+                // A directive that fails leaves no current instance, so
+                // a later `invoke` reports the cascade rather than
+                // running against whatever was current before.
+                self.current = None;
                 let name = quote.name().map(|id| id.name().to_owned());
                 let bytes = quote.encode().map_err(|err| format!("encode: {err}"))?;
                 let component = self.component(&bytes)?;
@@ -167,6 +171,7 @@ impl Runner {
             WastDirective::ModuleInstance {
                 instance, module, ..
             } => {
+                self.current = None;
                 let component = match module {
                     Some(id) => self
                         .definitions

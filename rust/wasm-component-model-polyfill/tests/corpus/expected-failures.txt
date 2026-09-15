@@ -30,27 +30,16 @@ cm/linking/tags.wast:89 cascade no instance to invoke
 cm/linking/tags.wast:93 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
 cm/linking/tags.wast:133 cascade no instance to invoke
 cm/linking/tags.wast:134 cascade no instance to invoke
-cm/linking/unit.wast:1019 defect expected [U32(1)], got [U32(0)]
-cm/linking/unit.wast:1020 defect expected [U32(2)], got [U32(1)]
-cm/linking/unit.wast:1021 defect expected [U32(1)], got [U32(0)]
-cm/linking/unit.wast:1022 defect expected [U32(3)], got [U32(2)]
-cm/linking/unit.wast:1023 defect expected [U32(2)], got [U32(1)]
-cm/resources/borrows.wast:159 defect instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0xa3 - DM!<wasm function 6>: wasm tra
-cm/resources/handle-table.wast:49 defect instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x4d - M!<wasm function 3>: wasm trap
-cm/resources/handle-table.wast:106 defect instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x4d - DM!<wasm function 3>: wasm tra
 cm/resources/handle-table.wast:201 trap-message expected a trap `unknown handle index 5`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm back
 cm/resources/handle-table.wast:203 trap-message expected a trap `unknown handle index 5`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm back
 cm/resources/handle-table.wast:205 trap-message expected a trap `unknown handle index 1`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm back
 cm/resources/handle-table.wast:207 trap-message expected a trap `unknown handle index 0`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm back
 cm/resources/handle-table.wast:209 trap-message expected a trap `unknown handle index 4294967295`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at 
-cm/resources/handle-table.wast:211 trap-message expected a trap `unknown handle index 1`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm back
-cm/resources/handle-table.wast:260 defect instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x4d - UM!<wasm function 2>: wasm tra
 cm/resources/handle-table.wast:261 trap-message expected a trap `unknown handle index 1`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm back
-cm/resources/handle-table.wast:265 defect instantiation failed: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x31 - M!start:
-cm/resources/handle-table.wast:293 trap-message expected a trap `unknown handle index 1`, got `no function export named `drop-childs-index``
+cm/resources/handle-table.wast:293 trap-message expected a trap `unknown handle index 1`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm back
 cm/resources/handle-table.wast:322 trap-message expected a trap `handle index 1 used with the wrong type, expected guest-defined resource but found a different guest-defined resource`, got `instantiation error: the runtime substrate failed to instantiate the component
 cm/resources/handle-table.wast:324 trap-message expected a trap `handle index 1 used with the wrong type, expected guest-defined resource but found a different guest-defined resource`, got `canonical ABI error: at result (type Own(ResourceType { label: "R2", index: So
-cm/resources/multiple-resources.wast:170 defect instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0xa5 - DM!run: wasm trap: wasm `unrea
+cm/resources/multiple-resources.wast:170 defect instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0xb2 - DM!run: wasm trap: wasm `unrea
 cm/validation/attributes.wast:2 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`a` is not a WIT interface identifier)
 cm/validation/attributes.wast:30 deferred-feature component rejected: unsupported component feature: instance exports with a plain name (`a` is not a WIT interface identifier)
 cm/validation/extern-names.wast:53 validation expected rejection `expected `/` after package name`, but the component parsed
@@ -132,7 +121,7 @@ cm/values/post-return.wast:254 cascade expected a trap `cannot leave component i
 cm/values/post-return.wast:255 cascade no definition named `Tester`
 cm/values/post-return.wast:256 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
 cm/values/post-return.wast:334 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
-cm/values/post-return.wast:358 defect expected [U32(11)], got [U32(5)]
+cm/values/post-return.wast:358 cascade no instance to invoke
 cm/values/realloc.wast:109 trap-message expected a trap `realloc return: beyond end of memory`, got `canonical ABI error: at argument 0 (type List(ListType { element: Primitive(U32) })): `cabi_realloc` invocation failed: at argument 0 (type List(ListType { ele
 cm/values/realloc.wast:111 trap-message expected a trap `realloc return: beyond end of memory`, got []
 cm/values/realloc.wast:124 trap-message expected a trap `realloc return: result not aligned`, got `canonical ABI error: at argument 0 (type List(ListType { element: Primitive(U32) })): `cabi_realloc` invocation failed: at argument 0 (type List(ListType { eleme
@@ -141,10 +130,10 @@ cm/values/strings.wast:85 trap-message expected a trap `invalid utf-8`, got `can
 cm/values/strings.wast:101 trap-message expected a trap `incomplete utf-8 byte sequence`, got `canonical ABI error: at result (type Primitive(String)): invalid encoding for value type: invalid UTF-8 string: at result (type Primitive(String)): invalid encoding 
 cm/values/strings.wast:135 trap-message expected a trap `string pointer/length out of bounds of memory`, got `canonical ABI error: at result (type Primitive(String)): substrate-level memory access failed: at result (type Primitive(String)): substrate-level mem
 cm/values/variants.wast:83 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
-cm/values/variants.wast:183 cascade no function export named `join-narrow`
-cm/values/variants.wast:184 cascade no function export named `join-wide`
-cm/values/variants.wast:185 cascade no function export named `join-f32`
-cm/values/variants.wast:186 cascade no function export named `ret-f32`
+cm/values/variants.wast:183 cascade no instance to invoke
+cm/values/variants.wast:184 cascade no instance to invoke
+cm/values/variants.wast:185 cascade no instance to invoke
+cm/values/variants.wast:186 cascade no instance to invoke
 wasmtime/adapter.wast:77 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host-return-two`: no registered linker instance satisfies import `host-return-two`
 wasmtime/adapter.wast:98 defect instantiation failed: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x62 - <unknown
 wasmtime/adapter.wast:136 trap-message expected a trap `realloc return: beyond end of memory`, got []
@@ -181,6 +170,7 @@ wasmtime/error-context-trap-in-post-return.wast:48 cascade expected a trap `cann
 wasmtime/error-context-trap-in-post-return.wast:49 cascade no definition named `Tester`
 wasmtime/error-context-trap-in-post-return.wast:50 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
 wasmtime/exceptions.wast:168 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref (concrete func VMSharedTypeIndex(2))) is not su
+wasmtime/exceptions.wast:237 cascade expected a trap `uncaught exception propagated out of component`, got `no instance to invoke`
 wasmtime/implements-disabled.wast:3 validation expected rejection `the `cm-implements` feature is not active`, but the component parsed
 wasmtime/import.wast:7 validation expected link failure `expected instance found func`, but it linked
 wasmtime/import.wast:15 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `not-provided-by-the-host2`: no registered linker instance satisfies import `not-provided-by-the-host2`
@@ -221,44 +211,39 @@ wasmtime/nested.wast:149 deferred-feature component rejected: unsupported compon
 wasmtime/nested.wast:213 deferred-feature component rejected: unsupported component feature: module-typed exports
 wasmtime/nested.wast:219 deferred-feature component rejected: unsupported component feature: instantiation of an imported core module
 wasmtime/nested.wast:410 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host-return-two`: no registered linker instance satisfies import `host-return-two`
-wasmtime/resources.wast:4 defect instantiation failed: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x4a - m!start:
 wasmtime/resources.wast:56 trap-message expected a trap `unknown handle index 0`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm back
 wasmtime/resources.wast:78 trap-message expected a trap `unknown handle index 0`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm back
-wasmtime/resources.wast:81 defect instantiation failed: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x4c - m!start:
 wasmtime/resources.wast:182 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
 wasmtime/resources.wast:191 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
 wasmtime/resources.wast:211 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
 wasmtime/resources.wast:220 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
 wasmtime/resources.wast:271 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/resources.wast:296 trap-message expected a trap `unknown handle index`, got `no function export named `f``
+wasmtime/resources.wast:296 cascade expected a trap `unknown handle index`, got `no instance to invoke`
 wasmtime/resources.wast:299 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/resources.wast:337 cascade no function export named `f`
-wasmtime/resources.wast:338 trap-message expected a trap `unknown handle index`, got `no function export named `f2``
+wasmtime/resources.wast:337 cascade no instance to invoke
+wasmtime/resources.wast:338 cascade expected a trap `unknown handle index`, got `no instance to invoke`
 wasmtime/resources.wast:341 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/resources.wast:378 cascade no function export named `f`
-wasmtime/resources.wast:379 trap-message expected a trap `unknown handle index`, got `no function export named `f2``
+wasmtime/resources.wast:378 cascade no instance to invoke
+wasmtime/resources.wast:379 cascade expected a trap `unknown handle index`, got `no instance to invoke`
 wasmtime/resources.wast:383 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/resources.wast:435 trap-message expected a trap `unknown handle index`, got `no function export named `f``
-wasmtime/resources.wast:438 defect instantiation failed: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x32 - m!start:
-wasmtime/resources.wast:481 trap-message expected a trap `unknown handle index 2`, got `no function export named `f``
-wasmtime/resources.wast:526 defect instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x51 - m!<wasm function 2>: wasm trap
-wasmtime/resources.wast:527 defect instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x5a - m!<wasm function 3>: canonical
-wasmtime/resources.wast:529 defect instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x51 - m!<wasm function 2>: wasm trap
-wasmtime/resources.wast:530 defect instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x5a - m!<wasm function 3>: canonical
+wasmtime/resources.wast:435 cascade expected a trap `unknown handle index`, got `no instance to invoke`
+wasmtime/resources.wast:481 trap-message expected a trap `unknown handle index 2`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm back
 wasmtime/resources.wast:531 trap-message expected a trap `unknown handle index`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtr
 wasmtime/resources.wast:537 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/resources.wast:592 defect instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x51 - m!<wasm function 2>: wasm trap
-wasmtime/resources.wast:597 trap-message expected a trap `unknown handle index`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtr
-wasmtime/resources.wast:600 defect instantiation failed: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x6c - m!start:
+wasmtime/resources.wast:592 cascade no instance to invoke
+wasmtime/resources.wast:593 cascade no instance to invoke
+wasmtime/resources.wast:594 cascade no instance to invoke
+wasmtime/resources.wast:595 cascade no instance to invoke
+wasmtime/resources.wast:596 cascade no instance to invoke
+wasmtime/resources.wast:597 cascade expected a trap `unknown handle index`, got `no instance to invoke`
 wasmtime/resources.wast:665 trap-message expected a trap `unknown handle index`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtr
-wasmtime/resources.wast:668 defect instantiation failed: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x7d - m2!start
+wasmtime/resources.wast:668 defect instantiation failed: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x86 - m2!start
 wasmtime/resources.wast:748 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
 wasmtime/resources.wast:812 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
 wasmtime/resources.wast:889 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/resources.wast:927 deferred-feature expected a trap `cannot remove owned resource while borrowed`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while e
+wasmtime/resources.wast:927 cascade expected a trap `cannot remove owned resource while borrowed`, got `no instance to invoke`
 wasmtime/resources.wast:930 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `host`: no registered linker instance satisfies import `host`
-wasmtime/resources.wast:961 trap-message expected a trap `unknown handle index 0`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm back
-wasmtime/resources.wast:1054 defect instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x73 - m!<wasm function 4>: wasm trap
+wasmtime/resources.wast:961 cascade expected a trap `unknown handle index 0`, got `no instance to invoke`
 wasmtime/resources.wast:1091 trap-message expected a trap `handle index 1 used with the wrong type, expected guest-defined resource but found a different guest-defined resource`, got `instantiation error: the runtime substrate failed to instantiate the component
 wasmtime/resources.wast:1093 trap-message expected a trap `handle index 1 used with the wrong type, expected guest-defined resource but found a different guest-defined resource`, got `canonical ABI error: at result (type Own(ResourceType { label: "r2", index: So
 wasmtime/strings.wast:21 trap-message expected a trap `string pointer not aligned to 2`, got [String("")]

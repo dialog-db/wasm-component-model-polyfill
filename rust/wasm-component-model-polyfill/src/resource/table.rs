@@ -7,6 +7,9 @@
 //!
 //! Allocation policy follows the canonical-ABI runtime-state rules:
 //!
+//! - Index 0 is reserved and never handed out, as in the canonical
+//!   ABI's reference definitions and in Wasmtime, so the first
+//!   allocation in a fresh table is index 1.
 //! - Indices are non-aliasing while live: every minted index points
 //!   to a distinct table entry.
 //! - Reuse of a freed index is deterministic within a single store:
@@ -31,6 +34,9 @@ use super::handle_entry::HandleEntry;
 /// the resource's entry: its rep and whether it is owned or a
 /// borrow.
 enum Slot {
+    /// Index 0, which the canonical ABI never hands out: a handle of
+    /// 0 is never valid, so the first allocation is index 1.
+    Reserved,
     Free {
         /// Index of the next free slot, or `None` if this is the
         /// list tail.
@@ -60,7 +66,7 @@ impl HandleTable {
     /// Construct an empty handle table.
     pub fn new() -> Self {
         Self {
-            slots: Vec::new(),
+            slots: vec![Slot::Reserved],
             free_head: None,
         }
     }
@@ -82,8 +88,8 @@ impl HandleTable {
         if let Some(idx) = self.free_head {
             let next = match self.slots[idx as usize] {
                 Slot::Free { next } => next,
-                Slot::Occupied { .. } => {
-                    unreachable!("free_head pointed at an occupied slot")
+                Slot::Occupied { .. } | Slot::Reserved => {
+                    unreachable!("free_head pointed at a slot that is not free")
                 }
             };
             self.free_head = next;
@@ -105,7 +111,7 @@ impl HandleTable {
     pub fn entry(&self, index: u32) -> Option<&HandleEntry> {
         match self.slots.get(index as usize)? {
             Slot::Occupied { entry } => Some(entry),
-            Slot::Free { .. } => None,
+            Slot::Free { .. } | Slot::Reserved => None,
         }
     }
 
@@ -113,7 +119,7 @@ impl HandleTable {
     pub fn entry_mut(&mut self, index: u32) -> Option<&mut HandleEntry> {
         match self.slots.get_mut(index as usize)? {
             Slot::Occupied { entry } => Some(entry),
-            Slot::Free { .. } => None,
+            Slot::Free { .. } | Slot::Reserved => None,
         }
     }
 
@@ -122,7 +128,7 @@ impl HandleTable {
         let slot = self.slots.get_mut(index as usize)?;
         let entry = match slot {
             Slot::Occupied { entry } => *entry,
-            Slot::Free { .. } => return None,
+            Slot::Free { .. } | Slot::Reserved => return None,
         };
         *slot = Slot::Free {
             next: self.free_head,
@@ -172,6 +178,14 @@ mod tests {
         assert_eq!(table.remove(idx).map(|e| e.rep()), Some(7));
         assert_eq!(table.get(idx), None);
         assert_eq!(table.remove(idx), None);
+    }
+
+    #[test]
+    fn it_never_hands_out_index_zero() {
+        let mut table = HandleTable::new();
+        assert_eq!(table.insert_own(5), 1, "the first allocation is 1");
+        assert_eq!(table.get(0), None);
+        assert_eq!(table.remove(0), None);
     }
 
     #[test]

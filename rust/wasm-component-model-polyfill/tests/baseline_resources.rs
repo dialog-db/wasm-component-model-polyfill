@@ -91,9 +91,9 @@ async fn it_isolates_handle_tables_across_stores_with_the_same_engine() {
     let b0 = store_b.resource_new(type_id, 100).expect("b0");
     // Both stores allocate from index 0; the tables are
     // store-local.
-    assert_eq!(a0.index, 0);
-    assert_eq!(a1.index, 1);
-    assert_eq!(b0.index, 0);
+    assert_eq!(a0.index, 1, "index 0 is reserved");
+    assert_eq!(a1.index, 2);
+    assert_eq!(b0.index, 1);
 }
 
 #[wcmp_macros::test]
@@ -419,7 +419,7 @@ async fn it_translates_and_instantiates_a_locally_defined_resource() {
     let (mut store, instance) = local_resource_instance();
     let handle = make_handle(&mut store, &instance, 7);
     assert_eq!(
-        handle.index, 0,
+        handle.index, 1,
         "the first handle takes the first table slot"
     );
 }
@@ -999,4 +999,56 @@ async fn it_leaves_the_owning_handle_live_after_a_borrow_is_dropped_in_the_call(
         Some(7),
         "the owning entry is live after the call"
     );
+}
+
+#[wcmp_macros::test]
+async fn it_allocates_from_index_one_in_each_nested_instance() {
+    // Two instantiations of one inner component each keep their own
+    // table for the resource they define, and each table hands out
+    // index 1 first, as the canonical ABI's reference table does.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (component $inner
+            (type $r (resource (rep i32)))
+            (core func $ctor (canon resource.new $r))
+            (core func $drop (canon resource.drop $r))
+            (core module $m
+              (import "" "ctor" (func $ctor (param i32) (result i32)))
+              (import "" "drop" (func $drop (param i32)))
+              (func (export "alloc") (result i32) i32.const 100 call $ctor)
+              (func (export "dealloc") (param i32) local.get 0 call $drop))
+            (core instance $i (instantiate $m
+              (with "" (instance
+                (export "ctor" (func $ctor))
+                (export "drop" (func $drop))))))
+            (func (export "alloc") (result u32) (canon lift (core func $i "alloc")))
+            (func (export "dealloc") (param "i" u32) (canon lift (core func $i "dealloc"))))
+          (instance $i1 (instantiate $inner))
+          (instance $i2 (instantiate $inner))
+          (export "alloc-in1" (func $i1 "alloc"))
+          (export "dealloc-in1" (func $i1 "dealloc"))
+          (export "alloc-in2" (func $i2 "alloc"))
+          (export "dealloc-in2" (func $i2 "dealloc")))
+        "#
+    );
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, COMPONENT).expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("instantiate");
+    let call = |store: &mut Store<()>, name: &str, args: &[Val]| {
+        instance
+            .get_func(name)
+            .unwrap_or_else(|| panic!("{name} export"))
+            .call(store, args)
+            .unwrap_or_else(|err| panic!("{name}: {err}"))
+    };
+    assert_eq!(call(&mut store, "alloc-in1", &[]).as_ref(), &[Val::U32(1)]);
+    call(&mut store, "dealloc-in1", &[Val::U32(1)]);
+    assert_eq!(call(&mut store, "alloc-in1", &[]).as_ref(), &[Val::U32(1)]);
+    assert_eq!(call(&mut store, "alloc-in2", &[]).as_ref(), &[Val::U32(1)]);
+    assert_eq!(call(&mut store, "alloc-in2", &[]).as_ref(), &[Val::U32(2)]);
 }
