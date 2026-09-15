@@ -5,6 +5,7 @@ kanban-plugin: basic
 ## To-do
 
 - [ ] [[4599cd]]
+- [ ] [[ec3a3d]]
 
 ## In Progress
 
