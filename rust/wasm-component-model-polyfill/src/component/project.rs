@@ -94,8 +94,8 @@ impl<'a> TypeProjector<'a> {
             .map(String::as_str)
             .unwrap_or(UNNAMED_RESOURCE);
         match &self.types[index] {
-            TypeResourceTable::Concrete { ty, .. } => {
-                ResourceType::indexed(label, ty.as_u32() as usize)
+            TypeResourceTable::Concrete { .. } => {
+                ResourceType::indexed(label, index.as_u32() as usize)
             }
             TypeResourceTable::Abstract(_) => ResourceType::new(label),
         }
@@ -240,9 +240,9 @@ impl<'a> TypeProjector<'a> {
             TypeDef::ComponentInstance(index) => ExternType::Instance(self.instance(*index)?),
             TypeDef::Interface(ty) => ExternType::Value(self.value_type(ty)?),
             TypeDef::Resource(index) => ExternType::Resource(match &self.types[*index] {
-                TypeResourceTable::Concrete { ty, .. } => ResourceType::indexed(
+                TypeResourceTable::Concrete { .. } => ResourceType::indexed(
                     self.labels.get(index).map(String::as_str).unwrap_or(name),
-                    ty.as_u32() as usize,
+                    index.as_u32() as usize,
                 ),
                 TypeResourceTable::Abstract(_) => {
                     ResourceType::new(self.labels.get(index).map(String::as_str).unwrap_or(name))

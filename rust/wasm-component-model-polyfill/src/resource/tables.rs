@@ -20,13 +20,18 @@ use super::call_scope::CallScope;
 use super::handle_entry::HandleEntry;
 use super::identity::ResourceTypeId;
 use super::table::HandleTable;
+use super::table_id::TableId;
 
-/// The full set of per-resource-type handle tables a [`Store`]
-/// carries.
+/// Every handle table a [`Store`] carries, with the call stack the
+/// canonical ABI keeps for borrows.
 ///
 /// [`Store`]: crate::Store
 pub struct HandleTables {
-    tables: HashMap<ResourceTypeId, HandleTable>,
+    /// Every table in the store, by identity: one per component
+    /// instance per resource type, plus the host's per type.
+    tables: HashMap<TableId, HandleTable>,
+    /// The host's table for each resource type, created on first use.
+    host_tables: HashMap<ResourceTypeId, TableId>,
     /// The store's call stack: one scope per call in flight across
     /// the host boundary, innermost last.
     scopes: Vec<CallScope>,
@@ -37,6 +42,7 @@ impl HandleTables {
     pub fn new() -> Self {
         Self {
             tables: HashMap::new(),
+            host_tables: HashMap::new(),
             scopes: Vec::new(),
         }
     }
@@ -60,9 +66,9 @@ impl HandleTables {
         let Some(scope) = self.scopes.pop() else {
             return Ok(());
         };
-        for (type_id, index) in scope.lenders {
+        for (table, index) in scope.lenders {
             if let Some(HandleEntry::Own { lend_count, .. }) =
-                self.for_type_mut(type_id).entry_mut(index)
+                self.for_table_mut(table).entry_mut(index)
             {
                 *lend_count = lend_count.saturating_sub(1);
             }
@@ -81,31 +87,31 @@ impl HandleTables {
         let _ = self.exit_call();
     }
 
-    /// Record that a borrow of the owning entry `(type_id, index)`
-    /// was lifted into the host during the current call, so the
-    /// entry cannot be removed until the call ends. Returns `false`
-    /// when the entry is not an owning entry.
-    pub fn lend(&mut self, type_id: ResourceTypeId, index: u32) -> bool {
+    /// Record that a borrow of the owning entry `(table, index)` was
+    /// lifted out during the current call, so the entry cannot be
+    /// removed until the call ends. Returns `false` when the entry is
+    /// not an owning entry or no call is in flight.
+    pub fn lend(&mut self, table: TableId, index: u32) -> bool {
         let Some(scope) = self.current_scope() else {
             return false;
         };
-        match self.for_type_mut(type_id).entry_mut(index) {
+        match self.for_table_mut(table).entry_mut(index) {
             Some(HandleEntry::Own { lend_count, .. }) => {
                 *lend_count += 1;
-                self.scopes[scope].lenders.push((type_id, index));
+                self.scopes[scope].lenders.push((table, index));
                 true
             }
             _ => false,
         }
     }
 
-    /// Insert a borrow of `rep` into the table for `type_id`, owed to
-    /// the current call. Returns the new index, or `None` when no
-    /// call is in flight.
-    pub fn insert_borrow(&mut self, type_id: ResourceTypeId, rep: u32) -> Option<u32> {
+    /// Insert a borrow of `rep` into `table`, owed to the current
+    /// call. Returns the new index, or `None` when no call is in
+    /// flight.
+    pub fn insert_borrow(&mut self, table: TableId, rep: u32) -> Option<u32> {
         let scope = self.current_scope()?;
         self.scopes[scope].borrow_count += 1;
-        Some(self.for_type_mut(type_id).insert_borrow(rep, scope))
+        Some(self.for_table_mut(table).insert_borrow(rep, scope))
     }
 
     /// Drop a borrow entry: the guest returned the handle it was
@@ -121,23 +127,41 @@ impl HandleTables {
         }
     }
 
-    /// Borrow the table for the given resource-type identity,
-    /// creating it on first access.
+    /// Borrow the table with the given identity, creating it on first
+    /// access.
+    pub fn for_table_mut(&mut self, table: TableId) -> &mut HandleTable {
+        self.tables.entry(table).or_default()
+    }
+
+    /// Borrow the table with the given identity, or `None` if nothing
+    /// has been allocated in it yet.
+    pub fn for_table(&self, table: TableId) -> Option<&HandleTable> {
+        self.tables.get(&table)
+    }
+
+    /// The host's table for a resource type, created on first access.
+    /// Handles the host holds (`Store::resource_new`, an `own<T>`
+    /// lifted out of a guest) live here.
+    pub fn host_table(&mut self, type_id: ResourceTypeId) -> TableId {
+        *self
+            .host_tables
+            .entry(type_id)
+            .or_insert_with(TableId::fresh)
+    }
+
+    /// Borrow the host's table for a resource type, creating it on
+    /// first access.
     pub fn for_type_mut(&mut self, type_id: ResourceTypeId) -> &mut HandleTable {
-        self.tables.entry(type_id).or_default()
+        let table = self.host_table(type_id);
+        self.for_table_mut(table)
     }
 
-    /// Borrow the table for the given resource-type identity, or
-    /// `None` if no entry has been allocated for it yet.
+    /// Borrow the host's table for a resource type, or `None` if the
+    /// host holds nothing of that type yet.
     pub fn for_type(&self, type_id: ResourceTypeId) -> Option<&HandleTable> {
-        self.tables.get(&type_id)
-    }
-
-    /// Iterate over `(type_id, table)` pairs in the collection.
-    /// Iteration order is unspecified; consumers that need to look
-    /// up a specific entry should use [`Self::for_type`] instead.
-    pub fn iter(&self) -> impl Iterator<Item = (ResourceTypeId, &HandleTable)> {
-        self.tables.iter().map(|(id, table)| (*id, table))
+        self.host_tables
+            .get(&type_id)
+            .and_then(|table| self.tables.get(table))
     }
 }
 

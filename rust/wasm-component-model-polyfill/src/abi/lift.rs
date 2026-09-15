@@ -314,11 +314,9 @@ fn read_discriminant(bytes: &[u8]) -> usize {
 /// transfers to the host. For `borrow<T>` the entry is left in
 /// place and the host receives a handle that aliases the live entry.
 ///
-/// The declared `ValueType` names the resource by its index in the
-/// component, and the lift context maps that to the table the
-/// instance uses. A declared type without an index (an abstract
-/// resource) falls back to a walk over every table for a live entry
-/// at `index`.
+/// The declared `ValueType` names the resource table by its index in
+/// the component, and the lift context maps that to the table the
+/// instance keeps and the resource type it holds.
 pub fn lift_handle<T: 'static>(
     ctx: &mut LiftContext<'_, T>,
     index: u32,
@@ -340,28 +338,20 @@ pub fn lift_handle<T: 'static>(
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
 
-    // The declared type names the resource by its index in the
-    // component; the instance maps that to the table it uses. A type
-    // without an index (an abstract resource) falls back to a walk
-    // over every table for a live entry at `index`.
-    let expected = declared_resource_index(ty).and_then(|i| ctx.resource_types.get(i).copied());
-    let found = match expected {
-        Some(type_id) => guard
-            .for_type(type_id)
-            .and_then(|t| t.get(index))
-            .map(|_| type_id),
-        None => {
-            let candidates: Vec<crate::resource::ResourceTypeId> =
-                guard.iter().map(|(type_id, _)| type_id).collect();
-            candidates.into_iter().find(|type_id| {
-                guard
-                    .for_type(*type_id)
-                    .and_then(|t| t.get(index))
-                    .is_some()
+    // The declared type names the resource table by its index in the
+    // component; the instance maps that to the table it keeps.
+    let table = declared_resource_index(ty)
+        .and_then(|i| ctx.resource_tables.get(i).copied().flatten())
+        .ok_or_else(|| {
+            Error::from(AbiError {
+                position,
+                valtype: ty.clone(),
+                cause: AbiCause::InvalidHandle {
+                    reason: "the handle's type names no resource table of the instance".to_owned(),
+                },
             })
-        }
-    };
-    let type_id = found.ok_or_else(|| {
+        })?;
+    let disappeared = || {
         Error::from(AbiError {
             position,
             valtype: ty.clone(),
@@ -369,25 +359,18 @@ pub fn lift_handle<T: 'static>(
                 reason: format!("handle index {index} is not live in the resource table"),
             },
         })
-    })?;
+    };
 
     if is_own {
         // Ownership transfers to the host: the guest's entry goes
-        // away and the handle carries the rep itself. An entry that is
-        // lent out as a borrow cannot leave until the borrow returns.
+        // away and the host's table for the type takes the resource.
+        // An entry that is lent out as a borrow cannot leave until the
+        // borrow returns.
         let entry = guard
-            .for_type(type_id)
+            .for_table(table.table)
             .and_then(|t| t.entry(index))
             .copied()
-            .ok_or_else(|| {
-                Error::from(AbiError {
-                    position,
-                    valtype: ty.clone(),
-                    cause: AbiCause::InvalidHandle {
-                        reason: format!("handle index {index} disappeared during lift"),
-                    },
-                })
-            })?;
+            .ok_or_else(disappeared)?;
         let rep = match entry {
             HandleEntry::Own { rep, lend_count: 0 } => rep,
             HandleEntry::Own { .. } => {
@@ -409,34 +392,35 @@ pub fn lift_handle<T: 'static>(
                 }));
             }
         };
-        guard.for_type_mut(type_id).remove(index);
+        guard.for_table_mut(table.table).remove(index);
+        let host_index = guard.for_type_mut(table.type_id).insert_own(rep);
         Ok(Val::Own(ResourceHandle {
-            type_id,
-            index,
+            type_id: table.type_id,
+            index: host_index,
             rep,
+        }))
+    } else if table.defining {
+        // The defining instance passes its own resource's rep for a
+        // borrow, with no table entry behind it.
+        Ok(Val::Borrow(ResourceHandle {
+            type_id: table.type_id,
+            index,
+            rep: index,
         }))
     } else {
         // A borrow lifted out of an owning entry lends that entry to
         // the host for the rest of the call; a borrow of a borrow
         // needs no bookkeeping of its own.
         let entry = guard
-            .for_type(type_id)
+            .for_table(table.table)
             .and_then(|t| t.entry(index))
             .copied()
-            .ok_or_else(|| {
-                Error::from(AbiError {
-                    position,
-                    valtype: ty.clone(),
-                    cause: AbiCause::InvalidHandle {
-                        reason: format!("handle index {index} disappeared during lift"),
-                    },
-                })
-            })?;
+            .ok_or_else(disappeared)?;
         if matches!(entry, HandleEntry::Own { .. }) {
-            guard.lend(type_id, index);
+            guard.lend(table.table, index);
         }
         Ok(Val::Borrow(ResourceHandle {
-            type_id,
+            type_id: table.type_id,
             index,
             rep: entry.rep(),
         }))

@@ -44,6 +44,11 @@ pub struct ExecutorIr {
     /// friends to resolve which host-resource registration the
     /// trampoline dispatches into.
     pub resources: Box<[ResourceSpec]>,
+    /// One entry per resource table of the component, by the
+    /// translator's table index: the canonical ABI keeps one table
+    /// per component instance per resource type. `None` marks an
+    /// abstract table, one that no concrete instance holds.
+    pub resource_tables: Box<[Option<ResourceTableSpec>]>,
     /// Maps each runtime-instance position (the index a
     /// [`CoreInstanceExport`] uses) to the polyfill's `modules`
     /// slot the instance was instantiated against. The runtime-
@@ -323,20 +328,20 @@ pub enum TrampolineSpec {
     /// store table and runs the host destructor with the entry's
     /// rep.
     ResourceDrop {
-        /// Index into [`ExecutorIr::resources`].
-        resource_index: usize,
+        /// Index into [`ExecutorIr::resource_tables`].
+        table_index: usize,
     },
     /// The trampoline implements `resource.new`: allocates a fresh
     /// handle for the rep argument and returns the index.
     ResourceNew {
-        /// Index into [`ExecutorIr::resources`].
-        resource_index: usize,
+        /// Index into [`ExecutorIr::resource_tables`].
+        table_index: usize,
     },
     /// The trampoline implements `resource.rep`: returns the rep of
     /// the handle at the given index without removing it.
     ResourceRep {
-        /// Index into [`ExecutorIr::resources`].
-        resource_index: usize,
+        /// Index into [`ExecutorIr::resource_tables`].
+        table_index: usize,
     },
     /// A string transcoder an adapter module imports to move a
     /// string between two components' memories.
@@ -435,6 +440,19 @@ pub enum TranscodeOp {
     Utf8ToLatin1,
     /// Convert UTF-8 to UTF-16.
     Utf8ToUtf16,
+}
+
+/// One resource table of the component: the resource it holds and
+/// the component instance that keeps it.
+#[derive(Clone, Debug)]
+pub struct ResourceTableSpec {
+    /// Index into [`ExecutorIr::resources`].
+    pub resource_index: usize,
+    /// The component instance (by runtime index) that keeps the table.
+    pub instance: usize,
+    /// Whether that instance is the one that defines the resource. The
+    /// defining instance handles reps directly for borrows.
+    pub defining: bool,
 }
 
 /// Per-resource metadata captured during translation, indexed by the

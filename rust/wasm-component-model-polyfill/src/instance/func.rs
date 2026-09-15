@@ -14,7 +14,7 @@ use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result};
 use crate::executor::ir::CanonOptions;
 use crate::executor::trampoline::AbiRuntimeState;
-use crate::resource::ResourceTypeId;
+use crate::resource::ResourceTableRuntime;
 use crate::store::{Store, StoreId};
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
@@ -180,14 +180,14 @@ impl Func {
         Ok(lifted_result.into_iter().collect())
     }
 
-    /// The handle-table identity of every resource of the instance,
-    /// by resource index, for the lift and lower contexts.
-    fn resource_types(&self) -> Result<Vec<ResourceTypeId>> {
+    /// The resource tables of the instance, by table index, for the
+    /// lift and lower contexts.
+    fn resource_tables(&self) -> Result<Vec<Option<ResourceTableRuntime>>> {
         let state = self
             .abi_state
             .lock()
             .map_err(|_| Error::internal("ABI runtime state lock poisoned"))?;
-        Ok(state.resource_types.clone())
+        Ok(state.resource_tables.clone())
     }
 
     /// The number of core-Wasm result slots the underlying core
@@ -211,14 +211,14 @@ impl Func {
     ) -> Result<Vec<RuntimeVal>> {
         let tables = store.tables_handle();
         let store_ctx = store.inner_mut().as_context_mut();
-        let resource_types = self.resource_types()?;
+        let resource_tables = self.resource_tables()?;
         let mut lower_ctx = LowerContext::new(
             store_ctx,
             memory,
             realloc,
             self.options.string_encoding,
             Some(tables),
-            resource_types,
+            resource_tables,
         );
 
         if params_spill(&self.signature) {
@@ -291,13 +291,13 @@ impl Func {
         let position = AbiPosition::Result;
         let tables = store.tables_handle();
         let store_ctx = store.inner_mut().as_context_mut();
-        let resource_types = self.resource_types()?;
+        let resource_tables = self.resource_tables()?;
         let mut lift_ctx = LiftContext::new(
             store_ctx,
             memory,
             self.options.string_encoding,
             Some(tables),
-            resource_types,
+            resource_tables,
         );
         if result_spills(&self.signature) {
             // Wide result: read from the pointer the core function

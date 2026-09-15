@@ -38,6 +38,7 @@ use crate::backend::Backend;
 use crate::error::{Error, Result};
 use crate::executor::ir::{CoreSignature, TranscodeOp};
 use crate::executor::trampoline::AbiRuntimeState;
+use crate::resource::{HandleEntry, HandleTables, ResourceTableRuntime};
 use crate::store::Store;
 
 /// The tag a "compact UTF-16" length carries when the string was
@@ -181,24 +182,124 @@ pub fn build_exit_sync_call<T: 'static>(
     )
 }
 
-/// Build the `resource-transfer-own` and `resource-transfer-borrow`
-/// intrinsics. The adapter passes the source handle index and the
-/// source and destination resource tables. Because the polyfill
-/// keeps one handle table per resource type per store, the index is
-/// valid in the destination as it stands and is returned unchanged.
+/// Build the `resource-transfer-own` or `resource-transfer-borrow`
+/// intrinsic. The adapter passes the handle index in the caller's
+/// table and the caller's and callee's table indices, and receives
+/// the index in the callee's table. An owned handle moves between the
+/// tables: it leaves the caller's table, which it cannot do while a
+/// borrow of it is lent out, and enters the callee's. A borrowed
+/// handle lends the caller's entry for the call and gives the callee
+/// a borrow owed to the call's scope, or the rep itself when the
+/// callee is the resource's defining instance.
 pub fn build_resource_transfer<T: 'static>(
     store: &mut Store<T>,
     signature: &CoreSignature,
+    abi_state: Arc<Mutex<AbiRuntimeState>>,
+    own: bool,
 ) -> RuntimeFunc {
+    let tables = store.tables_handle();
     RuntimeFunc::new(
         store.inner_mut(),
         core_func_type(signature),
         move |_store_ctx, args, results| {
             let index = arg_u32(args, 0)?;
-            results[0] = RuntimeVal::I32(index as i32);
+            let src = table_at(&abi_state, arg_u32(args, 1)?)?;
+            let dst = table_at(&abi_state, arg_u32(args, 2)?)?;
+            let out = if own {
+                transfer_own(&tables, src, dst, index)?
+            } else {
+                transfer_borrow(&tables, src, dst, index)?
+            };
+            results[0] = RuntimeVal::I32(out as i32);
             Ok(())
         },
     )
+}
+
+fn table_at(
+    abi_state: &Arc<Mutex<AbiRuntimeState>>,
+    table_index: u32,
+) -> anyhow::Result<ResourceTableRuntime> {
+    let state = abi_state
+        .lock()
+        .map_err(|_| anyhow!("ABI state poisoned"))?;
+    state
+        .resource_tables
+        .get(table_index as usize)
+        .copied()
+        .flatten()
+        .ok_or_else(|| {
+            anyhow!(
+                "adapter named resource table {table_index}, which this instantiation does not hold"
+            )
+        })
+}
+
+fn transfer_own(
+    tables: &Arc<Mutex<HandleTables>>,
+    src: ResourceTableRuntime,
+    dst: ResourceTableRuntime,
+    index: u32,
+) -> anyhow::Result<u32> {
+    let mut guard = tables
+        .lock()
+        .map_err(|_| anyhow!("resource handle tables lock poisoned"))?;
+    let entry = guard
+        .for_table(src.table)
+        .and_then(|t| t.entry(index))
+        .copied()
+        .ok_or_else(|| anyhow!("wasm trap: unknown handle index {index}"))?;
+    let rep = match entry {
+        HandleEntry::Own { rep, lend_count: 0 } => rep,
+        HandleEntry::Own { .. } => {
+            return Err(anyhow!(
+                "wasm trap: cannot remove owned resource while borrowed"
+            ));
+        }
+        HandleEntry::Borrow { .. } => {
+            return Err(anyhow!(
+                "wasm trap: handle index {index} used with the wrong type, expected own but found borrow"
+            ));
+        }
+    };
+    guard.for_table_mut(src.table).remove(index);
+    Ok(guard.for_table_mut(dst.table).insert_own(rep))
+}
+
+fn transfer_borrow(
+    tables: &Arc<Mutex<HandleTables>>,
+    src: ResourceTableRuntime,
+    dst: ResourceTableRuntime,
+    index: u32,
+) -> anyhow::Result<u32> {
+    let mut guard = tables
+        .lock()
+        .map_err(|_| anyhow!("resource handle tables lock poisoned"))?;
+    // Lift the borrow out of the caller: the defining instance holds
+    // reps directly; anyone else holds a table entry, and an owning
+    // entry is lent for the rest of the call.
+    let rep = if src.defining {
+        index
+    } else {
+        let entry = guard
+            .for_table(src.table)
+            .and_then(|t| t.entry(index))
+            .copied()
+            .ok_or_else(|| anyhow!("wasm trap: unknown handle index {index}"))?;
+        if matches!(entry, HandleEntry::Own { .. }) {
+            guard.lend(src.table, index);
+        }
+        entry.rep()
+    };
+    // Lower it into the callee: the defining instance receives the
+    // rep; anyone else receives a borrow entry owed to the call.
+    if dst.defining {
+        Ok(rep)
+    } else {
+        guard
+            .insert_borrow(dst.table, rep)
+            .ok_or_else(|| anyhow!("wasm trap: a borrow can only be transferred during a call"))
+    }
 }
 
 /// Build a string transcoder. The source and destination memories

@@ -37,7 +37,7 @@ use crate::identifier::InterfaceIdentifier;
 use super::ir::{
     CanonOptions, CoreInstanceExport, CoreSignature, CoreSourceItem, EntityIndex, ExecutorIr,
     ExportSpec, ImportSource, Initializer, LoweringSpec, ModuleEntry, ModuleImport, ResourceSpec,
-    StringEncoding, TrampolineSpec, TranscodeOp,
+    ResourceTableSpec, StringEncoding, TrampolineSpec, TranscodeOp,
 };
 
 /// Everything one translation of a component binary produces.
@@ -66,6 +66,9 @@ pub fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
         .translate(bytes)
         .map_err(translation_error)?;
 
+    // The builder knows how many resource tables the component has;
+    // the finished types index them but do not count them.
+    let num_resource_tables = types.num_resource_tables();
     let (component_types, _) = types.finish(&translation.component);
     let projector = TypeProjector::new(&component_types, &translation.component);
 
@@ -139,6 +142,31 @@ pub fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
         });
     }
 
+    // Pre-walk #2b: one entry per resource table, at the translator's
+    // table index. A concrete table names its resource and the instance
+    // that keeps it; an abstract one has no runtime presence.
+    let resource_tables: Vec<Option<ResourceTableSpec>> = (0..num_resource_tables as u32)
+        .map(
+            |i| match &component_types[TypeResourceTableIndex::from_u32(i)] {
+                TypeResourceTable::Concrete { ty, instance } => {
+                    let defining = translation
+                        .component
+                        .defined_resource_index(*ty)
+                        .map(|defined| {
+                            translation.component.defined_resource_instances[defined] == *instance
+                        })
+                        .unwrap_or(false);
+                    Some(ResourceTableSpec {
+                        resource_index: ty.as_u32() as usize,
+                        instance: instance.as_u32() as usize,
+                        defining,
+                    })
+                }
+                TypeResourceTable::Abstract(_) => None,
+            },
+        )
+        .collect();
+
     // Pre-walk #3: build a `TrampolineSpec` for every trampoline
     // kind the polyfill implements. The resulting indices are
     // consulted by `CoreDef::Trampoline` resolution.
@@ -170,13 +198,13 @@ pub fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 })
             }
             Trampoline::ResourceDrop { ty, .. } => TrampolineSpec::ResourceDrop {
-                resource_index: resolve_resource_index(&component_types, resources.len(), *ty)?,
+                table_index: resolve_table_index(&component_types, resource_tables.len(), *ty)?,
             },
             Trampoline::ResourceNew { ty, .. } => TrampolineSpec::ResourceNew {
-                resource_index: resolve_resource_index(&component_types, resources.len(), *ty)?,
+                table_index: resolve_table_index(&component_types, resource_tables.len(), *ty)?,
             },
             Trampoline::ResourceRep { ty, .. } => TrampolineSpec::ResourceRep {
-                resource_index: resolve_resource_index(&component_types, resources.len(), *ty)?,
+                table_index: resolve_table_index(&component_types, resource_tables.len(), *ty)?,
             },
             Trampoline::Transcoder {
                 op,
@@ -343,6 +371,7 @@ pub fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
             exports: export_specs.into_boxed_slice(),
             trampoline_specs: trampoline_specs.into_boxed_slice(),
             resources: resources.into_boxed_slice(),
+            resource_tables: resource_tables.into_boxed_slice(),
             runtime_instance_to_module: state.runtime_instance_to_module.into_boxed_slice(),
             num_runtime_memories: state.num_runtime_memories,
             num_runtime_reallocs: state.num_runtime_reallocs,
@@ -521,30 +550,24 @@ fn collect_export_spec(
     }
 }
 
-/// Resolve a [`TypeResourceTableIndex`] to the polyfill's resource
-/// index. The trampoline references resources by their per-component
-/// table identity; the polyfill addresses them by position in the
-/// `imported_resources` map.
-fn resolve_resource_index(
+/// Resolve a [`TypeResourceTableIndex`] to the polyfill's table
+/// index: the same number, checked to name a concrete table.
+fn resolve_table_index(
     component_types: &ComponentTypes,
-    num_resources: usize,
+    num_tables: usize,
     ty: TypeResourceTableIndex,
 ) -> Result<usize> {
-    let table = &component_types[ty];
-    let resource_idx = match table {
-        TypeResourceTable::Concrete { ty, .. } => *ty,
-        TypeResourceTable::Abstract(_) => {
-            return Err(Error::internal(
-                "resource trampoline references an abstract resource table in a concrete instantiation",
-            ));
-        }
-    };
-    let slot = resource_idx.as_u32() as usize;
-    if slot < num_resources {
-        Ok(slot)
+    if let TypeResourceTable::Abstract(_) = &component_types[ty] {
+        return Err(Error::internal(
+            "resource trampoline references an abstract resource table in a concrete instantiation",
+        ));
+    }
+    let index = ty.as_u32() as usize;
+    if index < num_tables {
+        Ok(index)
     } else {
         Err(Error::internal(
-            "resource trampoline references a resource index outside the component's resources",
+            "resource trampoline references a table outside the component's resource tables",
         ))
     }
 }

@@ -301,3 +301,65 @@ async fn it_transcodes_strings_between_inner_components() {
         .expect("call");
     assert_eq!(result.as_ref(), &[Val::String(text)]);
 }
+
+#[wcmp_macros::test]
+async fn it_runs_the_defining_components_destructor_when_another_component_drops_the_handle() {
+    // `$A` defines a resource with a destructor that counts drops and
+    // exports `make`. `$B` imports the resource type and `make`,
+    // creates a handle, and drops it in its own table. The drop must
+    // reach `$A`'s destructor exactly once, through the adapter's
+    // transfer of the owned handle between the two tables.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (component $A
+            (core module $d
+              (global $drops (mut i32) (i32.const 0))
+              (func (export "dtor") (param i32)
+                global.get $drops i32.const 1 i32.add global.set $drops)
+              (func (export "drops") (result i32) global.get $drops))
+            (core instance $di (instantiate $d))
+            (type $r (resource (rep i32) (dtor (core func $di "dtor"))))
+            (core func $new (canon resource.new $r))
+            (core module $m
+              (import "" "new" (func $new (param i32) (result i32)))
+              (func (export "make") (result i32) i32.const 7 call $new))
+            (core instance $i (instantiate $m
+              (with "" (instance (export "new" (func $new))))))
+            (export $r' "r" (type $r))
+            (func (export "make") (result (own $r'))
+              (canon lift (core func $i "make")))
+            (func (export "drops") (result u32)
+              (canon lift (core func $di "drops"))))
+          (component $B
+            (import "r" (type $r (sub resource)))
+            (import "make" (func $make (result (own $r))))
+            (core func $core-make (canon lower (func $make)))
+            (core func $drop (canon resource.drop $r))
+            (core module $m
+              (import "" "make" (func $make (result i32)))
+              (import "" "drop" (func $drop (param i32)))
+              (func (export "run") call $make call $drop))
+            (core instance $i (instantiate $m
+              (with "" (instance
+                (export "make" (func $core-make))
+                (export "drop" (func $drop))))))
+            (func (export "run") (canon lift (core func $i "run"))))
+          (instance $a (instantiate $A))
+          (instance $b (instantiate $B
+            (with "r" (type $a "r"))
+            (with "make" (func $a "make"))))
+          (export "run" (func $b "run"))
+          (export "drops" (func $a "drops")))
+        "#
+    );
+    let (mut store, instance) = instantiate(COMPONENT);
+    let run = instance.get_func("run").expect("run export");
+    run.call(&mut store, &[]).expect("run");
+    let drops = instance.get_func("drops").expect("drops export");
+    assert_eq!(
+        drops.call(&mut store, &[]).expect("drops").as_ref(),
+        &[Val::U32(1)],
+        "the defining component's destructor ran exactly once"
+    );
+}

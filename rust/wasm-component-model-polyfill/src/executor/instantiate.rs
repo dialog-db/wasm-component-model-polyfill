@@ -21,6 +21,7 @@ use crate::component::{Component, ExternType, ExternalName};
 use crate::error::{Error, InstantiationError, LinkError, Result};
 use crate::instance::{ExportedFunction, Instance};
 use crate::linker::{HostFuncBody, ImportBinding, InstanceRegistration, Linker, Resolution};
+use crate::resource::{ResourceTableRuntime, TableId};
 use crate::store::Store;
 
 use super::ResourceDestructor;
@@ -76,11 +77,31 @@ pub fn instantiate<T: 'static>(
         )?);
     }
 
+    // One fresh table per resource table of the component: the
+    // canonical ABI keeps handles per component instance per resource,
+    // and this instantiation's instances get tables of their own.
+    let resource_tables: Vec<Option<ResourceTableRuntime>> = ir
+        .resource_tables
+        .iter()
+        .map(|spec| {
+            spec.as_ref().and_then(|spec| {
+                resource_runtimes
+                    .get(spec.resource_index)
+                    .map(|runtime| ResourceTableRuntime {
+                        table: TableId::fresh(),
+                        type_id: runtime.type_id,
+                        resource_index: spec.resource_index,
+                        defining: spec.defining,
+                    })
+            })
+        })
+        .collect();
+
     let abi_state = Arc::new(Mutex::new(AbiRuntimeState::with_slabs(
         ir.num_runtime_memories,
         ir.num_runtime_reallocs,
         ir.num_runtime_post_returns,
-        resource_runtimes.iter().map(|r| r.type_id).collect(),
+        resource_tables,
     )));
 
     // Build every trampoline upfront. Trampolines never depend on
@@ -255,23 +276,24 @@ fn build_runtime_trampoline<T: 'static>(
                 host_func,
             ))
         }
-        TrampolineSpec::ResourceDrop { resource_index } => {
+        TrampolineSpec::ResourceDrop { table_index } => {
+            let table = resource_table(abi_state, *table_index)?;
             let runtime = resource_runtimes
-                .get(*resource_index)
-                .ok_or_else(|| internal("ResourceDrop.resource_index out of bounds"))?;
-            Ok(build_resource_drop_trampoline(store, runtime.clone()))
+                .get(table.resource_index)
+                .ok_or_else(|| internal("ResourceDrop.table_index names an unknown resource"))?;
+            Ok(build_resource_drop_trampoline(
+                store,
+                table,
+                runtime.clone(),
+            ))
         }
-        TrampolineSpec::ResourceNew { resource_index } => {
-            let runtime = resource_runtimes
-                .get(*resource_index)
-                .ok_or_else(|| internal("ResourceNew.resource_index out of bounds"))?;
-            Ok(build_resource_new_trampoline(store, runtime.clone()))
+        TrampolineSpec::ResourceNew { table_index } => {
+            let table = resource_table(abi_state, *table_index)?;
+            Ok(build_resource_new_trampoline(store, table))
         }
-        TrampolineSpec::ResourceRep { resource_index } => {
-            let runtime = resource_runtimes
-                .get(*resource_index)
-                .ok_or_else(|| internal("ResourceRep.resource_index out of bounds"))?;
-            Ok(build_resource_rep_trampoline(store, runtime.clone()))
+        TrampolineSpec::ResourceRep { table_index } => {
+            let table = resource_table(abi_state, *table_index)?;
+            Ok(build_resource_rep_trampoline(store, table))
         }
         TrampolineSpec::Transcoder {
             op,
@@ -286,10 +308,18 @@ fn build_runtime_trampoline<T: 'static>(
             signature,
             abi_state.clone(),
         )),
-        TrampolineSpec::ResourceTransferOwn { signature }
-        | TrampolineSpec::ResourceTransferBorrow { signature } => {
-            Ok(build_resource_transfer(store, signature))
-        }
+        TrampolineSpec::ResourceTransferOwn { signature } => Ok(build_resource_transfer(
+            store,
+            signature,
+            abi_state.clone(),
+            true,
+        )),
+        TrampolineSpec::ResourceTransferBorrow { signature } => Ok(build_resource_transfer(
+            store,
+            signature,
+            abi_state.clone(),
+            false,
+        )),
         TrampolineSpec::Trap { signature } => Ok(build_trap(store, signature)),
         TrampolineSpec::EnterSyncCall { signature } => Ok(build_enter_sync_call(store, signature)),
         TrampolineSpec::ExitSyncCall { signature } => Ok(build_exit_sync_call(store, signature)),
@@ -527,4 +557,22 @@ fn collect_function_exports<T: 'static>(
 
 fn internal(message: &str) -> Error {
     Error::internal(message)
+}
+
+/// The runtime data of one resource table of the instantiation.
+fn resource_table(
+    abi_state: &Arc<Mutex<AbiRuntimeState>>,
+    table_index: usize,
+) -> Result<ResourceTableRuntime> {
+    let state = abi_state
+        .lock()
+        .map_err(|_| internal("ABI state poisoned"))?;
+    state
+        .resource_tables
+        .get(table_index)
+        .copied()
+        .flatten()
+        .ok_or_else(|| {
+            internal("resource trampoline names a table the instantiation does not hold")
+        })
 }

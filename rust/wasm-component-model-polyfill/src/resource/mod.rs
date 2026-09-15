@@ -25,9 +25,13 @@ mod handle;
 mod handle_entry;
 mod identity;
 mod table;
+mod table_id;
+mod table_runtime;
 mod tables;
 
 pub use handle::ResourceHandle;
 pub use handle_entry::HandleEntry;
 pub use identity::ResourceTypeId;
+pub use table_id::TableId;
+pub use table_runtime::ResourceTableRuntime;
 pub use tables::HandleTables;

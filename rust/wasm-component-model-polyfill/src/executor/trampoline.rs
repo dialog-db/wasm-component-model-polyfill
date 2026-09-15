@@ -43,7 +43,7 @@ use crate::executor::ir::{CanonOptions, LoweringSpec};
 use crate::linker::{HostCall, HostFuncBody, HostResource};
 
 use super::ResourceDestructor;
-use crate::resource::{HandleEntry, HandleTables, ResourceTypeId};
+use crate::resource::{HandleEntry, HandleTables, ResourceTableRuntime, ResourceTypeId, TableId};
 use crate::store::Store;
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
@@ -56,11 +56,11 @@ pub struct AbiRuntimeState {
     pub memories: Vec<Option<Memory>>,
     pub reallocs: Vec<Option<RuntimeFunc>>,
     pub post_returns: Vec<Option<RuntimeFunc>>,
-    /// The handle-table identity of every resource of the component,
-    /// by the translator's resource index. Imported resources carry
-    /// the identity of their host registration; locally-defined ones
-    /// carry an identity minted for this instantiation.
-    pub resource_types: Vec<ResourceTypeId>,
+    /// Every resource table of the instance, by the translator's
+    /// table index: the table created for this instantiation, the
+    /// identity of the resource type it holds, and whether the table's
+    /// instance defines the resource. `None` for an abstract table.
+    pub resource_tables: Vec<Option<ResourceTableRuntime>>,
 }
 
 /// Per-resource runtime data captured by every resource trampoline.
@@ -116,13 +116,13 @@ impl AbiRuntimeState {
         num_memories: usize,
         num_reallocs: usize,
         num_post_returns: usize,
-        resource_types: Vec<ResourceTypeId>,
+        resource_tables: Vec<Option<ResourceTableRuntime>>,
     ) -> Self {
         Self {
             memories: vec![None; num_memories],
             reallocs: vec![None; num_reallocs],
             post_returns: vec![None; num_post_returns],
-            resource_types,
+            resource_tables,
         }
     }
 }
@@ -136,6 +136,7 @@ impl AbiRuntimeState {
 /// if the index does not address a live entry.
 pub fn build_resource_drop_trampoline<T: 'static>(
     store: &mut Store<T>,
+    table: ResourceTableRuntime,
     runtime: ResourceRuntime<T>,
 ) -> RuntimeFunc {
     let tables = store.tables_handle();
@@ -148,7 +149,7 @@ pub fn build_resource_drop_trampoline<T: 'static>(
             // Dropping a borrow returns it to its call and runs no
             // destructor; dropping an owned entry runs the destructor,
             // unless a borrow of it is still lent to the host.
-            let Some(rep) = drop_handle(&tables, runtime.type_id, index)? else {
+            let Some(rep) = drop_handle(&tables, table.table, index)? else {
                 return Ok(());
             };
             match &runtime.destructor {
@@ -177,7 +178,7 @@ pub fn build_resource_drop_trampoline<T: 'static>(
 /// minted index.
 pub fn build_resource_new_trampoline<T: 'static>(
     store: &mut Store<T>,
-    runtime: ResourceRuntime<T>,
+    table: ResourceTableRuntime,
 ) -> RuntimeFunc {
     let tables = store.tables_handle();
     let func_type = FuncType::new([CoreType::I32], [CoreType::I32]);
@@ -186,7 +187,7 @@ pub fn build_resource_new_trampoline<T: 'static>(
         func_type,
         move |_store_ctx, args, results| {
             let rep = take_i32(args, 0).map_err(|err| anyhow!("resource.new: {err}"))?;
-            let index = insert_handle(&tables, runtime.type_id, rep)?;
+            let index = insert_handle(&tables, table.table, rep)?;
             results[0] = RuntimeVal::I32(index as i32);
             Ok(())
         },
@@ -199,7 +200,7 @@ pub fn build_resource_new_trampoline<T: 'static>(
 /// returns the rep stored at that entry.
 pub fn build_resource_rep_trampoline<T: 'static>(
     store: &mut Store<T>,
-    runtime: ResourceRuntime<T>,
+    table: ResourceTableRuntime,
 ) -> RuntimeFunc {
     let tables = store.tables_handle();
     let func_type = FuncType::new([CoreType::I32], [CoreType::I32]);
@@ -208,7 +209,7 @@ pub fn build_resource_rep_trampoline<T: 'static>(
         func_type,
         move |_store_ctx, args, results| {
             let index = take_i32(args, 0).map_err(|err| anyhow!("resource.rep: {err}"))?;
-            let rep = read_handle(&tables, runtime.type_id, index)?;
+            let rep = read_handle(&tables, table.table, index)?;
             results[0] = RuntimeVal::I32(rep as i32);
             Ok(())
         },
@@ -227,22 +228,22 @@ fn take_i32(args: &[RuntimeVal], cursor: usize) -> Result<u32> {
 /// Remove the entry at `index` for a `resource.drop`. Returns the rep
 /// of an owned entry, whose destructor the caller runs, or `None`
 /// for a borrow, which is handed back to the call it belongs to.
-fn drop_handle(
+pub fn drop_handle(
     tables: &Arc<Mutex<HandleTables>>,
-    type_id: ResourceTypeId,
+    table: TableId,
     index: u32,
 ) -> Result<Option<u32>> {
     let mut guard = tables
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
     let entry = guard
-        .for_type(type_id)
+        .for_table(table)
         .and_then(|t| t.entry(index))
         .copied()
         .ok_or_else(|| invalid_handle(index))?;
     match entry {
         HandleEntry::Own { rep, lend_count: 0 } => {
-            guard.for_type_mut(type_id).remove(index);
+            guard.for_table_mut(table).remove(index);
             Ok(Some(rep))
         }
         HandleEntry::Own { .. } => Err(Error::from(AbiError {
@@ -256,33 +257,25 @@ fn drop_handle(
             if !guard.return_borrow(scope) {
                 return Err(invalid_handle(index));
             }
-            guard.for_type_mut(type_id).remove(index);
+            guard.for_table_mut(table).remove(index);
             Ok(None)
         }
     }
 }
 
-fn insert_handle(
-    tables: &Arc<Mutex<HandleTables>>,
-    type_id: ResourceTypeId,
-    rep: u32,
-) -> Result<u32> {
+pub fn insert_handle(tables: &Arc<Mutex<HandleTables>>, table: TableId, rep: u32) -> Result<u32> {
     let mut guard = tables
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
-    Ok(guard.for_type_mut(type_id).insert_own(rep))
+    Ok(guard.for_table_mut(table).insert_own(rep))
 }
 
-fn read_handle(
-    tables: &Arc<Mutex<HandleTables>>,
-    type_id: ResourceTypeId,
-    index: u32,
-) -> Result<u32> {
+fn read_handle(tables: &Arc<Mutex<HandleTables>>, table: TableId, index: u32) -> Result<u32> {
     let guard = tables
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
     let table = guard
-        .for_type(type_id)
+        .for_table(table)
         .ok_or_else(|| invalid_handle(index))?;
     table.get(index).ok_or_else(|| invalid_handle(index))
 }
@@ -385,7 +378,7 @@ fn invoke_trampoline<T: 'static>(
     args: &[RuntimeVal],
     results: &mut [RuntimeVal],
 ) -> Result<()> {
-    let (memory, realloc, resource_types) = {
+    let (memory, realloc, resource_tables) = {
         let state = abi_state
             .lock()
             .map_err(|_| Error::internal("ABI runtime state lock poisoned"))?;
@@ -395,7 +388,7 @@ fn invoke_trampoline<T: 'static>(
         let realloc = options
             .realloc
             .and_then(|s| state.reallocs.get(s).and_then(|r| r.clone()));
-        (memory, realloc, state.resource_types.clone())
+        (memory, realloc, state.resource_tables.clone())
     };
 
     // A call from the guest into the host opens a scope: borrows the
@@ -409,7 +402,7 @@ fn invoke_trampoline<T: 'static>(
         memory.clone(),
         options.string_encoding,
         Some(tables.clone()),
-        resource_types.clone(),
+        resource_tables.clone(),
     );
     let lifted = if params_spill(signature) {
         lift_spilled_arguments(&mut lift_ctx, signature, args, &mut cursor)?
@@ -445,7 +438,11 @@ fn invoke_trampoline<T: 'static>(
 
     let host_arity = usize::from(signature.result.is_some());
     let mut host_results: Vec<Val> = vec![Val::Bool(false); host_arity];
-    let call = HostCall::new(store_ctx.data_mut(), tables.clone(), resource_types.clone());
+    let call = HostCall::new(
+        store_ctx.data_mut(),
+        tables.clone(),
+        resource_tables.clone(),
+    );
     if let Err(err) = host_func(call, &lifted, &mut host_results) {
         // The failure path pops the scope without the borrow check:
         // the error already says the call failed.
@@ -481,7 +478,7 @@ fn invoke_trampoline<T: 'static>(
         realloc,
         options.string_encoding,
         Some(tables.clone()),
-        resource_types.clone(),
+        resource_tables.clone(),
     );
     match return_area_ptr {
         Some(ptr) => lower(

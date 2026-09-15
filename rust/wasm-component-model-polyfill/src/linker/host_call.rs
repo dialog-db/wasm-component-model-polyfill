@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
-use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId};
+use crate::resource::{HandleTables, ResourceHandle, ResourceTableRuntime, ResourceTypeId};
 use crate::types::{ResourceType, ValueType};
 
 /// The context a registered host function runs against, scoped to
@@ -23,10 +23,10 @@ use crate::types::{ResourceType, ValueType};
 pub struct HostCall<'a, T> {
     data: &'a mut T,
     tables: Arc<Mutex<HandleTables>>,
-    /// The identities of the resource types of the instance whose
-    /// import is being served, by resource index. A mint against
-    /// any other identity is refused.
-    resource_types: Vec<ResourceTypeId>,
+    /// The resource tables of the instance whose import is being
+    /// served. A mint against a resource type none of them holds is
+    /// refused.
+    resource_tables: Vec<Option<ResourceTableRuntime>>,
 }
 
 impl<'a, T> HostCall<'a, T> {
@@ -36,12 +36,12 @@ impl<'a, T> HostCall<'a, T> {
     pub fn new(
         data: &'a mut T,
         tables: Arc<Mutex<HandleTables>>,
-        resource_types: Vec<ResourceTypeId>,
+        resource_tables: Vec<Option<ResourceTableRuntime>>,
     ) -> Self {
         Self {
             data,
             tables,
-            resource_types,
+            resource_tables,
         }
     }
 
@@ -62,7 +62,12 @@ impl<'a, T> HostCall<'a, T> {
     /// calling instance's resource types is refused with the
     /// unregistered-resource-type ABI cause.
     pub fn resource_new(&self, type_id: ResourceTypeId, rep: u32) -> Result<ResourceHandle> {
-        if !self.resource_types.contains(&type_id) {
+        let known = self
+            .resource_tables
+            .iter()
+            .flatten()
+            .any(|table| table.type_id == type_id);
+        if !known {
             return Err(Error::from(AbiError {
                 position: AbiPosition::Result,
                 valtype: ValueType::Own(ResourceType::new("resource")),

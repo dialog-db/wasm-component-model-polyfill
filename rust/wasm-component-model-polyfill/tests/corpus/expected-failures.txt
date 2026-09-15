@@ -30,15 +30,12 @@ cm/linking/tags.wast:89 cascade no instance to invoke
 cm/linking/tags.wast:93 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
 cm/linking/tags.wast:133 cascade no instance to invoke
 cm/linking/tags.wast:134 cascade no instance to invoke
-cm/linking/unit.wast:931 defect expected [U32(26)], got [U32(0)]
-cm/linking/unit.wast:932 defect expected [U32(60)], got [U32(0)]
 cm/linking/unit.wast:1019 defect expected [U32(1)], got [U32(0)]
 cm/linking/unit.wast:1020 defect expected [U32(2)], got [U32(1)]
 cm/linking/unit.wast:1021 defect expected [U32(1)], got [U32(0)]
 cm/linking/unit.wast:1022 defect expected [U32(3)], got [U32(2)]
 cm/linking/unit.wast:1023 defect expected [U32(2)], got [U32(1)]
 cm/resources/borrows.wast:159 defect instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0xa3 - DM!<wasm function 6>: wasm tra
-cm/resources/borrows.wast:162 deferred-feature expected a trap `cannot remove owned resource while borrowed`, got []
 cm/resources/handle-table.wast:49 defect instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x4d - M!<wasm function 3>: wasm trap
 cm/resources/handle-table.wast:106 defect instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x4d - DM!<wasm function 3>: wasm tra
 cm/resources/handle-table.wast:201 trap-message expected a trap `unknown handle index 5`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm back
@@ -47,7 +44,6 @@ cm/resources/handle-table.wast:205 trap-message expected a trap `unknown handle 
 cm/resources/handle-table.wast:207 trap-message expected a trap `unknown handle index 0`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm back
 cm/resources/handle-table.wast:209 trap-message expected a trap `unknown handle index 4294967295`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at 
 cm/resources/handle-table.wast:211 trap-message expected a trap `unknown handle index 1`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm back
-cm/resources/handle-table.wast:213 trap-message expected a trap `unknown handle index 3`, got []
 cm/resources/handle-table.wast:260 defect instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x4d - UM!<wasm function 2>: wasm tra
 cm/resources/handle-table.wast:261 trap-message expected a trap `unknown handle index 1`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm back
 cm/resources/handle-table.wast:265 defect instantiation failed: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x31 - M!start:

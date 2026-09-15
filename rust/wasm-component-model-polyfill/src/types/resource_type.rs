@@ -3,10 +3,10 @@
 //!
 //! A resource type is named by a label, the name under which the
 //! component imports or exports it, and positioned by an index, the
-//! resource's place in its component's resource list. The label is
-//! what a reader of a component's imports and exports sees; the index
-//! is what the canonical ABI uses to find the handle table an
-//! instance keeps for the resource.
+//! resource table of the component that a handle of this type lives
+//! in (one per component instance per resource). The label is what a
+//! reader of a component's imports and exports sees; the index is
+//! what the canonical ABI uses to find the handle table.
 
 /// The identity of a resource type referenced by a handle.
 ///
@@ -32,8 +32,8 @@ impl ResourceType {
         }
     }
 
-    /// Construct a resource type identity from a label and the
-    /// resource's index in its component's resource list.
+    /// Construct a resource type identity from a label and the index
+    /// of the resource table it lives in within its component.
     pub fn indexed(label: impl Into<String>, index: usize) -> Self {
         Self {
             label: label.into(),
@@ -46,8 +46,8 @@ impl ResourceType {
         &self.label
     }
 
-    /// The resource's index in its component's resource list, when
-    /// a concrete component defines or imports it.
+    /// The index of the resource table the type lives in within its
+    /// component, when a concrete instance holds it.
     pub fn index(&self) -> Option<usize> {
         self.index
     }
