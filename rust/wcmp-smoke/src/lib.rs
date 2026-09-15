@@ -141,8 +141,6 @@ const DROPPER: &[u8] = component!(
     "#
 );
 
-
-
 /// The report as text: one line per step and a summary line.
 pub fn render(steps: &[Step]) -> String {
     let mut out = String::new();
