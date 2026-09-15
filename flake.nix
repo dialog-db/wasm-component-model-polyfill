@@ -76,6 +76,7 @@
           inherit pkgs;
           workspaceRoot = ./.;
           include = [
+            "CLAUDE.md"
             "project/design/**/*.md"
             "project/kanban/README.md"
           ];
