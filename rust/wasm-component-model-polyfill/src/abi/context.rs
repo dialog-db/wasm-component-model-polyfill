@@ -20,7 +20,7 @@ use crate::abi::layout::alignment_of;
 use crate::backend::Backend;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::StringEncoding;
-use crate::resource::HandleTables;
+use crate::resource::{HandleTables, ResourceTypeId};
 use crate::types::ValueType;
 use wasm_runtime_layer::{Func as RuntimeFunc, Memory, StoreContextMut, Val as RuntimeVal};
 
@@ -43,6 +43,10 @@ pub struct LiftContext<'a, T: 'static> {
     /// The per-store handle tables. Required when lifting `own<T>`
     /// or `borrow<T>` valtypes; `None` is rejected at first contact.
     pub tables: Option<Arc<Mutex<HandleTables>>>,
+    /// The handle-table identity of every resource of the component
+    /// instance, by resource index. A handle's declared type names
+    /// the index; this maps it to the table the instance uses.
+    pub resource_types: Vec<ResourceTypeId>,
 }
 
 impl<'a, T: 'static> LiftContext<'a, T> {
@@ -52,12 +56,14 @@ impl<'a, T: 'static> LiftContext<'a, T> {
         memory: Option<Memory>,
         string_encoding: StringEncoding,
         tables: Option<Arc<Mutex<HandleTables>>>,
+        resource_types: Vec<ResourceTypeId>,
     ) -> Self {
         Self {
             store,
             memory,
             string_encoding,
             tables,
+            resource_types,
         }
     }
 
@@ -107,6 +113,10 @@ pub struct LowerContext<'a, T: 'static> {
     /// The per-store handle tables. Required when lowering `own<T>`
     /// or `borrow<T>` valtypes; `None` is rejected at first contact.
     pub tables: Option<Arc<Mutex<HandleTables>>>,
+    /// The handle-table identity of every resource of the component
+    /// instance, by resource index. A handle's declared type names
+    /// the index; this maps it to the table the instance uses.
+    pub resource_types: Vec<ResourceTypeId>,
 }
 
 impl<'a, T: 'static> LowerContext<'a, T> {
@@ -117,6 +127,7 @@ impl<'a, T: 'static> LowerContext<'a, T> {
         realloc: Option<RuntimeFunc>,
         string_encoding: StringEncoding,
         tables: Option<Arc<Mutex<HandleTables>>>,
+        resource_types: Vec<ResourceTypeId>,
     ) -> Self {
         Self {
             store,
@@ -124,6 +135,7 @@ impl<'a, T: 'static> LowerContext<'a, T> {
             realloc,
             string_encoding,
             tables,
+            resource_types,
         }
     }
 

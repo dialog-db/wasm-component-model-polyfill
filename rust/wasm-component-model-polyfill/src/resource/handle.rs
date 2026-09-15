@@ -34,4 +34,10 @@ pub struct ResourceHandle {
     /// The handle-table entry this handle names. Workspace-internal;
     /// consumers see the handle as opaque.
     pub index: u32,
+    /// The resource's 32-bit representation. Carried so that a
+    /// handle the host owns outright (one lifted out of a guest as
+    /// `own<T>`, whose table entry the lift removed) can be lowered
+    /// back into a guest, which re-inserts the rep and takes a fresh
+    /// index. Workspace-internal; consumers see the handle as opaque.
+    pub rep: u32,
 }

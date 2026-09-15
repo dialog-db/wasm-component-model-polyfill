@@ -25,7 +25,6 @@ use super::layout::{FlatType, flags_chunk_count, flat_types, join_flat_slots, si
 use super::{lift, lower};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::StringEncoding;
-use crate::resource::ResourceHandle;
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::{Val, ValField};
 
@@ -176,8 +175,8 @@ pub fn lower_into_flat_slots<T: 'static>(
         (ValueType::Own(_), Val::Own(handle))
         | (ValueType::Borrow(_), Val::Borrow(handle))
         | (ValueType::Borrow(_), Val::Own(handle)) => {
-            validate_handle_in_table(ctx, handle, ty, position)?;
-            out.push(RuntimeVal::I32(handle.index as i32));
+            let index = lower::lower_handle(ctx, handle, ty, position)?;
+            out.push(RuntimeVal::I32(index as i32));
             Ok(())
         }
         _ => Err(host_value_mismatch(ty, position)),
@@ -685,46 +684,6 @@ fn lower_string<T: 'static>(
         ctx.write_bytes(ptr, &bytes, position, ty)?;
     }
     Ok((ptr, units))
-}
-
-fn validate_handle_in_table<T: 'static>(
-    ctx: &LowerContext<'_, T>,
-    handle: &ResourceHandle,
-    ty: &ValueType,
-    position: AbiPosition,
-) -> Result<()> {
-    let tables = ctx.tables.as_ref().ok_or_else(|| {
-        Error::from(AbiError {
-            position,
-            valtype: ty.clone(),
-            cause: AbiCause::InvalidHandle {
-                reason: "no handle-tables ledger available to the lower context".to_owned(),
-            },
-        })
-    })?;
-    let guard = tables
-        .lock()
-        .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
-    let table = guard.for_type(handle.type_id).ok_or_else(|| {
-        Error::from(AbiError {
-            position,
-            valtype: ty.clone(),
-            cause: AbiCause::UnregisteredResourceType,
-        })
-    })?;
-    if table.get(handle.index).is_none() {
-        return Err(Error::from(AbiError {
-            position,
-            valtype: ty.clone(),
-            cause: AbiCause::InvalidHandle {
-                reason: format!(
-                    "handle index {} is not live in the resource table",
-                    handle.index
-                ),
-            },
-        }));
-    }
-    Ok(())
 }
 
 fn take_i32(

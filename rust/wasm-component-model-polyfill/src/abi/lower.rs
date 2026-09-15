@@ -7,6 +7,7 @@
 
 use crate::abi::context::LowerContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
+use crate::abi::lift::declared_resource_index;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::StringEncoding;
 use crate::resource::ResourceHandle;
@@ -173,23 +174,10 @@ pub fn lower<T: 'static>(
             }
             ctx.write_bytes(offset, &bytes, position, ty)
         }
-        (ValueType::Own(_), Val::Own(handle)) => {
-            // The host already owns the entry: the handle was minted
-            // through `Store::resource_new` (or carried out of a
-            // prior lift). Validate that the index is live in the
-            // per-store table for the handle's resource-type id and
-            // write the index into the slot; ownership transfers
-            // structurally when the guest calls `resource.drop`.
-            validate_handle(ctx, handle, ty, position)?;
-            ctx.write_bytes(offset, &handle.index.to_le_bytes(), position, ty)
-        }
-        (ValueType::Borrow(_), Val::Borrow(handle) | Val::Own(handle)) => {
-            // Borrow lower: the host hands a live handle to the
-            // guest for the duration of the call. The polyfill does
-            // not yet enforce per-call borrow tracking; the index is
-            // written through and the table entry is left in place.
-            validate_handle(ctx, handle, ty, position)?;
-            ctx.write_bytes(offset, &handle.index.to_le_bytes(), position, ty)
+        (ValueType::Own(_), Val::Own(handle))
+        | (ValueType::Borrow(_), Val::Borrow(handle) | Val::Own(handle)) => {
+            let index = lower_handle(ctx, handle, ty, position)?;
+            ctx.write_bytes(offset, &index.to_le_bytes(), position, ty)
         }
         _ => Err(host_value_mismatch(ty, position)),
     }
@@ -305,12 +293,24 @@ fn write_discriminant<T: 'static>(
     }
 }
 
-fn validate_handle<T: 'static>(
+/// Lower a handle into the guest and return the index to write.
+///
+/// The declared parameter names a resource by its index in the
+/// component; a handle whose identity is not the one the instance
+/// uses for that resource (one minted by another instance of the
+/// same component, say) is rejected with the unregistered-resource-
+/// type cause. A handle whose entry is live in the table lowers as
+/// that index: the host minted it with `Store::resource_new`, or
+/// lends it as a borrow. A handle whose entry is gone is one the
+/// host owns outright (an `own<T>` lifted out of a guest); its rep
+/// is inserted again and the fresh index is written, which is the
+/// canonical ABI's transfer of ownership back into the guest.
+pub fn lower_handle<T: 'static>(
     ctx: &LowerContext<'_, T>,
     handle: &ResourceHandle,
     ty: &ValueType,
     position: AbiPosition,
-) -> Result<()> {
+) -> Result<u32> {
     let tables = ctx.tables.as_ref().ok_or_else(|| {
         Error::from(AbiError {
             position,
@@ -320,29 +320,32 @@ fn validate_handle<T: 'static>(
             },
         })
     })?;
-    let guard = tables.lock().map_err(|_| Error::Internal {
-        message: "resource handle tables lock poisoned".to_owned(),
-    })?;
-    let table = guard.for_type(handle.type_id).ok_or_else(|| {
-        Error::from(AbiError {
-            position,
-            valtype: ty.clone(),
-            cause: AbiCause::UnregisteredResourceType,
-        })
-    })?;
-    if table.get(handle.index).is_none() {
+    if let Some(expected) =
+        declared_resource_index(ty).and_then(|i| ctx.resource_types.get(i).copied())
+        && expected != handle.type_id
+    {
         return Err(Error::from(AbiError {
             position,
             valtype: ty.clone(),
-            cause: AbiCause::InvalidHandle {
-                reason: format!(
-                    "handle index {} is not live in the resource table",
-                    handle.index
-                ),
-            },
+            cause: AbiCause::UnregisteredResourceType,
         }));
     }
-    Ok(())
+    let mut guard = tables.lock().map_err(|_| Error::Internal {
+        message: "resource handle tables lock poisoned".to_owned(),
+    })?;
+    if guard.for_type(handle.type_id).is_none() {
+        return Err(Error::from(AbiError {
+            position,
+            valtype: ty.clone(),
+            cause: AbiCause::UnregisteredResourceType,
+        }));
+    }
+    let table = guard.for_type_mut(handle.type_id);
+    if table.get(handle.index).is_some() {
+        Ok(handle.index)
+    } else {
+        Ok(table.insert(handle.rep))
+    }
 }
 
 fn host_value_mismatch(ty: &ValueType, position: AbiPosition) -> Error {

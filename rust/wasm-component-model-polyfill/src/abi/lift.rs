@@ -314,11 +314,11 @@ fn read_discriminant(bytes: &[u8]) -> usize {
 /// transfers to the host. For `borrow<T>` the entry is left in
 /// place and the host receives a handle that aliases the live entry.
 ///
-/// The declared `ValueType` carries only the resource's label, not
-/// its registered identity, so the lift locates the entry by walking
-/// every table for a live entry at `index`. This is sound while the
-/// executor's resource trampolines and `Store::resource_new` are the
-/// only producers of live entries.
+/// The declared `ValueType` names the resource by its index in the
+/// component, and the lift context maps that to the table the
+/// instance uses. A declared type without an index (an abstract
+/// resource) falls back to a walk over every table for a live entry
+/// at `index`.
 pub fn lift_handle<T: 'static>(
     ctx: &mut LiftContext<'_, T>,
     index: u32,
@@ -340,27 +340,41 @@ pub fn lift_handle<T: 'static>(
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
 
-    let candidates: Vec<crate::resource::ResourceTypeId> =
-        guard.iter().map(|(type_id, _)| type_id).collect();
-    let mut found = None;
-    for type_id in candidates {
-        if let Some(_rep) = guard.for_type(type_id).and_then(|t| t.get(index)) {
-            found = Some(type_id);
-            break;
+    // The declared type names the resource by its index in the
+    // component; the instance maps that to the table it uses. A type
+    // without an index (an abstract resource) falls back to a walk
+    // over every table for a live entry at `index`.
+    let expected = declared_resource_index(ty).and_then(|i| ctx.resource_types.get(i).copied());
+    let found = match expected {
+        Some(type_id) => guard
+            .for_type(type_id)
+            .and_then(|t| t.get(index))
+            .map(|_| type_id),
+        None => {
+            let candidates: Vec<crate::resource::ResourceTypeId> =
+                guard.iter().map(|(type_id, _)| type_id).collect();
+            candidates.into_iter().find(|type_id| {
+                guard
+                    .for_type(*type_id)
+                    .and_then(|t| t.get(index))
+                    .is_some()
+            })
         }
-    }
+    };
     let type_id = found.ok_or_else(|| {
         Error::from(AbiError {
             position,
             valtype: ty.clone(),
             cause: AbiCause::InvalidHandle {
-                reason: format!("handle index {index} is not live in any resource table"),
+                reason: format!("handle index {index} is not live in the resource table"),
             },
         })
     })?;
 
     if is_own {
-        guard.for_type_mut(type_id).remove(index).ok_or_else(|| {
+        // Ownership transfers to the host: the guest's entry goes
+        // away and the handle carries the rep itself.
+        let rep = guard.for_type_mut(type_id).remove(index).ok_or_else(|| {
             Error::from(AbiError {
                 position,
                 valtype: ty.clone(),
@@ -369,9 +383,29 @@ pub fn lift_handle<T: 'static>(
                 },
             })
         })?;
-        Ok(Val::Own(ResourceHandle { type_id, index }))
+        Ok(Val::Own(ResourceHandle {
+            type_id,
+            index,
+            rep,
+        }))
     } else {
-        Ok(Val::Borrow(ResourceHandle { type_id, index }))
+        let rep = guard
+            .for_type(type_id)
+            .and_then(|t| t.get(index))
+            .ok_or_else(|| {
+                Error::from(AbiError {
+                    position,
+                    valtype: ty.clone(),
+                    cause: AbiCause::InvalidHandle {
+                        reason: format!("handle index {index} disappeared during lift"),
+                    },
+                })
+            })?;
+        Ok(Val::Borrow(ResourceHandle {
+            type_id,
+            index,
+            rep,
+        }))
     }
 }
 
@@ -383,4 +417,12 @@ fn invalid_encoding(ty: &ValueType, position: AbiPosition, message: &str) -> Err
             message: message.to_owned(),
         },
     })
+}
+
+/// The resource index a handle type declares, when it declares one.
+pub fn declared_resource_index(ty: &ValueType) -> Option<usize> {
+    match ty {
+        ValueType::Own(resource) | ValueType::Borrow(resource) => resource.index(),
+        _ => None,
+    }
 }

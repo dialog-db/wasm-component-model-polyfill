@@ -13,8 +13,8 @@
 use std::sync::{Arc, Mutex};
 
 use wasm_component_model_polyfill::{
-    Component, Engine, Error, InterfaceIdentifier, Linker, ResourceHandle, ResourceTypeId, Store,
-    Val,
+    AbiCause, Component, Engine, Error, InterfaceIdentifier, Linker, ResourceHandle,
+    ResourceTypeId, Store, Val,
 };
 use wcmp_macros::component;
 
@@ -182,6 +182,7 @@ async fn it_rejects_a_completely_fabricated_handle_index() {
     let bogus = ResourceHandle {
         type_id,
         index: 999,
+        rep: 0,
     };
     let outcome = consume.call(&mut store, &[Val::Own(bogus)]);
     assert!(matches!(outcome, Err(Error::Abi(_))));
@@ -447,10 +448,103 @@ async fn it_mints_a_distinct_resource_type_identity_per_instantiation() {
 // ----------------------------------------------------------------
 
 #[wcmp_macros::test]
-#[ignore = "stub: locally-defined resources (`(type (resource (rep i32) (dtor (core func $f))))`) — the translator reports them as `Error::Unsupported`"]
 async fn it_supports_a_locally_defined_resource_with_an_in_binary_destructor() {
-    todo!(
-        "load a component that defines its own resource with a destructor pointing at a core func, instantiate it, and assert the in-binary destructor runs synchronously when the handle is dropped"
+    let (mut store, instance) = local_resource_instance();
+    let handle = make_handle(&mut store, &instance, 7);
+    let dispose = instance.get_func("dispose").expect("dispose export");
+    dispose
+        .call(&mut store, &[Val::Own(handle)])
+        .expect("dispose call");
+    let dropped = instance.get_func("dropped").expect("dropped export");
+    let last = instance.get_func("last").expect("last export");
+    assert_eq!(
+        dropped.call(&mut store, &[]).expect("dropped").as_ref(),
+        &[Val::U32(1)],
+        "the in-binary destructor ran when the guest dropped the handle"
+    );
+    assert_eq!(
+        last.call(&mut store, &[]).expect("last").as_ref(),
+        &[Val::U32(7)],
+        "the destructor received the dropped entry's rep"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_runs_the_in_binary_destructor_exactly_once_per_dropped_handle() {
+    let (mut store, instance) = local_resource_instance();
+    let dispose = instance.get_func("dispose").expect("dispose export");
+    let dropped = instance.get_func("dropped").expect("dropped export");
+    let kept = make_handle(&mut store, &instance, 1);
+    for rep in [2, 3] {
+        let handle = make_handle(&mut store, &instance, rep);
+        dispose
+            .call(&mut store, &[Val::Own(handle)])
+            .expect("dispose call");
+    }
+    assert_eq!(
+        dropped.call(&mut store, &[]).expect("dropped").as_ref(),
+        &[Val::U32(2)],
+        "two handles dropped, two destructor runs; the kept handle ran none"
+    );
+    let _ = kept;
+}
+
+#[wcmp_macros::test]
+async fn it_rejects_a_handle_from_another_instance_of_the_same_component() {
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, LOCAL_RESOURCE).expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let first = linker
+        .instantiate(&mut store, &component)
+        .expect("first instantiation");
+    let second = linker
+        .instantiate(&mut store, &component)
+        .expect("second instantiation");
+    let handle = make_handle(&mut store, &first, 1);
+    let dispose = second.get_func("dispose").expect("dispose export");
+    let err = dispose
+        .call(&mut store, &[Val::Own(handle)])
+        .expect_err("a handle from another instance must not lower");
+    assert!(
+        matches!(&err, Error::Abi(abi) if matches!(abi.cause, AbiCause::UnregisteredResourceType)),
+        "expected the unregistered-resource-type cause, got {err:?}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_rejects_a_local_destructor_with_the_wrong_signature() {
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (core module $d
+            (func (export "dtor") (param i32) (result i32) local.get 0))
+          (core instance $di (instantiate $d))
+          (type $thing (resource (rep i32) (dtor (core func $di "dtor"))))
+          (core func $new (canon resource.new $thing))
+          (core module $m
+            (import "" "new" (func $new (param i32) (result i32)))
+            (func (export "make") (param i32) (result i32) local.get 0 call $new))
+          (core instance $i (instantiate $m
+            (with "" (instance (export "new" (func $new))))))
+          (export $thing' "thing" (type $thing))
+          (func (export "make") (param "rep" u32) (result (own $thing'))
+            (canon lift (core func $i "make"))))
+        "#
+    );
+    let engine = Engine::new().expect("engine");
+    let outcome = Component::new(&engine, COMPONENT).and_then(|component| {
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+        linker.instantiate(&mut store, &component).map(|_| ())
+    });
+    let err = outcome.expect_err("a destructor that returns a value is refused");
+    assert!(
+        matches!(
+            &err,
+            Error::Instantiation(_) | Error::InvalidComponentBinary { .. }
+        ),
+        "expected an instantiation or validation error, got {err:?}"
     );
 }
 

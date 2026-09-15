@@ -21,7 +21,8 @@ use std::collections::HashMap;
 
 use wasmtime_environ::component::{
     Component as EnvironComponent, ComponentExtern, ComponentTypes, Export as EnvironExport,
-    InterfaceType, TypeComponentInstanceIndex, TypeDef, TypeFuncIndex, TypeResourceTableIndex,
+    InterfaceType, TypeComponentInstanceIndex, TypeDef, TypeFuncIndex, TypeResourceTable,
+    TypeResourceTableIndex,
 };
 
 use super::extern_type::ExternType;
@@ -87,12 +88,17 @@ impl<'a> TypeProjector<'a> {
     }
 
     fn resource(&self, index: TypeResourceTableIndex) -> ResourceType {
-        ResourceType::new(
-            self.labels
-                .get(&index)
-                .map(String::as_str)
-                .unwrap_or(UNNAMED_RESOURCE),
-        )
+        let label = self
+            .labels
+            .get(&index)
+            .map(String::as_str)
+            .unwrap_or(UNNAMED_RESOURCE);
+        match &self.types[index] {
+            TypeResourceTable::Concrete { ty, .. } => {
+                ResourceType::indexed(label, ty.as_u32() as usize)
+            }
+            TypeResourceTable::Abstract(_) => ResourceType::new(label),
+        }
     }
 
     /// Project one value type.
@@ -233,12 +239,15 @@ impl<'a> TypeProjector<'a> {
             TypeDef::ComponentFunc(index) => ExternType::Function(self.function(*index)?),
             TypeDef::ComponentInstance(index) => ExternType::Instance(self.instance(*index)?),
             TypeDef::Interface(ty) => ExternType::Value(self.value_type(ty)?),
-            TypeDef::Resource(index) => ExternType::Resource(
-                self.labels
-                    .get(index)
-                    .map(|label| ResourceType::new(label.clone()))
-                    .unwrap_or_else(|| ResourceType::new(name)),
-            ),
+            TypeDef::Resource(index) => ExternType::Resource(match &self.types[*index] {
+                TypeResourceTable::Concrete { ty, .. } => ResourceType::indexed(
+                    self.labels.get(index).map(String::as_str).unwrap_or(name),
+                    ty.as_u32() as usize,
+                ),
+                TypeResourceTable::Abstract(_) => {
+                    ResourceType::new(self.labels.get(index).map(String::as_str).unwrap_or(name))
+                }
+            }),
             TypeDef::Module(_) => ExternType::Module,
             TypeDef::Component(_) => ExternType::Component,
             TypeDef::CoreFunc(_) => {

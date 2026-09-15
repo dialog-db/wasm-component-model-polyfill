@@ -1,12 +1,12 @@
 //! Identity of a resource type referenced by an `own<T>` or
 //! `borrow<T>` handle slot.
 //!
-//! At this stage of the polyfill, resource types are represented in
-//! the introspection surface as named slots. The full handle-table
-//! behaviour — destruction, ownership transfer, the canonical-ABI
-//! handle index space — is the responsibility of a later layer; this
-//! type exists so that a parsed component's imports and exports can
-//! be walked and reported even when they reference resources.
+//! A resource type is named by a label, the name under which the
+//! component imports or exports it, and positioned by an index, the
+//! resource's place in its component's resource list. The label is
+//! what a reader of a component's imports and exports sees; the index
+//! is what the canonical ABI uses to find the handle table an
+//! instance keeps for the resource.
 
 /// The identity of a resource type referenced by a handle.
 ///
@@ -14,10 +14,13 @@
 /// label is whatever name the parser assigned the resource — its
 /// declared name in the component's local types, or the import path
 /// it was introduced at — and is meaningful only within the
-/// component it belongs to.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+/// component it belongs to. The index does not take part in equality:
+/// it positions the resource within one component's resource list and
+/// is `None` for a resource type that no concrete component defines.
+#[derive(Clone, Debug)]
 pub struct ResourceType {
     label: String,
+    index: Option<usize>,
 }
 
 impl ResourceType {
@@ -25,11 +28,41 @@ impl ResourceType {
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
+            index: None,
+        }
+    }
+
+    /// Construct a resource type identity from a label and the
+    /// resource's index in its component's resource list.
+    pub fn indexed(label: impl Into<String>, index: usize) -> Self {
+        Self {
+            label: label.into(),
+            index: Some(index),
         }
     }
 
     /// The resource type's label.
     pub fn label(&self) -> &str {
         &self.label
+    }
+
+    /// The resource's index in its component's resource list, when
+    /// a concrete component defines or imports it.
+    pub fn index(&self) -> Option<usize> {
+        self.index
+    }
+}
+
+impl PartialEq for ResourceType {
+    fn eq(&self, other: &Self) -> bool {
+        self.label == other.label
+    }
+}
+
+impl Eq for ResourceType {}
+
+impl std::hash::Hash for ResourceType {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.label.hash(state);
     }
 }

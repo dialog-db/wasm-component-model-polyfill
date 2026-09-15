@@ -354,7 +354,7 @@ fn invoke_trampoline<T: 'static>(
     args: &[RuntimeVal],
     results: &mut [RuntimeVal],
 ) -> Result<()> {
-    let (memory, realloc) = {
+    let (memory, realloc, resource_types) = {
         let state = abi_state
             .lock()
             .map_err(|_| Error::internal("ABI runtime state lock poisoned"))?;
@@ -364,7 +364,7 @@ fn invoke_trampoline<T: 'static>(
         let realloc = options
             .realloc
             .and_then(|s| state.reallocs.get(s).and_then(|r| r.clone()));
-        (memory, realloc)
+        (memory, realloc, state.resource_types.clone())
     };
 
     let mut cursor = 0usize;
@@ -373,6 +373,7 @@ fn invoke_trampoline<T: 'static>(
         memory.clone(),
         options.string_encoding,
         Some(tables.clone()),
+        resource_types.clone(),
     );
     let lifted = if params_spill(signature) {
         lift_spilled_arguments(&mut lift_ctx, signature, args, &mut cursor)?
@@ -426,6 +427,7 @@ fn invoke_trampoline<T: 'static>(
         realloc,
         options.string_encoding,
         Some(tables.clone()),
+        resource_types.clone(),
     );
     match return_area_ptr {
         Some(ptr) => lower(

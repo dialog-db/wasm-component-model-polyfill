@@ -104,7 +104,11 @@ impl<T: 'static> Store<T> {
             .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
         let table = guard.for_type_mut(type_id);
         let index = table.insert(rep);
-        Ok(ResourceHandle { type_id, index })
+        Ok(ResourceHandle {
+            type_id,
+            index,
+            rep,
+        })
     }
 
     /// Borrow the wrapped runtime-layer store.
