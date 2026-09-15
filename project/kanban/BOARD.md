@@ -27,12 +27,11 @@ kanban-plugin: basic
 
 ## In Progress
 
-- [ ] [[69e878]]
-
 ## Needs Review
 
 - [ ] [[0280b2]]
 - [ ] [[f6bd29]]
+- [ ] [[69e878]]
 
 ## Ready
 
