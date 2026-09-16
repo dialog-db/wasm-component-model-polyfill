@@ -337,6 +337,17 @@
                   ${pkgs.python3}/bin/python3 -m http.server --bind 127.0.0.1 --directory "$site" "$port"
                 '';
               };
+              check = {
+                description = "Drive the smoke test page headlessly as the flake check does, and print its report";
+                command = ''
+                  if report=$(nix build --no-link --print-out-paths .#checks.${system}.smoke-web); then
+                    cat "$report/report.txt"
+                  else
+                    echo "smoke check: FAILED (see the build log above)"
+                    exit 1
+                  fi
+                '';
+              };
             };
           };
 
@@ -378,6 +389,28 @@
             cp ${./rust/wcmp-smoke/web/index.html} $out/index.html
           '';
         };
+
+        # The web smoke page driven headlessly, as a check: the page
+        # `smoke web` serves, loaded in the flake's Chromium through
+        # chromedriver inside the build sandbox by `web/check.py`, with
+        # its report compared against the native smoke binary's.
+        smokeWebCheck =
+          pkgs.runCommand "wcmp-smoke-web-check"
+            {
+              nativeBuildInputs = [
+                chrome
+                pkgs.chromedriver
+                pkgs.python3
+              ];
+              CHROMEDRIVER = "${pkgs.chromedriver}/bin/chromedriver";
+              WASM_BINDGEN_TEST_WEBDRIVER_JSON = webdriverConfig;
+            }
+            ''
+              export HOME=$TMPDIR
+              native=$(${smokeNative}/bin/wcmp-smoke | tail -n 1)
+              mkdir -p $out
+              python3 ${./rust/wcmp-smoke/web/check.py} ${smokeWeb} "$native" $out/report.txt
+            '';
 
         # The polyfill crate itself, as a derivation per (target, profile).
         # Building an `rlib` installs no binary; the store path holds the
@@ -470,6 +503,8 @@
           // markdown.checks
           // project.checks
           // {
+            # The web smoke page must still run: see `smokeWebCheck`.
+            smoke-web = smokeWebCheck;
             # The doctests are not in a nextest archive (nextest does not run
             # them), so they get a derivation of their own: the workspace's
             # `cargo test --doc` against the `dev` dependency bundle.

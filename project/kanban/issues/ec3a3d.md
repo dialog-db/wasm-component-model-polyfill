@@ -13,8 +13,10 @@ created: 2026-09-15T14:44:21Z
 Make the page a check. Add a flake check (and a `smoke web` mode, or a sibling subcommand, that runs it) which builds `.#smoke-web`, serves it on a loopback port, loads it in the flake's headless Chromium with a virtual-time budget, reads the `#out` element, and fails unless the last line is `smoke: N passed, 0 failed, 0 skipped` with the same N the native run reports. Keep the serving mode for a person who wants to open the page. The check must run inside the Nix sandbox the way the browser tests do (use the same WebDriver or headless-Chromium plumbing the web test lane uses on Linux and Darwin).
 
 ## Acceptance criteria
-- [ ] `nix flake check` fails when a smoke step fails in the browser, and passes on the current tree.
-- [ ] `smoke web` (or its check mode) prints the page's report and exits non-zero on a failure, like `smoke native`.
-- [ ] The serving mode still works for a person who wants to open the page.
+- [x] `nix flake check` fails when a smoke step fails in the browser, and passes on the current tree.
+- [x] `smoke web` (or its check mode) prints the page's report and exits non-zero on a failure, like `smoke native`.
+- [x] The serving mode still works for a person who wants to open the page.
 - [ ] The check runs on Linux and Darwin through the flake's existing browser plumbing.
 
+## Review notes
+Done (2026-09-15) as the `smoke-web` flake check plus the `smoke check` menu subcommand. `rust/wcmp-smoke/web/check.py` serves the built page on a loopback port inside the build sandbox, opens it through chromedriver with the flake's `webdriver.json` capabilities (the browser tests' plumbing), polls the `#out` element until its last line is the `smoke:` summary, and fails unless that line equals the native binary's and reports no failure and no skip. The report lands in `$out/report.txt`, which `smoke check` prints; `smoke web` still serves the page. Verified on Linux: the check passes on this tree (six steps), a mismatched summary makes the script exit non-zero, and the page finishes in a few seconds. Darwin is not verified here: the check uses the same `chrome`, `chromedriver`, and `webdriver.json` the web test lane uses on Darwin, so it needs one run there before the last box is ticked.
