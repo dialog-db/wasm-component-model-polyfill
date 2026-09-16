@@ -636,6 +636,8 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 #[cfg(test)]
 mod tests {
+    use wasmtime_environ::Trap;
+
     use super::*;
 
     #[test]
@@ -653,6 +655,30 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "scheduler error: cannot block a synchronous task before returning"
+        );
+    }
+
+    #[test]
+    fn it_pins_the_deadlock_cause_to_the_trap_wasmtime_environ_renders() {
+        let trap = Trap::AsyncDeadlock.to_string();
+        let cause = SchedulerCause::Deadlock.to_string();
+        assert!(
+            trap.ends_with(&cause),
+            "`Trap::AsyncDeadlock` now renders as {trap:?}, which no longer ends with \
+             the `SchedulerCause::Deadlock` message {cause:?}; the conformance corpus \
+             matches this trap by substring, so the message has to follow the trap"
+        );
+    }
+
+    #[test]
+    fn it_pins_the_cannot_block_cause_to_the_trap_wasmtime_environ_renders() {
+        let trap = Trap::CannotBlockSyncTask.to_string();
+        let cause = SchedulerCause::CannotBlock.to_string();
+        assert!(
+            trap.ends_with(&cause),
+            "`Trap::CannotBlockSyncTask` now renders as {trap:?}, which no longer ends \
+             with the `SchedulerCause::CannotBlock` message {cause:?}; the conformance \
+             corpus matches this trap by substring, so the message has to follow the trap"
         );
     }
 
