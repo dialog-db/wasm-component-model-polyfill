@@ -17,5 +17,5 @@ Corpus: 1 `deferred-feature` line in `wasmtime/memory64.wast` and its 3 cascades
 ## Acceptance criteria
 - [ ] The `wasmtime/memory64.wast` lines are removed from `expected-failures.txt` (or re-categorized as `substrate` with the exact runtime-layer reason), and the corpus is regenerated.
 - [ ] A string crosses a composed component with 64-bit memories on both targets.
-- [ ] `tests all` passes on both targets.
+- [x] `tests all` passes on both targets.
 
