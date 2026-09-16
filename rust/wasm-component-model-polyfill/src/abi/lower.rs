@@ -45,6 +45,17 @@ pub fn lower<T: 'static>(
             )?;
             Ok(())
         }
+        (ValueType::FixedLengthList(fixed), Val::FixedLengthList(items)) => {
+            if items.len() != fixed.length() as usize {
+                return Err(host_value_mismatch(ty, position));
+            }
+            let element_ty = fixed.element();
+            let element_size = size_of(element_ty);
+            for (i, item) in items.iter().enumerate() {
+                lower(ctx, offset + i * element_size, item, element_ty, position)?;
+            }
+            Ok(())
+        }
         (ValueType::Map(map), Val::Map(entries)) => {
             // A map is laid out as the list of its entry tuples.
             let list = crate::abi::map_to_entries(entries);

@@ -1,0 +1,10 @@
+package wcmp:fixtures;
+
+world fixed-lists {
+  /// The sum of four values.
+  export sum: func(l: list<u32, 4>) -> u32;
+  /// Every byte doubled, wrapping.
+  export double: func(l: list<u8, 16>) -> list<u8, 16>;
+  /// The list, unchanged.
+  export identity: func(l: list<u8, 16>) -> list<u8, 16>;
+}

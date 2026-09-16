@@ -23,7 +23,7 @@ use crate::error::{
     AbiCause, AbiError, AbiPosition, Error, Result, TypeMismatch, TypeMismatchPosition,
     TypeRendering,
 };
-use crate::types::{ListType, MapType, OptionType, PrimitiveType, ValueType};
+use crate::types::{FixedLengthListType, ListType, MapType, OptionType, PrimitiveType, ValueType};
 use crate::value::Val;
 
 /// A Rust type that maps to a single component-level value type.
@@ -116,6 +116,25 @@ impl<T: ComponentValue> ComponentValue for Vec<T> {
     }
     fn to_val(self) -> Val {
         Val::List(self.into_iter().map(T::to_val).collect())
+    }
+}
+
+/// A `list<T, N>` as a Rust array of `N` elements.
+impl<T: ComponentValue, const N: usize> ComponentValue for [T; N] {
+    fn value_type() -> ValueType {
+        ValueType::FixedLengthList(FixedLengthListType::new(T::value_type(), N as u32))
+    }
+    fn from_val(val: &Val) -> Result<Self> {
+        match val {
+            Val::FixedLengthList(items) if items.len() == N => {
+                let items: Vec<T> = items.iter().map(T::from_val).collect::<Result<_>>()?;
+                items.try_into().map_err(|_| value_mismatch(val))
+            }
+            _ => Err(value_mismatch(val)),
+        }
+    }
+    fn to_val(self) -> Val {
+        Val::FixedLengthList(self.into_iter().map(T::to_val).collect())
     }
 }
 

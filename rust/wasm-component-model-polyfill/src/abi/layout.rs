@@ -146,6 +146,11 @@ fn canonical_abi(ty: &ValueType) -> CanonicalAbiInfo {
         ValueType::Enum(en) => CanonicalAbiInfo::enum_(en.cases().len()),
         ValueType::Flags(flags) => CanonicalAbiInfo::flags(flags.names().len()),
         ValueType::List(_) | ValueType::Map(_) => CanonicalAbiInfo::POINTER_PAIR,
+        // Laid out as a tuple of `N` copies of the element.
+        ValueType::FixedLengthList(fixed) => {
+            let element = canonical_abi(fixed.element());
+            CanonicalAbiInfo::record(std::iter::repeat_n(&element, fixed.length() as usize))
+        }
         ValueType::Own(_) | ValueType::Borrow(_) => CanonicalAbiInfo::SCALAR4,
     }
 }
@@ -238,6 +243,14 @@ pub fn flat_types(ty: &ValueType) -> Vec<FlatType> {
         ValueType::Enum(_) => vec![FlatType::I32],
         ValueType::Flags(flags) => vec![FlatType::I32; flags_chunk_count(flags)],
         ValueType::List(_) | ValueType::Map(_) => vec![FlatType::I32, FlatType::I32],
+        ValueType::FixedLengthList(fixed) => {
+            let element = flat_types(fixed.element());
+            let mut out = Vec::with_capacity(element.len() * fixed.length() as usize);
+            for _ in 0..fixed.length() {
+                out.extend_from_slice(&element);
+            }
+            out
+        }
         ValueType::Own(_) | ValueType::Borrow(_) => vec![FlatType::I32],
     }
 }

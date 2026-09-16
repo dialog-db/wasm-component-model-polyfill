@@ -1,6 +1,7 @@
 //! The polyfill's umbrella value-type enum.
 
 use super::enum_type::EnumType;
+use super::fixed_length_list_type::FixedLengthListType;
 use super::flags_type::FlagsType;
 use super::list_type::ListType;
 use super::map_type::MapType;
@@ -38,6 +39,8 @@ pub enum ValueType {
     List(ListType),
     /// An association from keys to values (`map<K, V>`).
     Map(MapType),
+    /// A list of a fixed number of elements (`list<T, N>`).
+    FixedLengthList(FixedLengthListType),
     /// A value that may be present or absent.
     Option(OptionType),
     /// A success-or-failure value with optional payloads on each arm.

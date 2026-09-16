@@ -31,6 +31,7 @@ corpus_test!(it_passes_cm_values_strings, "cm/values/strings.wast");
 corpus_test!(it_passes_cm_values_transcode, "cm/values/transcode.wast");
 corpus_test!(it_passes_cm_values_variants, "cm/values/variants.wast");
 corpus_test!(it_passes_fixtures_composition, "fixtures/composition.wast");
+corpus_test!(it_passes_fixtures_fixed_lists, "fixtures/fixed-lists.wast");
 corpus_test!(it_passes_fixtures_guest, "fixtures/guest.wast");
 corpus_test!(it_passes_fixtures_maps, "fixtures/maps.wast");
 corpus_test!(it_passes_wasmtime_adapter, "wasmtime/adapter.wast");
@@ -102,6 +103,7 @@ const CORPUS_FILES: &[(&str, &str)] = &[
     ("cm/values/transcode.wast", include_str!("../corpus/cm/values/transcode.wast")),
     ("cm/values/variants.wast", include_str!("../corpus/cm/values/variants.wast")),
     ("fixtures/composition.wast", include_str!("../corpus/fixtures/composition.wast")),
+    ("fixtures/fixed-lists.wast", include_str!("../corpus/fixtures/fixed-lists.wast")),
     ("fixtures/guest.wast", include_str!("../corpus/fixtures/guest.wast")),
     ("fixtures/maps.wast", include_str!("../corpus/fixtures/maps.wast")),
     ("wasmtime/adapter.wast", include_str!("../corpus/wasmtime/adapter.wast")),

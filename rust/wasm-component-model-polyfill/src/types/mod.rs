@@ -18,6 +18,7 @@
 //! [`Component`]: crate::Component
 
 mod enum_type;
+mod fixed_length_list_type;
 mod flags_type;
 mod list_type;
 mod map_type;
@@ -31,6 +32,7 @@ mod value_type;
 mod variant_type;
 
 pub use enum_type::EnumType;
+pub use fixed_length_list_type::FixedLengthListType;
 pub use flags_type::FlagsType;
 pub use list_type::ListType;
 pub use map_type::MapType;

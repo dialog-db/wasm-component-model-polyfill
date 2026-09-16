@@ -49,6 +49,16 @@ pub fn lift<T: 'static>(
             }
             Ok(Val::List(out.into_boxed_slice()))
         }
+        ValueType::FixedLengthList(fixed) => {
+            // Elements sit inline, one element size apart.
+            let element_ty = fixed.element();
+            let element_size = size_of(element_ty);
+            let mut out = Vec::with_capacity(fixed.length() as usize);
+            for i in 0..fixed.length() as usize {
+                out.push(lift(ctx, offset + i * element_size, element_ty, position)?);
+            }
+            Ok(Val::FixedLengthList(out.into_boxed_slice()))
+        }
         ValueType::Map(map) => {
             // A map is laid out as the list of its entry tuples.
             let entries = lift(ctx, offset, &crate::abi::map_entries_type(map), position)?;

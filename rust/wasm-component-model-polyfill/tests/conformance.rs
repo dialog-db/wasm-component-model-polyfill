@@ -630,10 +630,11 @@ fn convert(val: &WastVal<'_>) -> Result<Val, String> {
     })
 }
 
-/// `wast` has no syntax for a `map` value, so a directive spells one
-/// as a list of two-element tuples, which is how the canonical ABI
-/// lays a map out. Where the function's declared type says `map`,
-/// the harness turns such a list into the polyfill's map value, for
+/// `wast` has no syntax for a `map` value or a fixed-length list, so
+/// a directive spells a map as a list of two-element tuples, which is
+/// how the canonical ABI lays a map out, and a fixed-length list as a
+/// list. Where the function's declared type says `map` or `list<T,
+/// N>`, the harness turns such a list into the polyfill's value, for
 /// arguments and expected results alike; every other value passes
 /// through unchanged, and the polyfill reports the mismatch.
 fn coerce(value: Val, ty: &ValueType) -> Val {
@@ -666,6 +667,13 @@ fn coerce(value: Val, ty: &ValueType) -> Val {
                     .collect(),
             )
         }
+        (Val::List(items), ValueType::FixedLengthList(fixed)) => Val::FixedLengthList(
+            items
+                .into_vec()
+                .into_iter()
+                .map(|item| coerce(item, fixed.element()))
+                .collect(),
+        ),
         (Val::List(items), ValueType::List(list)) => Val::List(
             items
                 .into_vec()
@@ -768,7 +776,9 @@ fn vals_equal(a: &Val, b: &Val) -> bool {
     match (a, b) {
         (Val::F32(x), Val::F32(y)) => x.to_bits() == y.to_bits(),
         (Val::F64(x), Val::F64(y)) => x.to_bits() == y.to_bits(),
-        (Val::List(x), Val::List(y)) | (Val::Tuple(x), Val::Tuple(y)) => {
+        (Val::List(x), Val::List(y))
+        | (Val::Tuple(x), Val::Tuple(y))
+        | (Val::FixedLengthList(x), Val::FixedLengthList(y)) => {
             x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| vals_equal(a, b))
         }
         (Val::Record(x), Val::Record(y)) => {

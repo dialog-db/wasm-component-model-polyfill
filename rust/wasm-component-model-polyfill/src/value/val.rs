@@ -62,6 +62,8 @@ pub enum Val {
     /// boundary. Duplicate keys are carried as they are; a typed
     /// conversion into a Rust map keeps the last value for a key.
     Map(Box<[(Val, Val)]>),
+    /// A `list<T, N>`: exactly `N` elements, laid out inline.
+    FixedLengthList(Box<[Val]>),
     /// A record value: an ordered list of named field values.
     ///
     /// Field order matches the corresponding `RecordType.fields()`

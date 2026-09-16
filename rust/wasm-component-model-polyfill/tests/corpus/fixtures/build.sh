@@ -46,6 +46,12 @@ wasm-tools component new maps/maps.core.wasm -o maps/maps.wasm
 rm maps/maps.core.wasm
 emit_wast maps maps maps/maps.wasm
 
+# fixed-lists: one core module, one world, `list<T, N>` in and out.
+wasm-tools component embed --world fixed-lists fixed-lists/fixed-lists.wit fixed-lists/fixed-lists.wat -o fixed-lists/fixed-lists.core.wasm
+wasm-tools component new fixed-lists/fixed-lists.core.wasm -o fixed-lists/fixed-lists.wasm
+rm fixed-lists/fixed-lists.core.wasm
+emit_wast fixed-lists fixed-lists fixed-lists/fixed-lists.wasm
+
 # composition: a plug that exports `math` and a socket that imports it,
 # each a component of its own, then composed with `wac plug`.
 wasm-tools component embed --world plug composition/math.wit composition/plug.wat -o composition/plug.core.wasm

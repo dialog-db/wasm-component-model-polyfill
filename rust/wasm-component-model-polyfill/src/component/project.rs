@@ -33,8 +33,9 @@ use super::module_type::ModuleType;
 use crate::error::{Error, Result};
 use crate::module::{CoreExternType, CoreValueType, ModuleExport, ModuleImport};
 use crate::types::{
-    EnumType, FlagsType, ListType, MapType, OptionType, PrimitiveType, RecordField, RecordType,
-    ResourceType, ResultType, TupleType, ValueType, VariantCase, VariantType,
+    EnumType, FixedLengthListType, FlagsType, ListType, MapType, OptionType, PrimitiveType,
+    RecordField, RecordType, ResourceType, ResultType, TupleType, ValueType, VariantCase,
+    VariantType,
 };
 
 /// The label a resource receives when no import or export names it.
@@ -184,8 +185,12 @@ impl<'a> TypeProjector<'a> {
                     self.value_type(&map.value)?,
                 ))
             }
-            InterfaceType::FixedLengthList(_) => {
-                return Err(Error::unsupported("fixed-length `list<T, N>` values"));
+            InterfaceType::FixedLengthList(index) => {
+                let fixed = &self.types[*index];
+                ValueType::FixedLengthList(FixedLengthListType::new(
+                    self.value_type(&fixed.element)?,
+                    fixed.size,
+                ))
             }
             InterfaceType::Future(_) => return Err(Error::unsupported("`future<T>` values")),
             InterfaceType::Stream(_) => return Err(Error::unsupported("`stream<T>` values")),
