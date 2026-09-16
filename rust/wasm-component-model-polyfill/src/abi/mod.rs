@@ -31,3 +31,53 @@ pub mod strings;
 
 pub use lift::{lift, lift_handle};
 pub use lower::lower;
+
+/// The list-of-entries type a map is laid out as.
+pub fn map_entries_type(map: &crate::types::MapType) -> crate::types::ValueType {
+    crate::types::ValueType::List(crate::types::ListType::new(map.entry()))
+}
+
+/// A map value as the list of `(key, value)` tuples the canonical ABI
+/// lays out.
+pub fn map_to_entries(entries: &[(crate::value::Val, crate::value::Val)]) -> crate::value::Val {
+    crate::value::Val::List(
+        entries
+            .iter()
+            .map(|(key, value)| crate::value::Val::Tuple(Box::new([key.clone(), value.clone()])))
+            .collect(),
+    )
+}
+
+/// A lifted list of `(key, value)` tuples as a map value.
+pub fn entries_to_map(
+    list: crate::value::Val,
+    ty: &crate::types::ValueType,
+    position: crate::error::AbiPosition,
+) -> crate::error::Result<crate::value::Val> {
+    let malformed = || {
+        crate::error::Error::from(crate::error::AbiError {
+            position,
+            valtype: ty.clone(),
+            cause: crate::error::AbiCause::InvalidEncoding {
+                message: "a map entry did not lift as a key-value pair".to_owned(),
+            },
+        })
+    };
+    let crate::value::Val::List(items) = list else {
+        return Err(malformed());
+    };
+    let mut entries = Vec::with_capacity(items.len());
+    for item in items.into_vec() {
+        let crate::value::Val::Tuple(pair) = item else {
+            return Err(malformed());
+        };
+        let mut pair = pair.into_vec();
+        if pair.len() != 2 {
+            return Err(malformed());
+        }
+        let value = pair.pop().ok_or_else(malformed)?;
+        let key = pair.pop().ok_or_else(malformed)?;
+        entries.push((key, value));
+    }
+    Ok(crate::value::Val::Map(entries.into_boxed_slice()))
+}

@@ -40,6 +40,12 @@ wasm-tools component new guest/guest.core.wasm -o guest/guest.wasm
 rm guest/guest.core.wasm
 emit_wast guest guest guest/guest.wasm
 
+# maps: one core module, one world, `map<string, u32>` in and out.
+wasm-tools component embed --world maps maps/maps.wit maps/maps.wat -o maps/maps.core.wasm
+wasm-tools component new maps/maps.core.wasm -o maps/maps.wasm
+rm maps/maps.core.wasm
+emit_wast maps maps maps/maps.wasm
+
 # composition: a plug that exports `math` and a socket that imports it,
 # each a component of its own, then composed with `wac plug`.
 wasm-tools component embed --world plug composition/math.wit composition/plug.wat -o composition/plug.core.wasm

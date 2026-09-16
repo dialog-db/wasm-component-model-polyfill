@@ -1,0 +1,12 @@
+package wcmp:fixtures;
+
+world maps {
+  /// The sum of the values.
+  export sum: func(m: map<string, u32>) -> u32;
+  /// The keys, in entry order.
+  export keys: func(m: map<string, u32>) -> list<string>;
+  /// A map built from its entries.
+  export make: func(entries: list<tuple<string, u32>>) -> map<string, u32>;
+  /// The map, unchanged.
+  export identity: func(m: map<string, u32>) -> map<string, u32>;
+}

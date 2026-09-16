@@ -15,12 +15,15 @@
 //! baseline tests exercise; extending to higher arities is purely
 //! mechanical.
 
+use std::collections::HashMap;
+use std::hash::Hash;
+
 use crate::component::{FunctionParameter, FunctionType};
 use crate::error::{
     AbiCause, AbiError, AbiPosition, Error, Result, TypeMismatch, TypeMismatchPosition,
     TypeRendering,
 };
-use crate::types::{ListType, OptionType, PrimitiveType, ValueType};
+use crate::types::{ListType, MapType, OptionType, PrimitiveType, ValueType};
 use crate::value::Val;
 
 /// A Rust type that maps to a single component-level value type.
@@ -113,6 +116,31 @@ impl<T: ComponentValue> ComponentValue for Vec<T> {
     }
     fn to_val(self) -> Val {
         Val::List(self.into_iter().map(T::to_val).collect())
+    }
+}
+
+/// A `map<K, V>` as a Rust hash map, as Wasmtime maps it. Entries
+/// cross the boundary in the map's iteration order; a value lifted
+/// with a duplicate key keeps the last entry.
+impl<K: ComponentValue + Eq + Hash, V: ComponentValue> ComponentValue for HashMap<K, V> {
+    fn value_type() -> ValueType {
+        ValueType::Map(MapType::new(K::value_type(), V::value_type()))
+    }
+    fn from_val(val: &Val) -> Result<Self> {
+        match val {
+            Val::Map(entries) => entries
+                .iter()
+                .map(|(key, value)| Ok((K::from_val(key)?, V::from_val(value)?)))
+                .collect(),
+            _ => Err(value_mismatch(val)),
+        }
+    }
+    fn to_val(self) -> Val {
+        Val::Map(
+            self.into_iter()
+                .map(|(key, value)| (key.to_val(), value.to_val()))
+                .collect(),
+        )
     }
 }
 

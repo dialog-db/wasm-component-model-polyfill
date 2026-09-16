@@ -145,7 +145,7 @@ fn canonical_abi(ty: &ValueType) -> CanonicalAbiInfo {
         ValueType::Result(result) => result_abi(result),
         ValueType::Enum(en) => CanonicalAbiInfo::enum_(en.cases().len()),
         ValueType::Flags(flags) => CanonicalAbiInfo::flags(flags.names().len()),
-        ValueType::List(_) => CanonicalAbiInfo::POINTER_PAIR,
+        ValueType::List(_) | ValueType::Map(_) => CanonicalAbiInfo::POINTER_PAIR,
         ValueType::Own(_) | ValueType::Borrow(_) => CanonicalAbiInfo::SCALAR4,
     }
 }
@@ -237,7 +237,7 @@ pub fn flat_types(ty: &ValueType) -> Vec<FlatType> {
         }
         ValueType::Enum(_) => vec![FlatType::I32],
         ValueType::Flags(flags) => vec![FlatType::I32; flags_chunk_count(flags)],
-        ValueType::List(_) => vec![FlatType::I32, FlatType::I32],
+        ValueType::List(_) | ValueType::Map(_) => vec![FlatType::I32, FlatType::I32],
         ValueType::Own(_) | ValueType::Borrow(_) => vec![FlatType::I32],
     }
 }

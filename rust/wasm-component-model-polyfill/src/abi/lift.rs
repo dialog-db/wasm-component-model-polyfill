@@ -49,6 +49,11 @@ pub fn lift<T: 'static>(
             }
             Ok(Val::List(out.into_boxed_slice()))
         }
+        ValueType::Map(map) => {
+            // A map is laid out as the list of its entry tuples.
+            let entries = lift(ctx, offset, &crate::abi::map_entries_type(map), position)?;
+            crate::abi::entries_to_map(entries, ty, position)
+        }
         ValueType::Record(record) => {
             let mut fields: Vec<ValField> = Vec::with_capacity(record.fields().len());
             let mut field_offset = offset;

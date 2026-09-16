@@ -64,6 +64,12 @@ pub struct Func {
 }
 
 impl Func {
+    /// The component-level signature of the export: its parameters
+    /// and its result, as the component declares them.
+    pub fn ty(&self) -> &FunctionType {
+        &self.signature
+    }
+
     /// Invoke the function with the given polyfill-typed arguments.
     /// Drives the full canonical-ABI round-trip: heap-allocating
     /// arguments are lowered into guest memory via `cabi_realloc`,

@@ -3,6 +3,7 @@
 use super::enum_type::EnumType;
 use super::flags_type::FlagsType;
 use super::list_type::ListType;
+use super::map_type::MapType;
 use super::option_type::OptionType;
 use super::primitive_type::PrimitiveType;
 use super::record_type::RecordType;
@@ -35,6 +36,8 @@ pub enum ValueType {
     Variant(VariantType),
     /// A homogeneous list of element values.
     List(ListType),
+    /// An association from keys to values (`map<K, V>`).
+    Map(MapType),
     /// A value that may be present or absent.
     Option(OptionType),
     /// A success-or-failure value with optional payloads on each arm.

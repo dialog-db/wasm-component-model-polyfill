@@ -45,6 +45,17 @@ pub fn lower<T: 'static>(
             )?;
             Ok(())
         }
+        (ValueType::Map(map), Val::Map(entries)) => {
+            // A map is laid out as the list of its entry tuples.
+            let list = crate::abi::map_to_entries(entries);
+            lower(
+                ctx,
+                offset,
+                &list,
+                &crate::abi::map_entries_type(map),
+                position,
+            )
+        }
         (ValueType::Record(record), Val::Record(fields)) => {
             if fields.len() != record.fields().len() {
                 return Err(host_value_mismatch(ty, position));

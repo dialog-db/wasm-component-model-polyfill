@@ -20,6 +20,7 @@
 mod enum_type;
 mod flags_type;
 mod list_type;
+mod map_type;
 mod option_type;
 mod primitive_type;
 mod record_type;
@@ -32,6 +33,7 @@ mod variant_type;
 pub use enum_type::EnumType;
 pub use flags_type::FlagsType;
 pub use list_type::ListType;
+pub use map_type::MapType;
 pub use option_type::OptionType;
 pub use primitive_type::PrimitiveType;
 pub use record_type::{RecordField, RecordType};

@@ -55,9 +55,15 @@ generated and runs under the harness like the vendored corpora.
 | ------------- | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
 | `guest`       | `guest/guest.wit` (world `guest`), `guest/guest.wat`                          | `wasm-tools component embed --world guest`, then `wasm-tools component new` |
 | `composition` | `composition/math.wit` (worlds `plug` and `socket`), `plug.wat`, `socket.wat` | each world as above, then `wac plug --plug plug.wasm socket.wasm`           |
+| `maps`        | `maps/maps.wit` (world `maps`), `maps/maps.wat`                               | as `guest`                                                                  |
 
 `build.sh` records the exact commands. The `.wasm` binaries are checked
 in next to their sources.
+
+`wast` has no syntax for a `map` value. A directive spells one as a
+list of two-element tuples, the map's canonical-ABI layout, and the
+harness turns it into the polyfill's map value wherever the invoked
+function declares a `map`, for arguments and expected results alike.
 
 ## Baseline
 

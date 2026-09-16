@@ -58,6 +58,10 @@ pub enum Val {
     /// site is parameterised by; the payload only carries the values
     /// themselves.
     List(Box<[Val]>),
+    /// A `map<K, V>` as its entries, in the order they cross the
+    /// boundary. Duplicate keys are carried as they are; a typed
+    /// conversion into a Rust map keeps the last value for a key.
+    Map(Box<[(Val, Val)]>),
     /// A record value: an ordered list of named field values.
     ///
     /// Field order matches the corresponding `RecordType.fields()`

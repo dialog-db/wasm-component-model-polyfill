@@ -33,7 +33,7 @@ use super::module_type::ModuleType;
 use crate::error::{Error, Result};
 use crate::module::{CoreExternType, CoreValueType, ModuleExport, ModuleImport};
 use crate::types::{
-    EnumType, FlagsType, ListType, OptionType, PrimitiveType, RecordField, RecordType,
+    EnumType, FlagsType, ListType, MapType, OptionType, PrimitiveType, RecordField, RecordType,
     ResourceType, ResultType, TupleType, ValueType, VariantCase, VariantType,
 };
 
@@ -177,7 +177,13 @@ impl<'a> TypeProjector<'a> {
             }
             InterfaceType::Own(index) => ValueType::Own(self.resource(*index)),
             InterfaceType::Borrow(index) => ValueType::Borrow(self.resource(*index)),
-            InterfaceType::Map(_) => return Err(Error::unsupported("`map<K, V>` values")),
+            InterfaceType::Map(index) => {
+                let map = &self.types[*index];
+                ValueType::Map(MapType::new(
+                    self.value_type(&map.key)?,
+                    self.value_type(&map.value)?,
+                ))
+            }
             InterfaceType::FixedLengthList(_) => {
                 return Err(Error::unsupported("fixed-length `list<T, N>` values"));
             }

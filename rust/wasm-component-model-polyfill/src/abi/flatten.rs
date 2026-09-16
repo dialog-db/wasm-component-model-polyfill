@@ -63,6 +63,17 @@ pub fn lower_into_flat_slots<T: 'static>(
             out.push(RuntimeVal::I32(elements.len() as i32));
             Ok(())
         }
+        (ValueType::Map(map), Val::Map(entries)) => {
+            // A map flattens as the list of its entry tuples.
+            let list = crate::abi::map_to_entries(entries);
+            lower_into_flat_slots(
+                ctx,
+                &list,
+                &crate::abi::map_entries_type(map),
+                out,
+                position,
+            )
+        }
         (ValueType::Record(record), Val::Record(fields)) => {
             if fields.len() != record.fields().len() {
                 return Err(host_value_mismatch(ty, position));
@@ -208,6 +219,16 @@ pub fn lift_from_flat_slots<T: 'static>(
                 out.push(lift(ctx, ptr + i * element_size, &element_ty, position)?);
             }
             Ok(Val::List(out.into_boxed_slice()))
+        }
+        ValueType::Map(map) => {
+            let entries = lift_from_flat_slots(
+                ctx,
+                args,
+                cursor,
+                &crate::abi::map_entries_type(map),
+                position,
+            )?;
+            crate::abi::entries_to_map(entries, ty, position)
         }
         ValueType::Record(record) => {
             let mut fields: Vec<ValField> = Vec::with_capacity(record.fields().len());

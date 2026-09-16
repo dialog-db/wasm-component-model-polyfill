@@ -210,11 +210,17 @@ impl Runner {
                 .await
                 .map(|_| ()),
             WastDirective::AssertReturn { exec, results, .. } => {
-                let actual = self.execute(exec).await?;
+                let (actual, result_type) = self.execute(exec).await?;
                 let mut expected = Vec::with_capacity(results.len());
                 for ret in results {
                     match ret {
-                        WastRet::Component(val) => expected.push(convert(&val)?),
+                        WastRet::Component(val) => {
+                            let value = convert(&val)?;
+                            expected.push(match &result_type {
+                                Some(ty) => coerce(value, ty),
+                                None => value,
+                            });
+                        }
                         _ => return Err("core-Wasm result in a component directive".into()),
                     }
                 }
@@ -229,7 +235,7 @@ impl Runner {
                 Ok(())
             }
             WastDirective::AssertTrap { exec, message, .. } => match self.execute(exec).await {
-                Ok(values) => Err(format!("expected a trap `{message}`, got {values:?}")),
+                Ok((values, _)) => Err(format!("expected a trap `{message}`, got {values:?}")),
                 Err(err) => {
                     if err.contains(message) {
                         Ok(())
@@ -341,7 +347,12 @@ impl Runner {
         }
     }
 
-    async fn execute(&mut self, exec: WastExecute<'_>) -> Result<Box<[Val]>, String> {
+    /// Run an action: the values it produced and, for an invocation,
+    /// the declared result type of the function.
+    async fn execute(
+        &mut self,
+        exec: WastExecute<'_>,
+    ) -> Result<(Box<[Val]>, Option<ValueType>), String> {
         match exec {
             WastExecute::Invoke(invoke) => {
                 self.invoke(invoke.module, invoke.name, invoke.args).await
@@ -350,7 +361,7 @@ impl Runner {
                 let bytes = wat.encode().map_err(|err| format!("encode: {err}"))?;
                 let component = self.component(&bytes).await?;
                 self.instantiate(&component).await?;
-                Ok(Box::new([]))
+                Ok((Box::new([]), None))
             }
             WastExecute::Get { .. } => Err("the `get` directive is not supported".into()),
         }
@@ -361,7 +372,7 @@ impl Runner {
         module: Option<wast::token::Id<'_>>,
         name: &str,
         args: Vec<WastArg<'_>>,
-    ) -> Result<Box<[Val]>, String> {
+    ) -> Result<(Box<[Val]>, Option<ValueType>), String> {
         let index = match module {
             Some(id) => *self
                 .named
@@ -375,16 +386,25 @@ impl Runner {
         let func = instance
             .get_func(name)
             .ok_or_else(|| format!("no function export named `{name}`"))?;
+        let signature = func.ty().clone();
         let mut values = Vec::with_capacity(args.len());
-        for arg in args {
+        for (index, arg) in args.into_iter().enumerate() {
             match arg {
-                WastArg::Component(val) => values.push(convert(&val)?),
+                WastArg::Component(val) => {
+                    let value = convert(&val)?;
+                    values.push(match signature.parameters.get(index) {
+                        Some(parameter) => coerce(value, &parameter.ty),
+                        None => value,
+                    });
+                }
                 _ => return Err("core-Wasm argument in a component directive".into()),
             }
         }
-        func.call(&mut self.store, &values)
+        let results = func
+            .call(&mut self.store, &values)
             .await
-            .map_err(|err| chain(&err))
+            .map_err(|err| chain(&err))?;
+        Ok((results, signature.result))
     }
 }
 
@@ -610,6 +630,123 @@ fn convert(val: &WastVal<'_>) -> Result<Val, String> {
     })
 }
 
+/// `wast` has no syntax for a `map` value, so a directive spells one
+/// as a list of two-element tuples, which is how the canonical ABI
+/// lays a map out. Where the function's declared type says `map`,
+/// the harness turns such a list into the polyfill's map value, for
+/// arguments and expected results alike; every other value passes
+/// through unchanged, and the polyfill reports the mismatch.
+fn coerce(value: Val, ty: &ValueType) -> Val {
+    match (value, ty) {
+        (Val::List(items), ValueType::Map(map)) => {
+            let entry = map.entry();
+            let items: Vec<Val> = items
+                .into_vec()
+                .into_iter()
+                .map(|item| coerce(item, &entry))
+                .collect();
+            if !items
+                .iter()
+                .all(|item| matches!(item, Val::Tuple(pair) if pair.len() == 2))
+            {
+                return Val::List(items.into_boxed_slice());
+            }
+            Val::Map(
+                items
+                    .into_iter()
+                    .map(|item| {
+                        let Val::Tuple(pair) = item else {
+                            unreachable!("checked above");
+                        };
+                        let mut pair = pair.into_vec();
+                        let value = pair.pop().expect("two elements");
+                        let key = pair.pop().expect("two elements");
+                        (key, value)
+                    })
+                    .collect(),
+            )
+        }
+        (Val::List(items), ValueType::List(list)) => Val::List(
+            items
+                .into_vec()
+                .into_iter()
+                .map(|item| coerce(item, list.element()))
+                .collect(),
+        ),
+        (Val::Tuple(items), ValueType::Tuple(tuple)) => Val::Tuple(
+            items
+                .into_vec()
+                .into_iter()
+                .zip(
+                    tuple
+                        .elements()
+                        .iter()
+                        .chain(std::iter::repeat(&ValueType::Primitive(
+                            PrimitiveType::Bool,
+                        ))),
+                )
+                .map(|(item, ty)| coerce(item, ty))
+                .collect(),
+        ),
+        (Val::Record(fields), ValueType::Record(record)) => Val::Record(
+            fields
+                .into_vec()
+                .into_iter()
+                .map(|field| {
+                    let ty = record
+                        .fields()
+                        .iter()
+                        .find(|candidate| candidate.name() == field.name)
+                        .map(|candidate| candidate.ty().clone());
+                    ValField {
+                        name: field.name,
+                        value: match ty {
+                            Some(ty) => coerce(field.value, &ty),
+                            None => field.value,
+                        },
+                    }
+                })
+                .collect(),
+        ),
+        (Val::Option(Some(inner)), ValueType::Option(option)) => {
+            Val::Option(Some(Box::new(coerce(*inner, option.payload()))))
+        }
+        (Val::Result(Ok(Some(inner))), ValueType::Result(result)) => {
+            Val::Result(Ok(Some(Box::new(match result.ok() {
+                Some(ty) => coerce(*inner, ty),
+                None => *inner,
+            }))))
+        }
+        (Val::Result(Err(Some(inner))), ValueType::Result(result)) => {
+            Val::Result(Err(Some(Box::new(match result.err() {
+                Some(ty) => coerce(*inner, ty),
+                None => *inner,
+            }))))
+        }
+        (
+            Val::Variant {
+                discriminant,
+                payload: Some(inner),
+            },
+            ValueType::Variant(variant),
+        ) => {
+            let payload_ty = variant
+                .cases()
+                .iter()
+                .find(|case| case.name() == discriminant)
+                .and_then(|case| case.payload().cloned());
+            Val::Variant {
+                discriminant,
+                payload: Some(Box::new(match payload_ty {
+                    Some(ty) => coerce(*inner, &ty),
+                    None => *inner,
+                })),
+            }
+        }
+        (value, _) => value,
+    }
+}
+
 fn convert_all(items: &[WastVal<'_>]) -> Result<Box<[Val]>, String> {
     let mut out = Vec::with_capacity(items.len());
     for item in items {
@@ -657,6 +794,12 @@ fn vals_equal(a: &Val, b: &Val) -> bool {
         },
         (Val::Flags(x), Val::Flags(y)) => {
             x.len() == y.len() && x.iter().all(|name| y.contains(name))
+        }
+        (Val::Map(x), Val::Map(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .zip(y.iter())
+                    .all(|((ka, va), (kb, vb))| vals_equal(ka, kb) && vals_equal(va, vb))
         }
         _ => a == b,
     }

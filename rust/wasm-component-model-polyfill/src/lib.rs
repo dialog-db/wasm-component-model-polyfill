@@ -203,7 +203,7 @@ pub use crate::module::{
 pub use crate::resource::{ResourceHandle, ResourceTypeId};
 pub use crate::store::Store;
 pub use crate::types::{
-    EnumType, FlagsType, ListType, OptionType, PrimitiveType, RecordField, RecordType,
+    EnumType, FlagsType, ListType, MapType, OptionType, PrimitiveType, RecordField, RecordType,
     ResourceType, ResultType, TupleType, ValueType, VariantCase, VariantType,
 };
 pub use crate::value::{Val, ValField};
