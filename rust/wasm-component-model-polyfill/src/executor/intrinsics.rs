@@ -296,6 +296,7 @@ pub fn build_transcoder<T: 'static>(
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
+    let result_widths: Vec<FlatType> = signature.results.clone();
     RuntimeFunc::new(
         store.inner_mut(),
         core_func_type(signature),
@@ -318,12 +319,16 @@ pub fn build_transcoder<T: 'static>(
                     })?;
                 (from, to)
             };
-            transcode(store_ctx, op, &from, &to, args, results)
+            transcode(store_ctx, op, &from, &to, args, results, &result_widths)
                 .map_err(|err| anyhow!("string transcoder failed: {err}"))
         },
     )
 }
 
+/// Run one transcoder. Pointers and lengths arrive at the width of
+/// the memory they address, `i32` for a 32-bit memory and `i64` for
+/// a 64-bit one, and the results are written back at the widths
+/// `result_widths` names.
 fn transcode<T: 'static>(
     mut ctx: StoreContextMut<'_, T, Backend>,
     op: TranscodeOp,
@@ -331,7 +336,10 @@ fn transcode<T: 'static>(
     to: &Memory,
     args: &[RuntimeVal],
     results: &mut [RuntimeVal],
+    result_widths: &[FlatType],
 ) -> Result<()> {
+    let set_results =
+        |results: &mut [RuntimeVal], values: &[usize]| set_results(results, result_widths, values);
     match op {
         TranscodeOp::CopyUtf8 => {
             let (src, len, dst) = three(args)?;
@@ -573,16 +581,30 @@ fn arg_u32(args: &[RuntimeVal], index: usize) -> Result<u32> {
     }
 }
 
+/// A pointer or length argument at the width of the memory it
+/// addresses. A 64-bit offset that the host cannot address (a 32-bit
+/// host with a memory past 4 GiB) is reported rather than truncated.
 fn arg_usize(args: &[RuntimeVal], index: usize) -> Result<usize> {
-    arg_u32(args, index).map(|v| v as usize)
+    match args.get(index) {
+        Some(RuntimeVal::I32(v)) => Ok(*v as u32 as usize),
+        Some(RuntimeVal::I64(v)) => usize::try_from(*v as u64).map_err(|_| {
+            Error::internal("the host cannot address a 64-bit memory offset of this size")
+        }),
+        _ => Err(Error::internal("intrinsic expected an integer argument")),
+    }
 }
 
-fn set_results(results: &mut [RuntimeVal], values: &[usize]) -> Result<()> {
-    if results.len() != values.len() {
+/// Write the transcoder's results at the widths the adapter's core
+/// signature declares.
+fn set_results(results: &mut [RuntimeVal], widths: &[FlatType], values: &[usize]) -> Result<()> {
+    if results.len() != values.len() || widths.len() != values.len() {
         return Err(Error::internal("intrinsic result arity mismatch"));
     }
-    for (slot, value) in results.iter_mut().zip(values) {
-        *slot = RuntimeVal::I32(*value as u32 as i32);
+    for ((slot, width), value) in results.iter_mut().zip(widths).zip(values) {
+        *slot = match width {
+            FlatType::I64 => RuntimeVal::I64(*value as u64 as i64),
+            _ => RuntimeVal::I32(*value as u32 as i32),
+        };
     }
     Ok(())
 }

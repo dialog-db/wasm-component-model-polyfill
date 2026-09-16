@@ -62,7 +62,7 @@ in next to their sources.
 ## Baseline
 
 The progress summary on the native target, as of 2026-09-15 (`tests
-conformance` prints the current one; the browser differs by the three
+conformance` prints the current one; the browser differs by the six
 lines of `expected-failures.web.txt`):
 
 | Corpus     | Directives | Passed | Pass % | Expected failures by category                                          |

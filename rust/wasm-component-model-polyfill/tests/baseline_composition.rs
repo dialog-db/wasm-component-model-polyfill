@@ -423,3 +423,105 @@ async fn it_lowers_a_lifted_function_of_the_same_component() {
         }
     }
 }
+
+#[wcmp_macros::test]
+async fn it_copies_strings_between_a_32_bit_and_a_64_bit_component() {
+    // The shape of `wasmtime/memory64.wast` with small memories: the
+    // host calls into a 32-bit component, which forwards the string
+    // through an adapter into a 64-bit component that copies it, and
+    // the result comes back the same way. Every pointer and length
+    // on the 64-bit side is an `i64`.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (component $c64
+            (core module $m
+              (memory (export "memory") i64 1)
+              (global $next (mut i64) (i64.const 8))
+              (func $realloc (export "realloc")
+                (param $old i64) (param $old_sz i64) (param $align i64) (param $new_sz i64)
+                (result i64)
+                (local $ret i64)
+                (local.set $ret
+                  (i64.and (i64.add (global.get $next) (i64.const 7)) (i64.const -8)))
+                (global.set $next (i64.add (local.get $ret) (local.get $new_sz)))
+                (local.get $ret))
+              (func (export "roundtrip") (param $ptr i64) (param $len i64) (result i64)
+                (local $dst i64)
+                (local $ret i64)
+                (local.set $dst
+                  (call $realloc (i64.const 0) (i64.const 0) (i64.const 1) (local.get $len)))
+                (memory.copy (local.get $dst) (local.get $ptr) (local.get $len))
+                (local.set $ret
+                  (call $realloc (i64.const 0) (i64.const 0) (i64.const 8) (i64.const 16)))
+                (i64.store (local.get $ret) (local.get $dst))
+                (i64.store offset=8 (local.get $ret) (local.get $len))
+                (local.get $ret)))
+            (core instance $m (instantiate $m))
+            (func (export "roundtrip") (param "a" string) (result string)
+              (canon lift (core func $m "roundtrip")
+                (memory (core memory $m "memory"))
+                (realloc (core func $m "realloc")))))
+          (instance $c64 (instantiate $c64))
+          (component $c32
+            (import "backend" (instance $i
+              (export "roundtrip" (func (param "a" string) (result string)))))
+            (core module $libc
+              (memory (export "memory") 1)
+              (global $next (mut i32) (i32.const 8))
+              (func (export "realloc")
+                (param $old i32) (param $old_sz i32) (param $align i32) (param $new_sz i32)
+                (result i32)
+                (local $ret i32)
+                (local.set $ret
+                  (i32.and (i32.add (global.get $next) (i32.const 7)) (i32.const -8)))
+                (global.set $next (i32.add (local.get $ret) (local.get $new_sz)))
+                (local.get $ret)))
+            (core instance $libc (instantiate $libc))
+            (core func $roundtrip
+              (canon lower (func $i "roundtrip")
+                (memory (core memory $libc "memory"))
+                (realloc (core func $libc "realloc"))))
+            (core module $m
+              (import "" "memory" (memory 1))
+              (import "" "realloc" (func $realloc (param i32 i32 i32 i32) (result i32)))
+              (import "" "roundtrip" (func $roundtrip (param i32 i32 i32)))
+              (func (export "roundtrip") (param $ptr i32) (param $len i32) (result i32)
+                (local $ret i32)
+                (local.set $ret
+                  (call $realloc (i32.const 0) (i32.const 0) (i32.const 1) (i32.const 8)))
+                (call $roundtrip (local.get $ptr) (local.get $len) (local.get $ret))
+                (local.get $ret)))
+            (core instance $m (instantiate $m
+              (with "" (instance
+                (export "memory" (memory $libc "memory"))
+                (export "realloc" (func $libc "realloc"))
+                (export "roundtrip" (func $roundtrip))))))
+            (func (export "roundtrip") (param "a" string) (result string)
+              (canon lift (core func $m "roundtrip")
+                (memory (core memory $libc "memory"))
+                (realloc (core func $libc "realloc")))))
+          (instance $c32 (instantiate $c32 (with "backend" (instance $c64))))
+          (export "roundtrip" (func $c32 "roundtrip")))
+        "#
+    );
+    let (mut store, instance) = instantiate(COMPONENT).await;
+    let roundtrip = instance
+        .get_func("roundtrip")
+        .expect("`roundtrip` is exported")
+        .typed::<(String,), String>()
+        .expect("typed");
+    for text in [
+        "hello",
+        "Hello, I'm a longer string asdljasdlkjasdlkjasdlkjasdljkasd0",
+        "",
+    ] {
+        assert_eq!(
+            roundtrip
+                .call(&mut store, (text.to_owned(),))
+                .await
+                .expect("the string crosses both memories"),
+            text
+        );
+    }
+}

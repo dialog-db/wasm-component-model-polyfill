@@ -191,23 +191,15 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
             Trampoline::ResourceRep { ty, .. } => TrampolineSpec::ResourceRep {
                 table_index: resolve_table_index(&component_types, resource_tables.len(), *ty)?,
             },
-            Trampoline::Transcoder {
-                op,
-                from,
-                from64,
-                to,
-                to64,
-            } => {
-                if *from64 || *to64 {
-                    return Err(Error::unsupported("64-bit memories in adapter modules"));
-                }
-                TrampolineSpec::Transcoder {
-                    op: lift_transcode_op(*op),
-                    from_memory: from.as_u32() as usize,
-                    to_memory: to.as_u32() as usize,
-                    signature: core_signature(&component_types, &translation, trampoline_idx)?,
-                }
-            }
+            // A 64-bit memory on either side shows in the core
+            // signature the translator recorded: the transcoder reads
+            // its pointers and lengths at the width of each slot.
+            Trampoline::Transcoder { op, from, to, .. } => TrampolineSpec::Transcoder {
+                op: lift_transcode_op(*op),
+                from_memory: from.as_u32() as usize,
+                to_memory: to.as_u32() as usize,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
             Trampoline::ResourceTransferOwn => TrampolineSpec::ResourceTransferOwn {
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
