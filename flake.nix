@@ -159,10 +159,25 @@
           storeVolumeSize = 65536;
           scratchVolumeSize = 131072;
 
-          # One derivation at a time inside the guest: `lint` (`nix flake
-          # check`) would otherwise start every cargo check at once and
-          # exhaust the VM's memory.
-          guestModules = [ { nix.settings.max-jobs = 1; } ];
+          guestModules = [
+            {
+              # One derivation at a time inside the guest: `lint` (`nix flake
+              # check`) would otherwise start every cargo check at once and
+              # exhaust the VM's memory.
+              nix.settings.max-jobs = 1;
+
+              # The guest routes every process through its egress proxy with
+              # `HTTP_PROXY` and friends. The browser lane talks to ChromeDriver
+              # and the test page over loopback, and wasm-bindgen-test-runner's
+              # HTTP client (ureq 3) obeys those variables, so without a bypass
+              # the proxy answers its loopback CONNECT with 403 and every web
+              # test fails. Loopback never needs the allowlist.
+              environment.variables = {
+                NO_PROXY = "localhost,127.0.0.1,::1";
+                no_proxy = "localhost,127.0.0.1,::1";
+              };
+            }
+          ];
         };
 
         # Chrome differs by platform: Darwin uses google-chrome (unfree)
