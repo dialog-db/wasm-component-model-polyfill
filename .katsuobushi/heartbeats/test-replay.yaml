@@ -1,0 +1,14 @@
+# Beats while a nextest replay is running in the dev shell. The `tests`
+# lanes run outside the nix-daemon, so the shipped "Nix build" heartbeat
+# does not see them; this one gives the WORK column a name for the long
+# native and browser replays.
+#
+# The check matches on the process name (`pgrep -x`), not the command line:
+# the check body itself runs as `sh -c <body>`, so a `pgrep -f` on a tool
+# name would match this shell and beat forever. `cargo nextest` runs as the
+# `cargo-nextest` binary; a browser lane keeps a `chromedriver` alive.
+label: Test replay
+timeout: 90m
+interval: 10s
+check: |
+  pgrep -x cargo-nextest >/dev/null || pgrep -x chromedriver >/dev/null

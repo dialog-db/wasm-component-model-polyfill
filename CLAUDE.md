@@ -19,6 +19,8 @@ for the board.
   `lint` or a `tests` command, or the run measures a stale tree.
 - On Linux the flake supplies the WebDriver configuration for the browser tests.
   No manual Chrome setup is needed.
+- `sandbox` (Linux only) launches and drives agent VMs. `sandbox status` is the
+  host preflight; it needs `HARNESS_OAUTH_TOKEN` exported on the host.
 
 ## Design corpus
 
@@ -43,6 +45,8 @@ for the board.
 ## Version control
 
 - The repository is a colocated `jj` repo. Use `jj`, not `git`.
+- Inside a sandbox VM the workspace is a plain `git` clone with no `.jj/`. Use
+  `git` there and push the `sandbox/<name>` branch.
 - Commit messages follow Conventional Commits with a Sentence-case summary and
   no trailers. Do not reference PDD numbers in commit messages.
 

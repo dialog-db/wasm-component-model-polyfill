@@ -2,13 +2,40 @@
   description = "Wasm Component Model Polyfill";
 
   # Katsuobushi carries the Rust build infra (crane, nix-filter, rust-overlay)
-  # as transitive inputs, so this flake declares only nixpkgs, flake-utils, and
-  # katsuobushi. `nixpkgs.follows` unifies the dependency graph on one nixpkgs.
+  # and the sandbox infra (microvm.nix) as transitive inputs, so this flake
+  # declares only nixpkgs, flake-utils, and katsuobushi, plus the project-data
+  # sources the sandbox guest carries. `nixpkgs.follows` keeps katsuobushi and
+  # everything it builds on this flake's nixpkgs.
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     katsuobushi.url = "github:cdata/katsuobushi/v0.5.1";
     katsuobushi.inputs.nixpkgs.follows = "nixpkgs";
+
+    # The agent harness that runs inside a sandbox VM. Pre-built upstream, so
+    # it needs no unfree allowance, and newer than the nixpkgs build. It keeps
+    # its own nixpkgs: its packages track a newer nixpkgs than this flake
+    # pins, and only the guest's harness closure is built from it.
+    llm-agents.url = "github:numtide/llm-agents.nix";
+
+    # Project-data sources for the sandbox guest. `flake = false` fetches the
+    # tree only; `nix flake update` moves the pins. The two reference repos
+    # are the ones a design review cites side by side with this crate; the
+    # config repo holds the owner's universal agent rules.
+    component-model-src = {
+      url = "github:WebAssembly/component-model";
+      flake = false;
+    };
+    wasmtime-src = {
+      url = "github:bytecodealliance/wasmtime";
+      flake = false;
+    };
+    # A private repo, so it is fetched over SSH with the host's keys. Only
+    # the tree matters, hence the shallow clone.
+    nixos-config = {
+      url = "git+ssh://git@github.com/cdata/nixos-config.git?shallow=1";
+      flake = false;
+    };
   };
 
   outputs =
@@ -17,6 +44,10 @@
       nixpkgs,
       flake-utils,
       katsuobushi,
+      llm-agents,
+      component-model-src,
+      wasmtime-src,
+      nixos-config,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -44,6 +75,94 @@
           inherit pkgs;
           katsuctl = katsuobushi.packages.${system}.katsuctl;
           workspaceRoot = ./.;
+        };
+
+        # The sandbox guest is a Linux microvm, so the sandbox app, its
+        # checks, and the lifecycle commands exist on Linux only.
+        isLinux = pkgs.stdenv.isLinux;
+
+        # The agent sandbox: a hermetic microvm guest that a delegated agent
+        # works in, with its blast radius bounded by the VM. `sandbox status`
+        # is the host preflight; `sandbox start --agent --name <name>` boots
+        # an instance, and its work comes back as a pushed `sandbox/<name>`
+        # branch. Inside, the agent goes through `nix develop` and the menu
+        # exactly as on the host; `importHostStoreDb` (on by default) lets it
+        # reuse every derivation the host has already built, offline.
+        sandbox = katsuobushi.lib.sandbox {
+          inherit pkgs;
+          workspaceRoot = ./.;
+          projectId = "cdata/wasm-component-model-polyfill";
+
+          # Beyond the Anthropic+Nix baseline, the guest reaches the cargo
+          # registry (a dependency bump made inside the VM), the Rust dist
+          # server (a toolchain the host has not built yet), and docs.rs
+          # (the preferred place to read a dependency's API).
+          allowedOrigins = [
+            "static.rust-lang.org"
+            "crates.io"
+            "index.crates.io"
+            "static.crates.io"
+            "docs.rs"
+          ];
+
+          # The agent harness and nothing else: every build and test tool
+          # arrives through `nix develop`, exactly as on the host.
+          packages = [ llm-agents.packages.${system}.claude-code ];
+
+          # The host variable is deliberately not CLAUDE_CODE_OAUTH_TOKEN: a
+          # Claude Code session orchestrating the sandbox scrubs that name
+          # from its children. On the host:
+          #   export HARNESS_OAUTH_TOKEN="$(claude setup-token)"
+          secrets.CLAUDE_CODE_OAUTH_TOKEN.fromEnv = "HARNESS_OAUTH_TOKEN";
+
+          # Writable, pinned copies of the two references a design review
+          # cites, at the paths the owner's rules expect them.
+          extraRepos = [
+            {
+              source = component-model-src;
+              dest = "Git/github.com/WebAssembly/component-model";
+            }
+            {
+              source = wasmtime-src;
+              dest = "Git/github.com/bytecodealliance/wasmtime";
+            }
+          ];
+
+          # The owner's universal agent rules, read-only, so the guest agent
+          # works under the same global instructions as a host session.
+          homeFiles.".claude/CLAUDE.md" = {
+            source = nixos-config;
+            path = "AGENTS.md";
+            mode = "immutable";
+          };
+
+          # Untracked, project-local Claude Code configuration (a
+          # `.claude/settings.json` pins the in-guest model, for example).
+          # Carried when present; a missing path is skipped at launch.
+          workspaceContext = [ ".claude" ];
+
+          # Resources, sized around the browser lanes. `tests web` starts one
+          # headless Chromium plus one test runner (about 2 GB) per test in
+          # flight and caps that from MemAvailable at one per 4 GB, so 16 GB
+          # gives a guest three at a time while a Rust build keeps 8 cores.
+          # An out-of-memory condition inside this budget takes down the VM,
+          # not the host session.
+          vcpu = 8;
+          mem = 16384;
+
+          # Disk, in MiB. A test replay extracts a 4-7 GB archive under
+          # $XDG_CACHE_HOME, which the guest keeps on the scratch volume;
+          # rebuilding the archives after a code change adds several GB of
+          # dependency bundles and archives to the store overlay and their
+          # build trees to the scratch volume. The images are sparse, so the
+          # caps cost nothing until used.
+          storeVolumeSize = 65536;
+          scratchVolumeSize = 131072;
+
+          # One derivation at a time inside the guest: `lint` (`nix flake
+          # check`) would otherwise start every cargo check at once and
+          # exhaust the VM's memory.
+          guestModules = [ { nix.settings.max-jobs = 1; } ];
         };
 
         # Chrome differs by platform: Darwin uses google-chrome (unfree)
@@ -365,7 +484,11 @@
 
         }
         // markdown.menuCommands
-        // project.menuCommands;
+        // project.menuCommands
+        # `sandbox start` / `prompt` / `status` / `attach` / `fetch` /
+        # `deliver` / `stop` / `dispatch` / `prune`. Every `<inst>` also
+        # accepts the index shown in `sandbox status`.
+        // pkgs.lib.optionalAttrs isLinux sandbox.menuCommands;
 
         # The smoke test host (`rust/wcmp-smoke`): one program that walks
         # the polyfill end to end. Natively it is a binary; for the browser
@@ -451,6 +574,12 @@
         };
       in
       {
+        # `nix run .#sandbox -- --agent --name <name>` is `sandbox start`
+        # from outside the dev shell.
+        apps = pkgs.lib.optionalAttrs isLinux {
+          sandbox = sandbox.apps.sandbox;
+        };
+
         packages = {
           # The component toolchain the `fixtures` command runs, exposed so
           # the pinned versions are one `nix build` away.
@@ -519,12 +648,25 @@
               # build, so there is no cargo build log for crane's hook to read.
               doNotPostBuildInstallCargoBinaries = true;
             };
+          }
+          // pkgs.lib.optionalAttrs isLinux {
+            # Builds the guest image, so a broken sandbox configuration fails
+            # here rather than at launch; and confirms the `sandbox` wrapper
+            # and `katsuctl` agree on the verb set.
+            sandbox = sandbox.checks.sandbox;
+            sandbox-verb-coverage = sandbox.checks.sandbox-verb-coverage;
           };
 
         devShells.default = pkgs.mkShell {
           name = "wcmp";
           env = developmentEnvVars;
-          nativeBuildInputs = menu.commands ++ developmentBuildInputs;
+          nativeBuildInputs =
+            menu.commands
+            ++ developmentBuildInputs
+            # The `sandbox` commands invoke `katsuctl` by its store path; a
+            # bare `katsuctl` on the PATH is for driving the controller
+            # directly.
+            ++ pkgs.lib.optionals isLinux [ sandbox.katsuctl ];
           shellHook = rustEnvironmentHook + makeDevShellHook menu;
         };
       }
