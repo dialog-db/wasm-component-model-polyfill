@@ -1,4 +1,4 @@
-//! One component instance's handle table for one resource type.
+//! One resource type's view of a component instance's handle table.
 
 use super::identity::ResourceTypeId;
 use super::table_id::TableId;

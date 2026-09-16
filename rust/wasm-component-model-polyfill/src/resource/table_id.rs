@@ -2,11 +2,11 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// The identity of one handle table. The canonical ABI keeps one
-/// table per component instance per resource type, and the polyfill
-/// keeps one more per resource type for the host's own handles; each
-/// gets a fresh identity when it is created, so no two tables in a
-/// store collide.
+/// The identity of one handle table. The polyfill keeps one table
+/// per component instance, shared by every handle kind the instance
+/// uses, plus one table per resource type for the host's own
+/// handles; each table gets a fresh identity when it is created, so
+/// no two tables in a store collide.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TableId(u64);
 

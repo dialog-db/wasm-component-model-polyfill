@@ -46,12 +46,16 @@ enum Slot {
     },
 }
 
-/// A per-resource-type handle table, owned by a single [`Store`].
+/// One component instance's handle table, owned by a single
+/// [`Store`].
 ///
-/// The table allocates 32-bit indices for `own<T>` handles, frees
-/// them on drop, and surfaces structured failure when a stale
-/// handle is presented. Borrow tracking is the responsibility of
-/// the per-call lift/lower context, not of this table.
+/// The table allocates 32-bit indices shared by every handle kind
+/// the instance uses, not just `own<T>` resources, frees them on
+/// drop, and surfaces structured failure when a stale handle is
+/// presented. Index 0 is never handed out, and a freed index is
+/// reused deterministically from a free list. Borrow tracking is
+/// the responsibility of the per-call lift/lower context, not of
+/// this table.
 ///
 /// [`Store`]: crate::Store
 pub struct HandleTable {

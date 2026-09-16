@@ -1,10 +1,11 @@
-//! Per-store collection of handle tables, keyed by resource-type
-//! identity.
+//! Per-store collection of handle tables, keyed by table identity.
 //!
-//! Each [`Store`] owns one `HandleTables` instance. The collection
-//! lazily creates a [`HandleTable`] the first time a given
-//! [`ResourceTypeId`] is touched, so resource types that go
-//! unexercised cost nothing.
+//! Each [`Store`] owns one `HandleTables` instance. A component
+//! instance's table is shared by every handle kind the instance
+//! uses; the collection lazily creates a [`HandleTable`] the first
+//! time a given [`TableId`] is touched, so a table nothing has
+//! allocated into yet costs nothing. The host gets its own table
+//! per resource type, also created on first use.
 //!
 //! Workspace-internal: the collection is reached only through
 //! crate-private accessors on [`Store`]. The public API exposes the
@@ -29,7 +30,8 @@ use super::table_id::TableId;
 /// [`Store`]: crate::Store
 pub struct HandleTables {
     /// Every table in the store, by identity: one per component
-    /// instance per resource type, plus the host's per type.
+    /// instance, shared by every handle kind, plus one per resource
+    /// type for the host's own handles.
     tables: HashMap<TableId, HandleTable>,
     /// The host's table for each resource type, created on first use.
     host_tables: HashMap<ResourceTypeId, TableId>,

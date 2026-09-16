@@ -19,9 +19,11 @@ use super::identity::ResourceTypeId;
 ///
 /// The polyfill mints these when a host registers a resource against
 /// a [`LinkerInstance`] and hands one across the canonical-ABI
-/// boundary, or when a guest produces one during a lifted call. The
-/// handle's index is meaningful only against the resource-type's
-/// table inside the [`Store`] the handle came from.
+/// boundary, or when a guest produces one during a lifted call. A
+/// handle's index is meaningful only against the table it names: the
+/// per-instance table of the instance the handle came from, or, for
+/// an `own<T>` handle the host holds outright, the host's
+/// per-resource-type table in the [`Store`].
 ///
 /// [`LinkerInstance`]: crate::LinkerInstance
 /// [`Store`]: crate::Store
