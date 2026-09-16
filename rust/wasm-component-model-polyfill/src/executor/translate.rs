@@ -21,7 +21,7 @@ use wasmtime_environ::component::{
     Transcode, Translator, TypeResourceTable, TypeResourceTableIndex, UnsafeIntrinsic,
 };
 use wasmtime_environ::prelude::Error as TranslatorError;
-use wasmtime_environ::wasmparser::{Validator, WasmFeatures};
+use wasmtime_environ::wasmparser::Validator;
 use wasmtime_environ::{
     EntityIndex as EnvironEntityIndex, ScopeVec, Tunables, WasmError, WasmValType,
 };
@@ -62,7 +62,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
     // and provides the `task_may_block` global synchronous adapters
     // import under that setting.
     let tunables = Tunables::default_u32();
-    let mut validator = Validator::new_with_features(WasmFeatures::all());
+    let mut validator = Validator::new_with_features(engine.config().wasm_features());
     let mut types = ComponentTypesBuilder::new(&validator);
 
     let (translation, modules) = Translator::new(&tunables, &mut validator, &mut types, &scope)

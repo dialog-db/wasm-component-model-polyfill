@@ -11,14 +11,14 @@
 #                     Wasmtime's, or is missing
 #   defect            a wrong result from a feature the polyfill claims
 #   cascade           a consequence of an earlier failure in the same file
-cm/binary/binary.wast:1186 validation expected rejection `non-zero reserved byte`, but the component parsed
-cm/binary/binary.wast:1208 validation expected rejection `non-zero reserved byte`, but the component parsed
-cm/binary/binary.wast:1230 validation expected rejection `non-zero reserved byte`, but the component parsed
-cm/binary/binary.wast:1239 validation expected rejection `non-zero reserved byte`, but the component parsed
-cm/binary/binary.wast:1248 validation expected rejection `non-zero reserved byte`, but the component parsed
-cm/binary/binary.wast:1257 validation expected rejection `non-zero reserved byte`, but the component parsed
-cm/binary/binary.wast:1266 validation expected rejection `non-zero reserved byte`, but the component parsed
-cm/binary/binary.wast:1275 validation expected rejection `non-zero reserved byte`, but the component parsed
+cm/binary/binary.wast:1186 validation expected rejection `non-zero reserved byte`, but the component parsed (wasmparser 0.254 still reads the byte as the `cancellable` flag the corpus removed; the reference implementation does not pass this file either, see cm/nyi.txt)
+cm/binary/binary.wast:1208 validation expected rejection `non-zero reserved byte`, but the component parsed (wasmparser 0.254 still reads the byte as the `cancellable` flag the corpus removed; the reference implementation does not pass this file either, see cm/nyi.txt)
+cm/binary/binary.wast:1230 validation expected rejection `non-zero reserved byte`, but the component parsed (wasmparser 0.254 still reads the byte as the `cancellable` flag the corpus removed; the reference implementation does not pass this file either, see cm/nyi.txt)
+cm/binary/binary.wast:1239 validation expected rejection `non-zero reserved byte`, but the component parsed (wasmparser 0.254 still reads the byte as the `cancellable` flag the corpus removed; the reference implementation does not pass this file either, see cm/nyi.txt)
+cm/binary/binary.wast:1248 validation expected rejection `non-zero reserved byte`, but the component parsed (wasmparser 0.254 still reads the byte as the `cancellable` flag the corpus removed; the reference implementation does not pass this file either, see cm/nyi.txt)
+cm/binary/binary.wast:1257 validation expected rejection `non-zero reserved byte`, but the component parsed (wasmparser 0.254 still reads the byte as the `cancellable` flag the corpus removed; the reference implementation does not pass this file either, see cm/nyi.txt)
+cm/binary/binary.wast:1266 validation expected rejection `non-zero reserved byte`, but the component parsed (wasmparser 0.254 still reads the byte as the `cancellable` flag the corpus removed; the reference implementation does not pass this file either, see cm/nyi.txt)
+cm/binary/binary.wast:1275 validation expected rejection `non-zero reserved byte`, but the component parsed (wasmparser 0.254 still reads the byte as the `cancellable` flag the corpus removed; the reference implementation does not pass this file either, see cm/nyi.txt)
 cm/linking/tags.wast:7 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
 cm/linking/tags.wast:31 cascade no instance to invoke
 cm/linking/tags.wast:32 cascade no instance to invoke
@@ -29,20 +29,18 @@ cm/linking/tags.wast:89 cascade no instance to invoke
 cm/linking/tags.wast:93 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
 cm/linking/tags.wast:133 cascade no instance to invoke
 cm/linking/tags.wast:134 cascade no instance to invoke
-cm/validation/extern-names.wast:53 validation expected rejection `expected `/` after package name`, but the component parsed
-cm/validation/extern-names.wast:56 validation expected rejection `trailing characters found: `/qux``, but the component parsed
-cm/validation/kebab.wast:149 validation expected rejection `import name `foobar` conflicts with previous name `foo-bar``, but the component parsed
-cm/validation/kebab.wast:154 validation expected rejection `import name `FOOBAR` conflicts with previous name `foo-bar``, but the component parsed
-cm/validation/kebab.wast:159 validation expected rejection `import name `foob-ar` conflicts with previous name `foo-bar``, but the component parsed
-cm/validation/kebab.wast:164 validation expected rejection `import name `[static]foo-bar.FO-ob-AR` conflicts with previous name `foo-bar``, but the component parsed
-cm/validation/kebab.wast:169 validation expected rejection `import name `[method]foo-bar.foobar` conflicts with previous name `foo-bar``, but the component parsed
-cm/validation/max-value-size.wast:25 validation expected rejection `exceeds maximum byte size`, but the component parsed
-cm/validation/max-value-size.wast:31 validation expected rejection `exceeds maximum byte size`, but the component parsed
-cm/validation/max-value-size.wast:37 validation expected rejection `exceeds maximum byte size`, but the component parsed
-cm/validation/max-value-size.wast:43 validation expected rejection `exceeds maximum byte size`, but the component parsed
-cm/validation/max-value-size.wast:48 validation expected rejection `exceeds maximum byte size`, but the component parsed
-cm/validation/max-value-size.wast:57 validation expected rejection `exceeds maximum byte size`, but the component parsed
-cm/validation/max-value-size.wast:63 validation expected rejection `exceeds maximum byte size`, but the component parsed
+cm/validation/kebab.wast:149 validation expected rejection `import name `foobar` conflicts with previous name `foo-bar``, but the component parsed (the reference implementation does not pass this file either, see cm/nyi.txt)
+cm/validation/kebab.wast:154 validation expected rejection `import name `FOOBAR` conflicts with previous name `foo-bar``, but the component parsed (the reference implementation does not pass this file either, see cm/nyi.txt)
+cm/validation/kebab.wast:159 validation expected rejection `import name `foob-ar` conflicts with previous name `foo-bar``, but the component parsed (the reference implementation does not pass this file either, see cm/nyi.txt)
+cm/validation/kebab.wast:164 validation expected rejection `import name `[static]foo-bar.FO-ob-AR` conflicts with previous name `foo-bar``, but the component parsed (the reference implementation does not pass this file either, see cm/nyi.txt)
+cm/validation/kebab.wast:169 validation expected rejection `import name `[method]foo-bar.foobar` conflicts with previous name `foo-bar``, but the component parsed (the reference implementation does not pass this file either, see cm/nyi.txt)
+cm/validation/max-value-size.wast:25 validation expected rejection `exceeds maximum byte size`, but the component parsed (wasmparser 0.254 predates the element-size limit the corpus checks)
+cm/validation/max-value-size.wast:31 validation expected rejection `exceeds maximum byte size`, but the component parsed (wasmparser 0.254 predates the element-size limit the corpus checks)
+cm/validation/max-value-size.wast:37 validation expected rejection `exceeds maximum byte size`, but the component parsed (wasmparser 0.254 predates the element-size limit the corpus checks)
+cm/validation/max-value-size.wast:43 validation expected rejection `exceeds maximum byte size`, but the component parsed (wasmparser 0.254 predates the element-size limit the corpus checks)
+cm/validation/max-value-size.wast:48 validation expected rejection `exceeds maximum byte size`, but the component parsed (wasmparser 0.254 predates the element-size limit the corpus checks)
+cm/validation/max-value-size.wast:57 validation expected rejection `exceeds maximum byte size`, but the component parsed (wasmparser 0.254 predates the element-size limit the corpus checks)
+cm/validation/max-value-size.wast:63 validation expected rejection `exceeds maximum byte size`, but the component parsed (wasmparser 0.254 predates the element-size limit the corpus checks)
 cm/values/post-return.wast:4 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
 cm/values/post-return.wast:201 cascade no definition named `Tester`
 cm/values/post-return.wast:202 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
@@ -140,7 +138,6 @@ wasmtime/error-context-trap-in-post-return.wast:49 cascade no definition named `
 wasmtime/error-context-trap-in-post-return.wast:50 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
 wasmtime/exceptions.wast:168 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref (concrete func VMSharedTypeIndex(2))) is not su
 wasmtime/exceptions.wast:237 cascade expected a trap `uncaught exception propagated out of component`, got `no instance to invoke`
-wasmtime/implements-disabled.wast:3 validation expected rejection `the `cm-implements` feature is not active`, but the component parsed
 wasmtime/modules.wast:482 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
 wasmtime/modules.wast:485 cascade no registered linker instance satisfies import `tag-module` (the component at line 482 did not instantiate)
 wasmtime/tags.wast:3 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer

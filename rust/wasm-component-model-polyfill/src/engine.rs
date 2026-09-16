@@ -10,6 +10,7 @@
 //! delegated to a backend's component runtime.
 
 use crate::backend::Backend;
+use crate::engine_config::EngineConfig;
 use crate::error::Result;
 
 /// The polyfill's compilation context.
@@ -19,25 +20,39 @@ use crate::error::Result;
 /// state is shared — and is constructed without arguments via
 /// [`Engine::new`].
 ///
-/// Later work hangs component compilation off this type; for now
-/// the public surface is just construction.
+/// The engine carries the [`EngineConfig`] every component it
+/// translates is validated with.
 #[derive(Clone)]
 pub struct Engine {
     inner: wasm_runtime_layer::Engine<Backend>,
+    config: EngineConfig,
 }
 
 impl Engine {
-    /// Construct an `Engine` over a default-configured backend.
+    /// Construct an `Engine` over a default-configured backend, with
+    /// the default [`EngineConfig`].
     ///
     /// The return type is [`Result`] for forward compatibility:
     /// today, both supported backends are infallibly default-
     /// constructible, but later work will accept configuration that
     /// can fail at construction time.
-    #[allow(clippy::unnecessary_wraps)]
     pub fn new() -> Result<Self> {
+        Self::with_config(&EngineConfig::default())
+    }
+
+    /// Construct an `Engine` from `config`, the polyfill's analogue
+    /// to building a Wasmtime engine from a `Config`.
+    #[allow(clippy::unnecessary_wraps)]
+    pub fn with_config(config: &EngineConfig) -> Result<Self> {
         Ok(Self {
             inner: wasm_runtime_layer::Engine::new(Backend::default()),
+            config: config.clone(),
         })
+    }
+
+    /// The configuration this engine was built from.
+    pub fn config(&self) -> &EngineConfig {
+        &self.config
     }
 
     /// Borrow the wrapped runtime-layer engine.

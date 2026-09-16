@@ -33,9 +33,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use wasm_component_model_polyfill::{
-    Component, Engine, Error, ExternType, ExternalName, FunctionParameter, FunctionType,
-    HostResource, Instance, Linker, Module, PrimitiveType, ResourceType, Store, Val, ValField,
-    ValueType,
+    Component, Engine, EngineConfig, Error, ExternType, ExternalName, FunctionParameter,
+    FunctionType, HostResource, Instance, Linker, Module, PrimitiveType, ResourceType, Store, Val,
+    ValField, ValueType,
 };
 use wast::component::WastVal;
 use wast::parser::{self, ParseBuffer};
@@ -94,8 +94,8 @@ struct Runner {
 }
 
 impl Runner {
-    async fn new() -> Self {
-        let engine = Engine::new().expect("engine");
+    async fn new(config: &EngineConfig) -> Self {
+        let engine = Engine::with_config(config).expect("engine");
         let store = Store::new(&engine, ()).expect("store");
         let mut linker = Linker::new(&engine);
         link_spectest(&engine, &mut linker).await;
@@ -823,9 +823,58 @@ fn boxed_equal(a: Option<&Val>, b: Option<&Val>) -> bool {
     }
 }
 
+/// The engine configuration a corpus file runs with, as Wasmtime's
+/// wast runner configures it (`crates/test-util/src/wast.rs`
+/// upstream). A file of the Component Model's own suite (`cm/`) gets
+/// every gated feature the runner turns on for that suite; a file of
+/// Wasmtime's suite starts from the polyfill's defaults. Either way a
+/// `;;! component_model_<feature> = <bool>` header line then sets
+/// that feature. Core-Wasm flags (`gc`, `memory64`, `multi_memory`,
+/// ...) name features the polyfill validates with already and are
+/// ignored.
+fn engine_config(path: &str, text: &str) -> EngineConfig {
+    let mut config = EngineConfig::new();
+    if path.starts_with("cm/") {
+        config
+            .wasm_component_model_implements(true)
+            .wasm_component_model_more_async_builtins(true)
+            .wasm_component_model_async_stackful(true)
+            .wasm_component_model_threading(true);
+    }
+    for line in text.lines() {
+        let Some(directive) = line.strip_prefix(";;!") else {
+            if line.trim().is_empty() || line.starts_with(";;") {
+                continue;
+            }
+            break;
+        };
+        let Some((key, value)) = directive.split_once('=') else {
+            continue;
+        };
+        let enable = value.trim() == "true";
+        match key.trim() {
+            "component_model_implements" => config.wasm_component_model_implements(enable),
+            "component_model_map" => config.wasm_component_model_map(enable),
+            "component_model_fixed_length_lists" => {
+                config.wasm_component_model_fixed_length_lists(enable)
+            }
+            "component_model_memory64" => config.wasm_component_model_memory64(enable),
+            "component_model_error_context" => config.wasm_component_model_error_context(enable),
+            "component_model_gc" => config.wasm_component_model_gc(enable),
+            "component_model_async_stackful" => config.wasm_component_model_async_stackful(enable),
+            "component_model_threading" => config.wasm_component_model_threading(enable),
+            "component_model_more_async_builtins" => {
+                config.wasm_component_model_more_async_builtins(enable)
+            }
+            _ => &mut config,
+        };
+    }
+    config
+}
+
 /// Run one corpus file against the expectations that name it.
 async fn report_file(path: &str, text: &str, expectations: &[Expectation]) -> FileReport {
-    let mut runner = Runner::new().await;
+    let mut runner = Runner::new(&engine_config(path, text)).await;
     let (directives, failures) = runner.run(text).await;
     let expected = expectations
         .iter()

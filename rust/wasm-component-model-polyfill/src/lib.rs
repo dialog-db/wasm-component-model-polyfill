@@ -5,7 +5,8 @@
 //!
 //! The crate exposes:
 //!
-//! - [`Engine`] and [`Store`] — the compilation context and the
+//! - [`Engine`], [`EngineConfig`], and [`Store`] — the compilation
+//!   context with the feature gates it validates against, and the
 //!   owner of guest state, the foundations every higher-level type
 //!   is built against.
 //! - [`Component`] — a parsed component value with accessors over
@@ -169,6 +170,7 @@ mod abi;
 mod backend;
 mod component;
 mod engine;
+mod engine_config;
 mod error;
 mod executor;
 mod identifier;
@@ -185,6 +187,7 @@ pub use crate::component::{
     FunctionType, InstanceItem, InstanceType, ModuleType,
 };
 pub use crate::engine::Engine;
+pub use crate::engine_config::EngineConfig;
 pub use crate::error::{
     AbiCause, AbiError, AbiPosition, Error, InstantiationError, LinkError, Result, TypeMismatch,
     TypeMismatchPosition, TypeRendering,

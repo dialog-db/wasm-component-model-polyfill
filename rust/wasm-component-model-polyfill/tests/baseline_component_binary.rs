@@ -5,7 +5,7 @@
 #![cfg(test)]
 
 use wasm_component_model_polyfill::{
-    Component, Engine, Error, ExternType, ExternalName, Linker, Store,
+    Component, Engine, EngineConfig, Error, ExternType, ExternalName, Linker, Store,
 };
 use wcmp_macros::{component, wasm};
 
@@ -176,4 +176,49 @@ async fn it_returns_send_futures_on_native() {
         .await
         .expect("instantiate the component");
     assert!(instance.exports().func("f").is_none());
+}
+
+#[wcmp_macros::test]
+async fn it_validates_with_wasmtimes_feature_gates() {
+    // The `implements` annotation is gated in Wasmtime, so the
+    // default engine rejects it and an engine that opts in accepts
+    // it.
+    const IMPLEMENTS: &[u8] = component!(
+        r#"
+        (component (import "a" (implements "a:b/c") (instance)))
+        "#
+    );
+    let engine = Engine::new().expect("engine");
+    let err = Component::new(&engine, IMPLEMENTS)
+        .await
+        .expect_err("`implements` is off by default");
+    match err {
+        Error::InvalidComponentBinary { message, .. } => {
+            assert!(
+                message.contains("cm-implements"),
+                "the rejection names the gate: {message}"
+            );
+        }
+        other => panic!("expected a validation failure, got {other:?}"),
+    }
+
+    let mut config = EngineConfig::new();
+    config.wasm_component_model_implements(true);
+    let engine = Engine::with_config(&config).expect("engine");
+    Component::new(&engine, IMPLEMENTS)
+        .await
+        .expect("an engine that opts in accepts `implements`");
+
+    // Nested namespaces and projections in extern names are not a
+    // feature Wasmtime enables at all, so no configuration accepts
+    // them.
+    const NESTED: &[u8] = component!(
+        r#"
+        (component (import "foo:bar/baz/qux" (func)))
+        "#
+    );
+    let err = Component::new(&engine, NESTED)
+        .await
+        .expect_err("a nested projection is rejected");
+    assert!(matches!(err, Error::InvalidComponentBinary { .. }));
 }
