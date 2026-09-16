@@ -22,8 +22,6 @@ kanban-plugin: basic
 
 ## In Progress
 
-- [ ] [[2e826c]]
-
 ## Needs Review
 
 - [ ] [[0280b2]]
@@ -35,6 +33,7 @@ kanban-plugin: basic
 - [ ] [[5d61b2]]
 - [ ] [[ff8c3b]]
 - [ ] [[4a48bf]]
+- [ ] [[2e826c]]
 
 ## Ready
 
