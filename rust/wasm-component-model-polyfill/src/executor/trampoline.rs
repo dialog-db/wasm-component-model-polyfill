@@ -239,21 +239,24 @@ pub fn drop_handle(
     let entry = guard
         .lookup(table.table, index, table.type_id, table.guest_defined)
         .map_err(|e| invalid_handle_reason(e.to_string()))?;
-    match entry.kind {
-        HandleKind::Own { lend_count: 0 } => {
+    match entry {
+        HandleKind::Own {
+            lend_count: 0, rep, ..
+        } => {
             guard.for_table_mut(table.table).remove(index);
-            Ok(Some(entry.rep))
+            Ok(Some(rep))
         }
         HandleKind::Own { .. } => Err(invalid_handle_reason(
             "cannot remove owned resource while borrowed".to_owned(),
         )),
-        HandleKind::Borrow { scope } => {
+        HandleKind::Borrow { scope, .. } => {
             if !guard.return_borrow(scope) {
                 return Err(invalid_handle(index));
             }
             guard.for_table_mut(table.table).remove(index);
             Ok(None)
         }
+        _ => unreachable!("lookup only ever returns a resource entry"),
     }
 }
 
@@ -278,7 +281,11 @@ fn read_handle(
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
     guard
         .lookup(table.table, index, table.type_id, table.guest_defined)
-        .map(|entry| entry.rep)
+        .map(|entry| {
+            entry
+                .rep()
+                .expect("lookup only ever returns a resource entry")
+        })
         .map_err(|e| invalid_handle_reason(e.to_string()))
 }
 

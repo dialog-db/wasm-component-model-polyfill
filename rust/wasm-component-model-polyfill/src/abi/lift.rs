@@ -416,13 +416,15 @@ pub fn lift_handle<T: 'static>(
         let entry = guard
             .lookup(table.table, index, table.type_id, table.guest_defined)
             .map_err(|e| invalid(e.to_string()))?;
-        if matches!(entry.kind, HandleKind::Own { .. }) {
+        if matches!(entry, HandleKind::Own { .. }) {
             guard.lend(table.table, index);
         }
         Ok(Val::Borrow(ResourceHandle {
             type_id: table.type_id,
             index,
-            rep: entry.rep,
+            rep: entry
+                .rep()
+                .expect("lookup only ever returns a resource entry"),
         }))
     }
 }

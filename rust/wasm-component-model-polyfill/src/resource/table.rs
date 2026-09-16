@@ -1,9 +1,11 @@
-//! Per-resource-type handle table.
+//! One component instance's handle table.
 //!
 //! A `HandleTable` is the slab the canonical ABI's runtime-state
-//! rules require for every live `own<T>` and `borrow<T>` handle.
-//! The polyfill keeps one table per registered resource type per
-//! [`Store`], reached through crate-private accessors on the store.
+//! rules require: the reference's `handles` table on a
+//! `ComponentInstance`. The polyfill keeps one table per component
+//! instance, shared by every resource type and every other handle
+//! kind the instance uses, reached through crate-private accessors on
+//! the store.
 //!
 //! Allocation policy follows the canonical-ABI runtime-state rules:
 //!
@@ -15,9 +17,6 @@
 //! - Reuse of a freed index is deterministic within a single store:
 //!   a free list of freed indices is drained LIFO so reuse is fixed
 //!   by the order of drops.
-//! - Each entry tracks its own *generation* so a stale handle
-//!   pointing at a slot that has since been reused is rejected. The
-//!   generation is opaque and not exposed.
 //!
 //! Borrows live in the table too: a `borrow<T>` lowered into the
 //! guest is an entry owed to the call it was lowered in, and an
@@ -26,13 +25,12 @@
 //!
 //! [`Store`]: crate::Store
 
-use super::handle_entry::HandleEntry;
+use super::handle_kind::HandleKind;
 
 /// One entry in the slab.
 ///
 /// Free entries form a singly-linked list; occupied entries carry
-/// the resource's entry: its rep and whether it is owned or a
-/// borrow.
+/// the handle's kind, whatever it is.
 enum Slot {
     /// Index 0, which the canonical ABI never hands out: a handle of
     /// 0 is never valid, so the first allocation is index 1.
@@ -43,9 +41,8 @@ enum Slot {
         next: Option<u32>,
     },
     Occupied {
-        /// The entry: the resource's rep and whether the slot owns
-        /// it or borrows it for a call.
-        entry: HandleEntry,
+        /// The entry's kind.
+        entry: HandleKind,
     },
 }
 
@@ -71,14 +68,12 @@ impl HandleTable {
         }
     }
 
-    /// Insert a fresh `own<T>` entry carrying the given host
-    /// representation. Returns the table index.
-    /// Insert an entry and return its index.
-    pub fn insert_entry(&mut self, entry: HandleEntry) -> u32 {
+    /// Insert an entry, of any kind, and return its index.
+    pub fn insert_entry(&mut self, entry: HandleKind) -> u32 {
         self.insert(entry)
     }
 
-    fn insert(&mut self, entry: HandleEntry) -> u32 {
+    fn insert(&mut self, entry: HandleKind) -> u32 {
         if let Some(idx) = self.free_head {
             let next = match self.slots[idx as usize] {
                 Slot::Free { next } => next,
@@ -96,13 +91,14 @@ impl HandleTable {
         }
     }
 
-    /// The rep at a live index.
+    /// The resource rep at a live index, for an owning or borrowed
+    /// entry.
     pub fn get(&self, index: u32) -> Option<u32> {
-        self.entry(index).map(|entry| entry.rep)
+        self.entry(index).and_then(HandleKind::rep)
     }
 
     /// The entry at a live index.
-    pub fn entry(&self, index: u32) -> Option<&HandleEntry> {
+    pub fn entry(&self, index: u32) -> Option<&HandleKind> {
         match self.slots.get(index as usize)? {
             Slot::Occupied { entry } => Some(entry),
             Slot::Free { .. } | Slot::Reserved => None,
@@ -110,7 +106,7 @@ impl HandleTable {
     }
 
     /// The entry at a live index, mutably.
-    pub fn entry_mut(&mut self, index: u32) -> Option<&mut HandleEntry> {
+    pub fn entry_mut(&mut self, index: u32) -> Option<&mut HandleKind> {
         match self.slots.get_mut(index as usize)? {
             Slot::Occupied { entry } => Some(entry),
             Slot::Free { .. } | Slot::Reserved => None,
@@ -118,7 +114,7 @@ impl HandleTable {
     }
 
     /// Free a live index and return its entry.
-    pub fn remove(&mut self, index: u32) -> Option<HandleEntry> {
+    pub fn remove(&mut self, index: u32) -> Option<HandleKind> {
         let slot = self.slots.get_mut(index as usize)?;
         let entry = match slot {
             Slot::Occupied { entry } => *entry,
@@ -142,12 +138,12 @@ impl Default for HandleTable {
 mod tests {
     use super::*;
 
-    fn own(rep: u32) -> HandleEntry {
-        HandleEntry {
-            rep,
+    fn own(rep: u32) -> HandleKind {
+        HandleKind::Own {
             type_id: crate::resource::ResourceTypeId::fresh(),
             guest_defined: false,
-            kind: crate::resource::HandleKind::Own { lend_count: 0 },
+            rep,
+            lend_count: 0,
         }
     }
 
@@ -166,7 +162,7 @@ mod tests {
         let mut table = HandleTable::new();
         let a = table.insert_entry(own(1));
         let _b = table.insert_entry(own(2));
-        assert_eq!(table.remove(a).map(|e| e.rep), Some(1));
+        assert_eq!(table.remove(a).and_then(|e| e.rep()), Some(1));
 
         // The next insert reuses the freshly-freed slot.
         let c = table.insert_entry(own(3));
@@ -178,7 +174,7 @@ mod tests {
     fn it_rejects_stale_indices_after_remove() {
         let mut table = HandleTable::new();
         let idx = table.insert_entry(own(7));
-        assert_eq!(table.remove(idx).map(|e| e.rep), Some(7));
+        assert_eq!(table.remove(idx).and_then(|e| e.rep()), Some(7));
         assert_eq!(table.get(idx), None);
         assert_eq!(table.remove(idx), None);
     }

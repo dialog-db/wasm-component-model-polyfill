@@ -13,9 +13,12 @@
 //!   memories; lengths count code units of the respective encoding.
 //! - Resource transfer, which moves an `own<T>` or lends a
 //!   `borrow<T>` from one component instance's handle table to
-//!   another's. The polyfill keeps one handle table per resource
-//!   type per store rather than one per component instance, so a
-//!   transfer keeps the same index.
+//!   another's. The polyfill keeps one handle table per component
+//!   instance, shared by every resource type and every other handle
+//!   kind the instance uses. An owned transfer removes the entry from
+//!   the source table and inserts it into the destination table, so
+//!   the index changes; a borrow transfer inserts a borrow entry into
+//!   the destination table for the duration of the call.
 //! - A trap intrinsic that raises a Wasmtime trap code.
 //! - Enter and exit intrinsics around a synchronous call that
 //!   carries resources. They exist so borrow scopes can be validated
@@ -268,10 +271,12 @@ fn transfer_borrow(
         let entry = guard
             .lookup(src.table, index, src.type_id, src.guest_defined)
             .map_err(|e| anyhow!("wasm trap: {e}"))?;
-        if matches!(entry.kind, HandleKind::Own { .. }) {
+        if matches!(entry, HandleKind::Own { .. }) {
             guard.lend(src.table, index);
         }
-        entry.rep
+        entry
+            .rep()
+            .expect("lookup only ever returns a resource entry")
     };
     // Lower it into the callee: the defining instance receives the
     // rep; anyone else receives a borrow entry owed to the call.
@@ -611,4 +616,85 @@ fn set_results(results: &mut [RuntimeVal], widths: &[FlatType], values: &[usize]
 
 fn invalid(message: &str) -> Error {
     Error::internal(message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resource::{ResourceTypeId, TableId};
+
+    fn runtime(table: TableId, type_id: ResourceTypeId) -> ResourceTableRuntime {
+        ResourceTableRuntime {
+            table,
+            type_id,
+            resource_index: 0,
+            defining: false,
+            guest_defined: true,
+        }
+    }
+
+    #[test]
+    fn it_moves_an_owned_handle_from_the_source_table_to_the_destination_table() {
+        let tables = Arc::new(Mutex::new(HandleTables::new()));
+        let type_id = ResourceTypeId::fresh();
+        let src_table = TableId::fresh();
+        let dst_table = TableId::fresh();
+        let src = runtime(src_table, type_id);
+        let dst = runtime(dst_table, type_id);
+        let index = tables
+            .lock()
+            .unwrap()
+            .insert_own(src_table, type_id, true, 42);
+
+        let new_index = transfer_own(&tables, src, dst, index).unwrap();
+
+        let guard = tables.lock().unwrap();
+        assert!(
+            guard.lookup(src_table, index, type_id, true).is_err(),
+            "the entry leaves the source table"
+        );
+        assert_eq!(
+            guard
+                .lookup(dst_table, new_index, type_id, true)
+                .unwrap()
+                .rep(),
+            Some(42),
+            "the entry takes an index in the destination table"
+        );
+    }
+
+    #[test]
+    fn it_inserts_a_borrow_entry_in_the_destination_table_for_the_call() {
+        let tables = Arc::new(Mutex::new(HandleTables::new()));
+        let type_id = ResourceTypeId::fresh();
+        let src_table = TableId::fresh();
+        let dst_table = TableId::fresh();
+        let src = runtime(src_table, type_id);
+        let dst = runtime(dst_table, type_id);
+        let index = {
+            let mut guard = tables.lock().unwrap();
+            let index = guard.insert_own(src_table, type_id, true, 7);
+            guard.enter_call();
+            index
+        };
+
+        let borrow_index = transfer_borrow(&tables, src, dst, index).unwrap();
+
+        let guard = tables.lock().unwrap();
+        assert_eq!(
+            guard
+                .lookup(dst_table, borrow_index, type_id, true)
+                .unwrap(),
+            HandleKind::Borrow {
+                type_id,
+                guest_defined: true,
+                rep: 7,
+                scope: 0,
+            }
+        );
+        assert!(
+            guard.lookup(src_table, index, type_id, true).is_ok(),
+            "the source entry stays lent, not removed"
+        );
+    }
 }

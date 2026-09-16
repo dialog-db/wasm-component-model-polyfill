@@ -17,7 +17,6 @@
 use std::collections::HashMap;
 
 use super::call_scope::CallScope;
-use super::handle_entry::HandleEntry;
 use super::handle_kind::HandleKind;
 use super::handle_lookup_error::HandleLookupError;
 use super::identity::ResourceTypeId;
@@ -69,10 +68,8 @@ impl HandleTables {
             return Ok(());
         };
         for (table, index) in scope.lenders {
-            if let Some(HandleEntry {
-                kind: HandleKind::Own { lend_count },
-                ..
-            }) = self.for_table_mut(table).entry_mut(index)
+            if let Some(HandleKind::Own { lend_count, .. }) =
+                self.for_table_mut(table).entry_mut(index)
             {
                 *lend_count = lend_count.saturating_sub(1);
             }
@@ -100,10 +97,7 @@ impl HandleTables {
             return false;
         };
         match self.for_table_mut(table).entry_mut(index) {
-            Some(HandleEntry {
-                kind: HandleKind::Own { lend_count },
-                ..
-            }) => {
+            Some(HandleKind::Own { lend_count, .. }) => {
                 *lend_count += 1;
                 self.scopes[scope].lenders.push((table, index));
                 true
@@ -121,11 +115,11 @@ impl HandleTables {
         guest_defined: bool,
         rep: u32,
     ) -> u32 {
-        self.for_table_mut(table).insert_entry(HandleEntry {
-            rep,
+        self.for_table_mut(table).insert_entry(HandleKind::Own {
             type_id,
             guest_defined,
-            kind: HandleKind::Own { lend_count: 0 },
+            rep,
+            lend_count: 0,
         })
     }
 
@@ -141,35 +135,79 @@ impl HandleTables {
     ) -> Option<u32> {
         let scope = self.current_scope()?;
         self.scopes[scope].borrow_count += 1;
-        Some(self.for_table_mut(table).insert_entry(HandleEntry {
-            rep,
+        Some(self.for_table_mut(table).insert_entry(HandleKind::Borrow {
             type_id,
             guest_defined,
-            kind: HandleKind::Borrow { scope },
+            rep,
+            scope,
         }))
+    }
+
+    /// Insert a subtask entry that points at index `subtask` of the
+    /// store's subtask table, and return the handle-table index.
+    pub fn insert_subtask(&mut self, table: TableId, subtask: u32) -> u32 {
+        self.for_table_mut(table)
+            .insert_entry(HandleKind::Subtask { index: subtask })
+    }
+
+    /// Insert a waitable-set entry that points at index `set` of the
+    /// store's waitable-set table, and return the handle-table index.
+    pub fn insert_waitable_set(&mut self, table: TableId, set: u32) -> u32 {
+        self.for_table_mut(table)
+            .insert_entry(HandleKind::WaitableSet { index: set })
+    }
+
+    /// Read the entry at `index` of `table`, of any kind, with no
+    /// type check. Used for a handle kind that carries no resource
+    /// type, such as a subtask or a waitable set.
+    pub fn entry(&self, table: TableId, index: u32) -> Option<HandleKind> {
+        self.for_table(table).and_then(|t| t.entry(index)).copied()
+    }
+
+    /// Remove the entry at `index` of `table`, of any kind, with no
+    /// type check and no ownership or borrow bookkeeping. A resource
+    /// entry is removed through [`remove_own`](Self::remove_own)
+    /// instead, which enforces that bookkeeping.
+    pub fn remove(&mut self, table: TableId, index: u32) -> Option<HandleKind> {
+        self.for_table_mut(table).remove(index)
     }
 
     /// Read the entry at `index` of `table`, checking that it holds a
     /// resource of type `type_id`. A component instance keeps one
-    /// table for every resource type it uses, so an index of one type
-    /// can name an entry of another; that is the wrong-type trap.
+    /// table for every handle kind it uses, so an index of one
+    /// resource type can name an entry of another type, or an entry
+    /// that is not a resource at all; both are the wrong-type trap
+    /// and the wrong-kind failure respectively.
     pub fn lookup(
         &self,
         table: TableId,
         index: u32,
         type_id: ResourceTypeId,
         guest_defined: bool,
-    ) -> Result<HandleEntry, HandleLookupError> {
+    ) -> Result<HandleKind, HandleLookupError> {
         let entry = self
             .for_table(table)
             .and_then(|t| t.entry(index))
             .copied()
             .ok_or(HandleLookupError::Unknown { index })?;
-        if entry.type_id != type_id {
+        let (found_type, found_guest) = match entry {
+            HandleKind::Own {
+                type_id,
+                guest_defined,
+                ..
+            }
+            | HandleKind::Borrow {
+                type_id,
+                guest_defined,
+                ..
+            } => (type_id, guest_defined),
+            _ => return Err(HandleLookupError::WrongKind { index }),
+        };
+        if found_type != type_id {
             return Err(HandleLookupError::WrongType {
                 index,
                 expected_guest: guest_defined,
-                found_guest: entry.guest_defined,
+                found_guest,
             });
         }
         Ok(entry)
@@ -186,13 +224,16 @@ impl HandleTables {
         guest_defined: bool,
     ) -> Result<u32, HandleLookupError> {
         let entry = self.lookup(table, index, type_id, guest_defined)?;
-        match entry.kind {
-            HandleKind::Own { lend_count: 0 } => {
+        match entry {
+            HandleKind::Own {
+                lend_count: 0, rep, ..
+            } => {
                 self.for_table_mut(table).remove(index);
-                Ok(entry.rep)
+                Ok(rep)
             }
             HandleKind::Own { .. } => Err(HandleLookupError::Lent),
             HandleKind::Borrow { .. } => Err(HandleLookupError::NotOwned { index }),
+            _ => unreachable!("lookup only ever returns a resource entry"),
         }
     }
 
@@ -265,9 +306,60 @@ mod tests {
             "handle index 1 used with the wrong type, expected guest-defined resource but found a different guest-defined resource"
         );
         assert_eq!(
-            tables.lookup(table, index, first, true).map(|e| e.rep),
-            Ok(7)
+            tables.lookup(table, index, first, true).unwrap().rep(),
+            Some(7)
         );
+    }
+
+    #[test]
+    fn it_allocates_consecutive_indices_across_resource_types_in_one_table() {
+        let mut tables = HandleTables::new();
+        let table = TableId::fresh();
+        let first = ResourceTypeId::fresh();
+        let second = ResourceTypeId::fresh();
+        let a = tables.insert_own(table, first, true, 1);
+        let b = tables.insert_own(table, second, true, 2);
+        assert_eq!(b, a + 1, "one allocator serves every resource type");
+    }
+
+    #[test]
+    fn it_inserts_looks_up_and_removes_a_subtask_and_a_waitable_set_entry() {
+        let mut tables = HandleTables::new();
+        let table = TableId::fresh();
+        let subtask_index = tables.insert_subtask(table, 5);
+        let set_index = tables.insert_waitable_set(table, 9);
+        assert_ne!(subtask_index, set_index);
+        assert_eq!(
+            tables.entry(table, subtask_index),
+            Some(HandleKind::Subtask { index: 5 })
+        );
+        assert_eq!(
+            tables.entry(table, set_index),
+            Some(HandleKind::WaitableSet { index: 9 })
+        );
+
+        let ty = ResourceTypeId::fresh();
+        assert_eq!(
+            tables.lookup(table, subtask_index, ty, true),
+            Err(HandleLookupError::WrongKind {
+                index: subtask_index
+            })
+        );
+        assert_eq!(
+            tables.lookup(table, set_index, ty, true),
+            Err(HandleLookupError::WrongKind { index: set_index })
+        );
+
+        assert_eq!(
+            tables.remove(table, subtask_index),
+            Some(HandleKind::Subtask { index: 5 })
+        );
+        assert_eq!(
+            tables.remove(table, set_index),
+            Some(HandleKind::WaitableSet { index: 9 })
+        );
+        assert_eq!(tables.entry(table, subtask_index), None);
+        assert_eq!(tables.entry(table, set_index), None);
     }
 
     #[test]

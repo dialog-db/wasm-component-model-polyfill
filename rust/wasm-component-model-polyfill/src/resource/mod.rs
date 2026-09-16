@@ -22,7 +22,6 @@
 
 mod call_scope;
 mod handle;
-mod handle_entry;
 mod handle_kind;
 mod handle_lookup_error;
 mod identity;

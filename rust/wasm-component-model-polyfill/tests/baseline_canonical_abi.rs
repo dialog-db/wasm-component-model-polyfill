@@ -930,7 +930,7 @@ async fn it_tracks_resource_handles_in_a_handle_table() {
         tables
             .for_table_mut(host_table)
             .remove(h1.index)
-            .map(|e| e.rep),
+            .and_then(|e| e.rep()),
         Some(101)
     );
     drop(tables);
