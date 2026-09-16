@@ -9,11 +9,13 @@
 //! per resource type, also created on first use.
 //!
 //! The collection also carries [`TaskTables`], the store's records
-//! of the calls in flight. The two live together because every
-//! borrow operation needs both: a borrow lowered into a guest takes
-//! an index in a handle table and counts against the current task,
-//! and a borrow lifted out of an owning entry raises that entry's
-//! lend count and is recorded on the current scope.
+//! of the calls in flight and of the waitables a guest waits on. The
+//! two live together because the borrow and waitable operations need
+//! both: a borrow lowered into a guest takes an index in a handle
+//! table and counts against the current task, a borrow lifted out of
+//! an owning entry raises that entry's lend count and is recorded on
+//! the current scope, and delivering a subtask's event lowers those
+//! counts again.
 //!
 //! Workspace-internal: the collection is reached only through
 //! crate-private accessors on [`Store`]. The public API exposes the
@@ -25,7 +27,10 @@
 
 use std::collections::HashMap;
 
-use crate::concurrency::{Scope, SubtaskId, SubtaskState, TaskId, TaskTables};
+use crate::concurrency::{
+    Event, Scope, SubtaskId, SubtaskState, TaskId, TaskTables, ThreadId, WaitableId, WaitableSetId,
+};
+use crate::error::Error;
 
 use super::handle_kind::HandleKind;
 use super::handle_lookup_error::HandleLookupError;
@@ -117,7 +122,7 @@ impl HandleTables {
         if let Some(record) = self.tasks.subtask_mut(subtask) {
             record.state = state;
         }
-        self.undo_lends(Scope::Subtask(subtask));
+        self.deliver_resolution(subtask);
         self.tasks.remove_subtask(subtask);
     }
 
@@ -132,6 +137,139 @@ impl HandleTables {
             _ => SubtaskState::CancelledBeforeReturned,
         };
         self.exit_subtask(subtask, state);
+    }
+
+    /// Deliver the resolution of `subtask`: the count on each handle
+    /// the call borrowed is decremented and the subtask is marked as
+    /// having delivered its resolution, which is what lets a guest
+    /// drop it. A subtask that has not resolved has no resolution to
+    /// deliver, and a second delivery does nothing.
+    pub fn deliver_subtask_resolution(&mut self, subtask: SubtaskId) -> Result<(), Error> {
+        let record = self
+            .tasks
+            .subtask(subtask)
+            .ok_or_else(|| Error::internal("subtask record is not in the store"))?;
+        if !record.state.resolved() {
+            return Err(Error::internal(
+                "a subtask's resolution was delivered before the call resolved",
+            ));
+        }
+        self.deliver_resolution(subtask);
+        Ok(())
+    }
+
+    /// Give back the handles `subtask` borrowed, once. Does nothing
+    /// for a subtask whose resolution was already delivered, or one
+    /// whose record is gone.
+    fn deliver_resolution(&mut self, subtask: SubtaskId) {
+        let delivered = self
+            .tasks
+            .subtask(subtask)
+            .map(|record| record.resolve_delivered)
+            .unwrap_or(true);
+        if delivered {
+            return;
+        }
+        self.undo_lends(Scope::Subtask(subtask));
+        if let Some(record) = self.tasks.subtask_mut(subtask) {
+            record.resolve_delivered = true;
+        }
+    }
+
+    /// The waitable the entry at `index` of `table` names. A built-in
+    /// that takes a waitable handle reaches its record this way.
+    pub fn waitable_from_handle(
+        &self,
+        table: TableId,
+        index: u32,
+    ) -> Result<WaitableId, HandleLookupError> {
+        match self.entry(table, index) {
+            Some(HandleKind::Subtask { index }) => {
+                Ok(self.tasks.subtask_waitable(SubtaskId::from_index(index)))
+            }
+            Some(_) => Err(HandleLookupError::WrongKind { index }),
+            None => Err(HandleLookupError::Unknown { index }),
+        }
+    }
+
+    /// The waitable set the entry at `index` of `table` names. A
+    /// built-in that takes a waitable-set handle reaches its record
+    /// this way.
+    pub fn waitable_set_from_handle(
+        &self,
+        table: TableId,
+        index: u32,
+    ) -> Result<WaitableSetId, HandleLookupError> {
+        match self.entry(table, index) {
+            Some(HandleKind::WaitableSet { index }) => Ok(WaitableSetId::from_index(index)),
+            Some(_) => Err(HandleLookupError::WrongKind { index }),
+            None => Err(HandleLookupError::Unknown { index }),
+        }
+    }
+
+    /// Take the event pending on `waitable`, leaving its slot empty.
+    /// Taking a subtask's event also delivers the subtask's
+    /// resolution when the call has resolved, which is what gives the
+    /// handles it borrowed back to the caller.
+    fn take_event(&mut self, waitable: WaitableId) -> Result<Option<Event>, Error> {
+        let event = self.tasks.take_pending_event(waitable)?;
+        if event.is_some()
+            && let WaitableId::Subtask(subtask) = waitable
+        {
+            let resolved = self
+                .tasks
+                .subtask(subtask)
+                .map(|record| record.state.resolved())
+                .unwrap_or(false);
+            if resolved {
+                self.deliver_resolution(subtask);
+            }
+        }
+        Ok(event)
+    }
+
+    /// Poll `set`: deliver the event of the waitable that joined
+    /// earliest among those that hold one, and answer the none event
+    /// when the set holds none. A poll never blocks.
+    pub fn poll_waitable_set(&mut self, set: WaitableSetId) -> Result<Event, Error> {
+        match self.tasks.next_ready_waitable(set)? {
+            Some(waitable) => Ok(self.take_event(waitable)?.unwrap_or_else(Event::none)),
+            None => Ok(Event::none()),
+        }
+    }
+
+    /// Wait on `set` with `thread`. A set that already holds an event
+    /// delivers it at once and the thread does not block. Otherwise
+    /// the thread is parked on the set and `None` says the caller
+    /// must suspend it; the thread's wait ends at
+    /// [`finish_wait_on_waitable_set`](Self::finish_wait_on_waitable_set).
+    ///
+    /// Both a blocking `waitable-set.wait` and a callback that
+    /// returned the wait code with `set` come here: the record-level
+    /// effect is the same, and only how the thread gives way differs.
+    pub fn wait_on_waitable_set(
+        &mut self,
+        set: WaitableSetId,
+        thread: ThreadId,
+    ) -> Result<Option<Event>, Error> {
+        if self.tasks.set_has_pending_event(set)? {
+            return Ok(Some(self.poll_waitable_set(set)?));
+        }
+        self.tasks.begin_wait(set, thread)?;
+        Ok(None)
+    }
+
+    /// End the wait `wait_on_waitable_set` parked `thread` for and
+    /// deliver what the set holds. Answers the none event when it
+    /// holds nothing, which is what a thread resumed for another
+    /// reason sees.
+    pub fn finish_wait_on_waitable_set(
+        &mut self,
+        set: WaitableSetId,
+        thread: ThreadId,
+    ) -> Result<Event, Error> {
+        self.tasks.end_wait(set, thread)?;
+        self.poll_waitable_set(set)
     }
 
     /// Pop scopes until `scope` itself has been popped, discarding

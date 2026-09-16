@@ -2,8 +2,8 @@
 
 use crate::resource::TableId;
 
-use super::subtask_event::SubtaskEvent;
 use super::subtask_state::SubtaskState;
+use super::waitable_state::WaitableState;
 
 /// The record of one call out through an import.
 ///
@@ -13,6 +13,10 @@ use super::subtask_state::SubtaskState;
 /// resolution lowers those counts again. A resolution is delivered
 /// when the caller's thread receives the subtask event, or when a
 /// synchronous lower returns.
+///
+/// A subtask is also a waitable, so the record carries the waitable
+/// state a guest waits on: the pending event slot, the set the
+/// subtask joined, and the synchronous-waiter flag.
 pub struct Subtask {
     /// How far the call has got.
     pub state: SubtaskState,
@@ -20,21 +24,14 @@ pub struct Subtask {
     /// as `(table, index)`. The reference names this list `lenders`.
     /// Emptied when the resolution is delivered.
     pub lenders: Vec<(TableId, u32)>,
-    /// The event the subtask has pending for the thread waiting on
-    /// it, which the reference fills when the scheduler records
-    /// readiness and empties on delivery. Nothing fills it yet.
-    #[allow(dead_code)]
-    pub pending_event: Option<SubtaskEvent>,
-    /// The waitable set the subtask joined, by its index in the
-    /// store, or `None` when it has joined none. Nothing joins a
-    /// waitable set yet.
-    #[allow(dead_code)]
-    pub waitable_set: Option<u32>,
-    /// Whether a thread is waiting on this subtask synchronously.
-    /// Nothing sets it yet: a synchronous call keeps its caller on
-    /// the one real stack rather than recording a waiter.
-    #[allow(dead_code)]
-    pub synchronous_waiter: bool,
+    /// Whether the subtask's resolution has been delivered, which is
+    /// what released the handles in `lenders`. The reference says
+    /// the same thing by emptying its own list. Dropping a subtask
+    /// whose resolution was not delivered traps.
+    pub resolve_delivered: bool,
+    /// The waitable state: what a thread waiting on this subtask
+    /// consults.
+    pub waitable: WaitableState,
     /// Whether the caller asked for the call to be cancelled.
     /// Nothing requests cancellation yet.
     #[allow(dead_code)]
@@ -48,9 +45,8 @@ impl Subtask {
         Self {
             state: SubtaskState::Starting,
             lenders: Vec::new(),
-            pending_event: None,
-            waitable_set: None,
-            synchronous_waiter: false,
+            resolve_delivered: false,
+            waitable: WaitableState::new(),
             cancel_requested: false,
         }
     }

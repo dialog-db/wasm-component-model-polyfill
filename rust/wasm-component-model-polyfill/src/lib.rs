@@ -191,7 +191,7 @@ pub use crate::engine::Engine;
 pub use crate::engine_config::EngineConfig;
 pub use crate::error::{
     AbiCause, AbiError, AbiPosition, Error, InstantiationError, LinkError, Result, SchedulerCause,
-    TypeMismatch, TypeMismatchPosition, TypeRendering,
+    TypeMismatch, TypeMismatchPosition, TypeRendering, WaitableCause,
 };
 pub use crate::identifier::{IdentifierParseError, InterfaceIdentifier, PackageName};
 pub use crate::instance::{

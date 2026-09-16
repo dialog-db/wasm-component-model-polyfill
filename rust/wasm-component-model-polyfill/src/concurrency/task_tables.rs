@@ -1,12 +1,15 @@
-//! The store's tables of task, subtask, thread, and instance
-//! records, with the stack of current scopes.
+//! The store's tables of task, subtask, thread, waitable set, and
+//! instance records, with the stack of current scopes.
 
 use crate::component::FunctionType;
+use crate::error::{Error, Result, WaitableCause};
 use crate::executor::ir::CanonOptions;
 use crate::resource::TableId;
 
+use super::event::Event;
 use super::instance_id::InstanceId;
 use super::instance_record::InstanceRecord;
+use super::readiness::Readiness;
 use super::record_table::RecordTable;
 use super::scope::Scope;
 use super::subtask::Subtask;
@@ -17,9 +20,13 @@ use super::task_id::TaskId;
 use super::task_state::TaskState;
 use super::thread::Thread;
 use super::thread_id::ThreadId;
+use super::waitable_id::WaitableId;
+use super::waitable_set::WaitableSet;
+use super::waitable_set_id::WaitableSetId;
+use super::waitable_state::WaitableState;
 
-/// The store's tables of task, subtask, thread, and instance
-/// records, with the stack of current scopes.
+/// The store's tables of task, subtask, thread, waitable set, and
+/// instance records, with the stack of current scopes.
 ///
 /// A scope is a task record or a subtask record, and the top of the
 /// stack is the current scope. Every borrow operation consults it: a
@@ -27,10 +34,15 @@ use super::thread_id::ThreadId;
 /// borrow lifted out of an owning handle is lent to the current
 /// scope, and the scope's exit checks that the guest dropped what it
 /// was lent.
+///
+/// The waitable state a guest waits on lives on the records
+/// themselves — a subtask carries its own — so the waitable
+/// operations here take a [`WaitableId`] and reach through it.
 pub struct TaskTables {
     tasks: RecordTable<Task>,
     subtasks: RecordTable<Subtask>,
     threads: RecordTable<Thread>,
+    waitable_sets: RecordTable<WaitableSet>,
     instances: Vec<InstanceRecord>,
     scopes: Vec<Scope>,
 }
@@ -42,6 +54,7 @@ impl TaskTables {
             tasks: RecordTable::new(),
             subtasks: RecordTable::new(),
             threads: RecordTable::new(),
+            waitable_sets: RecordTable::new(),
             instances: Vec::new(),
             scopes: Vec::new(),
         }
@@ -97,10 +110,19 @@ impl TaskTables {
         task
     }
 
+    /// Create a subtask record for a call out through an import.
+    /// The call that made it owns the record until its resolution is
+    /// delivered, which is not always the call that is on the stack:
+    /// an asynchronous lower leaves the subtask behind for a guest
+    /// to wait on.
+    pub fn insert_subtask(&mut self) -> SubtaskId {
+        SubtaskId::from_index(self.subtasks.insert(Subtask::new()))
+    }
+
     /// Create a subtask for a call out through an import and push it
     /// as the current scope.
     pub fn push_subtask(&mut self) -> SubtaskId {
-        let subtask = SubtaskId::from_index(self.subtasks.insert(Subtask::new()));
+        let subtask = self.insert_subtask();
         self.scopes.push(Scope::Subtask(subtask));
         subtask
     }
@@ -254,6 +276,279 @@ impl TaskTables {
     /// Remove a subtask record.
     pub fn remove_subtask(&mut self, subtask: SubtaskId) -> Option<Subtask> {
         self.subtasks.remove(subtask.index())
+    }
+
+    // ---- waitables and waitable sets ----
+
+    /// Create a waitable set record and return its identity. The
+    /// `waitable-set.new` built-in calls this and puts the identity's
+    /// index in a handle-table entry for the guest.
+    pub fn insert_waitable_set(&mut self) -> WaitableSetId {
+        WaitableSetId::from_index(self.waitable_sets.insert(WaitableSet::new()))
+    }
+
+    /// One waitable set record.
+    pub fn waitable_set(&self, set: WaitableSetId) -> Option<&WaitableSet> {
+        self.waitable_sets.get(set.index())
+    }
+
+    /// How many waitable set records the store holds.
+    pub fn waitable_set_count(&self) -> usize {
+        self.waitable_sets.len()
+    }
+
+    /// The waitable a subtask is. A subtask is the one kind of
+    /// waitable the polyfill builds today; the features that add
+    /// streams and futures name their ends the same way.
+    pub fn subtask_waitable(&self, subtask: SubtaskId) -> WaitableId {
+        WaitableId::Subtask(subtask)
+    }
+
+    /// The call `subtask` names returned its result: the subtask
+    /// moves to its returned state. Its resolution is delivered
+    /// separately, when the caller's thread takes the subtask event
+    /// or a synchronous lower returns.
+    pub fn subtask_returned(&mut self, subtask: SubtaskId) -> Result<()> {
+        self.subtask_mut(subtask)
+            .ok_or_else(|| Error::internal("subtask record is not in the store"))?
+            .state = SubtaskState::Returned;
+        Ok(())
+    }
+
+    /// The call `subtask` names was cancelled: the subtask moves to
+    /// cancelled-before-started when the callee had not read its
+    /// parameters yet, and to cancelled-before-returned when it had.
+    /// Nothing cancels a call yet.
+    #[allow(dead_code)]
+    pub fn subtask_cancelled(&mut self, subtask: SubtaskId) -> Result<()> {
+        let record = self
+            .subtask_mut(subtask)
+            .ok_or_else(|| Error::internal("subtask record is not in the store"))?;
+        record.state = match record.state {
+            SubtaskState::Starting => SubtaskState::CancelledBeforeStarted,
+            _ => SubtaskState::CancelledBeforeReturned,
+        };
+        Ok(())
+    }
+
+    /// Record readiness on `subtask` by filling its pending event
+    /// slot with the subtask event: `handle_index` is the subtask's
+    /// index in the caller instance's handle table, and the second
+    /// payload is the state the subtask is in now.
+    pub fn record_subtask_event(&mut self, subtask: SubtaskId, handle_index: u32) -> Result<()> {
+        let state = self.subtask_record(subtask)?.state;
+        self.set_pending_event(
+            WaitableId::Subtask(subtask),
+            Event::subtask(handle_index, state),
+        )
+    }
+
+    /// Record readiness on `waitable` by filling its pending event
+    /// slot. A slot that already held an event is overwritten, which
+    /// is what a waitable that progressed twice before either event
+    /// was delivered needs: the guest sees the later state.
+    pub fn set_pending_event(&mut self, waitable: WaitableId, event: Event) -> Result<()> {
+        self.waitable_state_mut(waitable)?.pending_event = Some(event);
+        Ok(())
+    }
+
+    /// Whether `waitable` holds a pending event.
+    pub fn has_pending_event(&self, waitable: WaitableId) -> Result<bool> {
+        Ok(self.waitable_state(waitable)?.pending_event.is_some())
+    }
+
+    /// Whether any waitable of `set` holds a pending event. A wait on
+    /// such a set returns at once rather than blocking.
+    pub fn set_has_pending_event(&self, set: WaitableSetId) -> Result<bool> {
+        Ok(self.next_ready_waitable(set)?.is_some())
+    }
+
+    /// The waitable set `waitable` joined, or `None` when it has
+    /// joined none.
+    pub fn waitable_set_of(&self, waitable: WaitableId) -> Result<Option<WaitableSetId>> {
+        Ok(self.waitable_state(waitable)?.set)
+    }
+
+    /// Move `waitable` into `set`, or out of every set when `set` is
+    /// `None`. Joining removes the waitable from the set it was in
+    /// before, and a waitable a thread waits on synchronously cannot
+    /// join a set at all.
+    pub fn join_waitable_set(
+        &mut self,
+        waitable: WaitableId,
+        set: Option<WaitableSetId>,
+    ) -> Result<()> {
+        let state = self.waitable_state(waitable)?;
+        let synchronous_waiter = state.synchronous_waiter;
+        let previous = state.set;
+        if synchronous_waiter {
+            return Err(Error::Waitable(WaitableCause::SyncAndAsync));
+        }
+        if let Some(previous) = previous
+            && let Some(record) = self.waitable_sets.get_mut(previous.index())
+        {
+            record.waitables.retain(|member| *member != waitable);
+        }
+        if let Some(set) = set {
+            self.waitable_set_record_mut(set)?.waitables.push(waitable);
+        }
+        self.waitable_state_mut(waitable)?.set = set;
+        Ok(())
+    }
+
+    /// Mark `waitable` as one a thread waits on synchronously, on its
+    /// own rather than through a set. A waitable already in a set
+    /// cannot take such a waiter, and neither can one that already
+    /// has one.
+    pub fn begin_synchronous_wait(&mut self, waitable: WaitableId) -> Result<()> {
+        let state = self.waitable_state_mut(waitable)?;
+        if state.set.is_some() || state.synchronous_waiter {
+            return Err(Error::Waitable(WaitableCause::SyncAndAsync));
+        }
+        state.synchronous_waiter = true;
+        Ok(())
+    }
+
+    /// The synchronous wait on `waitable` is over: the waitable can
+    /// join a set again.
+    pub fn end_synchronous_wait(&mut self, waitable: WaitableId) -> Result<()> {
+        self.waitable_state_mut(waitable)?.synchronous_waiter = false;
+        Ok(())
+    }
+
+    /// Park `thread` on `set`: the set's waiter count rises and the
+    /// thread's readiness condition names the set. The scheduler
+    /// suspends the thread after this, and
+    /// [`end_wait`](Self::end_wait) undoes it when the thread runs
+    /// again.
+    pub fn begin_wait(&mut self, set: WaitableSetId, thread: ThreadId) -> Result<()> {
+        self.waitable_set_record_mut(set)?.num_waiting += 1;
+        match self.thread_mut(thread) {
+            Some(record) => {
+                record.readiness = Some(Readiness::WaitableSet { set });
+                Ok(())
+            }
+            None => Err(Error::internal("waiting thread is not in the store")),
+        }
+    }
+
+    /// The wait [`begin_wait`](Self::begin_wait) parked `thread` for
+    /// is over: the set's waiter count falls and the thread's
+    /// readiness condition clears.
+    pub fn end_wait(&mut self, set: WaitableSetId, thread: ThreadId) -> Result<()> {
+        let record = self.waitable_set_record_mut(set)?;
+        record.num_waiting = record.num_waiting.saturating_sub(1);
+        if let Some(record) = self.thread_mut(thread) {
+            record.readiness = None;
+        }
+        Ok(())
+    }
+
+    /// Drop the waitable set `set`. A set that still holds waitables
+    /// traps, and so does one a thread is waiting on: the guest would
+    /// otherwise strand a waitable pointing at a set that is gone, or
+    /// a thread waiting for an event that can never arrive.
+    pub fn drop_waitable_set(&mut self, set: WaitableSetId) -> Result<()> {
+        let record = self.waitable_set_record_mut(set)?;
+        if !record.waitables.is_empty() {
+            return Err(Error::Waitable(WaitableCause::SetHasWaitables));
+        }
+        if record.num_waiting > 0 {
+            return Err(Error::Waitable(WaitableCause::SetHasWaiters));
+        }
+        self.waitable_sets.remove(set.index());
+        Ok(())
+    }
+
+    /// Drop the waitable `waitable` and the record it names. A
+    /// subtask whose resolution was not delivered traps, because the
+    /// handles the call borrowed are still lent out; so does a
+    /// waitable a thread waits on synchronously. The waitable leaves
+    /// the set it joined on its way out.
+    pub fn drop_waitable(&mut self, waitable: WaitableId) -> Result<()> {
+        let state = self.waitable_state(waitable)?;
+        if state.synchronous_waiter {
+            return Err(Error::Waitable(WaitableCause::SyncAndAsync));
+        }
+        match waitable {
+            WaitableId::Subtask(subtask) => {
+                let record = self.subtask_record(subtask)?;
+                if !record.resolve_delivered {
+                    return Err(Error::Waitable(WaitableCause::SubtaskNotResolved));
+                }
+                self.join_waitable_set(waitable, None)?;
+                self.remove_subtask(subtask);
+                Ok(())
+            }
+            // The feature that adds streams and futures removes
+            // their end records here.
+            _ => Err(Error::internal("waitable kind has no record in the store")),
+        }
+    }
+
+    /// The waitable of `set` that holds the oldest pending event, in
+    /// the order the waitables joined the set. Workspace-internal:
+    /// the store's delivery operations spell it.
+    pub fn next_ready_waitable(&self, set: WaitableSetId) -> Result<Option<WaitableId>> {
+        let record = self.waitable_set_record(set)?;
+        for waitable in &record.waitables {
+            if self.has_pending_event(*waitable)? {
+                return Ok(Some(*waitable));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Take the event pending on `waitable`, leaving its slot empty.
+    /// Workspace-internal: the store's delivery operations spell it,
+    /// because delivering a subtask's event also delivers its
+    /// resolution, which only the handle tables can do.
+    pub fn take_pending_event(&mut self, waitable: WaitableId) -> Result<Option<Event>> {
+        Ok(self.waitable_state_mut(waitable)?.pending_event.take())
+    }
+
+    /// One subtask record, or the internal error when the identity
+    /// names none.
+    fn subtask_record(&self, subtask: SubtaskId) -> Result<&Subtask> {
+        self.subtask(subtask)
+            .ok_or_else(|| Error::internal("subtask record is not in the store"))
+    }
+
+    /// One waitable set record, or the internal error when the
+    /// identity names none.
+    fn waitable_set_record(&self, set: WaitableSetId) -> Result<&WaitableSet> {
+        self.waitable_set(set)
+            .ok_or_else(|| Error::internal("waitable set record is not in the store"))
+    }
+
+    /// One waitable set record, mutably.
+    fn waitable_set_record_mut(&mut self, set: WaitableSetId) -> Result<&mut WaitableSet> {
+        self.waitable_sets
+            .get_mut(set.index())
+            .ok_or_else(|| Error::internal("waitable set record is not in the store"))
+    }
+
+    /// The waitable state on the record `waitable` names.
+    fn waitable_state(&self, waitable: WaitableId) -> Result<&WaitableState> {
+        match waitable {
+            WaitableId::Subtask(subtask) => Ok(&self.subtask_record(subtask)?.waitable),
+            // The feature that adds streams and futures answers with
+            // the state on their end records.
+            _ => Err(Error::internal("waitable kind has no record in the store")),
+        }
+    }
+
+    /// The waitable state on the record `waitable` names, mutably.
+    fn waitable_state_mut(&mut self, waitable: WaitableId) -> Result<&mut WaitableState> {
+        match waitable {
+            WaitableId::Subtask(subtask) => match self.subtasks.get_mut(subtask.index()) {
+                Some(record) => Ok(&mut record.waitable),
+                None => Err(Error::internal("subtask record is not in the store")),
+            },
+            // The feature that adds streams and futures answers with
+            // the state on their end records.
+            _ => Err(Error::internal("waitable kind has no record in the store")),
+        }
     }
 }
 

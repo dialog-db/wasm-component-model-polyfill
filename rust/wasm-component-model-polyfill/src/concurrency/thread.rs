@@ -16,8 +16,8 @@ pub struct Thread {
     pub task: TaskId,
     /// The readiness condition the thread waits on, or `None` when
     /// it is running or ready. A thread of a synchronous call never
-    /// waits, so nothing sets this yet.
-    #[allow(dead_code)]
+    /// waits; a thread parked on a waitable set names the set here
+    /// until its wait ends.
     pub readiness: Option<Readiness>,
     /// The two context slots, which `context.get` reads and
     /// `context.set` writes.

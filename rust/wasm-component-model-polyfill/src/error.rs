@@ -127,6 +127,12 @@ pub enum Error {
     #[error("scheduler error: {0}")]
     Scheduler(#[source] SchedulerCause),
 
+    /// A guest broke one of the rules that govern waitables and
+    /// waitable sets. The carried [`WaitableCause`] names which rule.
+    /// Each is a trap in the reference.
+    #[error("waitable error: {0}")]
+    Waitable(#[source] WaitableCause),
+
     /// The component uses a Component Model feature the polyfill
     /// does not implement yet. The feature is named so a caller can
     /// tell "not built yet" from "broken". Reaching this variant is
@@ -631,6 +637,47 @@ pub enum SchedulerCause {
     StackSwitchNeeded,
 }
 
+/// The structured reason a waitable operation failed.
+///
+/// Carried by [`Error::Waitable`]. Each cause is a trap in the
+/// reference, so a built-in that meets one fails the guest's call.
+/// Nothing produces these yet; the built-ins of the concurrency
+/// features produce them once they land.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum WaitableCause {
+    /// A guest dropped a waitable set that still held waitables. The
+    /// reference traps on the same condition; Wasmtime has no trap of
+    /// its own for it, so the message is the polyfill's own, written
+    /// to read like the one beside it.
+    #[error("cannot drop waitable set with waitables in it")]
+    SetHasWaitables,
+
+    /// A guest dropped a waitable set a thread was waiting on. The
+    /// message is Wasmtime 48's trap,
+    /// `Trap::WaitableSetDropHasWaiters` in `wasmtime-environ`'s
+    /// `src/trap_encoding.rs`, so the conformance corpus can match it
+    /// by substring.
+    #[error("cannot drop waitable set with waiters")]
+    SetHasWaiters,
+
+    /// A guest dropped a subtask whose resolution had not been
+    /// delivered, so the handles the call borrowed were still lent
+    /// out. The message is Wasmtime 48's trap,
+    /// `Trap::SubtaskDropNotResolved`, under the same rule as
+    /// [`WaitableCause::SetHasWaiters`].
+    #[error("cannot drop a subtask which has not yet resolved")]
+    SubtaskNotResolved,
+
+    /// A guest added a waitable to a waitable set while a thread was
+    /// waiting on that waitable on its own, or waited on a waitable
+    /// on its own while it was in a set. The message is Wasmtime 48's
+    /// trap, `Trap::WaitableSyncAndAsync`, under the same rule as
+    /// [`WaitableCause::SetHasWaiters`].
+    #[error("waitable cannot be used synchronously while added to a waitable set")]
+    SyncAndAsync,
+}
+
 /// A `Result` whose error variant is the polyfill's [`Error`].
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -706,5 +753,43 @@ mod tests {
         let unsupported = Error::unsupported("stream<T>");
         assert!(!matches!(stack_switch, Error::Unsupported { .. }));
         assert!(matches!(unsupported, Error::Unsupported { .. }));
+    }
+
+    #[test]
+    fn it_renders_the_waitable_set_drop_causes() {
+        assert_eq!(
+            Error::Waitable(WaitableCause::SetHasWaitables).to_string(),
+            "waitable error: cannot drop waitable set with waitables in it"
+        );
+        assert_eq!(
+            Error::Waitable(WaitableCause::SetHasWaiters).to_string(),
+            "waitable error: cannot drop waitable set with waiters"
+        );
+    }
+
+    #[test]
+    fn it_pins_the_waitable_causes_to_the_traps_wasmtime_environ_renders() {
+        for (trap, cause) in [
+            (
+                Trap::WaitableSetDropHasWaiters,
+                WaitableCause::SetHasWaiters.to_string(),
+            ),
+            (
+                Trap::SubtaskDropNotResolved,
+                WaitableCause::SubtaskNotResolved.to_string(),
+            ),
+            (
+                Trap::WaitableSyncAndAsync,
+                WaitableCause::SyncAndAsync.to_string(),
+            ),
+        ] {
+            let rendered = trap.to_string();
+            assert!(
+                rendered.ends_with(&cause),
+                "{trap:?} now renders as {rendered:?}, which no longer ends with the \
+                 `WaitableCause` message {cause:?}; the conformance corpus matches these \
+                 traps by substring, so the messages have to follow the traps"
+            );
+        }
     }
 }
