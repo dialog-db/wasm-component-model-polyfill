@@ -21,10 +21,9 @@ kanban-plugin: basic
 - [ ] [[3727fa]]
 - [ ] [[d552c8]]
 - [ ] [[d34ad1]]
+- [ ] [[377cb2]]
 
 ## In Progress
-
-- [ ] [[377cb2]]
 
 ## Needs Review
 
