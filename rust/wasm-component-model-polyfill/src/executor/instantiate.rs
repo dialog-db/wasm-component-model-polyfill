@@ -19,6 +19,7 @@ use wasm_runtime_layer::{
 };
 
 use crate::component::{Component, ExternType, ExternalName};
+use crate::concurrency::InstanceId;
 use crate::error::{Error, InstantiationError, LinkError, Result};
 use crate::instance::{ExportedFunction, ExportedModule, Instance};
 use crate::linker::{HostFuncBody, ImportBinding, InstanceRegistration, Linker, Resolution};
@@ -28,8 +29,8 @@ use crate::store::Store;
 
 use super::ResourceDestructor;
 use super::intrinsics::{
-    ContextSlots, build_context_get, build_context_set, build_enter_sync_call,
-    build_exit_sync_call, build_resource_transfer, build_transcoder, build_trap,
+    build_context_get, build_context_set, build_enter_sync_call, build_exit_sync_call,
+    build_resource_transfer, build_transcoder, build_trap,
 };
 use super::ir::{
     CoreInstanceExport, CoreSourceItem, ExecutorIr, ExportSpec, ImportSource, Initializer,
@@ -110,11 +111,27 @@ pub fn instantiate<T: 'static>(
         })
         .collect();
 
+    // One instance record per component instance of this
+    // instantiation: the entry gate, the backpressure counter, the
+    // exclusive thread, and the two flags a call consults. The
+    // adapters name their instances by the translator's index, which
+    // this list maps onto the store-wide identity.
+    let component_instances: Vec<InstanceId> = {
+        let mut guard = store
+            .tables
+            .lock()
+            .map_err(|_| internal("resource handle tables lock poisoned"))?;
+        (0..ir.num_component_instances)
+            .map(|_| guard.tasks.insert_instance())
+            .collect()
+    };
+
     let abi_state = Arc::new(Mutex::new(AbiRuntimeState::with_slabs(
         ir.num_runtime_memories,
         ir.num_runtime_reallocs,
         ir.num_runtime_post_returns,
         resource_tables,
+        component_instances,
     )));
 
     // Build every trampoline upfront. Trampolines never depend on
@@ -123,7 +140,6 @@ pub fn instantiate<T: 'static>(
     // the resulting runtime-layer `Func`s can be slotted into the
     // import table for any module that references them via
     // `CoreDef::Trampoline`.
-    let context = ContextSlots::default();
     let mut trampolines: Vec<RuntimeFunc> = Vec::with_capacity(ir.trampoline_specs.len());
     for spec in ir.trampoline_specs.iter() {
         let func = build_runtime_trampoline(
@@ -134,7 +150,6 @@ pub fn instantiate<T: 'static>(
             store,
             &abi_state,
             &resource_runtimes,
-            &context,
         )?;
         trampolines.push(func);
     }
@@ -293,7 +308,6 @@ fn build_runtime_trampoline<T: 'static>(
     store: &mut Store<T>,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     resource_runtimes: &[ResourceRuntime<T>],
-    context: &ContextSlots,
 ) -> Result<RuntimeFunc> {
     match spec {
         TrampolineSpec::LowerImport(lowering) => {
@@ -350,13 +364,15 @@ fn build_runtime_trampoline<T: 'static>(
             false,
         )),
         TrampolineSpec::Trap { signature } => Ok(build_trap(store, signature)),
-        TrampolineSpec::EnterSyncCall { signature } => Ok(build_enter_sync_call(store, signature)),
+        TrampolineSpec::EnterSyncCall { signature } => {
+            Ok(build_enter_sync_call(store, signature, abi_state.clone()))
+        }
         TrampolineSpec::ExitSyncCall { signature } => Ok(build_exit_sync_call(store, signature)),
         TrampolineSpec::ContextGet { slot, signature } => {
-            Ok(build_context_get(store, *slot, signature, context.clone()))
+            Ok(build_context_get(store, *slot, signature))
         }
         TrampolineSpec::ContextSet { slot, signature } => {
-            Ok(build_context_set(store, *slot, signature, context.clone()))
+            Ok(build_context_set(store, *slot, signature))
         }
     }
 }

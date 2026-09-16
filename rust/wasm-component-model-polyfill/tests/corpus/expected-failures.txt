@@ -555,7 +555,6 @@ wasmtime/async/cancel-sync-and-waitable.wast:177 deferred-feature component reje
 wasmtime/async/cancel-sync-and-waitable.wast:227 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
 wasmtime/async/cancel-sync-and-waitable.wast:230 deferred-feature component rejected: unsupported component feature: asynchronous functions
 wasmtime/async/cancel-sync-and-waitable.wast:301 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
-wasmtime/async/context-in-compositions.wast:155 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x91 - M!<wasm function 3> 1: 0x2a3 - <unknown>!<wasm function 10> 2: 0x48 - N!<wasm function 2>: wasm trap: wasm `unreachable` instruction executed
 wasmtime/async/context-in-compositions.wast:268 deferred-feature component rejected: unsupported component feature: asynchronous functions
 wasmtime/async/context-in-compositions.wast:434 deferred-feature no instance to invoke
 wasmtime/async/context-in-compositions.wast:435 deferred-feature no instance to invoke
@@ -713,18 +712,14 @@ wasmtime/async/subtask-wait.wast:9 deferred-feature component rejected: unsuppor
 wasmtime/async/subtask-wait.wast:82 deferred-feature expected a trap `wasm `unreachable` instruction executed`, got `no instance to invoke`
 wasmtime/async/sync-and-async-waitable.wast:5 deferred-feature component rejected: unsupported component feature: asynchronous functions
 wasmtime/async/sync-and-async-waitable.wast:123 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
-wasmtime/async/sync-call-context-slots.wast:76 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x51 - M!<wasm function 4> 1: 0x100 - <unknown>!<wasm function 4> 2: 0x67 - N!<wasm function 5>: wasm trap: wasm `unreachable` instruction executed
 wasmtime/async/sync-call-context-slots.wast:79 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
 wasmtime/async/sync-call-context-slots.wast:152 deferred-feature no instance to invoke
-wasmtime/async/sync-call-context.wast:61 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x4f - M!<wasm function 2> 1: 0x100 - <unknown>!<wasm function 4> 2: 0x64 - N!<wasm function 3>: wasm trap: wasm `unreachable` instruction executed
 wasmtime/async/sync-call-context.wast:64 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
 wasmtime/async/sync-call-context.wast:126 deferred-feature no instance to invoke
-wasmtime/async/sync-call-context.wast:207 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x5c - M!<wasm function 3> 1: 0x100 - <unknown>!<wasm function 4> 2: 0x62 - M!<wasm function 3>: wasm trap: wasm `unreachable` instruction executed
 wasmtime/async/sync-call-context.wast:210 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
 wasmtime/async/sync-call-context.wast:298 deferred-feature no instance to invoke
 wasmtime/async/sync-call-context.wast:301 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
 wasmtime/async/sync-call-context.wast:389 deferred-feature no instance to invoke
-wasmtime/async/sync-call-context.wast:447 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x4f - M!<wasm function 2> 1: 0x100 - <unknown>!<wasm function 4> 2: 0x59 - N!<wasm function 3>: wasm trap: wasm `unreachable` instruction executed
 wasmtime/async/sync-call-context.wast:450 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
 wasmtime/async/sync-call-context.wast:544 deferred-feature no instance to invoke
 wasmtime/async/sync-streams.wast:14 deferred-feature component rejected: unsupported component feature: asynchronous functions

@@ -1,4 +1,5 @@
-//! Per-store collection of handle tables, keyed by table identity.
+//! Per-store collection of handle tables, keyed by table identity,
+//! with the store's task, subtask, and thread records beside them.
 //!
 //! Each [`Store`] owns one `HandleTables` instance. A component
 //! instance's table is shared by every handle kind the instance
@@ -6,6 +7,13 @@
 //! time a given [`TableId`] is touched, so a table nothing has
 //! allocated into yet costs nothing. The host gets its own table
 //! per resource type, also created on first use.
+//!
+//! The collection also carries [`TaskTables`], the store's records
+//! of the calls in flight. The two live together because every
+//! borrow operation needs both: a borrow lowered into a guest takes
+//! an index in a handle table and counts against the current task,
+//! and a borrow lifted out of an owning entry raises that entry's
+//! lend count and is recorded on the current scope.
 //!
 //! Workspace-internal: the collection is reached only through
 //! crate-private accessors on [`Store`]. The public API exposes the
@@ -17,15 +25,16 @@
 
 use std::collections::HashMap;
 
-use super::call_scope::CallScope;
+use crate::concurrency::{Scope, SubtaskId, SubtaskState, TaskId, TaskTables};
+
 use super::handle_kind::HandleKind;
 use super::handle_lookup_error::HandleLookupError;
 use super::identity::ResourceTypeId;
 use super::table::HandleTable;
 use super::table_id::TableId;
 
-/// Every handle table a [`Store`] carries, with the call stack the
-/// canonical ABI keeps for borrows.
+/// Every handle table a [`Store`] carries, with the task, subtask,
+/// and thread records the canonical ABI keeps for borrows.
 ///
 /// [`Store`]: crate::Store
 pub struct HandleTables {
@@ -35,9 +44,9 @@ pub struct HandleTables {
     tables: HashMap<TableId, HandleTable>,
     /// The host's table for each resource type, created on first use.
     host_tables: HashMap<ResourceTypeId, TableId>,
-    /// The store's call stack: one scope per call in flight across
-    /// the host boundary, innermost last.
-    scopes: Vec<CallScope>,
+    /// The store's task, subtask, thread, and instance records, with
+    /// the stack of current scopes. Workspace-internal.
+    pub tasks: TaskTables,
 }
 
 impl HandleTables {
@@ -46,63 +55,164 @@ impl HandleTables {
         Self {
             tables: HashMap::new(),
             host_tables: HashMap::new(),
-            scopes: Vec::new(),
+            tasks: TaskTables::new(),
         }
     }
 
-    /// Push a call scope: a call is crossing the host boundary.
-    pub fn enter_call(&mut self) {
-        self.scopes.push(CallScope::default());
-    }
-
-    /// The position of the innermost call scope, if a call is in
-    /// flight.
-    pub fn current_scope(&self) -> Option<usize> {
-        self.scopes.len().checked_sub(1)
-    }
-
-    /// End the innermost call on its success path: every borrow
-    /// lowered into the guest during the call must have been dropped,
-    /// else the residual count is returned and the scope is still
-    /// popped. Each lend recorded during the call is undone.
-    pub fn exit_call(&mut self) -> Result<(), u32> {
-        let Some(scope) = self.scopes.pop() else {
+    /// End the task `task` on its success path: every borrow lowered
+    /// into the guest during the task must have been dropped, else
+    /// the residual count is returned and the scope is still popped.
+    /// Each lend recorded against the task is undone, the
+    /// may-not-suspend flag the enter intrinsic saved is restored,
+    /// and the task's record is removed.
+    ///
+    /// A scope a failed call left above `task` is discarded first, so
+    /// a failure between a push and its pop cannot strand a scope or
+    /// the lends recorded against it. Does nothing when `task` is not
+    /// on the stack.
+    pub fn exit_task(&mut self, task: TaskId) -> Result<(), u32> {
+        if !self.unwind_to(Scope::Task(task)) {
             return Ok(());
+        }
+        self.undo_lends(Scope::Task(task));
+        let borrows = self
+            .tasks
+            .task(task)
+            .map(|record| record.num_borrows)
+            .unwrap_or(0);
+        self.restore_may_not_suspend(task);
+        self.tasks.remove_task(task);
+        if borrows > 0 { Err(borrows) } else { Ok(()) }
+    }
+
+    /// End the innermost task on the stack on its success path, for
+    /// the one caller that cannot name the task it pushed: an
+    /// adapter's enter and exit intrinsics are two separate calls
+    /// that pass no identity between them. Behaves as
+    /// [`exit_task`](Self::exit_task) in every other respect.
+    pub fn exit_current_task(&mut self) -> Result<(), u32> {
+        match self.tasks.current_task() {
+            Some(task) => self.exit_task(task),
+            None => Ok(()),
+        }
+    }
+
+    /// End the task `task` on its failure path: the scope is popped
+    /// and its lends undone, and no borrow check is made, because
+    /// the call already failed. Every scope the failure left above
+    /// `task` is discarded with it.
+    pub fn abandon_task(&mut self, task: TaskId) {
+        let _ = self.exit_task(task);
+    }
+
+    /// Deliver the subtask `subtask`'s resolution and pop it: the
+    /// subtask moves to `state`, the count on each handle it
+    /// borrowed is decremented, and its record is removed. A scope a
+    /// failed call left above it is discarded first, and nothing
+    /// happens when `subtask` is not on the stack.
+    pub fn exit_subtask(&mut self, subtask: SubtaskId, state: SubtaskState) {
+        if !self.unwind_to(Scope::Subtask(subtask)) {
+            return;
+        }
+        if let Some(record) = self.tasks.subtask_mut(subtask) {
+            record.state = state;
+        }
+        self.undo_lends(Scope::Subtask(subtask));
+        self.tasks.remove_subtask(subtask);
+    }
+
+    /// End the subtask `subtask` on its failure path: the call never
+    /// returned, so its resolution is a cancellation — before the
+    /// callee read its parameters when the failure was in lifting
+    /// them, and after when the host function itself failed. The
+    /// handles the caller lent are given back either way.
+    pub fn abandon_subtask(&mut self, subtask: SubtaskId) {
+        let state = match self.tasks.subtask(subtask).map(|record| record.state) {
+            Some(SubtaskState::Starting) => SubtaskState::CancelledBeforeStarted,
+            _ => SubtaskState::CancelledBeforeReturned,
         };
-        for (table, index) in scope.lenders {
+        self.exit_subtask(subtask, state);
+    }
+
+    /// Pop scopes until `scope` itself has been popped, discarding
+    /// every scope above it. Those are what a call that failed
+    /// between its own push and its own pop left behind: the failure
+    /// travels as an error or a trap past the pop that would have
+    /// ended the scope, so the scope that catches it ends them.
+    /// Returns `false`, having popped nothing, when `scope` is not on
+    /// the stack.
+    fn unwind_to(&mut self, scope: Scope) -> bool {
+        if !self.tasks.scopes().contains(&scope) {
+            return false;
+        }
+        while let Some(top) = self.tasks.pop_scope() {
+            if top == scope {
+                return true;
+            }
+            self.discard_scope(top);
+        }
+        false
+    }
+
+    /// Give back the lends of a scope a failed call left behind and
+    /// remove its record, without the checks the scope's own exit
+    /// would have made: the call that would have made them is gone.
+    fn discard_scope(&mut self, scope: Scope) {
+        self.undo_lends(scope);
+        match scope {
+            Scope::Task(task) => {
+                self.restore_may_not_suspend(task);
+                self.tasks.remove_task(task);
+            }
+            Scope::Subtask(subtask) => {
+                self.tasks.remove_subtask(subtask);
+            }
+        }
+    }
+
+    /// Restore the may-not-suspend flag of `task`'s instance to the
+    /// value the enter intrinsic saved on the task's implicit thread.
+    /// Does nothing for a task that never set the flag.
+    fn restore_may_not_suspend(&mut self, task: TaskId) {
+        let Some((instance, thread)) = self
+            .tasks
+            .task(task)
+            .map(|record| (record.instance, record.implicit_thread))
+        else {
+            return;
+        };
+        let restore = self
+            .tasks
+            .thread_mut(thread)
+            .and_then(|record| record.old_may_not_suspend.take());
+        if let Some(old) = restore {
+            self.tasks.set_may_not_suspend(instance, old);
+        }
+    }
+
+    /// Give back every owning entry lent to `scope`.
+    fn undo_lends(&mut self, scope: Scope) {
+        for (table, index) in self.tasks.take_lenders(scope) {
             if let Some(HandleKind::Own { lend_count, .. }) =
                 self.for_table_mut(table).entry_mut(index)
             {
                 *lend_count = lend_count.saturating_sub(1);
             }
         }
-        if scope.borrow_count > 0 {
-            Err(scope.borrow_count)
-        } else {
-            Ok(())
-        }
-    }
-
-    /// End the innermost call on its failure path: the scope is
-    /// popped and its lends undone, and no borrow check is made,
-    /// because the call already failed.
-    pub fn abandon_call(&mut self) {
-        let _ = self.exit_call();
     }
 
     /// Record that a borrow of the owning entry `(table, index)` was
-    /// lifted out during the current call, so the entry cannot be
-    /// removed until the call ends. Returns `false` when the entry is
-    /// not an owning entry or no call is in flight.
+    /// lifted out during the current scope, so the entry cannot be
+    /// removed until the scope ends. Returns `false` when the entry
+    /// is not an owning entry or no scope is in flight.
     pub fn lend(&mut self, table: TableId, index: u32) -> bool {
-        let Some(scope) = self.current_scope() else {
+        let Some(scope) = self.tasks.current_scope() else {
             return false;
         };
         match self.for_table_mut(table).entry_mut(index) {
             Some(HandleKind::Own { lend_count, .. }) => {
                 *lend_count += 1;
-                self.scopes[scope].lenders.push((table, index));
-                true
+                self.tasks.add_lender(scope, (table, index))
             }
             _ => false,
         }
@@ -126,8 +236,8 @@ impl HandleTables {
     }
 
     /// Insert a borrow of `rep` of resource type `type_id` into
-    /// `table`, owed to the current call. Returns the new index, or
-    /// `None` when no call is in flight.
+    /// `table`, owed to the current task. Returns the new index, or
+    /// `None` when no task is in flight.
     pub fn insert_borrow(
         &mut self,
         table: TableId,
@@ -135,13 +245,13 @@ impl HandleTables {
         guest_defined: bool,
         rep: u32,
     ) -> Option<u32> {
-        let scope = self.current_scope()?;
-        self.scopes[scope].borrow_count += 1;
+        let task = self.tasks.current_task()?;
+        self.tasks.task_mut(task)?.num_borrows += 1;
         Some(self.for_table_mut(table).insert_entry(HandleKind::Borrow {
             type_id,
             guest_defined,
             rep,
-            scope,
+            task,
         }))
     }
 
@@ -240,12 +350,12 @@ impl HandleTables {
     }
 
     /// Drop a borrow entry: the guest returned the handle it was
-    /// lent. Returns `false` when the scope the borrow belongs to is
-    /// no longer on the stack.
-    pub fn return_borrow(&mut self, scope: usize) -> bool {
-        match self.scopes.get_mut(scope) {
-            Some(call) => {
-                call.borrow_count = call.borrow_count.saturating_sub(1);
+    /// lent. Returns `false` when the task the borrow is owed to is
+    /// no longer in the store.
+    pub fn return_borrow(&mut self, task: TaskId) -> bool {
+        match self.tasks.task_mut(task) {
+            Some(record) => {
+                record.num_borrows = record.num_borrows.saturating_sub(1);
                 true
             }
             None => false,
@@ -365,22 +475,142 @@ mod tests {
     }
 
     #[test]
-    fn it_refuses_to_remove_a_lent_entry_until_the_call_ends() {
+    fn it_refuses_to_remove_a_lent_entry_until_the_task_ends() {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
         let ty = ResourceTypeId::fresh();
         let index = tables.insert_own(table, ty, false, 3);
-        tables.enter_call();
+        let instance = tables.tasks.insert_instance();
+        let task = tables.tasks.push_task(None, None, instance);
         assert!(tables.lend(table, index));
         assert_eq!(
             tables.remove_own(table, index, ty, false),
             Err(HandleLookupError::Lent)
         );
-        assert_eq!(tables.exit_call(), Ok(()));
+        assert_eq!(tables.exit_task(task), Ok(()));
         assert_eq!(tables.remove_own(table, index, ty, false), Ok(3));
         assert_eq!(
             tables.remove_own(table, index, ty, false),
             Err(HandleLookupError::Unknown { index })
+        );
+    }
+
+    #[test]
+    fn it_owes_a_lowered_borrow_to_the_current_task_and_takes_it_back_on_drop() {
+        let mut tables = HandleTables::new();
+        let table = TableId::fresh();
+        let ty = ResourceTypeId::fresh();
+        let instance = tables.tasks.insert_instance();
+        let task = tables.tasks.push_task(None, None, instance);
+        let index = tables
+            .insert_borrow(table, ty, false, 11)
+            .expect("a task is in flight");
+        tables
+            .insert_borrow(table, ty, false, 12)
+            .expect("a task is in flight");
+        assert_eq!(
+            tables.entry(table, index),
+            Some(HandleKind::Borrow {
+                type_id: ty,
+                guest_defined: false,
+                rep: 11,
+                task,
+            })
+        );
+
+        assert!(
+            tables.return_borrow(task),
+            "the guest drops one of the two borrows"
+        );
+        assert_eq!(
+            tables.exit_task(task),
+            Err(1),
+            "the drop took one back and the guest still holds the other"
+        );
+        assert!(
+            !tables.return_borrow(task),
+            "the task is gone once its scope ended"
+        );
+
+        // A task that sees every borrow it was lowered dropped owes
+        // nothing at its exit.
+        let task = tables.tasks.push_task(None, None, instance);
+        tables
+            .insert_borrow(table, ty, false, 13)
+            .expect("a task is in flight");
+        assert!(tables.return_borrow(task), "the guest drops the borrow");
+        assert_eq!(
+            tables.exit_task(task),
+            Ok(()),
+            "nothing is owed when the count is back to zero"
+        );
+    }
+
+    #[test]
+    fn it_refuses_a_borrow_lowered_outside_a_task() {
+        let mut tables = HandleTables::new();
+        let table = TableId::fresh();
+        let ty = ResourceTypeId::fresh();
+        assert_eq!(tables.insert_borrow(table, ty, false, 1), None);
+    }
+
+    #[test]
+    fn it_discards_a_subtask_a_failed_host_call_left_above_the_task() {
+        // The failure of a host call travels past the pop that would
+        // have ended its subtask: the lift of a parameter fails after
+        // an earlier parameter has already lent an owning entry. The
+        // task that catches the failure ends the subtask with itself.
+        let mut tables = HandleTables::new();
+        let table = TableId::fresh();
+        let ty = ResourceTypeId::fresh();
+        let index = tables.insert_own(table, ty, false, 4);
+        let instance = tables.tasks.insert_instance();
+        let task = tables.tasks.push_task(None, None, instance);
+        let subtask = tables.tasks.push_subtask();
+        assert!(tables.lend(table, index), "the borrow lifts out");
+        assert_eq!(
+            tables.remove_own(table, index, ty, false),
+            Err(HandleLookupError::Lent),
+            "the entry is lent while the host call runs"
+        );
+
+        tables.abandon_task(task);
+
+        assert_eq!(
+            tables.remove_own(table, index, ty, false),
+            Ok(4),
+            "the lend the abandoned subtask held is given back"
+        );
+        assert!(
+            tables.tasks.scopes().is_empty(),
+            "neither scope is left on the stack"
+        );
+        assert_eq!(tables.tasks.subtask(subtask).map(|_| ()), None);
+        assert_eq!(tables.tasks.task_count(), 0, "no task record is left");
+        assert_eq!(tables.tasks.subtask_count(), 0, "no subtask record either");
+        assert_eq!(tables.tasks.thread_count(), 0, "nor any thread record");
+    }
+
+    #[test]
+    fn it_leaves_a_scope_that_is_not_on_the_stack_alone() {
+        // An identity that has already been popped names nothing, and
+        // ending it a second time must not eat the scope below it.
+        let mut tables = HandleTables::new();
+        let instance = tables.tasks.insert_instance();
+        let outer = tables.tasks.push_task(None, None, instance);
+        let inner = tables.tasks.push_task(None, None, instance);
+        assert_eq!(tables.exit_task(inner), Ok(()));
+
+        assert_eq!(
+            tables.exit_task(inner),
+            Ok(()),
+            "the second exit is a no-op"
+        );
+
+        assert_eq!(
+            tables.tasks.current_scope(),
+            Some(Scope::Task(outer)),
+            "the caller's task is still current"
         );
     }
 }

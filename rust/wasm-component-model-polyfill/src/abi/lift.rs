@@ -411,8 +411,8 @@ pub fn lift_handle<T: 'static>(
         }))
     } else {
         // A borrow lifted out of an owning entry lends that entry to
-        // the host for the rest of the call; a borrow of a borrow
-        // needs no bookkeeping of its own.
+        // the current scope, which gives it back when the scope ends;
+        // a borrow of a borrow needs no bookkeeping of its own.
         let entry = guard
             .lookup(table.table, index, table.type_id, table.guest_defined)
             .map_err(|e| invalid(e.to_string()))?;

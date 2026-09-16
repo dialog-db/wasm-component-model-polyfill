@@ -43,6 +43,7 @@ use crate::executor::ir::{CanonOptions, LoweringSpec};
 use crate::linker::{HostCall, HostFuncBody, HostResource};
 
 use super::ResourceDestructor;
+use crate::concurrency::{InstanceId, SubtaskState};
 use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime, ResourceTypeId};
 use crate::store::Store;
 use crate::types::{PrimitiveType, ValueType};
@@ -61,6 +62,11 @@ pub struct AbiRuntimeState {
     /// identity of the resource type it holds, and whether the table's
     /// instance defines the resource. `None` for an abstract table.
     pub resource_tables: Vec<Option<ResourceTableRuntime>>,
+    /// The store-wide identity of every component instance of this
+    /// instantiation, by the translator's per-instantiation index.
+    /// An adapter names its caller and its callee by that index; the
+    /// enter intrinsic maps it onto the instance record.
+    pub component_instances: Vec<InstanceId>,
 }
 
 /// Per-resource runtime data captured by every resource trampoline.
@@ -117,12 +123,14 @@ impl AbiRuntimeState {
         num_reallocs: usize,
         num_post_returns: usize,
         resource_tables: Vec<Option<ResourceTableRuntime>>,
+        component_instances: Vec<InstanceId>,
     ) -> Self {
         Self {
             memories: vec![None; num_memories],
             reallocs: vec![None; num_reallocs],
             post_returns: vec![None; num_post_returns],
             resource_tables,
+            component_instances,
         }
     }
 }
@@ -249,8 +257,8 @@ pub fn drop_handle(
         HandleKind::Own { .. } => Err(invalid_handle_reason(
             "cannot remove owned resource while borrowed".to_owned(),
         )),
-        HandleKind::Borrow { scope, .. } => {
-            if !guard.return_borrow(scope) {
+        HandleKind::Borrow { task, .. } => {
+            if !guard.return_borrow(task) {
                 return Err(invalid_handle(index));
             }
             guard.for_table_mut(table.table).remove(index);
@@ -408,76 +416,93 @@ fn invoke_trampoline<T: 'static>(
         (memory, realloc, state.resource_tables.clone())
     };
 
-    // A call from the guest into the host opens a scope: borrows the
-    // guest lends in are recorded against it, and borrows the host
-    // lowers back out are owed to it.
-    lock_tables(tables)?.enter_call();
+    // A call from the guest into the host is a subtask: it goes on
+    // the stack of current scopes and stays there while the host side
+    // runs. Borrows the guest lends in are recorded against it, and
+    // are given back when the subtask's resolution is delivered.
+    let subtask = lock_tables(tables)?.tasks.push_subtask();
 
-    let mut cursor = 0usize;
-    let mut lift_ctx = LiftContext::new(
-        store_ctx.as_context_mut(),
-        memory.clone(),
-        options.string_encoding,
-        Some(tables.clone()),
-        resource_tables.clone(),
-    );
-    let lifted = if params_spill(signature) {
-        lift_spilled_arguments(&mut lift_ctx, signature, args, &mut cursor)?
-    } else {
-        let mut lifted: Vec<Val> = Vec::with_capacity(signature.parameters.len());
-        for (i, param) in signature.parameters.iter().enumerate() {
-            let position = AbiPosition::Argument(i);
-            lifted.push(lift_from_flat_slots(
-                &mut lift_ctx,
+    // Lifting the parameters and running the host function both
+    // happen with the subtask on the stack, and either can fail. The
+    // failure travels past the pop that would have ended the subtask,
+    // so the whole of it is one fallible step whose one error path
+    // ends the subtask below.
+    let called = (|store_ctx: &mut wasm_runtime_layer::StoreContextMut<'_, T, Backend>| -> Result<(Vec<Val>, Option<usize>)> {
+        let mut cursor = 0usize;
+        let mut lift_ctx = LiftContext::new(
+            store_ctx.as_context_mut(),
+            memory.clone(),
+            options.string_encoding,
+            Some(tables.clone()),
+            resource_tables.clone(),
+        );
+        let lifted = if params_spill(signature) {
+            lift_spilled_arguments(&mut lift_ctx, signature, args, &mut cursor)?
+        } else {
+            let mut lifted: Vec<Val> = Vec::with_capacity(signature.parameters.len());
+            for (i, param) in signature.parameters.iter().enumerate() {
+                let position = AbiPosition::Argument(i);
+                lifted.push(lift_from_flat_slots(
+                    &mut lift_ctx,
+                    args,
+                    &mut cursor,
+                    &param.ty,
+                    position,
+                )?);
+            }
+            lifted
+        };
+
+        // When the result is too wide for flat slots, the caller
+        // passes a return-area pointer as the final argument.
+        let return_area_ptr = match &signature.result {
+            Some(result_ty) if result_spills(signature) => Some(pointer_argument(
                 args,
                 &mut cursor,
-                &param.ty,
-                position,
-            )?);
+                result_ty,
+                AbiPosition::Result,
+            )?),
+            _ => None,
+        };
+
+        // Drop the lift context borrow before invoking the host.
+        drop(lift_ctx);
+
+        // The parameters are lifted, so the callee has started.
+        lock_tables(tables)?.tasks.start_subtask(subtask);
+
+        let host_arity = usize::from(signature.result.is_some());
+        let mut host_results: Vec<Val> = vec![Val::Bool(false); host_arity];
+        let call = HostCall::new(
+            store_ctx.data_mut(),
+            tables.clone(),
+            resource_tables.clone(),
+        );
+        host_func(call, &lifted, &mut host_results)?;
+        Ok((host_results, return_area_ptr))
+    })(&mut store_ctx);
+
+    let (host_results, return_area_ptr) = match called {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            // The call never returned, so the subtask's resolution is
+            // a cancellation, and the handles the guest lent for it
+            // are given back all the same. The lock is taken without
+            // the usual error wrapping so that a poisoned lock does
+            // not displace the failure that is being reported.
+            if let Ok(mut guard) = tables.lock() {
+                guard.abandon_subtask(subtask);
+            }
+            return Err(err);
         }
-        lifted
     };
 
-    // When the result is too wide for flat slots, the caller passes
-    // a return-area pointer as the final argument.
-    let return_area_ptr = match &signature.result {
-        Some(result_ty) if result_spills(signature) => Some(pointer_argument(
-            args,
-            &mut cursor,
-            result_ty,
-            AbiPosition::Result,
-        )?),
-        _ => None,
-    };
-
-    // Drop the lift context borrow before invoking the host.
-    drop(lift_ctx);
-
-    let host_arity = usize::from(signature.result.is_some());
-    let mut host_results: Vec<Val> = vec![Val::Bool(false); host_arity];
-    let call = HostCall::new(
-        store_ctx.data_mut(),
-        tables.clone(),
-        resource_tables.clone(),
-    );
-    if let Err(err) = host_func(call, &lifted, &mut host_results) {
-        // The failure path pops the scope without the borrow check:
-        // the error already says the call failed.
-        lock_tables(tables)?.abandon_call();
-        return Err(err);
-    }
-    // The success path validates the scope before results are
-    // written back: every borrow lowered into the guest during the
-    // call must have been dropped, and each lend is undone.
-    if let Err(count) = lock_tables(tables)?.exit_call() {
-        return Err(Error::from(AbiError {
-            position: AbiPosition::Result,
-            valtype: ValueType::Primitive(PrimitiveType::Bool),
-            cause: AbiCause::OutstandingBorrows {
-                count: count as usize,
-            },
-        }));
-    }
+    // The success path resolves the subtask before results are
+    // written back: a synchronous lower delivers the resolution as it
+    // returns, which gives back every handle the guest lent for the
+    // call. A borrow the host lowers back out belongs to the caller's
+    // task, which is why the subtask leaves the stack first.
+    lock_tables(tables)?.exit_subtask(subtask, SubtaskState::Returned);
 
     let Some(result_ty) = &signature.result else {
         return Ok(());

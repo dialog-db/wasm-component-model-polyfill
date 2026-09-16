@@ -20,12 +20,13 @@
 //!   the index changes; a borrow transfer inserts a borrow entry into
 //!   the destination table for the duration of the call.
 //! - A trap intrinsic that raises a Wasmtime trap code.
-//! - Enter and exit intrinsics around a synchronous call that
-//!   carries resources. They exist so borrow scopes can be validated
-//!   at exit; without per-call borrow tracking they succeed.
-//! - The two context slots of the current task, which an adapter
-//!   saves and restores around the callee. The polyfill runs one
-//!   task, so the slots are two integers per instantiation.
+//! - Enter and exit intrinsics around a synchronous call between two
+//!   components. The enter intrinsic pushes the callee's task on the
+//!   store's stack of current scopes and marks the callee instance
+//!   as one that may not suspend; the exit intrinsic validates the
+//!   task's borrows, restores the flag, and pops the task.
+//! - The two context slots of the current thread, which an adapter
+//!   saves and restores around the callee.
 
 use std::sync::{Arc, Mutex};
 
@@ -38,6 +39,7 @@ use wasmtime_environ::Trap;
 
 use crate::abi::layout::FlatType;
 use crate::backend::Backend;
+use crate::concurrency::{InstanceId, ThreadId};
 use crate::error::{Error, Result};
 use crate::executor::ir::{CoreSignature, TranscodeOp};
 use crate::executor::trampoline::AbiRuntimeState;
@@ -48,58 +50,76 @@ use crate::store::Store;
 /// left as UTF-16 rather than deflated to Latin-1.
 const UTF16_TAG: u32 = 1 << 31;
 
-/// The context slots of the polyfill's single task, shared by the
-/// context intrinsics of one instantiation.
-#[derive(Clone, Default)]
-pub struct ContextSlots(Arc<Mutex<[i32; 2]>>);
-
-/// Build a `context.get` intrinsic for `slot`.
+/// Build a `context.get` intrinsic for `slot`. It reads the slot of
+/// the current thread: the thread of the task on top of the store's
+/// stack of current scopes.
 pub fn build_context_get<T: 'static>(
     store: &mut Store<T>,
     slot: usize,
     signature: &CoreSignature,
-    context: ContextSlots,
 ) -> RuntimeFunc {
+    let tables = store.tables_handle();
     RuntimeFunc::new(
         store.inner_mut(),
         core_func_type(signature),
         move |_store_ctx, _args, results| {
-            let slots = context
-                .0
-                .lock()
-                .map_err(|_| Error::internal("context slots lock poisoned"))?;
-            let value = *slots
-                .get(slot)
-                .ok_or_else(|| Error::internal("context slot index out of range"))?;
-            results[0] = RuntimeVal::I32(value);
+            results[0] = RuntimeVal::I32(context_get(&tables, slot)?);
             Ok(())
         },
     )
 }
 
-/// Build a `context.set` intrinsic for `slot`.
+/// Read slot `slot` of the current thread, which is what a
+/// `context.get` intrinsic does.
+fn context_get(tables: &Arc<Mutex<HandleTables>>, slot: usize) -> anyhow::Result<i32> {
+    let guard = lock_tables(tables)?;
+    let thread = current_thread(&guard)?;
+    let value = *guard
+        .tasks
+        .thread(thread)
+        .and_then(|record| record.context.get(slot))
+        .ok_or_else(|| Error::internal("context slot index out of range"))?;
+    Ok(value)
+}
+
+/// Build a `context.set` intrinsic for `slot`. See
+/// [`build_context_get`]: it writes the current thread's slot.
 pub fn build_context_set<T: 'static>(
     store: &mut Store<T>,
     slot: usize,
     signature: &CoreSignature,
-    context: ContextSlots,
 ) -> RuntimeFunc {
+    let tables = store.tables_handle();
     RuntimeFunc::new(
         store.inner_mut(),
         core_func_type(signature),
         move |_store_ctx, args, _results| {
             let value = arg_u32(args, 0)? as i32;
-            let mut slots = context
-                .0
-                .lock()
-                .map_err(|_| Error::internal("context slots lock poisoned"))?;
-            let target = slots
-                .get_mut(slot)
-                .ok_or_else(|| Error::internal("context slot index out of range"))?;
-            *target = value;
-            Ok(())
+            context_set(&tables, slot, value)
         },
     )
+}
+
+/// Write `value` into slot `slot` of the current thread, which is
+/// what a `context.set` intrinsic does.
+fn context_set(tables: &Arc<Mutex<HandleTables>>, slot: usize, value: i32) -> anyhow::Result<()> {
+    let mut guard = lock_tables(tables)?;
+    let thread = current_thread(&guard)?;
+    let target = guard
+        .tasks
+        .thread_mut(thread)
+        .and_then(|record| record.context.get_mut(slot))
+        .ok_or_else(|| Error::internal("context slot index out of range"))?;
+    *target = value;
+    Ok(())
+}
+
+/// The thread whose context slots the context intrinsics address.
+fn current_thread(guard: &HandleTables) -> anyhow::Result<ThreadId> {
+    guard
+        .tasks
+        .current_thread()
+        .ok_or_else(|| anyhow!("an adapter read or wrote a context slot with no task on the stack"))
 }
 
 /// The runtime-layer function type for a [`CoreSignature`].
@@ -138,30 +158,43 @@ pub fn build_trap<T: 'static>(store: &mut Store<T>, signature: &CoreSignature) -
 
 /// Build the `enter-sync-call` intrinsic. The adapter passes the
 /// caller instance, whether the callee is asynchronous, and the
-/// callee instance. A call between two components opens a call
-/// scope like a call across the host boundary does.
+/// callee instance. A synchronous call between two components is a
+/// task with one thread, so the intrinsic pushes the callee's task
+/// on the store's stack of current scopes.
 pub fn build_enter_sync_call<T: 'static>(
     store: &mut Store<T>,
     signature: &CoreSignature,
+    abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
     let tables = store.tables_handle();
     RuntimeFunc::new(
         store.inner_mut(),
         core_func_type(signature),
-        move |_store_ctx, _args, _results| {
-            tables
-                .lock()
-                .map_err(|_| anyhow!("resource handle tables lock poisoned"))?
-                .enter_call();
-            Ok(())
+        move |_store_ctx, args, _results| {
+            let (callee, callee_async) = enter_sync_call_arguments(&abi_state, args)?;
+            enter_sync_call(&tables, callee, callee_async)
         },
     )
 }
 
+/// The callee of an `enter-sync-call` and whether it is
+/// asynchronous. The adapter passes the caller instance, then
+/// whether the callee is asynchronous, then the callee instance;
+/// only the last two are read, because the task the intrinsic pushes
+/// and the instance it flags are the callee's.
+fn enter_sync_call_arguments(
+    abi_state: &Arc<Mutex<AbiRuntimeState>>,
+    args: &[RuntimeVal],
+) -> anyhow::Result<(InstanceId, bool)> {
+    let callee_async = arg_u32(args, 1)? != 0;
+    let callee = instance_at(abi_state, arg_u32(args, 2)?)?;
+    Ok((callee, callee_async))
+}
+
 /// Build the `exit-sync-call` intrinsic. See
-/// [`build_enter_sync_call`]: the scope is validated and closed, and
-/// a borrow the callee did not drop traps with the message Wasmtime
-/// uses.
+/// [`build_enter_sync_call`]: the callee's task is validated and
+/// popped, and a borrow the callee did not drop traps with the
+/// message Wasmtime uses.
 pub fn build_exit_sync_call<T: 'static>(
     store: &mut Store<T>,
     signature: &CoreSignature,
@@ -170,19 +203,78 @@ pub fn build_exit_sync_call<T: 'static>(
     RuntimeFunc::new(
         store.inner_mut(),
         core_func_type(signature),
-        move |_store_ctx, _args, _results| {
-            let outcome = tables
-                .lock()
-                .map_err(|_| anyhow!("resource handle tables lock poisoned"))?
-                .exit_call();
-            match outcome {
-                Ok(()) => Ok(()),
-                Err(_) => Err(anyhow!(
-                    "wasm trap: borrow handles still remain at the end of the call"
-                )),
-            }
-        },
+        move |_store_ctx, _args, _results| exit_sync_call(&tables),
     )
+}
+
+/// Push the task of a synchronous call into `callee` and, unless the
+/// callee is asynchronous, mark the instance as one that may not
+/// suspend for the duration. The flag's old value is saved on the
+/// task's thread, which is where Wasmtime saves it and where the
+/// exit intrinsic reads it back.
+fn enter_sync_call(
+    tables: &Arc<Mutex<HandleTables>>,
+    callee: InstanceId,
+    callee_async: bool,
+) -> anyhow::Result<()> {
+    let mut guard = lock_tables(tables)?;
+    let task = guard.tasks.push_task(None, None, callee);
+    guard.tasks.start_task(task);
+    if callee_async {
+        return Ok(());
+    }
+    let old = guard
+        .tasks
+        .set_may_not_suspend(callee, true)
+        .ok_or_else(|| anyhow!("the adapter named an instance the store does not hold"))?;
+    let thread = guard
+        .tasks
+        .task(task)
+        .map(|record| record.implicit_thread)
+        .ok_or_else(|| anyhow!("a task pushed by the enter intrinsic has no record"))?;
+    if let Some(record) = guard.tasks.thread_mut(thread) {
+        record.old_may_not_suspend = Some(old);
+    }
+    Ok(())
+}
+
+/// Validate and pop the task the enter intrinsic pushed. The two
+/// intrinsics are separate adapter calls that pass no identity
+/// between them, so the innermost task on the stack is the one to
+/// pop, and anything a failed call left above it goes with it.
+fn exit_sync_call(tables: &Arc<Mutex<HandleTables>>) -> anyhow::Result<()> {
+    match lock_tables(tables)?.exit_current_task() {
+        Ok(()) => Ok(()),
+        Err(_) => Err(anyhow!(
+            "wasm trap: borrow handles still remain at the end of the call"
+        )),
+    }
+}
+
+/// The store-wide identity of the component instance the adapter
+/// names by `index`, the translator's per-instantiation index.
+fn instance_at(abi_state: &Arc<Mutex<AbiRuntimeState>>, index: u32) -> anyhow::Result<InstanceId> {
+    let state = abi_state
+        .lock()
+        .map_err(|_| anyhow!("ABI state poisoned"))?;
+    state
+        .component_instances
+        .get(index as usize)
+        .copied()
+        .ok_or_else(|| {
+            anyhow!(
+                "adapter named component instance {index}, which this instantiation does not hold"
+            )
+        })
+}
+
+/// Lock the store's handle tables and record state.
+fn lock_tables(
+    tables: &Arc<Mutex<HandleTables>>,
+) -> anyhow::Result<std::sync::MutexGuard<'_, HandleTables>> {
+    tables
+        .lock()
+        .map_err(|_| anyhow!("resource handle tables lock poisoned"))
 }
 
 /// Build the `resource-transfer-own` or `resource-transfer-borrow`
@@ -621,6 +713,7 @@ fn invalid(message: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::concurrency::Scope;
     use crate::resource::{ResourceTypeId, TableId};
 
     fn runtime(table: TableId, type_id: ResourceTypeId) -> ResourceTableRuntime {
@@ -671,11 +764,12 @@ mod tests {
         let dst_table = TableId::fresh();
         let src = runtime(src_table, type_id);
         let dst = runtime(dst_table, type_id);
-        let index = {
+        let (index, task) = {
             let mut guard = tables.lock().unwrap();
             let index = guard.insert_own(src_table, type_id, true, 7);
-            guard.enter_call();
-            index
+            let instance = guard.tasks.insert_instance();
+            let task = guard.tasks.push_task(None, None, instance);
+            (index, task)
         };
 
         let borrow_index = transfer_borrow(&tables, src, dst, index).unwrap();
@@ -689,12 +783,220 @@ mod tests {
                 type_id,
                 guest_defined: true,
                 rep: 7,
-                scope: 0,
+                task,
             }
         );
         assert!(
             guard.lookup(src_table, index, type_id, true).is_ok(),
             "the source entry stays lent, not removed"
+        );
+    }
+
+    #[test]
+    fn it_pushes_the_callees_task_and_marks_the_instance_may_not_suspend() {
+        let tables = Arc::new(Mutex::new(HandleTables::new()));
+        let callee = tables.lock().unwrap().tasks.insert_instance();
+
+        enter_sync_call(&tables, callee, false).expect("the enter intrinsic runs");
+
+        {
+            let guard = tables.lock().unwrap();
+            let Some(Scope::Task(task)) = guard.tasks.current_scope() else {
+                panic!("the enter intrinsic pushes the callee's task");
+            };
+            assert_eq!(
+                guard.tasks.task(task).map(|record| record.instance),
+                Some(callee),
+                "the task names the callee instance"
+            );
+            assert!(
+                guard
+                    .tasks
+                    .instance(callee)
+                    .is_some_and(|record| record.may_not_suspend),
+                "the callee instance may not suspend for the call"
+            );
+        }
+
+        exit_sync_call(&tables).expect("the exit intrinsic runs");
+
+        let guard = tables.lock().unwrap();
+        assert_eq!(
+            guard.tasks.current_scope(),
+            None,
+            "the exit intrinsic pops the task"
+        );
+        assert!(
+            guard
+                .tasks
+                .instance(callee)
+                .is_some_and(|record| !record.may_not_suspend),
+            "the exit intrinsic restores the flag"
+        );
+        assert_eq!(guard.tasks.task_count(), 0, "the task record is gone");
+        assert_eq!(guard.tasks.thread_count(), 0, "its thread record too");
+    }
+
+    #[test]
+    fn it_leaves_the_flag_set_for_a_nested_synchronous_call() {
+        let tables = Arc::new(Mutex::new(HandleTables::new()));
+        let callee = tables.lock().unwrap().tasks.insert_instance();
+
+        enter_sync_call(&tables, callee, false).expect("the outer call");
+        enter_sync_call(&tables, callee, false).expect("a call back into the same instance");
+        exit_sync_call(&tables).expect("the inner call returns");
+
+        assert!(
+            tables
+                .lock()
+                .unwrap()
+                .tasks
+                .instance(callee)
+                .is_some_and(|record| record.may_not_suspend),
+            "the inner call restores the value the outer call set"
+        );
+
+        exit_sync_call(&tables).expect("the outer call returns");
+        assert!(
+            tables
+                .lock()
+                .unwrap()
+                .tasks
+                .instance(callee)
+                .is_some_and(|record| !record.may_not_suspend),
+            "the outer call restores the value the instance started with"
+        );
+    }
+
+    #[test]
+    fn it_reads_and_writes_the_context_slots_of_the_current_thread() {
+        // Every read and write here goes through the bodies the
+        // `context.get` and `context.set` intrinsics run.
+        let tables = Arc::new(Mutex::new(HandleTables::new()));
+        let instance = tables.lock().unwrap().tasks.insert_instance();
+        assert!(
+            context_get(&tables, 0).is_err(),
+            "there is no thread to address with no task on the stack"
+        );
+
+        let caller = tables.lock().unwrap().tasks.push_task(None, None, instance);
+        context_set(&tables, 0, 7).expect("the caller writes its first slot");
+        context_set(&tables, 1, 8).expect("the caller writes its second slot");
+        assert!(
+            context_set(&tables, 2, 9).is_err(),
+            "a thread has two context slots and no more"
+        );
+
+        let callee = tables.lock().unwrap().tasks.push_task(None, None, instance);
+        assert_eq!(
+            (
+                context_get(&tables, 0).unwrap(),
+                context_get(&tables, 1).unwrap()
+            ),
+            (0, 0),
+            "the callee's task brings its own thread, with empty slots"
+        );
+        context_set(&tables, 0, 9).expect("the callee writes its own first slot");
+
+        assert_eq!(tables.lock().unwrap().exit_task(callee), Ok(()));
+        assert_eq!(
+            (
+                context_get(&tables, 0).unwrap(),
+                context_get(&tables, 1).unwrap()
+            ),
+            (7, 8),
+            "the caller's slots are as it left them"
+        );
+        assert_eq!(
+            tables.lock().unwrap().tasks.current_task(),
+            Some(caller),
+            "the caller's task is current again"
+        );
+    }
+
+    #[test]
+    fn it_pops_the_callees_task_with_the_export_task_when_the_call_is_abandoned() {
+        // A guest that traps inside a composed call never reaches the
+        // exit intrinsic, so the callee's task is still on the stack
+        // when the export's task is abandoned. Abandoning the export's
+        // task ends the callee's with it and restores the flag the
+        // enter intrinsic set.
+        let tables = Arc::new(Mutex::new(HandleTables::new()));
+        let (caller, callee) = {
+            let mut guard = tables.lock().unwrap();
+            let instance = guard.tasks.insert_instance();
+            let caller = guard.tasks.push_task(None, None, instance);
+            (caller, instance)
+        };
+
+        enter_sync_call(&tables, callee, false).expect("the enter intrinsic runs");
+        assert!(
+            tables
+                .lock()
+                .unwrap()
+                .tasks
+                .instance(callee)
+                .is_some_and(|record| record.may_not_suspend),
+            "the callee instance may not suspend for the call"
+        );
+
+        // The callee traps: the exit intrinsic never runs, and the
+        // failure reaches the export's task instead.
+        tables.lock().unwrap().abandon_task(caller);
+
+        let guard = tables.lock().unwrap();
+        assert_eq!(
+            guard.tasks.current_scope(),
+            None,
+            "both tasks leave the stack"
+        );
+        assert!(
+            guard
+                .tasks
+                .instance(callee)
+                .is_some_and(|record| !record.may_not_suspend),
+            "the flag the enter intrinsic set is restored"
+        );
+        assert_eq!(guard.tasks.task_count(), 0, "no task record is left");
+        assert_eq!(guard.tasks.thread_count(), 0, "nor any thread record");
+    }
+
+    #[test]
+    fn it_takes_the_callee_of_an_enter_from_the_third_adapter_argument() {
+        let mut tables = HandleTables::new();
+        let caller = tables.tasks.insert_instance();
+        let callee = tables.tasks.insert_instance();
+        let abi_state = Arc::new(Mutex::new(AbiRuntimeState {
+            memories: Vec::new(),
+            reallocs: Vec::new(),
+            post_returns: Vec::new(),
+            resource_tables: Vec::new(),
+            component_instances: vec![caller, callee],
+        }));
+
+        // The adapter passes the caller instance, whether the callee
+        // is asynchronous, and the callee instance, in that order.
+        let (named, callee_async) = enter_sync_call_arguments(
+            &abi_state,
+            &[RuntimeVal::I32(0), RuntimeVal::I32(0), RuntimeVal::I32(1)],
+        )
+        .expect("the arguments decode");
+        assert_eq!(named, callee, "the third argument names the callee");
+        assert_ne!(named, caller, "not the first, which names the caller");
+        assert!(!callee_async, "the second argument is clear");
+
+        let (named, callee_async) = enter_sync_call_arguments(
+            &abi_state,
+            &[RuntimeVal::I32(1), RuntimeVal::I32(1), RuntimeVal::I32(0)],
+        )
+        .expect("the arguments decode");
+        assert_eq!(
+            named, caller,
+            "the two instances swap when the third argument does"
+        );
+        assert!(
+            callee_async,
+            "the second argument says the callee is asynchronous"
         );
     }
 }

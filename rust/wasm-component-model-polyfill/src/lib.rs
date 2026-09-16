@@ -169,6 +169,7 @@
 mod abi;
 mod backend;
 mod component;
+mod concurrency;
 mod engine;
 mod engine_config;
 mod error;

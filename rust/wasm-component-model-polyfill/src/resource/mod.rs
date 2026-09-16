@@ -20,7 +20,6 @@
 //! [`Val::Own`]: crate::Val::Own
 //! [`Val::Borrow`]: crate::Val::Borrow
 
-mod call_scope;
 mod handle;
 mod handle_kind;
 mod handle_lookup_error;

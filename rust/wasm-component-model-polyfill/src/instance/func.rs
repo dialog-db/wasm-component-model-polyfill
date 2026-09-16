@@ -11,6 +11,7 @@ use crate::abi::flatten::{lift_from_flat_slots, lower_into_flat_slots};
 use crate::abi::layout::{flat_types, params_spill, result_spills, spill_layout};
 use crate::abi::{lift, lower};
 use crate::component::FunctionType;
+use crate::concurrency::{InstanceId, TaskId};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result};
 use crate::executor::ir::CanonOptions;
 use crate::executor::trampoline::AbiRuntimeState;
@@ -124,15 +125,21 @@ impl Func {
             (memory, realloc, post_return)
         };
 
-        // A call from the host into the guest opens a scope: borrows
-        // the host lowers in are owed to it and must be dropped by
-        // the guest before the call ends; borrows the guest lifts out
-        // in results lend to the host until the call ends.
-        store.enter_call()?;
-        let outcome = self.call_in_scope(store, args, memory, realloc, post_return);
+        // A call from the host into the guest is a task: it goes on
+        // the stack of current scopes. Borrows the host lowers in are
+        // owed to it and must be dropped by the guest before the call
+        // ends; borrows the guest lifts out in results lend to it
+        // until the call ends.
+        let task = store.enter_export_task(
+            self.signature.clone(),
+            self.options.clone(),
+            self.instance_record()?,
+        )?;
+        let outcome = self.call_in_task(task, store, args, memory, realloc, post_return);
         match outcome {
             Ok(result) => {
-                if let Err(count) = store.exit_call()? {
+                store.resolve_export_task(task, result.first().cloned())?;
+                if let Err(count) = store.exit_export_task(task)? {
                     return Err(Error::from(AbiError {
                         position: AbiPosition::Result,
                         valtype: ValueType::Primitive(PrimitiveType::Bool),
@@ -144,15 +151,35 @@ impl Func {
                 Ok(result)
             }
             Err(err) => {
-                store.abandon_call()?;
+                store.abandon_export_task(task)?;
                 Err(err)
             }
         }
     }
 
-    /// The body of [`Self::call`] inside its call scope.
-    fn call_in_scope<T: 'static>(
+    /// The store-wide identity of the component instance the export
+    /// belongs to, which the lift's canon options name by the
+    /// translator's per-instantiation index.
+    fn instance_record(&self) -> Result<InstanceId> {
+        let state = self
+            .abi_state
+            .lock()
+            .map_err(|_| Error::internal("ABI runtime state lock poisoned"))?;
+        state
+            .component_instances
+            .get(self.options.instance)
+            .copied()
+            .ok_or_else(|| {
+                Error::internal(
+                    "an export's lift names a component instance the plan does not hold",
+                )
+            })
+    }
+
+    /// The body of [`Self::call`] inside its task.
+    fn call_in_task<T: 'static>(
         &self,
+        task: TaskId,
         store: &mut Store<T>,
         args: &[Val],
         memory: Option<wasm_runtime_layer::Memory>,
@@ -163,6 +190,8 @@ impl Func {
         let result_arity = self.core_result_arity();
         let mut core_results = vec![RuntimeVal::I32(0); result_arity];
 
+        // The arguments are lowered, so the task's thread runs now.
+        store.start_export_task(task)?;
         self.inner
             .call(store.inner_mut(), &core_args, &mut core_results)
             .map_err(|err| Error::from(InstantiationError::SubstrateFailure(err)))?;

@@ -14,11 +14,15 @@ use std::sync::{Arc, Mutex};
 use wasm_runtime_layer::Val as RuntimeVal;
 
 use crate::backend::Backend;
+use crate::component::FunctionType;
+use crate::concurrency::{InstanceId, TaskId};
 use crate::engine::Engine;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ResourceDestructor;
+use crate::executor::ir::CanonOptions;
 use crate::resource::{HandleLookupError, HandleTables, ResourceHandle, ResourceTypeId};
 use crate::types::{ResourceType, ValueType};
+use crate::value::Val;
 
 /// A process-unique identity for one [`Store`].
 ///
@@ -212,34 +216,59 @@ impl<T: 'static> Store<T> {
         }
     }
 
-    /// Open a call scope on the handle tables. Workspace-internal.
-    pub fn enter_call(&self) -> Result<()> {
-        self.tables
-            .lock()
-            .map_err(|_| Error::internal("resource handle tables lock poisoned"))?
-            .enter_call();
-        Ok(())
-    }
-
-    /// Close the innermost call scope on its success path. The inner
-    /// `Err` carries the count of borrows the guest did not drop.
-    /// Workspace-internal.
-    pub fn exit_call(&self) -> Result<core::result::Result<(), u32>> {
+    /// Create the task of one call into an export and push it as the
+    /// current scope. Workspace-internal.
+    pub fn enter_export_task(
+        &self,
+        function: FunctionType,
+        options: CanonOptions,
+        instance: InstanceId,
+    ) -> Result<TaskId> {
         Ok(self
-            .tables
-            .lock()
-            .map_err(|_| Error::internal("resource handle tables lock poisoned"))?
-            .exit_call())
+            .lock_tables()?
+            .tasks
+            .push_task(Some(function), Some(options), instance))
     }
 
-    /// Close the innermost call scope on its failure path.
+    /// Mark an export's task started: its thread is about to run.
     /// Workspace-internal.
-    pub fn abandon_call(&self) -> Result<()> {
+    pub fn start_export_task(&self, task: TaskId) -> Result<()> {
+        self.lock_tables()?.tasks.start_task(task);
+        Ok(())
+    }
+
+    /// Resolve an export's task with the result it returned, which
+    /// the caller on the stack takes as the call returns.
+    /// Workspace-internal.
+    pub fn resolve_export_task(&self, task: TaskId, result: Option<Val>) -> Result<()> {
+        if let Some(record) = self.lock_tables()?.tasks.task_mut(task) {
+            record.resolve(result);
+        }
+        Ok(())
+    }
+
+    /// Pop the export's task on its success path, together with any
+    /// scope left above it. The inner `Err` carries the count of
+    /// borrows the guest did not drop. Workspace-internal.
+    pub fn exit_export_task(&self, task: TaskId) -> Result<core::result::Result<(), u32>> {
+        Ok(self.lock_tables()?.exit_task(task))
+    }
+
+    /// Pop the export's task on its failure path, with no borrow
+    /// check. Every scope the failure left above the task — the task
+    /// of a callee that trapped, the subtask of a host call that
+    /// failed — is popped with it, and the lends of each are given
+    /// back. Workspace-internal.
+    pub fn abandon_export_task(&self, task: TaskId) -> Result<()> {
+        self.lock_tables()?.abandon_task(task);
+        Ok(())
+    }
+
+    /// Lock the store's handle tables and record state.
+    fn lock_tables(&self) -> Result<std::sync::MutexGuard<'_, HandleTables>> {
         self.tables
             .lock()
-            .map_err(|_| Error::internal("resource handle tables lock poisoned"))?
-            .abandon_call();
-        Ok(())
+            .map_err(|_| Error::internal("resource handle tables lock poisoned"))
     }
 
     /// Borrow the wrapped runtime-layer store.

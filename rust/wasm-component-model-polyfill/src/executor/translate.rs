@@ -735,6 +735,7 @@ impl ProjectionState {
 
 fn lift_canon_options(options: &EnvironCanonOptions) -> CanonOptions {
     CanonOptions {
+        instance: options.instance.as_u32() as usize,
         memory: options.memory().map(|i| i.as_u32() as usize),
         realloc: match options.data_model {
             CanonicalOptionsDataModel::LinearMemory(opts) => {

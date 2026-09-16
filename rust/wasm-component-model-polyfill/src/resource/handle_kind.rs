@@ -1,5 +1,7 @@
 //! What a handle-table entry names, for every kind a guest can hold.
 
+use crate::concurrency::TaskId;
+
 use super::identity::ResourceTypeId;
 
 /// The kind of a live handle-table entry.
@@ -26,9 +28,9 @@ pub enum HandleKind {
         /// in flight.
         lend_count: u32,
     },
-    /// A borrowed resource entry, lowered in for one call. `scope` is
-    /// the position on the store's call stack the borrow belongs to;
-    /// the call cannot end until the guest drops the borrow.
+    /// A borrowed resource entry, lowered in for one call. `task` is
+    /// the task the borrow is owed to; that task cannot return until
+    /// the guest drops the borrow.
     Borrow {
         /// The identity of the resource's type.
         type_id: ResourceTypeId,
@@ -37,9 +39,8 @@ pub enum HandleKind {
         guest_defined: bool,
         /// The resource's 32-bit representation.
         rep: u32,
-        /// The position on the store's call stack the borrow is owed
-        /// to.
-        scope: usize,
+        /// The task the borrow is owed to.
+        task: TaskId,
     },
     /// A subtask: the index of its record in the store's subtask
     /// table.

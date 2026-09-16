@@ -305,6 +305,11 @@ pub struct ExportSpec {
 /// (e.g. a function whose ABI does not need `realloc`).
 #[derive(Clone, Debug)]
 pub struct CanonOptions {
+    /// The component instance the lift or lower belongs to, by the
+    /// translator's per-instantiation index. Names the instance
+    /// record whose entry gate, backpressure, and flags the call
+    /// consults.
+    pub instance: usize,
     /// Index into the `num_runtime_memories` slab on
     /// [`ExecutorIr`]. `None` when the function does not declare a
     /// memory option.

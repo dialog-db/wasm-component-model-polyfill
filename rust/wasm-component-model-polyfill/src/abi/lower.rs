@@ -299,7 +299,7 @@ fn write_discriminant<T: 'static>(
 /// host's table, which moves into the instance's table: this is the
 /// canonical ABI's transfer of ownership into the guest. For a
 /// `borrow<T>` parameter the guest receives a borrow entry owed to
-/// the current call, or the rep itself when the instance defines the
+/// the current task, or the rep itself when the instance defines the
 /// resource.
 pub fn lower_handle<T: 'static>(
     ctx: &LowerContext<'_, T>,
@@ -340,7 +340,7 @@ pub fn lower_handle<T: 'static>(
     if matches!(ty, ValueType::Borrow(_)) {
         // The defining instance receives its own resource's rep; any
         // other instance receives a borrow entry owed to the current
-        // call, which the guest must drop before the call ends.
+        // task, which the guest must drop before that task returns.
         if table.defining {
             return Ok(handle.rep);
         }
