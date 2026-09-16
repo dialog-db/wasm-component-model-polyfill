@@ -21,3 +21,5 @@ Vendor the `async` directory of the Component Model test corpus (`test/async/` a
 
 ## Dispatch log
 - 2026-09-16T06:28:44Z dispatched implementor `card-0f9fdd-23b7af81` (implement session, PDD018 thread, budget 4)
+- 2026-09-16T07:58:42Z implementor reported done at `b5f9c24` (all lanes + lint green in the guest; `NO_PROXY` workaround found on its own). Fetched, moved to needs-review, paused the implementor.
+- 2026-09-16T07:59:08Z launched reviewer `review-0f9fdd-d5479186`; delivered `sandbox-guest/card-0f9fdd-23b7af81` (tip b5f9c24) as `delivered/card-0f9fdd-23b7af81`.
