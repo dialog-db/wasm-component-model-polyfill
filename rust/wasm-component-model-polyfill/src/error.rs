@@ -121,6 +121,12 @@ pub enum Error {
     #[error("canonical ABI error: {0}")]
     Abi(#[source] Box<AbiError>),
 
+    /// The concurrency scheduler could not carry a driver through a
+    /// turn. The carried [`SchedulerCause`] names which of the four
+    /// ways this can happen occurred.
+    #[error("scheduler error: {0}")]
+    Scheduler(#[source] SchedulerCause),
+
     /// The component uses a Component Model feature the polyfill
     /// does not implement yet. The feature is named so a caller can
     /// tell "not built yet" from "broken". Reaching this variant is
@@ -582,5 +588,97 @@ pub enum AbiCause {
     SubstrateFailure(#[source] anyhow::Error),
 }
 
+/// The structured reason the concurrency scheduler failed to carry a
+/// driver through a turn.
+///
+/// Carried by [`Error::Scheduler`]. Nothing produces this cause yet;
+/// the scheduler, the `run_concurrent` entry, and the suspend seam
+/// each produce it once they land.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum SchedulerCause {
+    /// A driver went idle with nothing ready, no host task pending,
+    /// and its condition unmet. The message is Wasmtime 48's deadlock
+    /// trap, `Trap::AsyncDeadlock` in `wasmtime-environ`'s
+    /// `src/trap_encoding.rs`, so the conformance corpus can match it
+    /// by substring.
+    #[error("deadlock detected: event loop cannot make further progress")]
+    Deadlock,
+
+    /// A task that must not block went idle while waiting. The
+    /// message is Wasmtime 48's cannot-block trap,
+    /// `Trap::CannotBlockSyncTask` in `wasmtime-environ`'s
+    /// `src/trap_encoding.rs`, so the conformance corpus can match it
+    /// by substring.
+    #[error("cannot block a synchronous task before returning")]
+    CannotBlock,
+
+    /// A driver was entered while another driver of the same store
+    /// was already inside a turn, or an accessor was used from inside
+    /// another accessor's closure.
+    #[error(
+        "a driver was entered while another was inside a turn, or an accessor was used inside another accessor's closure"
+    )]
+    RecursiveDriver,
+
+    /// A guest thread blocked at a point the reference permits
+    /// blocking, but the target has no suspend provider to switch its
+    /// stack. Unlike [`Error::Unsupported`], the feature itself is
+    /// supported here; only the capability to serve it on this
+    /// target is missing, and a host may want to branch on that
+    /// distinction.
+    #[error("blocking here requires a stack switch, but the target has no suspend provider")]
+    StackSwitchNeeded,
+}
+
 /// A `Result` whose error variant is the polyfill's [`Error`].
 pub type Result<T> = core::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn it_renders_the_deadlock_cause_as_wasmtime_48s_trap_message() {
+        let err = Error::Scheduler(SchedulerCause::Deadlock);
+        assert_eq!(
+            err.to_string(),
+            "scheduler error: deadlock detected: event loop cannot make further progress"
+        );
+    }
+
+    #[test]
+    fn it_renders_the_cannot_block_cause_as_wasmtime_48s_trap_message() {
+        let err = Error::Scheduler(SchedulerCause::CannotBlock);
+        assert_eq!(
+            err.to_string(),
+            "scheduler error: cannot block a synchronous task before returning"
+        );
+    }
+
+    #[test]
+    fn it_renders_the_recursive_driver_cause() {
+        let err = Error::Scheduler(SchedulerCause::RecursiveDriver);
+        assert_eq!(
+            err.to_string(),
+            "scheduler error: a driver was entered while another was inside a turn, or an accessor was used inside another accessor's closure"
+        );
+    }
+
+    #[test]
+    fn it_renders_the_stack_switch_needed_cause() {
+        let err = Error::Scheduler(SchedulerCause::StackSwitchNeeded);
+        assert_eq!(
+            err.to_string(),
+            "scheduler error: blocking here requires a stack switch, but the target has no suspend provider"
+        );
+    }
+
+    #[test]
+    fn it_keeps_stack_switch_needed_distinct_from_unsupported() {
+        let stack_switch = Error::Scheduler(SchedulerCause::StackSwitchNeeded);
+        let unsupported = Error::unsupported("stream<T>");
+        assert!(!matches!(stack_switch, Error::Unsupported { .. }));
+        assert!(matches!(unsupported, Error::Unsupported { .. }));
+    }
+}
