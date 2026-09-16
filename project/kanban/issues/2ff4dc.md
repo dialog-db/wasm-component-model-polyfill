@@ -5,6 +5,8 @@ type: bug
 blocked_by: []
 labels: [parity, conformance]
 created: 2026-09-15T16:37:10Z
+disposition: accepted
+disposition_at: 2026-09-16T03:57:12Z
 ---
 
 ## What to build
@@ -16,4 +18,3 @@ Parity: resolution is shared code; add a cross-target test.
 - [x] Registering a function where an instance is imported fails to link with `expected instance found func`, on both targets, and the reverse case fails the same way.
 - [x] The `wasmtime/import.wast:7` line is removed from `expected-failures.txt`, and the corpus is regenerated.
 - [x] `tests all` passes on both targets.
-

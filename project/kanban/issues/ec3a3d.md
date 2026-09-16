@@ -5,6 +5,8 @@ type: chore
 blocked_by: []
 labels: [PDD001, wave-4]
 created: 2026-09-15T14:44:21Z
+disposition: accepted
+disposition_at: 2026-09-16T03:57:12Z
 ---
 
 ## What to build

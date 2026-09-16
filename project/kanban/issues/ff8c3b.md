@@ -5,6 +5,8 @@ type: feature
 blocked_by: []
 labels: [parity, conformance]
 created: 2026-09-15T16:37:10Z
+disposition: accepted
+disposition_at: 2026-09-16T03:57:12Z
 ---
 
 ## What to build
@@ -18,4 +20,3 @@ Corpus: 1 `deferred-feature` line in `wasmtime/memory64.wast` and its 3 cascades
 - [ ] The `wasmtime/memory64.wast` lines are removed from `expected-failures.txt` (or re-categorized as `substrate` with the exact runtime-layer reason), and the corpus is regenerated.
 - [ ] A string crosses a composed component with 64-bit memories on both targets.
 - [x] `tests all` passes on both targets.
-
