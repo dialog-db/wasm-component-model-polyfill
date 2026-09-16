@@ -33,9 +33,15 @@ counts on both targets.
 The harness links every file against the host environment Wasmtime's
 wast runner provides: the `host` instance, `host-return-two`, and
 the rest of its component spectest (`crates/wast/src/spectest.rs`
-upstream), less the asynchronous items, plus the module exports of
-every named component a file instantiates, reflected under the
-component's name as the runner does.
+upstream), plus the module exports of every named component a file
+instantiates, reflected under the component's name as the runner
+does. The runner defines five of those items as asynchronous. The
+harness registers one of them, `host-echo-u32`, as a synchronous
+function, because it returns its argument and never pends. It
+registers none of the other four: `host.never-return`,
+`host.return-two-slowly`, `host.echo-slowly`, and
+`host.[method]resource1.never-return`. A file that imports one of the
+four fails as a `deferred-feature`.
 
 The test `it_reports_conformance_progress` runs every file in one
 process and prints a summary per corpus directory: directives, passes,

@@ -458,15 +458,20 @@ mod tests {
         let reports = [
             report("x/a.wast", 5, &[], &[]),
             report("x/async/y.wast", 3, &[1], &[(1, Category::DeferredFeature)]),
+            // A two-level path that is not `async` stays in the
+            // top-level corpus, as `wasmtime/gc/` does.
+            report("x/gc/z.wast", 4, &[2], &[(2, Category::Defect)]),
         ];
         let summary = Summary::new(&reports);
         assert!(summary.corpora.contains_key("x/async"));
+        assert!(!summary.corpora.contains_key("x/gc"));
         let x = &summary.corpora["x"];
-        assert_eq!((x.directives, x.passed), (5, 5));
+        assert_eq!((x.directives, x.passed), (9, 8));
+        assert_eq!(x.expected_in(Category::Defect), 1);
         let x_async = &summary.corpora["x/async"];
         assert_eq!((x_async.directives, x_async.passed), (3, 2));
         assert_eq!(x_async.expected_in(Category::DeferredFeature), 1);
-        assert_eq!((summary.total.directives, summary.total.passed), (8, 7));
+        assert_eq!((summary.total.directives, summary.total.passed), (12, 10));
     }
 
     #[wcmp_macros::test]
