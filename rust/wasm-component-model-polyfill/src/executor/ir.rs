@@ -303,7 +303,7 @@ pub struct ExportSpec {
 /// Indexes reference the runtime slabs the corresponding `Extract*`
 /// initializer populates; `None` means the option was not declared
 /// (e.g. a function whose ABI does not need `realloc`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CanonOptions {
     /// The component instance the lift or lower belongs to, by the
     /// translator's per-instantiation index. Names the instance
@@ -325,6 +325,27 @@ pub struct CanonOptions {
     /// The string encoding the lift or lower uses for
     /// `string`-typed values.
     pub string_encoding: StringEncoding,
+    /// Where the values the lift or lower carries live. Linear
+    /// memory is the only data model the polyfill implements, so a
+    /// `canon` definition that declares another one is rejected at
+    /// translation.
+    pub data_model: DataModel,
+}
+
+/// Where the values a [`CanonOptions`] bundle governs live.
+///
+/// The canonical ABI has one strategy per data model. The
+/// linear-memory model stores a value at a byte offset the caller
+/// supplied or `cabi_realloc` returned, and loads a value from a
+/// pointer. The garbage-collected model keeps the value in the
+/// collected heap instead. The polyfill implements the first, and
+/// translation rejects a component that declares the second.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DataModel {
+    /// Values live in the component instance's linear memory.
+    LinearMemory,
+    /// Values live in the garbage-collected heap.
+    Gc,
 }
 
 /// The string encoding a [`CanonOptions`] bundle declares.

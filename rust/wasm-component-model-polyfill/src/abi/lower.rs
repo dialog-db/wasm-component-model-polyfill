@@ -1,11 +1,11 @@
 //! Canonical-ABI lower: write a [`Val`] into guest memory.
 //!
-//! The entry point [`lower`] takes a [`LowerContext`], a memory
+//! The entry point [`lower`] takes a [`BoundaryContext`], a memory
 //! offset, and the value plus its declared type. It recurses through
 //! compound shapes, calling `cabi_realloc` via the context for
 //! heap-allocating value types (string and list).
 
-use crate::abi::context::LowerContext;
+use crate::abi::context::BoundaryContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
 use crate::abi::lift::declared_resource_index;
 use crate::abi::strings;
@@ -16,9 +16,9 @@ use crate::value::Val;
 
 /// Lower `value` of declared type `ty` into the guest's linear
 /// memory at `offset`. Heap-allocating types call into `cabi_realloc`
-/// via [`LowerContext::allocate`].
+/// via [`BoundaryContext::allocate_aligned`].
 pub fn lower<T: 'static>(
-    ctx: &mut LowerContext<'_, T>,
+    ctx: &mut BoundaryContext<'_, T>,
     offset: usize,
     value: &Val,
     ty: &ValueType,
@@ -204,7 +204,7 @@ pub fn lower<T: 'static>(
 }
 
 fn lower_primitive<T: 'static>(
-    ctx: &mut LowerContext<'_, T>,
+    ctx: &mut BoundaryContext<'_, T>,
     offset: usize,
     value: &Val,
     prim: PrimitiveType,
@@ -250,13 +250,13 @@ fn lower_primitive<T: 'static>(
 }
 
 fn lower_string<T: 'static>(
-    ctx: &mut LowerContext<'_, T>,
+    ctx: &mut BoundaryContext<'_, T>,
     offset: usize,
     s: &str,
     position: AbiPosition,
     ty: &ValueType,
 ) -> Result<()> {
-    let encoding = ctx.string_encoding;
+    let encoding = ctx.string_encoding();
     let (bytes, units) = strings::encode(encoding, s);
     // `cabi_realloc` runs even for an empty string, as the canonical
     // ABI prescribes, so a guest allocator that misbehaves traps.
@@ -268,7 +268,7 @@ fn lower_string<T: 'static>(
 }
 
 fn write_discriminant<T: 'static>(
-    ctx: &mut LowerContext<'_, T>,
+    ctx: &mut BoundaryContext<'_, T>,
     offset: usize,
     tag: usize,
     width: usize,
@@ -302,12 +302,12 @@ fn write_discriminant<T: 'static>(
 /// the current task, or the rep itself when the instance defines the
 /// resource.
 pub fn lower_handle<T: 'static>(
-    ctx: &LowerContext<'_, T>,
+    ctx: &BoundaryContext<'_, T>,
     handle: &ResourceHandle,
     ty: &ValueType,
     position: AbiPosition,
 ) -> Result<u32> {
-    let tables = ctx.tables.as_ref().ok_or_else(|| {
+    let tables = ctx.tables().ok_or_else(|| {
         Error::from(AbiError {
             position,
             valtype: ty.clone(),
@@ -317,7 +317,7 @@ pub fn lower_handle<T: 'static>(
         })
     })?;
     let table = declared_resource_index(ty)
-        .and_then(|i| ctx.resource_tables.get(i).copied().flatten())
+        .and_then(|i| ctx.resource_tables().get(i).copied().flatten())
         .ok_or_else(|| {
             Error::from(AbiError {
                 position,
@@ -345,7 +345,13 @@ pub fn lower_handle<T: 'static>(
             return Ok(handle.rep);
         }
         return guard
-            .insert_borrow(table.table, table.type_id, table.guest_defined, handle.rep)
+            .insert_borrow_for(
+                ctx.scope(),
+                table.table,
+                table.type_id,
+                table.guest_defined,
+                handle.rep,
+            )
             .ok_or_else(|| {
                 Error::from(AbiError {
                     position,

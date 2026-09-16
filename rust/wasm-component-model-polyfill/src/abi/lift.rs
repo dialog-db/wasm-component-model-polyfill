@@ -1,11 +1,11 @@
 //! Canonical-ABI lift: read a [`Val`] out of guest memory.
 //!
-//! The entry point [`lift`] takes a [`LiftContext`], a memory
+//! The entry point [`lift`] takes a [`BoundaryContext`], a memory
 //! offset, and the destination [`ValueType`]. It recurses through
 //! compound shapes, dispatching to per-variant primitives at the
 //! leaves.
 
-use crate::abi::context::LiftContext;
+use crate::abi::context::BoundaryContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
 use crate::abi::strings;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
@@ -18,7 +18,7 @@ use crate::value::{Val, ValField};
 /// element-wise after computing per-element offsets via
 /// [`crate::abi::layout`].
 pub fn lift<T: 'static>(
-    ctx: &mut LiftContext<'_, T>,
+    ctx: &mut BoundaryContext<'_, T>,
     offset: usize,
     ty: &ValueType,
     position: AbiPosition,
@@ -204,7 +204,7 @@ pub fn lift<T: 'static>(
 }
 
 fn lift_primitive<T: 'static>(
-    ctx: &mut LiftContext<'_, T>,
+    ctx: &mut BoundaryContext<'_, T>,
     offset: usize,
     prim: PrimitiveType,
     position: AbiPosition,
@@ -273,13 +273,13 @@ fn lift_primitive<T: 'static>(
 }
 
 fn lift_string<T: 'static>(
-    ctx: &mut LiftContext<'_, T>,
+    ctx: &mut BoundaryContext<'_, T>,
     ptr: usize,
     units: usize,
     position: AbiPosition,
     ty: &ValueType,
 ) -> Result<Val> {
-    let encoding = ctx.string_encoding;
+    let encoding = ctx.string_encoding();
     let units = u32::try_from(units)
         .map_err(|_| invalid_encoding(ty, position, "string length overflow"))?;
     let alignment = strings::alignment(encoding);
@@ -345,13 +345,14 @@ fn read_discriminant(bytes: &[u8]) -> usize {
 /// the component, and the lift context maps that to the table the
 /// instance keeps and the resource type it holds.
 pub fn lift_handle<T: 'static>(
-    ctx: &mut LiftContext<'_, T>,
+    ctx: &mut BoundaryContext<'_, T>,
     index: u32,
     ty: &ValueType,
     position: AbiPosition,
     is_own: bool,
 ) -> Result<Val> {
-    let tables = ctx.tables.clone().ok_or_else(|| {
+    let scope = ctx.scope();
+    let tables = ctx.tables().cloned().ok_or_else(|| {
         Error::from(AbiError {
             position,
             valtype: ty.clone(),
@@ -368,7 +369,7 @@ pub fn lift_handle<T: 'static>(
     // The declared type names the resource table by its index in the
     // component; the instance maps that to the table it keeps.
     let table = declared_resource_index(ty)
-        .and_then(|i| ctx.resource_tables.get(i).copied().flatten())
+        .and_then(|i| ctx.resource_tables().get(i).copied().flatten())
         .ok_or_else(|| {
             Error::from(AbiError {
                 position,
@@ -417,7 +418,7 @@ pub fn lift_handle<T: 'static>(
             .lookup(table.table, index, table.type_id, table.guest_defined)
             .map_err(|e| invalid(e.to_string()))?;
         if matches!(entry, HandleKind::Own { .. }) {
-            guard.lend(table.table, index);
+            guard.lend_to(scope, table.table, index);
         }
         Ok(Val::Borrow(ResourceHandle {
             type_id: table.type_id,

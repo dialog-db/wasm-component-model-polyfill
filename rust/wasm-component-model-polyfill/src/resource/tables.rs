@@ -344,7 +344,16 @@ impl HandleTables {
     /// removed until the scope ends. Returns `false` when the entry
     /// is not an owning entry or no scope is in flight.
     pub fn lend(&mut self, table: TableId, index: u32) -> bool {
-        let Some(scope) = self.tasks.current_scope() else {
+        self.lend_to(None, table, index)
+    }
+
+    /// Record the lend against `scope` rather than against whatever
+    /// is on top of the stack. A crossing names the scope its lends
+    /// count against when it is built, and hands it here; `None`
+    /// falls back to the current scope, for a caller that has no
+    /// crossing of its own.
+    pub fn lend_to(&mut self, scope: Option<Scope>, table: TableId, index: u32) -> bool {
+        let Some(scope) = scope.or_else(|| self.tasks.current_scope()) else {
             return false;
         };
         match self.for_table_mut(table).entry_mut(index) {
@@ -383,7 +392,28 @@ impl HandleTables {
         guest_defined: bool,
         rep: u32,
     ) -> Option<u32> {
-        let task = self.tasks.current_task()?;
+        self.insert_borrow_for(None, table, type_id, guest_defined, rep)
+    }
+
+    /// Insert the borrow against the task `scope` names rather than
+    /// against whatever is on top of the stack. A crossing names the
+    /// scope its borrows count against when it is built, and hands
+    /// it here. A crossing counted against a subtask, and a caller
+    /// with no crossing of its own, fall back to the innermost task
+    /// on the stack, which is the task the borrow is owed to either
+    /// way.
+    pub fn insert_borrow_for(
+        &mut self,
+        scope: Option<Scope>,
+        table: TableId,
+        type_id: ResourceTypeId,
+        guest_defined: bool,
+        rep: u32,
+    ) -> Option<u32> {
+        let task = match scope {
+            Some(Scope::Task(task)) => task,
+            _ => self.tasks.current_task()?,
+        };
         self.tasks.task_mut(task)?.num_borrows += 1;
         Some(self.for_table_mut(table).insert_entry(HandleKind::Borrow {
             type_id,

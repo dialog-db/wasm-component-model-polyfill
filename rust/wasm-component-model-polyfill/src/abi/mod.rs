@@ -11,13 +11,23 @@
 //! [`lower`] are the per-valtype recursions that read a
 //! [`crate::Val`] out of guest memory and write one back. [`flatten`]
 //! is the counterpart for values that travel in flat core slots.
-//! [`context`] carries the per-call state — the runtime-layer memory
-//! the value sits in and the optional `cabi_realloc` for
-//! heap-allocating types — that the lift and lower paths read from.
+//! [`transcode`] moves a string between two guest memories for an
+//! adapter. [`runtime_state`] is where an instantiation deposits the
+//! memory, the `cabi_realloc`, and the `post-return` a crossing's
+//! options name.
 //!
-//! Workspace-internal: the surface is consumed by `Func::call` and
-//! by the host-trampoline path in [`crate::executor::instantiate`];
-//! no `abi` symbol is re-exported from `lib.rs`.
+//! [`context`] holds the boundary context, the one object a value
+//! crosses through. One is built per crossing from the canon
+//! [`options`] of the lift or lower, the component instance, and the
+//! task or subtask the crossing counts against, and it selects its
+//! [`strategy`] from those options. It is the only object in the
+//! polyfill that reads guest memory, writes guest memory, or asks
+//! the guest for memory.
+//!
+//! Workspace-internal: the surface is consumed by `Func::call`, by
+//! the host-trampoline path in [`crate::executor::trampoline`], and
+//! by the adapter intrinsics in [`crate::executor::intrinsics`]; no
+//! `abi` symbol is re-exported from `lib.rs`.
 //!
 //! [Component Model Canonical ABI rules]:
 //!     https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md
@@ -27,7 +37,11 @@ pub mod flatten;
 pub mod layout;
 mod lift;
 mod lower;
+pub mod options;
+pub mod runtime_state;
+pub mod strategy;
 pub mod strings;
+pub mod transcode;
 
 pub use lift::{lift, lift_handle};
 pub use lower::lower;

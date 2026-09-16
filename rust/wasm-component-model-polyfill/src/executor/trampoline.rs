@@ -15,9 +15,11 @@
 //!    slots, or written into the return area the caller supplied
 //!    when the result is too wide for flat passing.
 //!
-//! Memory, realloc, and post-return are looked up at call time from
-//! a shared [`AbiRuntimeState`] populated by the executor's
-//! `Extract*` directives — wasmtime emits `LowerImport` before the
+//! Both crossings run on a boundary context the trampoline builds
+//! from the lowering's canon options, resolved at call time against
+//! the instantiation's
+//! [`AbiRuntimeState`](crate::abi::runtime_state::AbiRuntimeState) —
+//! wasmtime emits `LowerImport` before the
 //! `ExtractMemory`/`Realloc`/`PostReturn` that depend on the same
 //! module the lowered import is passed into, so the slots are filled
 //! between trampoline construction and the trampoline's first call.
@@ -29,12 +31,14 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
 use wasm_runtime_layer::{
-    AsContextMut, Func as RuntimeFunc, FuncType, Memory, Val as RuntimeVal, ValType as CoreType,
+    AsContextMut, Func as RuntimeFunc, FuncType, Val as RuntimeVal, ValType as CoreType,
 };
 
-use crate::abi::context::{LiftContext, LowerContext};
+use crate::abi::context::BoundaryContext;
 use crate::abi::flatten::{lift_from_flat_slots, lower_into_flat_slots};
 use crate::abi::layout::{FlatType, flat_types, params_spill, result_spills, spill_layout};
+use crate::abi::options::BoundaryOptions;
+use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::{lift, lower};
 use crate::backend::Backend;
 use crate::component::FunctionType;
@@ -43,31 +47,11 @@ use crate::executor::ir::{CanonOptions, LoweringSpec};
 use crate::linker::{HostCall, HostFuncBody, HostResource};
 
 use super::ResourceDestructor;
-use crate::concurrency::{InstanceId, SubtaskState};
+use crate::concurrency::{Scope, SubtaskState};
 use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime, ResourceTypeId};
 use crate::store::Store;
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
-
-/// Per-component canonical-ABI runtime state. Populated by the
-/// executor's `Extract*` directives during instantiation; consulted
-/// by trampolines at call time. Shared via `Arc<Mutex<...>>` so the
-/// runtime layer's `Send + Sync` bound on `Func::new` is satisfied.
-pub struct AbiRuntimeState {
-    pub memories: Vec<Option<Memory>>,
-    pub reallocs: Vec<Option<RuntimeFunc>>,
-    pub post_returns: Vec<Option<RuntimeFunc>>,
-    /// Every resource table of the instance, by the translator's
-    /// table index: the table created for this instantiation, the
-    /// identity of the resource type it holds, and whether the table's
-    /// instance defines the resource. `None` for an abstract table.
-    pub resource_tables: Vec<Option<ResourceTableRuntime>>,
-    /// The store-wide identity of every component instance of this
-    /// instantiation, by the translator's per-instantiation index.
-    /// An adapter names its caller and its callee by that index; the
-    /// enter intrinsic maps it onto the instance record.
-    pub component_instances: Vec<InstanceId>,
-}
 
 /// Per-resource runtime data captured by every resource trampoline.
 ///
@@ -111,26 +95,6 @@ impl<T> Clone for ResourceRuntime<T> {
         Self {
             type_id: self.type_id,
             destructor: self.destructor.clone(),
-        }
-    }
-}
-
-impl AbiRuntimeState {
-    /// Construct a state with the requested slab sizes, every slot
-    /// initially empty.
-    pub fn with_slabs(
-        num_memories: usize,
-        num_reallocs: usize,
-        num_post_returns: usize,
-        resource_tables: Vec<Option<ResourceTableRuntime>>,
-        component_instances: Vec<InstanceId>,
-    ) -> Self {
-        Self {
-            memories: vec![None; num_memories],
-            reallocs: vec![None; num_reallocs],
-            post_returns: vec![None; num_post_returns],
-            resource_tables,
-            component_instances,
         }
     }
 }
@@ -403,17 +367,16 @@ fn invoke_trampoline<T: 'static>(
     args: &[RuntimeVal],
     results: &mut [RuntimeVal],
 ) -> Result<()> {
-    let (memory, realloc, resource_tables) = {
+    // The canon options of the lowering, resolved against the
+    // instance's runtime state. Each crossing of the call builds its
+    // boundary context from them.
+    let options = BoundaryOptions::resolve(options, abi_state)?;
+    let instance = options.instance();
+    let resource_tables = {
         let state = abi_state
             .lock()
             .map_err(|_| Error::internal("ABI runtime state lock poisoned"))?;
-        let memory = options
-            .memory
-            .and_then(|s| state.memories.get(s).and_then(|m| m.clone()));
-        let realloc = options
-            .realloc
-            .and_then(|s| state.reallocs.get(s).and_then(|r| r.clone()));
-        (memory, realloc, state.resource_tables.clone())
+        state.resource_tables.clone()
     };
 
     // A call from the guest into the host is a subtask: it goes on
@@ -429,10 +392,11 @@ fn invoke_trampoline<T: 'static>(
     // ends the subtask below.
     let called = (|store_ctx: &mut wasm_runtime_layer::StoreContextMut<'_, T, Backend>| -> Result<(Vec<Val>, Option<usize>)> {
         let mut cursor = 0usize;
-        let mut lift_ctx = LiftContext::new(
+        let mut lift_ctx = BoundaryContext::new(
             store_ctx.as_context_mut(),
-            memory.clone(),
-            options.string_encoding,
+            options.clone(),
+            instance,
+            Some(Scope::Subtask(subtask)),
             Some(tables.clone()),
             resource_tables.clone(),
         );
@@ -501,8 +465,14 @@ fn invoke_trampoline<T: 'static>(
     // written back: a synchronous lower delivers the resolution as it
     // returns, which gives back every handle the guest lent for the
     // call. A borrow the host lowers back out belongs to the caller's
-    // task, which is why the subtask leaves the stack first.
-    lock_tables(tables)?.exit_subtask(subtask, SubtaskState::Returned);
+    // task, which is why the subtask leaves the stack first, and why
+    // the crossing of the result counts against the scope the pop
+    // uncovers.
+    let caller = {
+        let mut guard = lock_tables(tables)?;
+        guard.exit_subtask(subtask, SubtaskState::Returned);
+        guard.tasks.current_scope()
+    };
 
     let Some(result_ty) = &signature.result else {
         return Ok(());
@@ -514,11 +484,11 @@ fn invoke_trampoline<T: 'static>(
             cause: AbiCause::HostValueMismatch,
         })
     })?;
-    let mut lower_ctx = LowerContext::new(
+    let mut lower_ctx = BoundaryContext::new(
         store_ctx.as_context_mut(),
-        memory,
-        realloc,
-        options.string_encoding,
+        options,
+        instance,
+        caller,
         Some(tables.clone()),
         resource_tables.clone(),
     );
@@ -565,7 +535,7 @@ fn invoke_trampoline<T: 'static>(
 /// each parameter sits at the offset the canonical ABI's record
 /// layout gives it.
 fn lift_spilled_arguments<T: 'static>(
-    ctx: &mut LiftContext<'_, T>,
+    ctx: &mut BoundaryContext<'_, T>,
     signature: &FunctionType,
     args: &[RuntimeVal],
     cursor: &mut usize,

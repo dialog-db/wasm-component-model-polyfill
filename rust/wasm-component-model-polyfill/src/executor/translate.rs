@@ -35,8 +35,8 @@ use crate::error::{Error, Result};
 use crate::module::Module;
 
 use super::ir::{
-    CanonOptions, CoreInstanceExport, CoreSignature, CoreSourceItem, EntityIndex, ExecutorIr,
-    ExportSpec, ImportSource, Initializer, LoweringSpec, ModuleEntry, ModuleExportSpec,
+    CanonOptions, CoreInstanceExport, CoreSignature, CoreSourceItem, DataModel, EntityIndex,
+    ExecutorIr, ExportSpec, ImportSource, Initializer, LoweringSpec, ModuleEntry, ModuleExportSpec,
     ModuleSource, NamedImportSource, ResourceSpec, ResourceTableSpec, StringEncoding,
     TrampolineSpec, TranscodeOp,
 };
@@ -179,7 +179,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                     import_index,
                     path,
                     signature: projector.function(*lower_ty)?,
-                    options: lift_canon_options(canon),
+                    options: lift_canon_options(canon)?,
                 })
             }
             Trampoline::ResourceDrop { ty, .. } => TrampolineSpec::ResourceDrop {
@@ -525,7 +525,7 @@ fn collect_export_spec(
                 path: path.into(),
                 source,
                 signature: projector.function(*ty)?,
-                options: lift_canon_options(canon),
+                options: lift_canon_options(canon)?,
             });
             Ok(())
         }
@@ -733,19 +733,33 @@ impl ProjectionState {
     }
 }
 
-fn lift_canon_options(options: &EnvironCanonOptions) -> CanonOptions {
-    CanonOptions {
+/// Project one canon-options bundle onto the polyfill's own.
+///
+/// The garbage-collected data model reaches the field faithfully and
+/// is then refused: the polyfill implements the linear-memory ABI
+/// strategy alone, and an option it does not implement fails here
+/// rather than at the crossing that would have used it.
+fn lift_canon_options(options: &EnvironCanonOptions) -> Result<CanonOptions> {
+    let (realloc, data_model) = match options.data_model {
+        CanonicalOptionsDataModel::LinearMemory(opts) => (
+            opts.realloc.map(|i| i.as_u32() as usize),
+            DataModel::LinearMemory,
+        ),
+        CanonicalOptionsDataModel::Gc {} => (None, DataModel::Gc),
+    };
+    if data_model != DataModel::LinearMemory {
+        return Err(Error::unsupported(
+            "the garbage-collected canonical-ABI data model",
+        ));
+    }
+    Ok(CanonOptions {
         instance: options.instance.as_u32() as usize,
         memory: options.memory().map(|i| i.as_u32() as usize),
-        realloc: match options.data_model {
-            CanonicalOptionsDataModel::LinearMemory(opts) => {
-                opts.realloc.map(|i| i.as_u32() as usize)
-            }
-            CanonicalOptionsDataModel::Gc {} => None,
-        },
+        realloc,
         post_return: options.post_return.map(|i| i.as_u32() as usize),
         string_encoding: lift_string_encoding(options.string_encoding),
-    }
+        data_model,
+    })
 }
 
 fn lift_string_encoding(encoding: EnvironStringEncoding) -> StringEncoding {

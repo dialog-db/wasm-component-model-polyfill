@@ -6,15 +6,16 @@ use std::sync::{Arc, Mutex};
 
 use wasm_runtime_layer::{AsContextMut, Val as RuntimeVal};
 
-use crate::abi::context::{LiftContext, LowerContext};
+use crate::abi::context::BoundaryContext;
 use crate::abi::flatten::{lift_from_flat_slots, lower_into_flat_slots};
 use crate::abi::layout::{flat_types, params_spill, result_spills, spill_layout};
+use crate::abi::options::BoundaryOptions;
+use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::{lift, lower};
 use crate::component::FunctionType;
-use crate::concurrency::{InstanceId, TaskId};
+use crate::concurrency::{InstanceId, Scope, TaskId};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result};
 use crate::executor::ir::CanonOptions;
-use crate::executor::trampoline::AbiRuntimeState;
 use crate::resource::ResourceTableRuntime;
 use crate::store::{Store, StoreId};
 use crate::types::{PrimitiveType, ValueType};
@@ -103,39 +104,23 @@ impl Func {
             }));
         }
 
-        // Resolve memory / realloc / post-return from the instance
-        // state for the duration of the call.
-        let (memory, realloc, post_return) = {
-            let state = self
-                .abi_state
-                .lock()
-                .map_err(|_| Error::internal("ABI runtime state lock poisoned"))?;
-            let memory = self
-                .options
-                .memory
-                .and_then(|s| state.memories.get(s).and_then(|m| m.clone()));
-            let realloc = self
-                .options
-                .realloc
-                .and_then(|s| state.reallocs.get(s).and_then(|f| f.clone()));
-            let post_return = self
-                .options
-                .post_return
-                .and_then(|s| state.post_returns.get(s).and_then(|f| f.clone()));
-            (memory, realloc, post_return)
-        };
+        // The canon options of the export's lift, resolved against
+        // the instance's runtime state once for the whole call. Each
+        // crossing of the call builds its boundary context from
+        // them.
+        let options = BoundaryOptions::resolve(&self.options, &self.abi_state)?;
+        let instance = options.instance().ok_or_else(|| {
+            Error::internal("an export's lift names a component instance the plan does not hold")
+        })?;
 
         // A call from the host into the guest is a task: it goes on
         // the stack of current scopes. Borrows the host lowers in are
         // owed to it and must be dropped by the guest before the call
         // ends; borrows the guest lifts out in results lend to it
         // until the call ends.
-        let task = store.enter_export_task(
-            self.signature.clone(),
-            self.options.clone(),
-            self.instance_record()?,
-        )?;
-        let outcome = self.call_in_task(task, store, args, memory, realloc, post_return);
+        let task =
+            store.enter_export_task(self.signature.clone(), self.options.clone(), instance)?;
+        let outcome = self.call_in_task(task, instance, store, args, &options);
         match outcome {
             Ok(result) => {
                 store.resolve_export_task(task, result.first().cloned())?;
@@ -157,36 +142,16 @@ impl Func {
         }
     }
 
-    /// The store-wide identity of the component instance the export
-    /// belongs to, which the lift's canon options name by the
-    /// translator's per-instantiation index.
-    fn instance_record(&self) -> Result<InstanceId> {
-        let state = self
-            .abi_state
-            .lock()
-            .map_err(|_| Error::internal("ABI runtime state lock poisoned"))?;
-        state
-            .component_instances
-            .get(self.options.instance)
-            .copied()
-            .ok_or_else(|| {
-                Error::internal(
-                    "an export's lift names a component instance the plan does not hold",
-                )
-            })
-    }
-
     /// The body of [`Self::call`] inside its task.
     fn call_in_task<T: 'static>(
         &self,
         task: TaskId,
+        instance: InstanceId,
         store: &mut Store<T>,
         args: &[Val],
-        memory: Option<wasm_runtime_layer::Memory>,
-        realloc: Option<wasm_runtime_layer::Func>,
-        post_return: Option<wasm_runtime_layer::Func>,
+        options: &BoundaryOptions,
     ) -> Result<Box<[Val]>> {
-        let core_args = self.lower_args(store, args, memory.clone(), realloc.clone())?;
+        let core_args = self.lower_args(store, args, instance, task, options)?;
         let result_arity = self.core_result_arity();
         let mut core_results = vec![RuntimeVal::I32(0); result_arity];
 
@@ -196,25 +161,12 @@ impl Func {
             .call(store.inner_mut(), &core_args, &mut core_results)
             .map_err(|err| Error::from(InstantiationError::SubstrateFailure(err)))?;
 
-        let lifted_result = self.lift_result(store, &core_results, memory)?;
-
-        // Run post-return (if any) after the caller has logically
-        // observed the return; we hold the lifted value, so the
-        // post-return is safe to call now. Its arguments are the
-        // core results: the flat result slots, or the return-area
-        // pointer when the result spilled to memory.
-        if let Some(post_return_func) = post_return {
-            let mut empty: [RuntimeVal; 0] = [];
-            post_return_func
-                .call(store.inner_mut(), &core_results, &mut empty)
-                .map_err(|err| {
-                    Error::from(AbiError {
-                        position: AbiPosition::Result,
-                        valtype: ValueType::Primitive(PrimitiveType::Bool),
-                        cause: AbiCause::SubstrateFailure(err),
-                    })
-                })?;
-        }
+        // The result crosses back out, and the export's post-return
+        // runs after the caller has logically observed it: the
+        // lifted value is in hand, so the post-return is safe to run
+        // now. Both go through the one context of the crossing.
+        let lifted_result =
+            self.lift_result(store, &core_results, instance, task, options.clone())?;
 
         Ok(lifted_result.into_iter().collect())
     }
@@ -245,17 +197,18 @@ impl Func {
         &self,
         store: &mut Store<T>,
         args: &[Val],
-        memory: Option<wasm_runtime_layer::Memory>,
-        realloc: Option<wasm_runtime_layer::Func>,
+        instance: InstanceId,
+        task: TaskId,
+        options: &BoundaryOptions,
     ) -> Result<Vec<RuntimeVal>> {
         let tables = store.tables_handle();
-        let store_ctx = store.inner_mut().as_context_mut();
         let resource_tables = self.resource_tables()?;
-        let mut lower_ctx = LowerContext::new(
+        let store_ctx = store.inner_mut().as_context_mut();
+        let mut lower_ctx = BoundaryContext::new(
             store_ctx,
-            memory,
-            realloc,
-            self.options.string_encoding,
+            options.clone(),
+            Some(instance),
+            Some(Scope::Task(task)),
             Some(tables),
             resource_tables,
         );
@@ -322,23 +275,27 @@ impl Func {
         &self,
         store: &mut Store<T>,
         core_results: &[RuntimeVal],
-        memory: Option<wasm_runtime_layer::Memory>,
+        instance: InstanceId,
+        task: TaskId,
+        options: BoundaryOptions,
     ) -> Result<Option<Val>> {
-        let Some(result_ty) = &self.signature.result else {
-            return Ok(None);
-        };
         let position = AbiPosition::Result;
         let tables = store.tables_handle();
-        let store_ctx = store.inner_mut().as_context_mut();
         let resource_tables = self.resource_tables()?;
-        let mut lift_ctx = LiftContext::new(
+        let store_ctx = store.inner_mut().as_context_mut();
+        let mut lift_ctx = BoundaryContext::new(
             store_ctx,
-            memory,
-            self.options.string_encoding,
+            options,
+            Some(instance),
+            Some(Scope::Task(task)),
             Some(tables),
             resource_tables,
         );
-        if result_spills(&self.signature) {
+        let Some(result_ty) = &self.signature.result else {
+            lift_ctx.post_return(core_results)?;
+            return Ok(None);
+        };
+        let lifted = if result_spills(&self.signature) {
             // Wide result: read from the pointer the core function
             // returned.
             let ptr = match core_results.first() {
@@ -353,16 +310,21 @@ impl Func {
                     }));
                 }
             };
-            return Ok(Some(lift(&mut lift_ctx, ptr, result_ty, position)?));
-        }
-        let mut cursor = 0usize;
-        let val = lift_from_flat_slots(
-            &mut lift_ctx,
-            core_results,
-            &mut cursor,
-            result_ty,
-            position,
-        )?;
-        Ok(Some(val))
+            lift(&mut lift_ctx, ptr, result_ty, position)?
+        } else {
+            let mut cursor = 0usize;
+            lift_from_flat_slots(
+                &mut lift_ctx,
+                core_results,
+                &mut cursor,
+                result_ty,
+                position,
+            )?
+        };
+        // The post-return's arguments are the core results: the flat
+        // result slots, or the return-area pointer when the result
+        // spilled to memory.
+        lift_ctx.post_return(core_results)?;
+        Ok(Some(lifted))
     }
 }

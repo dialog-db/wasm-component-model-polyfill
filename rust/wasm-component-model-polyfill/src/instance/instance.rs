@@ -2,9 +2,9 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::abi::runtime_state::AbiRuntimeState;
 use crate::component::{ExternalName, FunctionType};
 use crate::executor::ir::CanonOptions;
-use crate::executor::trampoline::AbiRuntimeState;
 use crate::module::Module;
 use crate::store::StoreId;
 

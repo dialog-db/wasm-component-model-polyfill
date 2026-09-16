@@ -32,13 +32,15 @@ use super::intrinsics::{
     build_context_get, build_context_set, build_enter_sync_call, build_exit_sync_call,
     build_resource_transfer, build_transcoder, build_trap,
 };
+use crate::abi::runtime_state::AbiRuntimeState;
+
 use super::ir::{
     CoreInstanceExport, CoreSourceItem, ExecutorIr, ExportSpec, ImportSource, Initializer,
     LoweringSpec, ModuleEntry, ModuleSource, ResourceSpec, TrampolineSpec,
 };
 use super::trampoline::{
-    AbiRuntimeState, ResourceRuntime, build_resource_drop_trampoline,
-    build_resource_new_trampoline, build_resource_rep_trampoline, build_trampoline,
+    ResourceRuntime, build_resource_drop_trampoline, build_resource_new_trampoline,
+    build_resource_rep_trampoline, build_trampoline,
 };
 
 /// The runtime items the executor has produced so far while walking

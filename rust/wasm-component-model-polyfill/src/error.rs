@@ -592,6 +592,14 @@ pub enum AbiCause {
     /// underlying cause is captured as `#[source]`.
     #[error("substrate-level memory access failed")]
     SubstrateFailure(#[source] anyhow::Error),
+
+    /// The crossing runs under a data model whose ABI strategy the
+    /// polyfill does not implement. A component that declares such a
+    /// data model is refused at translation with
+    /// [`Error::Unsupported`], so a crossing reaches this cause only
+    /// when it was built against those options directly.
+    #[error("the canonical-ABI strategy for this data model is not implemented")]
+    UnsupportedDataModel,
 }
 
 /// The structured reason the concurrency scheduler failed to carry a

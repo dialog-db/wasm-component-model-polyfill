@@ -20,7 +20,7 @@
 
 use wasm_runtime_layer::Val as RuntimeVal;
 
-use super::context::{LiftContext, LowerContext};
+use super::context::BoundaryContext;
 use super::layout::{
     FlatType, alignment_of, flags_chunk_count, flat_types, join_flat_slots, size_of,
 };
@@ -32,7 +32,7 @@ use crate::value::{Val, ValField};
 /// Lower a value into the slot-by-slot flat encoding the canonical
 /// ABI specifies for function parameters.
 pub fn lower_into_flat_slots<T: 'static>(
-    ctx: &mut LowerContext<'_, T>,
+    ctx: &mut BoundaryContext<'_, T>,
     value: &Val,
     ty: &ValueType,
     out: &mut Vec<RuntimeVal>,
@@ -205,7 +205,7 @@ pub fn lower_into_flat_slots<T: 'static>(
 /// Lift a value out of the slot-by-slot flat encoding starting at
 /// `cursor`. The cursor advances by the value's flat-slot count.
 pub fn lift_from_flat_slots<T: 'static>(
-    ctx: &mut LiftContext<'_, T>,
+    ctx: &mut BoundaryContext<'_, T>,
     args: &[RuntimeVal],
     cursor: &mut usize,
     ty: &ValueType,
@@ -413,7 +413,7 @@ pub fn lift_from_flat_slots<T: 'static>(
 /// reinterpreted) per the canonical ABI's join rules.
 #[allow(clippy::too_many_arguments)]
 fn lower_variant_flat<T: 'static, I: Iterator<Item = Option<ValueType>>>(
-    ctx: &mut LowerContext<'_, T>,
+    ctx: &mut BoundaryContext<'_, T>,
     tag: usize,
     payload_ty: Option<&ValueType>,
     payload_value: Option<&Val>,
@@ -459,7 +459,7 @@ fn lower_variant_flat<T: 'static, I: Iterator<Item = Option<ValueType>>>(
 /// consumes the joined payload slots and decodes them against the
 /// active case's flat shape.
 fn lift_variant_payload_flat<T: 'static>(
-    ctx: &mut LiftContext<'_, T>,
+    ctx: &mut BoundaryContext<'_, T>,
     args: &[RuntimeVal],
     cursor: &mut usize,
     payload_ty: Option<&ValueType>,
@@ -666,13 +666,13 @@ fn primitive_from_flat(
 }
 
 fn lift_string_from_memory<T: 'static>(
-    ctx: &mut LiftContext<'_, T>,
+    ctx: &mut BoundaryContext<'_, T>,
     ptr: usize,
     units: usize,
     ty: &ValueType,
     position: AbiPosition,
 ) -> Result<Val> {
-    let encoding = ctx.string_encoding;
+    let encoding = ctx.string_encoding();
     let units = u32::try_from(units)
         .map_err(|_| invalid_encoding(ty, position, "string length overflow"))?;
     let alignment = strings::alignment(encoding);
@@ -699,12 +699,12 @@ fn lift_string_from_memory<T: 'static>(
 }
 
 fn lower_string<T: 'static>(
-    ctx: &mut LowerContext<'_, T>,
+    ctx: &mut BoundaryContext<'_, T>,
     s: &str,
     position: AbiPosition,
     ty: &ValueType,
 ) -> Result<(usize, usize)> {
-    let encoding = ctx.string_encoding;
+    let encoding = ctx.string_encoding();
     let (bytes, units) = strings::encode(encoding, s);
     // `cabi_realloc` runs even for an empty string, as the canonical
     // ABI prescribes, so a guest allocator that misbehaves traps.
