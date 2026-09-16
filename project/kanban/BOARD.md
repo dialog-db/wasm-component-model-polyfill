@@ -16,10 +16,11 @@ kanban-plugin: basic
 - [ ] [[90d05d]]
 - [ ] [[55c5ef]]
 - [ ] [[968d39]]
-- [ ] [[392746]]
 - [ ] [[45740e]]
 
 ## In Progress
+
+- [ ] [[392746]]
 
 ## Needs Review
 

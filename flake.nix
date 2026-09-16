@@ -165,14 +165,52 @@
           echo "== conformance progress: ${package}"
           archive=$(nix build --no-link --print-out-paths .#${package})
           summary="''${CARGO_TARGET_DIR:-target}/conformance/summary.json"
-          mkdir -p "$(dirname "$summary")"
+          mkdir -p "$(dirname "$summary")" "''${XDG_CACHE_HOME:-$HOME/.cache}/wcmp-tests/${package}-summary"
           WCMP_CONFORMANCE_SUMMARY="$summary" cargo nextest run \
             --workspace-remap ./ \
             --archive-file "$archive/${package}.tar.zst" \
+            --extract-to "''${XDG_CACHE_HOME:-$HOME/.cache}/wcmp-tests/${package}-summary" \
+            --extract-overwrite \
             --no-capture \
             -E 'test(it_reports_conformance_progress)'
+          rm -rf "''${XDG_CACHE_HOME:-$HOME/.cache}/wcmp-tests/${package}-summary"
         '';
         conformanceSummaryCommand = conformanceSummaryFor "tests-native-debug";
+
+        # Every replay extracts the archive (4 to 7 GB of test binaries)
+        # into a directory on disk under the user's cache directory, not
+        # under `$TMPDIR`, which is a RAM-backed tmpfs on most Linux
+        # systems, and removes it when nextest exits. The browsers a web
+        # lane starts write their profiles under the same directory. The
+        # path is kept short on purpose: Chromium puts Unix sockets under
+        # `$TMPDIR`, and a socket path longer than 108 bytes aborts the
+        # browser at startup.
+        testWorkspace = package: ''
+          workspace="''${XDG_CACHE_HOME:-$HOME/.cache}/wcmp-tests/${package}"
+          rm -rf "$workspace"
+          mkdir -p "$workspace/archive" "$workspace/tmp"
+          trap 'rm -rf "$workspace"' EXIT
+          export TMPDIR="$workspace/tmp"
+        '';
+
+        # A web lane runs one headless browser and one test runner (about
+        # 2 GB) per test in flight, so its parallelism follows available
+        # memory, one test per 4 GB and at most 8, unless the operator
+        # sets `NEXTEST_TEST_THREADS` or passes `-j`. Native lanes keep
+        # nextest's default, one test per core.
+        browserTestThreads = ''
+          if [ -z "''${NEXTEST_TEST_THREADS:-}" ]; then
+            threads=4
+            if [ -r /proc/meminfo ]; then
+              available_kb=$(awk '/MemAvailable/ { print $2 }' /proc/meminfo)
+              threads=$(( available_kb / 1024 / 1024 / 4 ))
+            fi
+            [ "$threads" -lt 1 ] && threads=1
+            [ "$threads" -gt 8 ] && threads=8
+            export NEXTEST_TEST_THREADS="$threads"
+            echo "browser tests: $threads at a time (set NEXTEST_TEST_THREADS or pass -j to change)"
+          fi
+        '';
 
         menuTestCommand =
           {
@@ -180,14 +218,22 @@
             package,
             # Print the conformance progress summary after the run.
             summary ? false,
+            # Cap the parallelism from available memory (web lanes).
+            browser ? false,
           }:
           {
             inherit description;
             command = ''
               archive=$(nix build --no-link --print-out-paths .#${package})
+            ''
+            + testWorkspace package
+            + pkgs.lib.optionalString browser browserTestThreads
+            + ''
               cargo nextest run \
                 --workspace-remap ./ \
                 --archive-file "$archive/${package}.tar.zst" \
+                --extract-to "$workspace/archive" \
+                --extract-overwrite \
                 "$@"
             ''
             + pkgs.lib.optionalString summary conformanceSummaryCommand;
@@ -231,15 +277,17 @@
                 };
               };
               web = {
-                description = "Unit and integration tests in headless Chrome";
+                description = "Unit and integration tests in headless Chrome (one browser per test in flight; parallelism follows available memory unless NEXTEST_TEST_THREADS or -j says otherwise)";
                 subcommands = {
                   debug = menuTestCommand {
                     description = "Unit and integration tests (wasm32-unknown-unknown, debug)";
                     package = "tests-web-debug";
+                    browser = true;
                   };
                   release = menuTestCommand {
                     description = "Unit and integration tests (wasm32-unknown-unknown, release)";
                     package = "tests-web-release";
+                    browser = true;
                   };
                 };
               };
