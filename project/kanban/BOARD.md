@@ -19,8 +19,6 @@ kanban-plugin: basic
 
 ## In Progress
 
-- [ ] [[ec3a3d]]
-
 ## Needs Review
 
 - [ ] [[0280b2]]
@@ -35,6 +33,7 @@ kanban-plugin: basic
 - [ ] [[2e826c]]
 - [ ] [[360f52]]
 - [ ] [[392746]]
+- [ ] [[ec3a3d]]
 
 ## Ready
 
