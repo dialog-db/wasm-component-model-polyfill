@@ -1,5 +1,8 @@
 //! The smoke test: one host program that walks the polyfill from the
-//! foundations to a `wac` composition and reports each step. It runs
+//! foundations through a `wac` composition, real-toolchain maps and
+//! fixed-length lists, core modules at the boundary, export
+//! navigation by name, a 64-bit memory, and engine configuration,
+//! and reports each step. It runs
 //! as a native binary (`smoke native`) and as a page in the browser
 //! (`smoke web`) from the same source, so a reader can check the
 //! polyfill by reading this file and by running it on both targets.
@@ -12,10 +15,12 @@ mod host_state;
 mod outcome;
 mod step;
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use wasm_component_model_polyfill::{
-    Component, Engine, HostCall, InterfaceIdentifier, Linker, Store, Val,
+    Component, CoreExternType, Engine, EngineConfig, Error, HostCall, InterfaceIdentifier, Linker,
+    Store, Val, ValueType,
 };
 use wcmp_macros::component;
 
@@ -32,6 +37,152 @@ const GUEST: &[u8] =
 /// The socket's `run` calls the plug's `double` through an adapter.
 const COMPOSITION: &[u8] = include_bytes!(
     "../../wasm-component-model-polyfill/tests/corpus/fixtures/composition/composed.wasm"
+);
+
+/// The `maps` fixture: a `wasm-tools` build whose exports take and
+/// return a `map<string, u32>`.
+const MAPS: &[u8] =
+    include_bytes!("../../wasm-component-model-polyfill/tests/corpus/fixtures/maps/maps.wasm");
+
+/// The `fixed-lists` fixture: a `wasm-tools` build whose exports take
+/// and return a `list<u32, 4>` and a `list<u8, 16>`.
+const FIXED_LISTS: &[u8] = include_bytes!(
+    "../../wasm-component-model-polyfill/tests/corpus/fixtures/fixed-lists/fixed-lists.wasm"
+);
+
+/// A component that exports a core module for the host to take: one
+/// global and one function, and nothing the component instantiates
+/// itself.
+const MODULE_PROVIDER: &[u8] = component!(
+    r#"
+    (component
+      (core module $m
+        (global (export "g") i32 i32.const 100)
+        (func (export "f") (result i32) i32.const 101))
+      (export "m" (core module $m)))
+    "#
+);
+
+/// A component that imports that core module, instantiates it, and
+/// exports the sum of its function's result and its global.
+const MODULE_CONSUMER: &[u8] = component!(
+    r#"
+    (component
+      (import "m" (core module $m
+        (export "f" (func (result i32)))
+        (export "g" (global i32))))
+      (core instance $provided (instantiate $m))
+      (core module $sum
+        (import "m" "f" (func $f (result i32)))
+        (import "m" "g" (global $g i32))
+        (func (export "sum") (result i32)
+          call $f global.get $g i32.add))
+      (core instance $i (instantiate $sum (with "m" (instance $provided))))
+      (func (export "sum") (result u32) (canon lift (core func $i "sum"))))
+    "#
+);
+
+/// A component whose functions live under a plain-named instance
+/// export, `a`, and under an instance nested inside it, `a.b`.
+const NESTED_EXPORTS: &[u8] = component!(
+    r#"
+    (component
+      (core module $m
+        (func (export "f") (result i32) i32.const 42)
+        (func (export "g") (param i32) (result i32) local.get 0 i32.const 1 i32.add))
+      (core instance $i (instantiate $m))
+      (func $f (result u32) (canon lift (core func $i "f")))
+      (func $g (param "x" u32) (result u32) (canon lift (core func $i "g")))
+      (instance $b (export "g" (func $g)))
+      (instance $a (export "f" (func $f)) (export "b" (instance $b)))
+      (export "a" (instance $a)))
+    "#
+);
+
+/// A 32-bit component that forwards a string to a 64-bit component,
+/// which copies it inside its `i64`-addressed memory and hands it
+/// back, so the string crosses an adapter in each direction.
+const MEMORY64_COMPOSITION: &[u8] = component!(
+    r#"
+    (component
+      (component $c64
+        (core module $m
+          (memory (export "memory") i64 1)
+          (global $next (mut i64) (i64.const 8))
+          (func $realloc (export "realloc")
+            (param $old i64) (param $old-size i64) (param $align i64) (param $size i64)
+            (result i64)
+            (local $ret i64)
+            (local.set $ret
+              (i64.and (i64.add (global.get $next) (i64.const 7)) (i64.const -8)))
+            (global.set $next (i64.add (local.get $ret) (local.get $size)))
+            (local.get $ret))
+          (func (export "roundtrip") (param $ptr i64) (param $len i64) (result i64)
+            (local $dst i64)
+            (local $ret i64)
+            (local.set $dst
+              (call $realloc (i64.const 0) (i64.const 0) (i64.const 1) (local.get $len)))
+            (memory.copy (local.get $dst) (local.get $ptr) (local.get $len))
+            (local.set $ret
+              (call $realloc (i64.const 0) (i64.const 0) (i64.const 8) (i64.const 16)))
+            (i64.store (local.get $ret) (local.get $dst))
+            (i64.store offset=8 (local.get $ret) (local.get $len))
+            (local.get $ret)))
+        (core instance $m (instantiate $m))
+        (func (export "roundtrip") (param "a" string) (result string)
+          (canon lift (core func $m "roundtrip")
+            (memory (core memory $m "memory"))
+            (realloc (core func $m "realloc")))))
+      (instance $c64 (instantiate $c64))
+      (component $c32
+        (import "backend" (instance $i
+          (export "roundtrip" (func (param "a" string) (result string)))))
+        (core module $libc
+          (memory (export "memory") 1)
+          (global $next (mut i32) (i32.const 8))
+          (func (export "realloc")
+            (param $old i32) (param $old-size i32) (param $align i32) (param $size i32)
+            (result i32)
+            (local $ret i32)
+            (local.set $ret
+              (i32.and (i32.add (global.get $next) (i32.const 7)) (i32.const -8)))
+            (global.set $next (i32.add (local.get $ret) (local.get $size)))
+            (local.get $ret)))
+        (core instance $libc (instantiate $libc))
+        (core func $roundtrip
+          (canon lower (func $i "roundtrip")
+            (memory (core memory $libc "memory"))
+            (realloc (core func $libc "realloc"))))
+        (core module $m
+          (import "" "memory" (memory 1))
+          (import "" "realloc" (func $realloc (param i32 i32 i32 i32) (result i32)))
+          (import "" "roundtrip" (func $roundtrip (param i32 i32 i32)))
+          (func (export "roundtrip") (param $ptr i32) (param $len i32) (result i32)
+            (local $ret i32)
+            (local.set $ret
+              (call $realloc (i32.const 0) (i32.const 0) (i32.const 1) (i32.const 8)))
+            (call $roundtrip (local.get $ptr) (local.get $len) (local.get $ret))
+            (local.get $ret)))
+        (core instance $m (instantiate $m
+          (with "" (instance
+            (export "memory" (memory $libc "memory"))
+            (export "realloc" (func $libc "realloc"))
+            (export "roundtrip" (func $roundtrip))))))
+        (func (export "roundtrip") (param "a" string) (result string)
+          (canon lift (core func $m "roundtrip")
+            (memory (core memory $libc "memory"))
+            (realloc (core func $libc "realloc")))))
+      (instance $c32 (instantiate $c32 (with "backend" (instance $c64))))
+      (export "roundtrip" (func $c32 "roundtrip")))
+    "#
+);
+
+/// A component whose import carries the gated `implements`
+/// annotation, which an engine accepts only when configured to.
+const IMPLEMENTS: &[u8] = component!(
+    r#"
+    (component (import "a" (implements "a:b/c") (instance)))
+    "#
 );
 
 /// A component that imports a host function and exports functions
@@ -163,6 +314,15 @@ pub async fn run() -> Vec<Step> {
         Step::run("host resource with a destructor", dropper(&engine)).await,
         Step::run("disposal from the host", disposal(&engine)).await,
         composition(&engine).await,
+        Step::run(
+            "maps and fixed-length lists from wasm-tools",
+            real_values(&engine),
+        )
+        .await,
+        Step::run("core modules at the boundary", core_modules(&engine)).await,
+        Step::run("export navigation by name", navigation(&engine)).await,
+        Step::run("string through a 64-bit memory", memory64(&engine)).await,
+        Step::run("engine configuration", engine_configuration()).await,
     ]
 }
 
@@ -418,4 +578,270 @@ async fn composition(engine: &Engine) -> Step {
         ))
     })
     .await
+}
+
+/// Two components built by a real toolchain move a `map<string, u32>`
+/// and fixed-length lists in both directions, typed and untyped. The
+/// map's keys are sent as `Val::Map` where their order matters, so
+/// the evidence is the same on every target.
+async fn real_values(engine: &Engine) -> Result<String, String> {
+    let linker: Linker<HostState> = Linker::new(engine);
+    let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
+
+    let maps = Component::new(engine, MAPS).await.map_err(fail)?;
+    let maps = linker.instantiate(&mut store, &maps).await.map_err(fail)?;
+    let sum = maps
+        .get_func("sum")
+        .ok_or("no `sum` export")?
+        .typed::<(HashMap<String, u32>,), u32>()
+        .map_err(fail)?;
+    let map: HashMap<String, u32> = [("a", 1), ("b", 2), ("c", 39)]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect();
+    let total = sum.call(&mut store, (map,)).await.map_err(fail)?;
+    expect("sum({a: 1, b: 2, c: 39})", total, 42)?;
+    let entries = Val::Map(Box::new([
+        (Val::String("x".to_owned()), Val::U32(7)),
+        (Val::String("y".to_owned()), Val::U32(8)),
+    ]));
+    let keys = maps
+        .get_func("keys")
+        .ok_or("no `keys` export")?
+        .call(&mut store, std::slice::from_ref(&entries))
+        .await
+        .map_err(fail)?;
+    expect(
+        "keys({x: 7, y: 8})",
+        keys.as_ref(),
+        &[Val::List(Box::new([
+            Val::String("x".to_owned()),
+            Val::String("y".to_owned()),
+        ]))],
+    )?;
+    let back = maps
+        .get_func("identity")
+        .ok_or("no `identity` export")?
+        .call(&mut store, std::slice::from_ref(&entries))
+        .await
+        .map_err(fail)?;
+    expect("identity({x: 7, y: 8})", back.as_ref(), &[entries])?;
+
+    let lists = Component::new(engine, FIXED_LISTS).await.map_err(fail)?;
+    let lists = linker.instantiate(&mut store, &lists).await.map_err(fail)?;
+    let sum4 = lists
+        .get_func("sum")
+        .ok_or("no `sum` export")?
+        .typed::<([u32; 4],), u32>()
+        .map_err(fail)?;
+    let total4 = sum4
+        .call(&mut store, ([1, 2, 3, 36],))
+        .await
+        .map_err(fail)?;
+    expect("sum([1, 2, 3, 36])", total4, 42)?;
+    let double = lists
+        .get_func("double")
+        .ok_or("no `double` export")?
+        .typed::<([u8; 16],), [u8; 16]>()
+        .map_err(fail)?;
+    let input: [u8; 16] = core::array::from_fn(|i| i as u8);
+    let doubled = double.call(&mut store, (input,)).await.map_err(fail)?;
+    expect(
+        "double(0..16)",
+        doubled,
+        core::array::from_fn(|i| 2 * i as u8),
+    )?;
+    let bytes = Val::FixedLengthList(input.iter().map(|b| Val::U8(*b)).collect());
+    let same = lists
+        .get_func("identity")
+        .ok_or("no `identity` export")?
+        .call(&mut store, std::slice::from_ref(&bytes))
+        .await
+        .map_err(fail)?;
+    expect("identity(0..16)", same.as_ref(), &[bytes])?;
+
+    Ok(format!(
+        "maps.wasm ({} bytes): sum = {total}, keys = [x, y], identity kept 2 entries; \
+         fixed-lists.wasm ({} bytes): sum = {total4}, double(0..16) ends in {}, identity kept 16 bytes",
+        MAPS.len(),
+        FIXED_LISTS.len(),
+        doubled[15]
+    ))
+}
+
+/// A component exports a core module; the host reads its shape,
+/// instantiates it itself, and registers it for a second component
+/// that instantiates it in turn.
+async fn core_modules(engine: &Engine) -> Result<String, String> {
+    let provider = Component::new(engine, MODULE_PROVIDER)
+        .await
+        .map_err(fail)?;
+    let linker: Linker<HostState> = Linker::new(engine);
+    let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
+    let instance = linker
+        .instantiate(&mut store, &provider)
+        .await
+        .map_err(fail)?;
+    let module = instance.get_module("m").ok_or("no `m` module export")?;
+    let shape: Vec<String> = module
+        .exports()
+        .iter()
+        .map(|export| {
+            let kind = match export.ty {
+                CoreExternType::Func { .. } => "func",
+                CoreExternType::Global { .. } => "global",
+                CoreExternType::Memory { .. } => "memory",
+                CoreExternType::Table { .. } => "table",
+                CoreExternType::Tag { .. } => "tag",
+                _ => "other",
+            };
+            format!("{} ({kind})", export.name)
+        })
+        .collect();
+    expect("module imports", module.imports().len(), 0)?;
+    expect(
+        "module exports",
+        shape.as_slice(),
+        &["g (global)".to_owned(), "f (func)".to_owned()],
+    )?;
+    let core = module.instantiate(&mut store, &[]).await.map_err(fail)?;
+    let g = core.get_export(&store, "g").ok_or("no `g` core export")?;
+    expect(
+        "the host reads the global's type",
+        matches!(g.ty(&store), CoreExternType::Global { .. }),
+        true,
+    )?;
+
+    let consumer = Component::new(engine, MODULE_CONSUMER)
+        .await
+        .map_err(fail)?;
+    let mut linker: Linker<HostState> = Linker::new(engine);
+    linker.root().module("m", &module);
+    let instance = linker
+        .instantiate(&mut store, &consumer)
+        .await
+        .map_err(fail)?;
+    let sum = instance
+        .get_func("sum")
+        .ok_or("no `sum` export")?
+        .typed::<(), u32>()
+        .map_err(fail)?;
+    let total = sum.call(&mut store, ()).await.map_err(fail)?;
+    expect("f() + g", total, 201)?;
+    Ok(format!(
+        "exported module m has {} imports and exports {}; the host instantiated it, then a \
+         second component instantiated it through the linker: f() + g = {total}",
+        module.imports().len(),
+        shape.join(", ")
+    ))
+}
+
+/// Functions inside a plain-named instance export and inside a nested
+/// one are reached by name, and a handle reports its signature.
+async fn navigation(engine: &Engine) -> Result<String, String> {
+    let component = Component::new(engine, NESTED_EXPORTS).await.map_err(fail)?;
+    let linker: Linker<HostState> = Linker::new(engine);
+    let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .map_err(fail)?;
+    expect("no root-level `f`", instance.get_func("f").is_none(), true)?;
+    let a = instance
+        .exports()
+        .instance("a")
+        .ok_or("no `a` instance export")?;
+    let f = a.func("f").ok_or("no `a.f` export")?;
+    let forty_two = f.call(&mut store, &[]).await.map_err(fail)?;
+    expect("a.f()", forty_two.as_ref(), &[Val::U32(42)])?;
+    let g = a
+        .instance("b")
+        .ok_or("no `a.b` instance export")?
+        .func("g")
+        .ok_or("no `a.b.g` export")?;
+    let signature = g.ty().clone();
+    let parameters: Vec<String> = signature
+        .parameters
+        .iter()
+        .map(|parameter| format!("{}: {}", parameter.name, type_name(&parameter.ty)))
+        .collect();
+    let g = g.typed::<(u32,), u32>().map_err(fail)?;
+    let result = g.call(&mut store, (41,)).await.map_err(fail)?;
+    expect("a.b.g(41)", result, 42)?;
+    Ok(format!(
+        "a.f() = 42, a.b.g(41) = {result}, a.b.g takes ({}) and returns {}",
+        parameters.join(", "),
+        signature
+            .result
+            .as_ref()
+            .map_or("nothing".to_owned(), type_name)
+    ))
+}
+
+/// A value type as WIT spells it, for the primitives the smoke test
+/// shows; any other shape falls back to the polyfill's debug form.
+fn type_name(ty: &ValueType) -> String {
+    match ty {
+        ValueType::Primitive(primitive) => format!("{primitive:?}").to_lowercase(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// A string goes from the host into a 32-bit component, through an
+/// adapter into a 64-bit component that copies it in an `i64`
+/// memory, and back.
+async fn memory64(engine: &Engine) -> Result<String, String> {
+    let component = Component::new(engine, MEMORY64_COMPOSITION)
+        .await
+        .map_err(fail)?;
+    let linker: Linker<HostState> = Linker::new(engine);
+    let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .map_err(fail)?;
+    let roundtrip = instance
+        .get_func("roundtrip")
+        .ok_or("no `roundtrip` export")?
+        .typed::<(String,), String>()
+        .map_err(fail)?;
+    let text = "héllo from a 64-bit memory";
+    let back = roundtrip
+        .call(&mut store, (text.to_owned(),))
+        .await
+        .map_err(fail)?;
+    expect("roundtrip", back.as_str(), text)?;
+    Ok(format!(
+        "{:?} crossed into an i64 memory and back, {} bytes each way",
+        text,
+        text.len()
+    ))
+}
+
+/// The default engine validates with Wasmtime's feature gates, and a
+/// host opts into a gated feature through the engine configuration.
+async fn engine_configuration() -> Result<String, String> {
+    let strict = Engine::new().map_err(fail)?;
+    let rejection = match Component::new(&strict, IMPLEMENTS).await {
+        Ok(_) => return Err("the default engine accepted `implements`".to_owned()),
+        Err(Error::InvalidComponentBinary { message, .. }) if message.contains("cm-implements") => {
+            "the `cm-implements` feature is not active"
+        }
+        Err(other) => return Err(format!("unexpected rejection: {other}")),
+    };
+    let mut config = EngineConfig::new();
+    config.wasm_component_model_implements(true);
+    let permissive = Engine::with_config(&config).map_err(fail)?;
+    let component = Component::new(&permissive, IMPLEMENTS)
+        .await
+        .map_err(fail)?;
+    expect(
+        "the annotated import is described",
+        component.imports.len(),
+        1,
+    )?;
+    Ok(format!(
+        "the default engine rejected an `implements` import ({rejection}); an engine that opts \
+         in accepted it"
+    ))
 }
