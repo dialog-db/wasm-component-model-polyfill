@@ -329,12 +329,12 @@
                 '';
               };
               web = {
-                description = "Build the smoke test page as a derivation and serve it";
+                description = "Build the smoke test page as a derivation and serve it (uncached, so a rebuilt page shows at once)";
                 command = ''
                   site=$(nix build --no-link --print-out-paths .#smoke-web)
                   port="''${1:-8765}"
                   echo "smoke test page: http://127.0.0.1:$port/  (Ctrl-C stops the server)"
-                  ${pkgs.python3}/bin/python3 -m http.server --bind 127.0.0.1 --directory "$site" "$port"
+                  ${pkgs.python3}/bin/python3 ${./rust/wcmp-smoke/web/serve.py} "$site" "$port"
                 '';
               };
               check = {
