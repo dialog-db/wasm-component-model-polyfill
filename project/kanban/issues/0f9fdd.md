@@ -18,3 +18,6 @@ Vendor the `async` directory of the Component Model test corpus (`test/async/` a
 - [ ] The native run and the browser run report the same counts for the `async` rows, and the same pass and failure results for every async file.
 - [ ] The harness still fails on an unlisted failure or a stale expectation, so a listed directive that starts to pass fails the run until its line is removed.
 
+
+## Dispatch log
+- 2026-09-16T06:28:44Z dispatched implementor `card-0f9fdd-23b7af81` (implement session, PDD018 thread, budget 4)
