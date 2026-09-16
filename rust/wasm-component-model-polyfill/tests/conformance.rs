@@ -429,14 +429,23 @@ struct ResourceState {
 /// Register the host items Wasmtime's wast runner provides for its
 /// component tests (`crates/wast/src/spectest.rs`,
 /// `link_component_spectest`), so the directives that import them
-/// run as they do there. The asynchronous items (`host-echo-u32`,
-/// `never-return`, `return-two-slowly`, `echo-slowly`, and
-/// `[method]resource1.never-return`) are left out: the corpus files
-/// that use them are not vendored.
+/// run as they do there. Wasmtime registers `host-echo-u32` as an
+/// asynchronous host function that resolves without yielding; a
+/// synchronous host function called through an asynchronous lower
+/// returns `RETURNED` at once, the same observable behavior, so it is
+/// registered here with `func_wrap`. The remaining asynchronous items
+/// (`never-return`, `return-two-slowly`, `echo-slowly`, and
+/// `[method]resource1.never-return`) need a host task that actually
+/// yields, which the polyfill does not support registering yet, so
+/// they are left out; every directive that imports one of them is a
+/// deferred feature.
 async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
     linker
         .root()
         .func_wrap("host-return-two", |_, (): ()| Ok(2u32));
+    linker
+        .root()
+        .func_wrap("host-echo-u32", |_, (v,): (u32,)| Ok(v));
 
     let simple_module = Module::new(engine, SIMPLE_MODULE)
         .await

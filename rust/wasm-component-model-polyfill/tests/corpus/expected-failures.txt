@@ -11,6 +11,387 @@
 #                     Wasmtime's, or is missing
 #   defect            a wrong result from a feature the polyfill claims
 #   cascade           a consequence of an earlier failure in the same file
+
+cm/async/async-calls-sync.wast:12 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/async-calls-sync.wast:250 deferred-feature no instance to invoke
+cm/async/async-calls-sync.wast:251 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:14 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+cm/async/big-interleaving-test.wast:862 deferred-feature no definition named `Tester`
+cm/async/big-interleaving-test.wast:864 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:866 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:875 deferred-feature expected a trap `unreachable`, got `no instance to invoke`
+cm/async/big-interleaving-test.wast:881 deferred-feature no definition named `Tester`
+cm/async/big-interleaving-test.wast:883 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:895 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:902 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:912 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:923 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:935 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:945 deferred-feature expected a trap `cannot drop future write end without first writing a value`, got `no instance to invoke`
+cm/async/big-interleaving-test.wast:951 deferred-feature no definition named `Tester`
+cm/async/big-interleaving-test.wast:953 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:973 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:985 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1003 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1063 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1097 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1143 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1171 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1199 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1245 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1295 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1327 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1383 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1431 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1445 deferred-feature no definition named `Tester`
+cm/async/big-interleaving-test.wast:1446 deferred-feature expected a trap `cannot have concurrent operations active on a future/stream`, got `no instance to invoke`
+cm/async/big-interleaving-test.wast:1454 deferred-feature no definition named `Tester`
+cm/async/big-interleaving-test.wast:1456 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1466 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1476 deferred-feature no definition named `Tester`
+cm/async/big-interleaving-test.wast:1477 deferred-feature expected a trap `cannot drop busy stream`, got `no instance to invoke`
+cm/async/big-interleaving-test.wast:1485 deferred-feature no definition named `Tester`
+cm/async/big-interleaving-test.wast:1487 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1496 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1508 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1520 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1530 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1543 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1559 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1572 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1583 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1594 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1607 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1623 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1630 deferred-feature no definition named `Tester`
+cm/async/big-interleaving-test.wast:1631 deferred-feature expected a trap `cannot drop a subtask which has not yet resolved`, got `no instance to invoke`
+cm/async/big-interleaving-test.wast:1638 deferred-feature no definition named `Tester`
+cm/async/big-interleaving-test.wast:1640 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1651 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1664 deferred-feature no instance to invoke
+cm/async/big-interleaving-test.wast:1675 deferred-feature no instance to invoke
+cm/async/builtin-trap-poisons-instance.wast:10 deferred-feature expected a trap `cannot enter component instance`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x1e - M!<wasm function 0>: wasm trap: wasm `unreachable` instruction executed`
+cm/async/builtin-trap-poisons-instance.wast:12 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+cm/async/builtin-trap-poisons-instance.wast:37 deferred-feature no definition named `BuiltinTrap`
+cm/async/builtin-trap-poisons-instance.wast:38 deferred-feature expected a trap `cannot drop busy stream`, got `no instance to invoke`
+cm/async/builtin-trap-poisons-instance.wast:39 deferred-feature expected a trap `cannot enter component instance`, got `no instance to invoke`
+cm/async/cancel-and-exclusive-lock.wast:10 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/cancel-and-exclusive-lock.wast:196 deferred-feature no instance to invoke
+cm/async/cancel-delivery.wast:23 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/cancel-delivery.wast:278 deferred-feature no instance to invoke
+cm/async/cancel-stream.wast:7 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/cancel-stream.wast:202 deferred-feature no instance to invoke
+cm/async/cancel-subtask.wast:8 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/cancel-subtask.wast:217 deferred-feature no instance to invoke
+cm/async/closed-stream.wast:4 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+cm/async/closed-stream.wast:101 deferred-feature no definition named `Tester`
+cm/async/closed-stream.wast:102 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:4 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/cross-abi-calls.wast:472 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:473 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:474 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:475 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:476 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:477 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:478 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:479 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:480 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:481 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:482 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:483 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:484 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:485 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:486 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:487 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:488 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:489 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:490 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:491 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:492 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:493 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:494 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:495 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:496 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:497 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:498 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:499 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:500 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:501 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:502 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:503 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:504 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:505 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:506 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:507 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:508 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:509 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:510 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:511 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:512 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:513 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:514 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:515 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:516 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:517 deferred-feature no instance to invoke
+cm/async/cross-abi-calls.wast:518 deferred-feature no definition named `C`
+cm/async/cross-abi-calls.wast:519 deferred-feature no instance to invoke
+cm/async/cross-task-future.wast:2 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/cross-task-future.wast:103 deferred-feature no instance to invoke
+cm/async/deadlock.wast:4 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/deadlock.wast:73 deferred-feature expected a trap `wasm trap: deadlock detected: event loop cannot make further progress`, got `no instance to invoke`
+cm/async/dont-block-start.wast:3 deferred-feature expected a trap `cannot block a synchronous task before returning`, got `component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components`
+cm/async/dont-block-start.wast:24 deferred-feature expected a trap `cannot block a synchronous task before returning`, got `component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components`
+cm/async/drop-cross-task-borrow.wast:9 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/drop-cross-task-borrow.wast:304 deferred-feature no definition named `Test`
+cm/async/drop-cross-task-borrow.wast:305 deferred-feature no instance to invoke
+cm/async/drop-cross-task-borrow.wast:306 deferred-feature no definition named `Test`
+cm/async/drop-cross-task-borrow.wast:307 deferred-feature no instance to invoke
+cm/async/drop-cross-task-borrow.wast:308 deferred-feature no definition named `Test`
+cm/async/drop-cross-task-borrow.wast:309 deferred-feature expected a trap `borrow handles still remain at the end of the call`, got `no instance to invoke`
+cm/async/drop-stream.wast:7 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+cm/async/drop-stream.wast:157 deferred-feature no definition named `Tester`
+cm/async/drop-stream.wast:158 deferred-feature expected a trap `cannot remove busy stream`, got `no instance to invoke`
+cm/async/drop-stream.wast:159 deferred-feature no definition named `Tester`
+cm/async/drop-stream.wast:160 deferred-feature expected a trap `cannot drop busy stream`, got `no instance to invoke`
+cm/async/drop-subtask.wast:5 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/drop-subtask.wast:139 deferred-feature no instance to invoke
+cm/async/drop-subtask.wast:140 deferred-feature expected a trap `cannot drop a subtask which has not yet resolved`, got `no instance to invoke`
+cm/async/drop-waitable-set.wast:5 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/drop-waitable-set.wast:84 deferred-feature expected a trap `cannot drop waitable set with waiters`, got `no instance to invoke`
+cm/async/during-sync-call-exclusive-resume.wast:9 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/during-sync-call-exclusive-resume.wast:59 deferred-feature no instance to invoke
+cm/async/during-sync-call-exclusive-resume.wast:60 deferred-feature no instance to invoke
+cm/async/during-sync-call-exclusive-resume.wast:65 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/during-sync-call-exclusive-resume.wast:102 deferred-feature no instance to invoke
+cm/async/during-sync-call-exclusive-resume.wast:103 deferred-feature expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
+cm/async/during-sync-call-may-block-if-other-ready-threads.wast:12 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/during-sync-call-may-block-if-other-ready-threads.wast:110 deferred-feature no definition named `Tester`
+cm/async/during-sync-call-may-block-if-other-ready-threads.wast:111 deferred-feature no instance to invoke
+cm/async/during-sync-call-may-block-if-other-ready-threads.wast:112 deferred-feature no instance to invoke
+cm/async/during-sync-call-may-block-if-other-ready-threads.wast:114 deferred-feature no definition named `Tester`
+cm/async/during-sync-call-may-block-if-other-ready-threads.wast:115 deferred-feature no instance to invoke
+cm/async/during-sync-call-may-block-if-other-ready-threads.wast:136 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/during-sync-call-may-block-if-other-ready-threads.wast:206 deferred-feature no instance to invoke
+cm/async/during-sync-call-may-block-if-other-ready-threads.wast:207 deferred-feature no instance to invoke
+cm/async/during-sync-call-no-sibling-resume.wast:16 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/during-sync-call-no-sibling-resume.wast:155 deferred-feature no instance to invoke
+cm/async/during-sync-call-no-sibling-resume.wast:156 deferred-feature no instance to invoke
+cm/async/during-sync-call-no-sibling-resume.wast:162 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+cm/async/during-sync-call-no-sibling-resume.wast:214 deferred-feature no instance to invoke
+cm/async/during-sync-call-no-sibling-resume.wast:215 deferred-feature expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
+cm/async/during-sync-scheduling-candidates.wast:19 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
+cm/async/during-sync-scheduling-candidates.wast:74 deferred-feature no instance to invoke
+cm/async/during-sync-scheduling-candidates.wast:75 deferred-feature no instance to invoke
+cm/async/during-sync-scheduling-candidates.wast:78 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/during-sync-scheduling-candidates.wast:132 deferred-feature no instance to invoke
+cm/async/during-sync-scheduling-candidates.wast:133 deferred-feature no instance to invoke
+cm/async/during-sync-scheduling-candidates.wast:134 deferred-feature no instance to invoke
+cm/async/during-sync-scheduling-candidates.wast:135 deferred-feature no instance to invoke
+cm/async/during-sync-scheduling-candidates.wast:144 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/during-sync-scheduling-candidates.wast:234 deferred-feature no instance to invoke
+cm/async/during-sync-scheduling-candidates.wast:235 deferred-feature no instance to invoke
+cm/async/during-sync-scheduling-candidates.wast:236 deferred-feature no instance to invoke
+cm/async/during-sync-scheduling-candidates.wast:237 deferred-feature no instance to invoke
+cm/async/during-sync-scheduling-candidates.wast:245 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/during-sync-scheduling-candidates.wast:303 deferred-feature no definition named `BlockedCallbackTester`
+cm/async/during-sync-scheduling-candidates.wast:304 deferred-feature no instance to invoke
+cm/async/during-sync-scheduling-candidates.wast:305 deferred-feature no instance to invoke
+cm/async/during-sync-scheduling-candidates.wast:307 deferred-feature no definition named `BlockedCallbackTester`
+cm/async/during-sync-scheduling-candidates.wast:308 deferred-feature no instance to invoke
+cm/async/during-sync-scheduling-candidates.wast:309 deferred-feature no instance to invoke
+cm/async/during-sync-scheduling-candidates.wast:315 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/during-sync-scheduling-candidates.wast:403 deferred-feature no definition named `SyncLiftedTester`
+cm/async/during-sync-scheduling-candidates.wast:404 deferred-feature no instance to invoke
+cm/async/during-sync-scheduling-candidates.wast:405 deferred-feature no instance to invoke
+cm/async/during-sync-scheduling-candidates.wast:407 deferred-feature no definition named `SyncLiftedTester`
+cm/async/during-sync-scheduling-candidates.wast:408 deferred-feature no instance to invoke
+cm/async/during-sync-scheduling-candidates.wast:409 deferred-feature no instance to invoke
+cm/async/during-sync-scheduling-candidates.wast:414 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/during-sync-scheduling-candidates.wast:482 deferred-feature no instance to invoke
+cm/async/during-sync-scheduling-candidates.wast:483 deferred-feature no instance to invoke
+cm/async/during-sync-scheduling-candidates.wast:484 deferred-feature no instance to invoke
+cm/async/empty-wait.wast:6 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/empty-wait.wast:199 deferred-feature no instance to invoke
+cm/async/futures-must-write.wast:5 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+cm/async/futures-must-write.wast:117 deferred-feature no instance to invoke
+cm/async/futures-must-write.wast:118 deferred-feature expected a trap `cannot drop future write end without first writing a value`, got `no instance to invoke`
+cm/async/partial-stream-copies.wast:7 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/partial-stream-copies.wast:238 deferred-feature no instance to invoke
+cm/async/passing-resources.wast:7 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/passing-resources.wast:175 deferred-feature no instance to invoke
+cm/async/passing-resources.wast:176 deferred-feature expected a trap `unknown handle index 3`, got `no instance to invoke`
+cm/async/reentrance.wast:42 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x76 - <unknown>!<wasm function 2> 1: 0x38 - M2!<wasm function 1>: wasm trap: cannot enter component instance
+cm/async/reentrance.wast:60 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x76 - <unknown>!<wasm function 2> 1: 0x27 - CoreOuter!<wasm function 1>: wasm trap: cannot enter component instance
+cm/async/reentrance.wast:99 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x77 - <unknown>!<wasm function 2> 1: 0x3d - M1!<wasm function 0>: wasm trap: cannot enter component instance
+cm/async/reentrance.wast:151 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x77 - <unknown>!<wasm function 2> 1: 0x3f - M2!<wasm function 1>: wasm trap: cannot enter component instance
+cm/async/reentrance.wast:198 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x72 - <unknown>!<wasm function 2> 1: 0x7b - CM!<wasm function 3>: wasm trap: cannot enter component instance
+cm/async/reentrance.wast:202 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/reentrance.wast:237 deferred-feature no instance to invoke
+cm/async/reentrance.wast:242 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/reentrance.wast:346 deferred-feature no instance to invoke
+cm/async/reentrance.wast:352 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/reentrance.wast:429 deferred-feature expected a trap `deadlock detected: event loop cannot make further progress`, got `no instance to invoke`
+cm/async/reentrance.wast:442 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/reentrance.wast:548 deferred-feature no instance to invoke
+cm/async/reentrance.wast:557 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+cm/async/reentrance.wast:685 deferred-feature no instance to invoke
+cm/async/reentrance.wast:701 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
+cm/async/reentrance.wast:813 deferred-feature no instance to invoke
+cm/async/reentrance.wast:817 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+cm/async/reentrance.wast:891 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+cm/async/same-component-stream-future.wast:5 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+cm/async/same-component-stream-future.wast:252 deferred-feature no definition named `Tester`
+cm/async/same-component-stream-future.wast:253 deferred-feature no instance to invoke
+cm/async/same-component-stream-future.wast:254 deferred-feature no definition named `Tester`
+cm/async/same-component-stream-future.wast:255 deferred-feature no instance to invoke
+cm/async/same-component-stream-future.wast:256 deferred-feature no definition named `Tester`
+cm/async/same-component-stream-future.wast:257 deferred-feature expected a trap `cannot read from and write to intra-component future`, got `no instance to invoke`
+cm/async/same-component-stream-future.wast:258 deferred-feature no definition named `Tester`
+cm/async/same-component-stream-future.wast:259 deferred-feature expected a trap `cannot read from and write to intra-component future`, got `no instance to invoke`
+cm/async/self-switch-traps.wast:3 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+cm/async/self-switch-traps.wast:45 deferred-feature no definition named `Tester`
+cm/async/self-switch-traps.wast:46 deferred-feature expected a trap `cannot resume thread which is not suspended`, got `no instance to invoke`
+cm/async/self-switch-traps.wast:47 deferred-feature no definition named `Tester`
+cm/async/self-switch-traps.wast:48 deferred-feature expected a trap `cannot resume thread which is not suspended`, got `no instance to invoke`
+cm/async/self-switch-traps.wast:49 deferred-feature no definition named `Tester`
+cm/async/self-switch-traps.wast:50 deferred-feature expected a trap `cannot resume thread which is not suspended`, got `no instance to invoke`
+cm/async/self-switch-traps.wast:51 deferred-feature no definition named `Tester`
+cm/async/self-switch-traps.wast:52 deferred-feature expected a trap `cannot resume thread which is not suspended`, got `no instance to invoke`
+cm/async/switch-to-ready-callback.wast:16 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/switch-to-ready-callback.wast:354 deferred-feature no definition named `Tester`
+cm/async/switch-to-ready-callback.wast:355 deferred-feature expected a trap `cannot resume thread which is not suspended`, got `no instance to invoke`
+cm/async/switch-to-ready-callback.wast:356 deferred-feature no definition named `Tester`
+cm/async/switch-to-ready-callback.wast:357 deferred-feature expected a trap `cannot resume thread which is not suspended`, got `no instance to invoke`
+cm/async/switch-to-ready-callback.wast:358 deferred-feature no definition named `Tester`
+cm/async/switch-to-ready-callback.wast:359 deferred-feature expected a trap `deadlock detected: event loop cannot make further progress`, got `no instance to invoke`
+cm/async/switch-to-ready-callback.wast:360 deferred-feature no definition named `Tester`
+cm/async/switch-to-ready-callback.wast:361 deferred-feature no instance to invoke
+cm/async/switch-to-ready-callback.wast:362 deferred-feature no definition named `Tester`
+cm/async/switch-to-ready-callback.wast:363 deferred-feature expected a trap `cannot resume thread which is not suspended`, got `no instance to invoke`
+cm/async/switch-to-ready-callback.wast:364 deferred-feature no definition named `Tester`
+cm/async/switch-to-ready-callback.wast:365 deferred-feature expected a trap `cannot resume thread which is not suspended`, got `no instance to invoke`
+cm/async/switch-to-ready-callback.wast:366 deferred-feature no definition named `Tester`
+cm/async/switch-to-ready-callback.wast:367 deferred-feature expected a trap `deadlock detected: event loop cannot make further progress`, got `no instance to invoke`
+cm/async/switch-to-ready-callback.wast:368 deferred-feature no definition named `Tester`
+cm/async/switch-to-ready-callback.wast:369 deferred-feature no instance to invoke
+cm/async/sync-barges-in.wast:6 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/sync-barges-in.wast:322 deferred-feature no definition named `Tester`
+cm/async/sync-barges-in.wast:323 deferred-feature no instance to invoke
+cm/async/sync-streams.wast:7 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/sync-streams.wast:208 deferred-feature no instance to invoke
+cm/async/trap-if-block-and-sync.wast:5 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/trap-if-block-and-sync.wast:315 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:316 deferred-feature expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
+cm/async/trap-if-block-and-sync.wast:317 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:318 deferred-feature expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
+cm/async/trap-if-block-and-sync.wast:319 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:320 deferred-feature expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
+cm/async/trap-if-block-and-sync.wast:321 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:322 deferred-feature expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
+cm/async/trap-if-block-and-sync.wast:323 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:324 deferred-feature expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
+cm/async/trap-if-block-and-sync.wast:325 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:326 deferred-feature no instance to invoke
+cm/async/trap-if-block-and-sync.wast:327 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:328 deferred-feature expected a trap `unsupported callback code`, got `no instance to invoke`
+cm/async/trap-if-block-and-sync.wast:329 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:330 deferred-feature expected a trap `unsupported callback code`, got `no instance to invoke`
+cm/async/trap-if-block-and-sync.wast:331 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:332 deferred-feature expected a trap `unsupported callback code`, got `no instance to invoke`
+cm/async/trap-if-block-and-sync.wast:333 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:334 deferred-feature no instance to invoke
+cm/async/trap-if-block-and-sync.wast:335 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:336 deferred-feature no instance to invoke
+cm/async/trap-if-block-and-sync.wast:337 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:338 deferred-feature no instance to invoke
+cm/async/trap-if-block-and-sync.wast:339 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:340 deferred-feature no instance to invoke
+cm/async/trap-if-block-and-sync.wast:341 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:342 deferred-feature no instance to invoke
+cm/async/trap-if-block-and-sync.wast:343 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:344 deferred-feature no instance to invoke
+cm/async/trap-if-block-and-sync.wast:345 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:346 deferred-feature no instance to invoke
+cm/async/trap-if-block-and-sync.wast:347 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:348 deferred-feature no instance to invoke
+cm/async/trap-if-block-and-sync.wast:349 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:350 deferred-feature expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
+cm/async/trap-if-block-and-sync.wast:351 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:352 deferred-feature expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
+cm/async/trap-if-block-and-sync.wast:353 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:354 deferred-feature expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
+cm/async/trap-if-block-and-sync.wast:355 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:356 deferred-feature expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
+cm/async/trap-if-block-and-sync.wast:357 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:358 deferred-feature expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
+cm/async/trap-if-block-and-sync.wast:359 deferred-feature no definition named `Tester`
+cm/async/trap-if-block-and-sync.wast:360 deferred-feature expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
+cm/async/trap-if-block-and-sync.wast:361 deferred-feature no definition named `Tester`
+cm/async/trap-if-done.wast:15 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/trap-if-done.wast:445 deferred-feature no definition named `Tester`
+cm/async/trap-if-done.wast:446 deferred-feature expected a trap `cannot write to future after previous write succeeded`, got `no instance to invoke`
+cm/async/trap-if-done.wast:447 deferred-feature no definition named `Tester`
+cm/async/trap-if-done.wast:448 deferred-feature expected a trap `cannot write to future after previous write succeeded`, got `no instance to invoke`
+cm/async/trap-if-done.wast:449 deferred-feature no definition named `Tester`
+cm/async/trap-if-done.wast:450 deferred-feature expected a trap `cannot write to future after previous write succeeded or readable end dropped`, got `no instance to invoke`
+cm/async/trap-if-done.wast:451 deferred-feature no definition named `Tester`
+cm/async/trap-if-done.wast:452 deferred-feature expected a trap `cannot read from future after previous read succeeded`, got `no instance to invoke`
+cm/async/trap-if-done.wast:453 deferred-feature no definition named `Tester`
+cm/async/trap-if-done.wast:454 deferred-feature expected a trap `cannot lift future after previous read succeeded`, got `no instance to invoke`
+cm/async/trap-if-done.wast:455 deferred-feature no definition named `Tester`
+cm/async/trap-if-done.wast:456 deferred-feature expected a trap `cannot read from future after previous read succeeded`, got `no instance to invoke`
+cm/async/trap-if-done.wast:457 deferred-feature no definition named `Tester`
+cm/async/trap-if-done.wast:458 deferred-feature expected a trap `cannot lift future after previous read succeeded`, got `no instance to invoke`
+cm/async/trap-if-done.wast:459 deferred-feature no definition named `Tester`
+cm/async/trap-if-done.wast:460 deferred-feature expected a trap `cannot write to stream after being notified that the readable end dropped`, got `no instance to invoke`
+cm/async/trap-if-done.wast:461 deferred-feature no definition named `Tester`
+cm/async/trap-if-done.wast:462 deferred-feature expected a trap `cannot write to stream after being notified that the readable end dropped`, got `no instance to invoke`
+cm/async/trap-if-done.wast:463 deferred-feature no definition named `Tester`
+cm/async/trap-if-done.wast:464 deferred-feature expected a trap `cannot read from stream after being notified that the writable end dropped`, got `no instance to invoke`
+cm/async/trap-if-done.wast:465 deferred-feature no definition named `Tester`
+cm/async/trap-if-done.wast:466 deferred-feature expected a trap `cannot lift stream after being notified that the writable end dropped`, got `no instance to invoke`
+cm/async/trap-if-done.wast:467 deferred-feature no definition named `Tester`
+cm/async/trap-if-done.wast:468 deferred-feature expected a trap `cannot read from stream after being notified that the writable end dropped`, got `no instance to invoke`
+cm/async/trap-if-done.wast:469 deferred-feature no definition named `Tester`
+cm/async/trap-if-done.wast:470 deferred-feature expected a trap `cannot lift stream after being notified that the writable end dropped`, got `no instance to invoke`
+cm/async/trap-if-sync-and-waitable-set.wast:8 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/trap-if-sync-and-waitable-set.wast:300 deferred-feature no definition named `Tester`
+cm/async/trap-if-sync-and-waitable-set.wast:301 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+cm/async/trap-if-sync-and-waitable-set.wast:302 deferred-feature no definition named `Tester`
+cm/async/trap-if-sync-and-waitable-set.wast:303 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+cm/async/trap-if-sync-and-waitable-set.wast:304 deferred-feature no definition named `Tester`
+cm/async/trap-if-sync-and-waitable-set.wast:305 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+cm/async/trap-if-sync-and-waitable-set.wast:306 deferred-feature no definition named `Tester`
+cm/async/trap-if-sync-and-waitable-set.wast:307 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+cm/async/trap-if-sync-and-waitable-set.wast:308 deferred-feature no definition named `Tester`
+cm/async/trap-if-sync-and-waitable-set.wast:309 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+cm/async/trap-if-sync-and-waitable-set.wast:310 deferred-feature no definition named `Tester`
+cm/async/trap-if-sync-and-waitable-set.wast:311 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+cm/async/trap-if-sync-and-waitable-set.wast:312 deferred-feature no definition named `Tester`
+cm/async/trap-if-sync-and-waitable-set.wast:313 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+cm/async/trap-if-sync-and-waitable-set.wast:314 deferred-feature no definition named `Tester`
+cm/async/trap-if-sync-and-waitable-set.wast:315 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+cm/async/trap-if-sync-and-waitable-set.wast:316 deferred-feature no definition named `Tester`
+cm/async/trap-if-sync-and-waitable-set.wast:317 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+cm/async/trap-if-sync-and-waitable-set.wast:318 deferred-feature no definition named `Tester`
+cm/async/trap-if-sync-and-waitable-set.wast:319 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+cm/async/trap-if-sync-and-waitable-set.wast:320 deferred-feature no definition named `Tester`
+cm/async/trap-if-sync-and-waitable-set.wast:321 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+cm/async/trap-if-sync-and-waitable-set.wast:322 deferred-feature no definition named `Tester`
+cm/async/trap-if-sync-and-waitable-set.wast:323 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+cm/async/trap-if-sync-and-waitable-set.wast:324 deferred-feature no definition named `Tester`
+cm/async/trap-if-sync-and-waitable-set.wast:325 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+cm/async/trap-if-sync-and-waitable-set.wast:326 deferred-feature no definition named `Tester`
+cm/async/trap-if-sync-and-waitable-set.wast:327 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+cm/async/trap-if-transfer-in-waitable-set.wast:6 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/trap-if-transfer-in-waitable-set.wast:48 deferred-feature no definition named `Tester`
+cm/async/trap-if-transfer-in-waitable-set.wast:49 deferred-feature expected a trap `cannot lift future while it's in a waitable set`, got `no instance to invoke`
+cm/async/trap-if-transfer-in-waitable-set.wast:50 deferred-feature no definition named `Tester`
+cm/async/trap-if-transfer-in-waitable-set.wast:51 deferred-feature expected a trap `cannot lift stream while it's in a waitable set`, got `no instance to invoke`
+cm/async/wait-during-callback.wast:2 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/wait-during-callback.wast:77 deferred-feature no instance to invoke
+cm/async/zero-length.wast:7 deferred-feature component rejected: unsupported component feature: asynchronous functions
+cm/async/zero-length.wast:223 deferred-feature no instance to invoke
 cm/binary/binary.wast:1186 validation expected rejection `non-zero reserved byte`, but the component parsed (wasmparser 0.254 still reads the byte as the `cancellable` flag the corpus removed; the reference implementation does not pass this file either, see cm/nyi.txt)
 cm/binary/binary.wast:1208 validation expected rejection `non-zero reserved byte`, but the component parsed (wasmparser 0.254 still reads the byte as the `cancellable` flag the corpus removed; the reference implementation does not pass this file either, see cm/nyi.txt)
 cm/binary/binary.wast:1230 validation expected rejection `non-zero reserved byte`, but the component parsed (wasmparser 0.254 still reads the byte as the `cancellable` flag the corpus removed; the reference implementation does not pass this file either, see cm/nyi.txt)
@@ -129,6 +510,373 @@ wasmtime/alias-region-reexported-known-entities.wast:14 substrate component reje
 wasmtime/alias-region-reexported-known-entities.wast:89 cascade no instance to invoke
 wasmtime/alias-region-reexported-known-entities.wast:90 cascade no instance to invoke
 wasmtime/alias-region-reexported-known-entities.wast:91 cascade no instance to invoke
+wasmtime/async/async-builtins.wast:5 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/async-builtins.wast:15 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/async-builtins.wast:25 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/async-builtins.wast:35 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/backpressure-deadlock.wast:14 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/backpressure-deadlock.wast:107 deferred-feature expected a trap `deadlock detected`, got `no instance to invoke`
+wasmtime/async/backpressure-overflow.wast:3 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/backpressure-overflow.wast:32 deferred-feature no definition named `A`
+wasmtime/async/backpressure-overflow.wast:33 deferred-feature expected a trap `backpressure counter overflow`, got `no instance to invoke`
+wasmtime/async/backpressure-overflow.wast:35 deferred-feature no definition named `A`
+wasmtime/async/backpressure-overflow.wast:36 deferred-feature expected a trap `backpressure counter overflow`, got `no instance to invoke`
+wasmtime/async/backpressure-overflow.wast:38 deferred-feature no definition named `A`
+wasmtime/async/backpressure-overflow.wast:39 deferred-feature expected a trap `backpressure counter overflow`, got `no instance to invoke`
+wasmtime/async/backpressure-overflow.wast:41 deferred-feature no definition named `A`
+wasmtime/async/backpressure-overflow.wast:42 deferred-feature no instance to invoke
+wasmtime/async/backpressure-overflow.wast:43 deferred-feature expected a trap `backpressure counter overflow`, got `no instance to invoke`
+wasmtime/async/callback-yield-then-exit.wast:7 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/callback-yield-then-exit.wast:50 deferred-feature no instance to invoke
+wasmtime/async/cancel-host.wast:7 deferred-feature component rejected: unsupported component feature: asynchronous functions (imports `[method]resource1.never-return`, which has no host task registered)
+wasmtime/async/cancel-host.wast:80 deferred-feature no instance to invoke
+wasmtime/async/cancel-host.wast:85 deferred-feature component rejected: unsupported component feature: asynchronous functions (imports `return-two-slowly`, which has no host task registered)
+wasmtime/async/cancel-host.wast:167 deferred-feature no instance to invoke
+wasmtime/async/cancel-host.wast:172 deferred-feature component rejected: unsupported component feature: asynchronous functions (imports `return-two-slowly`, which has no host task registered)
+wasmtime/async/cancel-host.wast:256 deferred-feature expected a trap ``subtask.cancel` called after terminal status delivered`, got `no instance to invoke`
+wasmtime/async/cancel-host.wast:264 deferred-feature component rejected: unsupported component feature: asynchronous functions (imports `echo-slowly`, which has no host task registered)
+wasmtime/async/cancel-host.wast:385 deferred-feature no instance to invoke
+wasmtime/async/cancel-host.wast:389 deferred-feature component rejected: unsupported component feature: asynchronous functions (imports `return-two-slowly`, which has no host task registered)
+wasmtime/async/cancel-host.wast:476 deferred-feature no instance to invoke
+wasmtime/async/cancel-sibling-subtask.wast:4 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/cancel-sibling-subtask.wast:145 deferred-feature no definition named `A`
+wasmtime/async/cancel-sibling-subtask.wast:146 deferred-feature no instance to invoke
+wasmtime/async/cancel-sibling-subtask.wast:149 deferred-feature no definition named `A`
+wasmtime/async/cancel-sibling-subtask.wast:150 deferred-feature no instance to invoke
+wasmtime/async/cancel-starting-subtask-does-not-leak.wast:9 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/cancel-starting-subtask-does-not-leak.wast:103 deferred-feature no instance to invoke
+wasmtime/async/cancel-sync-and-waitable.wast:18 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/cancel-sync-and-waitable.wast:68 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+wasmtime/async/cancel-sync-and-waitable.wast:71 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/cancel-sync-and-waitable.wast:121 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+wasmtime/async/cancel-sync-and-waitable.wast:124 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/cancel-sync-and-waitable.wast:174 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+wasmtime/async/cancel-sync-and-waitable.wast:177 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/cancel-sync-and-waitable.wast:227 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+wasmtime/async/cancel-sync-and-waitable.wast:230 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/cancel-sync-and-waitable.wast:301 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+wasmtime/async/context-in-compositions.wast:155 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x91 - M!<wasm function 3> 1: 0x2a3 - <unknown>!<wasm function 10> 2: 0x48 - N!<wasm function 2>: wasm trap: wasm `unreachable` instruction executed
+wasmtime/async/context-in-compositions.wast:268 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/context-in-compositions.wast:434 deferred-feature no instance to invoke
+wasmtime/async/context-in-compositions.wast:435 deferred-feature no instance to invoke
+wasmtime/async/context-in-compositions.wast:436 deferred-feature no instance to invoke
+wasmtime/async/context-in-compositions.wast:437 deferred-feature no instance to invoke
+wasmtime/async/context-in-resource-drop.wast:50 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x5c - M!<wasm function 5>: resource destructor failed: error while executing at wasm backtrace: 0: 0x4b - Dtor!<wasm function 2> 1: 0x5c - M!<wasm function 5>
+wasmtime/async/context-in-resource-drop.wast:154 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x67 - M!<wasm function 6>: resource destructor failed: error while executing at wasm backtrace: 0: 0x61 - Dtor1!<wasm function 4> 1: 0x67 - M!<wasm function 6>
+wasmtime/async/context-in-resource-drop.wast:242 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x5d - N!<wasm function 5>: resource destructor failed: error while executing at wasm backtrace: 0: 0x4b - Dtor!<wasm function 2> 1: 0x5d - N!<wasm function 5>
+wasmtime/async/context-in-resource-drop.wast:248 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `wasmtime`: no registered linker instance satisfies import `wasmtime`
+wasmtime/async/context-in-resource-drop.wast:325 deferred-feature no instance to invoke
+wasmtime/async/context-in-resource-drop.wast:326 deferred-feature no instance to invoke
+wasmtime/async/context-in-resource-drop.wast:327 deferred-feature no instance to invoke
+wasmtime/async/context-in-resource-drop.wast:328 deferred-feature no instance to invoke
+wasmtime/async/drop-deadlock.wast:3 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/drop-deadlock.wast:24 deferred-feature no instance to invoke
+wasmtime/async/drop-deadlock.wast:25 deferred-feature expected a trap `cannot make further progress`, got `no instance to invoke`
+wasmtime/async/drop-host.wast:5 deferred-feature component rejected: unsupported component feature: asynchronous functions (imports `return-two-slowly`, which has no host task registered)
+wasmtime/async/drop-host.wast:56 deferred-feature expected a trap `cannot drop a subtask which has not yet resolved`, got `no instance to invoke`
+wasmtime/async/drop-waitable-set-stackful.wast:13 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/drop-waitable-set-stackful.wast:105 deferred-feature expected a trap `cannot drop waitable set with waiters`, got `no instance to invoke`
+wasmtime/async/error-context.wast:5 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/error-context.wast:16 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/error-context.wast:30 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/error-context.wast:39 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/error-context.wast:84 deferred-feature no definition named `A`
+wasmtime/async/error-context.wast:85 deferred-feature no instance to invoke
+wasmtime/async/error-context.wast:86 deferred-feature expected a trap `invalid debug message pointer`, got `no instance to invoke`
+wasmtime/async/exceptions.wast:21 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/exceptions.wast:67 deferred-feature no definition named `A`
+wasmtime/async/exceptions.wast:68 deferred-feature expected a trap `thrown Wasm exception`, got `no instance to invoke`
+wasmtime/async/exceptions.wast:69 deferred-feature no definition named `A`
+wasmtime/async/exceptions.wast:70 deferred-feature expected a trap `thrown Wasm exception`, got `no instance to invoke`
+wasmtime/async/exceptions.wast:73 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/exceptions.wast:143 deferred-feature no definition named `A`
+wasmtime/async/exceptions.wast:144 deferred-feature expected a trap `thrown Wasm exception`, got `no instance to invoke`
+wasmtime/async/exceptions.wast:145 deferred-feature no definition named `A`
+wasmtime/async/exceptions.wast:146 deferred-feature expected a trap `thrown Wasm exception`, got `no instance to invoke`
+wasmtime/async/exceptions.wast:149 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/exceptions.wast:215 deferred-feature no definition named `A`
+wasmtime/async/exceptions.wast:216 deferred-feature expected a trap `thrown Wasm exception`, got `no instance to invoke`
+wasmtime/async/exceptions.wast:217 deferred-feature no definition named `A`
+wasmtime/async/exceptions.wast:218 deferred-feature expected a trap `thrown Wasm exception`, got `no instance to invoke`
+wasmtime/async/fused.wast:7 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/fused.wast:56 deferred-feature no instance to invoke
+wasmtime/async/fused.wast:59 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/fused.wast:101 deferred-feature no instance to invoke
+wasmtime/async/fused.wast:104 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/fused.wast:148 deferred-feature no instance to invoke
+wasmtime/async/future-cancel-read-dropped.wast:4 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/future-cancel-read-dropped.wast:66 deferred-feature no instance to invoke
+wasmtime/async/future-cancel-write-completed.wast:5 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/future-cancel-write-completed.wast:105 deferred-feature no instance to invoke
+wasmtime/async/future-cancel-write-dropped.wast:4 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/future-cancel-write-dropped.wast:57 deferred-feature no instance to invoke
+wasmtime/async/future-drop-writable-after-notified-drop.wast:4 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/future-drop-writable-after-notified-drop.wast:160 deferred-feature no instance to invoke
+wasmtime/async/future-read.wast:7 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/future-read.wast:65 deferred-feature expected a trap `wasm trap: cannot block a synchronous task before returning`, got `no instance to invoke`
+wasmtime/async/future-read.wast:68 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/future-read.wast:125 deferred-feature no instance to invoke
+wasmtime/async/future-read.wast:128 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/future-read.wast:190 deferred-feature expected a trap `deadlock detected: event loop cannot make further progress`, got `no instance to invoke`
+wasmtime/async/future-read.wast:193 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/future-read.wast:258 deferred-feature no instance to invoke
+wasmtime/async/futures-must-write2.wast:5 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/futures-must-write2.wast:39 deferred-feature expected a trap `cannot drop future write end without first writing a value`, got `no instance to invoke`
+wasmtime/async/futures-must-write.wast:10 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/futures-must-write.wast:127 deferred-feature no instance to invoke
+wasmtime/async/futures-must-write.wast:128 deferred-feature expected a trap `cannot drop future write end without first writing a value`, got `no instance to invoke`
+wasmtime/async/futures.wast:5 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/futures.wast:15 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/futures.wast:27 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/futures.wast:42 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/futures.wast:54 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/futures.wast:64 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/futures.wast:74 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/futures.wast:84 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/intra-futures.wast:4 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/intra-futures.wast:55 deferred-feature expected a trap `cannot read from and write to intra-component future/stream with non-numeric payload`, got `no instance to invoke`
+wasmtime/async/intra-streams.wast:5 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/intra-streams.wast:56 deferred-feature expected a trap `cannot read from and write to intra-component future/stream with non-numeric payload`, got `no instance to invoke`
+wasmtime/async/intra-streams.wast:59 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/intra-streams.wast:115 deferred-feature no instance to invoke
+wasmtime/async/intra-streams.wast:118 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/intra-streams.wast:176 deferred-feature no instance to invoke
+wasmtime/async/intra-streams.wast:179 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/intra-streams.wast:239 deferred-feature no instance to invoke
+wasmtime/async/join-during-sync-read.wast:8 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/join-during-sync-read.wast:66 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+wasmtime/async/lift.wast:5 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/lower.wast:4 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/many-params-with-retptr.wast:9 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/many-params-with-retptr.wast:176 deferred-feature expected a trap `unreachable`, got `no instance to invoke`
+wasmtime/async/partial-stream-copies.wast:14 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/partial-stream-copies.wast:243 deferred-feature no instance to invoke
+wasmtime/async/reenter-during-yield.wast:5 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/reenter-during-yield.wast:81 deferred-feature no instance to invoke
+wasmtime/async/reentrance.wast:4 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/reentrance.wast:92 deferred-feature no instance to invoke
+wasmtime/async/stackful.wast:7 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/stackful.wast:19 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/stackful.wast:64 deferred-feature no instance to invoke
+wasmtime/async/stackful.wast:67 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/stackful.wast:107 deferred-feature no instance to invoke
+wasmtime/async/stackful.wast:110 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/stackful.wast:121 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/stackful.wast:132 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/stream-big-read-and-writes.wast:4 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/stream-big-read-and-writes.wast:42 deferred-feature no instance to invoke
+wasmtime/async/stream-big-read-and-writes.wast:43 deferred-feature expected a trap `stream read/write count too large`, got `no instance to invoke`
+wasmtime/async/stream-big-read-and-writes.wast:47 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/stream-big-read-and-writes.wast:87 deferred-feature expected a trap `out of bounds`, got `no instance to invoke`
+wasmtime/async/stream-cancel-finished-op.wast:3 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/stream-cancel-finished-op.wast:231 deferred-feature no definition named `A`
+wasmtime/async/stream-cancel-finished-op.wast:232 deferred-feature expected a trap `cannot read after being notified that the writable end dropped`, got `no instance to invoke`
+wasmtime/async/stream-cancel-finished-op.wast:233 deferred-feature no definition named `A`
+wasmtime/async/stream-cancel-finished-op.wast:234 deferred-feature expected a trap `cannot read after being notified that the writable end dropped`, got `no instance to invoke`
+wasmtime/async/stream-cancel-finished-op.wast:235 deferred-feature no definition named `A`
+wasmtime/async/stream-cancel-finished-op.wast:236 deferred-feature expected a trap `cannot read after being notified that the writable end dropped`, got `no instance to invoke`
+wasmtime/async/stream-cancel-finished-op.wast:238 deferred-feature no definition named `A`
+wasmtime/async/stream-cancel-finished-op.wast:239 deferred-feature expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
+wasmtime/async/stream-cancel-finished-op.wast:240 deferred-feature no definition named `A`
+wasmtime/async/stream-cancel-finished-op.wast:241 deferred-feature expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
+wasmtime/async/stream-cancel-finished-op.wast:242 deferred-feature no definition named `A`
+wasmtime/async/stream-cancel-finished-op.wast:243 deferred-feature expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
+wasmtime/async/stream-cancel-finished-op.wast:246 deferred-feature no definition named `A`
+wasmtime/async/stream-cancel-finished-op.wast:247 deferred-feature expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
+wasmtime/async/stream-cancel-finished-op.wast:248 deferred-feature no definition named `A`
+wasmtime/async/stream-cancel-finished-op.wast:249 deferred-feature expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
+wasmtime/async/stream-cancel-finished-op.wast:250 deferred-feature no definition named `A`
+wasmtime/async/stream-cancel-finished-op.wast:251 deferred-feature expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
+wasmtime/async/streams-massive-send.wast:10 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/streams-massive-send.wast:237 deferred-feature no definition named `A`
+wasmtime/async/streams-massive-send.wast:238 deferred-feature expected a trap `fuel allocated for hostcalls has been exhausted`, got `no instance to invoke`
+wasmtime/async/streams-massive-send.wast:239 deferred-feature no definition named `A`
+wasmtime/async/streams-massive-send.wast:240 deferred-feature expected a trap `fuel allocated for hostcalls has been exhausted`, got `no instance to invoke`
+wasmtime/async/streams.wast:4 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/streams.wast:14 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/streams.wast:26 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/streams.wast:36 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/streams.wast:51 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/streams.wast:63 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/streams.wast:73 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/streams.wast:83 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/streams.wast:93 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/streams.wast:103 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/streams.wast:114 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/streams.wast:185 deferred-feature no definition named `A`
+wasmtime/async/streams.wast:186 deferred-feature expected a trap `cannot have concurrent operations active on a future/stream`, got `no instance to invoke`
+wasmtime/async/streams.wast:187 deferred-feature no definition named `A`
+wasmtime/async/streams.wast:188 deferred-feature expected a trap `cannot have concurrent operations active on a future/stream`, got `no instance to invoke`
+wasmtime/async/stream-zero-ops.wast:7 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/stream-zero-ops.wast:201 deferred-feature no instance to invoke
+wasmtime/async/subtask-wait.wast:9 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/subtask-wait.wast:82 deferred-feature expected a trap `wasm `unreachable` instruction executed`, got `no instance to invoke`
+wasmtime/async/sync-and-async-waitable.wast:5 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/sync-and-async-waitable.wast:123 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
+wasmtime/async/sync-call-context-slots.wast:76 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x51 - M!<wasm function 4> 1: 0x100 - <unknown>!<wasm function 4> 2: 0x67 - N!<wasm function 5>: wasm trap: wasm `unreachable` instruction executed
+wasmtime/async/sync-call-context-slots.wast:79 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/sync-call-context-slots.wast:152 deferred-feature no instance to invoke
+wasmtime/async/sync-call-context.wast:61 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x4f - M!<wasm function 2> 1: 0x100 - <unknown>!<wasm function 4> 2: 0x64 - N!<wasm function 3>: wasm trap: wasm `unreachable` instruction executed
+wasmtime/async/sync-call-context.wast:64 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/sync-call-context.wast:126 deferred-feature no instance to invoke
+wasmtime/async/sync-call-context.wast:207 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x5c - M!<wasm function 3> 1: 0x100 - <unknown>!<wasm function 4> 2: 0x62 - M!<wasm function 3>: wasm trap: wasm `unreachable` instruction executed
+wasmtime/async/sync-call-context.wast:210 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/sync-call-context.wast:298 deferred-feature no instance to invoke
+wasmtime/async/sync-call-context.wast:301 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/sync-call-context.wast:389 deferred-feature no instance to invoke
+wasmtime/async/sync-call-context.wast:447 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x4f - M!<wasm function 2> 1: 0x100 - <unknown>!<wasm function 4> 2: 0x59 - N!<wasm function 3>: wasm trap: wasm `unreachable` instruction executed
+wasmtime/async/sync-call-context.wast:450 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/sync-call-context.wast:544 deferred-feature no instance to invoke
+wasmtime/async/sync-streams.wast:14 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/sync-streams.wast:186 deferred-feature no instance to invoke
+wasmtime/async/task-builtins.wast:7 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/task-builtins.wast:16 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/task-builtins.wast:25 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/task-builtins.wast:34 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/task-builtins.wast:45 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/task-builtins.wast:56 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/task-builtins.wast:65 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/task-builtins.wast:74 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/task-builtins.wast:83 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/task-builtins.wast:124 deferred-feature no instance to invoke
+wasmtime/async/task-builtins.wast:128 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/task-builtins.wast:201 deferred-feature no instance to invoke
+wasmtime/async/task-builtins.wast:205 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/task-builtins.wast:390 deferred-feature no instance to invoke
+wasmtime/async/task-builtins.wast:391 deferred-feature no instance to invoke
+wasmtime/async/task-builtins.wast:392 deferred-feature no instance to invoke
+wasmtime/async/task-builtins.wast:393 deferred-feature no instance to invoke
+wasmtime/async/task-builtins.wast:396 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/task-builtins.wast:466 deferred-feature no instance to invoke
+wasmtime/async/task-builtins.wast:470 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/task-builtins.wast:723 deferred-feature no instance to invoke
+wasmtime/async/task-deletion.wast:11 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/task-deletion.wast:311 deferred-feature no instance to invoke
+wasmtime/async/task-deletion.wast:312 deferred-feature no instance to invoke
+wasmtime/async/task-deletion.wast:313 deferred-feature no instance to invoke
+wasmtime/async/task-deletion.wast:314 deferred-feature no instance to invoke
+wasmtime/async/task-deletion.wast:315 deferred-feature no instance to invoke
+wasmtime/async/task-deletion.wast:316 deferred-feature no instance to invoke
+wasmtime/async/task-deletion.wast:317 deferred-feature no instance to invoke
+wasmtime/async/task-deletion.wast:318 deferred-feature no instance to invoke
+wasmtime/async/task-deletion.wast:319 deferred-feature no instance to invoke
+wasmtime/async/task-return-traps.wast:5 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/task-return-traps.wast:19 deferred-feature expected a trap `async-lifted export failed to produce a result`, got `no instance to invoke`
+wasmtime/async/task-return-traps.wast:21 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/task-return-traps.wast:56 deferred-feature expected a trap `async-lifted export failed to produce a result`, got `no instance to invoke`
+wasmtime/async/task-return-traps.wast:58 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/task-return-traps.wast:91 deferred-feature expected a trap `async-lifted export failed to produce a result`, got `no instance to invoke`
+wasmtime/async/task-return-traps.wast:93 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/task-return-traps.wast:104 deferred-feature expected a trap `async-lifted export failed to produce a result`, got `no instance to invoke`
+wasmtime/async/task-return-traps.wast:106 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/task-return-traps.wast:118 deferred-feature expected a trap `invalid `task.return` signature and/or options for current task`, got `no instance to invoke`
+wasmtime/async/task-return-traps.wast:121 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/task-return-traps.wast:135 deferred-feature expected a trap `invalid `task.return` signature and/or options for current task`, got `no instance to invoke`
+wasmtime/async/task-return-traps.wast:138 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/task-return-traps.wast:150 deferred-feature expected a trap `invalid `task.return` signature and/or options for current task`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:22 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/trap-if-done.wast:580 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:581 deferred-feature expected a trap `cannot write to future after previous write succeeded or readable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:582 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:583 deferred-feature expected a trap `cannot write to future after previous write succeeded or readable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:584 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:585 deferred-feature expected a trap `cannot write to future after previous write succeeded or readable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:586 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:587 deferred-feature expected a trap `cannot write to future after previous write succeeded or readable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:589 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:590 deferred-feature expected a trap `cannot write to future after previous write succeeded or readable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:591 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:592 deferred-feature expected a trap `cannot write to future after previous write succeeded or readable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:593 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:594 deferred-feature expected a trap `cannot write to future after previous write succeeded or readable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:595 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:596 deferred-feature expected a trap `cannot write to future after previous write succeeded or readable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:598 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:599 deferred-feature expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:600 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:601 deferred-feature expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:602 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:603 deferred-feature expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:604 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:605 deferred-feature expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:607 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:608 deferred-feature expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:609 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:610 deferred-feature expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:611 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:612 deferred-feature expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:613 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:614 deferred-feature expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:616 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:617 deferred-feature expected a trap `cannot read from future after previous read succeeded`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:618 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:619 deferred-feature expected a trap `cannot read from future after previous read succeeded`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:620 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:621 deferred-feature expected a trap `cannot lift future after previous read succeeded`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:622 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:623 deferred-feature expected a trap `cannot read from future after previous read succeeded`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:624 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:625 deferred-feature expected a trap `cannot read from future after previous read succeeded`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:626 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:627 deferred-feature expected a trap `cannot lift future after previous read succeeded`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:629 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:630 deferred-feature expected a trap `cannot read from future after previous read succeeded`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:631 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:632 deferred-feature expected a trap `cannot read from future after previous read succeeded`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:633 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:634 deferred-feature expected a trap `cannot lift future after previous read succeeded`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:635 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:636 deferred-feature expected a trap `cannot read from future after previous read succeeded`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:637 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:638 deferred-feature expected a trap `cannot read from future after previous read succeeded`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:639 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:640 deferred-feature expected a trap `cannot lift future after previous read succeeded`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:642 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:643 deferred-feature expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:644 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:645 deferred-feature expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:646 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:647 deferred-feature expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:648 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:649 deferred-feature expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:650 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:652 deferred-feature expected a trap `cannot read after being notified that the writable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:653 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:654 deferred-feature expected a trap `cannot read after being notified that the writable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:655 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:656 deferred-feature expected a trap `cannot lift stream after being notified that the writable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:657 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:658 deferred-feature expected a trap `cannot read after being notified that the writable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:659 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:660 deferred-feature expected a trap `cannot read after being notified that the writable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:661 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-done.wast:662 deferred-feature expected a trap `cannot lift stream after being notified that the writable end dropped`, got `no instance to invoke`
+wasmtime/async/trap-if-done.wast:664 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
+wasmtime/async/trap-if-done.wast:722 deferred-feature expected a trap `cannot lift future after previous read succeeded`, got `no instance to invoke`
+wasmtime/async/trap-if-transfer-in-waitable-set.wast:6 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/trap-if-transfer-in-waitable-set.wast:48 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-transfer-in-waitable-set.wast:49 deferred-feature expected a trap `cannot lift future while it's in a waitable set`, got `no instance to invoke`
+wasmtime/async/trap-if-transfer-in-waitable-set.wast:50 deferred-feature no definition named `Tester`
+wasmtime/async/trap-if-transfer-in-waitable-set.wast:51 deferred-feature expected a trap `cannot lift stream while it's in a waitable set`, got `no instance to invoke`
+wasmtime/async/waitable-set-stale-entry.wast:3 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/waitable-set-stale-entry.wast:122 deferred-feature no definition named `A`
+wasmtime/async/waitable-set-stale-entry.wast:123 deferred-feature no instance to invoke
+wasmtime/async/waitable-set-stale-entry.wast:124 deferred-feature no definition named `A`
+wasmtime/async/waitable-set-stale-entry.wast:125 deferred-feature expected a trap `deadlock detected`, got `no instance to invoke`
+wasmtime/async/waitable-set-stale-entry.wast:126 deferred-feature no definition named `A`
+wasmtime/async/waitable-set-stale-entry.wast:127 deferred-feature no instance to invoke
+wasmtime/async/waitable-set-stale-entry.wast:128 deferred-feature no definition named `A`
+wasmtime/async/waitable-set-stale-entry.wast:129 deferred-feature expected a trap `deadlock detected`, got `no instance to invoke`
+wasmtime/async/waitable-set-stale-entry.wast:130 deferred-feature no definition named `A`
+wasmtime/async/waitable-set-stale-entry.wast:131 deferred-feature no instance to invoke
+wasmtime/async/waitable-set-stale-entry.wast:132 deferred-feature no definition named `A`
+wasmtime/async/waitable-set-stale-entry.wast:133 deferred-feature no instance to invoke
+wasmtime/async/wait-forever2.wast:5 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/wait-forever2.wast:75 deferred-feature expected a trap `deadlock detected`, got `no instance to invoke`
+wasmtime/async/wait-forever.wast:5 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/wait-forever.wast:63 deferred-feature expected a trap `deadlock detected`, got `no instance to invoke`
+wasmtime/async/yield-when-cancelled.wast:6 deferred-feature component rejected: unsupported component feature: asynchronous functions
+wasmtime/async/yield-when-cancelled.wast:97 deferred-feature no instance to invoke
 wasmtime/error-context-trap-in-post-return.wast:3 deferred-feature component rejected: unsupported component feature: string transcoders, resource transfer, and concurrency built-ins between components
 wasmtime/error-context-trap-in-post-return.wast:45 cascade no definition named `Tester`
 wasmtime/error-context-trap-in-post-return.wast:46 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`

@@ -5,13 +5,17 @@ harness in `tests/conformance.rs` runs every file on every supported
 target. A change to a file here is a deliberate update of the vendored
 commit, recorded below.
 
-| Directory   | Source                                                          | Commit       | Vendored   |
-| ----------- | --------------------------------------------------------------- | ------------ | ---------- |
-| `cm/`       | `WebAssembly/component-model`, `test/` (synchronous subsets)   | `e5ee0af9c617` | 2026-09-14 |
-| `wasmtime/` | `bytecodealliance/wasmtime`, `tests/misc_testsuite/component-model/` (synchronous subset) | `cb091c33cece` | 2026-09-14 |
+| Directory         | Source                                                                                  | Commit         | Vendored   |
+| ----------------- | ---------------------------------------------------------------------------------------- | -------------- | ---------- |
+| `cm/`             | `WebAssembly/component-model`, `test/` (synchronous subsets)                              | `e5ee0af9c617` | 2026-09-14 |
+| `cm/async/`       | `WebAssembly/component-model`, `test/async/`                                              | `e5ee0af9c617` | 2026-09-16 |
+| `wasmtime/`       | `bytecodealliance/wasmtime`, `tests/misc_testsuite/component-model/` (synchronous subset) | `cb091c33cece` | 2026-09-14 |
+| `wasmtime/async/` | `bytecodealliance/wasmtime`, `tests/misc_testsuite/component-model/async/`                | `cb091c33cece` | 2026-09-16 |
 
-The `async` directories of both suites are not vendored. They join the
-corpus when the concurrency features they exercise are in scope.
+The polyfill does not implement asynchronous functions yet, so almost
+every directive in `cm/async/` and `wasmtime/async/` is an expected
+failure of category `deferred-feature`; a handful of files pass
+outright because they exercise no async feature the polyfill lacks.
 
 `expected-failures.txt` lists every directive the polyfill does not pass
 yet, one per line, as `<path>:<line> <category> <reason>`. The harness
@@ -70,13 +74,20 @@ alike.
 
 ## Baseline
 
-The progress summary on the native target, as of 2026-09-15 (`tests
-conformance` prints the current one; the browser differs by the six
+The progress summary on the native target, as of 2026-09-16 (`tests
+conformance` prints the current one; the browser differs by the eight
 lines of `expected-failures.web.txt`):
 
-| Corpus     | Directives | Passed | Pass % | Expected failures by category                                          |
-| ---------- | ---------- | ------ | ------ | ---------------------------------------------------------------------- |
-| `cm`       | 1126       | 1030   | 91.5   | deferred-feature 3, substrate 4, validation 22, cascade 67             |
-| `fixtures` | 6          | 6      | 100.0  | none                                                                   |
-| `wasmtime` | 469        | 422    | 90.0   | deferred-feature 4, substrate 9, validation 1, cascade 33              |
-| total      | 1601       | 1458   | 91.1   | deferred-feature 7, substrate 13, validation 23, cascade 100            |
+| Corpus           | Directives | Passed | Pass % | Expected failures by category                                |
+| ---------------- | ---------- | ------ | ------ | -------------------------------------------------------------- |
+| `cm`             | 1126       | 1032   | 91.7   | deferred-feature 3, substrate 4, validation 20, cascade 67    |
+| `cm/async`       | 393        | 13     | 3.3    | deferred-feature 380                                          |
+| `fixtures`       | 17         | 17     | 100.0  | none                                                          |
+| `wasmtime`       | 469        | 427    | 91.0   | deferred-feature 3, substrate 9, cascade 30                   |
+| `wasmtime/async` | 387        | 20     | 5.2    | deferred-feature 367                                          |
+| total            | 2392       | 1509   | 63.1   | deferred-feature 753, substrate 13, validation 20, cascade 97 |
+
+The `async` rows hold the pass rate down: the polyfill does not
+implement asynchronous functions yet, so almost every directive there
+is an expected `deferred-feature` failure, while `cm` and `wasmtime`
+alone still pass at 91.7% and 91.0%.

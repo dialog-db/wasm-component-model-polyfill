@@ -239,7 +239,14 @@ impl Summary {
         let mut corpora: BTreeMap<String, Tally> = BTreeMap::new();
         let mut total = Tally::default();
         for report in reports {
-            let corpus = report.path.split('/').next().unwrap_or_default().to_owned();
+            let mut components = report.path.splitn(3, '/');
+            let first = components.next().unwrap_or_default();
+            let second = components.next().unwrap_or_default();
+            let corpus = if second == "async" {
+                format!("{first}/{second}")
+            } else {
+                first.to_owned()
+            };
             corpora.entry(corpus).or_default().add(report);
             total.add(report);
         }
@@ -444,6 +451,22 @@ mod tests {
         assert_eq!(wasmtime.expected_in(Category::Substrate), 1);
         assert_eq!((wasmtime.unexpected, wasmtime.stale), (1, 1));
         assert_eq!((summary.total.directives, summary.total.passed), (19, 15));
+    }
+
+    #[wcmp_macros::test]
+    async fn it_splits_an_async_subdirectory_into_its_own_corpus() {
+        let reports = [
+            report("x/a.wast", 5, &[], &[]),
+            report("x/async/y.wast", 3, &[1], &[(1, Category::DeferredFeature)]),
+        ];
+        let summary = Summary::new(&reports);
+        assert!(summary.corpora.contains_key("x/async"));
+        let x = &summary.corpora["x"];
+        assert_eq!((x.directives, x.passed), (5, 5));
+        let x_async = &summary.corpora["x/async"];
+        assert_eq!((x_async.directives, x_async.passed), (3, 2));
+        assert_eq!(x_async.expected_in(Category::DeferredFeature), 1);
+        assert_eq!((summary.total.directives, summary.total.passed), (8, 7));
     }
 
     #[wcmp_macros::test]

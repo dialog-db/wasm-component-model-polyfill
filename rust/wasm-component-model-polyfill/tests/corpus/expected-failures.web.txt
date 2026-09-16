@@ -3,6 +3,8 @@
 # line shape: `<path>:<line> <category> <reason>`. Only a difference of
 # the substrate belongs here (the browser's engine against Wasmtime);
 # a polyfill gap goes in the shared list so both targets record it.
+cm/async/builtin-trap-poisons-instance.wast:9 substrate expected a trap `wasm trap: wasm `unreachable` instruction executed`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: Guest function threw an error: unreachable` (V8's wording for the same trap)
+wasmtime/async/sync-call-context-trap.wast:47 substrate expected a trap `wasm `unreachable` instruction executed`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: Guest function threw an error: unreachable` (V8's wording for the same trap)
 wasmtime/big-strings.wast:342 substrate expected a trap `string content out-of-bounds`, got `unreachable` (V8 traps in the adapter before the bounds check that Wasmtime reaches)
 wasmtime/big-strings.wast:379 substrate expected a trap `string content out-of-bounds`, got `unreachable` (V8 traps in the adapter before the bounds check that Wasmtime reaches)
 wasmtime/trap.wast:30 substrate expected a trap `wasm `unreachable` instruction executed`, got `unreachable` (V8's wording for the same trap)
