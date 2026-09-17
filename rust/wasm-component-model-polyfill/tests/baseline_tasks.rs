@@ -107,7 +107,7 @@ async fn run_with_probe(bytes: &[u8], argument: u32) -> (Val, Seen, Seen) {
         .await
         .expect("component parses");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    let tables = store.tables.clone();
+    let tables = store.tables_handle();
     let during: Arc<Mutex<Seen>> = Arc::new(Mutex::new(Seen::default()));
     let recorded = during.clone();
 
@@ -150,7 +150,7 @@ async fn run_with_probe(bytes: &[u8], argument: u32) -> (Val, Seen, Seen) {
         .await
         .expect("call run");
 
-    let guard = store.tables.lock().expect("handle tables");
+    let guard = store.tables().lock().expect("handle tables");
     let after = Seen {
         scopes: guard.tasks.scopes().len(),
         tasks: guard.tasks.task_count(),
@@ -318,7 +318,7 @@ async fn it_gives_back_a_borrow_lent_to_a_host_call_whose_parameter_lift_failed(
         .expect_err("the surrogate is not a scalar value");
 
     {
-        let guard = store.tables.lock().expect("handle tables");
+        let guard = store.tables().lock().expect("handle tables");
         assert!(
             guard.tasks.scopes().is_empty(),
             "the failed host call leaves no scope on the stack"

@@ -95,7 +95,7 @@ impl Module {
                 found: imports.len(),
             }));
         }
-        if imports.iter().any(|import| import.store_id != store.id) {
+        if imports.iter().any(|import| import.store_id != store.id()) {
             return Err(Error::from(InstantiationError::WrongStore));
         }
         let mut runtime_imports = RuntimeImports::default();
@@ -106,7 +106,7 @@ impl Module {
             .map_err(InstantiationError::SubstrateFailure)?;
         Ok(CoreInstance {
             inner,
-            store_id: store.id,
+            store_id: store.id(),
         })
     }
 }

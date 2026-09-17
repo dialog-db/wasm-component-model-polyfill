@@ -25,7 +25,7 @@ fn store() -> Store<()> {
 #[wcmp_macros::test]
 async fn it_delivers_the_events_of_one_set_in_join_order() {
     let store = store();
-    let mut guard = store.tables.lock().expect("handle tables");
+    let mut guard = store.tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
     let set = tables.tasks.insert_waitable_set();
@@ -79,7 +79,7 @@ async fn it_delivers_the_events_of_one_set_in_join_order() {
 #[wcmp_macros::test]
 async fn it_returns_at_once_from_a_wait_on_a_set_that_already_holds_an_event() {
     let store = store();
-    let mut guard = store.tables.lock().expect("handle tables");
+    let mut guard = store.tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
     let instance = tables.tasks.insert_instance();
@@ -153,7 +153,7 @@ async fn it_returns_at_once_from_a_wait_on_a_set_that_already_holds_an_event() {
 #[wcmp_macros::test]
 async fn it_moves_a_waitable_out_of_its_previous_set_when_it_joins_another() {
     let store = store();
-    let mut guard = store.tables.lock().expect("handle tables");
+    let mut guard = store.tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
     let first = tables.tasks.insert_waitable_set();
@@ -210,7 +210,7 @@ async fn it_moves_a_waitable_out_of_its_previous_set_when_it_joins_another() {
 #[wcmp_macros::test]
 async fn it_traps_when_a_waitable_with_a_synchronous_waiter_joins_a_set() {
     let store = store();
-    let mut guard = store.tables.lock().expect("handle tables");
+    let mut guard = store.tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
     let set = tables.tasks.insert_waitable_set();
@@ -257,7 +257,7 @@ async fn it_traps_when_a_waitable_with_a_synchronous_waiter_joins_a_set() {
 #[wcmp_macros::test]
 async fn it_traps_when_a_set_that_still_holds_waitables_is_dropped() {
     let store = store();
-    let mut guard = store.tables.lock().expect("handle tables");
+    let mut guard = store.tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
     let set = tables.tasks.insert_waitable_set();
@@ -299,7 +299,7 @@ async fn it_traps_when_a_set_that_still_holds_waitables_is_dropped() {
 #[wcmp_macros::test]
 async fn it_traps_when_a_set_a_thread_is_waiting_on_is_dropped() {
     let store = store();
-    let mut guard = store.tables.lock().expect("handle tables");
+    let mut guard = store.tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
     let instance = tables.tasks.insert_instance();
@@ -341,7 +341,7 @@ async fn it_traps_when_a_set_a_thread_is_waiting_on_is_dropped() {
 #[wcmp_macros::test]
 async fn it_traps_when_a_subtask_whose_resolution_was_not_delivered_is_dropped() {
     let store = store();
-    let mut guard = store.tables.lock().expect("handle tables");
+    let mut guard = store.tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
     let set = tables.tasks.insert_waitable_set();
@@ -401,7 +401,7 @@ async fn it_traps_when_a_subtask_whose_resolution_was_not_delivered_is_dropped()
 #[wcmp_macros::test]
 async fn it_decrements_the_lenders_of_a_subtask_when_its_resolution_is_delivered() {
     let store = store();
-    let mut guard = store.tables.lock().expect("handle tables");
+    let mut guard = store.tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
     // A table of the store to hold the caller's handles. Nothing is
@@ -454,7 +454,7 @@ async fn it_decrements_the_lenders_of_a_subtask_when_its_resolution_is_delivered
 #[wcmp_macros::test]
 async fn it_finds_a_waitable_and_a_waitable_set_through_their_handles() {
     let store = store();
-    let mut guard = store.tables.lock().expect("handle tables");
+    let mut guard = store.tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
     let ty = ResourceTypeId::fresh();
@@ -491,7 +491,7 @@ async fn it_finds_a_waitable_and_a_waitable_set_through_their_handles() {
 #[wcmp_macros::test]
 async fn it_leaves_a_waitable_in_its_set_when_a_join_names_a_set_that_is_gone() {
     let store = store();
-    let mut guard = store.tables.lock().expect("handle tables");
+    let mut guard = store.tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
     let joined = tables.tasks.insert_waitable_set();
@@ -537,7 +537,7 @@ async fn it_leaves_a_waitable_in_its_set_when_a_join_names_a_set_that_is_gone() 
 #[wcmp_macros::test]
 async fn it_leaves_the_waiter_count_alone_when_a_wait_names_a_thread_that_is_gone() {
     let store = store();
-    let mut guard = store.tables.lock().expect("handle tables");
+    let mut guard = store.tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
     let instance = tables.tasks.insert_instance();
@@ -568,7 +568,7 @@ async fn it_leaves_the_waiter_count_alone_when_a_wait_names_a_thread_that_is_gon
 #[wcmp_macros::test]
 async fn it_refuses_to_take_a_subtask_event_before_its_resolution_is_delivered() {
     let store = store();
-    let mut guard = store.tables.lock().expect("handle tables");
+    let mut guard = store.tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
     let set = tables.tasks.insert_waitable_set();
@@ -625,7 +625,7 @@ async fn it_refuses_to_take_a_subtask_event_before_its_resolution_is_delivered()
 #[wcmp_macros::test]
 async fn it_leaves_the_set_of_a_subtask_its_own_exit_removed() {
     let store = store();
-    let mut guard = store.tables.lock().expect("handle tables");
+    let mut guard = store.tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
     let set = tables.tasks.insert_waitable_set();
@@ -675,7 +675,7 @@ async fn it_leaves_the_set_of_a_subtask_its_own_exit_removed() {
 #[wcmp_macros::test]
 async fn it_leaves_the_set_of_a_subtask_a_discarded_scope_removed() {
     let store = store();
-    let mut guard = store.tables.lock().expect("handle tables");
+    let mut guard = store.tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
     let set = tables.tasks.insert_waitable_set();

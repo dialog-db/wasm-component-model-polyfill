@@ -45,7 +45,7 @@ use super::registration::InstanceRegistration;
 ///
 /// [`Linker`]: super::Linker
 /// [`Linker::instance`]: super::Linker::instance
-pub struct LinkerInstance<'a, T> {
+pub struct LinkerInstance<'a, T: 'static> {
     /// The owned registration this view borrows. Held mutably so
     /// later registration methods can populate it without further
     /// linker access. Workspace-internal: this field is not

@@ -82,6 +82,7 @@ where
     /// owning [`Instance`] was created in.
     ///
     /// [`Func::call`]: super::Func::call
+    /// [`Store`]: crate::Store
     /// [`Instance`]: super::Instance
     pub async fn call<T: 'static>(&self, store: &mut Store<T>, args: P) -> Result<R> {
         let lowered = args.into_vals();

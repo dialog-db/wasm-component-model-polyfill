@@ -6,7 +6,7 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
 use crate::error::{Error, Result, SchedulerCause};
-use crate::store::Store;
+use crate::store::StoreContext;
 
 use super::outcome::Outcome;
 use super::task_id::TaskId;
@@ -42,7 +42,7 @@ use super::yield_wake::YieldWake;
 /// it pending rather than failing, because the closure it runs can
 /// wait on something outside the store.
 pub struct Driver<'a, T: 'static, C, R> {
-    store: &'a mut Store<T>,
+    store: StoreContext<'a, T>,
     condition: C,
     task: Option<TaskId>,
     entered: bool,
@@ -52,7 +52,7 @@ pub struct Driver<'a, T: 'static, C, R> {
 
 impl<'a, T: 'static, C, R> Driver<'a, T, C, R>
 where
-    C: FnMut(&mut Store<T>, &Waker) -> Option<Result<R>>,
+    C: FnMut(&mut StoreContext<'_, T>, &Waker) -> Option<Result<R>>,
 {
     /// Drive `store` until `condition` yields a value.
     ///
@@ -63,7 +63,7 @@ where
     /// is the task the driver waits on, when there is one: it
     /// decides whether an idle turn is a deadlock or a task that
     /// must not block.
-    pub fn new(store: &'a mut Store<T>, task: Option<TaskId>, condition: C) -> Self {
+    pub fn new(store: StoreContext<'a, T>, task: Option<TaskId>, condition: C) -> Self {
         Self {
             store,
             condition,
@@ -77,7 +77,7 @@ where
 
 impl<'a, T: 'static, C, R> Future for Driver<'a, T, C, R>
 where
-    C: FnMut(&mut Store<T>, &Waker) -> Option<Result<R>> + Unpin,
+    C: FnMut(&mut StoreContext<'_, T>, &Waker) -> Option<Result<R>> + Unpin,
 {
     type Output = Result<R>;
 
@@ -108,7 +108,7 @@ where
         }
 
         loop {
-            if let Some(done) = (this.condition)(this.store, waker) {
+            if let Some(done) = (this.condition)(&mut this.store, waker) {
                 return Poll::Ready(done);
             }
             let outcome = match this.store.turn(waker) {
@@ -130,13 +130,13 @@ where
                 // task it does not wait for — for ever, against a
                 // host task that never returns.
                 Outcome::Waiting => {
-                    if let Some(done) = (this.condition)(this.store, waker) {
+                    if let Some(done) = (this.condition)(&mut this.store, waker) {
                         return Poll::Ready(done);
                     }
                     return Poll::Pending;
                 }
                 Outcome::Idle => {
-                    if let Some(done) = (this.condition)(this.store, waker) {
+                    if let Some(done) = (this.condition)(&mut this.store, waker) {
                         return Poll::Ready(done);
                     }
                     return Poll::Ready(Err(Error::Scheduler(this.store.idle_cause(this.task))));
@@ -158,6 +158,8 @@ mod tests {
     use super::super::host_task::HostTask;
     use super::super::item::Item;
     use super::super::item_kind::ItemKind;
+    use crate::store::Store;
+
     use super::*;
 
     /// What the items of one test wrote as they ran, in order.
@@ -200,10 +202,13 @@ mod tests {
     /// An item that records that it ran.
     fn marker(log: &Log, name: &'static str) -> Item<()> {
         let log = log.clone();
-        Item::new(ItemKind::TaskStart, move |_store: &mut Store<()>| {
-            log.lock().expect("log").push(name);
-            Ok(())
-        })
+        Item::new(
+            ItemKind::TaskStart,
+            move |_store: &mut StoreContext<'_, ()>| {
+                log.lock().expect("log").push(name);
+                Ok(())
+            },
+        )
     }
 
     fn entries(log: &Log) -> Vec<&'static str> {
@@ -212,7 +217,7 @@ mod tests {
 
     /// A condition that is never met, so the driver runs until the
     /// scheduler goes idle.
-    fn never(_store: &mut Store<()>, _waker: &Waker) -> Option<Result<()>> {
+    fn never(_store: &mut StoreContext<'_, ()>, _waker: &Waker) -> Option<Result<()>> {
         None
     }
 
@@ -232,11 +237,16 @@ mod tests {
 
     /// Give `store` a host task that never returns: what a driver
     /// must not wait for once what it waits on has resolved.
-    fn never_returning_host_task(store: &mut Store<()>) {
-        let subtask = store.tables.lock().expect("tables").tasks.insert_subtask();
+    fn never_returning_host_task(store: &mut StoreContext<'_, ()>) {
+        let subtask = store
+            .tables()
+            .lock()
+            .expect("tables")
+            .tasks
+            .insert_subtask();
         store.push_host_task(HostTask::from_future(
             subtask,
-            |_store: &mut Store<()>, _outcome: Result<Vec<Val>>| Ok(()),
+            |_store: &mut StoreContext<'_, ()>, _outcome: Result<Vec<Val>>| Ok(()),
             core::future::pending::<Result<Vec<Val>>>(),
         ));
     }
@@ -245,11 +255,13 @@ mod tests {
     fn it_returns_when_the_turn_that_met_its_condition_left_a_host_task_pending() {
         let mut store = store();
         let log = log();
-        never_returning_host_task(&mut store);
-        store.scheduler.push_high_priority(marker(&log, "resolved"));
+        never_returning_host_task(&mut store.context());
+        store
+            .scheduler_mut()
+            .push_high_priority(marker(&log, "resolved"));
 
         let watched = log.clone();
-        let mut driver = Box::pin(Driver::new(&mut store, None, move |_store, _waker| {
+        let mut driver = Box::pin(Driver::new(store.context(), None, move |_store, _waker| {
             (!watched.lock().expect("log").is_empty()).then(|| Ok(()))
         }));
 
@@ -269,10 +281,10 @@ mod tests {
         let mut store = store();
         let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let recorded = seen.clone();
-        store.scheduler.push_high_priority(Item::new(
+        store.scheduler_mut().push_high_priority(Item::new(
             ItemKind::TaskStart,
-            move |store: &mut Store<()>| {
-                let mut nested = Box::pin(Driver::new(store, None, never));
+            move |store: &mut StoreContext<'_, ()>| {
+                let mut nested = Box::pin(Driver::new(store.reborrow(), None, never));
                 let outcome = poll_once(&mut nested, Waker::noop());
                 *recorded.lock().expect("record") = Some(cause(outcome));
                 Ok(())
@@ -291,7 +303,7 @@ mod tests {
     #[test]
     fn it_fails_a_driver_that_goes_idle_with_the_deadlock_cause() {
         let mut store = store();
-        let mut driver = Box::pin(Driver::new(&mut store, None, never));
+        let mut driver = Box::pin(Driver::new(store.context(), None, never));
 
         let outcome = poll_once(&mut driver, Waker::noop());
 
@@ -306,7 +318,7 @@ mod tests {
     fn it_fails_a_driver_whose_task_must_not_block_with_the_cannot_block_cause() {
         let mut store = store();
         let task = {
-            let mut guard = store.tables.lock().expect("tables");
+            let mut guard = store.tables().lock().expect("tables");
             let instance = guard.tasks.insert_instance();
             guard
                 .tasks
@@ -315,7 +327,7 @@ mod tests {
                 .may_not_suspend = true;
             guard.tasks.create_task(None, None, instance)
         };
-        let mut driver = Box::pin(Driver::new(&mut store, Some(task), never));
+        let mut driver = Box::pin(Driver::new(store.context(), Some(task), never));
 
         let outcome = poll_once(&mut driver, Waker::noop());
 
@@ -330,10 +342,12 @@ mod tests {
     fn it_leaves_the_pending_item_in_the_store_when_a_drivers_future_is_dropped() {
         let mut store = store();
         let log = log();
-        store.scheduler.push_low_priority(marker(&log, "deferred"));
+        store
+            .scheduler_mut()
+            .push_low_priority(marker(&log, "deferred"));
 
         {
-            let mut abandoned = Box::pin(Driver::new(&mut store, None, never));
+            let mut abandoned = Box::pin(Driver::new(store.context(), None, never));
             assert!(
                 poll_once(&mut abandoned, Waker::noop()).is_pending(),
                 "the turn yielded, so the driver returns pending"
@@ -345,7 +359,7 @@ mod tests {
         }
 
         let watched = log.clone();
-        let mut other = Box::pin(Driver::new(&mut store, None, move |_store, _waker| {
+        let mut other = Box::pin(Driver::new(store.context(), None, move |_store, _waker| {
             if watched.lock().expect("log").is_empty() {
                 None
             } else {
@@ -370,10 +384,12 @@ mod tests {
     fn it_wakes_itself_and_returns_pending_after_a_yield() {
         let mut store = store();
         let log = log();
-        store.scheduler.push_low_priority(marker(&log, "deferred"));
+        store
+            .scheduler_mut()
+            .push_low_priority(marker(&log, "deferred"));
         let wakes = Arc::new(Wakes::default());
         let waker = Waker::from(wakes.clone());
-        let mut driver = Box::pin(Driver::new(&mut store, None, never));
+        let mut driver = Box::pin(Driver::new(store.context(), None, never));
 
         let outcome = poll_once(&mut driver, &waker);
 
@@ -415,10 +431,12 @@ mod tests {
             .expect("queue the macrotask");
 
         let mut store = store();
-        store.scheduler.push_low_priority(marker(&log, "resumed"));
+        store
+            .scheduler_mut()
+            .push_low_priority(marker(&log, "resumed"));
 
         let watched = log.clone();
-        Driver::new(&mut store, None, move |_store, _waker| {
+        Driver::new(store.context(), None, move |_store, _waker| {
             if watched.lock().expect("log").contains(&"resumed") {
                 Some(Ok(()))
             } else {

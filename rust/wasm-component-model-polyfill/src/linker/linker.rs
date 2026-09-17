@@ -9,7 +9,7 @@ use crate::engine::Engine;
 use crate::error::{Error, Result, SchedulerCause};
 use crate::identifier::InterfaceIdentifier;
 use crate::instance::Instance;
-use crate::store::Store;
+use crate::store::{Store, StoreContext};
 
 use super::linker_instance::LinkerInstance;
 use super::registration::InstanceRegistration;
@@ -34,7 +34,7 @@ use super::resolve::{Resolution, resolve_imports};
 /// [`Component`]: crate::Component
 /// [`PackageName`]: crate::PackageName
 /// [`Error::Link`]: crate::Error::Link
-pub struct Linker<T> {
+pub struct Linker<T: 'static> {
     engine: Engine,
     instances: HashMap<InterfaceIdentifier, InstanceRegistration<T>>,
     /// The root namespace: host items a component imports under a
@@ -159,21 +159,26 @@ impl<T: 'static> Linker<T> {
         store: &mut Store<T>,
         component: &Component,
     ) -> Result<Instance> {
+        let store = store.context();
         let resolution = resolve_imports(component, self)?;
         if store.turn_in_flight()? {
             return Err(Error::Scheduler(SchedulerCause::RecursiveDriver));
         }
         let mut plan = Some(());
-        Driver::new(store, None, move |store: &mut Store<T>, waker| {
-            plan.take()?;
-            Some(
-                store
-                    .run_in_turn(waker, |store| {
-                        self.instantiate_resolved(store, component, &resolution)
-                    })
-                    .and_then(|outcome| outcome),
-            )
-        })
+        Driver::new(
+            store,
+            None,
+            move |store: &mut StoreContext<'_, T>, waker| {
+                plan.take()?;
+                Some(
+                    store
+                        .run_in_turn(waker, |store| {
+                            self.instantiate_resolved(store, component, &resolution)
+                        })
+                        .and_then(|outcome| outcome),
+                )
+            },
+        )
         .await
     }
 
@@ -185,7 +190,7 @@ impl<T: 'static> Linker<T> {
     /// Workspace-internal; not re-exported by `lib.rs`.
     pub fn instantiate_resolved(
         &self,
-        store: &mut Store<T>,
+        store: &mut StoreContext<'_, T>,
         component: &Component,
         resolution: &Resolution,
     ) -> Result<Instance> {

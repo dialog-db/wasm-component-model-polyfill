@@ -49,7 +49,7 @@ use crate::linker::{HostCall, HostFuncBody, HostResource};
 use super::ResourceDestructor;
 use crate::concurrency::{Scope, SubtaskState};
 use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime, ResourceTypeId};
-use crate::store::Store;
+use crate::store::{StoreContext, StoreData};
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
 
@@ -110,14 +110,14 @@ impl<T> Clone for ResourceRuntime<T> {
 /// Surfaces a structured ABI error if the index does not address a
 /// live entry.
 pub fn build_resource_drop_trampoline<T: 'static>(
-    store: &mut Store<T>,
+    store: &mut StoreContext<'_, T>,
     table: ResourceTableRuntime,
     runtime: ResourceRuntime<T>,
 ) -> RuntimeFunc {
     let tables = store.tables_handle();
     let func_type = FuncType::new([CoreType::I32], []);
     RuntimeFunc::new(
-        store.inner_mut(),
+        store.runtime_mut(),
         func_type,
         move |mut store_ctx, args, _results| {
             let index = take_i32(args, 0).map_err(|err| anyhow!("resource.drop: {err}"))?;
@@ -128,7 +128,7 @@ pub fn build_resource_drop_trampoline<T: 'static>(
                 return Ok(());
             };
             match &runtime.destructor {
-                ResourceDestructor::Host(body) => body(store_ctx.data_mut(), rep)
+                ResourceDestructor::Host(body) => body(store_ctx.data_mut().host_mut(), rep)
                     .map_err(|err| anyhow!("resource destructor failed: {err}"))?,
                 ResourceDestructor::Local(slot) => {
                     let destructor = slot
@@ -152,13 +152,13 @@ pub fn build_resource_drop_trampoline<T: 'static>(
 /// The returned function takes one i32 (the rep) and returns the
 /// minted index.
 pub fn build_resource_new_trampoline<T: 'static>(
-    store: &mut Store<T>,
+    store: &mut StoreContext<'_, T>,
     table: ResourceTableRuntime,
 ) -> RuntimeFunc {
     let tables = store.tables_handle();
     let func_type = FuncType::new([CoreType::I32], [CoreType::I32]);
     RuntimeFunc::new(
-        store.inner_mut(),
+        store.runtime_mut(),
         func_type,
         move |_store_ctx, args, results| {
             let rep = take_i32(args, 0).map_err(|err| anyhow!("resource.new: {err}"))?;
@@ -174,13 +174,13 @@ pub fn build_resource_new_trampoline<T: 'static>(
 /// The returned function takes one i32 (the handle index) and
 /// returns the rep stored at that entry.
 pub fn build_resource_rep_trampoline<T: 'static>(
-    store: &mut Store<T>,
+    store: &mut StoreContext<'_, T>,
     table: ResourceTableRuntime,
 ) -> RuntimeFunc {
     let tables = store.tables_handle();
     let func_type = FuncType::new([CoreType::I32], [CoreType::I32]);
     RuntimeFunc::new(
-        store.inner_mut(),
+        store.runtime_mut(),
         func_type,
         move |_store_ctx, args, results| {
             let index = take_i32(args, 0).map_err(|err| anyhow!("resource.rep: {err}"))?;
@@ -286,7 +286,7 @@ fn invalid_handle(index: u32) -> Error {
 /// import described by `spec`, dispatching to `host_func` and
 /// drawing memory/realloc from `abi_state` at call time.
 pub fn build_trampoline<T: 'static>(
-    store: &mut Store<T>,
+    store: &mut StoreContext<'_, T>,
     spec: &LoweringSpec,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
     host_func: Arc<HostFuncBody<T>>,
@@ -297,7 +297,7 @@ pub fn build_trampoline<T: 'static>(
     let tables = store.tables_handle();
 
     RuntimeFunc::new(
-        store.inner_mut(),
+        store.runtime_mut(),
         func_type,
         move |store_ctx, args, results| {
             invoke_trampoline(
@@ -361,7 +361,7 @@ fn core_type_of_flat(slot: FlatType) -> CoreType {
 /// lowers the return.
 #[allow(clippy::too_many_arguments)]
 fn invoke_trampoline<T: 'static>(
-    mut store_ctx: wasm_runtime_layer::StoreContextMut<'_, T, Backend>,
+    mut store_ctx: wasm_runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
     signature: &FunctionType,
     options: &CanonOptions,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
@@ -388,7 +388,12 @@ fn invoke_trampoline<T: 'static>(
     // failure travels past the pop that would have ended the subtask,
     // so the whole of it is one fallible step whose one error path
     // ends the subtask below.
-    let called = (|store_ctx: &mut wasm_runtime_layer::StoreContextMut<'_, T, Backend>| -> Result<(Vec<Val>, Option<usize>)> {
+    let called = (|store_ctx: &mut wasm_runtime_layer::StoreContextMut<
+        '_,
+        StoreData<T>,
+        Backend,
+    >|
+     -> Result<(Vec<Val>, Option<usize>)> {
         let mut cursor = 0usize;
         let mut lift_ctx = BoundaryContext::new(
             store_ctx.as_context_mut(),
@@ -433,9 +438,13 @@ fn invoke_trampoline<T: 'static>(
 
         let host_arity = usize::from(signature.result.is_some());
         let mut host_results: Vec<Val> = vec![Val::Bool(false); host_arity];
+        // The host function runs against the whole store: the
+        // polyfill's own state rides in the core store's data, so
+        // the context the runtime layer handed this trampoline
+        // reaches the scheduler, the suspend seam, and the host
+        // tasks from inside the guest call, with nothing captured.
         let call = HostCall::new(
-            store_ctx.data_mut(),
-            tables.clone(),
+            StoreContext::new(store_ctx.as_context_mut()),
             instance.resource_tables().to_vec(),
         );
         host_func(call, &lifted, &mut host_results)?;

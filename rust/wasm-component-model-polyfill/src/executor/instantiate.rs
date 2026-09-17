@@ -25,7 +25,7 @@ use crate::instance::{ExportedFunction, ExportedModule, Instance};
 use crate::linker::{HostFuncBody, ImportBinding, InstanceRegistration, Linker, Resolution};
 use crate::module::Module;
 use crate::resource::{ResourceTableRuntime, TableId};
-use crate::store::Store;
+use crate::store::StoreContext;
 
 use super::ResourceDestructor;
 use super::intrinsics::{
@@ -65,7 +65,7 @@ struct RuntimeItems {
 /// of the closures they need.
 pub fn instantiate<T: 'static>(
     component: &Component,
-    store: &mut Store<T>,
+    store: &mut StoreContext<'_, T>,
     linker: &Linker<T>,
     resolution: &Resolution,
 ) -> Result<Instance> {
@@ -120,7 +120,7 @@ pub fn instantiate<T: 'static>(
     // this list maps onto the store-wide identity.
     let component_instances: Vec<InstanceId> = {
         let mut guard = store
-            .tables
+            .tables()
             .lock()
             .map_err(|_| internal("resource handle tables lock poisoned"))?;
         (0..ir.num_component_instances)
@@ -161,10 +161,10 @@ pub fn instantiate<T: 'static>(
     // set, because every instance may be left until an adapter is
     // in the middle of translating values across its boundary.
     let flags: Vec<RuntimeGlobal> = (0..ir.num_component_instances)
-        .map(|_| RuntimeGlobal::new(store.inner_mut(), RuntimeVal::I32(1), true))
+        .map(|_| RuntimeGlobal::new(store.runtime_mut(), RuntimeVal::I32(1), true))
         .collect();
 
-    let task_may_block = RuntimeGlobal::new(store.inner_mut(), RuntimeVal::I32(1), true);
+    let task_may_block = RuntimeGlobal::new(store.runtime_mut(), RuntimeVal::I32(1), true);
     let mut items = RuntimeItems {
         core_instances: Vec::new(),
         trampolines,
@@ -183,10 +183,13 @@ pub fn instantiate<T: 'static>(
                     .get(*module_index)
                     .ok_or_else(|| internal("module index in IR initializer is out of bounds"))?;
                 let runtime_imports = build_imports(ir, &items, store, entry, imports)?;
-                let instance =
-                    RuntimeInstance::new(store.inner_mut(), &entry.module.inner, &runtime_imports)
-                        .map_err(InstantiationError::SubstrateFailure)
-                        .map_err(Error::from)?;
+                let instance = RuntimeInstance::new(
+                    store.runtime_mut(),
+                    &entry.module.inner,
+                    &runtime_imports,
+                )
+                .map_err(InstantiationError::SubstrateFailure)
+                .map_err(Error::from)?;
                 items.core_instances.push(instance);
             }
             Initializer::InstantiateImportedModule { source, imports } => {
@@ -197,7 +200,7 @@ pub fn instantiate<T: 'static>(
                     runtime_imports.define(&import.module, &import.name, value);
                 }
                 let instance =
-                    RuntimeInstance::new(store.inner_mut(), &module.inner, &runtime_imports)
+                    RuntimeInstance::new(store.runtime_mut(), &module.inner, &runtime_imports)
                         .map_err(InstantiationError::SubstrateFailure)
                         .map_err(Error::from)?;
                 items.core_instances.push(instance);
@@ -237,7 +240,7 @@ pub fn instantiate<T: 'static>(
                             "DefineResource directive resolved to a non-function item",
                         ));
                     };
-                    let ty = function.ty(store.inner());
+                    let ty = function.ty(store.runtime());
                     if ty.params() != [CoreType::I32] || !ty.results().is_empty() {
                         return Err(Error::from(InstantiationError::SubstrateFailure(anyhow!(
                             "the destructor of a locally-defined resource must have the core type \
@@ -293,7 +296,7 @@ pub fn instantiate<T: 'static>(
         instance_exports: ir.instance_exports.clone(),
         module_exports,
         abi_state,
-        store_id: store.id,
+        store_id: store.id(),
     })
 }
 
@@ -307,7 +310,7 @@ fn build_runtime_trampoline<T: 'static>(
     component: &Component,
     linker: &Linker<T>,
     resolution: &Resolution,
-    store: &mut Store<T>,
+    store: &mut StoreContext<'_, T>,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     resource_runtimes: &[ResourceRuntime<T>],
 ) -> Result<RuntimeFunc> {
@@ -502,7 +505,7 @@ fn lookup_host_func<T: 'static>(
 fn build_imports<T: 'static>(
     ir: &ExecutorIr,
     items: &RuntimeItems,
-    store: &mut Store<T>,
+    store: &mut StoreContext<'_, T>,
     entry: &ModuleEntry,
     sources: &[ImportSource],
 ) -> Result<Imports> {
@@ -525,7 +528,7 @@ fn build_imports<T: 'static>(
 fn resolve_source<T: 'static>(
     ir: &ExecutorIr,
     items: &RuntimeItems,
-    store: &mut Store<T>,
+    store: &mut StoreContext<'_, T>,
     source: &ImportSource,
 ) -> Result<RuntimeExtern> {
     match source {
@@ -551,7 +554,7 @@ fn resolve_source<T: 'static>(
 fn resolve_core_instance_export<T: 'static>(
     ir: &ExecutorIr,
     core_instances: &[RuntimeInstance],
-    store: &mut Store<T>,
+    store: &mut StoreContext<'_, T>,
     export: &CoreInstanceExport,
 ) -> Result<RuntimeExtern> {
     let runtime_instance = core_instances
@@ -577,7 +580,7 @@ fn resolve_core_instance_export<T: 'static>(
         }
     };
     runtime_instance
-        .get_export(store.inner(), name)
+        .get_export(store.runtime(), name)
         .ok_or_else(|| internal("module did not export the named item at runtime"))
 }
 
@@ -592,7 +595,7 @@ fn resolve_core_instance_export<T: 'static>(
 fn collect_function_exports<T: 'static>(
     ir: &ExecutorIr,
     items: &RuntimeItems,
-    store: &mut Store<T>,
+    store: &mut StoreContext<'_, T>,
 ) -> Result<Box<[ExportedFunction]>> {
     let mut out = Vec::with_capacity(ir.exports.len());
     for ExportSpec {

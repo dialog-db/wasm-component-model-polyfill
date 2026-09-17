@@ -4,9 +4,18 @@
 //! The entry is a driver: it polls the store's scheduler until the
 //! closure's future completes. The closure does not borrow the
 //! store. It reaches the store's host data only inside a closure the
-//! accessor runs, and a driver entered from inside that closure —
-//! here a call into an export — fails with the recursive-driver
-//! cause.
+//! accessor runs, and a driver entered from inside that closure
+//! fails with the recursive-driver cause.
+//!
+//! A call into an export is not one of the drivers that can be
+//! entered from there. The entry takes the store the host owns, and
+//! the closure never holds it — the accessor lends a borrow of the
+//! store as guest work reaches it, not the store itself — so the
+//! refusal a call would meet is a shape the closure cannot even
+//! write. What the closure can enter is another `run_concurrent`
+//! against the borrow it was lent, and that is what the refusal is
+//! read from here. Once the entry has returned the store is the
+//! host's again, and a call into an export goes through.
 
 #![cfg(test)]
 
@@ -43,11 +52,11 @@ fn poll_once<F: Future>(future: &mut Pin<Box<F>>, waker: &Waker) -> Poll<F::Outp
 }
 
 /// How a driver entered from inside the closure came out.
-fn cause(outcome: Poll<Result<Box<[Val]>>>) -> String {
+fn cause(outcome: Poll<Result<()>>) -> String {
     match outcome {
         Poll::Ready(Err(error)) => error.to_string(),
-        Poll::Ready(Ok(_)) => "the call succeeded".to_owned(),
-        Poll::Pending => "the call returned pending".to_owned(),
+        Poll::Ready(Ok(())) => "the driver succeeded".to_owned(),
+        Poll::Pending => "the driver returned pending".to_owned(),
     }
 }
 
@@ -84,7 +93,32 @@ async fn it_runs_its_closure_with_an_accessor_that_reaches_the_host_data() {
 }
 
 #[wcmp_macros::test]
-async fn it_refuses_a_call_into_an_export_entered_from_inside_the_closure() {
+async fn it_refuses_a_driver_entered_from_inside_the_closure() {
+    let engine = Engine::new().expect("engine");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+
+    let seen = store
+        .run_concurrent(async |accessor| {
+            accessor
+                .with(|store| {
+                    let mut nested = Box::pin(store.reborrow().run_concurrent(async |_| ()));
+                    cause(poll_once(&mut nested, Waker::noop()))
+                })
+                .expect("reach the store")
+        })
+        .await
+        .expect("run the closure");
+
+    assert_eq!(
+        seen,
+        Error::Scheduler(SchedulerCause::RecursiveDriver).to_string(),
+        "the store is inside a turn while the closure runs, so a driver \
+         entered from there is refused"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_calls_an_export_once_the_entry_has_returned() {
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, DOUBLES)
         .await
@@ -97,22 +131,23 @@ async fn it_refuses_a_call_into_an_export_entered_from_inside_the_closure() {
         .expect("instantiate");
     let double = instance.get_func("double").expect("double export");
 
-    let seen = store
+    store
         .run_concurrent(async |accessor| {
-            accessor
-                .with(|store| {
-                    let mut call = Box::pin(double.call(store, &[Val::U32(21)]));
-                    cause(poll_once(&mut call, Waker::noop()))
-                })
-                .expect("reach the store")
+            accessor.with(|_store| ()).expect("reach the store");
         })
         .await
         .expect("run the closure");
 
+    // The entry gave the turn's mark back when it returned, so the
+    // call is not the driver that is refused.
+    let results = double
+        .call(&mut store, &[Val::U32(21)])
+        .await
+        .expect("call the export");
+
     assert_eq!(
-        seen,
-        Error::Scheduler(SchedulerCause::RecursiveDriver).to_string(),
-        "the store is inside a turn while the closure runs, so a call into \
-         an export entered from there is refused"
+        results.as_ref(),
+        [Val::U32(42)],
+        "the store is the host's again once the entry has returned"
     );
 }

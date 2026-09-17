@@ -26,7 +26,7 @@ use super::host_call::HostCall;
 /// derived (typed). Both registration paths produce the same
 /// `HostFunc` so the trampoline dispatcher only sees one shape.
 #[derive(Clone)]
-pub struct HostFunc<T> {
+pub struct HostFunc<T: 'static> {
     /// The signature the registration declares. The resolver checks
     /// this against the import's declared type at link time.
     pub signature: FunctionType,
@@ -46,7 +46,7 @@ pub struct HostFunc<T> {
 pub type HostFuncBody<T> =
     dyn for<'a> Fn(HostCall<'a, T>, &[Val], &mut [Val]) -> Result<()> + Send + Sync + 'static;
 
-impl<T> HostFunc<T> {
+impl<T: 'static> HostFunc<T> {
     /// Construct a host-function payload from its signature and a
     /// closure.
     pub fn new(

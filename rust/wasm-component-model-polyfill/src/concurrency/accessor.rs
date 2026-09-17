@@ -4,7 +4,7 @@ use core::task::Waker;
 use std::sync::{Arc, Mutex, TryLockError};
 
 use crate::error::{Error, Result, SchedulerCause};
-use crate::store::Store;
+use crate::store::StoreContext;
 
 /// What the `run_concurrent` entry lends its accessor: the store,
 /// and the waker of the poll that is running. The entry lends both
@@ -12,7 +12,7 @@ use crate::store::Store;
 /// what makes a second reach into the store, from inside the first,
 /// fail instead of alias.
 struct Lent<'a, T: 'static> {
-    store: &'a mut Store<T>,
+    store: StoreContext<'a, T>,
     waker: Waker,
 }
 
@@ -41,7 +41,7 @@ impl<'a, T: 'static> Accessor<'a, T> {
     /// The poll that is running has not started yet, so the waker
     /// starts as one that does nothing. Workspace-internal; the
     /// store's `run_concurrent` entry is the only caller.
-    pub fn new(store: &'a mut Store<T>) -> Self {
+    pub fn new(store: StoreContext<'a, T>) -> Self {
         Self {
             lent: Arc::new(Mutex::new(Lent {
                 store,
@@ -63,8 +63,8 @@ impl<'a, T: 'static> Accessor<'a, T> {
     /// marks itself as running, so reaching the store through
     /// [`Accessor::with`] here would refuse itself.
     /// Workspace-internal.
-    pub fn lend<R>(&self, body: impl FnOnce(&mut Store<T>) -> R) -> Result<R> {
-        self.borrow(|lent| body(&mut *lent.store))
+    pub fn lend<R>(&self, body: impl FnOnce(&mut StoreContext<'_, T>) -> R) -> Result<R> {
+        self.borrow(|lent| body(&mut lent.store))
     }
 
     /// Run `body` against the store this accessor reaches.
@@ -78,7 +78,7 @@ impl<'a, T: 'static> Accessor<'a, T> {
     /// another `run_concurrent` — therefore fails with the
     /// recursive-driver cause, and so does this accessor used again
     /// from inside `body`.
-    pub fn with<R>(&self, body: impl FnOnce(&mut Store<T>) -> R) -> Result<R> {
+    pub fn with<R>(&self, body: impl FnOnce(&mut StoreContext<'_, T>) -> R) -> Result<R> {
         self.borrow(|lent| {
             let waker = lent.waker.clone();
             lent.store.run_in_turn(&waker, body)
@@ -109,6 +109,7 @@ mod tests {
     use core::task::{Context, Poll};
 
     use crate::engine::Engine;
+    use crate::store::Store;
 
     use super::*;
 
@@ -200,7 +201,7 @@ mod tests {
         let mut store = Store::new(&engine, ()).expect("store");
 
         {
-            let accessor = Accessor::new(&mut store);
+            let accessor = Accessor::new(store.context());
             // The panic is the point of the test, so its report is
             // kept out of the test's output.
             let hook = std::panic::take_hook();
@@ -220,7 +221,9 @@ mod tests {
             !store.turn_in_flight().expect("the store's turn state"),
             "the turn the closure ran inside is over"
         );
-        let mut driver = Box::pin(Driver::new(&mut store, None, |_store, _waker| Some(Ok(()))));
+        let mut driver = Box::pin(Driver::new(store.context(), None, |_store, _waker| {
+            Some(Ok(()))
+        }));
         assert!(
             matches!(poll_once(&mut driver, Waker::noop()), Poll::Ready(Ok(()))),
             "a driver entered after the panic is not refused"
@@ -235,8 +238,8 @@ mod tests {
         let seen = store
             .run_concurrent(async |accessor| {
                 accessor
-                    .with(|store: &mut Store<()>| {
-                        let mut nested = Box::pin(store.run_concurrent(async |_| ()));
+                    .with(|store: &mut StoreContext<'_, ()>| {
+                        let mut nested = Box::pin(store.reborrow().run_concurrent(async |_| ()));
                         cause(poll_once(&mut nested, Waker::noop()))
                     })
                     .expect("reach the store")

@@ -5,11 +5,12 @@
 //! suspended guest thread outside any poll of a driver: in the
 //! browser the resumption lands on a microtask, and the driver that
 //! started the guest has already returned. The scheduler's state is
-//! therefore reachable through the store's handle tables rather than
-//! through a driver, and a host trampoline finds it there with no
-//! driver of its own. These tests read it from a host function the
-//! guest called, which is the frame a blocking built-in runs in, and
-//! again after the call, when no driver is on the stack at all.
+//! therefore reachable through the core store's data rather than
+//! through a driver, and a host trampoline finds it there — in the
+//! context the runtime layer hands it — with no driver of its own.
+//! These tests read it from a host function the guest called, which
+//! is the frame a blocking built-in runs in, and again after the
+//! call, when no driver is on the stack at all.
 
 #![cfg(test)]
 
@@ -61,7 +62,7 @@ async fn it_reads_the_schedulers_state_from_a_host_function_called_by_the_guest(
     // The one handle a trampoline has to the store. Nothing else of
     // the call reaches the host function: no driver, no store
     // reference, only this.
-    let tables = store.tables.clone();
+    let tables = store.tables_handle();
     let during: Arc<Mutex<Seen>> = Arc::new(Mutex::new(Seen::default()));
     let recorded = during.clone();
 
@@ -99,7 +100,7 @@ async fn it_reads_the_schedulers_state_from_a_host_function_called_by_the_guest(
          trampoline, and found the turn that is running and its waker"
     );
 
-    let guard = store.tables.lock().expect("handle tables");
+    let guard = store.tables().lock().expect("handle tables");
     let after = Seen {
         in_turn: guard.scheduler.in_turn(),
         has_waker: guard.scheduler.active_waker().is_some(),

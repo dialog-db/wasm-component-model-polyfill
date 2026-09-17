@@ -1,14 +1,17 @@
-//! The half of the scheduler a trampoline can reach.
+//! The part of the scheduler the handle tables carry.
 
 use core::task::Waker;
 
-/// The half of the scheduler a trampoline can reach.
+/// The part of the scheduler the handle tables carry.
 ///
-/// The ready queues and the host tasks live on the store, where the
-/// type of the host data is known and where nothing has to be `Send`
-/// in the browser. Two things a trampoline needs do not: it reaches
-/// the store's handle tables from inside a runtime-layer closure,
-/// and it finds them here.
+/// The ready queues and the host tasks live in the store's data,
+/// where the type of the host data is known and where nothing has to
+/// be `Send` in the browser. Two things are wanted where the store's
+/// data is out of reach — by the guard that marks a turn as running,
+/// which is `'static`, outlives every borrow of the store, and hands
+/// the mark back from its `Drop`, and by a lift/lower context, which
+/// holds the tables and the core store's context separately — and
+/// they are here:
 ///
 /// - The waker of the turn that is running. A trampoline that starts
 ///   a host task polls its future once before it returns to the

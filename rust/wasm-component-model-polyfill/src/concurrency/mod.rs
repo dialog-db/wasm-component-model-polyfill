@@ -9,10 +9,12 @@
 //! a driver. [`Accessor`] is what the store's `run_concurrent` entry
 //! hands its closure: the one way a future that does not borrow the
 //! store still reaches the store's host data, and only during a
-//! poll. [`SchedulerState`] is the half of the scheduler a
-//! trampoline can reach from inside a runtime-layer closure: the
-//! waker of the running turn and the count of the turns that are
-//! running. [`TurnGuard`] is what a turn holds that state through:
+//! poll. [`SchedulerState`] is the part of the scheduler that lives
+//! behind the store's handle tables rather than in the store's data:
+//! the waker of the running turn and the count of the turns that
+//! are running, which a resource trampoline and a lift/lower
+//! context reach without the store's context.
+//! [`TurnGuard`] is what a turn holds that state through:
 //! an item can panic, and the mark a turn leaves has to go back
 //! whether the turn returned or unwound.
 //!

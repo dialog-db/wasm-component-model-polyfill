@@ -19,7 +19,7 @@ use crate::error::{
     AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result, SchedulerCause,
 };
 use crate::executor::ir::CanonOptions;
-use crate::store::{Store, StoreId};
+use crate::store::{Store, StoreContext, StoreId};
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
 
@@ -108,7 +108,8 @@ impl Func {
     /// deadlock cause, or with the cannot-block cause when the task
     /// must not block.
     pub async fn call<T: 'static>(&self, store: &mut Store<T>, args: &[Val]) -> Result<Box<[Val]>> {
-        if store.id != self.store_id {
+        let mut store = store.context();
+        if store.id() != self.store_id {
             return Err(Error::from(InstantiationError::WrongStore));
         }
         if args.len() != self.signature.parameters.len() {
@@ -162,16 +163,19 @@ impl Func {
         let queued = outcome.clone();
         let replica = self.replica();
         let arguments = args.to_vec();
-        let item = Item::new(ItemKind::TaskStart, move |store: &mut Store<T>| {
-            let result = replica.run_task(task, &instance, store, &arguments, &options);
-            if let Ok(mut slot) = queued.lock() {
-                *slot = Some(result);
-            }
-            // The failure of the call is the caller's, and it is in
-            // the slot the driver reads, so the item itself has
-            // nothing left to fail with.
-            Ok(())
-        });
+        let item = Item::new(
+            ItemKind::TaskStart,
+            move |store: &mut StoreContext<'_, T>| {
+                let result = replica.run_task(task, &instance, store, &arguments, &options);
+                if let Ok(mut slot) = queued.lock() {
+                    *slot = Some(result);
+                }
+                // The failure of the call is the caller's, and it is in
+                // the slot the driver reads, so the item itself has
+                // nothing left to fail with.
+                Ok(())
+            },
+        );
 
         // A synchronous export's task ignores the entry gate, as the
         // reference states: the gate applies to a task whose function
@@ -211,7 +215,7 @@ impl Func {
         &self,
         task: TaskId,
         instance: &BoundaryInstance,
-        store: &mut Store<T>,
+        store: &mut StoreContext<'_, T>,
         args: &[Val],
         options: &BoundaryOptions,
     ) -> Result<Box<[Val]>> {
@@ -243,7 +247,7 @@ impl Func {
         &self,
         task: TaskId,
         instance: &BoundaryInstance,
-        store: &mut Store<T>,
+        store: &mut StoreContext<'_, T>,
         args: &[Val],
         options: &BoundaryOptions,
     ) -> Result<Box<[Val]>> {
@@ -254,7 +258,7 @@ impl Func {
         // The arguments are lowered, so the task's thread runs now.
         store.start_export_task(task)?;
         self.inner
-            .call(store.inner_mut(), &core_args, &mut core_results)
+            .call(store.runtime_mut(), &core_args, &mut core_results)
             .map_err(|err| Error::from(InstantiationError::SubstrateFailure(err)))?;
 
         // The result crosses back out, and the export's post-return
@@ -281,13 +285,13 @@ impl Func {
 
     fn lower_args<T: 'static>(
         &self,
-        store: &mut Store<T>,
+        store: &mut StoreContext<'_, T>,
         args: &[Val],
         instance: &BoundaryInstance,
         task: TaskId,
         options: &BoundaryOptions,
     ) -> Result<Vec<RuntimeVal>> {
-        let store_ctx = store.inner_mut().as_context_mut();
+        let store_ctx = store.runtime_mut().as_context_mut();
         let mut lower_ctx = BoundaryContext::new(
             store_ctx,
             options.clone(),
@@ -355,14 +359,14 @@ impl Func {
 
     fn lift_result<T: 'static>(
         &self,
-        store: &mut Store<T>,
+        store: &mut StoreContext<'_, T>,
         core_results: &[RuntimeVal],
         instance: &BoundaryInstance,
         task: TaskId,
         options: BoundaryOptions,
     ) -> Result<Option<Val>> {
         let position = AbiPosition::Result;
-        let store_ctx = store.inner_mut().as_context_mut();
+        let store_ctx = store.runtime_mut().as_context_mut();
         let mut lift_ctx = BoundaryContext::new(
             store_ctx,
             options,

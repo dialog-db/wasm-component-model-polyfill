@@ -1,7 +1,7 @@
 //! The target's filling of the scheduler's suspend capability.
 
 use crate::error::Result;
-use crate::store::Store;
+use crate::store::StoreContext;
 
 /// The target's filling of the scheduler's suspend capability.
 ///
@@ -36,8 +36,25 @@ use crate::store::Store;
 ///   trampoline.
 /// - A suspended thread resumes outside any poll of a driver. The
 ///   scheduler's state is therefore reachable from a trampoline
-///   without a driver on the stack, through the store's handle
-///   tables.
+///   without a driver on the stack. It rides in the core store's
+///   data, which the runtime layer hands every trampoline as a
+///   context, so a blocking built-in reaches the seam, the queues,
+///   and the host tasks through [`StoreContext`] and captures
+///   nothing.
+///
+/// One obligation falls on the first provider to fill the seam. A
+/// synchronous lower of a host `async` function that blocks keeps
+/// its host task in the trampoline's frame rather than among the
+/// store's host tasks, because the call the task belongs to is
+/// still on the guest's stack. While the thread is suspended the
+/// store therefore holds no record of that pending body, and a
+/// driver that asks the store whether it holds work a turn can
+/// carry forward is told no. A provider that lets a driver of the
+/// same store run while such a frame is suspended must keep the
+/// store aware of the pending body — by parking a record of it
+/// there, or by admitting no turn until the frame resumes. A
+/// provider that does neither leaves that driver to go idle with
+/// the task unresolved, which raises the deadlock cause.
 pub trait SuspendProvider<T: 'static>: 'static {
     /// Suspend the current guest thread until `condition` holds.
     ///
@@ -51,7 +68,7 @@ pub trait SuspendProvider<T: 'static>: 'static {
     /// whatever the turns in between produced.
     fn suspend(
         &mut self,
-        store: &mut Store<T>,
-        condition: &mut dyn FnMut(&mut Store<T>) -> bool,
+        store: &mut StoreContext<'_, T>,
+        condition: &mut dyn FnMut(&mut StoreContext<'_, T>) -> bool,
     ) -> Result<()>;
 }

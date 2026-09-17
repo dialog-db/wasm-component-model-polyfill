@@ -44,19 +44,19 @@ use crate::concurrency::{InstanceId, Scope, ThreadId};
 use crate::error::{Error, Result};
 use crate::executor::ir::{CoreSignature, TranscodeOp};
 use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime};
-use crate::store::Store;
+use crate::store::StoreContext;
 
 /// Build a `context.get` intrinsic for `slot`. It reads the slot of
 /// the current thread: the thread of the task on top of the store's
 /// stack of current scopes.
 pub fn build_context_get<T: 'static>(
-    store: &mut Store<T>,
+    store: &mut StoreContext<'_, T>,
     slot: usize,
     signature: &CoreSignature,
 ) -> RuntimeFunc {
     let tables = store.tables_handle();
     RuntimeFunc::new(
-        store.inner_mut(),
+        store.runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, _args, results| {
             results[0] = RuntimeVal::I32(context_get(&tables, slot)?);
@@ -81,13 +81,13 @@ fn context_get(tables: &Arc<Mutex<HandleTables>>, slot: usize) -> anyhow::Result
 /// Build a `context.set` intrinsic for `slot`. See
 /// [`build_context_get`]: it writes the current thread's slot.
 pub fn build_context_set<T: 'static>(
-    store: &mut Store<T>,
+    store: &mut StoreContext<'_, T>,
     slot: usize,
     signature: &CoreSignature,
 ) -> RuntimeFunc {
     let tables = store.tables_handle();
     RuntimeFunc::new(
-        store.inner_mut(),
+        store.runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, args, _results| {
             let value = arg_u32(args, 0)? as i32;
@@ -137,9 +137,12 @@ fn core_type_of_flat(slot: FlatType) -> CoreType {
 
 /// Build the `trap` intrinsic: one `i32` Wasmtime trap code in,
 /// a trap out. The message is the one Wasmtime prints for the code.
-pub fn build_trap<T: 'static>(store: &mut Store<T>, signature: &CoreSignature) -> RuntimeFunc {
+pub fn build_trap<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    signature: &CoreSignature,
+) -> RuntimeFunc {
     RuntimeFunc::new(
-        store.inner_mut(),
+        store.runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, args, _results| {
             let code = arg_u32(args, 0)?;
@@ -158,13 +161,13 @@ pub fn build_trap<T: 'static>(store: &mut Store<T>, signature: &CoreSignature) -
 /// task with one thread, so the intrinsic pushes the callee's task
 /// on the store's stack of current scopes.
 pub fn build_enter_sync_call<T: 'static>(
-    store: &mut Store<T>,
+    store: &mut StoreContext<'_, T>,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
     let tables = store.tables_handle();
     RuntimeFunc::new(
-        store.inner_mut(),
+        store.runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, args, _results| {
             let (callee, callee_async) = enter_sync_call_arguments(&abi_state, args)?;
@@ -192,12 +195,12 @@ fn enter_sync_call_arguments(
 /// popped, and a borrow the callee did not drop traps with the
 /// message Wasmtime uses.
 pub fn build_exit_sync_call<T: 'static>(
-    store: &mut Store<T>,
+    store: &mut StoreContext<'_, T>,
     signature: &CoreSignature,
 ) -> RuntimeFunc {
     let tables = store.tables_handle();
     RuntimeFunc::new(
-        store.inner_mut(),
+        store.runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, _args, _results| exit_sync_call(&tables),
     )
@@ -283,14 +286,14 @@ fn lock_tables(
 /// a borrow owed to the call's scope, or the rep itself when the
 /// callee is the resource's defining instance.
 pub fn build_resource_transfer<T: 'static>(
-    store: &mut Store<T>,
+    store: &mut StoreContext<'_, T>,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
     own: bool,
 ) -> RuntimeFunc {
     let tables = store.tables_handle();
     RuntimeFunc::new(
-        store.inner_mut(),
+        store.runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, args, results| {
             let index = arg_u32(args, 0)?;
@@ -391,7 +394,7 @@ fn transfer_borrow(
 /// the callee's task: the fused adapter runs its enter intrinsic
 /// before it translates any argument.
 pub fn build_transcoder<T: 'static>(
-    store: &mut Store<T>,
+    store: &mut StoreContext<'_, T>,
     op: TranscodeOp,
     from_memory: usize,
     to_memory: usize,
@@ -401,7 +404,7 @@ pub fn build_transcoder<T: 'static>(
     let result_widths: Vec<FlatType> = signature.results.clone();
     let tables = store.tables_handle();
     RuntimeFunc::new(
-        store.inner_mut(),
+        store.runtime_mut(),
         core_func_type(signature),
         move |store_ctx, args, results| {
             let source = BoundaryOptions::for_memory(from_memory, &abi_state)?;

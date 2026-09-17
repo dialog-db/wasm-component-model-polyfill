@@ -1,7 +1,7 @@
 //! One item of the scheduler's ready queues.
 
 use crate::error::Result;
-use crate::store::Store;
+use crate::store::StoreContext;
 
 use super::item_action::ItemAction;
 use super::item_kind::ItemKind;
@@ -9,12 +9,12 @@ use super::item_kind::ItemKind;
 /// The boxed action of one item, with the `Send` bound the native
 /// target puts on everything a store holds.
 #[cfg(not(target_arch = "wasm32"))]
-type BoxedAction<T> = Box<dyn FnOnce(&mut Store<T>) -> Result<()> + Send + 'static>;
+type BoxedAction<T> = Box<dyn FnOnce(&mut StoreContext<'_, T>) -> Result<()> + Send + 'static>;
 
 /// The boxed action of one item. The browser drops the `Send` bound:
 /// see [`ItemAction`].
 #[cfg(target_arch = "wasm32")]
-type BoxedAction<T> = Box<dyn FnOnce(&mut Store<T>) -> Result<()> + 'static>;
+type BoxedAction<T> = Box<dyn FnOnce(&mut StoreContext<'_, T>) -> Result<()> + 'static>;
 
 /// One item of the scheduler's ready queues.
 ///
@@ -46,7 +46,7 @@ impl<T: 'static> Item<T> {
     }
 
     /// Run the item against `store`, consuming it.
-    pub fn run(self, store: &mut Store<T>) -> Result<()> {
+    pub fn run(self, store: &mut StoreContext<'_, T>) -> Result<()> {
         (self.action)(store)
     }
 }

@@ -26,7 +26,7 @@ use super::host_resource::HostResource;
 /// deterministic.
 ///
 /// [`Store`]: crate::Store
-pub struct InstanceRegistration<T> {
+pub struct InstanceRegistration<T: 'static> {
     /// The host-function payloads keyed by the item-name the
     /// component-side import expects. Insertion order is preserved
     /// via the `BTreeMap`'s sorted iteration; the keys are
@@ -45,7 +45,7 @@ pub struct InstanceRegistration<T> {
     pub instances: BTreeMap<String, InstanceRegistration<T>>,
 }
 
-impl<T> InstanceRegistration<T> {
+impl<T: 'static> InstanceRegistration<T> {
     /// Construct an empty registration.
     pub fn new() -> Self {
         Self {
@@ -95,7 +95,7 @@ impl<T> InstanceRegistration<T> {
     }
 }
 
-impl<T> Default for InstanceRegistration<T> {
+impl<T: 'static> Default for InstanceRegistration<T> {
     fn default() -> Self {
         Self::new()
     }

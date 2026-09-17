@@ -1,7 +1,7 @@
 //! The bound the lowering of a host task's result carries.
 
 use crate::error::Result;
-use crate::store::Store;
+use crate::store::StoreContext;
 use crate::value::Val;
 
 /// The bound the lowering of a host task's result carries.
@@ -20,13 +20,13 @@ use crate::value::Val;
 /// natively, and in the browser nothing it holds has to be.
 #[cfg(not(target_arch = "wasm32"))]
 pub trait HostResultLowering<T: 'static>:
-    FnOnce(&mut Store<T>, Result<Vec<Val>>) -> Result<()> + Send + 'static
+    FnOnce(&mut StoreContext<'_, T>, Result<Vec<Val>>) -> Result<()> + Send + 'static
 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl<T: 'static, F> HostResultLowering<T> for F where
-    F: FnOnce(&mut Store<T>, Result<Vec<Val>>) -> Result<()> + Send + 'static
+    F: FnOnce(&mut StoreContext<'_, T>, Result<Vec<Val>>) -> Result<()> + Send + 'static
 {
 }
 
@@ -35,12 +35,12 @@ impl<T: 'static, F> HostResultLowering<T> for F where
 /// absent here.
 #[cfg(target_arch = "wasm32")]
 pub trait HostResultLowering<T: 'static>:
-    FnOnce(&mut Store<T>, Result<Vec<Val>>) -> Result<()> + 'static
+    FnOnce(&mut StoreContext<'_, T>, Result<Vec<Val>>) -> Result<()> + 'static
 {
 }
 
 #[cfg(target_arch = "wasm32")]
 impl<T: 'static, F> HostResultLowering<T> for F where
-    F: FnOnce(&mut Store<T>, Result<Vec<Val>>) -> Result<()> + 'static
+    F: FnOnce(&mut StoreContext<'_, T>, Result<Vec<Val>>) -> Result<()> + 'static
 {
 }

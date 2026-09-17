@@ -206,7 +206,7 @@ pub use crate::module::{
     CoreExtern, CoreExternType, CoreInstance, CoreValueType, Module, ModuleExport, ModuleImport,
 };
 pub use crate::resource::{ResourceHandle, ResourceTypeId};
-pub use crate::store::Store;
+pub use crate::store::{Store, StoreContext};
 pub use crate::types::{
     EnumType, FixedLengthListType, FlagsType, ListType, MapType, OptionType, PrimitiveType,
     RecordField, RecordType, ResourceType, ResultType, TupleType, ValueType, VariantCase,

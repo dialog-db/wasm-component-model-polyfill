@@ -924,7 +924,7 @@ async fn it_tracks_resource_handles_in_a_handle_table() {
     // this by lowering through the lift/lower paths in production;
     // here, a structural assertion via the registered type id is
     // enough.
-    let mut tables = store.tables.lock().expect("tables");
+    let mut tables = store.tables().lock().expect("tables");
     let host_table = tables.host_table(type_a);
     assert_eq!(
         tables

@@ -1,7 +1,7 @@
 //! The bound the action of a queued item carries.
 
 use crate::error::Result;
-use crate::store::Store;
+use crate::store::StoreContext;
 
 /// The bound the action of a queued item carries.
 ///
@@ -26,16 +26,24 @@ use crate::store::Store;
 /// on one thread there, and an action that captures a JavaScript
 /// value is not `Send` and does not need to be.
 #[cfg(not(target_arch = "wasm32"))]
-pub trait ItemAction<T: 'static>: FnOnce(&mut Store<T>) -> Result<()> + Send + 'static {}
+pub trait ItemAction<T: 'static>:
+    FnOnce(&mut StoreContext<'_, T>) -> Result<()> + Send + 'static
+{
+}
 
 #[cfg(not(target_arch = "wasm32"))]
-impl<T: 'static, F> ItemAction<T> for F where F: FnOnce(&mut Store<T>) -> Result<()> + Send + 'static
-{}
+impl<T: 'static, F> ItemAction<T> for F where
+    F: FnOnce(&mut StoreContext<'_, T>) -> Result<()> + Send + 'static
+{
+}
 
 /// The bound the action of a queued item carries. See the native
 /// definition for what it is and why the `Send` half is absent here.
 #[cfg(target_arch = "wasm32")]
-pub trait ItemAction<T: 'static>: FnOnce(&mut Store<T>) -> Result<()> + 'static {}
+pub trait ItemAction<T: 'static>: FnOnce(&mut StoreContext<'_, T>) -> Result<()> + 'static {}
 
 #[cfg(target_arch = "wasm32")]
-impl<T: 'static, F> ItemAction<T> for F where F: FnOnce(&mut Store<T>) -> Result<()> + 'static {}
+impl<T: 'static, F> ItemAction<T> for F where
+    F: FnOnce(&mut StoreContext<'_, T>) -> Result<()> + 'static
+{
+}

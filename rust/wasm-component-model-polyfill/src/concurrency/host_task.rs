@@ -4,7 +4,7 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
 use crate::error::{Error, Result};
-use crate::store::Store;
+use crate::store::StoreContext;
 use crate::value::Val;
 
 use super::accessor::Accessor;
@@ -19,12 +19,13 @@ use super::subtask_id::SubtaskId;
 /// bound the native target puts on everything a store holds.
 #[cfg(not(target_arch = "wasm32"))]
 type BoxedLowering<T> =
-    Box<dyn FnOnce(&mut Store<T>, Result<Vec<Val>>) -> Result<()> + Send + 'static>;
+    Box<dyn FnOnce(&mut StoreContext<'_, T>, Result<Vec<Val>>) -> Result<()> + Send + 'static>;
 
 /// The boxed lowering of one host task's result. The browser drops
 /// the `Send` bound: see [`HostResultLowering`].
 #[cfg(target_arch = "wasm32")]
-type BoxedLowering<T> = Box<dyn FnOnce(&mut Store<T>, Result<Vec<Val>>) -> Result<()> + 'static>;
+type BoxedLowering<T> =
+    Box<dyn FnOnce(&mut StoreContext<'_, T>, Result<Vec<Val>>) -> Result<()> + 'static>;
 
 /// One call of a host `async` function, as the store holds it.
 ///
@@ -100,7 +101,7 @@ impl<T: 'static> HostTask<T> {
     /// now. The trampoline that started the call takes this path
     /// when the first poll resolved the body: the guest is still on
     /// the stack, so a failure fails its call.
-    pub fn lower(self, store: &mut Store<T>, outcome: Result<Vec<Val>>) -> Result<()> {
+    pub fn lower(self, store: &mut StoreContext<'_, T>, outcome: Result<Vec<Val>>) -> Result<()> {
         (self.lowering)(store, outcome)
     }
 
@@ -140,35 +141,38 @@ impl<T: 'static> HostTask<T> {
             handle_index,
             ..
         } = self;
-        Item::new(ItemKind::HostResultLowering, move |store: &mut Store<T>| {
-            // A body that failed is a call that never returned, so
-            // nothing crosses: the lowering has no value to take
-            // into the guest. A crossing that fails is the same
-            // thing seen from the other side, so the subtask
-            // resolves the same way and the failure travels on
-            // afterwards.
-            let produced = outcome.is_ok();
-            let crossing = match outcome {
-                Ok(values) => lowering(store, Ok(values)),
-                Err(_) => Ok(()),
-            };
-            let mut guard = store
-                .tables
-                .lock()
-                .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
-            if produced && crossing.is_ok() {
-                guard.tasks.subtask_returned(subtask)?;
-            } else {
-                guard.tasks.subtask_cancelled(subtask)?;
-            }
-            // The call is over either way, and the subtask's
-            // readiness is the subtask event a thread waiting on it
-            // takes delivery of. The event carries the subtask's
-            // index in the caller instance's handle table and the
-            // state it resolved to.
-            guard.tasks.record_subtask_event(subtask, handle_index)?;
-            crossing
-        })
+        Item::new(
+            ItemKind::HostResultLowering,
+            move |store: &mut StoreContext<'_, T>| {
+                // A body that failed is a call that never returned, so
+                // nothing crosses: the lowering has no value to take
+                // into the guest. A crossing that fails is the same
+                // thing seen from the other side, so the subtask
+                // resolves the same way and the failure travels on
+                // afterwards.
+                let produced = outcome.is_ok();
+                let crossing = match outcome {
+                    Ok(values) => lowering(store, Ok(values)),
+                    Err(_) => Ok(()),
+                };
+                let mut guard = store
+                    .tables()
+                    .lock()
+                    .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
+                if produced && crossing.is_ok() {
+                    guard.tasks.subtask_returned(subtask)?;
+                } else {
+                    guard.tasks.subtask_cancelled(subtask)?;
+                }
+                // The call is over either way, and the subtask's
+                // readiness is the subtask event a thread waiting on it
+                // takes delivery of. The event carries the subtask's
+                // index in the caller instance's handle table and the
+                // state it resolved to.
+                guard.tasks.record_subtask_event(subtask, handle_index)?;
+                crossing
+            },
+        )
     }
 }
 
@@ -195,6 +199,8 @@ mod tests {
 
     use super::super::lower_kind::LowerKind;
     use super::super::subtask_state::SubtaskState;
+    use crate::store::Store;
+
     use super::*;
 
     /// A body that reads the store's host data through the accessor
@@ -233,16 +239,17 @@ mod tests {
         let engine = Engine::new().expect("engine");
         let mut store = Store::new(&engine, "host data".to_owned()).expect("store");
         let table = TableId::fresh();
-        let subtask = store.tables.lock().expect("tables").tasks.push_subtask();
+        let subtask = store.tables().lock().expect("tables").tasks.push_subtask();
         let seen = Arc::new(Mutex::new(None));
         let lowered = Arc::new(Mutex::new(None));
         let slot = lowered.clone();
 
         let status = store
+            .context()
             .start_host_task(
                 HostTask::new(
                     subtask,
-                    move |_store: &mut Store<String>, outcome: Result<Vec<Val>>| {
+                    move |_store: &mut StoreContext<'_, String>, outcome: Result<Vec<Val>>| {
                         *slot.lock().expect("the lowering's slot") =
                             Some(outcome.expect("the body's value"));
                         Ok(())

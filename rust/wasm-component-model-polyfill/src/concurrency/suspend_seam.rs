@@ -2,7 +2,7 @@
 //! falls back to.
 
 use crate::error::{Error, Result};
-use crate::store::Store;
+use crate::store::StoreContext;
 
 use super::SuspendProvider;
 use super::outcome::Outcome;
@@ -136,9 +136,17 @@ impl<T: 'static> SuspendSeam<T> {
     /// This is the one entry a blocking built-in uses. It returns
     /// `Ok(())` with the condition true, and otherwise the scheduler
     /// error the built-in traps with.
+    ///
+    /// The store it takes is a [`StoreContext`], which is what the
+    /// frame a blocking built-in runs in can produce: a host
+    /// trampoline is handed the core store's context and nothing
+    /// else, and the scheduler rides in that store's data. The seam
+    /// is therefore reachable with no driver on the stack, which is
+    /// what a provider that resumes a thread outside any poll of a
+    /// driver needs.
     pub fn suspend(
-        store: &mut Store<T>,
-        mut condition: impl FnMut(&mut Store<T>) -> bool,
+        store: &mut StoreContext<'_, T>,
+        mut condition: impl FnMut(&mut StoreContext<'_, T>) -> bool,
     ) -> Result<()> {
         // The provider slot is consulted first. When a target fills
         // the capability the thread suspends there, and no guest
@@ -146,7 +154,7 @@ impl<T: 'static> SuspendSeam<T> {
         // is what a provider that switches stacks needs. The nested
         // turn runs only when the slot is empty, so the two never
         // meet.
-        if store.scheduler.suspend_seam().has_provider() {
+        if store.scheduler().suspend_seam().has_provider() {
             return Self::suspend_with_provider(store, &mut condition);
         }
         Self::run_nested_turns(store, &mut condition)
@@ -160,17 +168,17 @@ impl<T: 'static> SuspendSeam<T> {
     /// the life of the store, and every later suspension would take
     /// the nested-turn fallback on a target that had a provider.
     fn suspend_with_provider(
-        store: &mut Store<T>,
-        condition: &mut dyn FnMut(&mut Store<T>) -> bool,
+        store: &mut StoreContext<'_, T>,
+        condition: &mut dyn FnMut(&mut StoreContext<'_, T>) -> bool,
     ) -> Result<()> {
-        let Some(mut provider) = store.scheduler.suspend_seam_mut().provider.take() else {
+        let Some(mut provider) = store.scheduler_mut().suspend_seam_mut().provider.take() else {
             return Self::run_nested_turns(store, condition);
         };
         // `provider` stays in this frame. The closure only borrows
         // it, so an unwind through the call leaves it here to put
         // back rather than dropping it inside the closure.
         let outcome = Self::caught(|| provider.suspend(&mut *store, condition));
-        store.scheduler.suspend_seam_mut().provider = Some(provider);
+        store.scheduler_mut().suspend_seam_mut().provider = Some(provider);
         Self::resume(outcome)
     }
 
@@ -178,23 +186,23 @@ impl<T: 'static> SuspendSeam<T> {
     /// the guest call that blocked, until the condition holds or
     /// nothing can progress.
     fn run_nested_turns(
-        store: &mut Store<T>,
-        condition: &mut dyn FnMut(&mut Store<T>) -> bool,
+        store: &mut StoreContext<'_, T>,
+        condition: &mut dyn FnMut(&mut StoreContext<'_, T>) -> bool,
     ) -> Result<()> {
         // The fallback is one level deep. An item a nested turn runs
         // that reaches the seam again gets the condition checked and
         // then the refusal, because a second level would add a
         // native frame under the guest call without reaching any
         // work the level above it does not already offer.
-        if store.scheduler.suspend_seam().in_nested_turn() {
+        if store.scheduler().suspend_seam().in_nested_turn() {
             if condition(store) {
                 return Ok(());
             }
             return Err(Error::Scheduler(store.suspend_cause()));
         }
-        store.scheduler.suspend_seam_mut().in_nested_turn = true;
+        store.scheduler_mut().suspend_seam_mut().in_nested_turn = true;
         let outcome = Self::caught(|| Self::nested_turn_loop(&mut *store, condition));
-        store.scheduler.suspend_seam_mut().in_nested_turn = false;
+        store.scheduler_mut().suspend_seam_mut().in_nested_turn = false;
         Self::resume(outcome)
     }
 
@@ -226,8 +234,8 @@ impl<T: 'static> SuspendSeam<T> {
     /// The nested turns themselves, with the seam already marked as
     /// running one.
     fn nested_turn_loop(
-        store: &mut Store<T>,
-        condition: &mut dyn FnMut(&mut Store<T>) -> bool,
+        store: &mut StoreContext<'_, T>,
+        condition: &mut dyn FnMut(&mut StoreContext<'_, T>) -> bool,
     ) -> Result<()> {
         // The waker of the outer turn, so that a host task polled
         // here carries the waker the executor already holds. There
@@ -280,14 +288,20 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
+    use wcmp_macros::component;
+
+    use crate::component::Component;
     use crate::engine::Engine;
     use crate::error::SchedulerCause;
+    use crate::linker::{HostCall, Linker};
+    use crate::store::Store;
     use crate::value::Val;
 
     use super::super::driver::Driver;
     use super::super::host_task::HostTask;
     use super::super::item::Item;
     use super::super::item_kind::ItemKind;
+
     use super::*;
 
     /// What the items of one test wrote as they ran, in order.
@@ -355,8 +369,8 @@ mod tests {
     impl SuspendProvider<()> for Recorded {
         fn suspend(
             &mut self,
-            _store: &mut Store<()>,
-            _condition: &mut dyn FnMut(&mut Store<()>) -> bool,
+            _store: &mut StoreContext<'_, ()>,
+            _condition: &mut dyn FnMut(&mut StoreContext<'_, ()>) -> bool,
         ) -> Result<()> {
             *self.0.lock().expect("provider calls") += 1;
             Ok(())
@@ -372,8 +386,8 @@ mod tests {
     impl SuspendProvider<()> for Panics {
         fn suspend(
             &mut self,
-            _store: &mut Store<()>,
-            _condition: &mut dyn FnMut(&mut Store<()>) -> bool,
+            _store: &mut StoreContext<'_, ()>,
+            _condition: &mut dyn FnMut(&mut StoreContext<'_, ()>) -> bool,
         ) -> Result<()> {
             panic!("the provider panicked")
         }
@@ -403,10 +417,13 @@ mod tests {
     /// An item that records that it ran.
     fn marker(log: &Log, name: &'static str) -> Item<()> {
         let log = log.clone();
-        Item::new(ItemKind::TaskStart, move |_store: &mut Store<()>| {
-            log.lock().expect("log").push(name);
-            Ok(())
-        })
+        Item::new(
+            ItemKind::TaskStart,
+            move |_store: &mut StoreContext<'_, ()>| {
+                log.lock().expect("log").push(name);
+                Ok(())
+            },
+        )
     }
 
     fn entries(log: &Log) -> Vec<&'static str> {
@@ -419,26 +436,38 @@ mod tests {
     /// suspension ran from inside this item's guest call.
     fn blocker(log: &Log, enter: &'static str, leave: &'static str) -> Item<()> {
         let log = log.clone();
-        Item::new(ItemKind::TaskStart, move |store: &mut Store<()>| {
-            log.lock().expect("log").push(enter);
-            let _ = SuspendSeam::suspend(store, |_| false);
-            log.lock().expect("log").push(leave);
-            Ok(())
-        })
+        Item::new(
+            ItemKind::TaskStart,
+            move |store: &mut StoreContext<'_, ()>| {
+                log.lock().expect("log").push(enter);
+                let _ = SuspendSeam::suspend(store, |_| false);
+                log.lock().expect("log").push(leave);
+                Ok(())
+            },
+        )
     }
 
     /// Give `store` a host task whose body completes on its
     /// `ready_on`th poll. The slot it returns is the one the
     /// lowering of that body fills, and it is what every test here
     /// uses as its readiness condition.
-    fn host_task(store: &mut Store<()>, outer: &Waker, ready_on: usize) -> (Slot, Polls) {
-        let subtask = store.tables.lock().expect("tables").tasks.insert_subtask();
+    fn host_task(
+        store: &mut StoreContext<'_, ()>,
+        outer: &Waker,
+        ready_on: usize,
+    ) -> (Slot, Polls) {
+        let subtask = store
+            .tables()
+            .lock()
+            .expect("tables")
+            .tasks
+            .insert_subtask();
         let slot: Slot = Arc::new(Mutex::new(None));
         let polls: Polls = Arc::new(Mutex::new(Vec::new()));
         let filled = slot.clone();
         store.push_host_task(HostTask::from_future(
             subtask,
-            move |_store: &mut Store<()>, outcome: Result<Vec<Val>>| {
+            move |_store: &mut StoreContext<'_, ()>, outcome: Result<Vec<Val>>| {
                 *filled.lock().expect("slot") = Some(outcome);
                 Ok(())
             },
@@ -455,8 +484,8 @@ mod tests {
     /// blocking built-in would find it. `may_not_suspend` is the
     /// instance flag an adapter's enter intrinsic sets for the
     /// duration of a synchronous call.
-    fn current_task(store: &Store<()>, may_not_suspend: bool) {
-        let mut guard = store.tables.lock().expect("tables");
+    fn current_task(store: &StoreContext<'_, ()>, may_not_suspend: bool) {
+        let mut guard = store.tables().lock().expect("tables");
         let instance = guard.tasks.insert_instance();
         guard
             .tasks
@@ -471,7 +500,7 @@ mod tests {
     /// loops on `Progress` and returns control to the host executor
     /// on `Yield` would. The bound is there so a store that would
     /// never settle fails the test rather than hanging it.
-    fn drain(store: &mut Store<()>) {
+    fn drain(store: &mut StoreContext<'_, ()>) {
         for _ in 0..8 {
             if store.turn(Waker::noop()).expect("turn") == Outcome::Idle {
                 return;
@@ -496,10 +525,11 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn it_has_an_empty_provider_slot_on_both_targets() {
-        let store = store();
+        let mut owner = store();
+        let store = owner.context();
 
         assert!(
-            !store.scheduler.suspend_seam().has_provider(),
+            !store.scheduler().suspend_seam().has_provider(),
             "the capability is filled on neither target, so every suspension \
              takes the nested turn"
         );
@@ -508,7 +538,8 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn it_polls_a_host_task_with_the_outer_waker_and_returns_when_the_condition_holds() {
-        let mut store = store();
+        let mut owner = store();
+        let mut store = owner.context();
         let outer = Waker::from(Arc::new(Outer::default()));
         let (slot, polls) = host_task(&mut store, &outer, 1);
 
@@ -534,7 +565,7 @@ mod tests {
             "the completed future's value reached the slot the condition watches"
         );
         assert_eq!(
-            store.scheduler.host_task_count(),
+            store.scheduler().host_task_count(),
             0,
             "the host task that completed left the store"
         );
@@ -543,7 +574,8 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn it_runs_ready_work_of_another_task_while_the_condition_is_unmet() {
-        let mut store = store();
+        let mut owner = store();
+        let mut store = owner.context();
         let outer = Waker::from(Arc::new(Outer::default()));
         let (slot, _polls) = host_task(&mut store, &outer, 1);
 
@@ -555,9 +587,9 @@ mod tests {
         let recorded = seen.clone();
         let written = log.clone();
         let watched = slot.clone();
-        store.scheduler.push_high_priority(Item::new(
+        store.scheduler_mut().push_high_priority(Item::new(
             ItemKind::TaskStart,
-            move |_store: &mut Store<()>| {
+            move |_store: &mut StoreContext<'_, ()>| {
                 *recorded.lock().expect("record") = Some(watched.lock().expect("slot").is_some());
                 written.lock().expect("log").push("other task");
                 Ok(())
@@ -587,7 +619,8 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn it_leaves_a_host_task_it_left_pending_in_the_store_for_the_outer_driver() {
-        let mut store = store();
+        let mut owner = store();
+        let mut store = owner.context();
         let outer = Waker::from(Arc::new(Outer::default()));
         // The future is ready on its second poll, so the one poll
         // the nested turn makes leaves it pending.
@@ -598,9 +631,9 @@ mod tests {
         // returns with the host task still pending.
         let released = Arc::new(Mutex::new(false));
         let flag = released.clone();
-        store.scheduler.push_high_priority(Item::new(
+        store.scheduler_mut().push_high_priority(Item::new(
             ItemKind::TaskStart,
-            move |_store: &mut Store<()>| {
+            move |_store: &mut StoreContext<'_, ()>| {
                 *flag.lock().expect("flag") = true;
                 Ok(())
             },
@@ -620,7 +653,7 @@ mod tests {
             "the nested turn polled the host task once, with the outer waker"
         );
         assert_eq!(
-            store.scheduler.host_task_count(),
+            store.scheduler().host_task_count(),
             1,
             "the host task that stayed pending stayed in the store"
         );
@@ -631,9 +664,11 @@ mod tests {
 
         // A later turn of a driver of the same store polls it again.
         let watched = slot.clone();
-        let mut driver = Box::pin(Driver::new(&mut store, None, move |_store, _waker| {
-            watched.lock().expect("slot").is_some().then(|| Ok(()))
-        }));
+        let mut driver = Box::pin(Driver::new(
+            store.reborrow(),
+            None,
+            move |_store, _waker| watched.lock().expect("slot").is_some().then(|| Ok(())),
+        ));
         let done = poll_once(&mut driver, &outer);
 
         assert!(
@@ -650,7 +685,8 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn it_traps_with_the_cannot_block_cause_when_the_task_must_not_block() {
-        let mut store = store();
+        let mut owner = store();
+        let mut store = owner.context();
         current_task(&store, true);
 
         let outcome = store
@@ -670,7 +706,8 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn it_traps_with_the_stack_switch_cause_when_the_task_may_block() {
-        let mut store = store();
+        let mut owner = store();
+        let mut store = owner.context();
         current_task(&store, false);
 
         let outcome = store
@@ -690,16 +727,17 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn it_does_not_raise_the_recursive_driver_cause_from_inside_a_drivers_turn() {
-        let mut store = store();
+        let mut owner = store();
+        let mut store = owner.context();
         let outer = Waker::from(Arc::new(Outer::default()));
         let (slot, polls) = host_task(&mut store, &outer, 1);
 
         let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let recorded = seen.clone();
         let watched = slot.clone();
-        store.scheduler.push_high_priority(Item::new(
+        store.scheduler_mut().push_high_priority(Item::new(
             ItemKind::TaskStart,
-            move |store: &mut Store<()>| {
+            move |store: &mut StoreContext<'_, ()>| {
                 let outcome =
                     SuspendSeam::suspend(store, move |_| watched.lock().expect("slot").is_some());
                 *recorded.lock().expect("record") = Some(cause(outcome));
@@ -708,9 +746,11 @@ mod tests {
         ));
 
         let watched = seen.clone();
-        let mut driver = Box::pin(Driver::new(&mut store, None, move |_store, _waker| {
-            watched.lock().expect("record").is_some().then(|| Ok(()))
-        }));
+        let mut driver = Box::pin(Driver::new(
+            store.reborrow(),
+            None,
+            move |_store, _waker| watched.lock().expect("record").is_some().then(|| Ok(())),
+        ));
         let done = poll_once(&mut driver, &outer);
 
         assert!(
@@ -733,17 +773,18 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn it_consults_the_provider_slot_before_it_falls_back_to_a_nested_turn() {
-        let mut store = store();
+        let mut owner = store();
+        let mut store = owner.context();
         let calls = Arc::new(Mutex::new(0usize));
         store
-            .scheduler
+            .scheduler_mut()
             .suspend_seam_mut()
             .set_provider(Recorded(calls.clone()));
 
         // Ready guest work a nested turn would have run.
         let log = log();
         store
-            .scheduler
+            .scheduler_mut()
             .push_high_priority(marker(&log, "the nested turn"));
 
         let outcome = store
@@ -768,12 +809,12 @@ mod tests {
              that blocked"
         );
         assert_eq!(
-            store.scheduler.queued_items(),
+            store.scheduler().queued_items(),
             1,
             "the ready item is still queued for a turn of the scheduler"
         );
         assert!(
-            store.scheduler.suspend_seam().has_provider(),
+            store.scheduler().suspend_seam().has_provider(),
             "the provider went back into its slot"
         );
     }
@@ -781,19 +822,20 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn it_runs_every_deferred_item_exactly_once_after_a_suspension_gave_up() {
-        let mut store = store();
+        let mut owner = store();
+        let mut store = owner.context();
         let log = log();
-        store.scheduler.push_low_priority(marker(&log, "A"));
-        store.scheduler.push_low_priority(marker(&log, "B"));
+        store.scheduler_mut().push_low_priority(marker(&log, "A"));
+        store.scheduler_mut().push_low_priority(marker(&log, "B"));
 
         // The one item that is ready reaches the seam with a
         // condition nothing will meet, so its nested turn finds
         // nothing but the low-priority queue.
         let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let recorded = seen.clone();
-        store.scheduler.push_high_priority(Item::new(
+        store.scheduler_mut().push_high_priority(Item::new(
             ItemKind::TaskStart,
-            move |store: &mut Store<()>| {
+            move |store: &mut StoreContext<'_, ()>| {
                 let outcome = SuspendSeam::suspend(store, |_| false);
                 *recorded.lock().expect("record") = Some(cause(outcome));
                 Ok(())
@@ -815,25 +857,32 @@ mod tests {
              neither took the resume-after-yield slot nor filled it, so the \
              outer turn's own deferral overwrote nothing"
         );
-        assert_eq!(store.scheduler.queued_items(), 0, "nothing was left queued");
+        assert_eq!(
+            store.scheduler().queued_items(),
+            0,
+            "nothing was left queued"
+        );
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn it_never_resumes_a_yielded_item_inside_the_guest_call_that_blocked() {
-        let mut store = store();
+        let mut owner = store();
+        let mut store = owner.context();
         let log = log();
-        store.scheduler.push_low_priority(marker(&log, "yielded"));
+        store
+            .scheduler_mut()
+            .push_low_priority(marker(&log, "yielded"));
 
         // Both ready items block. The second one reaches the seam
         // from inside the first one's nested turn, which is where a
         // turn nested one deeper used to find the resumption sitting
         // in the resume-after-yield slot and run it.
         store
-            .scheduler
+            .scheduler_mut()
             .push_high_priority(blocker(&log, "outer enter", "outer leave"));
         store
-            .scheduler
+            .scheduler_mut()
             .push_high_priority(blocker(&log, "inner enter", "inner leave"));
 
         drain(&mut store);
@@ -856,23 +905,24 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn it_refuses_a_suspension_reached_from_inside_a_nested_turn() {
-        let mut store = store();
+        let mut owner = store();
+        let mut store = owner.context();
         let log = log();
         let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
         // The item that blocks first. Its nested turn runs the two
         // items queued behind it.
         store
-            .scheduler
+            .scheduler_mut()
             .push_high_priority(blocker(&log, "outer enter", "outer leave"));
 
         // The item the nested turn runs, which reaches the seam
         // itself and would be a second level.
         let recorded = seen.clone();
         let written = log.clone();
-        store.scheduler.push_high_priority(Item::new(
+        store.scheduler_mut().push_high_priority(Item::new(
             ItemKind::TaskStart,
-            move |store: &mut Store<()>| {
+            move |store: &mut StoreContext<'_, ()>| {
                 written.lock().expect("log").push("inner enter");
                 let outcome = SuspendSeam::suspend(store, |_| false);
                 *recorded.lock().expect("record") = Some(cause(outcome));
@@ -883,7 +933,9 @@ mod tests {
 
         // Ready work behind it. A second level would have run this
         // from inside the inner item's own guest call.
-        store.scheduler.push_high_priority(marker(&log, "behind"));
+        store
+            .scheduler_mut()
+            .push_high_priority(marker(&log, "behind"));
 
         drain(&mut store);
 
@@ -910,21 +962,22 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn it_refuses_a_nested_suspension_with_the_cannot_block_cause_in_a_sync_task() {
-        let mut store = store();
+        let mut owner = store();
+        let mut store = owner.context();
         current_task(&store, true);
 
         let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-        store.scheduler.push_high_priority(Item::new(
+        store.scheduler_mut().push_high_priority(Item::new(
             ItemKind::TaskStart,
-            |store: &mut Store<()>| {
+            |store: &mut StoreContext<'_, ()>| {
                 let _ = SuspendSeam::suspend(store, |_| false);
                 Ok(())
             },
         ));
         let recorded = seen.clone();
-        store.scheduler.push_high_priority(Item::new(
+        store.scheduler_mut().push_high_priority(Item::new(
             ItemKind::TaskStart,
-            move |store: &mut Store<()>| {
+            move |store: &mut StoreContext<'_, ()>| {
                 let outcome = SuspendSeam::suspend(store, |_| false);
                 *recorded.lock().expect("record") = Some(cause(outcome));
                 Ok(())
@@ -944,7 +997,8 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn it_runs_a_nested_turn_again_once_an_earlier_one_has_returned() {
-        let mut store = store();
+        let mut owner = store();
+        let mut store = owner.context();
         let outer = Waker::from(Arc::new(Outer::default()));
 
         let first = store
@@ -984,8 +1038,12 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn it_puts_the_provider_back_when_the_suspension_panicked() {
-        let mut store = store();
-        store.scheduler.suspend_seam_mut().set_provider(Panics);
+        let mut owner = store();
+        let mut store = owner.context();
+        store
+            .scheduler_mut()
+            .suspend_seam_mut()
+            .set_provider(Panics);
 
         let unwound = unwind(|| SuspendSeam::suspend(&mut store, |_| false));
 
@@ -994,7 +1052,7 @@ mod tests {
             "the provider's panic unwound the suspension"
         );
         assert!(
-            store.scheduler.suspend_seam().has_provider(),
+            store.scheduler().suspend_seam().has_provider(),
             "the provider went back into its slot, so the target still has the \
              capability it filled"
         );
@@ -1003,17 +1061,18 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn it_clears_the_nested_turn_marker_when_a_nested_turn_panicked() {
-        let mut store = store();
+        let mut owner = store();
+        let mut store = owner.context();
 
         let unwound = unwind(|| {
-            SuspendSeam::suspend(&mut store, |_store: &mut Store<()>| -> bool {
+            SuspendSeam::suspend(&mut store, |_store: &mut StoreContext<'_, ()>| -> bool {
                 panic!("the condition panicked")
             })
         });
 
         assert!(unwound.is_err(), "the condition's panic unwound the seam");
         assert!(
-            !store.scheduler.suspend_seam().in_nested_turn(),
+            !store.scheduler().suspend_seam().in_nested_turn(),
             "the seam is no longer marked as running a nested turn"
         );
 
@@ -1025,6 +1084,121 @@ mod tests {
             cause(again),
             "the seam returned with the condition held",
             "the next suspension is served rather than refused as a second level"
+        );
+    }
+
+    /// A component whose export calls a host function and adds one
+    /// to what it returns. The host function's frame is the one a
+    /// blocking built-in runs in: a trampoline, with the export
+    /// call's driver the only driver on the stack.
+    const CALLS_THE_HOST: &[u8] = component!(
+        r#"
+        (component
+          (import "probe" (func $probe (param "x" u32) (result u32)))
+          (core func $probe' (canon lower (func $probe)))
+          (core module $m
+            (import "" "probe" (func $probe (param i32) (result i32)))
+            (func (export "run") (param i32) (result i32)
+              local.get 0 call $probe i32.const 1 i32.add))
+          (core instance $i (instantiate $m
+            (with "" (instance (export "probe" (func $probe'))))))
+          (func (export "run") (param "x" u32) (result u32)
+            (canon lift (core func $i "run"))))
+        "#
+    );
+
+    #[wcmp_macros::test]
+    async fn it_suspends_a_host_function_the_guest_called_until_a_host_task_completes() {
+        let engine = Engine::new().expect("engine");
+        let component = Component::new(&engine, CALLS_THE_HOST)
+            .await
+            .expect("component parses");
+        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+
+        // Whether the suspension returned with its condition held,
+        // and whether a turn of the store was running when it did —
+        // the export call's, since the host function enters no
+        // driver of its own.
+        let suspension: Arc<Mutex<Option<(bool, bool)>>> = Arc::new(Mutex::new(None));
+        let recorded = suspension.clone();
+
+        let mut linker: Linker<()> = Linker::new(&engine);
+        linker.root().func_wrap(
+            "probe",
+            move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
+                // Everything below runs against the store as the
+                // trampoline reaches it: the core store's context
+                // the runtime layer handed it, paired with the
+                // handle it captured. No driver, no `&mut Store`.
+                let store = call.store();
+
+                // A host task of this call. Its body is ready at
+                // once, and its lowering fills the slot below — but
+                // a lowering runs as a queued item in a later turn
+                // than the poll that saw the body complete, so the
+                // slot is what the suspension has to wait for.
+                let slot: Slot = Arc::new(Mutex::new(None));
+                let filled = slot.clone();
+                let subtask = store.lock_tables()?.tasks.insert_subtask();
+                store.push_host_task(HostTask::from_future(
+                    subtask,
+                    move |_store: &mut StoreContext<'_, ()>, outcome: Result<Vec<Val>>| {
+                        *filled.lock().expect("slot") = Some(outcome);
+                        Ok(())
+                    },
+                    core::future::ready(Ok(vec![Val::U32(x * 2)])),
+                ));
+
+                let watched = slot.clone();
+                let held = SuspendSeam::suspend(store, move |_store| {
+                    watched.lock().expect("slot").is_some()
+                })
+                .is_ok();
+                *recorded.lock().expect("record") = Some((held, store.turn_in_flight()?));
+
+                // What the host task produced, which only the turns
+                // the suspension ran could have put there.
+                let produced = slot.lock().expect("slot").take();
+                let Some(produced) = produced else {
+                    return Err(Error::internal(
+                        "the suspension returned with the host task unlowered",
+                    ));
+                };
+                match produced?.first() {
+                    Some(Val::U32(value)) => Ok(*value),
+                    _ => Err(Error::internal("the host task produced no u32")),
+                }
+            },
+        );
+
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .await
+            .expect("instantiate");
+        let run = instance.get_func("run").expect("run export");
+        let result = run
+            .call(&mut store, &[Val::U32(20)])
+            .await
+            .expect("call run");
+
+        assert_eq!(
+            *suspension.lock().expect("record"),
+            Some((true, true)),
+            "the host function reached the seam through what the trampoline \
+             holds, and the suspension returned with its condition held from \
+             inside the turn of the export call"
+        );
+        assert_eq!(
+            result.first(),
+            Some(&Val::U32(41)),
+            "the guest's call returned what the host task produced, so the \
+             nested turns of the suspension polled the body and ran the \
+             lowering it queued from inside the trampoline"
+        );
+        assert_eq!(
+            store.scheduler().host_task_count(),
+            0,
+            "the host task the call started is resolved and gone"
         );
     }
 }
