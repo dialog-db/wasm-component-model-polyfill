@@ -212,3 +212,8 @@ pub use crate::types::{
     VariantType,
 };
 pub use crate::value::{Val, ValField};
+
+// The crate's own unit tests reach a browser in the web lane, where
+// the scheduler's per-target wake after a yield is what they measure.
+#[cfg(all(test, target_arch = "wasm32"))]
+wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);

@@ -13,13 +13,23 @@ use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::{lift, lower};
 use crate::component::FunctionType;
-use crate::concurrency::{InstanceId, Scope, TaskId};
-use crate::error::{AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result};
+use crate::concurrency::{Driver, InstanceId, Item, ItemKind, Scope, TaskId};
+use crate::error::{
+    AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result, SchedulerCause,
+};
 use crate::executor::ir::CanonOptions;
 use crate::resource::ResourceTableRuntime;
 use crate::store::{Store, StoreId};
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
+
+/// Where the queued item of one call leaves what the call produced.
+///
+/// The slot is what the call's driver watches: the item fills it
+/// when the export's task resolves or fails, and the driver takes
+/// the value out. Both sides hold it, because the item outlives the
+/// future when the future is dropped.
+type CallOutcome = Arc<Mutex<Option<Result<Box<[Val]>>>>>;
 
 /// A handle to one exported function of a component [`Instance`].
 ///
@@ -83,9 +93,20 @@ impl Func {
     /// created in. Passing a different store returns
     /// [`InstantiationError::WrongStore`].
     ///
-    /// The future completes without suspending on both targets
-    /// today; it is awaited so that an export which yields to the
-    /// host can do so without a change of signature.
+    /// The call is a driver of the store's cooperative scheduler: it
+    /// creates a task for the export, queues the start of the task's
+    /// implicit thread, and polls the scheduler in turns until the
+    /// task resolves. A synchronous export's task resolves when its
+    /// core function returns. Work the task leaves behind stays in
+    /// the store, and the future does not wait for it; dropping the
+    /// future cancels nothing, and the task runs in the next turn of
+    /// any driver.
+    ///
+    /// Entering the call while another driver of the same store is
+    /// inside a turn fails with the recursive-driver cause, and a
+    /// turn that goes idle with the task unresolved fails with the
+    /// deadlock cause, or with the cannot-block cause when the task
+    /// must not block.
     pub async fn call<T: 'static>(&self, store: &mut Store<T>, args: &[Val]) -> Result<Box<[Val]>> {
         if store.id != self.store_id {
             return Err(Error::from(InstantiationError::WrongStore));
@@ -104,6 +125,13 @@ impl Func {
             }));
         }
 
+        // A driver entered while another driver of the same store is
+        // inside a turn fails before it has created a task or queued
+        // anything, so a refused call leaves the store untouched.
+        if store.turn_in_flight()? {
+            return Err(Error::Scheduler(SchedulerCause::RecursiveDriver));
+        }
+
         // The canon options of the export's lift, resolved against
         // the instance's runtime state once for the whole call. Each
         // crossing of the call builds its boundary context from
@@ -113,14 +141,73 @@ impl Func {
             Error::internal("an export's lift names a component instance the plan does not hold")
         })?;
 
-        // A call from the host into the guest is a task: it goes on
-        // the stack of current scopes. Borrows the host lowers in are
-        // owed to it and must be dropped by the guest before the call
-        // ends; borrows the guest lifts out in results lend to it
-        // until the call ends.
+        // A call from the host into the guest is a task. The record
+        // is created now, so that it exists whether or not a turn
+        // ever runs the item that starts it; the task goes on the
+        // stack of current scopes only when its thread runs. Borrows
+        // the host lowers in are owed to it and must be dropped by
+        // the guest before the call ends; borrows the guest lifts out
+        // in results lend to it until the call ends.
         let task =
-            store.enter_export_task(self.signature.clone(), self.options.clone(), instance)?;
-        let outcome = self.call_in_task(task, instance, store, args, &options);
+            store.create_export_task(self.signature.clone(), self.options.clone(), instance)?;
+
+        // The item is `'static`: it outlives this future, because
+        // dropping the future cancels nothing. It therefore carries
+        // its own copy of everything the call needs — the resolved
+        // options among them — and leaves what the call produced in
+        // a slot both sides hold.
+        let outcome: CallOutcome = Arc::new(Mutex::new(None));
+        let queued = outcome.clone();
+        let replica = self.replica();
+        let arguments = args.to_vec();
+        let item = Item::new(ItemKind::TaskStart, move |store: &mut Store<T>| {
+            let result = replica.run_task(task, instance, store, &arguments, &options);
+            if let Ok(mut slot) = queued.lock() {
+                *slot = Some(result);
+            }
+        });
+
+        // A synchronous export's task ignores the entry gate, as the
+        // reference states: the gate applies to a task whose function
+        // type is `async`, and every export the polyfill lifts today
+        // is synchronous. The exclusive flag is the reference's
+        // `not opts.async or opts.callback`, which is true here; the
+        // gate reads it only for a task that does wait at it.
+        store.start_export_thread(task, instance, false, true, item)?;
+
+        Driver::new(store, Some(task), move |_store, _waker| {
+            outcome.lock().ok().and_then(|mut slot| slot.take())
+        })
+        .await
+    }
+
+    /// A `'static` copy of this handle, for the item that runs the
+    /// call. Every field is a name, a handle, or a description, so
+    /// the copy drives the same export as the original.
+    fn replica(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            inner: self.inner.clone(),
+            signature: self.signature.clone(),
+            options: self.options.clone(),
+            abi_state: self.abi_state.clone(),
+            store_id: self.store_id,
+        }
+    }
+
+    /// Run the export's task to its resolution: push it as the
+    /// current scope, drive the canonical-ABI round-trip, resolve the
+    /// task with what the export returned, and pop the scope.
+    fn run_task<T: 'static>(
+        &self,
+        task: TaskId,
+        instance: InstanceId,
+        store: &mut Store<T>,
+        args: &[Val],
+        options: &BoundaryOptions,
+    ) -> Result<Box<[Val]>> {
+        store.enter_export_task(task)?;
+        let outcome = self.call_in_task(task, instance, store, args, options);
         match outcome {
             Ok(result) => {
                 store.resolve_export_task(task, result.first().cloned())?;

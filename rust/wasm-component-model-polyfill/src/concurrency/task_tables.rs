@@ -93,10 +93,17 @@ impl TaskTables {
         Some(old)
     }
 
-    /// Create a task for a call into an export of `instance` and
-    /// push it as the current scope. The task's implicit thread is
-    /// created with it.
-    pub fn push_task(
+    /// Create a task for a call into an export of `instance`,
+    /// without making it the current scope. The task's implicit
+    /// thread is created with it.
+    ///
+    /// A driver creates the task of the call it is about to make
+    /// before it queues the task's start, so that the record exists
+    /// whether or not a turn ever runs the start. The scope is
+    /// pushed by [`push_task_scope`](Self::push_task_scope) when the
+    /// thread actually runs, because the scope stack nests with the
+    /// one real stack and a queued task is not on it.
+    pub fn create_task(
         &mut self,
         function: Option<FunctionType>,
         options: Option<CanonOptions>,
@@ -106,6 +113,28 @@ impl TaskTables {
         let thread = ThreadId::from_index(self.threads.insert(Thread::new(task)));
         self.tasks
             .insert(Task::new(function, options, instance, thread));
+        task
+    }
+
+    /// Make `task` the current scope.
+    pub fn push_task_scope(&mut self, task: TaskId) {
+        self.scopes.push(Scope::Task(task));
+    }
+
+    /// Create a task for a call into an export of `instance` and
+    /// push it as the current scope. The task's implicit thread is
+    /// created with it.
+    ///
+    /// This is the entry for a call that is already running on the
+    /// one real stack: an adapter's enter intrinsic, which pushes
+    /// the callee's task from inside the caller's turn.
+    pub fn push_task(
+        &mut self,
+        function: Option<FunctionType>,
+        options: Option<CanonOptions>,
+        instance: InstanceId,
+    ) -> TaskId {
+        let task = self.create_task(function, options, instance);
         self.scopes.push(Scope::Task(task));
         task
     }

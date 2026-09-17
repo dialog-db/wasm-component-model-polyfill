@@ -28,7 +28,8 @@
 use std::collections::HashMap;
 
 use crate::concurrency::{
-    Event, Scope, SubtaskId, SubtaskState, TaskId, TaskTables, ThreadId, WaitableId, WaitableSetId,
+    Event, SchedulerState, Scope, SubtaskId, SubtaskState, TaskId, TaskTables, ThreadId,
+    WaitableId, WaitableSetId,
 };
 use crate::error::Error;
 
@@ -52,6 +53,12 @@ pub struct HandleTables {
     /// The store's task, subtask, thread, and instance records, with
     /// the stack of current scopes. Workspace-internal.
     pub tasks: TaskTables,
+    /// The half of the store's scheduler a trampoline can reach: the
+    /// waker of the turn that is running, and whether a turn is
+    /// running at all. It lives here because a trampoline reaches
+    /// the collection from inside a runtime-layer closure, where the
+    /// store itself is unreachable. Workspace-internal.
+    pub scheduler: SchedulerState,
 }
 
 impl HandleTables {
@@ -61,6 +68,7 @@ impl HandleTables {
             tables: HashMap::new(),
             host_tables: HashMap::new(),
             tasks: TaskTables::new(),
+            scheduler: SchedulerState::new(),
         }
     }
 

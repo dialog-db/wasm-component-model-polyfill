@@ -36,6 +36,13 @@ wasmtime_runtime_layer = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js_wasm_runtime_layer = { workspace = true }
+# The wake after a yield crosses a macrotask boundary in the browser:
+# a self-wake from a microtask lands ahead of every network response
+# and timer and starves the page. Reaching `setTimeout` through the
+# global is all the polyfill needs of the JavaScript bindings, and it
+# works in a worker as well as on a page.
+js-sys = { workspace = true }
+wasm-bindgen = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }

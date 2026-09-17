@@ -1439,6 +1439,7 @@ name = "wasm-component-model-polyfill"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "js-sys",
  "js_wasm_runtime_layer",
  "semver",
  "thiserror 2.0.18",

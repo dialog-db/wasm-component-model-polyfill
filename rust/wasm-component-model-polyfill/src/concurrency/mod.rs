@@ -1,4 +1,14 @@
-//! The store's task, subtask, thread, waitable, and instance records.
+//! The store's cooperative scheduler and its task, subtask, thread,
+//! waitable, and instance records.
+//!
+//! [`Scheduler`] is the loop the store owns. It holds the ready
+//! queues and the entry gate; the turn that runs an item lives on
+//! the store, because an item runs against the store. [`Driver`] is
+//! a host future that polls it: one poll is a turn, guest code runs
+//! only inside a turn, and every entry point that reaches a guest is
+//! a driver. [`SchedulerState`] is the half of the scheduler a
+//! trampoline can reach from inside a runtime-layer closure: the
+//! waker of the running turn and the store's [`HostTask`]s.
 //!
 //! A task is the record of one call into an export; a subtask is the
 //! record of one call out through an import; a thread is one guest
@@ -30,12 +40,22 @@
 //! A synchronous call is a task with one thread, so the synchronous
 //! baseline is the case of one task per instance at a time.
 
+mod driver;
 mod event;
 mod event_code;
+mod host_future;
+mod host_task;
+mod host_task_result;
 mod instance_id;
 mod instance_record;
+mod item;
+mod item_action;
+mod item_kind;
+mod outcome;
 mod readiness;
 mod record_table;
+mod scheduler;
+mod scheduler_state;
 mod scope;
 mod subtask;
 mod subtask_id;
@@ -51,12 +71,20 @@ mod waitable_id;
 mod waitable_set;
 mod waitable_set_id;
 mod waitable_state;
+mod yield_wake;
 
 // The records themselves are reached through the accessors on
 // `TaskTables`, so only the names other modules spell are
 // re-exported here.
+pub use driver::Driver;
 pub use event::Event;
+pub use host_task::HostTask;
 pub use instance_id::InstanceId;
+pub use item::Item;
+pub use item_kind::ItemKind;
+pub use outcome::Outcome;
+pub use scheduler::Scheduler;
+pub use scheduler_state::SchedulerState;
 pub use scope::Scope;
 pub use subtask_id::SubtaskId;
 pub use subtask_state::SubtaskState;

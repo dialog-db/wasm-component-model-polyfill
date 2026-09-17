@@ -4,8 +4,9 @@ use core::marker::PhantomData;
 use std::collections::HashMap;
 
 use crate::component::Component;
+use crate::concurrency::Driver;
 use crate::engine::Engine;
-use crate::error::Result;
+use crate::error::{Error, Result, SchedulerCause};
 use crate::identifier::InterfaceIdentifier;
 use crate::instance::Instance;
 use crate::store::Store;
@@ -140,16 +141,40 @@ impl<T: 'static> Linker<T> {
     /// [`Error::Link`]: crate::Error::Link
     /// [`Error::Instantiation`]: crate::Error::Instantiation
     ///
-    /// The future completes without suspending on both targets today;
-    /// it is awaited so that a guest whose instantiation must yield
-    /// to the host can do so without a change of signature.
+    /// Instantiation is a driver of the store's cooperative
+    /// scheduler: the initializers of the plan and the core `start`
+    /// functions they run are guest work, and guest work runs only
+    /// inside a turn. The initializers are not queued items, because
+    /// they run against plan state the caller lends for the duration
+    /// of the call and an item outlives the driver that queued it;
+    /// they run inside a turn the driver opens instead. Work the
+    /// initializers leave behind stays in the store.
+    ///
+    /// Entering instantiation while another driver of the same store
+    /// is inside a turn fails with the recursive-driver cause, and a
+    /// turn that goes idle with the plan unfinished fails with the
+    /// deadlock cause.
     pub async fn instantiate(
         &self,
         store: &mut Store<T>,
         component: &Component,
     ) -> Result<Instance> {
         let resolution = resolve_imports(component, self)?;
-        self.instantiate_resolved(store, component, &resolution)
+        if store.turn_in_flight()? {
+            return Err(Error::Scheduler(SchedulerCause::RecursiveDriver));
+        }
+        let mut plan = Some(());
+        Driver::new(store, None, move |store: &mut Store<T>, waker| {
+            plan.take()?;
+            Some(
+                store
+                    .run_in_turn(waker, |store| {
+                        self.instantiate_resolved(store, component, &resolution)
+                    })
+                    .and_then(|outcome| outcome),
+            )
+        })
+        .await
     }
 
     /// Drive the runtime substrate against an already-resolved

@@ -18,6 +18,7 @@ repository = "https://github.com/cdata/wasm-component-model-polyfill"
 
 [workspace.dependencies]
 anyhow = "1"
+js-sys = "0.3"
 proc-macro2 = "1"
 quote = "1"
 semver = "1"
