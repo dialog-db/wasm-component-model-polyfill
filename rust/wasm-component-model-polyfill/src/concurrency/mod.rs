@@ -11,7 +11,8 @@
 //! store still reaches the store's host data, and only during a
 //! poll. [`SchedulerState`] is the half of the scheduler a
 //! trampoline can reach from inside a runtime-layer closure: the
-//! waker of the running turn and the flag that says one is running.
+//! waker of the running turn and the count of the turns that are
+//! running.
 //!
 //! [`HostTask`] is one call of a host `async` function: a body the
 //! store polls once per turn, and the lowering that carries what it
@@ -20,6 +21,18 @@
 //! host data reaches it the way a `run_concurrent` closure does.
 //! [`CallStatus`] is the word the call returns to the guest, and
 //! [`LowerKind`] is which lowering the guest called through.
+//!
+//! [`SuspendSeam`] is the scheduler's one suspend capability: a
+//! blocking built-in asks it to suspend the current guest thread
+//! until a readiness condition holds. Its provider slot takes the
+//! [`SuspendProvider`] a target fills it with, and is empty on both
+//! targets today, so a suspension runs a nested turn from inside the
+//! guest call instead. That nested turn is not the nesting
+//! [`SchedulerState`] counts: a host task's body that reaches the
+//! store through its accessor enters a turn of its own and raises
+//! that count, while the seam's fallback deliberately does not,
+//! because a nested turn is not a driver and polls with the waker
+//! the outer turn recorded.
 //!
 //! A task is the record of one call into an export; a subtask is the
 //! record of one call out through an import; a thread is one guest
@@ -75,6 +88,8 @@ mod scope;
 mod subtask;
 mod subtask_id;
 mod subtask_state;
+mod suspend_provider;
+mod suspend_seam;
 mod task;
 mod task_id;
 mod task_result;
@@ -106,6 +121,8 @@ pub use scheduler_state::SchedulerState;
 pub use scope::Scope;
 pub use subtask_id::SubtaskId;
 pub use subtask_state::SubtaskState;
+pub use suspend_provider::SuspendProvider;
+pub use suspend_seam::SuspendSeam;
 pub use task_id::TaskId;
 pub use task_tables::TaskTables;
 pub use thread_id::ThreadId;

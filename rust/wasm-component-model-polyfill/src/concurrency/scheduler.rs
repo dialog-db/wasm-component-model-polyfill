@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 
+use super::SuspendSeam;
 use super::host_task::HostTask;
 use super::instance_id::InstanceId;
 use super::item::Item;
@@ -45,6 +46,10 @@ struct GateEntry<T: 'static> {
 /// browser, and the store's handle tables are, so it cannot live
 /// beside them.
 ///
+/// The suspend capability is named here too. It is the seam a
+/// blocking built-in asks to suspend the current guest thread, and
+/// the slot a target fills to serve that block by switching stacks.
+///
 /// The turn itself lives on the store, because running an item needs
 /// the store the item runs against. This type holds what the turn
 /// chooses between.
@@ -55,6 +60,7 @@ pub struct Scheduler<T: 'static> {
     resume_after_yield: Option<Item<T>>,
     entry_gate: VecDeque<GateEntry<T>>,
     host_tasks: Vec<HostTask<T>>,
+    suspend_seam: SuspendSeam<T>,
 }
 
 impl<T: 'static> Scheduler<T> {
@@ -67,7 +73,21 @@ impl<T: 'static> Scheduler<T> {
             resume_after_yield: None,
             entry_gate: VecDeque::new(),
             host_tasks: Vec::new(),
+            suspend_seam: SuspendSeam::new(),
         }
+    }
+
+    /// The store's one suspend capability: the seam a blocking
+    /// built-in asks to suspend the current guest thread until a
+    /// readiness condition holds.
+    pub fn suspend_seam(&self) -> &SuspendSeam<T> {
+        &self.suspend_seam
+    }
+
+    /// The store's one suspend capability, mutably, which is how a
+    /// target fills its provider slot.
+    pub fn suspend_seam_mut(&mut self) -> &mut SuspendSeam<T> {
+        &mut self.suspend_seam
     }
 
     /// Give `task` to the store. A host task that joined since the
@@ -208,8 +228,17 @@ impl<T: 'static> Scheduler<T> {
     /// Move the front of the low-priority queue into the
     /// resume-after-yield slot, so the turn can end and the driver
     /// can return control to the host executor before the item runs.
-    /// `false` when the queue is empty.
+    /// `false` when nothing is deferred.
+    ///
+    /// The slot holds one item, and an occupied slot already holds a
+    /// resumption no driver has returned control for yet. The queue
+    /// then keeps its front rather than losing it to an overwrite,
+    /// and the answer is still `true`: deferred work is waiting and
+    /// the turn should end.
     pub fn defer_low_priority(&mut self) -> bool {
+        if self.resume_after_yield.is_some() {
+            return true;
+        }
         match self.low_priority.pop_front() {
             Some(item) => {
                 self.resume_after_yield = Some(item);
@@ -219,12 +248,23 @@ impl<T: 'static> Scheduler<T> {
         }
     }
 
-    /// Whether anything is ready to run.
+    /// Whether anything is ready to run, deferred work included.
     pub fn has_ready_item(&self) -> bool {
-        self.switch_slot.is_some()
-            || !self.high_priority.is_empty()
-            || !self.low_priority.is_empty()
-            || self.resume_after_yield.is_some()
+        self.has_immediate_item() || self.has_deferred_item()
+    }
+
+    /// Whether an item can run in this turn: one in the switch slot
+    /// or one in the high-priority queue.
+    pub fn has_immediate_item(&self) -> bool {
+        self.switch_slot.is_some() || !self.high_priority.is_empty()
+    }
+
+    /// Whether a resumption after a yield is waiting: one still in
+    /// the low-priority queue, or one already in the
+    /// resume-after-yield slot. Neither runs until a driver has
+    /// returned control to the host executor.
+    pub fn has_deferred_item(&self) -> bool {
+        !self.low_priority.is_empty() || self.resume_after_yield.is_some()
     }
 
     /// How many items the store holds, ready or held at the gate.

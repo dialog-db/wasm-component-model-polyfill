@@ -254,7 +254,7 @@ impl<T: 'static> Store<T> {
     /// Workspace-internal; not re-exported by `lib.rs`.
     pub fn turn(&mut self, waker: &Waker) -> Result<Outcome> {
         let displaced = Self::lock_handle(&self.tables)?.scheduler.enter_turn(waker);
-        let outcome = self.run_turn(waker);
+        let outcome = self.run_turn(waker, false);
         if let Ok(mut guard) = self.tables.lock() {
             guard.scheduler.leave_turn(displaced);
         }
@@ -378,23 +378,95 @@ impl<T: 'static> Store<T> {
         Ok(value)
     }
 
+    /// Run one nested turn of this store's scheduler: the fallback
+    /// of the suspend seam, run from inside the guest call that
+    /// blocked.
+    ///
+    /// A nested turn is not a driver. It neither consults the count
+    /// of running turns nor raises it, so the recursive-driver rule
+    /// does not apply to it, and it takes the waker of the outer
+    /// turn rather than recording one of its own, so a host task it
+    /// leaves pending carries the waker the executor already holds.
+    /// That count is the nesting a host task body raises when it
+    /// reaches the store through its accessor, which is a different
+    /// thing: the suspend seam's own documentation sets the two side
+    /// by side.
+    ///
+    /// It also leaves every resumption after a yield alone: it
+    /// neither takes the resume-after-yield slot nor fills it. Such
+    /// a resumption runs only after a driver has returned control to
+    /// the host executor, and a nested turn runs from inside a guest
+    /// call, so it has no control to return. It reports deferred work
+    /// it cannot run as [`Outcome::Yield`], which is the outer turn's
+    /// cue to end and the seam's cue to stop.
+    /// Workspace-internal.
+    pub fn nested_turn(&mut self, waker: &Waker) -> Result<Outcome> {
+        self.run_turn(waker, true)
+    }
+
+    /// The waker of the turn that is running, or a waker that does
+    /// nothing when no turn is running — which is the case for a
+    /// thread resumed outside any poll of a driver.
+    ///
+    /// Two callers want it. A trampoline that starts a host task
+    /// polls its body once before it returns to the guest, and a
+    /// body polled outside a turn counts as woken all the same,
+    /// because the next turn polls every host task the store holds.
+    /// The suspend seam's nested turn wants it for the same reason:
+    /// it polls with the waker the outer turn recorded rather than
+    /// recording one of its own, so a host task it leaves pending
+    /// carries the waker the executor already holds.
+    /// Workspace-internal.
+    pub fn active_waker(&self) -> Waker {
+        self.tables
+            .lock()
+            .ok()
+            .and_then(|guard| guard.scheduler.active_waker())
+            .unwrap_or_else(|| Waker::noop().clone())
+    }
+
     /// Why a driver that went idle failed: the cannot-block cause
     /// when the task it waits on is one that must not block, and the
     /// deadlock cause otherwise. Workspace-internal.
     pub fn idle_cause(&self, task: Option<TaskId>) -> SchedulerCause {
-        let Ok(guard) = self.tables.lock() else {
-            return SchedulerCause::Deadlock;
-        };
-        let must_not_block = task
-            .and_then(|task| guard.tasks.task(task))
-            .and_then(|record| guard.tasks.instance(record.instance))
-            .map(|record| record.may_not_suspend)
-            .unwrap_or(false);
-        if must_not_block {
+        if self.must_not_block(task) {
             SchedulerCause::CannotBlock
         } else {
             SchedulerCause::Deadlock
         }
+    }
+
+    /// Why a nested turn that went idle with its condition unmet
+    /// failed: the cannot-block cause when the current task is one
+    /// that must not block, which is the rule of the reference, and
+    /// the stack-switch cause otherwise, because the reference
+    /// permits that block and only the target cannot serve it.
+    /// Workspace-internal.
+    pub fn suspend_cause(&self) -> SchedulerCause {
+        let current = self
+            .tables
+            .lock()
+            .ok()
+            .and_then(|guard| guard.tasks.current_task());
+        if self.must_not_block(current) {
+            SchedulerCause::CannotBlock
+        } else {
+            SchedulerCause::StackSwitchNeeded
+        }
+    }
+
+    /// Whether `task` runs in an instance that forbids its threads
+    /// to suspend. A store whose tables are unreachable answers
+    /// `false`, so a poisoned lock never turns a deadlock into a
+    /// cannot-block.
+    fn must_not_block(&self, task: Option<TaskId>) -> bool {
+        let Ok(guard) = self.tables.lock() else {
+            return false;
+        };
+        task.and_then(|task| guard.tasks.task(task))
+            .and_then(|record| guard.tasks.instance(record.instance))
+            .map(|record| record.may_not_suspend)
+            .unwrap_or(false)
     }
 
     /// Start the host task of one call of a host `async` function,
@@ -436,7 +508,7 @@ impl<T: 'static> Store<T> {
         lower: LowerKind,
     ) -> Result<CallStatus> {
         let subtask = task.subtask();
-        let waker = self.poll_waker()?;
+        let waker = self.active_waker();
         let outcome = {
             // The body reaches the host data through this accessor
             // and through nothing else, for the length of a closure
@@ -494,19 +566,6 @@ impl<T: 'static> Store<T> {
         }
     }
 
-    /// The waker the first poll of a host task uses: the waker of the
-    /// turn that is running, or one that does nothing when no turn
-    /// is. A host task started outside a turn counts as woken all the
-    /// same, because the next turn polls every host task the store
-    /// holds.
-    fn poll_waker(&self) -> Result<Waker> {
-        Ok(self
-            .lock_tables()?
-            .scheduler
-            .active_waker()
-            .unwrap_or_else(|| Waker::noop().clone()))
-    }
-
     /// Give a host task to the store. The next turn polls it with
     /// the driver's waker, so no wake is lost. Workspace-internal.
     pub fn push_host_task(&mut self, task: HostTask<T>) {
@@ -514,9 +573,14 @@ impl<T: 'static> Store<T> {
     }
 
     /// The body of one turn, with the waker already recorded.
-    fn run_turn(&mut self, waker: &Waker) -> Result<Outcome> {
+    ///
+    /// `nested` marks the turn the suspend seam runs from inside a
+    /// guest call. Only a turn that is not nested touches the
+    /// resumptions after a yield, because only a driver's turn can
+    /// end and hand control back to the host executor first.
+    fn run_turn(&mut self, waker: &Waker, nested: bool) -> Result<Outcome> {
         self.open_entry_gate()?;
-        if let Some(item) = self.scheduler.take_resume_after_yield() {
+        if !nested && let Some(item) = self.scheduler.take_resume_after_yield() {
             item.run(self);
         }
         loop {
@@ -525,14 +589,22 @@ impl<T: 'static> Store<T> {
                 item.run(self);
                 continue;
             }
-            if self.scheduler.defer_low_priority() {
+            if !nested && self.scheduler.defer_low_priority() {
                 return Ok(Outcome::Yield);
             }
             break;
         }
         self.poll_host_tasks(waker)?;
-        if self.scheduler.has_ready_item() {
+        if self.scheduler.has_immediate_item() {
             return Ok(Outcome::Progress);
+        }
+        // Only deferred work is left. A nested turn reaches this and
+        // gives way: the resumption belongs to the outer turn, after
+        // the driver has returned control to the host executor. A
+        // driver's turn does not reach it, because the loop above
+        // deferred its front and returned already.
+        if self.scheduler.has_deferred_item() {
+            return Ok(Outcome::Yield);
         }
         if self.scheduler.host_task_count() == 0 {
             return Ok(Outcome::Idle);
@@ -1059,8 +1131,7 @@ mod tests {
         );
         assert_eq!(
             guard
-                .tasks
-                .take_pending_event(WaitableId::Subtask(subtask))
+                .take_event(WaitableId::Subtask(subtask))
                 .expect("the subtask's waitable state"),
             Some(Event::subtask(index, SubtaskState::Returned)),
             "the subtask's pending event says which entry returned, and how"
