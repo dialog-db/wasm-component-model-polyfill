@@ -14,9 +14,9 @@
 //!   allocation in a fresh table is index 1.
 //! - Indices are non-aliasing while live: every minted index points
 //!   to a distinct table entry.
-//! - Reuse of a freed index is deterministic within a single store:
-//!   a free list of freed indices is drained LIFO so reuse is fixed
-//!   by the order of drops.
+//! - Reuse of a freed index is deterministic within one instance
+//!   table: a free list of that table's freed indices is drained
+//!   LIFO so reuse is fixed by the order of drops.
 //!
 //! Borrows live in the table too: a `borrow<T>` lowered into the
 //! guest is an entry owed to the call it was lowered in, and an

@@ -15,9 +15,10 @@
 //!   another's. The polyfill keeps one handle table per component
 //!   instance, shared by every resource type and every other handle
 //!   kind the instance uses. An owned transfer removes the entry from
-//!   the source table and inserts it into the destination table, so
-//!   the index changes; a borrow transfer inserts a borrow entry into
-//!   the destination table for the duration of the call.
+//!   the source table and inserts it into the destination table,
+//!   which allocates its own index for it; a borrow transfer inserts
+//!   a borrow entry into the destination table for the duration of
+//!   the call.
 //! - A trap intrinsic that raises a Wasmtime trap code.
 //! - Enter and exit intrinsics around a synchronous call between two
 //!   components. The enter intrinsic pushes the callee's task on the
@@ -458,13 +459,22 @@ mod tests {
         let dst_table = TableId::fresh();
         let src = runtime(src_table, type_id);
         let dst = runtime(dst_table, type_id);
-        let index = tables
-            .lock()
-            .unwrap()
-            .insert_own(src_table, type_id, true, 42);
+        let (index, seeded) = {
+            let mut guard = tables.lock().unwrap();
+            // Seed the destination first, so the index it allocates
+            // for the transferred entry cannot be the source's index.
+            let seeded = guard.insert_own(dst_table, type_id, true, 99);
+            let index = guard.insert_own(src_table, type_id, true, 42);
+            (index, seeded)
+        };
+        assert_eq!(index, seeded, "each fresh table starts at the same index");
 
         let new_index = transfer_own(&tables, src, dst, index).unwrap();
 
+        assert_ne!(
+            new_index, index,
+            "the destination allocates its own index for the entry"
+        );
         let guard = tables.lock().unwrap();
         assert!(
             guard.lookup(src_table, index, type_id, true).is_err(),
@@ -477,6 +487,14 @@ mod tests {
                 .rep(),
             Some(42),
             "the entry takes an index in the destination table"
+        );
+        assert_eq!(
+            guard
+                .lookup(dst_table, seeded, type_id, true)
+                .unwrap()
+                .rep(),
+            Some(99),
+            "the destination's own entry keeps its index"
         );
     }
 
@@ -510,9 +528,15 @@ mod tests {
                 task,
             }
         );
-        assert!(
-            guard.lookup(src_table, index, type_id, true).is_ok(),
-            "the source entry stays lent, not removed"
+        assert_eq!(
+            guard.lookup(src_table, index, type_id, true).unwrap(),
+            HandleKind::Own {
+                type_id,
+                guest_defined: true,
+                rep: 7,
+                lend_count: 1,
+            },
+            "the source entry stays, counting the one lend"
         );
     }
 
