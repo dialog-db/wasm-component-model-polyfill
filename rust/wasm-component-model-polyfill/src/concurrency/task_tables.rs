@@ -109,7 +109,8 @@ impl TaskTables {
         options: Option<CanonOptions>,
         instance: InstanceId,
     ) -> TaskId {
-        let task = TaskId::from_index(self.tasks.next_index());
+        let index = self.tasks.next_index();
+        let task = TaskId::new(index, self.tasks.generation(index));
         let thread = ThreadId::from_index(self.threads.insert(Thread::new(task)));
         self.tasks
             .insert(Task::new(function, options, instance, thread));
@@ -212,14 +213,24 @@ impl TaskTables {
         &self.scopes
     }
 
+    /// The index `task` names, when a live record of that generation
+    /// still sits there. `None` for the identity of a task that has
+    /// ended, including one whose index another task has since taken:
+    /// that is what keeps a borrow entry left behind by a failed call
+    /// from reaching the later task's record.
+    fn task_index(&self, task: TaskId) -> Option<u32> {
+        (self.tasks.generation(task.index()) == task.generation()).then_some(task.index())
+    }
+
     /// One task record.
     pub fn task(&self, task: TaskId) -> Option<&Task> {
-        self.tasks.get(task.index())
+        self.tasks.get(self.task_index(task)?)
     }
 
     /// One task record, mutably.
     pub fn task_mut(&mut self, task: TaskId) -> Option<&mut Task> {
-        self.tasks.get_mut(task.index())
+        let index = self.task_index(task)?;
+        self.tasks.get_mut(index)
     }
 
     /// One subtask record.
@@ -295,7 +306,8 @@ impl TaskTables {
 
     /// Remove a task record and every thread it contains.
     pub fn remove_task(&mut self, task: TaskId) -> Option<Task> {
-        let record = self.tasks.remove(task.index())?;
+        let index = self.task_index(task)?;
+        let record = self.tasks.remove(index)?;
         for thread in &record.threads {
             self.threads.remove(thread.index());
         }

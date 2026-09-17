@@ -420,7 +420,9 @@ pub fn lift_handle<T: 'static>(
             .lookup(table.table, index, table.type_id, table.guest_defined)
             .map_err(|e| invalid(e.to_string()))?;
         if matches!(entry, HandleKind::Own { .. }) {
-            guard.lend_to(scope, table.table, index);
+            guard
+                .lend_to(scope, table.table, index)
+                .map_err(|e| invalid(e.to_string()))?;
         }
         Ok(Val::Borrow(ResourceHandle {
             type_id: table.type_id,

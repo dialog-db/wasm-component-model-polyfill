@@ -359,7 +359,9 @@ fn transfer_borrow(
             .lookup(src.table, index, src.type_id, src.guest_defined)
             .map_err(|e| anyhow!("wasm trap: {e}"))?;
         if matches!(entry, HandleKind::Own { .. }) {
-            guard.lend(src.table, index);
+            guard
+                .lend(src.table, index)
+                .map_err(|e| anyhow!("wasm trap: {e}"))?;
         }
         entry
             .rep()

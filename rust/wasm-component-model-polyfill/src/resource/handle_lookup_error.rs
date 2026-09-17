@@ -3,7 +3,8 @@
 use std::fmt;
 
 /// The reason a handle index did not name the entry a caller
-/// expected. The messages for a resource lookup match Wasmtime's
+/// expected, or the entry it named could not be used the way the
+/// caller asked. The messages for a resource lookup match Wasmtime's
 /// traps word for word, so a guest that misuses a resource handle
 /// fails the same way on both. `WrongKind` has no Wasmtime
 /// counterpart: it fires only when a resource lookup lands on a
@@ -29,6 +30,11 @@ pub enum HandleLookupError {
     /// The caller wanted an owning entry, but the index names a
     /// borrow.
     NotOwned { index: u32 },
+    /// A borrow was lifted out of an owning entry with no call to
+    /// lend the entry to: either no scope is in flight, or the scope
+    /// the caller named has already ended. Nothing gives the lend
+    /// back in either case, so the lend is refused instead of made.
+    NoCallInFlight,
 }
 
 impl HandleLookupError {
@@ -61,6 +67,9 @@ impl fmt::Display for HandleLookupError {
             Self::Lent => write!(f, "cannot remove owned resource while borrowed"),
             Self::NotOwned { index } => {
                 write!(f, "handle index {index} is a borrow, not an owned resource")
+            }
+            Self::NoCallInFlight => {
+                write!(f, "a borrow can only be lifted out during a call")
             }
         }
     }

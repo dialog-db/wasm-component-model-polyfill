@@ -349,9 +349,10 @@ impl HandleTables {
 
     /// Record that a borrow of the owning entry `(table, index)` was
     /// lifted out during the current scope, so the entry cannot be
-    /// removed until the scope ends. Returns `false` when the entry
-    /// is not an owning entry or no scope is in flight.
-    pub fn lend(&mut self, table: TableId, index: u32) -> bool {
+    /// removed until the scope ends. Fails when the index names no
+    /// owning entry or when no scope is in flight to give the lend
+    /// back.
+    pub fn lend(&mut self, table: TableId, index: u32) -> Result<(), HandleLookupError> {
         self.lend_to(None, table, index)
     }
 
@@ -360,17 +361,34 @@ impl HandleTables {
     /// count against when it is built, and hands it here; `None`
     /// falls back to the current scope, for a caller that has no
     /// crossing of its own.
-    pub fn lend_to(&mut self, scope: Option<Scope>, table: TableId, index: u32) -> bool {
+    ///
+    /// A lend is two writes — the count on the entry and the scope's
+    /// list of lenders — and only the pair is safe: a count raised
+    /// without a lender recorded is never given back, and the entry
+    /// can never be removed again. Everything that can refuse the
+    /// lend is therefore checked before either write happens.
+    pub fn lend_to(
+        &mut self,
+        scope: Option<Scope>,
+        table: TableId,
+        index: u32,
+    ) -> Result<(), HandleLookupError> {
         let Some(scope) = scope.or_else(|| self.tasks.current_scope()) else {
-            return false;
+            return Err(HandleLookupError::NoCallInFlight);
         };
-        match self.for_table_mut(table).entry_mut(index) {
-            Some(HandleKind::Own { lend_count, .. }) => {
-                *lend_count += 1;
-                self.tasks.add_lender(scope, (table, index))
-            }
-            _ => false,
+        match self.for_table(table).and_then(|t| t.entry(index)) {
+            Some(HandleKind::Own { .. }) => {}
+            Some(_) => return Err(HandleLookupError::NotOwned { index }),
+            None => return Err(HandleLookupError::Unknown { index }),
         }
+        if !self.tasks.add_lender(scope, (table, index)) {
+            return Err(HandleLookupError::NoCallInFlight);
+        }
+        match self.for_table_mut(table).entry_mut(index) {
+            Some(HandleKind::Own { lend_count, .. }) => *lend_count += 1,
+            _ => unreachable!("the entry was an owning entry a moment ago"),
+        }
+        Ok(())
     }
 
     /// Insert an owning entry for `rep` of resource type `type_id`
@@ -658,7 +676,7 @@ mod tests {
         let index = tables.insert_own(table, ty, false, 3);
         let instance = tables.tasks.insert_instance();
         let task = tables.tasks.push_task(None, None, instance);
-        assert!(tables.lend(table, index));
+        assert_eq!(tables.lend(table, index), Ok(()));
         assert_eq!(
             tables.remove_own(table, index, ty, false),
             Err(HandleLookupError::Lent)
@@ -743,7 +761,7 @@ mod tests {
         let instance = tables.tasks.insert_instance();
         let task = tables.tasks.push_task(None, None, instance);
         let subtask = tables.tasks.push_subtask();
-        assert!(tables.lend(table, index), "the borrow lifts out");
+        assert_eq!(tables.lend(table, index), Ok(()), "the borrow lifts out");
         assert_eq!(
             tables.remove_own(table, index, ty, false),
             Err(HandleLookupError::Lent),
@@ -787,6 +805,115 @@ mod tests {
             tables.tasks.current_scope(),
             Some(Scope::Task(outer)),
             "the caller's task is still current"
+        );
+    }
+
+    #[test]
+    fn it_keeps_a_borrow_left_by_a_failed_call_from_reaching_a_later_task() {
+        // A call that fails with a borrow outstanding leaves the
+        // borrow entry in the guest's table, naming a task whose
+        // record is gone. The next call takes the freed record index,
+        // so the stale entry must not name it.
+        let mut tables = HandleTables::new();
+        let table = TableId::fresh();
+        let ty = ResourceTypeId::fresh();
+        let instance = tables.tasks.insert_instance();
+
+        let failed = tables.tasks.push_task(None, None, instance);
+        let stale_entry = tables
+            .insert_borrow(table, ty, false, 21)
+            .expect("a task is in flight");
+        tables.abandon_task(failed);
+
+        let later = tables.tasks.push_task(None, None, instance);
+        assert_eq!(
+            later.index(),
+            failed.index(),
+            "the record table hands the freed index out again"
+        );
+        assert_ne!(later, failed, "the generation tells the two calls apart");
+        tables
+            .insert_borrow(table, ty, false, 22)
+            .expect("a task is in flight");
+
+        let Some(HandleKind::Borrow { task: stale, .. }) = tables.entry(table, stale_entry) else {
+            panic!("the failed call's borrow entry is still in the table");
+        };
+        assert_eq!(stale, failed, "the entry still names the call that failed");
+        assert!(
+            !tables.return_borrow(stale),
+            "the failed call's identity names no record"
+        );
+        assert_eq!(
+            tables.exit_task(later),
+            Err(1),
+            "the later call still owes the one borrow it was lowered"
+        );
+    }
+
+    #[test]
+    fn it_refuses_a_lend_with_no_call_to_give_it_back() {
+        let mut tables = HandleTables::new();
+        let table = TableId::fresh();
+        let ty = ResourceTypeId::fresh();
+        let index = tables.insert_own(table, ty, false, 5);
+
+        assert_eq!(
+            tables.lend(table, index),
+            Err(HandleLookupError::NoCallInFlight),
+            "nothing is in flight to record the lend against"
+        );
+        assert_eq!(
+            tables.remove_own(table, index, ty, false),
+            Ok(5),
+            "the refused lend left the count untouched"
+        );
+    }
+
+    #[test]
+    fn it_refuses_a_lend_to_a_scope_that_has_already_ended() {
+        // A crossing carries the scope its lends count against. A
+        // failure can end that scope before the crossing lifts its
+        // last argument, and a lend recorded against a record that is
+        // gone would never be given back.
+        let mut tables = HandleTables::new();
+        let table = TableId::fresh();
+        let ty = ResourceTypeId::fresh();
+        let index = tables.insert_own(table, ty, false, 6);
+        let instance = tables.tasks.insert_instance();
+        let task = tables.tasks.push_task(None, None, instance);
+        assert_eq!(tables.exit_task(task), Ok(()));
+
+        assert_eq!(
+            tables.lend_to(Some(Scope::Task(task)), table, index),
+            Err(HandleLookupError::NoCallInFlight),
+            "the named scope's record is gone"
+        );
+        assert_eq!(
+            tables.remove_own(table, index, ty, false),
+            Ok(6),
+            "the refused lend left the count untouched"
+        );
+    }
+
+    #[test]
+    fn it_refuses_a_lend_of_an_entry_that_owns_nothing() {
+        let mut tables = HandleTables::new();
+        let table = TableId::fresh();
+        let ty = ResourceTypeId::fresh();
+        let instance = tables.tasks.insert_instance();
+        tables.tasks.push_task(None, None, instance);
+        let borrow = tables
+            .insert_borrow(table, ty, false, 7)
+            .expect("a task is in flight");
+
+        assert_eq!(
+            tables.lend(table, borrow),
+            Err(HandleLookupError::NotOwned { index: borrow })
+        );
+        assert_eq!(
+            tables.lend(table, borrow + 1),
+            Err(HandleLookupError::Unknown { index: borrow + 1 })
         );
     }
 }

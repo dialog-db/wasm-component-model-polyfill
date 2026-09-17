@@ -415,7 +415,7 @@ async fn it_decrements_the_lenders_of_a_subtask_when_its_resolution_is_delivered
     // and then leaves the stack: an asynchronous call outlives the
     // scope that started it.
     let subtask = tables.tasks.push_subtask();
-    assert!(tables.lend(table, owned), "the borrow lifts out");
+    assert_eq!(tables.lend(table, owned), Ok(()), "the borrow lifts out");
     let _ = tables.tasks.pop_scope();
     assert!(
         tables.remove_own(table, owned, ty, false).is_err(),
