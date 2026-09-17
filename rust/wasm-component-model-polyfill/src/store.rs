@@ -18,7 +18,9 @@ use wasm_runtime_layer::Val as RuntimeVal;
 
 use crate::backend::Backend;
 use crate::component::FunctionType;
-use crate::concurrency::{HostTask, InstanceId, Item, ItemKind, Outcome, Scheduler, TaskId};
+use crate::concurrency::{
+    Accessor, HostTask, InstanceId, Item, ItemKind, Outcome, Scheduler, TaskId, YieldWake,
+};
 use crate::engine::Engine;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
@@ -265,12 +267,102 @@ impl<T: 'static> Store<T> {
         Ok(self.lock_tables()?.scheduler.in_turn())
     }
 
+    /// Run `body` with an accessor to this store, driving the
+    /// store's scheduler until the future `body` returns completes,
+    /// and return what that future resolved to.
+    ///
+    /// This is a driver: one poll of the returned future is a turn,
+    /// and guest code runs only inside a turn. A host uses it to let
+    /// a task finish after the call that started it returned, and to
+    /// run host tasks that no call owns.
+    ///
+    /// `body` does not borrow the store. It reaches the store's host
+    /// data only inside a closure the [`Accessor`] runs, through
+    /// [`Accessor::with`], and a value taken from the host data must
+    /// be cloned out of that closure.
+    ///
+    /// Entering this entry while another driver of the same store is
+    /// inside a turn fails with the recursive-driver cause. Dropping
+    /// the returned future cancels nothing: whatever the driver
+    /// queued stays in the store and runs in the next turn of any
+    /// driver.
+    ///
+    /// A turn that finds nothing ready and no host task pending
+    /// leaves this entry pending rather than failing with the
+    /// deadlock cause, which is the one rule where it differs from
+    /// the other drivers: `body`'s future can wait on something
+    /// outside the store, and the waker it was polled with is the
+    /// one that brings the entry back.
+    pub async fn run_concurrent<'a, R, F>(&'a mut self, body: F) -> Result<R>
+    where
+        F: AsyncFnOnce(&Accessor<'a, T>) -> R,
+    {
+        // The refusal happens before the accessor exists, so a
+        // refused entry leaves the store untouched.
+        if self.turn_in_flight()? {
+            return Err(Error::Scheduler(SchedulerCause::RecursiveDriver));
+        }
+
+        let accessor = Accessor::new(self);
+        let mut future = core::pin::pin!(body(&accessor));
+        let mut yield_wake: Option<YieldWake> = None;
+
+        core::future::poll_fn(|context| {
+            let waker = context.waker();
+
+            // A turn that ended in a yield returns control to the
+            // host executor before the item that yielded runs.
+            if let Some(wake) = &yield_wake {
+                if !wake.landed() {
+                    return Poll::Pending;
+                }
+                yield_wake = None;
+            }
+            if let Err(error) = accessor.attend(waker) {
+                return Poll::Ready(Err(error));
+            }
+
+            loop {
+                if let Poll::Ready(value) = future.as_mut().poll(context) {
+                    return Poll::Ready(Ok(value));
+                }
+                let outcome = match accessor.lend(|store| store.turn(waker)) {
+                    Ok(Ok(outcome)) => outcome,
+                    Ok(Err(error)) | Err(error) => return Poll::Ready(Err(error)),
+                };
+                match outcome {
+                    Outcome::Progress => continue,
+                    Outcome::Yield => {
+                        yield_wake = Some(YieldWake::after_yield(waker));
+                        return Poll::Pending;
+                    }
+                    Outcome::Waiting => return Poll::Pending,
+                    // An idle store is not a deadlock here: what
+                    // `body` waits on can be outside the store. The
+                    // closure's future is polled once more first,
+                    // for the same reason the other drivers consult
+                    // their condition once more: the turn that has
+                    // just run is what it was waiting for.
+                    Outcome::Idle => {
+                        if let Poll::Ready(value) = future.as_mut().poll(context) {
+                            return Poll::Ready(Ok(value));
+                        }
+                        return Poll::Pending;
+                    }
+                }
+            }
+        })
+        .await
+    }
+
     /// Run `body` inside a turn of this store, so that the guest
     /// code it reaches runs where every other piece of guest code
     /// runs. Instantiation uses this for the initializers of the
     /// plan: they are not queued items, because they run against
     /// borrowed plan state that no item could hold, but they are
-    /// still guest work and belong inside a turn.
+    /// still guest work and belong inside a turn. An [`Accessor`]
+    /// uses it for the closure it runs, which is guest work for the
+    /// same reason and which a driver must not be entered from.
     /// Workspace-internal.
     pub fn run_in_turn<R>(
         &mut self,
@@ -506,9 +598,13 @@ impl<T: 'static> Store<T> {
 
 #[cfg(test)]
 mod tests {
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::task::Context;
+
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
-    use crate::concurrency::{HostTask, Item, ItemKind};
+    use crate::concurrency::{Driver, HostTask, Item, ItemKind};
     use crate::engine::Engine;
 
     use super::*;
@@ -562,6 +658,134 @@ mod tests {
             item_runs.load(AtomicOrdering::Relaxed),
             0,
             "the queued item is dropped unrun"
+        );
+    }
+
+    /// A future that resolves when the host resolves it: something
+    /// outside the store for a `run_concurrent` closure to wait on.
+    #[derive(Clone, Default)]
+    struct Outside(Arc<Mutex<OutsideState>>);
+
+    /// Whether [`Outside`] has resolved, and the waker of whoever
+    /// waits on it.
+    #[derive(Default)]
+    struct OutsideState {
+        resolved: bool,
+        waker: Option<Waker>,
+    }
+
+    impl Outside {
+        /// Resolve the future and wake whoever waits on it.
+        fn resolve(&self) {
+            let waker = {
+                let mut state = self.0.lock().expect("outside");
+                state.resolved = true;
+                state.waker.take()
+            };
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        }
+    }
+
+    impl Future for Outside {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
+            let mut state = self.0.lock().expect("outside");
+            if state.resolved {
+                return Poll::Ready(());
+            }
+            state.waker = Some(context.waker().clone());
+            Poll::Pending
+        }
+    }
+
+    /// A condition that is never met, so the driver runs until the
+    /// scheduler goes idle or gives way.
+    fn never(_store: &mut Store<()>, _waker: &Waker) -> Option<Result<()>> {
+        None
+    }
+
+    /// Poll `future` once, as an executor would.
+    fn poll_once<F: Future>(future: &mut Pin<Box<F>>, waker: &Waker) -> Poll<F::Output> {
+        let mut context = Context::from_waker(waker);
+        future.as_mut().poll(&mut context)
+    }
+
+    #[wcmp_macros::test]
+    async fn it_returns_pending_when_the_store_is_idle_and_the_closure_waits_outside_it() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+        let outside = Outside::default();
+        let awaited = outside.clone();
+
+        let mut entry = Box::pin(store.run_concurrent(async move |_accessor| {
+            awaited.await;
+            "resolved"
+        }));
+
+        assert!(
+            poll_once(&mut entry, Waker::noop()).is_pending(),
+            "nothing is ready and no host task is pending, but the closure \
+             waits on something outside the store, so the entry returns \
+             pending rather than the deadlock cause"
+        );
+
+        outside.resolve();
+
+        let Poll::Ready(value) = poll_once(&mut entry, Waker::noop()) else {
+            panic!("the entry is still pending after the outside future resolved");
+        };
+        assert_eq!(
+            value.expect("run the closure"),
+            "resolved",
+            "the entry completes when the future outside the store resolves"
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_runs_an_item_an_earlier_driver_left_in_the_store() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+        let outside = Outside::default();
+        let signal = outside.clone();
+        let item_runs = Arc::new(AtomicUsize::new(0));
+        let counted = item_runs.clone();
+        store.scheduler.push_low_priority(Item::new(
+            ItemKind::TaskStart,
+            move |_store: &mut Store<()>| {
+                counted.fetch_add(1, AtomicOrdering::Relaxed);
+                signal.resolve();
+            },
+        ));
+
+        {
+            // A driver the item gave way to, dropped before the item
+            // ran. Dropping it cancels nothing.
+            let mut abandoned = Box::pin(Driver::new(&mut store, None, never));
+            assert!(
+                poll_once(&mut abandoned, Waker::noop()).is_pending(),
+                "the turn gave way, so the driver returns pending"
+            );
+        }
+        assert_eq!(
+            item_runs.load(AtomicOrdering::Relaxed),
+            0,
+            "the item that gave way has not run yet"
+        );
+
+        store
+            .run_concurrent(async move |_accessor| {
+                outside.await;
+            })
+            .await
+            .expect("run the closure");
+
+        assert_eq!(
+            item_runs.load(AtomicOrdering::Relaxed),
+            1,
+            "the entry ran the item the earlier driver left in the store"
         );
     }
 }

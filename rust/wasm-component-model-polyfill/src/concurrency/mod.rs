@@ -6,7 +6,10 @@
 //! the store, because an item runs against the store. [`Driver`] is
 //! a host future that polls it: one poll is a turn, guest code runs
 //! only inside a turn, and every entry point that reaches a guest is
-//! a driver. [`SchedulerState`] is the half of the scheduler a
+//! a driver. [`Accessor`] is what the store's `run_concurrent` entry
+//! hands its closure: the one way a future that does not borrow the
+//! store still reaches the store's host data, and only during a
+//! poll. [`SchedulerState`] is the half of the scheduler a
 //! trampoline can reach from inside a runtime-layer closure: the
 //! waker of the running turn and the store's [`HostTask`]s.
 //!
@@ -40,6 +43,7 @@
 //! A synchronous call is a task with one thread, so the synchronous
 //! baseline is the case of one task per instance at a time.
 
+mod accessor;
 mod driver;
 mod event;
 mod event_code;
@@ -76,6 +80,7 @@ mod yield_wake;
 // The records themselves are reached through the accessors on
 // `TaskTables`, so only the names other modules spell are
 // re-exported here.
+pub use accessor::Accessor;
 pub use driver::Driver;
 pub use event::Event;
 pub use host_task::HostTask;
@@ -93,3 +98,4 @@ pub use task_tables::TaskTables;
 pub use thread_id::ThreadId;
 pub use waitable_id::WaitableId;
 pub use waitable_set_id::WaitableSetId;
+pub use yield_wake::YieldWake;

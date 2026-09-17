@@ -35,6 +35,12 @@ use super::yield_wake::YieldWake;
 ///   driver.
 /// - Dropping the store drops every task, host task, and suspended
 ///   thread, and no destructor runs.
+///
+/// This type is the driver of a call into an export and of an
+/// instantiation. The store's `run_concurrent` entry is a driver
+/// too, and it keeps every rule but the second: an idle turn leaves
+/// it pending rather than failing, because the closure it runs can
+/// wait on something outside the store.
 pub struct Driver<'a, T: 'static, C, R> {
     store: &'a mut Store<T>,
     condition: C,
