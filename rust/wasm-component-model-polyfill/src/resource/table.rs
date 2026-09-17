@@ -1,11 +1,12 @@
-//! One component instance's handle table.
+//! One handle table.
 //!
 //! A `HandleTable` is the slab the canonical ABI's runtime-state
 //! rules require: the reference's `handles` table on a
 //! `ComponentInstance`. The polyfill keeps one table per component
 //! instance, shared by every resource type and every other handle
-//! kind the instance uses, reached through crate-private accessors on
-//! the store.
+//! kind the instance uses, plus one table per resource type for the
+//! handles the host owns outright, all reached through crate-private
+//! accessors on the store.
 //!
 //! Allocation policy follows the canonical-ABI runtime-state rules:
 //!
@@ -20,8 +21,9 @@
 //!
 //! Borrows live in the table too: a `borrow<T>` lowered into the
 //! guest is an entry owed to the call it was lowered in, and an
-//! owning entry lent to the host as a borrow counts its lends so it
-//! cannot be removed before the call ends.
+//! owning entry lent to the host as a borrow counts its lends, which
+//! is what the collection's owned-removal path reads to refuse the
+//! removal before the call ends.
 //!
 //! [`Store`]: crate::Store
 
@@ -46,16 +48,20 @@ enum Slot {
     },
 }
 
-/// One component instance's handle table, owned by a single
-/// [`Store`].
+/// One handle table, owned by a single [`Store`].
 ///
-/// The table allocates 32-bit indices shared by every handle kind
-/// the instance uses, not just `own<T>` resources, frees them on
-/// drop, and surfaces structured failure when a stale handle is
-/// presented. Index 0 is never handed out, and a freed index is
-/// reused deterministically from a free list. Borrow tracking is
-/// the responsibility of the per-call lift/lower context, not of
-/// this table.
+/// A component instance keeps one such table, shared by every
+/// resource type and every other handle kind the instance uses; the
+/// host keeps one table per resource type for the handles it owns
+/// outright. The table allocates 32-bit indices, frees them on drop,
+/// and surfaces structured failure when a stale handle is presented.
+/// Index 0 is never handed out, and a freed index is reused
+/// deterministically from a free list. Borrow bookkeeping lives in
+/// the entries: an owning entry counts the borrows lifted out of it,
+/// and a borrow entry names the call it is owed to. This type's own
+/// [`remove`](Self::remove) is unconditional; it is
+/// [`HandleTables::remove_own`](super::HandleTables::remove_own)
+/// that reads the count and refuses while it is above zero.
 ///
 /// [`Store`]: crate::Store
 pub struct HandleTable {

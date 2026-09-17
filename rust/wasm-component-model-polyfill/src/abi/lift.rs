@@ -333,11 +333,13 @@ fn read_discriminant(bytes: &[u8]) -> usize {
 /// Lift a `own<T>` or `borrow<T>` handle from a 4-byte index that
 /// has already been read out of the flat slot or memory location.
 ///
-/// The lift cross-references the index against the per-store
-/// handle tables: the polyfill keeps one table per registered
-/// resource type, addressed by the registered
+/// The lift cross-references the index against the per-store handle
+/// tables: the polyfill keeps one table per component instance,
+/// shared by every handle kind that instance uses, and one table per
+/// resource type for the handles the host owns outright, keyed by
 /// [`ResourceTypeId`](crate::resource::ResourceTypeId). For an
-/// `own<T>` lift the entry is removed from the table — ownership
+/// `own<T>` lift the entry is removed from the instance's table and
+/// inserted into the host's table for the resource type — ownership
 /// transfers to the host. For `borrow<T>` the entry is left in
 /// place and the host receives a handle that aliases the live entry.
 ///

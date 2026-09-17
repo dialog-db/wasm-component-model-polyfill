@@ -551,9 +551,9 @@ pub enum AbiCause {
     #[error("lift/lower for this valtype is not yet implemented")]
     Unimplemented,
 
-    /// A handle index does not address a live entry in the
-    /// per-store handle table, or the host supplied a handle whose
-    /// resource-type identity does not match the declared
+    /// A handle index does not address a live entry in the handle
+    /// table it was presented against, or the host supplied a handle
+    /// whose resource-type identity does not match the declared
     /// `own<T>` / `borrow<T>`.
     #[error("invalid resource handle: {reason}")]
     InvalidHandle {

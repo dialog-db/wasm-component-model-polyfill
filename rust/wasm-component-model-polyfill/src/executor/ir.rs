@@ -54,9 +54,11 @@ pub struct ExecutorIr {
     /// trampoline dispatches into.
     pub resources: Box<[ResourceSpec]>,
     /// One entry per resource table of the component, by the
-    /// translator's table index: the canonical ABI keeps one table
-    /// per component instance per resource type. `None` marks an
-    /// abstract table, one that no concrete instance holds.
+    /// translator's table index: the translator names one such table
+    /// for each pair of a component instance and a resource type,
+    /// which the polyfill resolves to the single table that instance
+    /// keeps. `None` marks an abstract table, one that no concrete
+    /// instance holds.
     pub resource_tables: Box<[Option<ResourceTableSpec>]>,
     /// Maps each runtime-instance position (the index a
     /// [`CoreInstanceExport`] uses) to the polyfill's `modules`
@@ -390,9 +392,10 @@ pub struct LoweringSpec {
 ///
 /// Each variant captures the polyfill-side metadata needed to build
 /// the corresponding runtime-layer host function at instantiation
-/// time. Lowered imports dispatch into a host registration; resource
-/// intrinsics dispatch into the per-store handle table for a named
-/// resource type.
+/// time. Lowered imports dispatch into a host registration; a
+/// resource intrinsic names one of the translator's resource tables
+/// by index, which instantiation maps to the one handle table the
+/// owning component instance keeps.
 #[derive(Clone, Debug)]
 pub enum TrampolineSpec {
     /// The trampoline lowers a host import: lifts core arguments to
@@ -402,9 +405,9 @@ pub enum TrampolineSpec {
     /// [`Val`]: crate::Val
     LowerImport(LoweringSpec),
     /// The trampoline implements the canonical `resource.drop`
-    /// intrinsic: removes the named resource handle from the per-
-    /// store table and runs the host destructor with the entry's
-    /// rep.
+    /// intrinsic: removes the named resource handle from the owning
+    /// instance's table and runs the host destructor with the
+    /// entry's rep.
     ResourceDrop {
         /// Index into [`ExecutorIr::resource_tables`].
         table_index: usize,

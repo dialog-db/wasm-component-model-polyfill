@@ -55,15 +55,17 @@ use crate::value::Val;
 
 /// Per-resource runtime data captured by every resource trampoline.
 ///
-/// Bundles the engine-issued identity (the per-store handle table
-/// key) with the host destructor closure. The `Arc` shape is
-/// preserved so the resource trampolines for `new`/`drop`/`rep` —
-/// which all touch the same handle table — share one ledger.
+/// Bundles the engine-issued identity of the resource type with the
+/// host destructor closure. The `Arc` shape is preserved so the
+/// resource trampolines for `new`/`drop`/`rep` — which all touch the
+/// same handle table — share one ledger.
 pub struct ResourceRuntime<T> {
     /// The identity of the resource type: the host registration's
     /// for an imported resource, a fresh one per instantiation for a
-    /// locally-defined resource. Used as the key into
-    /// [`HandleTables`](crate::resource::HandleTables).
+    /// locally-defined resource. It names no table. The store keys
+    /// the host's own table for the type by it, and keys the
+    /// destructor recorded at instantiation by it, and every handle
+    /// lookup passes it as the type check the entry has to match.
     pub type_id: ResourceTypeId,
     /// The destructor invoked when the guest drops the last handle
     /// to a resource.
@@ -103,9 +105,10 @@ impl<T> Clone for ResourceRuntime<T> {
 /// canonical `resource.drop` intrinsic for a single resource type.
 ///
 /// The returned function takes one i32 (the handle index), removes
-/// the entry from the per-store handle table, and runs the host
-/// destructor with the entry's rep. Surfaces a structured ABI error
-/// if the index does not address a live entry.
+/// the entry from the handle table the owning component instance
+/// keeps, and runs the host destructor with the entry's rep.
+/// Surfaces a structured ABI error if the index does not address a
+/// live entry.
 pub fn build_resource_drop_trampoline<T: 'static>(
     store: &mut Store<T>,
     table: ResourceTableRuntime,

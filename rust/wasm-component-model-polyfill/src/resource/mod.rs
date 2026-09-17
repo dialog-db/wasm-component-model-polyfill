@@ -6,8 +6,9 @@
 //!
 //! - [`ResourceTypeId`] is the engine-issued identity that names a
 //!   registered resource type. Every host registration mints one.
-//! - [`HandleTable`] and [`HandleTables`] are the per-store slabs
-//!   the canonical ABI's index-allocation and reuse rules govern.
+//! - [`HandleTable`] is one slab the canonical ABI's
+//!   index-allocation and reuse rules govern, and [`HandleTables`]
+//!   is the store's collection of them.
 //! - [`ResourceHandle`] is the polyfill's opaque addressing surface
 //!   for handles that pass through [`Val::Own`] and [`Val::Borrow`].
 //!

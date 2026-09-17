@@ -3,9 +3,11 @@
 //! `Store<T>` carries host data of type `T` and is the unit of
 //! isolation between independent component instances: the
 //! polyfill's analogue to `wasmtime::Store`. The store also owns the
-//! per-resource-type handle tables the canonical-ABI runtime-state
-//! rules require, and carries a process-unique identity so that an
-//! instance can refuse a call made through a different store.
+//! handle tables the canonical-ABI runtime-state rules require — one
+//! per component instance, shared by every handle kind that instance
+//! uses, plus one per resource type for the host's own handles — and
+//! carries a process-unique identity so that an instance can refuse a
+//! call made through a different store.
 
 use core::task::{Poll, Waker};
 use std::collections::HashMap;
@@ -56,7 +58,9 @@ pub struct Store<T: 'static> {
     /// The store's process-unique identity. Workspace-internal; not
     /// re-exported by `lib.rs`.
     pub id: StoreId,
-    /// Per-resource-type handle tables. The `Arc<Mutex<...>>` shape
+    /// The store's handle tables: one per component instance, shared
+    /// by every handle kind, plus one per resource type for the
+    /// host's own handles. The `Arc<Mutex<...>>` shape
     /// lets resource trampolines and lift/lower contexts reach the
     /// tables from inside runtime-layer closures, where the
     /// polyfill's wrapper struct is otherwise unreachable.

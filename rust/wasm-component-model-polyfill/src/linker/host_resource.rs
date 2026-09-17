@@ -23,9 +23,11 @@ use crate::resource::ResourceTypeId;
 /// the identity, so one value registers the same resource type under
 /// several interfaces.
 pub struct HostResource<T> {
-    /// The engine-issued identity for this registration. Used by
-    /// the per-store handle table to disambiguate handles that
-    /// share a label across registrations.
+    /// The engine-issued identity for this registration. Every
+    /// handle lookup carries it as the type check the entry has to
+    /// match, so two registrations that share a label stay distinct;
+    /// the store keys the host's own table for the type, and the
+    /// type's destructor, by it.
     pub type_id: ResourceTypeId,
     /// The destructor the guest drop runs against. Takes the
     /// store's host-data slot and the resource's `u32` rep — the

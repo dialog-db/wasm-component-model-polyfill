@@ -1,4 +1,4 @@
-//! The polyfill's opaque handle into a per-store resource table.
+//! The polyfill's opaque handle into one of a store's handle tables.
 //!
 //! A `ResourceHandle` is the value the polyfill exposes through the
 //! [`Val::Own`] and [`Val::Borrow`] variants. It carries the
@@ -15,7 +15,7 @@
 
 use super::identity::ResourceTypeId;
 
-/// An opaque handle into a per-store resource table.
+/// An opaque handle into one of a store's handle tables.
 ///
 /// The polyfill mints these when a host registers a resource against
 /// a [`LinkerInstance`] and hands one across the canonical-ABI
