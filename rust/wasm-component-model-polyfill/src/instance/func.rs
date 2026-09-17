@@ -167,6 +167,10 @@ impl Func {
             if let Ok(mut slot) = queued.lock() {
                 *slot = Some(result);
             }
+            // The failure of the call is the caller's, and it is in
+            // the slot the driver reads, so the item itself has
+            // nothing left to fail with.
+            Ok(())
         });
 
         // A synchronous export's task ignores the entry gate, as the
@@ -199,7 +203,10 @@ impl Func {
 
     /// Run the export's task to its resolution: push it as the
     /// current scope, drive the canonical-ABI round-trip, resolve the
-    /// task with what the export returned, and pop the scope.
+    /// task with what the export returned, and pop the scope. The
+    /// pop ends the task's implicit thread whichever way the call
+    /// went, so the instance it held exclusively, if it held one,
+    /// goes back before this returns.
     fn run_task<T: 'static>(
         &self,
         task: TaskId,
@@ -213,16 +220,16 @@ impl Func {
         match outcome {
             Ok(result) => {
                 store.resolve_export_task(task, result.first().cloned())?;
-                if let Err(count) = store.exit_export_task(task)? {
-                    return Err(Error::from(AbiError {
+                match store.exit_export_task(task)? {
+                    Ok(()) => Ok(result),
+                    Err(count) => Err(Error::from(AbiError {
                         position: AbiPosition::Result,
                         valtype: ValueType::Primitive(PrimitiveType::Bool),
                         cause: AbiCause::OutstandingBorrows {
                             count: count as usize,
                         },
-                    }));
+                    })),
                 }
-                Ok(result)
             }
             Err(err) => {
                 store.abandon_export_task(task)?;

@@ -188,6 +188,45 @@ mod tests {
         );
     }
 
+    // The browser target aborts on a panic instead of unwinding,
+    // so there is nothing to catch there and the test is native
+    // only.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn it_ends_the_turn_an_embedders_closure_panicked_out_of() {
+        use super::super::driver::Driver;
+
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+
+        {
+            let accessor = Accessor::new(&mut store);
+            // The panic is the point of the test, so its report is
+            // kept out of the test's output.
+            let hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(|_| {}));
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                accessor.with(|_store| panic!("the embedder's closure panicked"))
+            }));
+            std::panic::set_hook(hook);
+
+            assert!(
+                unwound.is_err(),
+                "the closure's panic unwound the reach into the store"
+            );
+        }
+
+        assert!(
+            !store.turn_in_flight().expect("the store's turn state"),
+            "the turn the closure ran inside is over"
+        );
+        let mut driver = Box::pin(Driver::new(&mut store, None, |_store, _waker| Some(Ok(()))));
+        assert!(
+            matches!(poll_once(&mut driver, Waker::noop()), Poll::Ready(Ok(()))),
+            "a driver entered after the panic is not refused"
+        );
+    }
+
     #[wcmp_macros::test]
     async fn it_refuses_a_nested_run_concurrent_entered_from_inside_the_closure() {
         let engine = Engine::new().expect("engine");

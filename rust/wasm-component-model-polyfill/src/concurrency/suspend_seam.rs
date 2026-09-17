@@ -155,7 +155,10 @@ impl<T: 'static> SuspendSeam<T> {
     /// Hand the suspension to the target's provider. The provider
     /// leaves the slot for the duration of the call, because it runs
     /// against the store the slot sits in, and goes back into it
-    /// afterwards.
+    /// afterwards — whether the call returned or unwound. A provider
+    /// a panic swallowed would leave the seam with an empty slot for
+    /// the life of the store, and every later suspension would take
+    /// the nested-turn fallback on a target that had a provider.
     fn suspend_with_provider(
         store: &mut Store<T>,
         condition: &mut dyn FnMut(&mut Store<T>) -> bool,
@@ -163,9 +166,12 @@ impl<T: 'static> SuspendSeam<T> {
         let Some(mut provider) = store.scheduler.suspend_seam_mut().provider.take() else {
             return Self::run_nested_turns(store, condition);
         };
-        let outcome = provider.suspend(store, condition);
+        // `provider` stays in this frame. The closure only borrows
+        // it, so an unwind through the call leaves it here to put
+        // back rather than dropping it inside the closure.
+        let outcome = Self::caught(|| provider.suspend(&mut *store, condition));
         store.scheduler.suspend_seam_mut().provider = Some(provider);
-        outcome
+        Self::resume(outcome)
     }
 
     /// The fallback: turns of the store's scheduler run from inside
@@ -187,9 +193,34 @@ impl<T: 'static> SuspendSeam<T> {
             return Err(Error::Scheduler(store.suspend_cause()));
         }
         store.scheduler.suspend_seam_mut().in_nested_turn = true;
-        let outcome = Self::nested_turn_loop(store, condition);
+        let outcome = Self::caught(|| Self::nested_turn_loop(&mut *store, condition));
         store.scheduler.suspend_seam_mut().in_nested_turn = false;
-        outcome
+        Self::resume(outcome)
+    }
+
+    /// Run `body` and hand back what it did, an unwind included.
+    ///
+    /// The seam cannot pair what it borrows with a guard the way a
+    /// turn does. What a turn marks lives behind the store's handle
+    /// tables, which a guard can hold a handle to; what the seam
+    /// marks lives on the store itself, and the body needs the store
+    /// mutably for as long as it runs, so no value can hold both.
+    /// The seam therefore catches the unwind, puts back what it
+    /// borrowed, and lets the panic carry on from where it was. The
+    /// browser aborts on a panic rather than unwinding, so there
+    /// nothing is ever caught and the path that returns is the whole
+    /// of it.
+    fn caught<R>(body: impl FnOnce() -> R) -> std::thread::Result<R> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(body))
+    }
+
+    /// Hand back what [`caught`](Self::caught) returned: the value,
+    /// or the panic, continuing its unwind.
+    fn resume<R>(outcome: std::thread::Result<R>) -> R {
+        match outcome {
+            Ok(value) => value,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
     }
 
     /// The nested turns themselves, with the seam already marked as
@@ -332,6 +363,34 @@ mod tests {
         }
     }
 
+    /// A provider that panics where one that switched stacks would
+    /// have suspended.
+    #[cfg(not(target_arch = "wasm32"))]
+    struct Panics;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl SuspendProvider<()> for Panics {
+        fn suspend(
+            &mut self,
+            _store: &mut Store<()>,
+            _condition: &mut dyn FnMut(&mut Store<()>) -> bool,
+        ) -> Result<()> {
+            panic!("the provider panicked")
+        }
+    }
+
+    /// Run `body` and catch the panic it is expected to unwind
+    /// with, keeping the report of that panic out of the test's
+    /// output.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn unwind<R>(body: impl FnOnce() -> R) -> std::thread::Result<R> {
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+        std::panic::set_hook(hook);
+        outcome
+    }
+
     fn store() -> Store<()> {
         let engine = Engine::new().expect("engine");
         Store::new(&engine, ()).expect("store")
@@ -346,6 +405,7 @@ mod tests {
         let log = log.clone();
         Item::new(ItemKind::TaskStart, move |_store: &mut Store<()>| {
             log.lock().expect("log").push(name);
+            Ok(())
         })
     }
 
@@ -363,6 +423,7 @@ mod tests {
             log.lock().expect("log").push(enter);
             let _ = SuspendSeam::suspend(store, |_| false);
             log.lock().expect("log").push(leave);
+            Ok(())
         })
     }
 
@@ -499,6 +560,7 @@ mod tests {
             move |_store: &mut Store<()>| {
                 *recorded.lock().expect("record") = Some(watched.lock().expect("slot").is_some());
                 written.lock().expect("log").push("other task");
+                Ok(())
             },
         ));
 
@@ -540,6 +602,7 @@ mod tests {
             ItemKind::TaskStart,
             move |_store: &mut Store<()>| {
                 *flag.lock().expect("flag") = true;
+                Ok(())
             },
         ));
 
@@ -640,6 +703,7 @@ mod tests {
                 let outcome =
                     SuspendSeam::suspend(store, move |_| watched.lock().expect("slot").is_some());
                 *recorded.lock().expect("record") = Some(cause(outcome));
+                Ok(())
             },
         ));
 
@@ -732,6 +796,7 @@ mod tests {
             move |store: &mut Store<()>| {
                 let outcome = SuspendSeam::suspend(store, |_| false);
                 *recorded.lock().expect("record") = Some(cause(outcome));
+                Ok(())
             },
         ));
 
@@ -812,6 +877,7 @@ mod tests {
                 let outcome = SuspendSeam::suspend(store, |_| false);
                 *recorded.lock().expect("record") = Some(cause(outcome));
                 written.lock().expect("log").push("inner leave");
+                Ok(())
             },
         ));
 
@@ -852,6 +918,7 @@ mod tests {
             ItemKind::TaskStart,
             |store: &mut Store<()>| {
                 let _ = SuspendSeam::suspend(store, |_| false);
+                Ok(())
             },
         ));
         let recorded = seen.clone();
@@ -860,6 +927,7 @@ mod tests {
             move |store: &mut Store<()>| {
                 let outcome = SuspendSeam::suspend(store, |_| false);
                 *recorded.lock().expect("record") = Some(cause(outcome));
+                Ok(())
             },
         ));
 
@@ -908,5 +976,55 @@ mod tests {
              level"
         );
         assert_eq!(polls.lock().expect("polls").clone(), vec![true]);
+    }
+
+    // The two tests below are native only: the browser aborts on a
+    // panic instead of unwinding, so there is nothing to catch there
+    // and nothing the seam could be left holding.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn it_puts_the_provider_back_when_the_suspension_panicked() {
+        let mut store = store();
+        store.scheduler.suspend_seam_mut().set_provider(Panics);
+
+        let unwound = unwind(|| SuspendSeam::suspend(&mut store, |_| false));
+
+        assert!(
+            unwound.is_err(),
+            "the provider's panic unwound the suspension"
+        );
+        assert!(
+            store.scheduler.suspend_seam().has_provider(),
+            "the provider went back into its slot, so the target still has the \
+             capability it filled"
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn it_clears_the_nested_turn_marker_when_a_nested_turn_panicked() {
+        let mut store = store();
+
+        let unwound = unwind(|| {
+            SuspendSeam::suspend(&mut store, |_store: &mut Store<()>| -> bool {
+                panic!("the condition panicked")
+            })
+        });
+
+        assert!(unwound.is_err(), "the condition's panic unwound the seam");
+        assert!(
+            !store.scheduler.suspend_seam().in_nested_turn(),
+            "the seam is no longer marked as running a nested turn"
+        );
+
+        let again = store
+            .run_in_turn(Waker::noop(), |store| SuspendSeam::suspend(store, |_| true))
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(again),
+            "the seam returned with the condition held",
+            "the next suspension is served rather than refused as a second level"
+        );
     }
 }

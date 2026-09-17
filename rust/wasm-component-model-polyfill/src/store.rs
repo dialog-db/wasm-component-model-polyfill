@@ -20,7 +20,7 @@ use crate::backend::Backend;
 use crate::component::FunctionType;
 use crate::concurrency::{
     Accessor, CallStatus, HostTask, InstanceId, Item, LowerKind, Outcome, Scheduler, SubtaskState,
-    TaskId, YieldWake,
+    TaskId, TurnGuard, YieldWake,
 };
 use crate::engine::Engine;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
@@ -253,12 +253,8 @@ impl<T: 'static> Store<T> {
     ///
     /// Workspace-internal; not re-exported by `lib.rs`.
     pub fn turn(&mut self, waker: &Waker) -> Result<Outcome> {
-        let displaced = Self::lock_handle(&self.tables)?.scheduler.enter_turn(waker);
-        let outcome = self.run_turn(waker, false);
-        if let Ok(mut guard) = self.tables.lock() {
-            guard.scheduler.leave_turn(displaced);
-        }
-        outcome
+        let _turn = TurnGuard::enter(&self.tables, waker);
+        self.run_turn(waker, false)
     }
 
     /// Whether a turn of this store is running. A driver entered
@@ -266,6 +262,15 @@ impl<T: 'static> Store<T> {
     /// with the recursive-driver cause. Workspace-internal.
     pub fn turn_in_flight(&self) -> Result<bool> {
         Ok(self.lock_tables()?.scheduler.in_turn())
+    }
+
+    /// Whether the store holds work only a turn can carry forward:
+    /// an item in one of the ready queues, deferred work included,
+    /// or a host task that has not resolved. A driver that parked on
+    /// such a store would wait for a wake that the work it parked on
+    /// is what produces. Workspace-internal.
+    pub fn has_pending_work(&self) -> bool {
+        self.scheduler.has_ready_item() || self.scheduler.host_task_count() > 0
     }
 
     /// Run `body` with an accessor to this store, driving the
@@ -337,7 +342,22 @@ impl<T: 'static> Store<T> {
                         yield_wake = Some(YieldWake::after_yield(waker));
                         return Poll::Pending;
                     }
-                    Outcome::Waiting => return Poll::Pending,
+                    // A turn that leaves a host task pending can
+                    // have completed the closure's future all the
+                    // same: it runs the items that are ready before
+                    // it polls the host tasks. The future is
+                    // therefore polled once more before the entry
+                    // parks, for the reason the other drivers
+                    // consult their condition once more — a closure
+                    // that is done would otherwise wait on a host
+                    // task it does not wait for, and against one
+                    // that never returns it would wait for ever.
+                    Outcome::Waiting => {
+                        if let Poll::Ready(value) = future.as_mut().poll(context) {
+                            return Poll::Ready(Ok(value));
+                        }
+                        return Poll::Pending;
+                    }
                     // An idle store is not a deadlock here: what
                     // `body` waits on can be outside the store. The
                     // closure's future is polled once more first,
@@ -348,7 +368,17 @@ impl<T: 'static> Store<T> {
                         if let Poll::Ready(value) = future.as_mut().poll(context) {
                             return Poll::Ready(Ok(value));
                         }
-                        return Poll::Pending;
+                        // That poll can have left work in the store:
+                        // the closure reaches the store through its
+                        // accessor, and what it queues there or
+                        // starts there is work only a turn runs.
+                        // Parking on it would wait for a wake that
+                        // the parked work is what produces.
+                        match accessor.lend(|store| store.has_pending_work()) {
+                            Ok(true) => continue,
+                            Ok(false) => return Poll::Pending,
+                            Err(error) => return Poll::Ready(Err(error)),
+                        }
                     }
                 }
             }
@@ -370,12 +400,8 @@ impl<T: 'static> Store<T> {
         waker: &Waker,
         body: impl FnOnce(&mut Self) -> R,
     ) -> Result<R> {
-        let displaced = Self::lock_handle(&self.tables)?.scheduler.enter_turn(waker);
-        let value = body(self);
-        if let Ok(mut guard) = self.tables.lock() {
-            guard.scheduler.leave_turn(displaced);
-        }
-        Ok(value)
+        let _turn = TurnGuard::enter(&self.tables, waker);
+        Ok(body(self))
     }
 
     /// Run one nested turn of this store's scheduler: the fallback
@@ -578,15 +604,21 @@ impl<T: 'static> Store<T> {
     /// guest call. Only a turn that is not nested touches the
     /// resumptions after a yield, because only a driver's turn can
     /// end and hand control back to the host executor first.
+    ///
+    /// An item that fails ends the turn and its failure is the
+    /// turn's. Almost no item can fail: what an item produces it
+    /// leaves in the store, and the failure of the call it ran is
+    /// part of that. The ones that can are the items whose own
+    /// bookkeeping failed, which belongs to no caller.
     fn run_turn(&mut self, waker: &Waker, nested: bool) -> Result<Outcome> {
         self.open_entry_gate()?;
         if !nested && let Some(item) = self.scheduler.take_resume_after_yield() {
-            item.run(self);
+            item.run(self)?;
         }
         loop {
             self.open_entry_gate()?;
             if let Some(item) = self.scheduler.take_ready() {
-                item.run(self);
+                item.run(self)?;
                 continue;
             }
             if !nested && self.scheduler.defer_low_priority() {
@@ -720,17 +752,35 @@ impl<T: 'static> Store<T> {
     /// Pop the export's task on its success path, together with any
     /// scope left above it. The inner `Err` carries the count of
     /// borrows the guest did not drop. Workspace-internal.
+    ///
+    /// The task's implicit thread ends first. That is the reference's
+    /// `exit_implicit_thread`: the thread the task's call ran on is
+    /// over, so the instance it held exclusively, if it held one,
+    /// goes back, and the next task waiting at that instance's entry
+    /// gate can take it. The release belongs to this exit rather than
+    /// to a call of its own because it reads the task record — the
+    /// thread it names and the instance that thread holds — and this
+    /// exit is what removes that record. A release that ran after the
+    /// record was gone would find nothing and give nothing back, and
+    /// the gate would stay shut for the life of the instance.
     pub fn exit_export_task(&self, task: TaskId) -> Result<core::result::Result<(), u32>> {
-        Ok(self.lock_tables()?.exit_task(task))
+        let mut guard = Self::lock_handle(&self.tables)?;
+        self.scheduler.exit_implicit_thread(&mut guard.tasks, task);
+        Ok(guard.exit_task(task))
     }
 
     /// Pop the export's task on its failure path, with no borrow
     /// check. Every scope the failure left above the task — the task
     /// of a callee that trapped, the subtask of a host call that
     /// failed — is popped with it, and the lends of each are given
-    /// back. Workspace-internal.
+    /// back. The task's implicit thread ends first, for the reason
+    /// [`exit_export_task`](Self::exit_export_task) gives: a call
+    /// that failed gives the instance back exactly as one that
+    /// returned does. Workspace-internal.
     pub fn abandon_export_task(&self, task: TaskId) -> Result<()> {
-        self.lock_tables()?.abandon_task(task);
+        let mut guard = Self::lock_handle(&self.tables)?;
+        self.scheduler.exit_implicit_thread(&mut guard.tasks, task);
+        guard.abandon_task(task);
         Ok(())
     }
 
@@ -817,6 +867,7 @@ mod tests {
             ItemKind::TaskStart,
             move |_store: &mut Store<()>| {
                 counted.fetch_add(1, AtomicOrdering::Relaxed);
+                Ok(())
             },
         ));
         let subtask = store.lock_tables().expect("tables").tasks.push_subtask();
@@ -926,6 +977,247 @@ mod tests {
     }
 
     #[wcmp_macros::test]
+    async fn it_runs_the_item_the_closure_queued_as_the_store_went_idle() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+
+        // The closure queues the item on the poll the entry makes
+        // when the turn before it went idle, and nothing outside the
+        // store ever wakes it: the item it queued is the only thing
+        // that resolves it, and only a turn runs an item.
+        let mut entry = Box::pin(store.run_concurrent(async |accessor| {
+            let ran = Arc::new(AtomicUsize::new(0));
+            let mut polls = 0usize;
+            core::future::poll_fn(move |_context| {
+                polls += 1;
+                if ran.load(AtomicOrdering::Relaxed) > 0 {
+                    return Poll::Ready("the item ran");
+                }
+                if polls == 2 {
+                    let counted = ran.clone();
+                    accessor
+                        .with(|store: &mut Store<()>| {
+                            store.scheduler.push_high_priority(Item::new(
+                                ItemKind::TaskStart,
+                                move |_store: &mut Store<()>| {
+                                    counted.fetch_add(1, AtomicOrdering::Relaxed);
+                                    Ok(())
+                                },
+                            ));
+                        })
+                        .expect("queue the item");
+                }
+                Poll::Pending
+            })
+            .await
+        }));
+
+        let Poll::Ready(value) = poll_once(&mut entry, Waker::noop()) else {
+            panic!("the entry parked on a store that held a ready item");
+        };
+        assert_eq!(
+            value.expect("run the closure"),
+            "the item ran",
+            "the entry ran the item rather than park on it"
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_polls_the_host_task_the_closure_started_as_the_store_went_idle() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+
+        // As above, with a host task in place of the item: what
+        // resolves the closure is the lowering of the body's result,
+        // and only a turn polls a host task.
+        let mut entry = Box::pin(store.run_concurrent(async |accessor| {
+            let lowered = Arc::new(AtomicUsize::new(0));
+            let mut polls = 0usize;
+            core::future::poll_fn(move |_context| {
+                polls += 1;
+                if lowered.load(AtomicOrdering::Relaxed) > 0 {
+                    return Poll::Ready("the body's result crossed");
+                }
+                if polls == 2 {
+                    let counted = lowered.clone();
+                    accessor
+                        .with(|store: &mut Store<()>| {
+                            let subtask =
+                                store.lock_tables().expect("tables").tasks.insert_subtask();
+                            store.push_host_task(HostTask::from_future(
+                                subtask,
+                                move |_store: &mut Store<()>, _outcome: Result<Vec<Val>>| {
+                                    counted.fetch_add(1, AtomicOrdering::Relaxed);
+                                    Ok(())
+                                },
+                                core::future::ready(Ok(vec![Val::U32(3)])),
+                            ));
+                        })
+                        .expect("start the host task");
+                }
+                Poll::Pending
+            })
+            .await
+        }));
+
+        let Poll::Ready(value) = poll_once(&mut entry, Waker::noop()) else {
+            panic!("the entry parked on a store that held a pending host task");
+        };
+        assert_eq!(
+            value.expect("run the closure"),
+            "the body's result crossed",
+            "the entry polled the host task rather than park on it"
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_returns_when_the_turn_that_completed_the_closure_left_a_host_task_pending() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+
+        // A host task that never returns, and an item that completes
+        // the closure. A turn runs the items that are ready before it
+        // polls the host tasks, so the closure is done by the time the
+        // turn reports that a host task is still pending — and the
+        // entry must not park on a host task it does not wait for.
+        let subtask = store.lock_tables().expect("tables").tasks.insert_subtask();
+        store.push_host_task(HostTask::from_future(
+            subtask,
+            |_store: &mut Store<()>, _outcome: Result<Vec<Val>>| Ok(()),
+            core::future::pending::<Result<Vec<Val>>>(),
+        ));
+        let ran = Arc::new(AtomicUsize::new(0));
+        let counted = ran.clone();
+        store.scheduler.push_high_priority(Item::new(
+            ItemKind::TaskStart,
+            move |_store: &mut Store<()>| {
+                counted.fetch_add(1, AtomicOrdering::Relaxed);
+                Ok(())
+            },
+        ));
+
+        let watched = ran.clone();
+        let mut entry = Box::pin(store.run_concurrent(async move |_accessor| {
+            core::future::poll_fn(move |_context| {
+                if watched.load(AtomicOrdering::Relaxed) > 0 {
+                    Poll::Ready("the item ran")
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await
+        }));
+
+        let Poll::Ready(value) = poll_once(&mut entry, Waker::noop()) else {
+            panic!("the entry parked on a host task that never returns");
+        };
+        assert_eq!(
+            value.expect("run the closure"),
+            "the item ran",
+            "the turn ran the item that completed the closure before it polled \
+             the host tasks, so the entry returns instead of waiting on a host \
+             task that never returns"
+        );
+    }
+
+    /// Run `body` and catch the panic it is expected to unwind
+    /// with, keeping the report of that panic out of the test's
+    /// output.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn unwind<R>(body: impl FnOnce() -> R) -> std::thread::Result<R> {
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+        std::panic::set_hook(hook);
+        outcome
+    }
+
+    // The browser target aborts on a panic instead of unwinding, so
+    // there is nothing to catch there and the test is native only.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn it_ends_the_turn_an_item_panicked_out_of() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+        store.scheduler.push_high_priority(Item::new(
+            ItemKind::TaskStart,
+            |_store: &mut Store<()>| -> Result<()> { panic!("the item panicked") },
+        ));
+
+        let unwound = unwind(|| store.turn(Waker::noop()));
+
+        assert!(unwound.is_err(), "the item's panic unwound the turn");
+        assert!(
+            !store.turn_in_flight().expect("the store's turn state"),
+            "the turn the panic unwound out of is over"
+        );
+        let mut driver = Box::pin(Driver::new(&mut store, None, |_store, _waker| Some(Ok(()))));
+        assert!(
+            matches!(poll_once(&mut driver, Waker::noop()), Poll::Ready(Ok(()))),
+            "a driver entered after the panic is not refused"
+        );
+    }
+
+    // Native only, for the reason the test above is: the browser
+    // aborts on a panic, so no panic ever reaches a lock there.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn it_takes_the_tables_back_from_a_panic_that_held_their_lock() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+        store.scheduler.push_high_priority(Item::new(
+            ItemKind::TaskStart,
+            |store: &mut Store<()>| -> Result<()> {
+                let _tables = store.lock_tables().expect("tables");
+                panic!("the item panicked with the tables locked")
+            },
+        ));
+
+        let unwound = unwind(|| store.turn(Waker::noop()));
+
+        assert!(unwound.is_err(), "the item's panic unwound the turn");
+        assert!(
+            store.lock_tables().is_ok(),
+            "the turn's guard took the tables back from the poison the panic \
+             left, so the store is not refusing every later reader"
+        );
+        let mut driver = Box::pin(Driver::new(&mut store, None, |_store, _waker| Some(Ok(()))));
+        assert!(
+            matches!(poll_once(&mut driver, Waker::noop()), Poll::Ready(Ok(()))),
+            "a driver entered after the panic is not refused"
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn it_enters_a_turn_on_tables_a_panic_outside_the_store_poisoned() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+
+        // A panic taken with the lock held and no turn in flight, so
+        // what meets the poison is the guard on its way in rather
+        // than on its way out.
+        let tables = store.tables.clone();
+        let poisoned = unwind(move || {
+            let _tables = tables.lock().expect("tables");
+            panic!("the host panicked with the tables locked")
+        });
+        assert!(poisoned.is_err(), "the panic unwound");
+        assert!(store.tables.is_poisoned(), "and poisoned the lock");
+
+        let outcome = store.turn(Waker::noop());
+
+        assert!(
+            outcome.is_ok(),
+            "the turn's guard took the tables back from the poison on its way in"
+        );
+        assert!(
+            !store.tables.is_poisoned(),
+            "and cleared it, so every later reader of the store reaches them too"
+        );
+    }
+
+    #[wcmp_macros::test]
     async fn it_runs_an_item_an_earlier_driver_left_in_the_store() {
         let engine = Engine::new().expect("engine");
         let mut store = Store::new(&engine, ()).expect("store");
@@ -938,6 +1230,7 @@ mod tests {
             move |_store: &mut Store<()>| {
                 counted.fetch_add(1, AtomicOrdering::Relaxed);
                 signal.resolve();
+                Ok(())
             },
         ));
 
@@ -1317,6 +1610,118 @@ mod tests {
                 .subtask(subtask)
                 .is_none(),
             "the failed call gave the subtask back"
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_resolves_the_subtask_when_the_host_task_fails_in_a_later_turn() {
+        let engine = Engine::new().expect("engine");
+        let (mut store, table, subtask) = host_call(&engine);
+        let slot: Lowered = Arc::new(Mutex::new(None));
+        let outside = Outside::default();
+        let awaited = outside.clone();
+
+        let status = store
+            .start_host_task(
+                HostTask::from_future(subtask, recording(&slot), async move {
+                    awaited.await;
+                    let failed: Result<Vec<Val>> = Err(Error::internal("the host call failed"));
+                    failed
+                }),
+                table,
+                LowerKind::Async,
+            )
+            .expect("start the host task");
+        let index = status
+            .subtask_index()
+            .expect("a started call carries the index of its subtask");
+
+        outside.resolve();
+
+        // The turn that sees the body fail queues the item, and the
+        // turn after it runs the item.
+        assert_eq!(
+            store.turn(Waker::noop()).expect("a turn"),
+            Outcome::Progress,
+            "the failed host task left an item ready to run"
+        );
+        store.turn(Waker::noop()).expect("a turn");
+
+        assert!(
+            slot.lock().expect("the lowering's slot").is_none(),
+            "a call that never returned has nothing to lower"
+        );
+        let mut guard = store.lock_tables().expect("tables");
+        assert_eq!(
+            guard.tasks.subtask(subtask).map(|record| record.state),
+            Some(SubtaskState::CancelledBeforeReturned),
+            "the call never returned, so its subtask resolved as a cancellation"
+        );
+        assert_eq!(
+            guard
+                .take_event(WaitableId::Subtask(subtask))
+                .expect("the subtask's waitable state"),
+            Some(Event::subtask(index, SubtaskState::CancelledBeforeReturned)),
+            "the guest waiting on the subtask takes delivery of the cancellation"
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_resolves_the_subtask_when_the_crossing_fails_in_a_later_turn() {
+        let engine = Engine::new().expect("engine");
+        let (mut store, table, subtask) = host_call(&engine);
+        let outside = Outside::default();
+        let awaited = outside.clone();
+
+        let status = store
+            .start_host_task(
+                HostTask::from_future(
+                    subtask,
+                    |_store: &mut Store<()>, _outcome: Result<Vec<Val>>| {
+                        Err(Error::internal("the crossing failed"))
+                    },
+                    async move {
+                        awaited.await;
+                        let produced: Result<Vec<Val>> = Ok(vec![Val::U32(7)]);
+                        produced
+                    },
+                ),
+                table,
+                LowerKind::Async,
+            )
+            .expect("start the host task");
+        let index = status
+            .subtask_index()
+            .expect("a started call carries the index of its subtask");
+
+        outside.resolve();
+
+        // The turn that sees the body complete queues the lowering,
+        // and the turn after it runs the lowering and fails.
+        assert_eq!(
+            store.turn(Waker::noop()).expect("a turn"),
+            Outcome::Progress,
+            "the completed host task left its lowering ready to run"
+        );
+
+        assert!(
+            store.turn(Waker::noop()).is_err(),
+            "the crossing's failure belongs to no caller, so it ends the turn"
+        );
+        let mut guard = store.lock_tables().expect("tables");
+        assert_eq!(
+            guard.tasks.subtask(subtask).map(|record| record.state),
+            Some(SubtaskState::CancelledBeforeReturned),
+            "nothing reached the guest, so the subtask resolved as a \
+             cancellation rather than staying started for ever"
+        );
+        assert_eq!(
+            guard
+                .take_event(WaitableId::Subtask(subtask))
+                .expect("the subtask's waitable state"),
+            Some(Event::subtask(index, SubtaskState::CancelledBeforeReturned)),
+            "a thread waiting on the subtask takes delivery of that \
+             cancellation rather than waiting for an event that never comes"
         );
     }
 }

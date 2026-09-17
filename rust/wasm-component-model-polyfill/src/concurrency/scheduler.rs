@@ -291,6 +291,29 @@ impl<T: 'static> Scheduler<T> {
         }
     }
 
+    /// End the implicit thread of `task`, which is the reference's
+    /// `exit_implicit_thread`: the thread the task's call ran on is
+    /// over, so the instance it held exclusively goes back and the
+    /// next task waiting at the gate can take it.
+    ///
+    /// The release is keyed on the thread rather than on the task's
+    /// canon options, so a task whose thread never claimed the
+    /// instance leaves whoever holds it alone. A task of a
+    /// synchronous export is such a task: it ignores the gate, so it
+    /// never claimed anything to give back.
+    pub fn exit_implicit_thread(&self, tables: &mut TaskTables, task: TaskId) {
+        let Some(record) = tables.task(task) else {
+            return;
+        };
+        let (thread, instance) = (record.implicit_thread, record.instance);
+        let Some(record) = tables.instance_mut(instance) else {
+            return;
+        };
+        if record.exclusive_thread == Some(thread) {
+            record.exclusive_thread = None;
+        }
+    }
+
     /// Give the instance to the task's implicit thread when the task
     /// needs it exclusively.
     fn claim_exclusive(
@@ -329,6 +352,7 @@ mod tests {
     use super::super::item::Item;
     use super::super::item_kind::ItemKind;
     use super::super::outcome::Outcome;
+    use super::super::task_id::TaskId;
 
     /// What the items of one test wrote as they ran, in order.
     type Log = Arc<Mutex<Vec<&'static str>>>;
@@ -347,6 +371,7 @@ mod tests {
         let log = log.clone();
         Item::new(ItemKind::TaskStart, move |_store: &mut Store<()>| {
             log.lock().expect("log").push(name);
+            Ok(())
         })
     }
 
@@ -372,14 +397,15 @@ mod tests {
             .backpressure = value;
     }
 
-    /// Queue the start of a fresh task of `instance`.
-    fn start(
+    /// Queue the start of a fresh task of `instance`, with an item
+    /// that `build` makes from the task's own identity.
+    fn start_with(
         store: &mut Store<()>,
         instance: InstanceId,
         async_function: bool,
         needs_exclusive: bool,
-        item: Item<()>,
-    ) {
+        build: impl FnOnce(TaskId) -> Item<()>,
+    ) -> TaskId {
         let task = store
             .tables
             .lock()
@@ -387,8 +413,39 @@ mod tests {
             .tasks
             .create_task(None, None, instance);
         store
-            .start_export_thread(task, instance, async_function, needs_exclusive, item)
+            .start_export_thread(task, instance, async_function, needs_exclusive, build(task))
             .expect("queue the task's start");
+        task
+    }
+
+    /// Queue the start of a fresh task of `instance`.
+    fn start(
+        store: &mut Store<()>,
+        instance: InstanceId,
+        async_function: bool,
+        needs_exclusive: bool,
+        item: Item<()>,
+    ) -> TaskId {
+        start_with(store, instance, async_function, needs_exclusive, |_| item)
+    }
+
+    /// An item that runs one export call the way `Func::run_task`
+    /// runs it, without a guest: the task becomes the current scope,
+    /// it resolves with no result, and then it exits. Nothing else
+    /// stands between a call returning and the instance going back,
+    /// so a test that ends a call this way is the ordering the
+    /// export path really takes.
+    fn export_call(log: &Log, name: &'static str, task: TaskId) -> Item<()> {
+        let log = log.clone();
+        Item::new(ItemKind::TaskStart, move |store: &mut Store<()>| {
+            log.lock().expect("log").push(name);
+            store.enter_export_task(task)?;
+            store.resolve_export_task(task, None)?;
+            store
+                .exit_export_task(task)?
+                .expect("the call dropped every borrow it took");
+            Ok(())
+        })
     }
 
     #[test]
@@ -534,5 +591,60 @@ mod tests {
             "the second task waits for the exclusive thread the first took"
         );
         assert_eq!(store.scheduler.waiting_at_gate(), 1);
+    }
+
+    #[test]
+    fn it_releases_the_instance_when_the_holding_tasks_call_ends() {
+        let mut store = store();
+        let log = log();
+        let instance = instance(&store);
+
+        // The first task's item ends its call the way the export
+        // path ends one: it resolves the task and exits it. That
+        // exit is what ends the task's implicit thread, so the
+        // instance goes back while the task record is still there
+        // to say which thread held it.
+        start_with(&mut store, instance, true, true, |task| {
+            export_call(&log, "exclusive", task)
+        });
+        start(&mut store, instance, true, true, marker(&log, "queued"));
+
+        store.turn(Waker::noop()).expect("turn");
+
+        assert_eq!(
+            entries(&log),
+            vec!["exclusive", "queued"],
+            "the task at the gate took the instance the ended call gave back"
+        );
+        assert_eq!(store.scheduler.waiting_at_gate(), 0);
+    }
+
+    #[test]
+    fn it_releases_the_instance_when_the_holding_tasks_call_fails() {
+        let mut store = store();
+        let log = log();
+        let instance = instance(&store);
+
+        // The same release on the failure path: a call that trapped
+        // is abandoned rather than exited, and the instance it held
+        // goes back all the same.
+        start_with(&mut store, instance, true, true, |task| {
+            let log = log.clone();
+            Item::new(ItemKind::TaskStart, move |store: &mut Store<()>| {
+                log.lock().expect("log").push("abandoned");
+                store.enter_export_task(task)?;
+                store.abandon_export_task(task)
+            })
+        });
+        start(&mut store, instance, true, true, marker(&log, "queued"));
+
+        store.turn(Waker::noop()).expect("turn");
+
+        assert_eq!(
+            entries(&log),
+            vec!["abandoned", "queued"],
+            "the task at the gate took the instance the failed call gave back"
+        );
+        assert_eq!(store.scheduler.waiting_at_gate(), 0);
     }
 }

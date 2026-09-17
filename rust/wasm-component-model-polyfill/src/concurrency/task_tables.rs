@@ -444,8 +444,9 @@ impl TaskTables {
     /// The call `subtask` names was cancelled: the subtask moves to
     /// cancelled-before-started when the callee had not read its
     /// parameters yet, and to cancelled-before-returned when it had.
-    /// Nothing cancels a call yet.
-    #[allow(dead_code)]
+    /// A host task whose body failed after the call returned to the
+    /// guest reaches this; the cancellation built-ins that also will
+    /// are not built yet.
     pub fn subtask_cancelled(&mut self, subtask: SubtaskId) -> Result<()> {
         let record = self
             .subtask_mut(subtask)

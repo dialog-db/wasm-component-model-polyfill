@@ -40,7 +40,8 @@ js_wasm_runtime_layer = { workspace = true }
 # a self-wake from a microtask lands ahead of every network response
 # and timer and starves the page. Reaching `setTimeout` through the
 # global is all the polyfill needs of the JavaScript bindings, and it
-# works in a worker as well as on a page.
+# works in a worker as well as on a page. The tests of the browser
+# target link this same dependency, so it is not repeated below.
 js-sys = { workspace = true }
 wasm-bindgen = { workspace = true }
 
@@ -50,10 +51,6 @@ wast = { workspace = true }
 wcmp-macros = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-# `wasm-bindgen` is pinned so that the crate version the tests link
-# against matches the `wasm-bindgen-cli` the flake provides for
-# `wasm-bindgen-test-runner`.
-wasm-bindgen = { workspace = true }
 wasm-bindgen-test = { workspace = true }
 # A JavaScript promise wrapped as a future: what the browser half of
 # the host-task bound is there to take, and what the test of that

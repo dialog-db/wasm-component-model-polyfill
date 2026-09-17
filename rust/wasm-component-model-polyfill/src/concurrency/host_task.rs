@@ -3,7 +3,7 @@
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::store::Store;
 use crate::value::Val;
 
@@ -106,17 +106,33 @@ impl<T: 'static> HostTask<T> {
 
     /// The item that lowers `outcome` into the subtask that awaits
     /// it in a later turn: the crossing runs where every other piece
-    /// of guest work runs, and the subtask then moves to its
-    /// returned state and takes on the subtask event a thread
-    /// waiting on it takes delivery of.
+    /// of guest work runs, and the subtask then resolves and takes
+    /// on the subtask event a thread waiting on it takes delivery
+    /// of.
     ///
-    /// `outcome` is what the body produced, which is a failure when
-    /// the host call itself failed. Either way the crossing is the
-    /// lowering's to make. A crossing that fails is a trap of the
-    /// caller's task in the reference, and nothing carries a trap out
-    /// of a queued item yet, so a failed crossing leaves the subtask
-    /// unresolved and with no event, and the driver that waits on it
-    /// reports the deadlock cause once nothing else can progress.
+    /// `outcome` is what the body produced. A value crosses through
+    /// the lowering and the subtask returns. A failure is a call
+    /// that never returned, so the subtask resolves as a
+    /// cancellation and nothing crosses, which is what the same
+    /// failure on the first poll does; the difference is only where
+    /// the guest learns of it. The guest's call was on the stack
+    /// then and the failure travelled out to it, and here the guest
+    /// has been told the call started, so what it takes delivery of
+    /// is the subtask event carrying the cancelled state.
+    ///
+    /// A crossing that fails is a call whose result the guest cannot
+    /// be given. The subtask resolves as a cancellation all the same
+    /// and takes on its event, exactly as a failed body resolves it:
+    /// the guest was told the call started, it holds the subtask in
+    /// its handle table, and a subtask left `started` with no event
+    /// would leave a thread waiting on it waiting for ever. The
+    /// failure itself belongs to no caller — the guest's call
+    /// returned turns ago and nothing of it is on the stack — so
+    /// once the subtask is resolved it ends the turn and reaches
+    /// whichever driver polled it. A subtask record that vanished
+    /// between the poll that completed the body and the turn that
+    /// ran this item ends the turn the same way, with nothing left
+    /// to resolve.
     pub fn lowering_item(self, outcome: Result<Vec<Val>>) -> Item<T> {
         let Self {
             lowering,
@@ -125,20 +141,33 @@ impl<T: 'static> HostTask<T> {
             ..
         } = self;
         Item::new(ItemKind::HostResultLowering, move |store: &mut Store<T>| {
-            if lowering(store, outcome).is_err() {
-                return;
-            }
-            let Ok(mut guard) = store.tables.lock() else {
-                return;
+            // A body that failed is a call that never returned, so
+            // nothing crosses: the lowering has no value to take
+            // into the guest. A crossing that fails is the same
+            // thing seen from the other side, so the subtask
+            // resolves the same way and the failure travels on
+            // afterwards.
+            let produced = outcome.is_ok();
+            let crossing = match outcome {
+                Ok(values) => lowering(store, Ok(values)),
+                Err(_) => Ok(()),
             };
-            // The call has returned, and the subtask's readiness
-            // is the subtask event a thread waiting on it takes
-            // delivery of. The event carries the subtask's index
-            // in the caller instance's handle table and the
-            // state it moved to.
-            if guard.tasks.subtask_returned(subtask).is_ok() {
-                let _ = guard.tasks.record_subtask_event(subtask, handle_index);
+            let mut guard = store
+                .tables
+                .lock()
+                .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
+            if produced && crossing.is_ok() {
+                guard.tasks.subtask_returned(subtask)?;
+            } else {
+                guard.tasks.subtask_cancelled(subtask)?;
             }
+            // The call is over either way, and the subtask's
+            // readiness is the subtask event a thread waiting on it
+            // takes delivery of. The event carries the subtask's
+            // index in the caller instance's handle table and the
+            // state it resolved to.
+            guard.tasks.record_subtask_event(subtask, handle_index)?;
+            crossing
         })
     }
 }

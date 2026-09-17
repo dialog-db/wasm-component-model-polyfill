@@ -12,7 +12,9 @@
 //! poll. [`SchedulerState`] is the half of the scheduler a
 //! trampoline can reach from inside a runtime-layer closure: the
 //! waker of the running turn and the count of the turns that are
-//! running.
+//! running. [`TurnGuard`] is what a turn holds that state through:
+//! an item can panic, and the mark a turn leaves has to go back
+//! whether the turn returned or unwound.
 //!
 //! [`HostTask`] is one call of a host `async` function: a body the
 //! store polls once per turn, and the lowering that carries what it
@@ -97,6 +99,7 @@ mod task_state;
 mod task_tables;
 mod thread;
 mod thread_id;
+mod turn_guard;
 mod waitable_id;
 mod waitable_set;
 mod waitable_set_id;
@@ -126,6 +129,7 @@ pub use suspend_seam::SuspendSeam;
 pub use task_id::TaskId;
 pub use task_tables::TaskTables;
 pub use thread_id::ThreadId;
+pub use turn_guard::TurnGuard;
 pub use waitable_id::WaitableId;
 pub use waitable_set_id::WaitableSetId;
 pub use yield_wake::YieldWake;

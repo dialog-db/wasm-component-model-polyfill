@@ -56,11 +56,13 @@ where
 {
     /// Drive `store` until `condition` yields a value.
     ///
-    /// The condition is consulted before each turn and once more
-    /// when a turn goes idle, so work the driver itself queued
-    /// before it was polled is seen. `task` is the task the driver
-    /// waits on, when there is one: it decides whether an idle turn
-    /// is a deadlock or a task that must not block.
+    /// The condition is consulted before each turn, and once more
+    /// when a turn goes idle or leaves only a host task pending, so
+    /// work the driver itself queued before it was polled is seen
+    /// and a turn that resolved the condition never parks. `task`
+    /// is the task the driver waits on, when there is one: it
+    /// decides whether an idle turn is a deadlock or a task that
+    /// must not block.
     pub fn new(store: &'a mut Store<T>, task: Option<TaskId>, condition: C) -> Self {
         Self {
             store,
@@ -119,7 +121,20 @@ where
                     this.yield_wake = Some(YieldWake::after_yield(waker));
                     return Poll::Pending;
                 }
-                Outcome::Waiting => return Poll::Pending,
+                // A turn that leaves a host task pending can have
+                // resolved what this driver waits on all the same:
+                // it runs the items that are ready before it polls
+                // the host tasks. The condition is therefore
+                // consulted once more before the driver parks, or a
+                // call whose task has returned would wait for a host
+                // task it does not wait for — for ever, against a
+                // host task that never returns.
+                Outcome::Waiting => {
+                    if let Some(done) = (this.condition)(this.store, waker) {
+                        return Poll::Ready(done);
+                    }
+                    return Poll::Pending;
+                }
                 Outcome::Idle => {
                     if let Some(done) = (this.condition)(this.store, waker) {
                         return Poll::Ready(done);
@@ -138,7 +153,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::engine::Engine;
+    use crate::value::Val;
 
+    use super::super::host_task::HostTask;
     use super::super::item::Item;
     use super::super::item_kind::ItemKind;
     use super::*;
@@ -185,6 +202,7 @@ mod tests {
         let log = log.clone();
         Item::new(ItemKind::TaskStart, move |_store: &mut Store<()>| {
             log.lock().expect("log").push(name);
+            Ok(())
         })
     }
 
@@ -212,6 +230,40 @@ mod tests {
         }
     }
 
+    /// Give `store` a host task that never returns: what a driver
+    /// must not wait for once what it waits on has resolved.
+    fn never_returning_host_task(store: &mut Store<()>) {
+        let subtask = store.tables.lock().expect("tables").tasks.insert_subtask();
+        store.push_host_task(HostTask::from_future(
+            subtask,
+            |_store: &mut Store<()>, _outcome: Result<Vec<Val>>| Ok(()),
+            core::future::pending::<Result<Vec<Val>>>(),
+        ));
+    }
+
+    #[test]
+    fn it_returns_when_the_turn_that_met_its_condition_left_a_host_task_pending() {
+        let mut store = store();
+        let log = log();
+        never_returning_host_task(&mut store);
+        store.scheduler.push_high_priority(marker(&log, "resolved"));
+
+        let watched = log.clone();
+        let mut driver = Box::pin(Driver::new(&mut store, None, move |_store, _waker| {
+            (!watched.lock().expect("log").is_empty()).then(|| Ok(()))
+        }));
+
+        let outcome = poll_once(&mut driver, Waker::noop());
+
+        assert_eq!(
+            cause(outcome),
+            "the driver succeeded",
+            "the turn ran the item that met the condition before it polled the \
+             host tasks, so the driver returns instead of waiting on a host task \
+             that never returns"
+        );
+    }
+
     #[test]
     fn it_refuses_a_driver_entered_from_inside_a_turn() {
         let mut store = store();
@@ -223,6 +275,7 @@ mod tests {
                 let mut nested = Box::pin(Driver::new(store, None, never));
                 let outcome = poll_once(&mut nested, Waker::noop());
                 *recorded.lock().expect("record") = Some(cause(outcome));
+                Ok(())
             },
         ));
 
