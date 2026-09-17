@@ -79,6 +79,17 @@ impl<T> RecordTable<T> {
         }
     }
 
+    /// Insert a record and return the index and the generation that
+    /// together name it. A record that learns its own identity only
+    /// after it is inserted is inserted this way; one that must know
+    /// it as it is built reads
+    /// [`next_index`](Self::next_index) and
+    /// [`generation`](Self::generation) first instead.
+    pub fn insert_with_generation(&mut self, record: T) -> (u32, u32) {
+        let index = self.insert(record);
+        (index, self.generation(index))
+    }
+
     /// Borrow the record at `index`, or `None` when nothing lives
     /// there.
     pub fn get(&self, index: u32) -> Option<&T> {

@@ -1,6 +1,6 @@
 //! What a handle-table entry names, for every kind a guest can hold.
 
-use crate::concurrency::TaskId;
+use crate::concurrency::{SubtaskId, TaskId, WaitableSetId};
 
 use super::identity::ResourceTypeId;
 
@@ -42,17 +42,21 @@ pub enum HandleKind {
         /// The task the borrow is owed to.
         task: TaskId,
     },
-    /// A subtask: the index of its record in the store's subtask
+    /// A subtask: the identity of its record in the store's subtask
     /// table.
     Subtask {
-        /// The subtask's index in the store.
-        index: u32,
+        /// The subtask the entry names. The identity carries the
+        /// generation of the record's slot, so an entry left behind
+        /// by a call that has ended goes on naming that call and
+        /// never the subtask that took its index.
+        subtask: SubtaskId,
     },
-    /// A waitable set: the index of its record in the store's
+    /// A waitable set: the identity of its record in the store's
     /// waitable-set table.
     WaitableSet {
-        /// The waitable set's index in the store.
-        index: u32,
+        /// The waitable set the entry names, under the same rule as
+        /// the identity a subtask entry carries.
+        set: WaitableSetId,
     },
     /// A readable stream end. Reserved for the feature that defines
     /// streams; nothing constructs this variant yet.

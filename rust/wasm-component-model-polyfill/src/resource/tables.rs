@@ -192,9 +192,7 @@ impl HandleTables {
         index: u32,
     ) -> Result<WaitableId, HandleLookupError> {
         match self.entry(table, index) {
-            Some(HandleKind::Subtask { index }) => {
-                Ok(self.tasks.subtask_waitable(SubtaskId::from_index(index)))
-            }
+            Some(HandleKind::Subtask { subtask }) => Ok(self.tasks.subtask_waitable(subtask)),
             Some(_) => Err(HandleLookupError::WrongKind { index }),
             None => Err(HandleLookupError::Unknown { index }),
         }
@@ -209,7 +207,7 @@ impl HandleTables {
         index: u32,
     ) -> Result<WaitableSetId, HandleLookupError> {
         match self.entry(table, index) {
-            Some(HandleKind::WaitableSet { index }) => Ok(WaitableSetId::from_index(index)),
+            Some(HandleKind::WaitableSet { set }) => Ok(set),
             Some(_) => Err(HandleLookupError::WrongKind { index }),
             None => Err(HandleLookupError::Unknown { index }),
         }
@@ -464,18 +462,18 @@ impl HandleTables {
         }))
     }
 
-    /// Insert a subtask entry that points at index `subtask` of the
-    /// store's subtask table, and return the handle-table index.
-    pub fn insert_subtask(&mut self, table: TableId, subtask: u32) -> u32 {
+    /// Insert a subtask entry that names the subtask record
+    /// `subtask`, and return the handle-table index.
+    pub fn insert_subtask(&mut self, table: TableId, subtask: SubtaskId) -> u32 {
         self.for_table_mut(table)
-            .insert_entry(HandleKind::Subtask { index: subtask })
+            .insert_entry(HandleKind::Subtask { subtask })
     }
 
-    /// Insert a waitable-set entry that points at index `set` of the
-    /// store's waitable-set table, and return the handle-table index.
-    pub fn insert_waitable_set(&mut self, table: TableId, set: u32) -> u32 {
+    /// Insert a waitable-set entry that names the waitable set `set`,
+    /// and return the handle-table index.
+    pub fn insert_waitable_set(&mut self, table: TableId, set: WaitableSetId) -> u32 {
         self.for_table_mut(table)
-            .insert_entry(HandleKind::WaitableSet { index: set })
+            .insert_entry(HandleKind::WaitableSet { set })
     }
 
     /// Read the entry at `index` of `table`, of any kind, with no
@@ -647,16 +645,18 @@ mod tests {
     fn it_inserts_looks_up_and_removes_a_subtask_and_a_waitable_set_entry() {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
-        let subtask_index = tables.insert_subtask(table, 5);
-        let set_index = tables.insert_waitable_set(table, 9);
+        let subtask = tables.tasks.insert_subtask();
+        let set = tables.tasks.insert_waitable_set();
+        let subtask_index = tables.insert_subtask(table, subtask);
+        let set_index = tables.insert_waitable_set(table, set);
         assert_ne!(subtask_index, set_index);
         assert_eq!(
             tables.entry(table, subtask_index),
-            Some(HandleKind::Subtask { index: 5 })
+            Some(HandleKind::Subtask { subtask })
         );
         assert_eq!(
             tables.entry(table, set_index),
-            Some(HandleKind::WaitableSet { index: 9 })
+            Some(HandleKind::WaitableSet { set })
         );
 
         let ty = ResourceTypeId::fresh();
@@ -673,11 +673,11 @@ mod tests {
 
         assert_eq!(
             tables.remove(table, subtask_index),
-            Some(HandleKind::Subtask { index: 5 })
+            Some(HandleKind::Subtask { subtask })
         );
         assert_eq!(
             tables.remove(table, set_index),
-            Some(HandleKind::WaitableSet { index: 9 })
+            Some(HandleKind::WaitableSet { set })
         );
         assert_eq!(tables.entry(table, subtask_index), None);
         assert_eq!(tables.entry(table, set_index), None);
@@ -863,6 +863,48 @@ mod tests {
             tables.exit_task(later),
             Err(1),
             "the later call still owes the one borrow it was lowered"
+        );
+    }
+
+    #[test]
+    fn it_refuses_a_lend_to_a_subtask_scope_that_has_already_ended() {
+        // A crossing names the scope its lends count against when it
+        // is built. A crossing built for a call out that then failed
+        // names a subtask whose record is gone, and the next call out
+        // takes the freed index: the lend must be refused, not
+        // recorded against the later call.
+        let mut tables = HandleTables::new();
+        let table = TableId::fresh();
+        let ty = ResourceTypeId::fresh();
+        let index = tables.insert_own(table, ty, false, 4);
+
+        let failed = tables.tasks.push_subtask();
+        tables.abandon_subtask(failed);
+        let later = tables.tasks.push_subtask();
+        assert_eq!(
+            later.index(),
+            failed.index(),
+            "the record table hands the freed index out again"
+        );
+
+        assert_eq!(
+            tables.lend_to(Some(Scope::Subtask(failed)), table, index),
+            Err(HandleLookupError::NoCallInFlight),
+            "the scope the crossing named has already ended"
+        );
+        assert!(
+            tables
+                .tasks
+                .subtask(later)
+                .expect("the later call")
+                .lenders
+                .is_empty(),
+            "nothing was recorded against the call that took the index"
+        );
+        assert_eq!(
+            tables.remove_own(table, index, ty, false),
+            Ok(4),
+            "and the refused lend left the entry free to be removed"
         );
     }
 

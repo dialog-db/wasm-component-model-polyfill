@@ -432,7 +432,7 @@ async fn it_decrements_the_lenders_of_a_subtask_when_its_resolution_is_delivered
         .tasks
         .subtask_returned(subtask)
         .expect("the call returns");
-    let handle_index = tables.insert_subtask(table, subtask.index());
+    let handle_index = tables.insert_subtask(table, subtask);
     tables
         .tasks
         .record_subtask_event(subtask, handle_index)
@@ -461,8 +461,8 @@ async fn it_finds_a_waitable_and_a_waitable_set_through_their_handles() {
     let table = tables.host_table(ty);
     let subtask = tables.tasks.insert_subtask();
     let set = tables.tasks.insert_waitable_set();
-    let subtask_handle = tables.insert_subtask(table, subtask.index());
-    let set_handle = tables.insert_waitable_set(table, set.index());
+    let subtask_handle = tables.insert_subtask(table, subtask);
+    let set_handle = tables.insert_waitable_set(table, set);
 
     assert_eq!(
         tables

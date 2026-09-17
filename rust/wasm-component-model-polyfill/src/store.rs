@@ -545,7 +545,7 @@ impl<T: 'static> Store<T> {
                 LowerKind::Async => {
                     let index = {
                         let mut guard = Self::lock_handle(&self.tables)?;
-                        let index = guard.insert_subtask(caller, subtask.index());
+                        let index = guard.insert_subtask(caller, subtask);
                         guard.tasks.start_subtask(subtask);
                         // The guest runs on while the host side does,
                         // so the subtask is no longer the scope the
@@ -1091,9 +1091,7 @@ mod tests {
             );
             assert_eq!(
                 guard.entry(table, index),
-                Some(HandleKind::Subtask {
-                    index: subtask.index()
-                }),
+                Some(HandleKind::Subtask { subtask }),
                 "the status names the entry the subtask took in the caller's table"
             );
         }

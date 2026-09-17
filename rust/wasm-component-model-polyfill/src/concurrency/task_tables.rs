@@ -111,9 +111,16 @@ impl TaskTables {
     ) -> TaskId {
         let index = self.tasks.next_index();
         let task = TaskId::new(index, self.tasks.generation(index));
-        let thread = ThreadId::from_index(self.threads.insert(Thread::new(task)));
-        self.tasks
+        let (thread_index, thread_generation) =
+            self.threads.insert_with_generation(Thread::new(task));
+        let thread = ThreadId::new(thread_index, thread_generation);
+        let inserted = self
+            .tasks
             .insert(Task::new(function, options, instance, thread));
+        debug_assert_eq!(
+            inserted, index,
+            "the task took the index its identity was minted against"
+        );
         task
     }
 
@@ -146,7 +153,8 @@ impl TaskTables {
     /// an asynchronous lower leaves the subtask behind for a guest
     /// to wait on.
     pub fn insert_subtask(&mut self) -> SubtaskId {
-        SubtaskId::from_index(self.subtasks.insert(Subtask::new()))
+        let (index, generation) = self.subtasks.insert_with_generation(Subtask::new());
+        SubtaskId::new(index, generation)
     }
 
     /// Create a subtask for a call out through an import and push it
@@ -253,6 +261,34 @@ impl TaskTables {
         (self.tasks.generation(task.index()) == task.generation()).then_some(task.index())
     }
 
+    /// The index `subtask` names, under the rule
+    /// [`task_index`](Self::task_index) states: `None` once the call
+    /// the identity was minted for has ended, so a lend recorded
+    /// against a subtask scope that is over cannot reach whichever
+    /// call took the index.
+    fn subtask_index(&self, subtask: SubtaskId) -> Option<u32> {
+        (self.subtasks.generation(subtask.index()) == subtask.generation())
+            .then_some(subtask.index())
+    }
+
+    /// The index `thread` names, under the rule
+    /// [`task_index`](Self::task_index) states: `None` once the
+    /// thread the identity was minted for has ended, so a context
+    /// slot addressed through a stale identity cannot land on
+    /// whichever thread took the index.
+    fn thread_index(&self, thread: ThreadId) -> Option<u32> {
+        (self.threads.generation(thread.index()) == thread.generation()).then_some(thread.index())
+    }
+
+    /// The index `set` names, under the rule
+    /// [`task_index`](Self::task_index) states: `None` once the set
+    /// the identity was minted for is gone, so a waitable or a
+    /// parked thread left naming a dropped set cannot reach whichever
+    /// set took the index.
+    fn waitable_set_index(&self, set: WaitableSetId) -> Option<u32> {
+        (self.waitable_sets.generation(set.index()) == set.generation()).then_some(set.index())
+    }
+
     /// One task record.
     pub fn task(&self, task: TaskId) -> Option<&Task> {
         self.tasks.get(self.task_index(task)?)
@@ -266,22 +302,24 @@ impl TaskTables {
 
     /// One subtask record.
     pub fn subtask(&self, subtask: SubtaskId) -> Option<&Subtask> {
-        self.subtasks.get(subtask.index())
+        self.subtasks.get(self.subtask_index(subtask)?)
     }
 
     /// One subtask record, mutably.
     pub fn subtask_mut(&mut self, subtask: SubtaskId) -> Option<&mut Subtask> {
-        self.subtasks.get_mut(subtask.index())
+        let index = self.subtask_index(subtask)?;
+        self.subtasks.get_mut(index)
     }
 
     /// One thread record.
     pub fn thread(&self, thread: ThreadId) -> Option<&Thread> {
-        self.threads.get(thread.index())
+        self.threads.get(self.thread_index(thread)?)
     }
 
     /// One thread record, mutably.
     pub fn thread_mut(&mut self, thread: ThreadId) -> Option<&mut Thread> {
-        self.threads.get_mut(thread.index())
+        let index = self.thread_index(thread)?;
+        self.threads.get_mut(index)
     }
 
     /// How many task records the store holds.
@@ -340,7 +378,9 @@ impl TaskTables {
         let index = self.task_index(task)?;
         let record = self.tasks.remove(index)?;
         for thread in &record.threads {
-            self.threads.remove(thread.index());
+            if let Some(index) = self.thread_index(*thread) {
+                self.threads.remove(index);
+            }
         }
         Some(record)
     }
@@ -350,8 +390,9 @@ impl TaskTables {
     /// handed out again, and a membership left behind would name
     /// whichever record takes the index next.
     pub fn remove_subtask(&mut self, subtask: SubtaskId) -> Option<Subtask> {
+        let index = self.subtask_index(subtask)?;
         self.leave_waitable_set(WaitableId::Subtask(subtask));
-        self.subtasks.remove(subtask.index())
+        self.subtasks.remove(index)
     }
 
     // ---- waitables and waitable sets ----
@@ -360,12 +401,21 @@ impl TaskTables {
     /// `waitable-set.new` built-in calls this and puts the identity's
     /// index in a handle-table entry for the guest.
     pub fn insert_waitable_set(&mut self) -> WaitableSetId {
-        WaitableSetId::from_index(self.waitable_sets.insert(WaitableSet::new()))
+        let (index, generation) = self
+            .waitable_sets
+            .insert_with_generation(WaitableSet::new());
+        WaitableSetId::new(index, generation)
     }
 
     /// One waitable set record.
     pub fn waitable_set(&self, set: WaitableSetId) -> Option<&WaitableSet> {
-        self.waitable_sets.get(set.index())
+        self.waitable_sets.get(self.waitable_set_index(set)?)
+    }
+
+    /// One waitable set record, mutably.
+    fn waitable_set_mut(&mut self, set: WaitableSetId) -> Option<&mut WaitableSet> {
+        let index = self.waitable_set_index(set)?;
+        self.waitable_sets.get_mut(index)
     }
 
     /// How many waitable set records the store holds.
@@ -485,7 +535,7 @@ impl TaskTables {
         let Some(previous) = state.set.take() else {
             return;
         };
-        if let Some(record) = self.waitable_sets.get_mut(previous.index()) {
+        if let Some(record) = self.waitable_set_mut(previous) {
             record.waitables.retain(|member| *member != waitable);
         }
     }
@@ -554,7 +604,9 @@ impl TaskTables {
         if record.num_waiting > 0 {
             return Err(Error::Waitable(WaitableCause::SetHasWaiters));
         }
-        self.waitable_sets.remove(set.index());
+        if let Some(index) = self.waitable_set_index(set) {
+            self.waitable_sets.remove(index);
+        }
         Ok(())
     }
 
@@ -635,8 +687,7 @@ impl TaskTables {
 
     /// One waitable set record, mutably.
     fn waitable_set_record_mut(&mut self, set: WaitableSetId) -> Result<&mut WaitableSet> {
-        self.waitable_sets
-            .get_mut(set.index())
+        self.waitable_set_mut(set)
             .ok_or_else(|| Error::internal("waitable set record is not in the store"))
     }
 
@@ -653,7 +704,7 @@ impl TaskTables {
     /// The waitable state on the record `waitable` names, mutably.
     fn waitable_state_mut(&mut self, waitable: WaitableId) -> Result<&mut WaitableState> {
         match waitable {
-            WaitableId::Subtask(subtask) => match self.subtasks.get_mut(subtask.index()) {
+            WaitableId::Subtask(subtask) => match self.subtask_mut(subtask) {
                 Some(record) => Ok(&mut record.waitable),
                 None => Err(Error::internal("subtask record is not in the store")),
             },
@@ -667,5 +718,131 @@ impl TaskTables {
 impl Default for TaskTables {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn it_resolves_a_stale_subtask_identity_to_no_record() {
+        // A call out through an import ends and its record index is
+        // handed out again. The identity the ended call was made
+        // with must not reach the call that took the index, because
+        // a subtask is the scope a lend is recorded against.
+        let mut tables = TaskTables::new();
+        let ended = tables.insert_subtask();
+        assert!(tables.remove_subtask(ended).is_some(), "the call ends");
+
+        let later = tables.insert_subtask();
+        assert_eq!(
+            later.index(),
+            ended.index(),
+            "the freed index is handed out again"
+        );
+        assert_ne!(later, ended, "the generation tells the two calls apart");
+
+        assert!(
+            tables.subtask(ended).is_none(),
+            "the ended call's identity names no record"
+        );
+        assert!(
+            !tables.add_lender(Scope::Subtask(ended), (TableId::fresh(), 0)),
+            "so no lend can be recorded against it"
+        );
+        assert!(
+            tables
+                .subtask(later)
+                .expect("the later call")
+                .lenders
+                .is_empty(),
+            "and the call that took the index was lent nothing"
+        );
+    }
+
+    #[test]
+    fn it_resolves_a_stale_thread_identity_to_no_record() {
+        // A task's threads go with its record, and the next task
+        // takes the freed thread index. The ended thread's identity
+        // must not address the later thread's context slots.
+        let mut tables = TaskTables::new();
+        let instance = tables.insert_instance();
+        let ended = tables.create_task(None, None, instance);
+        let ended_thread = tables.task(ended).expect("the task").implicit_thread;
+        assert!(tables.remove_task(ended).is_some(), "the task ends");
+
+        let later = tables.create_task(None, None, instance);
+        let later_thread = tables.task(later).expect("the task").implicit_thread;
+        assert_eq!(
+            later_thread.index(),
+            ended_thread.index(),
+            "the freed index is handed out again"
+        );
+        assert_ne!(
+            later_thread, ended_thread,
+            "the generation tells the two threads apart"
+        );
+
+        assert!(
+            tables.thread(ended_thread).is_none(),
+            "the ended thread's identity names no record"
+        );
+        assert!(
+            tables.thread_mut(ended_thread).is_none(),
+            "so nothing can be written through it"
+        );
+        assert_eq!(
+            tables
+                .thread(later_thread)
+                .expect("the later thread")
+                .context,
+            [0, 0],
+            "and the thread that took the index kept its own slots"
+        );
+    }
+
+    #[test]
+    fn it_resolves_a_stale_waitable_set_identity_to_no_record() {
+        // A dropped set's index is handed out again. The dropped
+        // set's identity must not name the set that took it, or a
+        // waitable left naming the old set would join the new one.
+        let mut tables = TaskTables::new();
+        let dropped = tables.insert_waitable_set();
+        tables
+            .drop_waitable_set(dropped)
+            .expect("a set nothing is in drops");
+
+        let later = tables.insert_waitable_set();
+        assert_eq!(
+            later.index(),
+            dropped.index(),
+            "the freed index is handed out again"
+        );
+        assert_ne!(later, dropped, "the generation tells the two sets apart");
+
+        assert!(
+            tables.waitable_set(dropped).is_none(),
+            "the dropped set's identity names no record"
+        );
+        let subtask = tables.insert_subtask();
+        let waitable = tables.subtask_waitable(subtask);
+        assert!(
+            tables.join_waitable_set(waitable, Some(dropped)).is_err(),
+            "so nothing can join it"
+        );
+        assert!(
+            tables
+                .waitable_set(later)
+                .expect("the later set")
+                .waitables
+                .is_empty(),
+            "and the set that took the index lists nothing"
+        );
+        assert_eq!(
+            tables.waitable_set_of(waitable).expect("the waitable"),
+            None,
+            "the refused join left the waitable naming no set"
+        );
     }
 }
