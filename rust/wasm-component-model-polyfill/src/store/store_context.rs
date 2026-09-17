@@ -415,11 +415,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     ///
     /// The body is therefore polled from the readiness condition,
     /// once per check, and the provider decides when to check — a
-    /// suspension and a resumption apart. The poll carries the waker
-    /// of the turn that is running, or one that does nothing when
-    /// the thread suspended outside a turn, so a provider that parks
-    /// until something wakes it supplies the wake itself; the seam
-    /// hands the condition no waker of its own.
+    /// suspension and a resumption apart. The wake that brings the
+    /// thread back to a check is the provider's to supply, which is
+    /// one of the two obligations the suspend provider trait states.
     fn block_on_host_task(
         &mut self,
         mut task: HostTask<T>,

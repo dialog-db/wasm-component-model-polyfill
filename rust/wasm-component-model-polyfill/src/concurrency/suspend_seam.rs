@@ -1128,8 +1128,8 @@ mod tests {
             move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
                 // Everything below runs against the store as the
                 // trampoline reaches it: the core store's context
-                // the runtime layer handed it, paired with the
-                // handle it captured. No driver, no `&mut Store`.
+                // the runtime layer handed it, and nothing besides.
+                // No driver, no `&mut Store`.
                 let store = call.store();
 
                 // A host task of this call. Its body is ready at

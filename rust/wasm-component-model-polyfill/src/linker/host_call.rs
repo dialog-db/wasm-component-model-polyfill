@@ -15,9 +15,23 @@ use crate::types::{ResourceType, ValueType};
 /// type the calling instance knows; and the store itself through
 /// [`Self::store`], which is how a call that has to block reaches
 /// the scheduler's suspend seam and how a host `async` function's
-/// call starts its host task. No runtime layer type appears here:
-/// the context is a borrowed view onto the polyfill's own store
-/// state.
+/// call starts its host task.
+///
+/// The store surface is a [`StoreContext`], the polyfill's own view
+/// of the store, and the whole store sits behind it: the scheduler,
+/// the queues, the host tasks, and the handle tables. That view is
+/// also the wrapper around the core store's context, so
+/// `call.store().runtime_mut()` reaches the runtime layer's own
+/// store context in two hops. The reach follows from how a
+/// trampoline is served rather than from anything this boundary
+/// means to offer: a suspended guest thread resumes outside any
+/// poll of a driver, so the scheduler's state has to be reachable
+/// from a trampoline that holds nothing but the context the runtime
+/// layer handed it, and the polyfill's state therefore rides in the
+/// core store's data. What the context promises a host function is
+/// the three surfaces above. The core store underneath them carries
+/// the polyfill's own bookkeeping, and a host function that drives
+/// it directly is outside what the polyfill defines.
 ///
 /// [`Store<T>`]: crate::Store
 /// [`Store::data`]: crate::Store::data

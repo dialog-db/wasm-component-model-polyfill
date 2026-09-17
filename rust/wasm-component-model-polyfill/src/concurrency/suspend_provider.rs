@@ -42,7 +42,9 @@ use crate::store::StoreContext;
 ///   and the host tasks through [`StoreContext`] and captures
 ///   nothing.
 ///
-/// One obligation falls on the first provider to fill the seam. A
+/// Two obligations fall on the first provider to fill the seam.
+///
+/// The first is to keep the store aware of a pending body. A
 /// synchronous lower of a host `async` function that blocks keeps
 /// its host task in the trampoline's frame rather than among the
 /// store's host tasks, because the call the task belongs to is
@@ -55,6 +57,13 @@ use crate::store::StoreContext;
 /// there, or by admitting no turn until the frame resumes. A
 /// provider that does neither leaves that driver to go idle with
 /// the task unresolved, which raises the deadlock cause.
+///
+/// The second is to supply the wake. Such a body is polled from the
+/// readiness condition, once per check, and the poll carries the
+/// waker of the turn that is running, or one that does nothing when
+/// the thread suspended outside a turn. The seam hands the
+/// condition no waker of its own, so a provider that parks until
+/// something wakes it is the thing that has to wake it.
 pub trait SuspendProvider<T: 'static>: 'static {
     /// Suspend the current guest thread until `condition` holds.
     ///

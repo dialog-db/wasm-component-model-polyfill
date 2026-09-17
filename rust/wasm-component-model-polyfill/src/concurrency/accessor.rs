@@ -26,11 +26,14 @@ struct Lent<'a, T: 'static> {
 /// because the closure's argument outlives nothing.
 ///
 /// An accessor used inside another accessor's closure fails with the
-/// recursive-driver cause, and so does a driver — a call into an
-/// export, an instantiation, another `run_concurrent` — entered from
-/// inside one: the store is inside a turn while the closure runs, so
-/// the guest work the closure reaches runs where every other piece
-/// of guest work runs.
+/// recursive-driver cause, and so does a nested `run_concurrent`
+/// entered from inside one: the store is inside a turn while the
+/// closure runs, so the guest work the closure reaches runs where
+/// every other piece of guest work runs. The other two drivers — a
+/// call into an export, an instantiation — cannot be entered from
+/// there at all, because each takes a `&mut Store<T>` and the
+/// closure holds a [`StoreContext`], which nothing turns back into
+/// the store the host owns.
 pub struct Accessor<'a, T: 'static> {
     lent: Arc<Mutex<Lent<'a, T>>>,
 }
@@ -73,11 +76,13 @@ impl<'a, T: 'static> Accessor<'a, T> {
     /// `body` takes the store by a borrow it cannot hold on to, so
     /// anything read out of the host data must be cloned out.
     ///
-    /// The store is inside a turn while `body` runs. A driver
-    /// entered from there — a call into an export, an instantiation,
-    /// another `run_concurrent` — therefore fails with the
+    /// The store is inside a turn while `body` runs. A nested
+    /// `run_concurrent` entered from there therefore fails with the
     /// recursive-driver cause, and so does this accessor used again
-    /// from inside `body`.
+    /// from inside `body`. The other two drivers — a call into an
+    /// export, an instantiation — take a `&mut Store<T>`, which the
+    /// [`StoreContext`] `body` holds cannot produce, so neither can
+    /// be written here.
     pub fn with<R>(&self, body: impl FnOnce(&mut StoreContext<'_, T>) -> R) -> Result<R> {
         self.borrow(|lent| {
             let waker = lent.waker.clone();
