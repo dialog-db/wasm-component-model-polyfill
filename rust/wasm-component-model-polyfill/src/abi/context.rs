@@ -5,7 +5,9 @@
 //! One context is built per crossing, from three things: the canon
 //! options of the lift or lower, the component instance, and the
 //! task or subtask whose borrows and lends the crossing counts
-//! against.
+//! against. The tables a handle of the crossing resolves against
+//! are the instance's, and the context reads them off it, so a call
+//! site names no table of its own.
 //!
 //! The context is the only object that reads guest memory, writes
 //! guest memory, or asks the guest for memory. A trampoline, an
@@ -23,18 +25,16 @@
 //!
 //! [`Val`]: crate::value::Val
 
-use std::sync::{Arc, Mutex};
-
 use wasm_runtime_layer::{StoreContextMut, Val as RuntimeVal};
 
+use crate::abi::instance::BoundaryInstance;
 use crate::abi::options::BoundaryOptions;
 use crate::abi::strategy::AbiStrategy;
 use crate::backend::Backend;
 use crate::component::FunctionType;
-use crate::concurrency::{InstanceId, Scope};
+use crate::concurrency::Scope;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::{CanonOptions, StringEncoding};
-use crate::resource::{HandleTables, ResourceTableRuntime};
 use crate::types::ValueType;
 
 /// The context of one canonical-ABI crossing.
@@ -51,50 +51,38 @@ pub struct BoundaryContext<'a, T: 'static> {
     /// encoding, and data model.
     options: BoundaryOptions,
     /// The options of the side a copy between two guest memories
-    /// reads from. `None` for every crossing that is not such a
-    /// copy, which is every crossing between a host [`Val`] and a
-    /// guest.
+    /// reads from, with the strategy those options select. `None`
+    /// for every crossing that is not such a copy, which is every
+    /// crossing between a host [`Val`] and a guest: there the side
+    /// read from is the side written to.
     ///
     /// [`Val`]: crate::value::Val
-    source: Option<BoundaryOptions>,
-    /// The component instance the crossing belongs to. A lift or a
-    /// lower takes it from its options. A copy between two guest
-    /// memories takes it from the task on the stack, because the
-    /// fused adapter's transcoder names only the two memories, and
-    /// has none when nothing is on the stack.
-    ///
-    /// Nothing reads it yet. The instance record it names carries
-    /// the entry gate, the backpressure counter, and the flags that
-    /// an asynchronous crossing consults.
-    #[allow(dead_code)]
-    instance: Option<InstanceId>,
+    source: Option<(BoundaryOptions, AbiStrategy)>,
+    /// The component instance the crossing belongs to, and with it
+    /// the tables a handle of the crossing resolves against. A lift
+    /// or a lower takes the instance from its options. A copy
+    /// between two guest memories takes it from the task on the
+    /// stack, because the fused adapter's transcoder names only the
+    /// two memories, and has none when nothing is on the stack.
+    instance: BoundaryInstance,
     /// The task or subtask the crossing's borrows and lends count
     /// against. Absent only for a crossing driven with no call in
     /// flight, which no guest reaches.
     scope: Option<Scope>,
     /// The strategy the options selected.
     strategy: AbiStrategy,
-    /// The per-store handle tables. Required when the crossing
-    /// carries `own<T>` or `borrow<T>` valtypes; `None` is rejected
-    /// at first contact.
-    tables: Option<Arc<Mutex<HandleTables>>>,
-    /// Every resource table of the component instance, by table
-    /// index. A handle's declared type names the index; this maps it
-    /// to the table the instance keeps and the resource it holds.
-    resource_tables: Vec<Option<ResourceTableRuntime>>,
 }
 
 impl<'a, T: 'static> BoundaryContext<'a, T> {
     /// Build the context of one crossing between a host value and a
     /// guest, under `options`, for `instance`, counted against
-    /// `scope`.
+    /// `scope`. The tables the crossing resolves a handle against
+    /// come off the instance.
     pub fn new(
         store: StoreContextMut<'a, T, Backend>,
         options: BoundaryOptions,
-        instance: Option<InstanceId>,
+        instance: BoundaryInstance,
         scope: Option<Scope>,
-        tables: Option<Arc<Mutex<HandleTables>>>,
-        resource_tables: Vec<Option<ResourceTableRuntime>>,
     ) -> Self {
         let strategy = AbiStrategy::select(&options);
         Self {
@@ -104,8 +92,6 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
             instance,
             scope,
             strategy,
-            tables,
-            resource_tables,
         }
     }
 
@@ -117,19 +103,18 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
         store: StoreContextMut<'a, T, Backend>,
         destination: BoundaryOptions,
         source: BoundaryOptions,
-        instance: Option<InstanceId>,
+        instance: BoundaryInstance,
         scope: Option<Scope>,
     ) -> Self {
         let strategy = AbiStrategy::select(&destination);
+        let source_strategy = AbiStrategy::select(&source);
         Self {
             store,
             options: destination,
-            source: Some(source),
+            source: Some((source, source_strategy)),
             instance,
             scope,
             strategy,
-            tables: None,
-            resource_tables: Vec::new(),
         }
     }
 
@@ -140,11 +125,11 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
         &self.options
     }
 
-    /// The component instance the crossing belongs to. Nothing reads
-    /// it yet, for the reason the field states.
-    #[allow(dead_code)]
-    pub fn instance(&self) -> Option<InstanceId> {
-        self.instance
+    /// The component instance the crossing belongs to, through which
+    /// a handle of the crossing reaches the tables it resolves
+    /// against.
+    pub fn instance(&self) -> &BoundaryInstance {
+        &self.instance
     }
 
     /// The task or subtask the crossing counts against.
@@ -165,18 +150,6 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
         self.options.string_encoding()
     }
 
-    /// The per-store handle tables the crossing resolves handles
-    /// against.
-    pub fn tables(&self) -> Option<&Arc<Mutex<HandleTables>>> {
-        self.tables.as_ref()
-    }
-
-    /// Every resource table of the component instance, by table
-    /// index.
-    pub fn resource_tables(&self) -> &[Option<ResourceTableRuntime>] {
-        &self.resource_tables
-    }
-
     /// The canon options of the lift of the task the crossing
     /// counts against. A `task.return` must find its own equal to
     /// these; nothing else reads them, so nothing does yet.
@@ -185,7 +158,7 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
         let Some(Scope::Task(task)) = self.scope else {
             return None;
         };
-        let guard = self.tables.as_ref()?.lock().ok()?;
+        let guard = self.instance.tables()?.lock().ok()?;
         guard.tasks.task(task)?.options.clone()
     }
 
@@ -197,7 +170,7 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
         let Some(Scope::Task(task)) = self.scope else {
             return None;
         };
-        let guard = self.tables.as_ref()?.lock().ok()?;
+        let guard = self.instance.tables()?.lock().ok()?;
         let function: &FunctionType = guard.tasks.task(task)?.function.as_ref()?;
         function.result.clone()
     }
@@ -286,8 +259,11 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
     }
 
     /// Read `length` bytes at `offset` out of the side a copy
-    /// between two guest memories reads from. A crossing that is not
-    /// such a copy reads its own side.
+    /// between two guest memories reads from, under the strategy
+    /// that side's own options select: each side of a copy carries
+    /// its own data model, so the side read from decides how the
+    /// read happens. A crossing that is not such a copy reads its
+    /// own side, under its own strategy.
     pub fn read_source_bytes(&mut self, offset: usize, length: usize) -> Result<Vec<u8>> {
         let Self {
             store,
@@ -296,8 +272,12 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
             strategy,
             ..
         } = self;
+        let (options, strategy) = match source {
+            Some((source_options, source_strategy)) => (&*source_options, &*source_strategy),
+            None => (&*options, &*strategy),
+        };
         strategy
-            .load(store, source.as_ref().unwrap_or(options), offset, length)
+            .load(store, options, offset, length)
             .map_err(Self::unlabelled)
     }
 
@@ -369,9 +349,12 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
     use crate::abi::runtime_state::AbiRuntimeState;
     use crate::component::{FunctionParameter, FunctionType};
+    use crate::concurrency::InstanceId;
     use crate::engine::Engine;
     use crate::executor::ir::DataModel;
     use crate::store::Store;
@@ -428,15 +411,16 @@ mod tests {
             (instance, task)
         };
         let declared = canon(DataModel::LinearMemory);
-        let options =
-            BoundaryOptions::resolve(&declared, &state(instance)).expect("options resolve");
+        // The three inputs of a crossing: the options, the instance
+        // the options name — which carries the tables of the
+        // crossing — and the scope.
+        let (options, boundary_instance) =
+            BoundaryInstance::resolve(&declared, &state(instance), &tables).expect("resolve");
         let ctx = BoundaryContext::new(
             store.inner_mut().as_context_mut(),
             options,
-            Some(instance),
+            boundary_instance,
             Some(Scope::Task(task)),
-            Some(tables.clone()),
-            Vec::new(),
         );
 
         assert_eq!(
@@ -445,9 +429,13 @@ mod tests {
             "the crossing carries its canon options as a value"
         );
         assert_eq!(
-            ctx.instance(),
+            ctx.instance().id(),
             Some(instance),
             "the crossing names the component instance it belongs to"
+        );
+        assert!(
+            ctx.instance().tables().is_some(),
+            "and the tables of the crossing came off that instance"
         );
         assert_eq!(
             ctx.scope(),
@@ -471,16 +459,12 @@ mod tests {
         let engine = Engine::new().expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let instance = InstanceId::from_index(0);
-        let options = BoundaryOptions::resolve(&canon(DataModel::LinearMemory), &state(instance))
-            .expect("options resolve");
-        let mut ctx = BoundaryContext::new(
-            store.inner_mut().as_context_mut(),
-            options,
-            Some(instance),
-            None,
-            None,
-            Vec::new(),
-        );
+        let tables = store.tables_handle();
+        let (options, instance) =
+            BoundaryInstance::resolve(&canon(DataModel::LinearMemory), &state(instance), &tables)
+                .expect("resolve");
+        let mut ctx =
+            BoundaryContext::new(store.inner_mut().as_context_mut(), options, instance, None);
 
         assert_eq!(ctx.strategy(), AbiStrategy::Eager);
         // The eager strategy addresses linear memory, so a crossing
@@ -507,16 +491,12 @@ mod tests {
         let engine = Engine::new().expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let instance = InstanceId::from_index(0);
-        let options = BoundaryOptions::resolve(&canon(DataModel::Gc), &state(instance))
-            .expect("options resolve");
-        let mut ctx = BoundaryContext::new(
-            store.inner_mut().as_context_mut(),
-            options,
-            Some(instance),
-            None,
-            None,
-            Vec::new(),
-        );
+        let tables = store.tables_handle();
+        let (options, instance) =
+            BoundaryInstance::resolve(&canon(DataModel::Gc), &state(instance), &tables)
+                .expect("resolve");
+        let mut ctx =
+            BoundaryContext::new(store.inner_mut().as_context_mut(), options, instance, None);
 
         assert_eq!(
             ctx.strategy(),
@@ -539,6 +519,42 @@ mod tests {
             ctx.memory_size(),
             None,
             "the second strategy addresses no linear memory"
+        );
+    }
+
+    #[test]
+    fn it_reads_the_source_of_a_copy_under_the_source_strategy() {
+        // A copy between two guest memories has two sides, and each
+        // carries its own data model. The read of the source goes
+        // through the strategy the source's options select, not the
+        // destination's: here the source is under the second
+        // strategy, which implements no access, while the
+        // destination is under the eager one.
+        let engine = Engine::new().expect("engine");
+        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+        let instance = InstanceId::from_index(0);
+        let state = state(instance);
+        let (destination, source) = {
+            let guard = state.lock().expect("runtime state");
+            (
+                BoundaryOptions::from_state(&canon(DataModel::LinearMemory), &guard),
+                BoundaryOptions::from_state(&canon(DataModel::Gc), &guard),
+            )
+        };
+        let mut ctx = BoundaryContext::for_copy(
+            store.inner_mut().as_context_mut(),
+            destination,
+            source,
+            BoundaryInstance::without_tables(Some(instance)),
+            None,
+        );
+
+        let Err(Error::Internal { message }) = ctx.read_source_bytes(0, 4) else {
+            panic!("the source read reports the strategy of the side it reads");
+        };
+        assert!(
+            message.contains("data model is not implemented"),
+            "the source's own strategy refused the read, not the destination's: {message}"
         );
     }
 }

@@ -354,7 +354,7 @@ pub fn lift_handle<T: 'static>(
     is_own: bool,
 ) -> Result<Val> {
     let scope = ctx.scope();
-    let tables = ctx.tables().cloned().ok_or_else(|| {
+    let tables = ctx.instance().tables().cloned().ok_or_else(|| {
         Error::from(AbiError {
             position,
             valtype: ty.clone(),
@@ -371,7 +371,7 @@ pub fn lift_handle<T: 'static>(
     // The declared type names the resource table by its index in the
     // component; the instance maps that to the table it keeps.
     let table = declared_resource_index(ty)
-        .and_then(|i| ctx.resource_tables().get(i).copied().flatten())
+        .and_then(|i| ctx.instance().resource_tables().get(i).copied().flatten())
         .ok_or_else(|| {
             Error::from(AbiError {
                 position,

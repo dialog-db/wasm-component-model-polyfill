@@ -18,9 +18,11 @@
 //!
 //! [`context`] holds the boundary context, the one object a value
 //! crosses through. One is built per crossing from the canon
-//! [`options`] of the lift or lower, the component instance, and the
-//! task or subtask the crossing counts against, and it selects its
-//! [`strategy`] from those options. It is the only object in the
+//! [`options`] of the lift or lower, the component [`instance`], and
+//! the task or subtask the crossing counts against, and it selects
+//! its [`strategy`] from those options. The instance is where the
+//! handle tables of the crossing come from, so a call site hands the
+//! context those three things and no table of its own. It is the only object in the
 //! polyfill that reads guest memory, writes guest memory, or asks
 //! the guest for memory.
 //!
@@ -34,6 +36,7 @@
 
 pub mod context;
 pub mod flatten;
+pub mod instance;
 pub mod layout;
 mod lift;
 mod lower;

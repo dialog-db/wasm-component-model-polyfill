@@ -35,6 +35,7 @@ use wasm_runtime_layer::{Func as RuntimeFunc, FuncType, Val as RuntimeVal, ValTy
 use wasmtime_environ::Trap;
 
 use crate::abi::context::BoundaryContext;
+use crate::abi::instance::BoundaryInstance;
 use crate::abi::layout::FlatType;
 use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
@@ -406,8 +407,13 @@ pub fn build_transcoder<T: 'static>(
             let source = BoundaryOptions::for_memory(from_memory, &abi_state)?;
             let destination = BoundaryOptions::for_memory(to_memory, &abi_state)?;
             let (instance, scope) = copy_scope(&tables)?;
-            let mut ctx =
-                BoundaryContext::for_copy(store_ctx, destination, source, instance, scope);
+            let mut ctx = BoundaryContext::for_copy(
+                store_ctx,
+                destination,
+                source,
+                BoundaryInstance::without_tables(instance),
+                scope,
+            );
             transcode(&mut ctx, op, args, results, &result_widths)
                 .map_err(|err| anyhow!("string transcoder failed: {err}"))
         },

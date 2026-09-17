@@ -53,18 +53,20 @@ pub struct BoundaryOptions {
 }
 
 impl BoundaryOptions {
-    /// Resolve the canon options `declared` against the instance's
-    /// runtime state: the memory, `cabi_realloc`, and `post-return`
-    /// slots the `Extract*` directives filled, and the identity of
-    /// the component instance the options name.
-    pub fn resolve(
-        declared: &CanonOptions,
-        abi_state: &Arc<Mutex<AbiRuntimeState>>,
-    ) -> Result<Self> {
-        let state = abi_state
-            .lock()
-            .map_err(|_| Error::internal("ABI runtime state lock poisoned"))?;
-        Ok(Self {
+    /// Resolve the canon options `declared` against a runtime state
+    /// the caller has already locked: the memory, `cabi_realloc`, and
+    /// `post-return` slots the `Extract*` directives filled, and the
+    /// identity of the component instance the options name.
+    ///
+    /// The lock is the caller's because a call site needs the
+    /// instance's tables along with the options, and both come out of
+    /// the same state: [`BoundaryInstance::resolve`] takes the lock
+    /// once and reads the pair through here.
+    ///
+    /// [`BoundaryInstance::resolve`]:
+    ///     crate::abi::instance::BoundaryInstance::resolve
+    pub fn from_state(declared: &CanonOptions, state: &AbiRuntimeState) -> Self {
+        Self {
             declared: Some(declared.clone()),
             instance: state.component_instances.get(declared.instance).copied(),
             memory: declared
@@ -78,7 +80,7 @@ impl BoundaryOptions {
                 .and_then(|slot| state.post_returns.get(slot).and_then(|f| f.clone())),
             string_encoding: declared.string_encoding,
             data_model: declared.data_model,
-        })
+        }
     }
 
     /// The options of one side of a copy between two guest memories.

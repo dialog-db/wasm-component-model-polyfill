@@ -360,7 +360,10 @@ impl HandleTables {
     /// is on top of the stack. A crossing names the scope its lends
     /// count against when it is built, and hands it here; `None`
     /// falls back to the current scope, for a caller that has no
-    /// crossing of its own.
+    /// crossing of its own. The argument is read through
+    /// [`TaskTables::counting_scope`], which is the one rule a
+    /// crossing's scope is read by, here and in
+    /// [`insert_borrow_for`](Self::insert_borrow_for).
     ///
     /// A lend is two writes — the count on the entry and the scope's
     /// list of lenders — and only the pair is safe: a count raised
@@ -373,7 +376,7 @@ impl HandleTables {
         table: TableId,
         index: u32,
     ) -> Result<(), HandleLookupError> {
-        let Some(scope) = scope.or_else(|| self.tasks.current_scope()) else {
+        let Some(scope) = self.tasks.counting_scope(scope) else {
             return Err(HandleLookupError::NoCallInFlight);
         };
         match self.for_table(table).and_then(|t| t.entry(index)) {
@@ -421,13 +424,19 @@ impl HandleTables {
         self.insert_borrow_for(None, table, type_id, guest_defined, rep)
     }
 
-    /// Insert the borrow against the task `scope` names rather than
+    /// Insert the borrow against the scope `scope` names rather than
     /// against whatever is on top of the stack. A crossing names the
     /// scope its borrows count against when it is built, and hands
-    /// it here. A crossing counted against a subtask, and a caller
-    /// with no crossing of its own, fall back to the innermost task
-    /// on the stack, which is the task the borrow is owed to either
-    /// way.
+    /// it here; `None` falls back to the current scope, for a caller
+    /// with no crossing of its own. The argument is read through
+    /// [`TaskTables::counting_scope`], the same rule
+    /// [`lend_to`](Self::lend_to) reads it by.
+    ///
+    /// A borrow is owed to a task, so the scope that came out of
+    /// that rule is resolved to one through
+    /// [`TaskTables::borrow_task`]: a subtask scope owes the borrow
+    /// to the task that made the call, not to whatever task happens
+    /// to be on top of the stack.
     pub fn insert_borrow_for(
         &mut self,
         scope: Option<Scope>,
@@ -436,10 +445,8 @@ impl HandleTables {
         guest_defined: bool,
         rep: u32,
     ) -> Option<u32> {
-        let task = match scope {
-            Some(Scope::Task(task)) => task,
-            _ => self.tasks.current_task()?,
-        };
+        let scope = self.tasks.counting_scope(scope)?;
+        let task = self.tasks.borrow_task(scope)?;
         self.tasks.task_mut(task)?.num_borrows += 1;
         Some(self.for_table_mut(table).insert_entry(HandleKind::Borrow {
             type_id,
@@ -893,6 +900,63 @@ mod tests {
             tables.remove_own(table, index, ty, false),
             Ok(6),
             "the refused lend left the count untouched"
+        );
+    }
+
+    #[test]
+    fn it_reads_a_subtask_scope_the_same_way_for_a_lend_and_for_a_borrow() {
+        // A crossing hands the same scope to both operations, so both
+        // read it by the same rule: the named subtask is the call the
+        // lend is given back to, and the task that made that call is
+        // the one the borrow is owed to. Neither consults the top of
+        // the stack instead, which here is a second, unrelated task
+        // running while the host side of the call runs.
+        let mut tables = HandleTables::new();
+        let table = TableId::fresh();
+        let ty = ResourceTypeId::fresh();
+        let owned = tables.insert_own(table, ty, false, 4);
+        let instance = tables.tasks.insert_instance();
+        let caller = tables.tasks.push_task(None, None, instance);
+        let subtask = tables.tasks.push_subtask();
+        let nested = tables.tasks.push_task(None, None, instance);
+
+        let scope = Some(Scope::Subtask(subtask));
+        assert_eq!(tables.lend_to(scope, table, owned), Ok(()));
+        let borrow = tables
+            .insert_borrow_for(scope, table, ty, false, 5)
+            .expect("the named subtask names the call the borrow is owed to");
+
+        assert_eq!(
+            tables.entry(table, borrow),
+            Some(HandleKind::Borrow {
+                type_id: ty,
+                guest_defined: false,
+                rep: 5,
+                task: caller,
+            }),
+            "the borrow is owed to the task that made the call, not to the task on the stack"
+        );
+        assert_eq!(
+            tables.exit_task(nested),
+            Ok(()),
+            "the task on top of the stack was handed neither the lend nor the borrow"
+        );
+        assert_eq!(
+            tables.remove_own(table, owned, ty, false),
+            Err(HandleLookupError::Lent),
+            "the lend is held by the named subtask, which has not resolved"
+        );
+
+        tables.exit_subtask(subtask, SubtaskState::Returned);
+        assert_eq!(
+            tables.remove_own(table, owned, ty, false),
+            Ok(4),
+            "resolving the call gave the lend back"
+        );
+        assert_eq!(
+            tables.exit_task(caller),
+            Err(1),
+            "and the borrow is still owed to the task that made the call"
         );
     }
 

@@ -182,15 +182,46 @@ impl TaskTables {
         self.scopes.last().copied()
     }
 
-    /// The current task: the innermost task on the stack. A subtask
-    /// on top of it does not displace it, because a borrow lowered
-    /// into a guest while a host call runs is still owed to the task
-    /// that made the call.
+    /// The scope an operation counts against when the crossing that
+    /// asks for it names `scope`: the scope it named, or the current
+    /// scope when it named none. This is the one rule for the scope
+    /// argument a crossing hands down — a lend and a borrow both read
+    /// it this way, so neither can quietly prefer the stack to the
+    /// scope the crossing was built with.
+    pub fn counting_scope(&self, scope: Option<Scope>) -> Option<Scope> {
+        scope.or_else(|| self.current_scope())
+    }
+
+    /// The task a borrow taken during `scope` is owed to. A task
+    /// scope is that task. A subtask scope is the task that made the
+    /// call — the innermost task under the subtask on the stack —
+    /// because a borrow lowered into a guest while a host call runs
+    /// is still owed to the task that made the call, and must be
+    /// dropped before that task returns. `None` when the subtask is
+    /// not on the stack or nothing on the stack under it is a task,
+    /// which leaves the borrow nowhere to be owed.
+    pub fn borrow_task(&self, scope: Scope) -> Option<TaskId> {
+        let under = match scope {
+            Scope::Task(task) => return Some(task),
+            Scope::Subtask(subtask) => self
+                .scopes
+                .iter()
+                .rposition(|entry| *entry == Scope::Subtask(subtask))?,
+        };
+        self.scopes[..under]
+            .iter()
+            .rev()
+            .find_map(|scope| match scope {
+                Scope::Task(task) => Some(*task),
+                Scope::Subtask(_) => None,
+            })
+    }
+
+    /// The current task: the task the scope on top of the stack
+    /// counts its borrows against, which is the innermost task on the
+    /// stack.
     pub fn current_task(&self) -> Option<TaskId> {
-        self.scopes.iter().rev().find_map(|scope| match scope {
-            Scope::Task(task) => Some(*task),
-            Scope::Subtask(_) => None,
-        })
+        self.borrow_task(self.current_scope()?)
     }
 
     /// The current subtask, when the current scope is one.

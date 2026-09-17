@@ -36,8 +36,8 @@ use wasm_runtime_layer::{
 
 use crate::abi::context::BoundaryContext;
 use crate::abi::flatten::{lift_from_flat_slots, lower_into_flat_slots};
+use crate::abi::instance::BoundaryInstance;
 use crate::abi::layout::{FlatType, flat_types, params_spill, result_spills, spill_layout};
-use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::{lift, lower};
 use crate::backend::Backend;
@@ -370,17 +370,12 @@ fn invoke_trampoline<T: 'static>(
     args: &[RuntimeVal],
     results: &mut [RuntimeVal],
 ) -> Result<()> {
-    // The canon options of the lowering, resolved against the
-    // instance's runtime state. Each crossing of the call builds its
-    // boundary context from them.
-    let options = BoundaryOptions::resolve(options, abi_state)?;
-    let instance = options.instance();
-    let resource_tables = {
-        let state = abi_state
-            .lock()
-            .map_err(|_| Error::internal("ABI runtime state lock poisoned"))?;
-        state.resource_tables.clone()
-    };
+    // The canon options of the lowering and the instance they name,
+    // read out of the instance's runtime state under one lock of it.
+    // Each crossing of the call builds its boundary context from the
+    // two, and the instance is where the handle tables of the
+    // crossing come from.
+    let (options, instance) = BoundaryInstance::resolve(options, abi_state, tables)?;
 
     // A call from the guest into the host is a subtask: it goes on
     // the stack of current scopes and stays there while the host side
@@ -398,10 +393,8 @@ fn invoke_trampoline<T: 'static>(
         let mut lift_ctx = BoundaryContext::new(
             store_ctx.as_context_mut(),
             options.clone(),
-            instance,
+            instance.clone(),
             Some(Scope::Subtask(subtask)),
-            Some(tables.clone()),
-            resource_tables.clone(),
         );
         let lifted = if params_spill(signature) {
             lift_spilled_arguments(&mut lift_ctx, signature, args, &mut cursor)?
@@ -443,7 +436,7 @@ fn invoke_trampoline<T: 'static>(
         let call = HostCall::new(
             store_ctx.data_mut(),
             tables.clone(),
-            resource_tables.clone(),
+            instance.resource_tables().to_vec(),
         );
         host_func(call, &lifted, &mut host_results)?;
         Ok((host_results, return_area_ptr))
@@ -487,14 +480,7 @@ fn invoke_trampoline<T: 'static>(
             cause: AbiCause::HostValueMismatch,
         })
     })?;
-    let mut lower_ctx = BoundaryContext::new(
-        store_ctx.as_context_mut(),
-        options,
-        instance,
-        caller,
-        Some(tables.clone()),
-        resource_tables.clone(),
-    );
+    let mut lower_ctx = BoundaryContext::new(store_ctx.as_context_mut(), options, instance, caller);
     match return_area_ptr {
         Some(ptr) => lower(
             &mut lower_ctx,

@@ -307,7 +307,7 @@ pub fn lower_handle<T: 'static>(
     ty: &ValueType,
     position: AbiPosition,
 ) -> Result<u32> {
-    let tables = ctx.tables().ok_or_else(|| {
+    let tables = ctx.instance().tables().ok_or_else(|| {
         Error::from(AbiError {
             position,
             valtype: ty.clone(),
@@ -317,7 +317,7 @@ pub fn lower_handle<T: 'static>(
         })
     })?;
     let table = declared_resource_index(ty)
-        .and_then(|i| ctx.resource_tables().get(i).copied().flatten())
+        .and_then(|i| ctx.instance().resource_tables().get(i).copied().flatten())
         .ok_or_else(|| {
             Error::from(AbiError {
                 position,

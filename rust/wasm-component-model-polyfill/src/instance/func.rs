@@ -8,17 +8,17 @@ use wasm_runtime_layer::{AsContextMut, Val as RuntimeVal};
 
 use crate::abi::context::BoundaryContext;
 use crate::abi::flatten::{lift_from_flat_slots, lower_into_flat_slots};
+use crate::abi::instance::BoundaryInstance;
 use crate::abi::layout::{flat_types, params_spill, result_spills, spill_layout};
 use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::{lift, lower};
 use crate::component::FunctionType;
-use crate::concurrency::{Driver, InstanceId, Item, ItemKind, Scope, TaskId};
+use crate::concurrency::{Driver, Item, ItemKind, Scope, TaskId};
 use crate::error::{
     AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result, SchedulerCause,
 };
 use crate::executor::ir::CanonOptions;
-use crate::resource::ResourceTableRuntime;
 use crate::store::{Store, StoreId};
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
@@ -132,12 +132,14 @@ impl Func {
             return Err(Error::Scheduler(SchedulerCause::RecursiveDriver));
         }
 
-        // The canon options of the export's lift, resolved against
-        // the instance's runtime state once for the whole call. Each
-        // crossing of the call builds its boundary context from
-        // them.
-        let options = BoundaryOptions::resolve(&self.options, &self.abi_state)?;
-        let instance = options.instance().ok_or_else(|| {
+        // The canon options of the export's lift and the instance
+        // they name, read out of the instance's runtime state once
+        // for the whole call. Each crossing of the call builds its
+        // boundary context from the two, and the instance is where
+        // the handle tables of the crossing come from.
+        let (options, instance) =
+            BoundaryInstance::resolve(&self.options, &self.abi_state, &store.tables_handle())?;
+        let instance_id = instance.id().ok_or_else(|| {
             Error::internal("an export's lift names a component instance the plan does not hold")
         })?;
 
@@ -149,7 +151,7 @@ impl Func {
         // the guest before the call ends; borrows the guest lifts out
         // in results lend to it until the call ends.
         let task =
-            store.create_export_task(self.signature.clone(), self.options.clone(), instance)?;
+            store.create_export_task(self.signature.clone(), self.options.clone(), instance_id)?;
 
         // The item is `'static`: it outlives this future, because
         // dropping the future cancels nothing. It therefore carries
@@ -161,7 +163,7 @@ impl Func {
         let replica = self.replica();
         let arguments = args.to_vec();
         let item = Item::new(ItemKind::TaskStart, move |store: &mut Store<T>| {
-            let result = replica.run_task(task, instance, store, &arguments, &options);
+            let result = replica.run_task(task, &instance, store, &arguments, &options);
             if let Ok(mut slot) = queued.lock() {
                 *slot = Some(result);
             }
@@ -173,7 +175,7 @@ impl Func {
         // is synchronous. The exclusive flag is the reference's
         // `not opts.async or opts.callback`, which is true here; the
         // gate reads it only for a task that does wait at it.
-        store.start_export_thread(task, instance, false, true, item)?;
+        store.start_export_thread(task, instance_id, false, true, item)?;
 
         Driver::new(store, Some(task), move |_store, _waker| {
             outcome.lock().ok().and_then(|mut slot| slot.take())
@@ -201,7 +203,7 @@ impl Func {
     fn run_task<T: 'static>(
         &self,
         task: TaskId,
-        instance: InstanceId,
+        instance: &BoundaryInstance,
         store: &mut Store<T>,
         args: &[Val],
         options: &BoundaryOptions,
@@ -233,7 +235,7 @@ impl Func {
     fn call_in_task<T: 'static>(
         &self,
         task: TaskId,
-        instance: InstanceId,
+        instance: &BoundaryInstance,
         store: &mut Store<T>,
         args: &[Val],
         options: &BoundaryOptions,
@@ -258,16 +260,6 @@ impl Func {
         Ok(lifted_result.into_iter().collect())
     }
 
-    /// The resource tables of the instance, by table index, for the
-    /// lift and lower contexts.
-    fn resource_tables(&self) -> Result<Vec<Option<ResourceTableRuntime>>> {
-        let state = self
-            .abi_state
-            .lock()
-            .map_err(|_| Error::internal("ABI runtime state lock poisoned"))?;
-        Ok(state.resource_tables.clone())
-    }
-
     /// The number of core-Wasm result slots the underlying core
     /// function returns. Mirrors the rule
     /// [`crate::executor::trampoline`] uses to derive the core
@@ -284,20 +276,16 @@ impl Func {
         &self,
         store: &mut Store<T>,
         args: &[Val],
-        instance: InstanceId,
+        instance: &BoundaryInstance,
         task: TaskId,
         options: &BoundaryOptions,
     ) -> Result<Vec<RuntimeVal>> {
-        let tables = store.tables_handle();
-        let resource_tables = self.resource_tables()?;
         let store_ctx = store.inner_mut().as_context_mut();
         let mut lower_ctx = BoundaryContext::new(
             store_ctx,
             options.clone(),
-            Some(instance),
+            instance.clone(),
             Some(Scope::Task(task)),
-            Some(tables),
-            resource_tables,
         );
 
         if params_spill(&self.signature) {
@@ -362,21 +350,17 @@ impl Func {
         &self,
         store: &mut Store<T>,
         core_results: &[RuntimeVal],
-        instance: InstanceId,
+        instance: &BoundaryInstance,
         task: TaskId,
         options: BoundaryOptions,
     ) -> Result<Option<Val>> {
         let position = AbiPosition::Result;
-        let tables = store.tables_handle();
-        let resource_tables = self.resource_tables()?;
         let store_ctx = store.inner_mut().as_context_mut();
         let mut lift_ctx = BoundaryContext::new(
             store_ctx,
             options,
-            Some(instance),
+            instance.clone(),
             Some(Scope::Task(task)),
-            Some(tables),
-            resource_tables,
         );
         let Some(result_ty) = &self.signature.result else {
             lift_ctx.post_return(core_results)?;
