@@ -219,11 +219,16 @@ impl HandleTables {
     /// Taking a subtask's event also delivers the subtask's
     /// resolution when the call has resolved, which is what gives the
     /// handles it borrowed back to the caller.
-    fn take_event(&mut self, waitable: WaitableId) -> Result<Option<Event>, Error> {
-        let event = self.tasks.take_pending_event(waitable)?;
-        if event.is_some()
-            && let WaitableId::Subtask(subtask) = waitable
-        {
+    ///
+    /// The two halves are one operation, so the resolution is
+    /// delivered before the slot is emptied: the record operation
+    /// that empties it refuses a subtask whose resolution is still
+    /// owed, and this is the only path that pays it first.
+    pub fn take_event(&mut self, waitable: WaitableId) -> Result<Option<Event>, Error> {
+        if !self.tasks.has_pending_event(waitable)? {
+            return Ok(None);
+        }
+        if let WaitableId::Subtask(subtask) = waitable {
             let resolved = self
                 .tasks
                 .subtask(subtask)
@@ -233,7 +238,7 @@ impl HandleTables {
                 self.deliver_resolution(subtask);
             }
         }
-        Ok(event)
+        self.tasks.take_pending_event(waitable)
     }
 
     /// Poll `set`: deliver the event of the waitable that joined
@@ -303,6 +308,9 @@ impl HandleTables {
     /// Give back the lends of a scope a failed call left behind and
     /// remove its record, without the checks the scope's own exit
     /// would have made: the call that would have made them is gone.
+    /// The removal is the one the store's records define, so a
+    /// subtask discarded here leaves its waitable set as any other
+    /// removal would.
     fn discard_scope(&mut self, scope: Scope) {
         self.undo_lends(scope);
         match scope {

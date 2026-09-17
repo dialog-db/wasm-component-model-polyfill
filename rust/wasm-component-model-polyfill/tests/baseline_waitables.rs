@@ -487,3 +487,234 @@ async fn it_finds_a_waitable_and_a_waitable_set_through_their_handles() {
         "a subtask is not a waitable set"
     );
 }
+
+#[wcmp_macros::test]
+async fn it_leaves_a_waitable_in_its_set_when_a_join_names_a_set_that_is_gone() {
+    let store = store();
+    let mut guard = store.tables.lock().expect("handle tables");
+    let tables = &mut *guard;
+
+    let joined = tables.tasks.insert_waitable_set();
+    let gone = tables.tasks.insert_waitable_set();
+    let subtask = tables.tasks.insert_subtask();
+    let waitable = tables.tasks.subtask_waitable(subtask);
+    tables
+        .tasks
+        .join_waitable_set(waitable, Some(joined))
+        .expect("the subtask joins the first set");
+    tables
+        .tasks
+        .drop_waitable_set(gone)
+        .expect("the second set drops while it holds nothing");
+
+    let error = tables
+        .tasks
+        .join_waitable_set(waitable, Some(gone))
+        .expect_err("the store holds no such set any more");
+    assert_eq!(
+        error.to_string(),
+        "polyfill internal invariant violated: waitable set record is not in the store"
+    );
+    assert_eq!(
+        tables
+            .tasks
+            .waitable_set(joined)
+            .expect("the set")
+            .waitables,
+        vec![waitable],
+        "the join that failed left the waitable listed in the set it already named"
+    );
+    assert_eq!(
+        tables
+            .tasks
+            .waitable_set_of(waitable)
+            .expect("the waitable"),
+        Some(joined),
+        "and left the waitable naming that set"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_leaves_the_waiter_count_alone_when_a_wait_names_a_thread_that_is_gone() {
+    let store = store();
+    let mut guard = store.tables.lock().expect("handle tables");
+    let tables = &mut *guard;
+
+    let instance = tables.tasks.insert_instance();
+    let task = tables.tasks.push_task(None, None, instance);
+    let thread = tables.tasks.current_thread().expect("the task's thread");
+    let set = tables.tasks.insert_waitable_set();
+    let _ = tables.exit_task(task);
+
+    let error = tables
+        .tasks
+        .begin_wait(set, thread)
+        .expect_err("the thread left the store with the task that ran it");
+    assert_eq!(
+        error.to_string(),
+        "polyfill internal invariant violated: waiting thread is not in the store"
+    );
+    assert_eq!(
+        tables.tasks.waitable_set(set).expect("the set").num_waiting,
+        0,
+        "the wait that failed raised no waiter count"
+    );
+    tables
+        .tasks
+        .drop_waitable_set(set)
+        .expect("so nothing waits on the set and it drops");
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_to_take_a_subtask_event_before_its_resolution_is_delivered() {
+    let store = store();
+    let mut guard = store.tables.lock().expect("handle tables");
+    let tables = &mut *guard;
+
+    let set = tables.tasks.insert_waitable_set();
+    let subtask = tables.tasks.insert_subtask();
+    let waitable = tables.tasks.subtask_waitable(subtask);
+    tables
+        .tasks
+        .join_waitable_set(waitable, Some(set))
+        .expect("the subtask joins the set");
+    tables
+        .tasks
+        .subtask_returned(subtask)
+        .expect("the call returns");
+    tables
+        .tasks
+        .record_subtask_event(subtask, 6)
+        .expect("the subtask is ready");
+
+    let error = tables
+        .tasks
+        .take_pending_event(waitable)
+        .expect_err("the record operation on its own cannot deliver the resolution");
+    assert_eq!(
+        error.to_string(),
+        "polyfill internal invariant violated: a subtask's event was taken before its resolution was delivered"
+    );
+    assert!(
+        tables
+            .tasks
+            .has_pending_event(waitable)
+            .expect("the waitable"),
+        "the refused take left the event where it was"
+    );
+    assert!(
+        tables.tasks.drop_waitable(waitable).is_err(),
+        "and left the subtask's resolution undelivered"
+    );
+
+    assert_eq!(
+        tables.poll_waitable_set(set).expect("poll").triple(),
+        (1, 6, 2),
+        "the paired operation delivers the resolution and takes the event together"
+    );
+    assert!(
+        tables
+            .tasks
+            .take_pending_event(waitable)
+            .expect("a subtask whose resolution was delivered owes nothing")
+            .is_none(),
+        "and the delivery emptied the slot"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_leaves_the_set_of_a_subtask_its_own_exit_removed() {
+    let store = store();
+    let mut guard = store.tables.lock().expect("handle tables");
+    let tables = &mut *guard;
+
+    let set = tables.tasks.insert_waitable_set();
+    let subtask = tables.tasks.push_subtask();
+    let waitable = tables.tasks.subtask_waitable(subtask);
+    tables
+        .tasks
+        .join_waitable_set(waitable, Some(set))
+        .expect("the subtask joins the set");
+
+    tables.abandon_subtask(subtask);
+    assert_eq!(
+        tables.tasks.subtask_count(),
+        0,
+        "the exit took the subtask's record with it"
+    );
+
+    let reused = tables.tasks.insert_subtask();
+    assert_eq!(
+        reused.index(),
+        subtask.index(),
+        "the freed index is handed out again"
+    );
+    assert!(
+        tables
+            .tasks
+            .waitable_set(set)
+            .expect("the set")
+            .waitables
+            .is_empty(),
+        "the removed subtask left the set, so the record that took its index is not in it"
+    );
+    assert_eq!(
+        tables
+            .tasks
+            .waitable_set_of(tables.tasks.subtask_waitable(reused))
+            .expect("the waitable"),
+        None,
+        "and the record that took the index names no set"
+    );
+    tables
+        .tasks
+        .drop_waitable_set(set)
+        .expect("a set nothing is in drops");
+}
+
+#[wcmp_macros::test]
+async fn it_leaves_the_set_of_a_subtask_a_discarded_scope_removed() {
+    let store = store();
+    let mut guard = store.tables.lock().expect("handle tables");
+    let tables = &mut *guard;
+
+    let set = tables.tasks.insert_waitable_set();
+    let instance = tables.tasks.insert_instance();
+    let task = tables.tasks.push_task(None, None, instance);
+    let subtask = tables.tasks.push_subtask();
+    let waitable = tables.tasks.subtask_waitable(subtask);
+    tables
+        .tasks
+        .join_waitable_set(waitable, Some(set))
+        .expect("the subtask joins the set");
+
+    // The call failed between the push of the subtask and the pop
+    // that would have ended it, so the task's exit discards the
+    // scope the failure left above it.
+    let _ = tables.exit_task(task);
+    assert_eq!(
+        tables.tasks.subtask_count(),
+        0,
+        "the discarded scope took the subtask's record with it"
+    );
+
+    let reused = tables.tasks.insert_subtask();
+    assert_eq!(
+        reused.index(),
+        subtask.index(),
+        "the freed index is handed out again"
+    );
+    assert!(
+        tables
+            .tasks
+            .waitable_set(set)
+            .expect("the set")
+            .waitables
+            .is_empty(),
+        "the discarded subtask left the set, so the record that took its index is not in it"
+    );
+    tables
+        .tasks
+        .drop_waitable_set(set)
+        .expect("a set nothing is in drops");
+}

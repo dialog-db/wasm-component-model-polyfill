@@ -345,8 +345,12 @@ impl TaskTables {
         Some(record)
     }
 
-    /// Remove a subtask record.
+    /// Remove a subtask record. The subtask leaves the set it joined
+    /// on its way out, whichever path removed it: a freed index is
+    /// handed out again, and a membership left behind would name
+    /// whichever record takes the index next.
     pub fn remove_subtask(&mut self, subtask: SubtaskId) -> Option<Subtask> {
+        self.leave_waitable_set(WaitableId::Subtask(subtask));
         self.subtasks.remove(subtask.index())
     }
 
@@ -450,22 +454,40 @@ impl TaskTables {
         waitable: WaitableId,
         set: Option<WaitableSetId>,
     ) -> Result<()> {
-        let state = self.waitable_state(waitable)?;
-        let synchronous_waiter = state.synchronous_waiter;
-        let previous = state.set;
-        if synchronous_waiter {
+        if self.waitable_state(waitable)?.synchronous_waiter {
             return Err(Error::Waitable(WaitableCause::SyncAndAsync));
         }
-        if let Some(previous) = previous
-            && let Some(record) = self.waitable_sets.get_mut(previous.index())
-        {
-            record.waitables.retain(|member| *member != waitable);
+        // Every lookup that can fail happens before the first write.
+        // A target set the store does not hold has to leave the
+        // waitable in the set it already named: a waitable taken out
+        // of that set by a join that then failed would go on naming
+        // a set which no longer lists it.
+        if let Some(set) = set {
+            self.waitable_set_record(set)?;
         }
+        self.leave_waitable_set(waitable);
         if let Some(set) = set {
             self.waitable_set_record_mut(set)?.waitables.push(waitable);
+            self.waitable_state_mut(waitable)?.set = Some(set);
         }
-        self.waitable_state_mut(waitable)?.set = set;
         Ok(())
+    }
+
+    /// Take `waitable` out of the set it joined, if it joined one.
+    /// Unlike a join this makes no checks and cannot fail: a record
+    /// on its way out of the store leaves its set whatever state it
+    /// is in, and a join has made its own checks by the time it
+    /// spells this.
+    fn leave_waitable_set(&mut self, waitable: WaitableId) {
+        let Ok(state) = self.waitable_state_mut(waitable) else {
+            return;
+        };
+        let Some(previous) = state.set.take() else {
+            return;
+        };
+        if let Some(record) = self.waitable_sets.get_mut(previous.index()) {
+            record.waitables.retain(|member| *member != waitable);
+        }
     }
 
     /// Mark `waitable` as one a thread waits on synchronously, on its
@@ -494,14 +516,18 @@ impl TaskTables {
     /// [`end_wait`](Self::end_wait) undoes it when the thread runs
     /// again.
     pub fn begin_wait(&mut self, set: WaitableSetId, thread: ThreadId) -> Result<()> {
-        self.waitable_set_record_mut(set)?.num_waiting += 1;
-        match self.thread_mut(thread) {
-            Some(record) => {
-                record.readiness = Some(Readiness::WaitableSet { set });
-                Ok(())
-            }
-            None => Err(Error::internal("waiting thread is not in the store")),
+        // The thread is looked up before the count rises. A count
+        // raised by a wait that then failed is never lowered again,
+        // and every later drop of the set traps on a waiter that is
+        // not there.
+        if self.thread(thread).is_none() {
+            return Err(Error::internal("waiting thread is not in the store"));
         }
+        self.waitable_set_record_mut(set)?.num_waiting += 1;
+        if let Some(record) = self.thread_mut(thread) {
+            record.readiness = Some(Readiness::WaitableSet { set });
+        }
+        Ok(())
     }
 
     /// The wait [`begin_wait`](Self::begin_wait) parked `thread` for
@@ -548,7 +574,6 @@ impl TaskTables {
                 if !record.resolve_delivered {
                     return Err(Error::Waitable(WaitableCause::SubtaskNotResolved));
                 }
-                self.join_waitable_set(waitable, None)?;
                 self.remove_subtask(subtask);
                 Ok(())
             }
@@ -572,10 +597,25 @@ impl TaskTables {
     }
 
     /// Take the event pending on `waitable`, leaving its slot empty.
-    /// Workspace-internal: the store's delivery operations spell it,
-    /// because delivering a subtask's event also delivers its
-    /// resolution, which only the handle tables can do.
+    ///
+    /// Taking the event of a subtask that has resolved is half of an
+    /// operation: the same delivery gives the caller back the
+    /// handles the call borrowed, and only the handle tables hold
+    /// those. Emptying the slot on its own would lose the one notice
+    /// the caller gets, leave the handles lent for good, and trap
+    /// every later drop of the subtask. So a resolution that has not
+    /// been delivered refuses the take, and the paired operation on
+    /// the handle tables — which delivers the resolution first — is
+    /// the only way to take such an event.
     pub fn take_pending_event(&mut self, waitable: WaitableId) -> Result<Option<Event>> {
+        if let WaitableId::Subtask(subtask) = waitable {
+            let record = self.subtask_record(subtask)?;
+            if record.state.resolved() && !record.resolve_delivered {
+                return Err(Error::internal(
+                    "a subtask's event was taken before its resolution was delivered",
+                ));
+            }
+        }
         Ok(self.waitable_state_mut(waitable)?.pending_event.take())
     }
 
