@@ -54,7 +54,7 @@ pub struct Scheduler<T: 'static> {
     low_priority: VecDeque<Item<T>>,
     resume_after_yield: Option<Item<T>>,
     entry_gate: VecDeque<GateEntry<T>>,
-    host_tasks: Vec<HostTask>,
+    host_tasks: Vec<HostTask<T>>,
 }
 
 impl<T: 'static> Scheduler<T> {
@@ -72,20 +72,20 @@ impl<T: 'static> Scheduler<T> {
 
     /// Give `task` to the store. A host task that joined since the
     /// last turn counts as woken, so the next turn polls it.
-    pub fn push_host_task(&mut self, task: HostTask) {
+    pub fn push_host_task(&mut self, task: HostTask<T>) {
         self.host_tasks.push(task);
     }
 
     /// Take every host task out, so a turn can poll them while it
     /// holds the store. The ones that are still pending go back
     /// through [`restore_host_tasks`](Self::restore_host_tasks).
-    pub fn take_host_tasks(&mut self) -> Vec<HostTask> {
+    pub fn take_host_tasks(&mut self) -> Vec<HostTask<T>> {
         core::mem::take(&mut self.host_tasks)
     }
 
     /// Put the host tasks that are still pending back, ahead of any
     /// task that joined while they were being polled.
-    pub fn restore_host_tasks(&mut self, mut pending: Vec<HostTask>) {
+    pub fn restore_host_tasks(&mut self, mut pending: Vec<HostTask<T>>) {
         pending.append(&mut self.host_tasks);
         self.host_tasks = pending;
     }

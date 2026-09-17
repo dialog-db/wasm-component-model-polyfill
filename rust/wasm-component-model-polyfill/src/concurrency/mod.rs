@@ -11,7 +11,15 @@
 //! store still reaches the store's host data, and only during a
 //! poll. [`SchedulerState`] is the half of the scheduler a
 //! trampoline can reach from inside a runtime-layer closure: the
-//! waker of the running turn and the store's [`HostTask`]s.
+//! waker of the running turn and the flag that says one is running.
+//!
+//! [`HostTask`] is one call of a host `async` function: a body the
+//! store polls once per turn, and the lowering that carries what it
+//! produced into the subtask that awaits it. The store polls a body
+//! with an [`Accessor`] of its own, so a body that has to read the
+//! host data reaches it the way a `run_concurrent` closure does.
+//! [`CallStatus`] is the word the call returns to the guest, and
+//! [`LowerKind`] is which lowering the guest called through.
 //!
 //! A task is the record of one call into an export; a subtask is the
 //! record of one call out through an import; a thread is one guest
@@ -44,17 +52,20 @@
 //! baseline is the case of one task per instance at a time.
 
 mod accessor;
+mod call_status;
 mod driver;
 mod event;
 mod event_code;
 mod host_future;
+mod host_result_lowering;
 mod host_task;
-mod host_task_result;
+mod host_task_body;
 mod instance_id;
 mod instance_record;
 mod item;
 mod item_action;
 mod item_kind;
+mod lower_kind;
 mod outcome;
 mod readiness;
 mod record_table;
@@ -81,12 +92,14 @@ mod yield_wake;
 // `TaskTables`, so only the names other modules spell are
 // re-exported here.
 pub use accessor::Accessor;
+pub use call_status::CallStatus;
 pub use driver::Driver;
 pub use event::Event;
 pub use host_task::HostTask;
 pub use instance_id::InstanceId;
 pub use item::Item;
 pub use item_kind::ItemKind;
+pub use lower_kind::LowerKind;
 pub use outcome::Outcome;
 pub use scheduler::Scheduler;
 pub use scheduler_state::SchedulerState;

@@ -1445,6 +1445,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "wasm_runtime_layer",
  "wasmtime",

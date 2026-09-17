@@ -1,57 +1,71 @@
 //! One call of a host `async` function, as the store holds it.
 
-use crate::error::Result;
-use crate::value::Val;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
+use crate::error::Result;
+use crate::store::Store;
+use crate::value::Val;
+
+use super::accessor::Accessor;
 use super::host_future::HostFuture;
-use super::host_task_result::HostTaskResult;
+use super::host_result_lowering::HostResultLowering;
+use super::host_task_body::HostTaskBody;
+use super::item::Item;
+use super::item_kind::ItemKind;
 use super::subtask_id::SubtaskId;
 
-/// The boxed future of one host task, with the `Send` bound the
-/// native target puts on everything a store holds.
+/// The boxed lowering of one host task's result, with the `Send`
+/// bound the native target puts on everything a store holds.
 #[cfg(not(target_arch = "wasm32"))]
-type BoxedFuture = Pin<Box<dyn core::future::Future<Output = Result<Vec<Val>>> + Send + 'static>>;
+type BoxedLowering<T> =
+    Box<dyn FnOnce(&mut Store<T>, Result<Vec<Val>>) -> Result<()> + Send + 'static>;
 
-/// The boxed future of one host task. The browser drops the `Send`
-/// bound: see [`HostFuture`].
+/// The boxed lowering of one host task's result. The browser drops
+/// the `Send` bound: see [`HostResultLowering`].
 #[cfg(target_arch = "wasm32")]
-type BoxedFuture = Pin<Box<dyn core::future::Future<Output = Result<Vec<Val>>> + 'static>>;
+type BoxedLowering<T> = Box<dyn FnOnce(&mut Store<T>, Result<Vec<Val>>) -> Result<()> + 'static>;
 
 /// One call of a host `async` function, as the store holds it.
 ///
-/// The store owns the future and polls it once per turn with the
-/// driver's waker, so a wake the executor delivers reaches the
-/// driver that is running the store. When the future completes, the
-/// turn fills the task's result slot and queues the lowering of the
-/// result into the subtask that awaits it.
-pub struct HostTask {
-    future: BoxedFuture,
+/// The runtime layer gives a host trampoline a synchronous closure
+/// and nothing else, so the trampoline cannot run the call's future
+/// itself. It gives the task to the store and returns to the guest,
+/// and the store polls it once per turn with the driver's waker, so
+/// a wake the executor delivers reaches the driver that is running
+/// the store. When the body completes, the turn queues the lowering
+/// of the result into the subtask that awaits it.
+pub struct HostTask<T: 'static> {
+    body: Box<dyn HostTaskBody<T>>,
+    lowering: BoxedLowering<T>,
     subtask: SubtaskId,
     handle_index: u32,
-    result: HostTaskResult,
 }
 
-impl HostTask {
-    /// Hand `future` to the store as the host task of `subtask`.
-    ///
-    /// `handle_index` is where the subtask sits in the calling
-    /// instance's handle table, which is the first payload of the
-    /// subtask event the guest receives when the task completes.
-    /// `result` is the slot the completed future's value is left in.
+impl<T: 'static> HostTask<T> {
+    /// The host task of the call `subtask` records, running `body`
+    /// and lowering what it produces through `lowering`.
     pub fn new(
         subtask: SubtaskId,
-        handle_index: u32,
-        result: HostTaskResult,
-        future: impl HostFuture,
+        lowering: impl HostResultLowering<T>,
+        body: impl HostTaskBody<T>,
     ) -> Self {
         Self {
-            future: Box::pin(future),
+            body: Box::new(body),
+            lowering: Box::new(lowering),
             subtask,
-            handle_index,
-            result,
+            handle_index: 0,
         }
+    }
+
+    /// The host task of a call whose body needs nothing from the
+    /// store: a plain future, polled with the accessor ignored.
+    pub fn from_future(
+        subtask: SubtaskId,
+        lowering: impl HostResultLowering<T>,
+        future: impl HostFuture,
+    ) -> Self {
+        Self::new(subtask, lowering, FutureBody(Box::pin(future)))
     }
 
     /// The subtask this host task resolves.
@@ -60,20 +74,188 @@ impl HostTask {
     }
 
     /// Where the subtask sits in the calling instance's handle
-    /// table.
+    /// table, which is the first payload of the subtask event the
+    /// guest receives when the call completes.
     pub fn handle_index(&self) -> u32 {
         self.handle_index
     }
 
-    /// The slot the completed future's value is left in.
-    pub fn result(&self) -> HostTaskResult {
-        self.result.clone()
+    /// Record where the subtask sits in the calling instance's
+    /// handle table. The index exists only once the call is known
+    /// not to have finished at once: a call whose first poll
+    /// resolved reports no subtask, so no entry is made for it.
+    pub fn set_handle_index(&mut self, handle_index: u32) {
+        self.handle_index = handle_index;
     }
 
-    /// Poll the future with `waker`, which is the waker of the turn
-    /// that is running.
-    pub fn poll(&mut self, waker: &Waker) -> Poll<Result<Vec<Val>>> {
+    /// Poll the body with `waker`, which is the waker of the turn
+    /// that is running, and `accessor`, which reaches the store for
+    /// the length of a closure the body runs through it.
+    pub fn poll(&mut self, accessor: &Accessor<'_, T>, waker: &Waker) -> Poll<Result<Vec<Val>>> {
         let mut context = Context::from_waker(waker);
-        self.future.as_mut().poll(&mut context)
+        self.body.poll(accessor, &mut context)
+    }
+
+    /// Lower `outcome` into the subtask that awaits it, here and
+    /// now. The trampoline that started the call takes this path
+    /// when the first poll resolved the body: the guest is still on
+    /// the stack, so a failure fails its call.
+    pub fn lower(self, store: &mut Store<T>, outcome: Result<Vec<Val>>) -> Result<()> {
+        (self.lowering)(store, outcome)
+    }
+
+    /// The item that lowers `outcome` into the subtask that awaits
+    /// it in a later turn: the crossing runs where every other piece
+    /// of guest work runs, and the subtask then moves to its
+    /// returned state and takes on the subtask event a thread
+    /// waiting on it takes delivery of.
+    ///
+    /// `outcome` is what the body produced, which is a failure when
+    /// the host call itself failed. Either way the crossing is the
+    /// lowering's to make. A crossing that fails is a trap of the
+    /// caller's task in the reference, and nothing carries a trap out
+    /// of a queued item yet, so a failed crossing leaves the subtask
+    /// unresolved and with no event, and the driver that waits on it
+    /// reports the deadlock cause once nothing else can progress.
+    pub fn lowering_item(self, outcome: Result<Vec<Val>>) -> Item<T> {
+        let Self {
+            lowering,
+            subtask,
+            handle_index,
+            ..
+        } = self;
+        Item::new(ItemKind::HostResultLowering, move |store: &mut Store<T>| {
+            if lowering(store, outcome).is_err() {
+                return;
+            }
+            let Ok(mut guard) = store.tables.lock() else {
+                return;
+            };
+            // The call has returned, and the subtask's readiness
+            // is the subtask event a thread waiting on it takes
+            // delivery of. The event carries the subtask's index
+            // in the caller instance's handle table and the
+            // state it moved to.
+            if guard.tasks.subtask_returned(subtask).is_ok() {
+                let _ = guard.tasks.record_subtask_event(subtask, handle_index);
+            }
+        })
+    }
+}
+
+/// A plain future as the body of a host task. It reaches nothing of
+/// the store, so every poll ignores the accessor.
+struct FutureBody<F>(Pin<Box<F>>);
+
+impl<T: 'static, F: HostFuture> HostTaskBody<T> for FutureBody<F> {
+    fn poll(
+        &mut self,
+        _accessor: &Accessor<'_, T>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<Vec<Val>>> {
+        core::future::Future::poll(self.0.as_mut(), context)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use crate::engine::Engine;
+    use crate::resource::TableId;
+
+    use super::super::lower_kind::LowerKind;
+    use super::super::subtask_state::SubtaskState;
+    use super::*;
+
+    /// A body that reads the store's host data through the accessor
+    /// the poll hands it, one poll after it started: the poll that
+    /// reads runs inside a turn, which is where the body of a host
+    /// task is polled from once its call has returned to the guest.
+    struct ReadsHostData {
+        polled: usize,
+        seen: Arc<Mutex<Option<String>>>,
+    }
+
+    impl HostTaskBody<String> for ReadsHostData {
+        fn poll(
+            &mut self,
+            accessor: &Accessor<'_, String>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<Vec<Val>>> {
+            self.polled += 1;
+            if self.polled == 1 {
+                return Poll::Pending;
+            }
+            // The borrow the closure is given outlives nothing, so
+            // what the body keeps is a clone.
+            match accessor.with(|store| store.data().clone()) {
+                Ok(data) => {
+                    *self.seen.lock().expect("what the body read") = Some(data);
+                    Poll::Ready(Ok(vec![Val::U32(1)]))
+                }
+                Err(error) => Poll::Ready(Err(error)),
+            }
+        }
+    }
+
+    #[wcmp_macros::test]
+    async fn it_reaches_the_host_data_through_the_accessor_the_poll_hands_it() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, "host data".to_owned()).expect("store");
+        let table = TableId::fresh();
+        let subtask = store.tables.lock().expect("tables").tasks.push_subtask();
+        let seen = Arc::new(Mutex::new(None));
+        let lowered = Arc::new(Mutex::new(None));
+        let slot = lowered.clone();
+
+        let status = store
+            .start_host_task(
+                HostTask::new(
+                    subtask,
+                    move |_store: &mut Store<String>, outcome: Result<Vec<Val>>| {
+                        *slot.lock().expect("the lowering's slot") =
+                            Some(outcome.expect("the body's value"));
+                        Ok(())
+                    },
+                    ReadsHostData {
+                        polled: 0,
+                        seen: seen.clone(),
+                    },
+                ),
+                table,
+                LowerKind::Async,
+            )
+            .expect("start the host task");
+
+        assert_eq!(
+            status.state(),
+            SubtaskState::Started.value(),
+            "the body was not ready on its first poll"
+        );
+        assert!(
+            seen.lock().expect("what the body read").is_none(),
+            "the body has not read the host data yet"
+        );
+
+        // The turn that polls the body a second time, and the one
+        // that runs the lowering it queued.
+        store.turn(Waker::noop()).expect("a turn");
+        store.turn(Waker::noop()).expect("a turn");
+
+        assert_eq!(
+            seen.lock().expect("what the body read").as_deref(),
+            Some("host data"),
+            "the body read the host data through the accessor the poll handed it"
+        );
+        assert_eq!(
+            lowered.lock().expect("the lowering's slot").as_deref(),
+            Some(&[Val::U32(1)][..]),
+            "the body's value crossed through the lowering"
+        );
+        assert!(
+            !store.turn_in_flight().expect("the store's turn state"),
+            "the turn the body ran a closure inside left the outer turn as it found it"
+        );
     }
 }

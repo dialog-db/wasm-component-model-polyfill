@@ -55,3 +55,7 @@ wcmp-macros = { workspace = true }
 # `wasm-bindgen-test-runner`.
 wasm-bindgen = { workspace = true }
 wasm-bindgen-test = { workspace = true }
+# A JavaScript promise wrapped as a future: what the browser half of
+# the host-task bound is there to take, and what the test of that
+# bound builds one from.
+wasm-bindgen-futures = { workspace = true }

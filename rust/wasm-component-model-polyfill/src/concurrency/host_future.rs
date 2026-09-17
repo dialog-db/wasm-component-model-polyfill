@@ -33,3 +33,57 @@ pub trait HostFuture: Future<Output = Result<Vec<Val>>> + 'static {}
 
 #[cfg(target_arch = "wasm32")]
 impl<F> HostFuture for F where F: Future<Output = Result<Vec<Val>>> + 'static {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Take a future that satisfies the bound and give it back. A
+    /// future that does not satisfy the bound of the target being
+    /// built fails to compile here.
+    fn accepts<F: HostFuture>(future: F) -> F {
+        future
+    }
+
+    /// The native bound takes a future that is `Send`, which is what
+    /// keeps a store `Send` while it holds one.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[wcmp_macros::test]
+    async fn it_takes_a_send_future_on_the_native_target() {
+        fn assert_send<F: Send>(future: F) -> F {
+            future
+        }
+
+        let future = assert_send(accepts(async { Ok(vec![Val::U32(7)]) }));
+
+        assert_eq!(
+            future.await.expect("the future's value"),
+            vec![Val::U32(7)],
+            "the future the native bound took runs and produces its value"
+        );
+    }
+
+    /// The browser bound takes a future that is not `Send`: a
+    /// JavaScript promise wrapped as a future is not, and neither is
+    /// a block that awaits one. Awaiting a promise is the whole
+    /// purpose of a browser host function, which is why the `Send`
+    /// half of the bound is absent on this target.
+    #[cfg(target_arch = "wasm32")]
+    #[wcmp_macros::test]
+    async fn it_takes_a_js_future_in_the_browser() {
+        let promise = js_sys::Promise::resolve(&wasm_bindgen::JsValue::from_f64(7.0));
+        let future = accepts(async move {
+            let resolved = wasm_bindgen_futures::JsFuture::from(promise)
+                .await
+                .expect("the promise resolves");
+            assert_eq!(resolved.as_f64(), Some(7.0), "the promise's value arrives");
+            Ok(vec![Val::U32(7)])
+        });
+
+        assert_eq!(
+            future.await.expect("the future's value"),
+            vec![Val::U32(7)],
+            "the future the browser bound took runs and produces its value"
+        );
+    }
+}

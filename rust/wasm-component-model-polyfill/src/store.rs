@@ -19,13 +19,14 @@ use wasm_runtime_layer::Val as RuntimeVal;
 use crate::backend::Backend;
 use crate::component::FunctionType;
 use crate::concurrency::{
-    Accessor, HostTask, InstanceId, Item, ItemKind, Outcome, Scheduler, TaskId, YieldWake,
+    Accessor, CallStatus, HostTask, InstanceId, Item, LowerKind, Outcome, Scheduler, SubtaskState,
+    TaskId, YieldWake,
 };
 use crate::engine::Engine;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
 use crate::executor::ir::CanonOptions;
-use crate::resource::{HandleLookupError, HandleTables, ResourceHandle, ResourceTypeId};
+use crate::resource::{HandleLookupError, HandleTables, ResourceHandle, ResourceTypeId, TableId};
 use crate::types::{ResourceType, ValueType};
 use crate::value::Val;
 
@@ -75,10 +76,10 @@ pub struct Store<T: 'static> {
     pub destructors: HashMap<ResourceTypeId, ResourceDestructor<T>>,
     /// The store's cooperative scheduler: the ready queues, the host
     /// tasks, and the entry gate. An item runs against this store
-    /// and a host task's future need not be `Send` in the browser,
+    /// and a host task's body need not be `Send` in the browser,
     /// so neither can live behind the tables lock; the half a
-    /// trampoline reaches — the waker of the running turn and the
-    /// in-turn flag — sits in the tables instead.
+    /// trampoline reaches — the waker of the running turn and
+    /// whether one is running — sits in the tables instead.
     /// Workspace-internal; not re-exported by `lib.rs`.
     pub scheduler: Scheduler<T>,
 }
@@ -252,10 +253,10 @@ impl<T: 'static> Store<T> {
     ///
     /// Workspace-internal; not re-exported by `lib.rs`.
     pub fn turn(&mut self, waker: &Waker) -> Result<Outcome> {
-        Self::lock_handle(&self.tables)?.scheduler.enter_turn(waker);
+        let displaced = Self::lock_handle(&self.tables)?.scheduler.enter_turn(waker);
         let outcome = self.run_turn(waker);
         if let Ok(mut guard) = self.tables.lock() {
-            guard.scheduler.leave_turn();
+            guard.scheduler.leave_turn(displaced);
         }
         outcome
     }
@@ -369,10 +370,10 @@ impl<T: 'static> Store<T> {
         waker: &Waker,
         body: impl FnOnce(&mut Self) -> R,
     ) -> Result<R> {
-        Self::lock_handle(&self.tables)?.scheduler.enter_turn(waker);
+        let displaced = Self::lock_handle(&self.tables)?.scheduler.enter_turn(waker);
         let value = body(self);
         if let Ok(mut guard) = self.tables.lock() {
-            guard.scheduler.leave_turn();
+            guard.scheduler.leave_turn(displaced);
         }
         Ok(value)
     }
@@ -396,9 +397,119 @@ impl<T: 'static> Store<T> {
         }
     }
 
+    /// Start the host task of one call of a host `async` function,
+    /// and report what the guest is told.
+    ///
+    /// `task` carries the body of the call, the subtask the caller
+    /// pushed for it, and the lowering that takes what the body
+    /// produces into the guest. `caller` is the handle table of the
+    /// instance that made the call, where a subtask the guest has to
+    /// wait on gets its entry. `lower` is the lowering the guest
+    /// called through.
+    ///
+    /// The body is polled once here, with the waker of the turn that
+    /// is running, or with a waker that does nothing when no turn is:
+    /// a host task that joined the store counts as woken, so the next
+    /// turn polls it again with the driver's waker and no wake is
+    /// lost. A body that resolves at once has its result lowered
+    /// here, and the guest sees the returned status with no subtask
+    /// behind it. A body that is still running joins the store's host
+    /// tasks, its subtask enters `caller` in the started state, and
+    /// the guest sees the started status carrying that index.
+    ///
+    /// A body that fails is a call that never returned: its subtask
+    /// resolves as a cancellation, the handles the guest lent for it
+    /// go back, and the failure travels out to the call the guest
+    /// still has on the stack.
+    ///
+    /// Through a synchronous lower the guest expects the result when
+    /// the call returns, so a body that is still running would have
+    /// to block the guest thread where it stands. That needs the
+    /// suspend seam, and no target fills it today, so the call fails
+    /// with the stack-switch cause and the subtask is given back.
+    ///
+    /// Workspace-internal; not re-exported by `lib.rs`.
+    pub fn start_host_task(
+        &mut self,
+        mut task: HostTask<T>,
+        caller: TableId,
+        lower: LowerKind,
+    ) -> Result<CallStatus> {
+        let subtask = task.subtask();
+        let waker = self.poll_waker()?;
+        let outcome = {
+            // The body reaches the host data through this accessor
+            // and through nothing else, for the length of a closure
+            // it runs with it.
+            let accessor = Accessor::new(&mut *self);
+            accessor.attend(&waker)?;
+            task.poll(&accessor, &waker)
+        };
+
+        match outcome {
+            Poll::Ready(Ok(values)) => {
+                // The call is over, so the subtask leaves the stack
+                // and gives back the handles the guest lent for it
+                // before the result crosses: a borrow lowered back
+                // out belongs to the caller's task.
+                Self::lock_handle(&self.tables)?.exit_subtask(subtask, SubtaskState::Returned);
+                task.lower(self, Ok(values))?;
+                Ok(CallStatus::returned())
+            }
+            // The call never returned, so the subtask's resolution
+            // is a cancellation, and the handles the guest lent for
+            // it are given back all the same. The guest's call is on
+            // the stack, so the failure travels out to it and
+            // nothing crosses.
+            Poll::Ready(Err(error)) => {
+                Self::lock_handle(&self.tables)?.abandon_subtask(subtask);
+                Err(error)
+            }
+            Poll::Pending => match lower {
+                LowerKind::Sync => {
+                    Self::lock_handle(&self.tables)?.abandon_subtask(subtask);
+                    Err(Error::Scheduler(SchedulerCause::StackSwitchNeeded))
+                }
+                LowerKind::Async => {
+                    let index = {
+                        let mut guard = Self::lock_handle(&self.tables)?;
+                        let index = guard.insert_subtask(caller, subtask.index());
+                        guard.tasks.start_subtask(subtask);
+                        // The guest runs on while the host side does,
+                        // so the subtask is no longer the scope the
+                        // guest's work counts against. Its record
+                        // stays, and with it the handles the call
+                        // borrowed, until its resolution is
+                        // delivered.
+                        if guard.tasks.current_subtask() == Some(subtask) {
+                            guard.tasks.pop_scope();
+                        }
+                        index
+                    };
+                    task.set_handle_index(index);
+                    self.push_host_task(task);
+                    Ok(CallStatus::started(index))
+                }
+            },
+        }
+    }
+
+    /// The waker the first poll of a host task uses: the waker of the
+    /// turn that is running, or one that does nothing when no turn
+    /// is. A host task started outside a turn counts as woken all the
+    /// same, because the next turn polls every host task the store
+    /// holds.
+    fn poll_waker(&self) -> Result<Waker> {
+        Ok(self
+            .lock_tables()?
+            .scheduler
+            .active_waker()
+            .unwrap_or_else(|| Waker::noop().clone()))
+    }
+
     /// Give a host task to the store. The next turn polls it with
     /// the driver's waker, so no wake is lost. Workspace-internal.
-    pub fn push_host_task(&mut self, task: HostTask) {
+    pub fn push_host_task(&mut self, task: HostTask<T>) {
         self.scheduler.push_host_task(task);
     }
 
@@ -445,9 +556,10 @@ impl<T: 'static> Store<T> {
     /// A host task that joined since the last turn counts as woken,
     /// and the waker the executor holds is the driver's, so polling
     /// them all is what "the ones the executor woke" comes to while
-    /// one waker serves the whole store. A future that completes
-    /// leaves its value in the slot its caller supplied and queues
-    /// the lowering of that value into the subtask that awaits it.
+    /// one waker serves the whole store. Each poll is handed an
+    /// accessor to this store, which is how a body that has to read
+    /// the host data reaches it. A body that completes queues the
+    /// lowering of what it produced into the subtask that awaits it.
     fn poll_host_tasks(&mut self, waker: &Waker) -> Result<()> {
         let mut tasks = self.scheduler.take_host_tasks();
         if tasks.is_empty() {
@@ -455,35 +567,19 @@ impl<T: 'static> Store<T> {
         }
         let mut pending = Vec::with_capacity(tasks.len());
         let mut completed = Vec::new();
-        for mut task in tasks.drain(..) {
-            match task.poll(waker) {
-                Poll::Ready(value) => {
-                    completed.push((task.subtask(), task.handle_index(), task.result(), value));
+        {
+            let accessor = Accessor::new(&mut *self);
+            accessor.attend(waker)?;
+            for mut task in tasks.drain(..) {
+                match task.poll(&accessor, waker) {
+                    Poll::Ready(value) => completed.push((task, value)),
+                    Poll::Pending => pending.push(task),
                 }
-                Poll::Pending => pending.push(task),
             }
         }
         self.scheduler.restore_host_tasks(pending);
-        for (subtask, handle_index, slot, value) in completed {
-            self.scheduler.push_high_priority(Item::new(
-                ItemKind::HostResultLowering,
-                move |store: &mut Self| {
-                    if let Ok(mut held) = slot.lock() {
-                        *held = Some(value);
-                    }
-                    let Ok(mut guard) = store.tables.lock() else {
-                        return;
-                    };
-                    // The subtask has returned, and its readiness is
-                    // the subtask event a thread waiting on it takes
-                    // delivery of. The event carries the subtask's
-                    // index in the caller instance's handle table and
-                    // the state it moved to.
-                    if guard.tasks.subtask_returned(subtask).is_ok() {
-                        let _ = guard.tasks.record_subtask_event(subtask, handle_index);
-                    }
-                },
-            ));
+        for (task, value) in completed {
+            self.scheduler.push_high_priority(task.lowering_item(value));
         }
         Ok(())
     }
@@ -596,6 +692,19 @@ impl<T: 'static> Store<T> {
     }
 }
 
+/// A store is `Send` on the native target, and everything it holds
+/// keeps it so: the actions of its queued items, the bodies of its
+/// host tasks, and the lowerings those bodies' results cross
+/// through. The browser drops the bound, because a body that awaits
+/// a JavaScript promise is not `Send` and the whole polyfill runs on
+/// one thread there. This is the assertion that fails the native
+/// build the moment something not `Send` joins a store.
+#[cfg(not(target_arch = "wasm32"))]
+const _: fn() = || {
+    fn assert_send<S: Send>() {}
+    assert_send::<Store<u32>>();
+};
+
 #[cfg(test)]
 mod tests {
     use core::future::Future;
@@ -604,8 +713,9 @@ mod tests {
 
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
-    use crate::concurrency::{Driver, HostTask, Item, ItemKind};
+    use crate::concurrency::{Driver, Event, HostTask, Item, ItemKind, SubtaskId, WaitableId};
     use crate::engine::Engine;
+    use crate::resource::HandleKind;
 
     use super::*;
 
@@ -638,10 +748,9 @@ mod tests {
             },
         ));
         let subtask = store.lock_tables().expect("tables").tasks.push_subtask();
-        store.push_host_task(HostTask::new(
+        store.push_host_task(HostTask::from_future(
             subtask,
-            0,
-            Arc::new(Mutex::new(None)),
+            |_store: &mut Store<()>, _outcome: Result<Vec<Val>>| Ok(()),
             core::future::pending::<Result<Vec<Val>>>(),
         ));
         assert_eq!(store.scheduler.queued_items(), 1);
@@ -786,6 +895,359 @@ mod tests {
             item_runs.load(AtomicOrdering::Relaxed),
             1,
             "the entry ran the item the earlier driver left in the store"
+        );
+    }
+
+    /// Where a test's lowering leaves what it was handed. The
+    /// lowering of a real call takes the value across into the
+    /// guest's memory; a test only has to see that it ran, with
+    /// what, and when.
+    type Lowered = Arc<Mutex<Option<Result<Vec<Val>>>>>;
+
+    /// A lowering that records what it was handed.
+    fn recording(
+        slot: &Lowered,
+    ) -> impl FnOnce(&mut Store<()>, Result<Vec<Val>>) -> Result<()> + Send + 'static {
+        let slot = slot.clone();
+        move |_store, outcome| {
+            *slot.lock().expect("the lowering's slot") = Some(outcome);
+            Ok(())
+        }
+    }
+
+    /// What a test's lowering was handed, or a panic when it has not
+    /// run yet.
+    fn lowered(slot: &Lowered) -> Vec<Val> {
+        slot.lock()
+            .expect("the lowering's slot")
+            .take()
+            .expect("the lowering ran")
+            .expect("the host task's value")
+    }
+
+    /// The store, the calling instance's handle table, and the
+    /// subtask a host call pushes before it starts: the state a
+    /// trampoline has built by the time it starts a host task.
+    fn host_call(engine: &Engine) -> (Store<()>, TableId, SubtaskId) {
+        let store = Store::new(engine, ()).expect("store");
+        let subtask = store.lock_tables().expect("tables").tasks.push_subtask();
+        (store, TableId::fresh(), subtask)
+    }
+
+    #[wcmp_macros::test]
+    async fn it_lowers_the_result_at_once_when_the_first_poll_resolves_the_future() {
+        let engine = Engine::new().expect("engine");
+        let (mut store, table, subtask) = host_call(&engine);
+        let slot: Lowered = Arc::new(Mutex::new(None));
+
+        let status = store
+            .start_host_task(
+                HostTask::from_future(
+                    subtask,
+                    recording(&slot),
+                    core::future::ready(Ok(vec![Val::U32(7)])),
+                ),
+                table,
+                LowerKind::Async,
+            )
+            .expect("start the host task");
+
+        assert_eq!(
+            status,
+            CallStatus::returned(),
+            "a call whose future resolved at once returns to the guest"
+        );
+        assert_eq!(
+            status.subtask_index(),
+            None,
+            "a call that returned at once leaves no subtask behind"
+        );
+        assert_eq!(
+            lowered(&slot),
+            vec![Val::U32(7)],
+            "the result crossed into the guest before the call returned"
+        );
+        assert_eq!(
+            store.scheduler.host_task_count(),
+            0,
+            "nothing joined the store's host tasks"
+        );
+        let guard = store.lock_tables().expect("tables");
+        assert!(
+            guard.tasks.subtask(subtask).is_none(),
+            "the subtask resolved and left the store"
+        );
+        assert!(
+            guard.entry(table, 0).is_none(),
+            "no subtask entered the caller's handle table"
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_starts_a_subtask_for_a_pending_future_and_lowers_its_result_in_a_later_turn() {
+        let engine = Engine::new().expect("engine");
+        let (mut store, table, subtask) = host_call(&engine);
+        let slot: Lowered = Arc::new(Mutex::new(None));
+        let outside = Outside::default();
+        let awaited = outside.clone();
+
+        let status = store
+            .start_host_task(
+                HostTask::from_future(subtask, recording(&slot), async move {
+                    awaited.await;
+                    Ok(vec![Val::U32(9)])
+                }),
+                table,
+                LowerKind::Async,
+            )
+            .expect("start the host task");
+
+        assert_eq!(
+            status.state(),
+            SubtaskState::Started.value(),
+            "a call whose future is still running is a started subtask"
+        );
+        let index = status
+            .subtask_index()
+            .expect("a started call carries the index of its subtask");
+        {
+            let guard = store.lock_tables().expect("tables");
+            assert_eq!(
+                guard.tasks.subtask(subtask).map(|record| record.state),
+                Some(SubtaskState::Started),
+                "the subtask record is in its started state"
+            );
+            assert_eq!(
+                guard.entry(table, index),
+                Some(HandleKind::Subtask {
+                    index: subtask.index()
+                }),
+                "the status names the entry the subtask took in the caller's table"
+            );
+        }
+        assert_eq!(
+            store.scheduler.host_task_count(),
+            1,
+            "the future joined the store's host tasks"
+        );
+        assert!(
+            slot.lock().expect("the lowering's slot").is_none(),
+            "nothing has crossed into the guest yet"
+        );
+
+        outside.resolve();
+
+        // The turn that sees the future complete queues the
+        // lowering, and the turn after it runs the item.
+        assert_eq!(
+            store.turn(Waker::noop()).expect("a turn"),
+            Outcome::Progress,
+            "the completed host task left an item ready to run"
+        );
+        store.turn(Waker::noop()).expect("a turn");
+
+        assert_eq!(
+            lowered(&slot),
+            vec![Val::U32(9)],
+            "the result crossed in the turn that ran the lowering"
+        );
+        let mut guard = store.lock_tables().expect("tables");
+        assert_eq!(
+            guard.tasks.subtask(subtask).map(|record| record.state),
+            Some(SubtaskState::Returned),
+            "the subtask moved to its returned state"
+        );
+        assert_eq!(
+            guard
+                .tasks
+                .take_pending_event(WaitableId::Subtask(subtask))
+                .expect("the subtask's waitable state"),
+            Some(Event::subtask(index, SubtaskState::Returned)),
+            "the subtask's pending event says which entry returned, and how"
+        );
+    }
+
+    /// A waker that counts the wakes it receives. A wake that lands
+    /// here is how a test says which waker a poll carried, without
+    /// comparing waker identities, which two clones of one waker do
+    /// not always agree on.
+    #[derive(Default)]
+    struct CountingWaker(AtomicUsize);
+
+    impl CountingWaker {
+        fn count(&self) -> usize {
+            self.0.load(AtomicOrdering::Relaxed)
+        }
+    }
+
+    impl std::task::Wake for CountingWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, AtomicOrdering::Relaxed);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, AtomicOrdering::Relaxed);
+        }
+    }
+
+    /// A future that counts its polls, wakes whatever waker each one
+    /// carried, and never resolves.
+    #[derive(Clone, Default)]
+    struct WakesItsWaker(Arc<AtomicUsize>);
+
+    impl Future for WakesItsWaker {
+        type Output = Result<Vec<Val>>;
+
+        fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+            self.0.fetch_add(1, AtomicOrdering::Relaxed);
+            context.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+
+    #[wcmp_macros::test]
+    async fn it_polls_a_host_task_started_outside_a_turn_with_the_next_turns_waker() {
+        let engine = Engine::new().expect("engine");
+        let (mut store, table, subtask) = host_call(&engine);
+        let slot: Lowered = Arc::new(Mutex::new(None));
+        let future = WakesItsWaker::default();
+        let polls = future.0.clone();
+        let counted = Arc::new(CountingWaker::default());
+        let driver_waker = Waker::from(counted.clone());
+
+        // No turn is running, so the first poll uses a waker that
+        // does nothing. The task joins the store all the same, and
+        // counts as woken for the turn that follows.
+        store
+            .start_host_task(
+                HostTask::from_future(subtask, recording(&slot), future),
+                table,
+                LowerKind::Async,
+            )
+            .expect("start the host task");
+        assert_eq!(
+            polls.load(AtomicOrdering::Relaxed),
+            1,
+            "the call polled the future once before it returned to the guest"
+        );
+        assert_eq!(
+            counted.count(),
+            0,
+            "a host task started outside a turn is polled with a waker that does nothing"
+        );
+
+        {
+            let mut driver = Box::pin(Driver::new(&mut store, None, never));
+            assert!(
+                poll_once(&mut driver, &driver_waker).is_pending(),
+                "the host task is still pending, so the driver waits on it"
+            );
+        }
+
+        assert_eq!(
+            polls.load(AtomicOrdering::Relaxed),
+            2,
+            "the next turn polled the host task again"
+        );
+        assert_eq!(
+            counted.count(),
+            1,
+            "the next turn polled it with the driver's waker, so no wake is lost"
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_fails_a_synchronous_lower_of_a_pending_future_with_the_stack_switch_cause() {
+        let engine = Engine::new().expect("engine");
+        let (mut store, table, subtask) = host_call(&engine);
+        let slot: Lowered = Arc::new(Mutex::new(None));
+
+        // A synchronous lower whose future resolves at once needs
+        // nothing of the suspend seam: the guest gets its result as
+        // the call returns.
+        store
+            .start_host_task(
+                HostTask::from_future(
+                    subtask,
+                    recording(&slot),
+                    core::future::ready(Ok(vec![Val::U32(1)])),
+                ),
+                table,
+                LowerKind::Sync,
+            )
+            .expect("start a host task whose future is ready");
+        assert_eq!(lowered(&slot), vec![Val::U32(1)]);
+
+        let subtask = store.lock_tables().expect("tables").tasks.push_subtask();
+        let error = store
+            .start_host_task(
+                HostTask::from_future(
+                    subtask,
+                    recording(&slot),
+                    core::future::pending::<Result<Vec<Val>>>(),
+                ),
+                table,
+                LowerKind::Sync,
+            )
+            .expect_err("a synchronous lower cannot block the guest thread here");
+
+        assert!(
+            matches!(error, Error::Scheduler(SchedulerCause::StackSwitchNeeded)),
+            "a synchronous lower of a future that is still running fails with the \
+             stack-switch cause while no target fills the suspend seam, and failed \
+             with {error} instead"
+        );
+        assert_eq!(
+            store.scheduler.host_task_count(),
+            0,
+            "the failed call left no host task in the store"
+        );
+        assert!(
+            store
+                .lock_tables()
+                .expect("tables")
+                .tasks
+                .subtask(subtask)
+                .is_none(),
+            "the failed call gave the subtask back"
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_fails_the_guests_call_when_the_host_task_fails_on_its_first_poll() {
+        let engine = Engine::new().expect("engine");
+        let (mut store, table, subtask) = host_call(&engine);
+        let slot: Lowered = Arc::new(Mutex::new(None));
+
+        let error = store
+            .start_host_task(
+                HostTask::from_future(
+                    subtask,
+                    recording(&slot),
+                    core::future::ready(Err(Error::internal("the host call failed"))),
+                ),
+                table,
+                LowerKind::Async,
+            )
+            .expect_err("the host call failed, so the guest's call fails");
+
+        assert!(
+            error.to_string().contains("the host call failed"),
+            "the failure the host call produced is the one the guest sees, and it \
+             saw {error} instead"
+        );
+        assert!(
+            slot.lock().expect("the lowering's slot").is_none(),
+            "a call that never returned has nothing to lower"
+        );
+        assert!(
+            store
+                .lock_tables()
+                .expect("tables")
+                .tasks
+                .subtask(subtask)
+                .is_none(),
+            "the failed call gave the subtask back"
         );
     }
 }
