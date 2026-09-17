@@ -27,3 +27,4 @@ Follow-up from the re-review of af244b (`review-af244b-b81315fc`).
 ## Dispatch log
 - 2026-09-17T22:08:54Z dispatched implementor `card-dee52c-534585b0` (implement session, PDD018 thread, Opus 5; seeded after 8af18fc landed)
 - 2026-09-17T22:52:46Z implementor reported done at `5e36ab9` (comments only; gate green; flagged the PDD011/PDD005 runtime-layer-exposure contradiction for the owner). Fetched, needs-review, paused the implementor; launched reviewer `review-dee52c-c870ef91`, delivered the branch.
+- 2026-09-17T23:33:33Z reviewer accepted; landed as `d6c22d4`; card to ready; removed the pair. Revert artifact: `sandbox-guest/card-dee52c-534585b0`.

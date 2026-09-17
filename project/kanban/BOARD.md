@@ -15,15 +15,14 @@ kanban-plugin: basic
 - [ ] [[968d39]]
 - [ ] [[45740e]]
 - [ ] [[806283]]
+- [ ] [[cb4bd5]]
 
 ## In Progress
-
-- [ ] [[52367e]]
 
 ## Needs Review
 
 - [ ] [[2609dc]]
-- [ ] [[dee52c]]
+- [ ] [[52367e]]
 
 ## Ready
 
@@ -48,6 +47,7 @@ kanban-plugin: basic
 - [ ] [[f91df3]]
 - [ ] [[cca88c]]
 - [ ] [[af244b]]
+- [ ] [[dee52c]]
 
 ---
 
