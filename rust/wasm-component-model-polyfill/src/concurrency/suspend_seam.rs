@@ -274,12 +274,12 @@ impl<T: 'static> Default for SuspendSeam<T> {
 }
 
 // The seam is one code path on both targets, and every test here
-// measures it on both. Each carries the pair of attributes the
-// crate's cross-target test attribute expands to, because that
-// attribute takes an `async fn` and none of these bodies awaits
-// anything: a nested turn is a synchronous call from inside a guest
-// call. A plain `#[test]` would run natively only, since the browser
-// runner collects `wasm_bindgen_test` functions.
+// measures it on both, under the crate's cross-target test attribute.
+// None of these bodies awaits anything — a nested turn is a
+// synchronous call from inside a guest call — so they take the
+// attribute's synchronous arm. A plain `#[test]` would run natively
+// only, since the browser runner collects `wasm_bindgen_test`
+// functions.
 #[cfg(test)]
 mod tests {
     use core::future::Future;
@@ -522,8 +522,7 @@ mod tests {
         }
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[wcmp_macros::test]
     fn it_has_an_empty_provider_slot_on_both_targets() {
         let mut owner = store();
         let store = owner.context();
@@ -535,8 +534,7 @@ mod tests {
         );
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[wcmp_macros::test]
     fn it_polls_a_host_task_with_the_outer_waker_and_returns_when_the_condition_holds() {
         let mut owner = store();
         let mut store = owner.context();
@@ -571,8 +569,7 @@ mod tests {
         );
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[wcmp_macros::test]
     fn it_runs_ready_work_of_another_task_while_the_condition_is_unmet() {
         let mut owner = store();
         let mut store = owner.context();
@@ -616,8 +613,7 @@ mod tests {
         );
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[wcmp_macros::test]
     fn it_leaves_a_host_task_it_left_pending_in_the_store_for_the_outer_driver() {
         let mut owner = store();
         let mut store = owner.context();
@@ -682,8 +678,7 @@ mod tests {
         );
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[wcmp_macros::test]
     fn it_traps_with_the_cannot_block_cause_when_the_task_must_not_block() {
         let mut owner = store();
         let mut store = owner.context();
@@ -703,8 +698,7 @@ mod tests {
         );
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[wcmp_macros::test]
     fn it_traps_with_the_stack_switch_cause_when_the_task_may_block() {
         let mut owner = store();
         let mut store = owner.context();
@@ -724,8 +718,7 @@ mod tests {
         );
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[wcmp_macros::test]
     fn it_does_not_raise_the_recursive_driver_cause_from_inside_a_drivers_turn() {
         let mut owner = store();
         let mut store = owner.context();
@@ -770,8 +763,7 @@ mod tests {
         );
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[wcmp_macros::test]
     fn it_consults_the_provider_slot_before_it_falls_back_to_a_nested_turn() {
         let mut owner = store();
         let mut store = owner.context();
@@ -819,8 +811,7 @@ mod tests {
         );
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[wcmp_macros::test]
     fn it_runs_every_deferred_item_exactly_once_after_a_suspension_gave_up() {
         let mut owner = store();
         let mut store = owner.context();
@@ -864,8 +855,7 @@ mod tests {
         );
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[wcmp_macros::test]
     fn it_never_resumes_a_yielded_item_inside_the_guest_call_that_blocked() {
         let mut owner = store();
         let mut store = owner.context();
@@ -902,8 +892,7 @@ mod tests {
         );
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[wcmp_macros::test]
     fn it_refuses_a_suspension_reached_from_inside_a_nested_turn() {
         let mut owner = store();
         let mut store = owner.context();
@@ -959,8 +948,7 @@ mod tests {
         );
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[wcmp_macros::test]
     fn it_refuses_a_nested_suspension_with_the_cannot_block_cause_in_a_sync_task() {
         let mut owner = store();
         let mut store = owner.context();
@@ -994,8 +982,7 @@ mod tests {
         );
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[wcmp_macros::test]
     fn it_runs_a_nested_turn_again_once_an_earlier_one_has_returned() {
         let mut owner = store();
         let mut store = owner.context();

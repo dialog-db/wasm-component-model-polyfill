@@ -57,25 +57,25 @@ impl fmt::Display for ExternalName {
 mod tests {
     use super::*;
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_parses_an_interface_form_into_the_interface_variant() {
         let name = ExternalName::from_raw("wasi:cli/run@0.2.0");
         assert!(matches!(name, ExternalName::Interface(_)));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_falls_back_to_plain_for_a_non_conforming_name() {
         let name = ExternalName::from_raw("hello");
         assert!(matches!(name, ExternalName::Plain(_)));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_falls_back_to_plain_for_a_kebab_case_label() {
         let name = ExternalName::from_raw("hello-world");
         assert!(matches!(name, ExternalName::Plain(_)));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_distinguishes_interface_and_plain_even_when_text_matches() {
         let interface = ExternalName::Interface("wasi:cli/run".parse().unwrap());
         let plain = ExternalName::Plain("wasi:cli/run".to_owned());

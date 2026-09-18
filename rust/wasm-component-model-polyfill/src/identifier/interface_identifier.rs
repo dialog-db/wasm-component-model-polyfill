@@ -98,21 +98,21 @@ mod tests {
     use super::*;
     use semver::Version;
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_parses_an_interface_with_a_package_version() {
         let id: InterfaceIdentifier = "wasi:cli@0.2.0/run".parse().unwrap();
         assert_eq!(id.package().version().unwrap(), &Version::new(0, 2, 0));
         assert_eq!(id.name(), "run");
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_normalises_a_trailing_version_onto_the_package() {
         let id: InterfaceIdentifier = "wasi:cli/run@0.2.0".parse().unwrap();
         assert_eq!(id.package().version().unwrap(), &Version::new(0, 2, 0));
         assert_eq!(id.name(), "run");
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_rejects_a_double_version() {
         assert!(matches!(
             "wasi:cli@0.2.0/run@0.2.0"
@@ -122,7 +122,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_rejects_an_identifier_missing_the_interface_segment() {
         assert!(matches!(
             "wasi:cli".parse::<InterfaceIdentifier>().unwrap_err(),
@@ -130,7 +130,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_rejects_an_empty_interface_segment() {
         assert!(matches!(
             "wasi:cli/".parse::<InterfaceIdentifier>().unwrap_err(),
@@ -138,7 +138,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_displays_in_the_trailing_version_form() {
         let id: InterfaceIdentifier = "wasi:cli@0.2.0/run".parse().unwrap();
         assert_eq!(id.to_string(), "wasi:cli/run@0.2.0");

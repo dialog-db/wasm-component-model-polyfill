@@ -133,7 +133,7 @@ impl<T> Default for RecordTable<T> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_advances_the_generation_of_a_slot_it_hands_out_again() {
         let mut table = RecordTable::new();
         let first = table.insert("first");
@@ -149,7 +149,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_reports_the_generation_of_a_slot_before_it_is_filled() {
         let table: RecordTable<()> = RecordTable::new();
         assert_eq!(

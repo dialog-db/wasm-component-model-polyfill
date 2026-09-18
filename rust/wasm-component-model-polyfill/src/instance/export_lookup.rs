@@ -62,7 +62,7 @@ impl ExportLookup for ExternalName {
 mod tests {
     use super::*;
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_reads_an_interface_shaped_string_as_the_interface_name() {
         let from_string = "test:guest/foo@1.2.3".external_name();
         let from_identifier = "test:guest/foo@1.2.3"
@@ -73,7 +73,7 @@ mod tests {
         assert!(matches!(from_string, ExternalName::Interface(_)));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_reads_any_other_string_as_a_plain_name() {
         assert_eq!("a".external_name(), ExternalName::Plain("a".to_owned()));
         assert_eq!(
@@ -82,7 +82,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_passes_an_external_name_through() {
         let name = ExternalName::Plain("i".to_owned());
         let borrowed: &ExternalName = &name;

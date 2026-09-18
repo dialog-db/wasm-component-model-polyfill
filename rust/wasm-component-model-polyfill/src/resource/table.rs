@@ -157,7 +157,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_mints_distinct_indices_while_live() {
         let mut table = HandleTable::new();
         let a = table.insert_entry(own(10));
@@ -167,7 +167,7 @@ mod tests {
         assert_eq!(table.get(b), Some(20));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_reuses_freed_indices_deterministically() {
         let mut table = HandleTable::new();
         let a = table.insert_entry(own(1));
@@ -180,7 +180,7 @@ mod tests {
         assert_eq!(table.get(c), Some(3));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_rejects_stale_indices_after_remove() {
         let mut table = HandleTable::new();
         let idx = table.insert_entry(own(7));
@@ -189,7 +189,7 @@ mod tests {
         assert_eq!(table.remove(idx), None);
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_never_hands_out_index_zero() {
         let mut table = HandleTable::new();
         assert_eq!(table.insert_entry(own(5)), 1, "the first allocation is 1");
@@ -197,7 +197,7 @@ mod tests {
         assert_eq!(table.remove(0), None);
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_rejects_never_allocated_indices() {
         let table = HandleTable::new();
         assert_eq!(table.get(42), None);

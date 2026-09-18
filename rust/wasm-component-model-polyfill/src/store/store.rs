@@ -256,7 +256,7 @@ mod tests {
 
     use super::*;
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_runs_no_destructor_when_the_store_is_dropped() {
         let engine = Engine::new().expect("engine");
         let mut store = Store::new(&engine, ()).expect("store");

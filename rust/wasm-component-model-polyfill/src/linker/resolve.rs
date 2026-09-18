@@ -650,7 +650,7 @@ mod tests {
         text.parse().unwrap()
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_falls_into_the_minor_compatibility_range_for_pre_one_versions() {
         assert!(versions_compatible(
             Some(&version("0.2.0")),
@@ -658,7 +658,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_excludes_a_different_minor_below_one() {
         assert!(!versions_compatible(
             Some(&version("0.2.0")),
@@ -666,7 +666,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_falls_into_the_major_compatibility_range_for_one_plus_versions() {
         assert!(versions_compatible(
             Some(&version("1.4.0")),
@@ -674,7 +674,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_excludes_a_different_major_at_or_above_one() {
         assert!(!versions_compatible(
             Some(&version("1.4.0")),
@@ -682,7 +682,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_excludes_pre_one_against_one_plus() {
         assert!(!versions_compatible(
             Some(&version("0.9.0")),
@@ -690,18 +690,18 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_treats_two_unversioned_as_compatible() {
         assert!(versions_compatible(None, None));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_treats_unversioned_versus_versioned_as_no_match() {
         assert!(!versions_compatible(None, Some(&version("1.0.0"))));
         assert!(!versions_compatible(Some(&version("1.0.0")), None));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_picks_highest_version_when_multiple_match() {
         let import = id("wasi:cli/run@0.2.0");
         let registered = [id("wasi:cli/run@0.2.5"), id("wasi:cli/run@0.2.7")];
@@ -709,7 +709,7 @@ mod tests {
         assert_eq!(chosen, Some(id("wasi:cli/run@0.2.7")));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_skips_a_candidate_with_a_different_interface_name() {
         let import = id("wasi:cli/run@0.2.0");
         let registered = [id("wasi:cli/exit@0.2.0")];
@@ -717,7 +717,7 @@ mod tests {
         assert_eq!(chosen, None);
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_skips_a_candidate_with_a_different_package() {
         let import = id("wasi:cli/run@0.2.0");
         let registered = [id("wasi:io/run@0.2.0")];

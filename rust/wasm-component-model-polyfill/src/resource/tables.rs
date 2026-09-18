@@ -897,7 +897,7 @@ impl Drop for SubtaskExit<'_> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_rejects_an_index_of_another_resource_type() {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
@@ -925,7 +925,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_allocates_consecutive_indices_across_resource_types_in_one_table() {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
@@ -936,7 +936,7 @@ mod tests {
         assert_eq!(b, a + 1, "one allocator serves every resource type");
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_inserts_looks_up_and_removes_a_subtask_and_a_waitable_set_entry() {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
@@ -978,7 +978,7 @@ mod tests {
         assert_eq!(tables.entry(table, set_index), None);
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_refuses_to_remove_a_lent_entry_until_the_task_ends() {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
@@ -999,7 +999,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_owes_a_lowered_borrow_to_the_current_task_and_takes_it_back_on_drop() {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
@@ -1050,7 +1050,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_refuses_a_borrow_lowered_outside_a_task() {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
@@ -1058,7 +1058,7 @@ mod tests {
         assert_eq!(tables.insert_borrow(table, ty, false, 1), None);
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_discards_a_subtask_a_failed_host_call_left_above_the_task() {
         // The failure of a host call travels past the pop that would
         // have ended its subtask: the lift of a parameter fails after
@@ -1095,7 +1095,7 @@ mod tests {
         assert_eq!(tables.tasks.thread_count(), 0, "nor any thread record");
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_leaves_a_scope_that_is_not_on_the_stack_alone() {
         // An identity that has already been popped names nothing, and
         // ending it a second time must not eat the scope below it.
@@ -1118,7 +1118,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_keeps_a_borrow_left_by_a_failed_call_from_reaching_a_later_task() {
         // A call that fails with a borrow outstanding leaves the
         // borrow entry in the guest's table, naming a task whose
@@ -1161,7 +1161,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_refuses_a_lend_to_a_subtask_scope_that_has_already_ended() {
         // A crossing names the scope its lends count against when it
         // is built. A crossing built for a call out that then failed
@@ -1203,7 +1203,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_refuses_a_lend_with_no_call_to_give_it_back() {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
@@ -1222,7 +1222,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_refuses_a_lend_to_a_scope_that_has_already_ended() {
         // A crossing carries the scope its lends count against. A
         // failure can end that scope before the crossing lifts its
@@ -1248,7 +1248,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_reads_a_subtask_scope_the_same_way_for_a_lend_and_for_a_borrow() {
         // A crossing hands the same scope to both operations, so both
         // read it by the same rule: the named subtask is the call the
@@ -1495,7 +1495,7 @@ mod tests {
         assert_eq!(tables.tasks.thread_count(), 0, "nor is a thread left");
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_refuses_a_lend_of_an_entry_that_owns_nothing() {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();

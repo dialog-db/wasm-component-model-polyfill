@@ -104,7 +104,7 @@ fn encode_utf16(s: &str) -> (Vec<u8>, u32) {
 mod tests {
     use super::*;
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_picks_latin1_when_every_scalar_fits_in_a_byte() {
         let (bytes, units) = encode(StringEncoding::CompactUtf16, "héllo");
         assert_eq!(bytes, b"h\xe9llo");
@@ -115,7 +115,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_falls_back_to_utf16_with_the_tag_bit() {
         let (bytes, units) = encode(StringEncoding::CompactUtf16, "cake 🍰");
         assert_eq!(units & UTF16_TAG, UTF16_TAG);
@@ -126,7 +126,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_sizes_each_representation() {
         assert_eq!(byte_length(StringEncoding::CompactUtf16, 5), Some(5));
         assert_eq!(

@@ -462,7 +462,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_moves_an_owned_handle_from_the_source_table_to_the_destination_table() {
         let tables = Arc::new(Mutex::new(HandleTables::new()));
         let type_id = ResourceTypeId::fresh();
@@ -509,7 +509,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_inserts_a_borrow_entry_in_the_destination_table_for_the_call() {
         let tables = Arc::new(Mutex::new(HandleTables::new()));
         let type_id = ResourceTypeId::fresh();
@@ -551,7 +551,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_pushes_the_callees_task_and_marks_the_instance_may_not_suspend() {
         let tables = Arc::new(Mutex::new(HandleTables::new()));
         let callee = tables.lock().unwrap().tasks.insert_instance();
@@ -596,7 +596,7 @@ mod tests {
         assert_eq!(guard.tasks.thread_count(), 0, "its thread record too");
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_leaves_the_flag_set_for_a_nested_synchronous_call() {
         let tables = Arc::new(Mutex::new(HandleTables::new()));
         let callee = tables.lock().unwrap().tasks.insert_instance();
@@ -627,7 +627,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_reads_and_writes_the_context_slots_of_the_current_thread() {
         // Every read and write here goes through the bodies the
         // `context.get` and `context.set` intrinsics run.
@@ -673,7 +673,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_pops_the_callees_task_with_the_export_task_when_the_call_is_abandoned() {
         // A guest that traps inside a composed call never reaches the
         // exit intrinsic, so the callee's task is still on the stack
@@ -720,7 +720,7 @@ mod tests {
         assert_eq!(guard.tasks.thread_count(), 0, "nor any thread record");
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_takes_the_callee_of_an_enter_from_the_third_adapter_argument() {
         let mut tables = HandleTables::new();
         let caller = tables.tasks.insert_instance();

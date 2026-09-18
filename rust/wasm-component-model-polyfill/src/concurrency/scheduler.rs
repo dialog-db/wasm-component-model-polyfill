@@ -459,7 +459,7 @@ mod tests {
         )
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_runs_the_switch_slot_before_the_high_priority_queue() {
         let mut store = store();
         let log = log();
@@ -478,7 +478,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_runs_the_high_priority_queue_in_the_order_items_became_ready() {
         let mut store = store();
         let log = log();
@@ -494,7 +494,7 @@ mod tests {
         assert_eq!(entries(&log), vec!["first", "second"]);
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_yields_to_the_driver_before_it_runs_a_low_priority_item() {
         let mut store = store();
         let log = log();
@@ -526,7 +526,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_lets_a_synchronous_task_past_a_shut_entry_gate() {
         let mut store = store();
         let log = log();
@@ -550,7 +550,7 @@ mod tests {
         assert_eq!(entries(&log), vec!["sync"]);
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_starts_tasks_held_at_the_entry_gate_in_arrival_order() {
         let mut store = store();
         let log = log();
@@ -589,7 +589,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_holds_a_task_behind_one_that_already_waits_at_the_gate() {
         let mut store = store();
         let log = log();
@@ -618,7 +618,7 @@ mod tests {
         assert_eq!(entries(&log), vec!["early", "late"]);
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_gives_the_instance_to_a_task_that_needs_it_exclusively() {
         let mut store = store();
         let log = log();
@@ -648,7 +648,7 @@ mod tests {
         assert_eq!(store.scheduler().waiting_at_gate(), 1);
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_releases_the_instance_when_the_holding_tasks_call_ends() {
         let mut store = store();
         let log = log();
@@ -680,7 +680,7 @@ mod tests {
         assert_eq!(store.scheduler().waiting_at_gate(), 0);
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_releases_the_instance_when_the_holding_tasks_call_fails() {
         let mut store = store();
         let log = log();

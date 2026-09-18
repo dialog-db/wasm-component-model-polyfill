@@ -695,7 +695,7 @@ mod tests {
 
     use super::*;
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_renders_the_deadlock_cause_as_wasmtime_48s_trap_message() {
         let err = Error::Scheduler(SchedulerCause::Deadlock);
         assert_eq!(
@@ -704,7 +704,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_renders_the_cannot_block_cause_as_wasmtime_48s_trap_message() {
         let err = Error::Scheduler(SchedulerCause::CannotBlock);
         assert_eq!(
@@ -713,7 +713,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_pins_the_deadlock_cause_to_the_trap_wasmtime_environ_renders() {
         let trap = Trap::AsyncDeadlock.to_string();
         let cause = SchedulerCause::Deadlock.to_string();
@@ -725,7 +725,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_pins_the_cannot_block_cause_to_the_trap_wasmtime_environ_renders() {
         let trap = Trap::CannotBlockSyncTask.to_string();
         let cause = SchedulerCause::CannotBlock.to_string();
@@ -737,7 +737,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_renders_the_recursive_driver_cause() {
         let err = Error::Scheduler(SchedulerCause::RecursiveDriver);
         assert_eq!(
@@ -746,7 +746,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_renders_the_stack_switch_needed_cause() {
         let err = Error::Scheduler(SchedulerCause::StackSwitchNeeded);
         assert_eq!(
@@ -755,7 +755,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_keeps_stack_switch_needed_distinct_from_unsupported() {
         let stack_switch = Error::Scheduler(SchedulerCause::StackSwitchNeeded);
         let unsupported = Error::unsupported("stream<T>");
@@ -763,7 +763,7 @@ mod tests {
         assert!(matches!(unsupported, Error::Unsupported { .. }));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_renders_the_waitable_set_drop_causes() {
         assert_eq!(
             Error::Waitable(WaitableCause::SetHasWaitables).to_string(),
@@ -775,7 +775,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_pins_the_waitable_causes_to_the_traps_wasmtime_environ_renders() {
         for (trap, cause) in [
             (

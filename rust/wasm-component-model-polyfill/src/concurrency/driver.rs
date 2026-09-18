@@ -247,7 +247,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_returns_when_the_turn_that_met_its_condition_left_a_host_task_pending() {
         let mut store = store();
         let log = log();
@@ -272,7 +272,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_refuses_a_driver_entered_from_inside_a_turn() {
         let mut store = store();
         let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -296,7 +296,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_fails_a_driver_that_goes_idle_with_the_deadlock_cause() {
         let mut store = store();
         let mut driver = Box::pin(Driver::new(store.context(), None, never));
@@ -310,7 +310,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_fails_a_driver_whose_task_must_not_block_with_the_cannot_block_cause() {
         let mut store = store();
         let task = {
@@ -334,7 +334,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_leaves_the_pending_item_in_the_store_when_a_drivers_future_is_dropped() {
         let mut store = store();
         let log = log();
@@ -375,6 +375,11 @@ mod tests {
         );
     }
 
+    // The wake after a yield is the one thing the driver does
+    // differently per target, so this test and the one below it are
+    // each written against one target. Natively the driver wakes
+    // itself; in the browser it queues a macrotask, which the test
+    // after this one measures.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn it_wakes_itself_and_returns_pending_after_a_yield() {

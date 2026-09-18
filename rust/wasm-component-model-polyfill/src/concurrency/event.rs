@@ -84,7 +84,7 @@ impl Event {
 mod tests {
     use super::*;
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_numbers_every_event_code_as_the_reference_does() {
         assert_eq!(Event::none().triple(), (0, 0, 0));
         assert_eq!(
@@ -105,7 +105,7 @@ mod tests {
         assert_eq!(Event::task_cancelled().triple(), (6, 0, 0));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_carries_each_resolved_subtask_state_as_its_second_payload() {
         for (state, value) in [
             (SubtaskState::Returned, 2),

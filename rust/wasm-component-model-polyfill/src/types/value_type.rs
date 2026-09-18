@@ -67,7 +67,7 @@ mod tests {
     use super::super::record_type::RecordField;
     use super::*;
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_treats_two_identical_records_as_structurally_equal() {
         let lhs = ValueType::Record(RecordType::new([
             RecordField::new("x", ValueType::Primitive(PrimitiveType::S32)),
@@ -80,7 +80,7 @@ mod tests {
         assert_eq!(lhs, rhs);
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_distinguishes_records_with_different_field_orders() {
         let lhs = ValueType::Record(RecordType::new([
             RecordField::new("x", ValueType::Primitive(PrimitiveType::S32)),
@@ -93,7 +93,7 @@ mod tests {
         assert_ne!(lhs, rhs);
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_distinguishes_records_with_different_field_types() {
         let lhs = ValueType::Record(RecordType::new([RecordField::new(
             "x",
@@ -106,7 +106,7 @@ mod tests {
         assert_ne!(lhs, rhs);
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_distinguishes_an_enum_from_a_payloadless_variant() {
         // The two shapes are spelled differently in WIT and the
         // polyfill keeps that distinction at the data level.
@@ -118,7 +118,7 @@ mod tests {
         assert_ne!(as_enum, as_variant);
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_supports_recursive_compound_shapes() {
         let inner = ValueType::List(ListType::new(ValueType::Primitive(PrimitiveType::U8)));
         let outer = ValueType::Option(OptionType::new(inner.clone()));

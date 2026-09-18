@@ -726,7 +726,7 @@ impl Default for TaskTables {
 mod tests {
     use super::*;
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_resolves_a_stale_subtask_identity_to_no_record() {
         // A call out through an import ends and its record index is
         // handed out again. The identity the ended call was made
@@ -762,7 +762,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_resolves_a_stale_thread_identity_to_no_record() {
         // A task's threads go with its record, and the next task
         // takes the freed thread index. The ended thread's identity
@@ -803,7 +803,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_resolves_a_stale_waitable_set_identity_to_no_record() {
         // A dropped set's index is handed out again. The dropped
         // set's identity must not name the set that took it, or a

@@ -3,7 +3,8 @@
 //! Three macros live here:
 //!
 //! - [`macro@test`] — cross-target attribute that expands to `#[tokio::test]`
-//!   on native and `#[wasm_bindgen_test]` on `wasm32-unknown-unknown`.
+//!   on native, or to the built-in `#[test]` for a synchronous body, and to
+//!   `#[wasm_bindgen_test]` on `wasm32-unknown-unknown`.
 //! - [`wasm!`] — assemble inline WebAssembly Text Format into a core-module
 //!   byte slice at compile time.
 //! - [`component!`] — assemble inline WebAssembly Text Format into a
@@ -32,21 +33,32 @@ use syn::{ItemFn, LitStr, parse_macro_input};
 ///         local.get 0 local.get 1 i32.add))
 /// "#);
 /// ```
-/// Cross-target async test attribute.
+/// Cross-target test attribute.
 ///
-/// On `cfg(not(target_arch = "wasm32"))` this expands to `#[tokio::test]`. On
-/// `cfg(target_arch = "wasm32")` it expands to `#[wasm_bindgen_test]`. The
-/// annotated function must be `async`; sync test bodies should use the
-/// language's built-in `#[test]` attribute directly.
+/// The attribute marks a test as one that runs on both targets. It takes an
+/// `async fn` or a plain `fn`.
+///
+/// An `async fn` expands to `#[tokio::test]` on
+/// `cfg(not(target_arch = "wasm32"))`. A synchronous `fn` expands to the
+/// language's built-in `#[test]` there. Both expand to `#[wasm_bindgen_test]`
+/// on `cfg(target_arch = "wasm32")`, because the browser runner collects only
+/// `wasm_bindgen_test` functions and a plain `#[test]` would therefore be a
+/// native-only test.
 ///
 /// The macro takes no arguments. Callers must have `tokio` in scope on native
-/// targets and `wasm_bindgen_test` in scope on `wasm32-unknown-unknown`.
+/// targets when the body is `async`, and `wasm_bindgen_test` in scope on
+/// `wasm32-unknown-unknown`.
 ///
 /// # Example
 ///
 /// ```ignore
 /// #[wcmp_macros::test]
 /// async fn it_works() {
+///     assert_eq!(2 + 2, 4);
+/// }
+///
+/// #[wcmp_macros::test]
+/// fn it_works_without_awaiting_anything() {
 ///     assert_eq!(2 + 2, 4);
 /// }
 /// ```
@@ -66,17 +78,18 @@ pub fn test(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let function = parse_macro_input!(item as ItemFn);
 
-    if function.sig.asyncness.is_none() {
-        return error(
-            function.sig.fn_token.span,
-            "`#[wcmp_macros::test]` requires an `async fn`; use `#[test]` for sync tests"
-                .to_string(),
-        )
-        .into();
-    }
+    // The two native halves differ: an `async fn` needs a runtime to be
+    // driven on, and a plain `fn` is what the built-in attribute already
+    // takes. The browser half is `wasm_bindgen_test` either way, since its
+    // runner takes both shapes.
+    let native = if function.sig.asyncness.is_some() {
+        quote!(::tokio::test)
+    } else {
+        quote!(test)
+    };
 
     quote! {
-        #[cfg_attr(not(target_arch = "wasm32"), ::tokio::test)]
+        #[cfg_attr(not(target_arch = "wasm32"), #native)]
         #[cfg_attr(target_arch = "wasm32", ::wasm_bindgen_test::wasm_bindgen_test)]
         #function
     }

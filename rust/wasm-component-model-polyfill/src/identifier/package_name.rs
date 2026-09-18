@@ -118,7 +118,7 @@ pub fn parse_package(input: &str) -> Result<PackageName, IdentifierParseError> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_parses_a_package_without_a_version() {
         let pkg: PackageName = "wasi:cli".parse().unwrap();
         assert_eq!(pkg.namespace(), "wasi");
@@ -126,13 +126,13 @@ mod tests {
         assert!(pkg.version().is_none());
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_parses_a_package_with_a_version() {
         let pkg: PackageName = "wasi:cli@0.2.0".parse().unwrap();
         assert_eq!(pkg.version().unwrap(), &Version::new(0, 2, 0));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_rejects_a_package_with_an_interface_segment() {
         assert!(matches!(
             "wasi:cli/run".parse::<PackageName>().unwrap_err(),
@@ -140,7 +140,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_rejects_a_package_missing_the_namespace_separator() {
         assert!(matches!(
             "wasicli".parse::<PackageName>().unwrap_err(),
@@ -148,7 +148,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_rejects_a_package_with_an_empty_segment() {
         assert!(matches!(
             "wasi:".parse::<PackageName>().unwrap_err(),
@@ -156,7 +156,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_rejects_a_package_with_an_invalid_semver() {
         assert!(matches!(
             "wasi:cli@nope".parse::<PackageName>().unwrap_err(),
@@ -164,7 +164,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_displays_back_to_canonical_form() {
         let pkg: PackageName = "wasi:cli@0.2.0".parse().unwrap();
         assert_eq!(pkg.to_string(), "wasi:cli@0.2.0");

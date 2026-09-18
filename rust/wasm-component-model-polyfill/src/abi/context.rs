@@ -396,7 +396,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_builds_one_context_from_options_an_instance_and_a_scope() {
         let engine = Engine::new().expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
@@ -454,7 +454,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_selects_the_eager_strategy_from_the_linear_memory_data_model() {
         let engine = Engine::new().expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
@@ -483,7 +483,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_selects_a_second_strategy_from_another_data_model() {
         // The call site is the same `BoundaryContext::new` every
         // crossing uses: only the data model of the options differs,
@@ -522,7 +522,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_reads_the_source_of_a_copy_under_the_source_strategy() {
         // A copy between two guest memories has two sides, and each
         // carries its own data model. The read of the source goes

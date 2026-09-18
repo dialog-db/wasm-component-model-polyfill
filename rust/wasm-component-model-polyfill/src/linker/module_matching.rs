@@ -306,7 +306,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_renders_a_function_type_like_the_text_format() {
         assert_eq!(
             render(&func(&[CoreValueType::I32], &[CoreValueType::I64])),
@@ -315,7 +315,7 @@ mod tests {
         assert_eq!(render(&func(&[], &[])), "(func)");
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_reports_a_kind_mismatch_in_wasmtimes_words() {
         let global = CoreExternType::Global {
             content: CoreValueType::I32,
@@ -327,7 +327,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wcmp_macros::test]
     fn it_lets_a_memory_start_larger_and_be_bounded_tighter() {
         assert!(limits_match("memory", 1, Some(4), 2, Some(3)).is_ok());
         assert!(limits_match("memory", 1, None, 1, Some(3)).is_ok());
