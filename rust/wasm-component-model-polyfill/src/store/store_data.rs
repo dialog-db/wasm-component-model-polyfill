@@ -189,10 +189,12 @@ impl<T: 'static> StoreData<T> {
     /// with the recursive-driver cause.
     ///
     /// Both driver entries ask this before either of them has a
-    /// [`TurnGuard`], so it is asked through the guard, which is
-    /// what takes the tables back from a poison a panic left. A
-    /// panic that poisoned them while no turn was running would
-    /// otherwise refuse every later driver of the store.
+    /// [`TurnGuard`], so it is asked through the guard, which reads
+    /// past a poison a panic left rather than refusing the question.
+    /// A panic that poisoned the tables while no turn was running
+    /// would otherwise refuse every later driver of the store. The
+    /// question is only a question: the poison is cleared by the
+    /// turn the driver goes on to enter, not here.
     /// Workspace-internal.
     pub fn turn_in_flight(&self) -> bool {
         TurnGuard::in_turn(&self.tables)

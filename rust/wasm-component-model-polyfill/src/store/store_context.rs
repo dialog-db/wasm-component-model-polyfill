@@ -1240,15 +1240,22 @@ mod tests {
         }));
         assert!(
             matches!(poll_once(&mut driver, Waker::noop()), Poll::Ready(Ok(()))),
-            "the driver read the store's turn state through the poison \
-             recovery a turn's guard uses, so a panic outside any turn does \
-             not refuse it"
+            "the driver read the store's turn state past the poison, so a \
+             panic outside any turn does not refuse it"
         );
         drop(driver);
         assert!(
-            !store.tables().is_poisoned(),
-            "and that read cleared the poison"
+            store.tables().is_poisoned(),
+            "and the read left the poison where it found it: this driver's \
+             condition was met before it ever entered a turn, and entering a \
+             turn is where the recovery happens"
         );
+
+        assert!(
+            store.turn(Waker::noop()).is_ok(),
+            "the turn this driver never needed takes the tables back"
+        );
+        assert!(!store.tables().is_poisoned(), "and clears the poison");
     }
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -23,16 +23,21 @@ use crate::resource::HandleTables;
 /// the turn returned or unwound.
 ///
 /// A panic taken while the tables were locked poisons the lock as
-/// well, and a poisoned lock refuses every later reader. The guard
-/// takes the tables back from the poison and clears it, on the way
-/// in and on the way out. It is the one place that does. Poisoning
-/// says that some value behind the lock may be half-written, and
-/// nothing behind this lock is: a store is `Send` and not `Sync`, so
-/// the lock guards no concurrent writer, and what a panic can
-/// interrupt is one record's worth of bookkeeping the store is free
-/// to read afterwards. Leaving the poison would turn every panic a
-/// turn survived into a store that fails every later call, which is
-/// exactly the outcome this guard exists to prevent.
+/// well, and a poisoned lock refuses every later reader. Entering a
+/// turn takes the tables back from the poison and clears it, and so
+/// does leaving one. Those two are the only places that clear it:
+/// entering and leaving a turn are where the store is handed over,
+/// and a query that cleared the poison on the side would take the
+/// recovery away from them and hide from its own caller that a
+/// panic had happened at all.
+///
+/// Poisoning says that some value behind the lock may be
+/// half-written, and nothing behind this lock is: a store is `Send`
+/// and not `Sync`, so the lock guards no concurrent writer, and what
+/// a panic can interrupt is one record's worth of bookkeeping the
+/// store is free to read afterwards. Leaving the poison would turn
+/// every panic a turn survived into a store that fails every later
+/// call, which is exactly the outcome this guard exists to prevent.
 pub struct TurnGuard {
     tables: Arc<Mutex<HandleTables>>,
     displaced: Option<Waker>,
@@ -56,26 +61,34 @@ impl TurnGuard {
     ///
     /// This is the question both driver entries ask before they
     /// build a guard of their own, and it is asked here so that it
-    /// is asked through the same poison recovery the guard itself
-    /// uses. A panic that poisoned the tables while no turn was
-    /// running would otherwise refuse every later driver — the
-    /// outcome this type exists to prevent, arrived at one step
-    /// earlier.
+    /// reads past a poison the way the guard does. A panic that
+    /// poisoned the tables while no turn was running would otherwise
+    /// refuse every later driver — the outcome this type exists to
+    /// prevent, arrived at one step earlier.
+    ///
+    /// Reading past the poison is all it does. The answer is a
+    /// question about the scheduler, and a question leaves the store
+    /// as it found it; the poison is cleared where the turn is
+    /// entered, which is where the recovery belongs.
     pub fn in_turn(tables: &Arc<Mutex<HandleTables>>) -> bool {
-        Self::take(tables).scheduler.in_turn()
+        Self::read(tables).scheduler.in_turn()
+    }
+
+    /// Lock `tables`, reading past a poison a panic left without
+    /// clearing it.
+    fn read(tables: &Arc<Mutex<HandleTables>>) -> MutexGuard<'_, HandleTables> {
+        tables
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Lock `tables`, taking them back from a poison a panic left
     /// and clearing it, for the reason the type's documentation
     /// gives.
     fn take(tables: &Arc<Mutex<HandleTables>>) -> MutexGuard<'_, HandleTables> {
-        match tables.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                tables.clear_poison();
-                poisoned.into_inner()
-            }
-        }
+        let guard = Self::read(tables);
+        tables.clear_poison();
+        guard
     }
 }
 
