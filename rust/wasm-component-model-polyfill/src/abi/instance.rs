@@ -79,6 +79,16 @@ impl BoundaryInstance {
         }
     }
 
+    /// The same tables, addressed by the component instance `id`
+    /// rather than the one the declared options name. A built-in
+    /// whose crossing belongs to a task takes the instance off the
+    /// task, which is the instance the reference builds its context
+    /// from.
+    pub fn with_id(mut self, id: InstanceId) -> Self {
+        self.id = Some(id);
+        self
+    }
+
     /// The store-wide identity of the component instance.
     pub fn id(&self) -> Option<InstanceId> {
         self.id

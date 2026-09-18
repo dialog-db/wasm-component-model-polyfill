@@ -24,6 +24,7 @@
 mod compile_module;
 mod instantiate;
 mod resource_destructor;
+mod task_return;
 mod translate;
 
 pub mod intrinsics;
@@ -33,4 +34,5 @@ pub mod trampoline;
 pub use compile_module::compile_module;
 pub use instantiate::instantiate;
 pub use resource_destructor::ResourceDestructor;
+pub use task_return::build_task_return;
 pub use translate::translate;

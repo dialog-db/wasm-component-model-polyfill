@@ -129,6 +129,12 @@ pub use subtask_state::SubtaskState;
 pub use suspend_provider::SuspendProvider;
 pub use suspend_seam::SuspendSeam;
 pub use task_id::TaskId;
+// Where a task's result went is read back only by the tests of the
+// built-in that puts it there; every caller of `Task::resolve` in the
+// crate takes the value from the call it is resolving.
+#[cfg(test)]
+pub use task_result::TaskResult;
+pub use task_state::TaskState;
 pub use task_tables::TaskTables;
 pub use thread_id::ThreadId;
 pub use turn_guard::TurnGuard;

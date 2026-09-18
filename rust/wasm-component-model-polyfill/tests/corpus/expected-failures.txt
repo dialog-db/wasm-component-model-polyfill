@@ -12,10 +12,10 @@
 #   defect            a wrong result from a feature the polyfill claims
 #   cascade           a consequence of an earlier failure in the same file
 
-cm/async/async-calls-sync.wast:12 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/async-calls-sync.wast:12 deferred-feature component rejected: unsupported component feature: the `component-sync-start-call` trampoline
 cm/async/async-calls-sync.wast:250 deferred-feature no instance to invoke
 cm/async/async-calls-sync.wast:251 deferred-feature no instance to invoke
-cm/async/big-interleaving-test.wast:14 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/big-interleaving-test.wast:14 deferred-feature component rejected: unsupported component feature: the `task-cancel` trampoline
 cm/async/big-interleaving-test.wast:862 deferred-feature no definition named `Tester`
 cm/async/big-interleaving-test.wast:864 deferred-feature no instance to invoke
 cm/async/big-interleaving-test.wast:866 deferred-feature no instance to invoke
@@ -75,18 +75,18 @@ cm/async/builtin-trap-poisons-instance.wast:12 deferred-feature component reject
 cm/async/builtin-trap-poisons-instance.wast:37 deferred-feature no definition named `BuiltinTrap`
 cm/async/builtin-trap-poisons-instance.wast:38 deferred-feature expected a trap `cannot drop busy stream`, got `no instance to invoke`
 cm/async/builtin-trap-poisons-instance.wast:39 deferred-feature expected a trap `cannot enter component instance`, got `no instance to invoke`
-cm/async/cancel-and-exclusive-lock.wast:10 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/cancel-and-exclusive-lock.wast:10 deferred-feature component rejected: unsupported component feature: the `task-cancel` trampoline
 cm/async/cancel-and-exclusive-lock.wast:196 deferred-feature no instance to invoke
 cm/async/cancel-delivery.wast:23 deferred-feature component rejected: unsupported component feature: the `task-cancel` trampoline
 cm/async/cancel-delivery.wast:278 deferred-feature no instance to invoke
-cm/async/cancel-stream.wast:7 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/cancel-stream.wast:7 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
 cm/async/cancel-stream.wast:202 deferred-feature no instance to invoke
 cm/async/cancel-subtask.wast:8 deferred-feature component rejected: unsupported component feature: the `task-cancel` trampoline
 cm/async/cancel-subtask.wast:217 deferred-feature no instance to invoke
 cm/async/closed-stream.wast:4 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
 cm/async/closed-stream.wast:101 deferred-feature no definition named `Tester`
 cm/async/closed-stream.wast:102 deferred-feature no instance to invoke
-cm/async/cross-abi-calls.wast:4 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/cross-abi-calls.wast:4 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 cm/async/cross-abi-calls.wast:472 deferred-feature no definition named `C`
 cm/async/cross-abi-calls.wast:473 deferred-feature no instance to invoke
 cm/async/cross-abi-calls.wast:474 deferred-feature no definition named `C`
@@ -135,7 +135,7 @@ cm/async/cross-abi-calls.wast:516 deferred-feature no definition named `C`
 cm/async/cross-abi-calls.wast:517 deferred-feature no instance to invoke
 cm/async/cross-abi-calls.wast:518 deferred-feature no definition named `C`
 cm/async/cross-abi-calls.wast:519 deferred-feature no instance to invoke
-cm/async/cross-task-future.wast:2 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/cross-task-future.wast:2 deferred-feature component rejected: unsupported component feature: `future<T>` values
 cm/async/cross-task-future.wast:103 deferred-feature no instance to invoke
 cm/async/deadlock.wast:4 deferred-feature component rejected: unsupported component feature: the `waitable-set-new` trampoline
 cm/async/deadlock.wast:73 deferred-feature expected a trap `wasm trap: deadlock detected: event loop cannot make further progress`, got `no instance to invoke`
@@ -153,15 +153,15 @@ cm/async/drop-stream.wast:157 deferred-feature no definition named `Tester`
 cm/async/drop-stream.wast:158 deferred-feature expected a trap `cannot remove busy stream`, got `no instance to invoke`
 cm/async/drop-stream.wast:159 deferred-feature no definition named `Tester`
 cm/async/drop-stream.wast:160 deferred-feature expected a trap `cannot drop busy stream`, got `no instance to invoke`
-cm/async/drop-subtask.wast:5 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/drop-subtask.wast:5 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 cm/async/drop-subtask.wast:139 deferred-feature no instance to invoke
 cm/async/drop-subtask.wast:140 deferred-feature expected a trap `cannot drop a subtask which has not yet resolved`, got `no instance to invoke`
 cm/async/drop-waitable-set.wast:5 deferred-feature component rejected: unsupported component feature: the `waitable-set-new` trampoline
 cm/async/drop-waitable-set.wast:84 deferred-feature expected a trap `cannot drop waitable set with waiters`, got `no instance to invoke`
-cm/async/during-sync-call-exclusive-resume.wast:9 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/during-sync-call-exclusive-resume.wast:9 deferred-feature component rejected: unsupported component feature: the `thread-index` trampoline
 cm/async/during-sync-call-exclusive-resume.wast:59 deferred-feature no instance to invoke
 cm/async/during-sync-call-exclusive-resume.wast:60 deferred-feature no instance to invoke
-cm/async/during-sync-call-exclusive-resume.wast:65 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/during-sync-call-exclusive-resume.wast:65 deferred-feature component rejected: unsupported component feature: the `thread-suspend` trampoline
 cm/async/during-sync-call-exclusive-resume.wast:102 deferred-feature no instance to invoke
 cm/async/during-sync-call-exclusive-resume.wast:103 deferred-feature expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
 cm/async/during-sync-call-may-block-if-other-ready-threads.wast:12 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
@@ -182,17 +182,17 @@ cm/async/during-sync-call-no-sibling-resume.wast:215 deferred-feature expected a
 cm/async/during-sync-scheduling-candidates.wast:19 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
 cm/async/during-sync-scheduling-candidates.wast:74 deferred-feature no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:75 deferred-feature no instance to invoke
-cm/async/during-sync-scheduling-candidates.wast:78 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/during-sync-scheduling-candidates.wast:78 deferred-feature component rejected: unsupported component feature: the `thread-index` trampoline
 cm/async/during-sync-scheduling-candidates.wast:132 deferred-feature no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:133 deferred-feature no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:134 deferred-feature no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:135 deferred-feature no instance to invoke
-cm/async/during-sync-scheduling-candidates.wast:144 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/during-sync-scheduling-candidates.wast:144 deferred-feature component rejected: unsupported component feature: the `thread-index` trampoline
 cm/async/during-sync-scheduling-candidates.wast:234 deferred-feature no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:235 deferred-feature no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:236 deferred-feature no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:237 deferred-feature no instance to invoke
-cm/async/during-sync-scheduling-candidates.wast:245 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/during-sync-scheduling-candidates.wast:245 deferred-feature component rejected: unsupported component feature: the `thread-index` trampoline
 cm/async/during-sync-scheduling-candidates.wast:303 deferred-feature no definition named `BlockedCallbackTester`
 cm/async/during-sync-scheduling-candidates.wast:304 deferred-feature no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:305 deferred-feature no instance to invoke
@@ -210,21 +210,20 @@ cm/async/during-sync-scheduling-candidates.wast:414 deferred-feature component r
 cm/async/during-sync-scheduling-candidates.wast:482 deferred-feature no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:483 deferred-feature no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:484 deferred-feature no instance to invoke
-cm/async/empty-wait.wast:6 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/empty-wait.wast:6 deferred-feature component rejected: unsupported component feature: the `waitable-join` trampoline
 cm/async/empty-wait.wast:199 deferred-feature no instance to invoke
 cm/async/futures-must-write.wast:5 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 cm/async/futures-must-write.wast:117 deferred-feature no instance to invoke
 cm/async/futures-must-write.wast:118 deferred-feature expected a trap `cannot drop future write end without first writing a value`, got `no instance to invoke`
-cm/async/partial-stream-copies.wast:7 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/partial-stream-copies.wast:7 deferred-feature component rejected: unsupported component feature: `stream<T>` values
 cm/async/partial-stream-copies.wast:238 deferred-feature no instance to invoke
 cm/async/passing-resources.wast:7 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
 cm/async/passing-resources.wast:175 deferred-feature no instance to invoke
 cm/async/passing-resources.wast:176 deferred-feature expected a trap `unknown handle index 3`, got `no instance to invoke`
-cm/async/reentrance.wast:202 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
-cm/async/reentrance.wast:237 deferred-feature no instance to invoke
-cm/async/reentrance.wast:242 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/reentrance.wast:237 deferred-feature unsupported component feature: host calls into an asynchronous export
+cm/async/reentrance.wast:242 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 cm/async/reentrance.wast:346 deferred-feature no instance to invoke
-cm/async/reentrance.wast:352 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/reentrance.wast:352 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 cm/async/reentrance.wast:429 deferred-feature expected a trap `deadlock detected: event loop cannot make further progress`, got `no instance to invoke`
 cm/async/reentrance.wast:442 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
 cm/async/reentrance.wast:548 deferred-feature no instance to invoke
@@ -252,7 +251,7 @@ cm/async/self-switch-traps.wast:49 deferred-feature no definition named `Tester`
 cm/async/self-switch-traps.wast:50 deferred-feature expected a trap `cannot resume thread which is not suspended`, got `no instance to invoke`
 cm/async/self-switch-traps.wast:51 deferred-feature no definition named `Tester`
 cm/async/self-switch-traps.wast:52 deferred-feature expected a trap `cannot resume thread which is not suspended`, got `no instance to invoke`
-cm/async/switch-to-ready-callback.wast:16 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/switch-to-ready-callback.wast:16 deferred-feature component rejected: unsupported component feature: the `thread-index` trampoline
 cm/async/switch-to-ready-callback.wast:354 deferred-feature no definition named `Tester`
 cm/async/switch-to-ready-callback.wast:355 deferred-feature expected a trap `cannot resume thread which is not suspended`, got `no instance to invoke`
 cm/async/switch-to-ready-callback.wast:356 deferred-feature no definition named `Tester`
@@ -269,10 +268,10 @@ cm/async/switch-to-ready-callback.wast:366 deferred-feature no definition named 
 cm/async/switch-to-ready-callback.wast:367 deferred-feature expected a trap `deadlock detected: event loop cannot make further progress`, got `no instance to invoke`
 cm/async/switch-to-ready-callback.wast:368 deferred-feature no definition named `Tester`
 cm/async/switch-to-ready-callback.wast:369 deferred-feature no instance to invoke
-cm/async/sync-barges-in.wast:6 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/sync-barges-in.wast:6 deferred-feature component rejected: unsupported component feature: the `thread-yield` trampoline
 cm/async/sync-barges-in.wast:322 deferred-feature no definition named `Tester`
 cm/async/sync-barges-in.wast:323 deferred-feature no instance to invoke
-cm/async/sync-streams.wast:7 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/sync-streams.wast:7 deferred-feature component rejected: unsupported component feature: `stream<T>` values
 cm/async/sync-streams.wast:208 deferred-feature no instance to invoke
 cm/async/trap-if-block-and-sync.wast:5 deferred-feature component rejected: unsupported component feature: the `waitable-set-new` trampoline
 cm/async/trap-if-block-and-sync.wast:315 deferred-feature no definition named `Tester`
@@ -383,9 +382,9 @@ cm/async/trap-if-transfer-in-waitable-set.wast:48 deferred-feature no definition
 cm/async/trap-if-transfer-in-waitable-set.wast:49 deferred-feature expected a trap `cannot lift future while it's in a waitable set`, got `no instance to invoke`
 cm/async/trap-if-transfer-in-waitable-set.wast:50 deferred-feature no definition named `Tester`
 cm/async/trap-if-transfer-in-waitable-set.wast:51 deferred-feature expected a trap `cannot lift stream while it's in a waitable set`, got `no instance to invoke`
-cm/async/wait-during-callback.wast:2 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/wait-during-callback.wast:2 deferred-feature component rejected: unsupported component feature: the `waitable-join` trampoline
 cm/async/wait-during-callback.wast:77 deferred-feature no instance to invoke
-cm/async/zero-length.wast:7 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/async/zero-length.wast:7 deferred-feature component rejected: unsupported component feature: `stream<T>` values
 cm/async/zero-length.wast:223 deferred-feature no instance to invoke
 cm/binary/binary.wast:1186 validation expected rejection `non-zero reserved byte`, but the component parsed (wasmparser 0.254 still reads the byte as the `cancellable` flag the corpus removed; the reference implementation does not pass this file either, see cm/nyi.txt)
 cm/binary/binary.wast:1208 validation expected rejection `non-zero reserved byte`, but the component parsed (wasmparser 0.254 still reads the byte as the `cancellable` flag the corpus removed; the reference implementation does not pass this file either, see cm/nyi.txt)
@@ -417,7 +416,7 @@ cm/validation/max-value-size.wast:43 validation expected rejection `exceeds maxi
 cm/validation/max-value-size.wast:48 validation expected rejection `exceeds maximum byte size`, but the component parsed (wasmparser 0.254 predates the element-size limit the corpus checks)
 cm/validation/max-value-size.wast:57 validation expected rejection `exceeds maximum byte size`, but the component parsed (wasmparser 0.254 predates the element-size limit the corpus checks)
 cm/validation/max-value-size.wast:63 validation expected rejection `exceeds maximum byte size`, but the component parsed (wasmparser 0.254 predates the element-size limit the corpus checks)
-cm/values/post-return.wast:4 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/values/post-return.wast:4 deferred-feature component rejected: unsupported component feature: the `task-cancel` trampoline
 cm/values/post-return.wast:201 cascade no definition named `Tester`
 cm/values/post-return.wast:202 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
 cm/values/post-return.wast:203 cascade no definition named `Tester`
@@ -474,7 +473,7 @@ cm/values/post-return.wast:253 cascade no definition named `Tester`
 cm/values/post-return.wast:254 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
 cm/values/post-return.wast:255 cascade no definition named `Tester`
 cm/values/post-return.wast:256 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/variants.wast:83 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+cm/values/variants.wast:83 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 cm/values/variants.wast:183 cascade no instance to invoke
 cm/values/variants.wast:184 cascade no instance to invoke
 cm/values/variants.wast:185 cascade no instance to invoke
@@ -508,7 +507,7 @@ wasmtime/async/async-builtins.wast:25 deferred-feature component rejected: unsup
 wasmtime/async/async-builtins.wast:35 deferred-feature component rejected: unsupported component feature: the `future-cancel-write` trampoline
 wasmtime/async/backpressure-deadlock.wast:14 deferred-feature component rejected: unsupported component feature: the `backpressure-inc` trampoline
 wasmtime/async/backpressure-deadlock.wast:107 deferred-feature expected a trap `deadlock detected`, got `no instance to invoke`
-wasmtime/async/callback-yield-then-exit.wast:7 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+wasmtime/async/callback-yield-then-exit.wast:7 deferred-feature component rejected: unsupported component feature: the `component-sync-start-call` trampoline
 wasmtime/async/callback-yield-then-exit.wast:50 deferred-feature no instance to invoke
 wasmtime/async/cancel-host.wast:7 deferred-feature component rejected: unsupported component feature: asynchronous function types on imports (imports `[method]resource1.never-return`, which has no host task registered)
 wasmtime/async/cancel-host.wast:80 deferred-feature no instance to invoke
@@ -537,7 +536,7 @@ wasmtime/async/cancel-sync-and-waitable.wast:177 deferred-feature component reje
 wasmtime/async/cancel-sync-and-waitable.wast:227 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
 wasmtime/async/cancel-sync-and-waitable.wast:230 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 wasmtime/async/cancel-sync-and-waitable.wast:301 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
-wasmtime/async/context-in-compositions.wast:268 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+wasmtime/async/context-in-compositions.wast:268 deferred-feature component rejected: unsupported component feature: the `component-sync-start-call` trampoline
 wasmtime/async/context-in-compositions.wast:434 deferred-feature no instance to invoke
 wasmtime/async/context-in-compositions.wast:435 deferred-feature no instance to invoke
 wasmtime/async/context-in-compositions.wast:436 deferred-feature no instance to invoke
@@ -577,11 +576,11 @@ wasmtime/async/exceptions.wast:215 deferred-feature no definition named `A`
 wasmtime/async/exceptions.wast:216 deferred-feature expected a trap `thrown Wasm exception`, got `no instance to invoke`
 wasmtime/async/exceptions.wast:217 deferred-feature no definition named `A`
 wasmtime/async/exceptions.wast:218 deferred-feature expected a trap `thrown Wasm exception`, got `no instance to invoke`
-wasmtime/async/fused.wast:7 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+wasmtime/async/fused.wast:7 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 wasmtime/async/fused.wast:56 deferred-feature no instance to invoke
 wasmtime/async/fused.wast:59 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 wasmtime/async/fused.wast:101 deferred-feature no instance to invoke
-wasmtime/async/fused.wast:104 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+wasmtime/async/fused.wast:104 deferred-feature component rejected: unsupported component feature: the `component-sync-start-call` trampoline
 wasmtime/async/fused.wast:148 deferred-feature no instance to invoke
 wasmtime/async/future-cancel-read-dropped.wast:4 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 wasmtime/async/future-cancel-read-dropped.wast:66 deferred-feature no instance to invoke
@@ -627,16 +626,16 @@ wasmtime/async/join-during-sync-read.wast:66 deferred-feature expected a trap `w
 wasmtime/async/lower.wast:4 deferred-feature component rejected: unsupported component feature: asynchronous function types on imports
 wasmtime/async/many-params-with-retptr.wast:9 deferred-feature component rejected: unsupported component feature: the `component-sync-start-call` trampoline
 wasmtime/async/many-params-with-retptr.wast:176 deferred-feature expected a trap `unreachable`, got `no instance to invoke`
-wasmtime/async/partial-stream-copies.wast:14 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+wasmtime/async/partial-stream-copies.wast:14 deferred-feature component rejected: unsupported component feature: `stream<T>` values
 wasmtime/async/partial-stream-copies.wast:243 deferred-feature no instance to invoke
 wasmtime/async/reenter-during-yield.wast:5 deferred-feature component rejected: unsupported component feature: the `thread-yield` trampoline
 wasmtime/async/reenter-during-yield.wast:81 deferred-feature no instance to invoke
-wasmtime/async/reentrance.wast:4 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+wasmtime/async/reentrance.wast:4 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 wasmtime/async/reentrance.wast:92 deferred-feature no instance to invoke
 wasmtime/async/stackful.wast:7 deferred-feature component rejected: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
-wasmtime/async/stackful.wast:19 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+wasmtime/async/stackful.wast:19 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 wasmtime/async/stackful.wast:64 deferred-feature no instance to invoke
-wasmtime/async/stackful.wast:67 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+wasmtime/async/stackful.wast:67 deferred-feature component rejected: unsupported component feature: the `component-sync-start-call` trampoline
 wasmtime/async/stackful.wast:107 deferred-feature no instance to invoke
 wasmtime/async/stackful.wast:110 deferred-feature component rejected: unsupported component feature: the `waitable-set-wait` trampoline
 wasmtime/async/stackful.wast:121 deferred-feature component rejected: unsupported component feature: the `waitable-set-poll` trampoline
@@ -665,7 +664,7 @@ wasmtime/async/stream-cancel-finished-op.wast:248 deferred-feature no definition
 wasmtime/async/stream-cancel-finished-op.wast:249 deferred-feature expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
 wasmtime/async/stream-cancel-finished-op.wast:250 deferred-feature no definition named `A`
 wasmtime/async/stream-cancel-finished-op.wast:251 deferred-feature expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
-wasmtime/async/streams-massive-send.wast:10 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
+wasmtime/async/streams-massive-send.wast:10 deferred-feature component rejected: unsupported component feature: `future<T>` values
 wasmtime/async/streams-massive-send.wast:237 deferred-feature no definition named `A`
 wasmtime/async/streams-massive-send.wast:238 deferred-feature expected a trap `fuel allocated for hostcalls has been exhausted`, got `no instance to invoke`
 wasmtime/async/streams-massive-send.wast:239 deferred-feature no definition named `A`
@@ -691,15 +690,14 @@ wasmtime/async/subtask-wait.wast:9 deferred-feature component rejected: unsuppor
 wasmtime/async/subtask-wait.wast:82 deferred-feature expected a trap `wasm `unreachable` instruction executed`, got `no instance to invoke`
 wasmtime/async/sync-and-async-waitable.wast:5 deferred-feature component rejected: unsupported component feature: the `waitable-join` trampoline
 wasmtime/async/sync-and-async-waitable.wast:123 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
-wasmtime/async/sync-streams.wast:14 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+wasmtime/async/sync-streams.wast:14 deferred-feature component rejected: unsupported component feature: `stream<T>` values
 wasmtime/async/sync-streams.wast:186 deferred-feature no instance to invoke
-wasmtime/async/task-builtins.wast:25 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
 wasmtime/async/task-builtins.wast:34 deferred-feature component rejected: unsupported component feature: the `waitable-set-wait` trampoline
 wasmtime/async/task-builtins.wast:45 deferred-feature component rejected: unsupported component feature: the `waitable-set-poll` trampoline
 wasmtime/async/task-builtins.wast:56 deferred-feature component rejected: unsupported component feature: the `thread-yield` trampoline
 wasmtime/async/task-builtins.wast:65 deferred-feature component rejected: unsupported component feature: the `subtask-drop` trampoline
 wasmtime/async/task-builtins.wast:74 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
-wasmtime/async/task-builtins.wast:205 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+wasmtime/async/task-builtins.wast:205 deferred-feature component rejected: unsupported component feature: the `backpressure-inc` trampoline
 wasmtime/async/task-builtins.wast:390 deferred-feature no instance to invoke
 wasmtime/async/task-builtins.wast:391 deferred-feature no instance to invoke
 wasmtime/async/task-builtins.wast:392 deferred-feature no instance to invoke
@@ -716,19 +714,18 @@ wasmtime/async/task-deletion.wast:316 deferred-feature no instance to invoke
 wasmtime/async/task-deletion.wast:317 deferred-feature no instance to invoke
 wasmtime/async/task-deletion.wast:318 deferred-feature no instance to invoke
 wasmtime/async/task-deletion.wast:319 deferred-feature no instance to invoke
-wasmtime/async/task-return-traps.wast:5 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
-wasmtime/async/task-return-traps.wast:19 deferred-feature expected a trap `async-lifted export failed to produce a result`, got `no instance to invoke`
+wasmtime/async/task-return-traps.wast:19 deferred-feature expected a trap `async-lifted export failed to produce a result`, got `unsupported component feature: host calls into an asynchronous export`
 wasmtime/async/task-return-traps.wast:21 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
 wasmtime/async/task-return-traps.wast:56 deferred-feature expected a trap `async-lifted export failed to produce a result`, got `no instance to invoke`
 wasmtime/async/task-return-traps.wast:58 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
 wasmtime/async/task-return-traps.wast:91 deferred-feature expected a trap `async-lifted export failed to produce a result`, got `no instance to invoke`
-wasmtime/async/task-return-traps.wast:93 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+wasmtime/async/task-return-traps.wast:93 deferred-feature component rejected: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
 wasmtime/async/task-return-traps.wast:104 deferred-feature expected a trap `async-lifted export failed to produce a result`, got `no instance to invoke`
-wasmtime/async/task-return-traps.wast:106 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+wasmtime/async/task-return-traps.wast:106 deferred-feature component rejected: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
 wasmtime/async/task-return-traps.wast:118 deferred-feature expected a trap `invalid `task.return` signature and/or options for current task`, got `no instance to invoke`
-wasmtime/async/task-return-traps.wast:121 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+wasmtime/async/task-return-traps.wast:121 deferred-feature component rejected: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
 wasmtime/async/task-return-traps.wast:135 deferred-feature expected a trap `invalid `task.return` signature and/or options for current task`, got `no instance to invoke`
-wasmtime/async/task-return-traps.wast:138 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
+wasmtime/async/task-return-traps.wast:138 deferred-feature component rejected: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
 wasmtime/async/task-return-traps.wast:150 deferred-feature expected a trap `invalid `task.return` signature and/or options for current task`, got `no instance to invoke`
 wasmtime/async/trap-if-done.wast:22 deferred-feature component rejected: unsupported component feature: `future<T>` values
 wasmtime/async/trap-if-done.wast:580 deferred-feature no definition named `Tester`

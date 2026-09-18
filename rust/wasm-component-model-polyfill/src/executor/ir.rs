@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use crate::abi::layout::FlatType;
 use crate::component::{ExternalName, FunctionType};
 use crate::module::Module;
+use crate::types::ValueType;
 
 /// The executor's IR for a single parsed component.
 ///
@@ -518,6 +519,24 @@ pub enum TrampolineSpec {
         /// lowers, by the translator's per-instantiation index.
         instance: usize,
         /// The core signature the guest imports.
+        signature: CoreSignature,
+    },
+    /// The trampoline implements `task.return`: it lifts the result
+    /// the guest passes it and resolves the current task with it.
+    TaskReturn {
+        /// The result type the built-in was declared with, or `None`
+        /// when it was declared with no result. The built-in traps
+        /// unless it equals the result of the function the current
+        /// task is a call into.
+        result: Option<ValueType>,
+        /// The canon options the built-in was declared with: the
+        /// lift of the result runs under them, and their string
+        /// encoding and memory must equal the ones the task's own
+        /// lift declared.
+        options: CanonOptions,
+        /// The core signature the guest imports: the flattened
+        /// result as parameters, or one `i32` pointer when the
+        /// flattened result exceeds sixteen values.
         signature: CoreSignature,
     },
 }

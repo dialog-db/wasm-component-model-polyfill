@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use wasmtime_environ::component::{
     Component as EnvironComponent, ComponentExtern, ComponentTypes, Export as EnvironExport,
     InterfaceType, TypeComponentInstanceIndex, TypeDef, TypeFuncIndex, TypeModuleIndex,
-    TypeResourceTable, TypeResourceTableIndex,
+    TypeResourceTable, TypeResourceTableIndex, TypeTupleIndex,
 };
 use wasmtime_environ::{EngineOrModuleTypeIndex, EntityType};
 
@@ -232,6 +232,22 @@ impl<'a> TypeProjector<'a> {
             result,
             async_: func.async_,
         })
+    }
+
+    /// Project the result tuple a `canon task.return` declares.
+    ///
+    /// The built-in takes the result values of the current task as
+    /// its own parameters, and the translator records them as a
+    /// tuple of none or one type. The polyfill admits at most one
+    /// result, as [`function`](Self::function) does, so a wider
+    /// tuple is refused for the same reason.
+    pub fn result_tuple(&self, index: TypeTupleIndex) -> Result<Option<ValueType>> {
+        let results = &self.types[index].types;
+        match results.len() {
+            0 => Ok(None),
+            1 => Ok(Some(self.value_type(&results[0])?)),
+            _ => Err(Error::unsupported("functions with more than one result")),
+        }
     }
 
     /// Project one instance type into the polyfill's typed bag of

@@ -17,9 +17,9 @@ use wasmtime_environ::component::{
     ComponentTypes, ComponentTypesBuilder, CoreDef, CoreExport, Export as EnvironExport,
     ExportIndex, ExportItem as EnvironExportItem, ExtractCallback, ExtractMemory,
     ExtractPostReturn, ExtractRealloc, FixedEncoding, GlobalInitializer, InstantiateModule,
-    LoweredIndex, RuntimeImportIndex, StaticModuleIndex, StringEncoding as EnvironStringEncoding,
-    Trampoline, TrampolineIndex, Transcode, Translator, TypeResourceTable, TypeResourceTableIndex,
-    UnsafeIntrinsic,
+    LoweredIndex, OptionsIndex, RuntimeImportIndex, StaticModuleIndex,
+    StringEncoding as EnvironStringEncoding, Trampoline, TrampolineIndex, Transcode, Translator,
+    TypeResourceTable, TypeResourceTableIndex, UnsafeIntrinsic,
 };
 use wasmtime_environ::prelude::Error as TranslatorError;
 use wasmtime_environ::wasmparser::Validator;
@@ -188,11 +188,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                         "Trampoline::LowerImport has no matching GlobalInitializer::LowerImport",
                     )
                 })?;
-                let canon = translation
-                    .component
-                    .options
-                    .get(*options)
-                    .ok_or_else(|| Error::internal("Trampoline OptionsIndex out of bounds"))?;
+                let canon = canon_options(&translation, *options)?;
                 let (import_index, path) = import_path(&translation, runtime_import)?;
                 let signature = projector.function(*lower_ty)?;
                 refuse_async_import(&signature)?;
@@ -247,6 +243,17 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
             },
             Trampoline::BackpressureDec { instance } => TrampolineSpec::BackpressureDec {
                 instance: instance.as_u32() as usize,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            // The result values are the built-in's parameters, so the
+            // core signature the translator recorded already carries
+            // the flat-parameter rule: the flattened result in slots,
+            // or one pointer beyond sixteen of them.
+            Trampoline::TaskReturn {
+                results, options, ..
+            } => TrampolineSpec::TaskReturn {
+                result: projector.result_tuple(*results)?,
+                options: lift_canon_options(canon_options(&translation, *options)?)?,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
             // Concurrency built-ins and the rest are not built. A
@@ -425,6 +432,20 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
             num_component_instances: translation.component.num_runtime_component_instances as usize,
         },
     })
+}
+
+/// The canon options a `canon` definition declared, which the
+/// translator records once per definition and its trampoline names
+/// by index.
+fn canon_options(
+    translation: &ComponentTranslation,
+    index: OptionsIndex,
+) -> Result<&EnvironCanonOptions> {
+    translation
+        .component
+        .options
+        .get(index)
+        .ok_or_else(|| Error::internal("Trampoline OptionsIndex out of bounds"))
 }
 
 /// The core signature the translator recorded for a trampoline.

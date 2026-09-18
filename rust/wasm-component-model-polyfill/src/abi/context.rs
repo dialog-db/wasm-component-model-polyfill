@@ -153,8 +153,7 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
 
     /// The canon options of the lift of the task the crossing
     /// counts against. A `task.return` must find its own equal to
-    /// these; nothing else reads them, so nothing does yet.
-    #[allow(dead_code)]
+    /// these, and reads the task's `async` option off them.
     pub fn task_lift_options(&self) -> Option<CanonOptions> {
         let Some(Scope::Task(task)) = self.scope else {
             return None;
@@ -165,8 +164,7 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
 
     /// The result type of the function the task the crossing counts
     /// against is a call into. A `task.return` must find its own
-    /// equal to this; nothing else reads it, so nothing does yet.
-    #[allow(dead_code)]
+    /// equal to this.
     pub fn task_result_type(&self) -> Option<ValueType> {
         let Some(Scope::Task(task)) = self.scope else {
             return None;
