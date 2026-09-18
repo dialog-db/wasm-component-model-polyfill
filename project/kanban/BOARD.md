@@ -30,13 +30,13 @@ kanban-plugin: basic
 
 ## In Progress
 
-- [ ] [[f4ac39]]
 - [ ] [[3e6b3e]]
 
 ## Needs Review
 
 - [ ] [[83a089]]
 - [ ] [[ebb8fc]]
+- [ ] [[f4ac39]]
 
 ## Ready
 
