@@ -18,3 +18,6 @@ Map `Trampoline::WaitableSetNew`, `WaitableSetWait`, `WaitableSetPoll`, `Waitabl
 - [ ] A synchronous task that must block runs only the ready work of its own instance before it fails with the cannot-block cause, proved through the store's records with a queued item of another instance that does not run.
 - [ ] `tests all` passes on both targets, and any async directive that starts passing has its line removed from the expected-failure list.
 
+
+## Dispatch log
+- 2026-09-18T13:18:23Z dispatched implementor `card-ebb8fc-9779c7dc` (implement session, PDD019 thread, budget 3; seed at 6671fd6)
