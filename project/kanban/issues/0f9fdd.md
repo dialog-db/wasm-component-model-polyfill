@@ -5,6 +5,8 @@ type: chore
 blocked_by: []
 labels: [PDD018, concurrency, conformance]
 created: 2026-09-16T05:54:16Z
+disposition: accepted
+disposition_at: 2026-09-18T08:03:50Z
 ---
 
 ## What to build
