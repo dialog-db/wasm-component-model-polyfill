@@ -12,9 +12,16 @@ publish = false
 wasm-component-model-polyfill = { workspace = true }
 wcmp-macros = { workspace = true }
 
+# `time` supplies the timer the `run_concurrent` step waits on: the
+# entry has to be pending on something the store cannot resolve, and
+# the executor's own timer is that on this target.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { workspace = true, features = ["rt", "macros"] }
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
 
+# The browser half of the same wait is a `setTimeout`-backed promise,
+# reached through the global the way the polyfill's own yield wake
+# reaches it, so it works on a page and in a worker alike.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }

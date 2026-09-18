@@ -1,7 +1,8 @@
 //! The smoke test: one host program that walks the polyfill from the
 //! foundations through a `wac` composition, real-toolchain maps and
 //! fixed-length lists, core modules at the boundary, export
-//! navigation by name, a 64-bit memory, and engine configuration,
+//! navigation by name, a 64-bit memory, engine configuration, and a
+//! `run_concurrent` entry that waits outside the store,
 //! and reports each step. It runs
 //! as a native binary (`smoke native`) and as a page in the browser
 //! (`smoke web`) from the same source, so a reader can check the
@@ -13,10 +14,16 @@
 
 mod host_state;
 mod outcome;
+mod outside;
 mod step;
 
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll, Waker};
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use wasm_component_model_polyfill::{
     Component, CoreExternType, Engine, EngineConfig, Error, HostCall, InterfaceIdentifier, Linker,
@@ -26,6 +33,7 @@ use wcmp_macros::component;
 
 pub use crate::host_state::HostState;
 pub use crate::outcome::Outcome;
+pub use crate::outside::Outside;
 pub use crate::step::Step;
 
 /// The `guest` fixture: a component `wasm-tools component new` built
@@ -323,6 +331,11 @@ pub async fn run() -> Vec<Step> {
         Step::run("export navigation by name", navigation(&engine)).await,
         Step::run("string through a 64-bit memory", memory64(&engine)).await,
         Step::run("engine configuration", engine_configuration()).await,
+        Step::run(
+            "run_concurrent waits outside the store",
+            run_concurrent_outside(&engine),
+        )
+        .await,
     ]
 }
 
@@ -843,5 +856,102 @@ async fn engine_configuration() -> Result<String, String> {
     Ok(format!(
         "the default engine rejected an `implements` import ({rejection}); an engine that opts \
          in accepted it"
+    ))
+}
+
+/// How long the `run_concurrent` closure waits outside the store, in
+/// milliseconds. The step then waits twice as long with the entry
+/// unpolled, so the closure's timer has fired before the entry is
+/// driven again.
+const WAIT_MILLIS: u32 = 20;
+
+/// A waker that counts the wakes it receives. A wake that lands here
+/// is how a step says a wake arrived without comparing waker
+/// identities, which two clones of one waker do not always agree on.
+#[derive(Default)]
+struct Wakes(AtomicUsize);
+
+impl Wakes {
+    fn count(&self) -> usize {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+impl std::task::Wake for Wakes {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Poll `future` once, as an executor would.
+fn poll_once<F: Future>(future: &mut Pin<Box<F>>, waker: &Waker) -> Poll<F::Output> {
+    let mut context = Context::from_waker(waker);
+    future.as_mut().poll(&mut context)
+}
+
+/// The store's `run_concurrent` entry waits on something the store
+/// cannot resolve, and comes back with the closure's value.
+///
+/// The closure reads the host data through the accessor, awaits a
+/// timer outside the store, reads the host data again and returns.
+/// While it waits the store is idle: every other driver would fail
+/// with the deadlock cause there, and this one returns pending
+/// instead, because the waker it was polled with is what brings it
+/// back. The step polls the entry by hand once to see that, and then
+/// waits twice as long with nothing polling it, so the timer's wake
+/// lands on the waker the hand poll gave it.
+async fn run_concurrent_outside(engine: &Engine) -> Result<String, String> {
+    let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
+    store.data_mut().tallies.push(1);
+
+    // What the host does while the wait is on: in the browser, a
+    // `setTimeout` of zero asked for now, which only a page still
+    // delivering callbacks will run.
+    let outside = Outside::watching();
+
+    let mut entry = Box::pin(store.run_concurrent(async |accessor| {
+        let before = accessor.with(|store| store.data().tallies.len())?;
+        // Nothing the store owns can resolve this.
+        Outside::pause(WAIT_MILLIS).await;
+        let after = accessor.with(|store| {
+            store.data_mut().tallies.push(2);
+            store.data().tallies.len()
+        })?;
+        Ok::<String, Error>(format!("{before} then {after}"))
+    }));
+
+    let wakes = Arc::new(Wakes::default());
+    let waker = Waker::from(wakes.clone());
+    match poll_once(&mut entry, &waker) {
+        Poll::Pending => (),
+        Poll::Ready(Ok(_)) => return Err("the entry completed without waiting".to_owned()),
+        Poll::Ready(Err(error)) => {
+            return Err(format!("the entry failed instead of waiting: {error}"));
+        }
+    }
+
+    Outside::pause(2 * WAIT_MILLIS).await;
+    let woken = wakes.count();
+    expect("the wait woke the entry's waker", woken > 0, true)?;
+    let watched = outside.observed()?;
+
+    let value = entry.await.map_err(fail)?.map_err(fail)?;
+    expect("the closure's value", value.as_str(), "1 then 2")?;
+    expect(
+        "what the closure wrote stayed in the store",
+        store.data().tallies.as_slice(),
+        &[1, 2],
+    )?;
+
+    Ok(format!(
+        "the entry was pending — not the deadlock cause — while the closure waited \
+         {WAIT_MILLIS} ms outside the store; {watched}, and the wait woke the entry's waker \
+         {woken} time(s) with nothing polling it; the entry then returned {value:?} and the host \
+         data the closure wrote through the accessor stayed in the store as {:?}",
+        store.data().tallies
     ))
 }
