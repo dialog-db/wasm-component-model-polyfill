@@ -20,11 +20,17 @@ use crate::types::ValueType;
 /// instantiation, then walks `exports` to expose component-level
 /// function handles.
 ///
-/// The five `num_runtime_*` fields name the slab sizes the
+/// Each `num_runtime_*` field names the size of the slab the
 /// initializers populate. Slot ordering matches the order in which
-/// the corresponding `Extract*` / `LowerImport` initializer
-/// produces its entry. `CanonOptions` and `ImportSource::Trampoline`
-/// reference these slabs by index.
+/// the corresponding `Extract*` initializer produces its entry, and
+/// `CanonOptions` names an entry in those slabs by index.
+///
+/// `num_component_instances` is the translator's per-instantiation
+/// index space, not a slab an initializer fills: it sizes the
+/// instance records, their handle tables, and their `may_leave`
+/// flags, which are built before the initializer walk begins.
+/// `CanonOptions::instance` and `ImportSource::InstanceFlags` name
+/// an instance by that index.
 pub struct ExecutorIr {
     /// One entry per `(core module ...)` section, in declaration
     /// order.

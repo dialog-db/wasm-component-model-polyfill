@@ -102,6 +102,14 @@ impl Func {
     /// future cancels nothing, and the task runs in the next turn of
     /// any driver.
     ///
+    /// An export whose lift is `async` is not called this way: it
+    /// returns a status word and delivers its result through
+    /// `task.return`, and the host side that reads the word is not
+    /// built, so the call is refused with [`Error::Unsupported`]
+    /// naming a host call into an asynchronous export. The refusal
+    /// comes before the call has created a task or queued anything,
+    /// so it leaves the store untouched.
+    ///
     /// Entering the call while another driver of the same store is
     /// inside a turn fails with the recursive-driver cause, and a
     /// turn that goes idle with the task unresolved fails with the
