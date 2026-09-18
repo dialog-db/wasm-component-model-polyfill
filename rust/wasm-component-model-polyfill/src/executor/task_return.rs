@@ -280,6 +280,7 @@ mod tests {
     use crate::concurrency::{InstanceId, TaskResult};
     use crate::engine::Engine;
     use crate::executor::ir::{DataModel, StringEncoding};
+    use crate::resource::TableId;
     use crate::store::Store;
     use crate::types::TupleType;
 
@@ -309,6 +310,7 @@ mod tests {
                 0,
                 Vec::new(),
                 vec![instance],
+                vec![TableId::fresh()],
             )));
             for slot in 0..memories {
                 let memory = Memory::new(store.inner_mut(), MemoryType::new(1, None))
