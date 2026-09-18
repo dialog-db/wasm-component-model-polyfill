@@ -829,9 +829,7 @@ wasmtime/exceptions.wast:237 cascade expected a trap `uncaught exception propaga
 wasmtime/modules.wast:482 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
 wasmtime/modules.wast:485 cascade instantiation failed: link error: no registered linker instance satisfies import `tag-module`: no registered linker instance satisfies import `tag-module` (the component at line 482 did not instantiate)
 wasmtime/tags.wast:3 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
-wasmtime/thread-transparency/blocks.wast:8 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
-wasmtime/thread-transparency/blocks.wast:68 cascade no definition named `Tester`
-wasmtime/thread-transparency/blocks.wast:69 cascade expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
+wasmtime/thread-transparency/blocks.wast:69 deferred-feature expected a trap `cannot block a synchronous task before returning`, got `unsupported component feature: host calls into an asynchronous export`
 wasmtime/thread-transparency/reentrancy.wast:22 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
 wasmtime/thread-transparency/reentrancy.wast:113 cascade no definition named `Tester`
 wasmtime/thread-transparency/reentrancy.wast:114 cascade expected a trap `wasm `unreachable` instruction executed`, got `no instance to invoke`
