@@ -19,3 +19,5 @@ The review of card `741912` accepted `task.return` and left a list of small thin
 
 ## Dispatch log
 - 2026-09-18T22:32:58Z dispatched implementor `card-21accc-f0dd8d9b` (implement session, PDD019 thread, budget 3; seed at 22b1206)
+- 2026-09-19T00:25:10Z implementor reported done at `d87371f` (four commits; `ReturnMismatchKind` on `TaskCause::ReturnMismatch` rendered after the pinned Wasmtime prefix, `AbiError.valtype` now `Option<ValueType>`, `function` projects through `result_tuple`, `with_id` doc, `same_memory` names `wasmtime_environ`'s translator, four tests; `tests all` four lanes green, conformance unchanged, lint green). Owner notes: four other sites still pass a fabricated `Bool` valtype (`func.rs:134`, `context.rs:339`, `component_value.rs:277/309/317`), left as scoped. Fetched, moved to needs-review, paused the implementor.
+- 2026-09-19T00:25:50Z launched reviewer `review-21accc-f64c2a64`; delivered `sandbox-guest/card-21accc-f0dd8d9b` (tip d87371f) as `delivered/card-21accc-f0dd8d9b`.
