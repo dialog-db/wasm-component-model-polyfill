@@ -104,12 +104,13 @@ impl TaskTables {
     /// host call into a synchronous export, and the task a core
     /// module's start function runs in. Each is a call that must
     /// return before its instance may block. Answers `None` when the
-    /// store holds no such task or no such instance, and holds
-    /// nothing in that case.
+    /// store holds no such task or no such instance, or when the task
+    /// belongs to no instance, and holds nothing in that case.
     pub fn hold_may_not_suspend(&mut self, task: TaskId) -> Option<()> {
         let (instance, thread) = self
             .task(task)
             .map(|record| (record.instance, record.implicit_thread))?;
+        let instance = instance?;
         let old = self.set_may_not_suspend(instance, true)?;
         self.thread_mut(thread)?.old_may_not_suspend = Some(old);
         Some(())

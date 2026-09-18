@@ -285,11 +285,13 @@ impl<T: 'static> StoreData<T> {
     ///
     /// A task that must not block gives way only to the ready work
     /// of its own instance, which is what Wasmtime switches to
-    /// before it raises the cannot-block trap. Workspace-internal.
+    /// before it raises the cannot-block trap. A task that belongs
+    /// to no instance is allowed to block, as `must_not_block` says.
+    /// Workspace-internal.
     pub fn must_not_block_instance(&self) -> Option<InstanceId> {
         let guard = self.tables.lock().ok()?;
         let task = guard.tasks.current_task()?;
-        let instance = guard.tasks.task(task)?.instance;
+        let instance = guard.tasks.task(task)?.instance?;
         guard
             .tasks
             .instance(instance)?
