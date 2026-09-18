@@ -270,10 +270,7 @@ pub fn build_backpressure_inc<T: 'static>(
         store.runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, _args, _results| {
-            let instance = instance_at(&abi_state, index)?;
-            backpressure_modify(&tables, instance, |count| {
-                (count < BACKPRESSURE_MAX).then(|| count + 1)
-            })
+            backpressure_inc(&tables, instance_at(&abi_state, index)?)
         },
     )
 }
@@ -294,10 +291,25 @@ pub fn build_backpressure_dec<T: 'static>(
         store.runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, _args, _results| {
-            let instance = instance_at(&abi_state, index)?;
-            backpressure_modify(&tables, instance, |count| count.checked_sub(1))
+            backpressure_dec(&tables, instance_at(&abi_state, index)?)
         },
     )
+}
+
+/// Raise the backpressure counter of `instance` by one, which is the
+/// whole body of the `backpressure.inc` built-in. The raise that
+/// would take the counter past its largest value traps.
+fn backpressure_inc(tables: &Arc<Mutex<HandleTables>>, instance: InstanceId) -> anyhow::Result<()> {
+    backpressure_modify(tables, instance, |count| {
+        (count < BACKPRESSURE_MAX).then(|| count + 1)
+    })
+}
+
+/// Lower the backpressure counter of `instance` by one, which is the
+/// whole body of the `backpressure.dec` built-in. The lowering that
+/// would take the counter below zero traps.
+fn backpressure_dec(tables: &Arc<Mutex<HandleTables>>, instance: InstanceId) -> anyhow::Result<()> {
+    backpressure_modify(tables, instance, |count| count.checked_sub(1))
 }
 
 /// Move the backpressure counter of `instance` by `modify`, which
@@ -837,26 +849,6 @@ mod tests {
         );
     }
 
-    /// Raise the backpressure of `instance`, which is what the
-    /// `backpressure.inc` built-in does.
-    fn backpressure_inc(
-        tables: &Arc<Mutex<HandleTables>>,
-        instance: InstanceId,
-    ) -> anyhow::Result<()> {
-        backpressure_modify(tables, instance, |count| {
-            (count < BACKPRESSURE_MAX).then(|| count + 1)
-        })
-    }
-
-    /// Lower the backpressure of `instance`, which is what the
-    /// `backpressure.dec` built-in does.
-    fn backpressure_dec(
-        tables: &Arc<Mutex<HandleTables>>,
-        instance: InstanceId,
-    ) -> anyhow::Result<()> {
-        backpressure_modify(tables, instance, |count| count.checked_sub(1))
-    }
-
     /// The backpressure counter of `instance`.
     fn counter(tables: &Arc<Mutex<HandleTables>>, instance: InstanceId) -> u32 {
         tables
@@ -868,16 +860,15 @@ mod tests {
             .backpressure
     }
 
-    /// Queue the start of a fresh task of `instance` whose item
-    /// records that it ran. `async_function` is whether the task's
-    /// function type is `async`, which is what decides whether the
-    /// task consults the entry gate at all.
-    fn queue_task(
+    /// Queue the start of a fresh task of `instance` whose start
+    /// runs `item`. `async_function` is whether the task's function
+    /// type is `async`, which is what decides whether the task
+    /// consults the entry gate at all.
+    fn queue_item(
         store: &mut StoreContext<'_, ()>,
-        log: &Arc<Mutex<Vec<&'static str>>>,
         instance: InstanceId,
         async_function: bool,
-        name: &'static str,
+        item: Item<()>,
     ) {
         let task = store
             .tables()
@@ -885,6 +876,20 @@ mod tests {
             .expect("tables")
             .tasks
             .create_task(None, None, instance);
+        store
+            .start_export_thread(task, instance, async_function, false, item)
+            .expect("queue the task's start");
+    }
+
+    /// Queue the start of a fresh task of `instance` whose item
+    /// records that it ran under `name`.
+    fn queue_task(
+        store: &mut StoreContext<'_, ()>,
+        log: &Arc<Mutex<Vec<&'static str>>>,
+        instance: InstanceId,
+        async_function: bool,
+        name: &'static str,
+    ) {
         let log = log.clone();
         let item = Item::new(
             ItemKind::TaskStart,
@@ -893,15 +898,13 @@ mod tests {
                 Ok(())
             },
         );
-        store
-            .start_export_thread(task, instance, async_function, false, item)
-            .expect("queue the task's start");
+        queue_item(store, instance, async_function, item);
     }
 
     #[wcmp_macros::test]
     fn it_holds_an_async_task_at_the_gate_while_the_counter_is_above_zero() {
-        // Both moves of the counter go through the body the
-        // backpressure built-ins run.
+        // Both moves of the counter go through the functions the
+        // backpressure built-ins are built from.
         let engine = Engine::new().expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let tables = store.tables_handle();
@@ -938,6 +941,104 @@ mod tests {
             "the counter back at zero lets the waiting task start"
         );
         assert_eq!(store.scheduler().waiting_at_gate(), 0);
+    }
+
+    #[wcmp_macros::test]
+    fn it_opens_the_gate_in_the_same_turn_a_running_task_lowers_the_counter() {
+        let engine = Engine::new().expect("engine");
+        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+        let tables = store.tables_handle();
+        let instance = tables.lock().expect("tables").tasks.insert_instance();
+        let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+
+        backpressure_inc(&tables, instance).expect("the guest raises backpressure");
+
+        // A task of a synchronous function type ignores the gate, so
+        // its item runs in the turn below and lowers the counter from
+        // inside the turn rather than between two of them.
+        let lowering = {
+            let tables = tables.clone();
+            let log = log.clone();
+            Item::new(
+                ItemKind::TaskStart,
+                move |_store: &mut StoreContext<'_, ()>| {
+                    backpressure_dec(&tables, instance).expect("the guest lowers backpressure");
+                    log.lock().expect("log").push("lowers");
+                    Ok(())
+                },
+            )
+        };
+        queue_item(&mut store.context(), instance, false, lowering);
+        queue_task(&mut store.context(), &log, instance, true, "async");
+
+        assert_eq!(
+            store.scheduler().waiting_at_gate(),
+            1,
+            "the task of an `async` function type starts out at the gate"
+        );
+
+        store.turn(Waker::noop()).expect("the one turn");
+
+        assert_eq!(
+            log.lock().expect("log").clone(),
+            vec!["lowers", "async"],
+            "the waiting task starts in the turn that lowered the counter"
+        );
+        assert_eq!(
+            store.scheduler().waiting_at_gate(),
+            0,
+            "and no task is left at the gate"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_moves_a_separate_counter_for_each_instance_of_one_component() {
+        let tables = Arc::new(Mutex::new(HandleTables::new()));
+        let (first, second) = {
+            let mut guard = tables.lock().expect("tables");
+            (guard.tasks.insert_instance(), guard.tasks.insert_instance())
+        };
+        // Two instantiations of one component: each built-in names
+        // its own by the translator's per-instantiation index.
+        let abi_state = Arc::new(Mutex::new(AbiRuntimeState {
+            memories: Vec::new(),
+            reallocs: Vec::new(),
+            post_returns: Vec::new(),
+            callbacks: Vec::new(),
+            resource_tables: Vec::new(),
+            component_instances: vec![first, second],
+            handle_tables: Vec::new(),
+        }));
+        let named_first = instance_at(&abi_state, 0).expect("the first instantiation");
+        let named_second = instance_at(&abi_state, 1).expect("the second instantiation");
+
+        backpressure_inc(&tables, named_first).expect("the first instance raises");
+        backpressure_inc(&tables, named_first).expect("the first instance raises again");
+        backpressure_inc(&tables, named_second).expect("the second instance raises");
+
+        assert_eq!(
+            counter(&tables, first),
+            2,
+            "the first instance counts only its own raises"
+        );
+        assert_eq!(
+            counter(&tables, second),
+            1,
+            "and the second instance only its own"
+        );
+
+        backpressure_dec(&tables, named_second).expect("the second instance lowers");
+
+        assert_eq!(
+            counter(&tables, second),
+            0,
+            "the lowering empties the second instance's counter"
+        );
+        assert_eq!(
+            counter(&tables, first),
+            2,
+            "and leaves the first instance's where it was"
+        );
     }
 
     #[wcmp_macros::test]

@@ -13,8 +13,10 @@ use super::thread_id::ThreadId;
 pub struct InstanceRecord {
     /// How many times the guest has raised backpressure without
     /// lowering it again. A task cannot enter the instance while the
-    /// count is above zero. The entry gate reads it; the built-in
-    /// that raises and lowers it is not built yet.
+    /// count is above zero. The entry gate reads it, and the
+    /// `backpressure.inc` and `backpressure.dec` built-ins raise and
+    /// lower it: a raise past the sixteen bits the reference counts
+    /// backpressure in, or a lowering below zero, traps.
     pub backpressure: u32,
     /// How many tasks are queued at the instance's entry gate. A
     /// fresh task queues behind them rather than overtaking them,

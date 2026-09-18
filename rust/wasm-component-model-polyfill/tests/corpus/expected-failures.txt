@@ -504,7 +504,7 @@ wasmtime/async/async-builtins.wast:5 deferred-feature component rejected: unsupp
 wasmtime/async/async-builtins.wast:15 deferred-feature component rejected: unsupported component feature: the `stream-cancel-write` trampoline
 wasmtime/async/async-builtins.wast:25 deferred-feature component rejected: unsupported component feature: the `future-cancel-read` trampoline
 wasmtime/async/async-builtins.wast:35 deferred-feature component rejected: unsupported component feature: the `future-cancel-write` trampoline
-wasmtime/async/backpressure-deadlock.wast:14 deferred-feature component rejected: unsupported component feature: the `backpressure-inc` trampoline
+wasmtime/async/backpressure-deadlock.wast:14 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 wasmtime/async/backpressure-deadlock.wast:107 deferred-feature expected a trap `deadlock detected`, got `no instance to invoke`
 wasmtime/async/callback-yield-then-exit.wast:7 deferred-feature component rejected: unsupported component feature: the `component-sync-start-call` trampoline
 wasmtime/async/callback-yield-then-exit.wast:50 deferred-feature no instance to invoke
