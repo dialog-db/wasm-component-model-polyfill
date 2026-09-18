@@ -18,8 +18,12 @@ async export. The polyfill runs the guest on the one real stack. The callback
 form never needs a stack switch, which is why it is the first feature. The
 design follows the [Concurrency explainer][Concurrency] and the Python reference
 in [`definitions.py`]. Where the reference leaves a choice to the host, the
-design makes the choice [Wasmtime] makes. Where it departs from either, it
-states the reason.
+design makes the choice [Wasmtime] makes at `v49.0.0-rc.1`. That tag is the
+first to carry Wasmtime's realignment with the current reference, and its trap
+messages equal those of the version before it. The design assumes the fused
+adapter compiler of Wasmtime 49, whose synchronous adapters import no may-block
+global and manage the context slots around each realloc call themselves. Where
+the design departs from either, it states the reason.
 
 ## Goals
 
@@ -73,7 +77,8 @@ states the reason.
   translation.
 - A provider for the suspend seam. When a built-in of this design must block
   where the reference permits it, the nested turn of [PDD018] serves it. Its
-  failure is the stack-switch cause.
+  failure is the deadlock cause when the store is idle and the stack-switch
+  cause when a host task is still pending.
 
 ## The Callback Export
 
@@ -133,9 +138,10 @@ and nothing else ready, fails with the deadlock cause. A synchronous export
 ignores the gate, as today.
 
 The arguments are lowered after the gate opens, as the reference's `start`
-lowers them. A `realloc` the lowering calls runs on the task's implicit thread,
-so a context slot the realloc sets is visible to the export's core function.
-Wasmtime's corpus proves that rule for a host call.
+lowers them. A `realloc` the lowering calls is a task with one thread, as the
+destructor task below is. The reference lifts `realloc` as a function and
+invokes it, so a slot the realloc sets ends with its thread and the export's
+core function sees zero. Wasmtime's corpus proves that rule for a host call.
 
 The call's future is a driver. It resolves when `task.return` sets the task's
 result, and it returns the lifted value. The export's core function has by then
@@ -157,11 +163,16 @@ status word decides what the task does next:
 Dropping the call's future cancels nothing, per [PDD018]. The task stays in the
 store and runs in the next turn of any driver.
 
-A task must not block while its function type is synchronous and it has not
-returned. Once it has returned, or when its function type is `async`, it is
-allowed to block. That is Wasmtime's rule, and it is the rule the explainer
-states for a synchronous function. A callback task is therefore allowed to block
-from its start.
+A task whose function type is synchronous must not block before it returns. Once
+it has returned, or when its function type is `async`, it is allowed to block.
+The rule is lazy, as the reference and Wasmtime state it. A synchronous task
+that has to block first runs the ready threads of its own instance, and it traps
+with the cannot-block cause only when none remains. In this design no such
+thread can exist, so the trap follows at once. A callback task is allowed to
+block from its start. The may-not-suspend flag of the instance record of
+[PDD018] marks a synchronous call in progress. A host call into a synchronous
+export sets it for the length of the call, as the enter intrinsic sets it for a
+synchronous call between components.
 
 The scope stack of [PDD018] sees a callback task as it sees every task. The
 start item pushes the task as the current scope before it lowers the arguments.
@@ -304,13 +315,15 @@ clear.
 - `waitable-set.wait` takes a set index and a pointer. If the set holds an
   event, the built-in takes the first event in join order. It writes the two
   payloads as `u32` values at the pointer and at the pointer plus four, in the
-  built-in's memory, and returns the code. If the set holds no event and the
-  current task must not block, the built-in fails with the cannot-block cause.
-  That is the case of a start function or a synchronous export. If the task is
-  allowed to block, the built-in asks the suspend seam of [PDD018] to suspend
-  the thread until the set holds an event. On a target with no provider, the
-  nested turn runs, and if it goes idle with no event, the built-in fails with
-  the stack-switch cause.
+  built-in's memory, and returns the code. If the set holds no event, the
+  built-in asks the suspend seam of [PDD018] to suspend the thread until the set
+  holds an event. On a target with no provider, the nested turn runs. For a task
+  that must not block, the nested turn runs only ready work of the task's own
+  instance, and the built-in fails with the cannot-block cause when that work
+  does not fill the set. That is the case of a start function or a synchronous
+  export. For a task that is allowed to block, the built-in fails with the
+  deadlock cause when the store goes idle with no event, and with the
+  stack-switch cause when a host task is still pending.
 - `waitable-set.poll` takes the same arguments and never blocks. It returns the
   none code and writes nothing when the set holds no event.
 - `waitable-set.drop` removes the entry. It traps when the set still holds a
@@ -337,20 +350,24 @@ exits. They end with the thread. Neither built-in reads the may-leave flag, and
 the corpus proves that a realloc can call them.
 
 Two consequences follow from the task lifecycle above. A realloc the host's
-argument lowering calls runs on the export's thread, so what it sets is visible
-to the export. A destructor runs on its own thread, so it sees zeros and what it
-sets does not reach the thread that dropped the handle.
+argument lowering calls runs on its own thread, so it sees zeros and what it
+sets does not reach the export. The same holds for a realloc that lowers a host
+function's result into the guest. A destructor runs on its own thread, so it
+sees zeros and what it sets does not reach the thread that dropped the handle.
 
 ## thread.yield
 
-`thread.yield` returns zero at once and reschedules nothing. The reference lets
-`wait_until` return without suspending when its condition already holds, and a
-yield's condition always holds. Wasmtime runs a yield in a task that must not
-block as a no-op. From inside a guest frame with no stack switch, the polyfill
-cannot hand control to the host executor. It therefore takes the early return on
-every task and on both targets. A callback task that wants to give way returns
-the yield status word instead. The built-in traps when the may-leave flag is
-clear.
+`thread.yield` gives way and returns zero. The reference treats a yield as a
+point where any other ready thread can run, and Wasmtime switches to a ready
+thread of the instance when one exists. The built-in asks the suspend seam of
+[PDD018] to suspend the thread with a condition that already holds. On a target
+with no provider, the nested turn runs the ready work once and the built-in
+returns. A task that must not block gives way only to ready work of its own
+instance, and with none the yield is a no-op, as Wasmtime runs it. The built-in
+never fails on its own, whatever the nested turn finds. From inside a guest
+frame with no stack switch, the polyfill cannot hand control to the host
+executor, so a callback task that wants the executor to run returns the yield
+status word instead. The built-in traps when the may-leave flag is clear.
 
 ## The Destructor Task
 
@@ -406,9 +423,12 @@ The scheduler causes of [PDD018] apply as that document states. A driver that
 goes idle with a callback task at the gate or waiting on an empty set fails with
 the deadlock cause. A synchronous task that waits on an empty set fails with the
 cannot-block cause. A callback task whose core function waits on an empty set,
-on a target with no suspend provider, fails with the stack-switch cause. The
-waitable causes of [PDD018] apply to `waitable-set.drop` and `waitable.join`.
-The outstanding-borrows cause of [PDD014] applies to `task.return`.
+on a target with no suspend provider, runs a nested turn. It fails with the
+deadlock cause when the store goes idle and with the stack-switch cause when a
+host task is still pending. No host task exists in this design, so the deadlock
+cause is the outcome. The waitable causes of [PDD018] apply to
+`waitable-set.drop` and `waitable.join`. The outstanding-borrows cause of
+[PDD014] applies to `task.return`.
 
 ## Target Differences
 
@@ -562,6 +582,11 @@ fails instantiation with the cannot-block message. A repository test proves that
 `waitable-set.wait` from a synchronous export on a set that holds an event
 returns that event without blocking.
 
+`thread.yield` gives way. A repository test proves that a yield in a callback
+task's core function runs a queued item of another task before it returns, and
+that a yield in a synchronous export with no ready work of its own instance
+returns zero at once.
+
 Waitable sets from one task behave as the reference states. `waitable-set.poll`
 on an empty set returns the none code. `waitable-set.drop` on a set that holds a
 waitable, and on a set a thread waits on, fails with the waitable causes.
@@ -573,7 +598,8 @@ built-in instantiate.
 Context slots belong to the thread. `sync-call-context.wast`,
 `sync-call-context-slots.wast`, and the single-instance directives of
 `task-builtins.wast` pass. A slot set by a realloc during the host's argument
-lowering is visible to the export.
+lowering, or during the lowering of a host function's result, is not visible to
+the export or to the task that made the call.
 
 A destructor runs as a task. `context-in-resource-drop.wast` passes whole, with
 the `wasmtime` `gc` host item registered. A destructor sees zero context slots,
@@ -666,9 +692,9 @@ repository test.
   https://github.com/WebAssembly/component-model/blob/main/design/mvp/Explainer.md#canonical-definitions
 [Wasmtime]: https://github.com/bytecodealliance/wasmtime
 [callback handling]:
-  https://github.com/bytecodealliance/wasmtime/blob/v48.0.2/crates/wasmtime/src/runtime/component/concurrent.rs
+  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent.rs
 [trap messages]:
-  https://github.com/bytecodealliance/wasmtime/blob/v48.0.2/crates/environ/src/trap_encoding.rs
+  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/environ/src/trap_encoding.rs
 [`ComponentFunc::async_`]:
   https://docs.wasmtime.dev/api/wasmtime/component/types/struct.ComponentFunc.html#method.async_
 [Component Model test corpus]:
