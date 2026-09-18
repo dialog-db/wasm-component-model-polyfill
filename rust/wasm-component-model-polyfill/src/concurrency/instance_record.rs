@@ -8,8 +8,9 @@ use super::thread_id::ThreadId;
 ///
 /// The entry gate reads and writes the first three fields, and the
 /// enter and exit intrinsics of an adapter maintain
-/// `may_not_suspend`. `may_leave` is clear for the length of a call
-/// the polyfill itself makes into the guest.
+/// `may_not_suspend`. `may_leave` is clear for the length of a
+/// `cabi_realloc` or a `post-return` the polyfill calls, and stays
+/// set around a destructor.
 pub struct InstanceRecord {
     /// How many times the guest has raised backpressure without
     /// lowering it again. A task cannot enter the instance while the
@@ -27,11 +28,26 @@ pub struct InstanceRecord {
     /// need it, and the entry gate hands it over as such a task
     /// starts.
     pub exclusive_thread: Option<ThreadId>,
-    /// Whether the instance may be left, which the reference clears
-    /// while a call the polyfill itself makes into the guest runs:
-    /// the `cabi_realloc` a crossing asks for memory with, and the
-    /// `post-return` of an export. A built-in that reads the flag
-    /// traps with the cannot-leave cause while it is clear. The
+    /// Whether the instance may be left. The reference clears the
+    /// flag while a call the polyfill itself makes into the guest
+    /// runs — the `cabi_realloc` a crossing asks for memory with and
+    /// the `post-return` of an export — and leaves it set around a
+    /// destructor. Clear therefore means the guest is running inside
+    /// one of those two calls, where the reference forbids it the
+    /// operations that would leave the instance.
+    ///
+    /// The reference traps with the cannot-leave cause on every
+    /// built-in the flag governs, and exempts the rest. The
+    /// exemptions are `context.get`, `context.set`,
+    /// `backpressure.inc`, `backpressure.dec`, and `resource.rep`:
+    /// none of the five reads the flag, and a realloc may call any
+    /// of them, so a built-in of the polyfill that read the field
+    /// here would trap where the reference lets the guest through.
+    /// A built-in the reference does not exempt traps the same way
+    /// once it reads the field. `task.return` is the one that reads
+    /// it today. `resource.new` and `resource.drop` are written and
+    /// do not read it yet, where the reference traps for both; the
+    /// built-ins still to be written read it as they land. The
     /// adapters read and write the flags global they compile
     /// against, which is a second copy of the same state.
     pub may_leave: bool,

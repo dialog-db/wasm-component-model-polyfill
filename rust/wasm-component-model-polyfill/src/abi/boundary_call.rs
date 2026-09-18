@@ -98,24 +98,52 @@ impl BoundaryCall {
     }
 
     /// Enter the call, pushing a task of its own when `as_task`.
+    ///
+    /// An instance with no tables reaches no records, so the call
+    /// enters nothing and the guard has nothing to undo. That holds
+    /// whether or not the instance names an identity: the task and
+    /// the flag both live in the records, and the records are
+    /// reached through the tables alone, so
+    /// `BoundaryInstance::without_tables(Some(id))` is as much of a
+    /// no-op guard as the `None` form.
+    ///
+    /// An instance that has tables but no identity is not a crossing
+    /// any caller builds: entering it would run the call with no
+    /// task, no fresh thread, and the may-leave flag of nobody, so
+    /// it is an internal error instead. Tables that hold no record
+    /// for the identity are refused the same way and for the same
+    /// reason: the flag to clear is nobody's.
+    ///
+    /// The flag is therefore cleared before the task is pushed, so
+    /// that the refusal has nothing to undo.
     fn enter(instance: &BoundaryInstance, as_task: bool) -> Result<Self> {
         let mut call = Self {
             tables: None,
             may_leave: None,
             task: None,
         };
-        let (Some(tables), Some(id)) = (instance.tables(), instance.id()) else {
+        let Some(tables) = instance.tables() else {
             return Ok(call);
+        };
+        let Some(id) = instance.id() else {
+            return Err(Error::internal(
+                "a call into a guest names handle tables but no component instance",
+            ));
         };
         let mut guard = tables
             .lock()
             .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
+        let Some(old) = guard.tasks.set_may_leave(id, false) else {
+            return Err(Error::internal(
+                "a call into a guest names a component instance the store has no record of",
+            ));
+        };
+        call.may_leave = Some((id, old));
         if as_task {
             let task = guard.tasks.push_task(None, None, id);
             guard.tasks.start_task(task);
             call.task = Some(task);
         }
-        call.may_leave = guard.tasks.set_may_leave(id, false).map(|old| (id, old));
         drop(guard);
         call.tables = Some(tables.clone());
         Ok(call)
@@ -134,18 +162,40 @@ impl Drop for BoundaryCall {
             return;
         };
         if let Some(task) = self.task.take() {
-            // The scope is popped, the record and its thread are
+            // The scope is popped, the lends recorded against the
+            // task are given back, the record and its thread are
             // removed, and a scope a trapping call left above it
-            // goes with them; what an exit would add, the check
-            // that the task holds no borrow as it ends, is skipped.
-            // A realloc and a post-return carry no borrow of their
-            // own, so for them there is nothing to check. A
-            // destructor is arbitrary guest code: it can call an
-            // import and receive a borrow lowered into its own
-            // task, and the reference traps when such a task
-            // returns holding one. No directive of the corpus
-            // reaches that, and checking here would need a cause
-            // and a test of its own, so the count stays unchecked.
+            // goes with them. The one step an exit would add is
+            // skipped: the count of borrows still owed to the task
+            // is read and discarded rather than turned into a trap.
+            //
+            // Only a realloc and a destructor reach here: a
+            // post-return enters with no task of its own, so it
+            // never takes this branch. Neither of the two is owed a
+            // borrow by its own parameters, which is the
+            // reference's route to the count — a `canon lower` of a
+            // `borrow<T>` the task is lifted with. A realloc is
+            // lifted with four `i32` and a destructor with one
+            // `u32`, so neither signature carries one.
+            //
+            // The other route is a `canon lower` that runs inside
+            // the task, which is an import the task called; this
+            // crate counts a lowering made while the task's own
+            // host call runs against the task as well. The
+            // reference traps on such a lower while the instance
+            // may not be left, which is the whole of a realloc, so
+            // a realloc cannot reach the point where it owes one.
+            // The polyfill's own lowering does not read the flag
+            // yet, so for now a realloc rests on that rule of the
+            // reference rather than on a check of this crate's.
+            //
+            // A destructor runs with the flag set and is arbitrary
+            // guest code: it can call an import and receive a borrow
+            // lowered into its own task, and the reference traps
+            // when such a task returns holding one. No directive of
+            // the corpus reaches that, and checking here would need
+            // a cause and a test of its own, so the count stays
+            // unchecked.
             guard.abandon_task(task);
         }
         if let Some((instance, old)) = self.may_leave.take() {
@@ -162,14 +212,10 @@ mod tests {
     use crate::executor::ir::{CanonOptions, DataModel, StringEncoding};
     use crate::resource::TableId;
 
-    /// A store's records with one component instance in them, the
-    /// instance's identity, and the crossing that instance's options
-    /// resolve to.
-    fn records() -> (Arc<Mutex<HandleTables>>, InstanceId, BoundaryInstance) {
-        let mut handles = HandleTables::new();
-        let instance = handles.tasks.insert_instance();
-        let tables = Arc::new(Mutex::new(handles));
-        let declared = CanonOptions {
+    /// The declared options of a crossing that names the first
+    /// component instance of its instantiation and nothing else.
+    fn declared() -> CanonOptions {
+        CanonOptions {
             instance: 0,
             memory: None,
             realloc: None,
@@ -178,7 +224,16 @@ mod tests {
             callback: None,
             string_encoding: StringEncoding::Utf8,
             data_model: DataModel::LinearMemory,
-        };
+        }
+    }
+
+    /// A store's records with one component instance in them, the
+    /// instance's identity, and the crossing that instance's options
+    /// resolve to.
+    fn records() -> (Arc<Mutex<HandleTables>>, InstanceId, BoundaryInstance) {
+        let mut handles = HandleTables::new();
+        let instance = handles.tasks.insert_instance();
+        let tables = Arc::new(Mutex::new(handles));
         let state = Arc::new(Mutex::new(AbiRuntimeState::with_slabs(
             0,
             0,
@@ -189,8 +244,26 @@ mod tests {
             vec![TableId::fresh()],
         )));
         let (_, boundary) =
-            BoundaryInstance::resolve(&declared, &state, &tables).expect("resolve the crossing");
+            BoundaryInstance::resolve(&declared(), &state, &tables).expect("resolve the crossing");
         (tables, instance, boundary)
+    }
+
+    /// A store's records and a crossing that reaches them but no
+    /// component instance, because the instantiation filled no
+    /// instance slot for its options to name.
+    fn records_without_an_instance() -> (Arc<Mutex<HandleTables>>, BoundaryInstance) {
+        let tables = Arc::new(Mutex::new(HandleTables::new()));
+        let state = Arc::new(Mutex::new(AbiRuntimeState::with_slabs(
+            0,
+            0,
+            0,
+            0,
+            Vec::new(),
+            Vec::new(),
+        )));
+        let (_, boundary) =
+            BoundaryInstance::resolve(&declared(), &state, &tables).expect("resolve the crossing");
+        (tables, boundary)
     }
 
     /// Whether the instance may be left, and how many tasks, threads,
@@ -307,5 +380,76 @@ mod tests {
         let call = BoundaryCall::realloc(&BoundaryInstance::without_tables(None))
             .expect("enter the realloc");
         drop(call);
+    }
+
+    #[wcmp_macros::test]
+    fn it_refuses_a_realloc_whose_crossing_names_no_component_instance() {
+        // Records but no instance is a combination no caller builds.
+        // Entering it would run the realloc with no task, no fresh
+        // thread, and nobody's flag cleared, so the entry fails
+        // rather than handing back a guard that does nothing.
+        let (tables, boundary) = records_without_an_instance();
+        let Err(error) = BoundaryCall::realloc(&boundary) else {
+            panic!("the realloc is refused");
+        };
+        assert!(
+            matches!(error, Error::Internal { .. }),
+            "the refusal is a structured internal error, not a trap: {error:?}"
+        );
+        let guard = tables.lock().expect("handle tables");
+        assert_eq!(
+            (
+                guard.tasks.task_count(),
+                guard.tasks.thread_count(),
+                guard.tasks.scopes().len()
+            ),
+            (0, 0, 0),
+            "the refused entry left nothing in the store"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_refuses_a_post_return_whose_crossing_names_no_component_instance() {
+        let (tables, boundary) = records_without_an_instance();
+        let Err(error) = BoundaryCall::post_return(&boundary) else {
+            panic!("the post-return is refused");
+        };
+        assert!(
+            matches!(error, Error::Internal { .. }),
+            "the refusal is a structured internal error, not a trap: {error:?}"
+        );
+        let guard = tables.lock().expect("handle tables");
+        assert_eq!(
+            (
+                guard.tasks.task_count(),
+                guard.tasks.thread_count(),
+                guard.tasks.scopes().len()
+            ),
+            (0, 0, 0),
+            "the refused entry left nothing in the store"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_refuses_a_realloc_whose_instance_has_no_record_in_the_store() {
+        // An identity the store holds no record for leaves the entry
+        // with nobody's flag to clear, so it fails rather than
+        // running the realloc with the flag of no instance at all.
+        // The flag is cleared before the task is pushed, so the
+        // refusal leaves no task behind either.
+        let (tables, instance, boundary) = records();
+        let absent = InstanceId::from_index(instance.index() + 1);
+        let Err(error) = BoundaryCall::realloc(&boundary.clone().with_id(absent)) else {
+            panic!("the realloc is refused");
+        };
+        assert!(
+            matches!(error, Error::Internal { .. }),
+            "the refusal is a structured internal error, not a trap: {error:?}"
+        );
+        assert_eq!(
+            state(&tables, instance),
+            (true, 0, 0, 0),
+            "the refused entry left nothing in the store and no flag clear"
+        );
     }
 }

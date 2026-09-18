@@ -509,8 +509,17 @@ mod tests {
         // and the context selects the other strategy from it.
         let engine = Engine::new().expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-        let instance = InstanceId::from_index(0);
         let tables = store.tables_handle();
+        // The allocation below enters a `cabi_realloc` boundary
+        // call, which clears the may-leave flag of the instance the
+        // options name. The store therefore has to hold that
+        // instance's record, so the identity is minted from the
+        // records rather than made up.
+        let instance = tables
+            .lock()
+            .expect("handle tables")
+            .tasks
+            .insert_instance();
         let (options, instance) =
             BoundaryInstance::resolve(&canon(DataModel::Gc), &state(instance), &tables)
                 .expect("resolve");
