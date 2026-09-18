@@ -260,6 +260,7 @@ mod tests {
             0,
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )));
         let (_, boundary) =
             BoundaryInstance::resolve(&declared(), &state, &tables).expect("resolve the crossing");
