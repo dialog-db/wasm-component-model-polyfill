@@ -27,6 +27,13 @@
 //!   task's borrows, restores the flag, and pops the task.
 //! - The two context slots of the current thread, which an adapter
 //!   saves and restores around the callee.
+//!
+//! A guest module imports two more host functions here without an
+//! adapter in between: the `backpressure.inc` and `backpressure.dec`
+//! built-ins, which raise and lower the counter that shuts one
+//! component instance's entry gate. A lowering that brings the
+//! counter back to zero opens the gate on the next turn, because
+//! every turn releases whatever the gate can let through.
 
 use std::sync::{Arc, Mutex};
 
@@ -41,7 +48,7 @@ use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::transcode::transcode;
 use crate::concurrency::{InstanceId, Scope, ThreadId};
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, TaskCause};
 use crate::executor::ir::{CoreSignature, TranscodeOp};
 use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime};
 use crate::store::StoreContext;
@@ -249,6 +256,79 @@ fn exit_sync_call(tables: &Arc<Mutex<HandleTables>>) -> anyhow::Result<()> {
     }
 }
 
+/// The largest value the backpressure counter holds. The reference
+/// counts backpressure in sixteen bits, so the raise that would take
+/// it to 65536 has nowhere to go.
+const BACKPRESSURE_MAX: u32 = 65535;
+
+/// Build the `backpressure.inc` built-in of the component instance
+/// the trampoline names by `instance`, the translator's
+/// per-instantiation index. The guest imports the built-in directly,
+/// so the instance comes from the trampoline rather than from an
+/// argument, and the built-in takes nothing and returns nothing.
+pub fn build_backpressure_inc<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    signature: &CoreSignature,
+    abi_state: Arc<Mutex<AbiRuntimeState>>,
+    instance: usize,
+) -> RuntimeFunc {
+    let tables = store.tables_handle();
+    let index = instance as u32;
+    RuntimeFunc::new(
+        store.runtime_mut(),
+        core_func_type(signature),
+        move |_store_ctx, _args, _results| {
+            let instance = instance_at(&abi_state, index)?;
+            backpressure_modify(&tables, instance, |count| {
+                (count < BACKPRESSURE_MAX).then(|| count + 1)
+            })
+        },
+    )
+}
+
+/// Build the `backpressure.dec` built-in. See
+/// [`build_backpressure_inc`]: this one lowers the counter, and the
+/// lowering that would take it below zero is the same trap as the
+/// raise that overflows it.
+pub fn build_backpressure_dec<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    signature: &CoreSignature,
+    abi_state: Arc<Mutex<AbiRuntimeState>>,
+    instance: usize,
+) -> RuntimeFunc {
+    let tables = store.tables_handle();
+    let index = instance as u32;
+    RuntimeFunc::new(
+        store.runtime_mut(),
+        core_func_type(signature),
+        move |_store_ctx, _args, _results| {
+            let instance = instance_at(&abi_state, index)?;
+            backpressure_modify(&tables, instance, |count| count.checked_sub(1))
+        },
+    )
+}
+
+/// Move the backpressure counter of `instance` by `modify`, which
+/// answers `None` for a move that leaves the counter's range. Such a
+/// move traps, in either direction, and leaves the counter as it was.
+///
+/// Neither built-in reads the instance's may-leave flag: the
+/// reference exempts them, and a `cabi_realloc` calls them with the
+/// flag clear.
+fn backpressure_modify(
+    tables: &Arc<Mutex<HandleTables>>,
+    instance: InstanceId,
+    modify: impl FnOnce(u32) -> Option<u32>,
+) -> anyhow::Result<()> {
+    let mut guard = lock_tables(tables)?;
+    let record = guard.tasks.instance_mut(instance).ok_or_else(|| {
+        anyhow!("a backpressure built-in named an instance the store does not hold")
+    })?;
+    record.backpressure =
+        modify(record.backpressure).ok_or(Error::Task(TaskCause::BackpressureOverflow))?;
+    Ok(())
+}
+
 /// The store-wide identity of the component instance the adapter
 /// names by `index`, the translator's per-instantiation index.
 fn instance_at(abi_state: &Arc<Mutex<AbiRuntimeState>>, index: u32) -> anyhow::Result<InstanceId> {
@@ -448,8 +528,13 @@ fn arg_u32(args: &[RuntimeVal], index: usize) -> Result<u32> {
 
 #[cfg(test)]
 mod tests {
+    use core::task::Waker;
+
     use super::*;
+    use crate::concurrency::{Item, ItemKind};
+    use crate::engine::Engine;
     use crate::resource::{ResourceTypeId, TableId};
+    use crate::store::Store;
 
     fn runtime(table: TableId, type_id: ResourceTypeId) -> ResourceTableRuntime {
         ResourceTableRuntime {
@@ -756,6 +841,144 @@ mod tests {
         assert!(
             callee_async,
             "the second argument says the callee is asynchronous"
+        );
+    }
+
+    /// Raise the backpressure of `instance`, which is what the
+    /// `backpressure.inc` built-in does.
+    fn backpressure_inc(
+        tables: &Arc<Mutex<HandleTables>>,
+        instance: InstanceId,
+    ) -> anyhow::Result<()> {
+        backpressure_modify(tables, instance, |count| {
+            (count < BACKPRESSURE_MAX).then(|| count + 1)
+        })
+    }
+
+    /// Lower the backpressure of `instance`, which is what the
+    /// `backpressure.dec` built-in does.
+    fn backpressure_dec(
+        tables: &Arc<Mutex<HandleTables>>,
+        instance: InstanceId,
+    ) -> anyhow::Result<()> {
+        backpressure_modify(tables, instance, |count| count.checked_sub(1))
+    }
+
+    /// The backpressure counter of `instance`.
+    fn counter(tables: &Arc<Mutex<HandleTables>>, instance: InstanceId) -> u32 {
+        tables
+            .lock()
+            .expect("tables")
+            .tasks
+            .instance(instance)
+            .expect("instance record")
+            .backpressure
+    }
+
+    /// Queue the start of a fresh task of `instance` whose item
+    /// records that it ran. `async_function` is whether the task's
+    /// function type is `async`, which is what decides whether the
+    /// task consults the entry gate at all.
+    fn queue_task(
+        store: &mut StoreContext<'_, ()>,
+        log: &Arc<Mutex<Vec<&'static str>>>,
+        instance: InstanceId,
+        async_function: bool,
+        name: &'static str,
+    ) {
+        let task = store
+            .tables()
+            .lock()
+            .expect("tables")
+            .tasks
+            .create_task(None, None, instance);
+        let log = log.clone();
+        let item = Item::new(
+            ItemKind::TaskStart,
+            move |_store: &mut StoreContext<'_, ()>| {
+                log.lock().expect("log").push(name);
+                Ok(())
+            },
+        );
+        store
+            .start_export_thread(task, instance, async_function, false, item)
+            .expect("queue the task's start");
+    }
+
+    #[wcmp_macros::test]
+    fn it_holds_an_async_task_at_the_gate_while_the_counter_is_above_zero() {
+        // Both moves of the counter go through the body the
+        // backpressure built-ins run.
+        let engine = Engine::new().expect("engine");
+        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+        let tables = store.tables_handle();
+        let instance = tables.lock().expect("tables").tasks.insert_instance();
+        let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+
+        backpressure_inc(&tables, instance).expect("the guest raises backpressure");
+        queue_task(&mut store.context(), &log, instance, true, "async");
+        queue_task(&mut store.context(), &log, instance, false, "sync");
+
+        store
+            .turn(Waker::noop())
+            .expect("the turn with the gate shut");
+
+        assert_eq!(
+            log.lock().expect("log").clone(),
+            vec!["sync"],
+            "a task of a synchronous function type ignores the counter"
+        );
+        assert_eq!(
+            store.scheduler().waiting_at_gate(),
+            1,
+            "the task of an `async` function type waits at the gate"
+        );
+
+        backpressure_dec(&tables, instance).expect("the guest lowers backpressure");
+        store
+            .turn(Waker::noop())
+            .expect("the turn with the gate open");
+
+        assert_eq!(
+            log.lock().expect("log").clone(),
+            vec!["sync", "async"],
+            "the counter back at zero lets the waiting task start"
+        );
+        assert_eq!(store.scheduler().waiting_at_gate(), 0);
+    }
+
+    #[wcmp_macros::test]
+    fn it_traps_at_both_ends_of_the_backpressure_counters_range() {
+        let tables = Arc::new(Mutex::new(HandleTables::new()));
+        let instance = tables.lock().expect("tables").tasks.insert_instance();
+
+        assert_eq!(
+            backpressure_dec(&tables, instance)
+                .expect_err("a lowering below zero traps")
+                .to_string(),
+            Error::Task(TaskCause::BackpressureOverflow).to_string(),
+            "the lowering traps with the backpressure-overflow cause"
+        );
+
+        for _ in 0..BACKPRESSURE_MAX {
+            backpressure_inc(&tables, instance).expect("a raise inside the range");
+        }
+        assert_eq!(
+            counter(&tables, instance),
+            BACKPRESSURE_MAX,
+            "the counter survives 65535 raises"
+        );
+        assert_eq!(
+            backpressure_inc(&tables, instance)
+                .expect_err("the raise that would reach 65536 traps")
+                .to_string(),
+            Error::Task(TaskCause::BackpressureOverflow).to_string(),
+            "the raise traps with the same cause"
+        );
+        assert_eq!(
+            counter(&tables, instance),
+            BACKPRESSURE_MAX,
+            "a raise that trapped leaves the counter as it was"
         );
     }
 }

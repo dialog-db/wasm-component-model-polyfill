@@ -29,8 +29,9 @@ use crate::store::StoreContext;
 
 use super::ResourceDestructor;
 use super::intrinsics::{
-    build_context_get, build_context_set, build_enter_sync_call, build_exit_sync_call,
-    build_resource_transfer, build_transcoder, build_trap,
+    build_backpressure_dec, build_backpressure_inc, build_context_get, build_context_set,
+    build_enter_sync_call, build_exit_sync_call, build_resource_transfer, build_transcoder,
+    build_trap,
 };
 use crate::abi::runtime_state::AbiRuntimeState;
 
@@ -393,6 +394,24 @@ fn build_runtime_trampoline<T: 'static>(
         TrampolineSpec::ContextSet { slot, signature } => {
             Ok(build_context_set(store, *slot, signature))
         }
+        TrampolineSpec::BackpressureInc {
+            instance,
+            signature,
+        } => Ok(build_backpressure_inc(
+            store,
+            signature,
+            abi_state.clone(),
+            *instance,
+        )),
+        TrampolineSpec::BackpressureDec {
+            instance,
+            signature,
+        } => Ok(build_backpressure_dec(
+            store,
+            signature,
+            abi_state.clone(),
+            *instance,
+        )),
     }
 }
 

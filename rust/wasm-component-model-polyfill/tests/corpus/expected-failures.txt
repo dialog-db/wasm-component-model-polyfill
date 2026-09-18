@@ -474,8 +474,6 @@ cm/values/post-return.wast:253 cascade no definition named `Tester`
 cm/values/post-return.wast:254 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
 cm/values/post-return.wast:255 cascade no definition named `Tester`
 cm/values/post-return.wast:256 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:334 deferred-feature component rejected: unsupported component feature: the `backpressure-inc` trampoline
-cm/values/post-return.wast:358 cascade no instance to invoke
 cm/values/variants.wast:83 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
 cm/values/variants.wast:183 cascade no instance to invoke
 cm/values/variants.wast:184 cascade no instance to invoke
@@ -510,16 +508,6 @@ wasmtime/async/async-builtins.wast:25 deferred-feature component rejected: unsup
 wasmtime/async/async-builtins.wast:35 deferred-feature component rejected: unsupported component feature: the `future-cancel-write` trampoline
 wasmtime/async/backpressure-deadlock.wast:14 deferred-feature component rejected: unsupported component feature: the `backpressure-inc` trampoline
 wasmtime/async/backpressure-deadlock.wast:107 deferred-feature expected a trap `deadlock detected`, got `no instance to invoke`
-wasmtime/async/backpressure-overflow.wast:3 deferred-feature component rejected: unsupported component feature: the `backpressure-inc` trampoline
-wasmtime/async/backpressure-overflow.wast:32 deferred-feature no definition named `A`
-wasmtime/async/backpressure-overflow.wast:33 deferred-feature expected a trap `backpressure counter overflow`, got `no instance to invoke`
-wasmtime/async/backpressure-overflow.wast:35 deferred-feature no definition named `A`
-wasmtime/async/backpressure-overflow.wast:36 deferred-feature expected a trap `backpressure counter overflow`, got `no instance to invoke`
-wasmtime/async/backpressure-overflow.wast:38 deferred-feature no definition named `A`
-wasmtime/async/backpressure-overflow.wast:39 deferred-feature expected a trap `backpressure counter overflow`, got `no instance to invoke`
-wasmtime/async/backpressure-overflow.wast:41 deferred-feature no definition named `A`
-wasmtime/async/backpressure-overflow.wast:42 deferred-feature no instance to invoke
-wasmtime/async/backpressure-overflow.wast:43 deferred-feature expected a trap `backpressure counter overflow`, got `no instance to invoke`
 wasmtime/async/callback-yield-then-exit.wast:7 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
 wasmtime/async/callback-yield-then-exit.wast:50 deferred-feature no instance to invoke
 wasmtime/async/cancel-host.wast:7 deferred-feature component rejected: unsupported component feature: asynchronous function types on imports (imports `[method]resource1.never-return`, which has no host task registered)
@@ -537,7 +525,7 @@ wasmtime/async/cancel-sibling-subtask.wast:145 deferred-feature no definition na
 wasmtime/async/cancel-sibling-subtask.wast:146 deferred-feature no instance to invoke
 wasmtime/async/cancel-sibling-subtask.wast:149 deferred-feature no definition named `A`
 wasmtime/async/cancel-sibling-subtask.wast:150 deferred-feature no instance to invoke
-wasmtime/async/cancel-starting-subtask-does-not-leak.wast:9 deferred-feature component rejected: unsupported component feature: the `backpressure-inc` trampoline
+wasmtime/async/cancel-starting-subtask-does-not-leak.wast:9 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 wasmtime/async/cancel-starting-subtask-does-not-leak.wast:103 deferred-feature no instance to invoke
 wasmtime/async/cancel-sync-and-waitable.wast:18 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 wasmtime/async/cancel-sync-and-waitable.wast:68 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
@@ -547,7 +535,7 @@ wasmtime/async/cancel-sync-and-waitable.wast:124 deferred-feature component reje
 wasmtime/async/cancel-sync-and-waitable.wast:174 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
 wasmtime/async/cancel-sync-and-waitable.wast:177 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
 wasmtime/async/cancel-sync-and-waitable.wast:227 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
-wasmtime/async/cancel-sync-and-waitable.wast:230 deferred-feature component rejected: unsupported component feature: the `backpressure-inc` trampoline
+wasmtime/async/cancel-sync-and-waitable.wast:230 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 wasmtime/async/cancel-sync-and-waitable.wast:301 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
 wasmtime/async/context-in-compositions.wast:268 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
 wasmtime/async/context-in-compositions.wast:434 deferred-feature no instance to invoke
@@ -562,9 +550,7 @@ wasmtime/async/context-in-resource-drop.wast:325 deferred-feature no instance to
 wasmtime/async/context-in-resource-drop.wast:326 deferred-feature no instance to invoke
 wasmtime/async/context-in-resource-drop.wast:327 deferred-feature no instance to invoke
 wasmtime/async/context-in-resource-drop.wast:328 deferred-feature no instance to invoke
-wasmtime/async/drop-deadlock.wast:3 deferred-feature component rejected: unsupported component feature: the `backpressure-inc` trampoline
-wasmtime/async/drop-deadlock.wast:24 deferred-feature no instance to invoke
-wasmtime/async/drop-deadlock.wast:25 deferred-feature expected a trap `cannot make further progress`, got `no instance to invoke`
+wasmtime/async/drop-deadlock.wast:25 deferred-feature expected a trap `cannot make further progress`, got `unsupported component feature: host calls into an asynchronous export`
 wasmtime/async/drop-host.wast:5 deferred-feature component rejected: unsupported component feature: asynchronous function types on imports (imports `return-two-slowly`, which has no host task registered)
 wasmtime/async/drop-host.wast:56 deferred-feature expected a trap `cannot drop a subtask which has not yet resolved`, got `no instance to invoke`
 wasmtime/async/drop-waitable-set-stackful.wast:13 deferred-feature component rejected: unsupported component feature: the `waitable-set-new` trampoline
@@ -705,38 +691,22 @@ wasmtime/async/subtask-wait.wast:9 deferred-feature component rejected: unsuppor
 wasmtime/async/subtask-wait.wast:82 deferred-feature expected a trap `wasm `unreachable` instruction executed`, got `no instance to invoke`
 wasmtime/async/sync-and-async-waitable.wast:5 deferred-feature component rejected: unsupported component feature: the `waitable-join` trampoline
 wasmtime/async/sync-and-async-waitable.wast:123 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
-wasmtime/async/sync-call-context-slots.wast:79 deferred-feature component rejected: unsupported component feature: the `backpressure-inc` trampoline
-wasmtime/async/sync-call-context-slots.wast:152 deferred-feature no instance to invoke
-wasmtime/async/sync-call-context.wast:64 deferred-feature component rejected: unsupported component feature: the `backpressure-inc` trampoline
-wasmtime/async/sync-call-context.wast:126 deferred-feature no instance to invoke
-wasmtime/async/sync-call-context.wast:210 deferred-feature component rejected: unsupported component feature: the `backpressure-inc` trampoline
-wasmtime/async/sync-call-context.wast:298 deferred-feature no instance to invoke
-wasmtime/async/sync-call-context.wast:301 deferred-feature component rejected: unsupported component feature: the `backpressure-inc` trampoline
-wasmtime/async/sync-call-context.wast:389 deferred-feature no instance to invoke
-wasmtime/async/sync-call-context.wast:450 deferred-feature component rejected: unsupported component feature: the `backpressure-inc` trampoline
-wasmtime/async/sync-call-context.wast:544 deferred-feature no instance to invoke
 wasmtime/async/sync-streams.wast:14 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
 wasmtime/async/sync-streams.wast:186 deferred-feature no instance to invoke
-wasmtime/async/task-builtins.wast:7 deferred-feature component rejected: unsupported component feature: the `backpressure-inc` trampoline
-wasmtime/async/task-builtins.wast:16 deferred-feature component rejected: unsupported component feature: the `backpressure-dec` trampoline
 wasmtime/async/task-builtins.wast:25 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
 wasmtime/async/task-builtins.wast:34 deferred-feature component rejected: unsupported component feature: the `waitable-set-wait` trampoline
 wasmtime/async/task-builtins.wast:45 deferred-feature component rejected: unsupported component feature: the `waitable-set-poll` trampoline
 wasmtime/async/task-builtins.wast:56 deferred-feature component rejected: unsupported component feature: the `thread-yield` trampoline
 wasmtime/async/task-builtins.wast:65 deferred-feature component rejected: unsupported component feature: the `subtask-drop` trampoline
 wasmtime/async/task-builtins.wast:74 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
-wasmtime/async/task-builtins.wast:83 deferred-feature component rejected: unsupported component feature: the `backpressure-inc` trampoline
-wasmtime/async/task-builtins.wast:124 deferred-feature no instance to invoke
-wasmtime/async/task-builtins.wast:128 deferred-feature component rejected: unsupported component feature: the `backpressure-inc` trampoline
 wasmtime/async/task-builtins.wast:201 deferred-feature no instance to invoke
 wasmtime/async/task-builtins.wast:205 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
 wasmtime/async/task-builtins.wast:390 deferred-feature no instance to invoke
 wasmtime/async/task-builtins.wast:391 deferred-feature no instance to invoke
 wasmtime/async/task-builtins.wast:392 deferred-feature no instance to invoke
 wasmtime/async/task-builtins.wast:393 deferred-feature no instance to invoke
-wasmtime/async/task-builtins.wast:396 deferred-feature component rejected: unsupported component feature: the `backpressure-inc` trampoline
 wasmtime/async/task-builtins.wast:466 deferred-feature no instance to invoke
-wasmtime/async/task-builtins.wast:470 deferred-feature component rejected: unsupported component feature: the `backpressure-inc` trampoline
+wasmtime/async/task-builtins.wast:470 deferred-feature component rejected: unsupported component feature: the `future-read` trampoline
 wasmtime/async/task-builtins.wast:723 deferred-feature no instance to invoke
 wasmtime/async/task-deletion.wast:11 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
 wasmtime/async/task-deletion.wast:311 deferred-feature no instance to invoke

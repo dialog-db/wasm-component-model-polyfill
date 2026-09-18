@@ -237,6 +237,18 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
             Trampoline::ExitSyncCall => TrampolineSpec::ExitSyncCall {
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
+            // The two backpressure built-ins name the instance whose
+            // counter they move. The guest imports them directly, so
+            // the instance comes from the trampoline rather than from
+            // an argument.
+            Trampoline::BackpressureInc { instance } => TrampolineSpec::BackpressureInc {
+                instance: instance.as_u32() as usize,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::BackpressureDec { instance } => TrampolineSpec::BackpressureDec {
+                instance: instance.as_u32() as usize,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
             // Concurrency built-ins and the rest are not built. A
             // `CoreDef::Trampoline` that references one surfaces
             // `Error::Unsupported` in `lift_core_def`, naming the

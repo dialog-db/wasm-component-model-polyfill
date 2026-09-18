@@ -502,6 +502,24 @@ pub enum TrampolineSpec {
         /// The core signature the adapter imports.
         signature: CoreSignature,
     },
+    /// The guest raises the backpressure of one component instance,
+    /// which shuts that instance's entry gate.
+    BackpressureInc {
+        /// The component instance whose counter the built-in
+        /// raises, by the translator's per-instantiation index.
+        instance: usize,
+        /// The core signature the guest imports.
+        signature: CoreSignature,
+    },
+    /// The guest lowers the backpressure of one component instance.
+    /// The gate opens again once the counter is back at zero.
+    BackpressureDec {
+        /// The component instance whose counter the built-in
+        /// lowers, by the translator's per-instantiation index.
+        instance: usize,
+        /// The core signature the guest imports.
+        signature: CoreSignature,
+    },
 }
 
 /// The core-Wasm signature of an intrinsic an adapter module
