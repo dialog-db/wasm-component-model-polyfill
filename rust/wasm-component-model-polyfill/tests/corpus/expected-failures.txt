@@ -699,13 +699,11 @@ wasmtime/async/task-builtins.wast:45 deferred-feature component rejected: unsupp
 wasmtime/async/task-builtins.wast:56 deferred-feature component rejected: unsupported component feature: the `thread-yield` trampoline
 wasmtime/async/task-builtins.wast:65 deferred-feature component rejected: unsupported component feature: the `subtask-drop` trampoline
 wasmtime/async/task-builtins.wast:74 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
-wasmtime/async/task-builtins.wast:201 deferred-feature no instance to invoke
 wasmtime/async/task-builtins.wast:205 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
 wasmtime/async/task-builtins.wast:390 deferred-feature no instance to invoke
 wasmtime/async/task-builtins.wast:391 deferred-feature no instance to invoke
 wasmtime/async/task-builtins.wast:392 deferred-feature no instance to invoke
 wasmtime/async/task-builtins.wast:393 deferred-feature no instance to invoke
-wasmtime/async/task-builtins.wast:466 deferred-feature no instance to invoke
 wasmtime/async/task-builtins.wast:470 deferred-feature component rejected: unsupported component feature: the `future-read` trampoline
 wasmtime/async/task-builtins.wast:723 deferred-feature no instance to invoke
 wasmtime/async/task-deletion.wast:11 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
