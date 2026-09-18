@@ -133,6 +133,12 @@ pub enum Error {
     #[error("waitable error: {0}")]
     Waitable(#[source] WaitableCause),
 
+    /// A guest broke one of the rules that govern tasks and the
+    /// built-ins that read a task's state. The carried [`TaskCause`]
+    /// names which rule. Each is a trap in the reference.
+    #[error("task error: {0}")]
+    Task(#[source] TaskCause),
+
     /// The component uses a Component Model feature the polyfill
     /// does not implement yet. The feature is named so a caller can
     /// tell "not built yet" from "broken". Reaching this variant is
@@ -686,6 +692,65 @@ pub enum WaitableCause {
     SyncAndAsync,
 }
 
+/// The structured reason a task operation failed.
+///
+/// Carried by [`Error::Task`]. Each cause is a trap in the reference,
+/// so a built-in that meets one fails the guest's call. Nothing
+/// produces these yet; the task built-ins produce them once they
+/// land.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum TaskCause {
+    /// The implicit thread of a task exited and the task had not
+    /// returned. The message is Wasmtime 48's trap,
+    /// `Trap::NoAsyncResult` in `wasmtime-environ`'s
+    /// `src/trap_encoding.rs`, so the conformance corpus can match it
+    /// by substring.
+    #[error("async-lifted export failed to produce a result")]
+    NoResult,
+
+    /// A guest ran `task.return` on a task that was already resolved.
+    /// The message is Wasmtime 48's trap,
+    /// `Trap::TaskCancelOrReturnTwice`, under the same rule as
+    /// [`TaskCause::NoResult`].
+    #[error("`task.return` or `task.cancel` called more than once for current task")]
+    ReturnedTwice,
+
+    /// The result type or the options of a `task.return` differ from
+    /// the ones the task's function was lifted with. The message is
+    /// Wasmtime 48's trap, `Trap::TaskReturnInvalid`, under the same
+    /// rule as [`TaskCause::NoResult`].
+    #[error("invalid `task.return` signature and/or options for current task")]
+    ReturnMismatch,
+
+    /// A guest ran `task.return` in a task whose lift is not `async`.
+    /// The reference traps on the same condition; Wasmtime has no
+    /// trap of its own for it, so the message is the polyfill's own,
+    /// written to read like the ones beside it.
+    #[error("`task.return` called for a task that was not lifted `async`")]
+    ReturnFromSynchronousTask,
+
+    /// A callback returned a status word whose code is above two. The
+    /// message is Wasmtime 48's trap, `Trap::UnsupportedCallbackCode`,
+    /// under the same rule as [`TaskCause::NoResult`].
+    #[error("unsupported callback code")]
+    UnsupportedCallbackCode,
+
+    /// A backpressure built-in took the counter out of its range, in
+    /// either direction. The message is Wasmtime 48's trap,
+    /// `Trap::BackpressureOverflow`, under the same rule as
+    /// [`TaskCause::NoResult`].
+    #[error("backpressure counter overflow")]
+    BackpressureOverflow,
+
+    /// A built-in that reads the may-leave flag ran while the flag
+    /// was clear, from a realloc or a post-return. The message is
+    /// Wasmtime 48's trap, `Trap::CannotLeaveComponent`, under the
+    /// same rule as [`TaskCause::NoResult`].
+    #[error("cannot leave component instance")]
+    CannotLeave,
+}
+
 /// A `Result` whose error variant is the polyfill's [`Error`].
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -796,6 +861,77 @@ mod tests {
                 rendered.ends_with(&cause),
                 "{trap:?} now renders as {rendered:?}, which no longer ends with the \
                  `WaitableCause` message {cause:?}; the conformance corpus matches these \
+                 traps by substring, so the messages have to follow the traps"
+            );
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_renders_the_task_causes() {
+        for (cause, rendered) in [
+            (
+                TaskCause::NoResult,
+                "task error: async-lifted export failed to produce a result",
+            ),
+            (
+                TaskCause::ReturnedTwice,
+                "task error: `task.return` or `task.cancel` called more than once for current task",
+            ),
+            (
+                TaskCause::ReturnMismatch,
+                "task error: invalid `task.return` signature and/or options for current task",
+            ),
+            (
+                TaskCause::ReturnFromSynchronousTask,
+                "task error: `task.return` called for a task that was not lifted `async`",
+            ),
+            (
+                TaskCause::UnsupportedCallbackCode,
+                "task error: unsupported callback code",
+            ),
+            (
+                TaskCause::BackpressureOverflow,
+                "task error: backpressure counter overflow",
+            ),
+            (
+                TaskCause::CannotLeave,
+                "task error: cannot leave component instance",
+            ),
+        ] {
+            assert_eq!(Error::Task(cause).to_string(), rendered);
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_pins_the_task_causes_to_the_traps_wasmtime_environ_renders() {
+        for (trap, cause) in [
+            (Trap::NoAsyncResult, TaskCause::NoResult.to_string()),
+            (
+                Trap::TaskCancelOrReturnTwice,
+                TaskCause::ReturnedTwice.to_string(),
+            ),
+            (
+                Trap::TaskReturnInvalid,
+                TaskCause::ReturnMismatch.to_string(),
+            ),
+            (
+                Trap::UnsupportedCallbackCode,
+                TaskCause::UnsupportedCallbackCode.to_string(),
+            ),
+            (
+                Trap::BackpressureOverflow,
+                TaskCause::BackpressureOverflow.to_string(),
+            ),
+            (
+                Trap::CannotLeaveComponent,
+                TaskCause::CannotLeave.to_string(),
+            ),
+        ] {
+            let rendered = trap.to_string();
+            assert!(
+                rendered.ends_with(&cause),
+                "{trap:?} now renders as {rendered:?}, which no longer ends with the \
+                 `TaskCause` message {cause:?}; the conformance corpus matches these \
                  traps by substring, so the messages have to follow the traps"
             );
         }
