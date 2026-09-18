@@ -290,7 +290,7 @@ mod tests {
             "the body's value crossed through the lowering"
         );
         assert!(
-            !store.turn_in_flight().expect("the store's turn state"),
+            !store.turn_in_flight(),
             "the turn the body ran a closure inside left the outer turn as it found it"
         );
     }

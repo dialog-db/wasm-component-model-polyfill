@@ -1154,7 +1154,7 @@ mod tests {
                     watched.lock().expect("slot").is_some()
                 })
                 .is_ok();
-                *recorded.lock().expect("record") = Some((held, store.turn_in_flight()?));
+                *recorded.lock().expect("record") = Some((held, store.turn_in_flight()));
 
                 // What the host task produced, which only the turns
                 // the suspension ran could have put there.

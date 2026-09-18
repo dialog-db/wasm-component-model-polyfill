@@ -161,7 +161,7 @@ impl<T: 'static> Linker<T> {
     ) -> Result<Instance> {
         let store = store.context();
         let resolution = resolve_imports(component, self)?;
-        if store.turn_in_flight()? {
+        if store.turn_in_flight() {
             return Err(Error::Scheduler(SchedulerCause::RecursiveDriver));
         }
         let mut plan = Some(());

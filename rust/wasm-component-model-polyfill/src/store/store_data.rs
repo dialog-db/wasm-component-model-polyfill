@@ -5,7 +5,7 @@ use core::task::Waker;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::concurrency::{Scheduler, TaskId};
+use crate::concurrency::{Scheduler, TaskId, TurnGuard};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
 use crate::resource::{HandleLookupError, HandleTables, ResourceHandle, ResourceTypeId};
@@ -186,9 +186,16 @@ impl<T: 'static> StoreData<T> {
 
     /// Whether a turn of this store is running. A driver entered
     /// while another driver of the same store is inside a turn fails
-    /// with the recursive-driver cause. Workspace-internal.
-    pub fn turn_in_flight(&self) -> Result<bool> {
-        Ok(self.lock_tables()?.scheduler.in_turn())
+    /// with the recursive-driver cause.
+    ///
+    /// Both driver entries ask this before either of them has a
+    /// [`TurnGuard`], so it is asked through the guard, which is
+    /// what takes the tables back from a poison a panic left. A
+    /// panic that poisoned them while no turn was running would
+    /// otherwise refuse every later driver of the store.
+    /// Workspace-internal.
+    pub fn turn_in_flight(&self) -> bool {
+        TurnGuard::in_turn(&self.tables)
     }
 
     /// Whether the store holds work only a turn can carry forward:
@@ -197,7 +204,16 @@ impl<T: 'static> StoreData<T> {
     /// such a store would wait for a wake that the work it parked on
     /// is what produces. Workspace-internal.
     pub fn has_pending_work(&self) -> bool {
-        self.scheduler.has_ready_item() || self.scheduler.host_task_count() > 0
+        self.has_ready_item() || self.scheduler.host_task_count() > 0
+    }
+
+    /// Whether the store holds an item a turn would run: one in one
+    /// of the ready queues, deferred work included. This is the half
+    /// of [`has_pending_work`](Self::has_pending_work) that a driver
+    /// already told a host task is pending wants, because the whole
+    /// of it would always answer yes there. Workspace-internal.
+    pub fn has_ready_item(&self) -> bool {
+        self.scheduler.has_ready_item()
     }
 
     /// The waker of the turn that is running, or a waker that does

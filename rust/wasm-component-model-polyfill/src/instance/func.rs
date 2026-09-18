@@ -129,7 +129,7 @@ impl Func {
         // A driver entered while another driver of the same store is
         // inside a turn fails before it has created a task or queued
         // anything, so a refused call leaves the store untouched.
-        if store.turn_in_flight()? {
+        if store.turn_in_flight() {
             return Err(Error::Scheduler(SchedulerCause::RecursiveDriver));
         }
 

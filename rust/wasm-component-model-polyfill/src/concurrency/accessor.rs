@@ -223,7 +223,7 @@ mod tests {
         }
 
         assert!(
-            !store.turn_in_flight().expect("the store's turn state"),
+            !store.turn_in_flight(),
             "the turn the closure ran inside is over"
         );
         let mut driver = Box::pin(Driver::new(store.context(), None, |_store, _waker| {

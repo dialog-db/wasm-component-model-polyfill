@@ -222,7 +222,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     }
 
     /// Whether a turn of this store is running. Workspace-internal.
-    pub fn turn_in_flight(&self) -> Result<bool> {
+    pub fn turn_in_flight(&self) -> bool {
         self.store_data().turn_in_flight()
     }
 
@@ -230,6 +230,12 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Workspace-internal.
     pub fn has_pending_work(&self) -> bool {
         self.store_data().has_pending_work()
+    }
+
+    /// Whether the store holds an item a turn would run.
+    /// Workspace-internal.
+    pub fn has_ready_item(&self) -> bool {
+        self.store_data().has_ready_item()
     }
 
     /// Run `body` inside a turn of this store, so that the guest
@@ -709,7 +715,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     {
         // The refusal happens before the accessor exists, so a
         // refused entry leaves the store untouched.
-        if self.turn_in_flight()? {
+        if self.turn_in_flight() {
             return Err(Error::Scheduler(SchedulerCause::RecursiveDriver));
         }
 
@@ -760,7 +766,19 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                         if let Poll::Ready(value) = future.as_mut().poll(context) {
                             return Poll::Ready(Ok(value));
                         }
-                        return Poll::Pending;
+                        // That poll can have queued an item through
+                        // the accessor, and only a turn runs an
+                        // item. The re-check asks for a ready item
+                        // rather than for pending work of any kind:
+                        // a host task is pending under this outcome
+                        // by definition, and it is not what the
+                        // entry parks on — a host task that never
+                        // returns would otherwise strand the item.
+                        match accessor.lend(|store| store.has_ready_item()) {
+                            Ok(true) => continue,
+                            Ok(false) => return Poll::Pending,
+                            Err(error) => return Poll::Ready(Err(error)),
+                        }
                     }
                     // An idle store is not a deadlock here: what
                     // `body` waits on can be outside the store. The
@@ -1038,6 +1056,63 @@ mod tests {
         );
     }
 
+    #[wcmp_macros::test]
+    async fn it_runs_the_item_the_closure_queued_as_the_turn_left_a_host_task_pending() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+
+        // A host task that never returns, so every turn reports one
+        // pending, and nothing outside the store ever wakes the
+        // entry. The item the closure queues is the only thing that
+        // resolves it, and only a turn runs an item — so an entry
+        // that parked here would wait for ever on work it holds.
+        let subtask = store.lock_tables().expect("tables").tasks.insert_subtask();
+        store.scheduler_mut().push_host_task(HostTask::from_future(
+            subtask,
+            |_store: &mut StoreContext<'_, ()>, _outcome: Result<Vec<Val>>| Ok(()),
+            core::future::pending::<Result<Vec<Val>>>(),
+        ));
+
+        // The closure queues the item on the poll the entry makes
+        // after the turn reported the host task pending.
+        let mut entry = Box::pin(store.run_concurrent(async |accessor| {
+            let ran = Arc::new(AtomicUsize::new(0));
+            let mut polls = 0usize;
+            core::future::poll_fn(move |_context| {
+                polls += 1;
+                if ran.load(AtomicOrdering::Relaxed) > 0 {
+                    return Poll::Ready("the item ran");
+                }
+                if polls == 2 {
+                    let counted = ran.clone();
+                    accessor
+                        .with(|store: &mut StoreContext<'_, ()>| {
+                            store.scheduler_mut().push_high_priority(Item::new(
+                                ItemKind::TaskStart,
+                                move |_store: &mut StoreContext<'_, ()>| {
+                                    counted.fetch_add(1, AtomicOrdering::Relaxed);
+                                    Ok(())
+                                },
+                            ));
+                        })
+                        .expect("queue the item");
+                }
+                Poll::Pending
+            })
+            .await
+        }));
+
+        let Poll::Ready(value) = poll_once(&mut entry, Waker::noop()) else {
+            panic!("the entry parked on a ready item while a host task was pending");
+        };
+        assert_eq!(
+            value.expect("run the closure"),
+            "the item ran",
+            "the entry ran the item the closure queued rather than park on a \
+             host task it does not wait for"
+        );
+    }
+
     /// Run `body` and catch the panic it is expected to unwind
     /// with, keeping the report of that panic out of the test's
     /// output.
@@ -1066,7 +1141,7 @@ mod tests {
 
         assert!(unwound.is_err(), "the item's panic unwound the turn");
         assert!(
-            !store.turn_in_flight().expect("the store's turn state"),
+            !store.turn_in_flight(),
             "the turn the panic unwound out of is over"
         );
         let mut driver = Box::pin(Driver::new(store.context(), None, |_store, _waker| {
@@ -1110,6 +1185,20 @@ mod tests {
         );
     }
 
+    /// Poison a store's handle tables the way a panic taken outside
+    /// any turn does: with the lock held and no guard in flight to
+    /// give it back.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn poison_the_tables<T: 'static>(store: &Store<T>) {
+        let tables = store.tables_handle();
+        let poisoned = unwind(move || {
+            let _tables = tables.lock().expect("tables");
+            panic!("the host panicked with the tables locked")
+        });
+        assert!(poisoned.is_err(), "the panic unwound");
+        assert!(store.tables().is_poisoned(), "and poisoned the lock");
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn it_enters_a_turn_on_tables_a_panic_outside_the_store_poisoned() {
@@ -1119,13 +1208,7 @@ mod tests {
         // A panic taken with the lock held and no turn in flight, so
         // what meets the poison is the guard on its way in rather
         // than on its way out.
-        let tables = store.tables_handle();
-        let poisoned = unwind(move || {
-            let _tables = tables.lock().expect("tables");
-            panic!("the host panicked with the tables locked")
-        });
-        assert!(poisoned.is_err(), "the panic unwound");
-        assert!(store.tables().is_poisoned(), "and poisoned the lock");
+        poison_the_tables(&store);
 
         let outcome = store.turn(Waker::noop());
 
@@ -1136,6 +1219,57 @@ mod tests {
         assert!(
             !store.tables().is_poisoned(),
             "and cleared it, so every later reader of the store reaches them too"
+        );
+    }
+
+    // Native only, for the reason the tests above are: the browser
+    // aborts on a panic, so no panic ever reaches a lock there.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn it_enters_a_driver_on_tables_a_panic_outside_a_turn_poisoned() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+
+        // Both driver entries ask whether a turn is running before
+        // either of them has a guard of its own, so the poison is
+        // here before anything that could clear it.
+        poison_the_tables(&store);
+
+        let mut driver = Box::pin(Driver::new(store.context(), None, |_store, _waker| {
+            Some(Ok(()))
+        }));
+        assert!(
+            matches!(poll_once(&mut driver, Waker::noop()), Poll::Ready(Ok(()))),
+            "the driver read the store's turn state through the poison \
+             recovery a turn's guard uses, so a panic outside any turn does \
+             not refuse it"
+        );
+        drop(driver);
+        assert!(
+            !store.tables().is_poisoned(),
+            "and that read cleared the poison"
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn it_enters_the_concurrent_entry_on_tables_a_panic_outside_a_turn_poisoned() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+
+        // The same for the other driver entry, which reads the turn
+        // state before it builds the accessor.
+        poison_the_tables(&store);
+
+        let mut entry = Box::pin(store.run_concurrent(async |_accessor| "the closure ran"));
+        let Poll::Ready(value) = poll_once(&mut entry, Waker::noop()) else {
+            panic!("the entry parked instead of running its closure");
+        };
+        assert_eq!(
+            value.expect("the entry is not refused"),
+            "the closure ran",
+            "a panic outside any turn does not refuse the concurrent entry \
+             either"
         );
     }
 

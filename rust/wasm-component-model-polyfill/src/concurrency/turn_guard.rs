@@ -52,6 +52,19 @@ impl TurnGuard {
         }
     }
 
+    /// Whether a turn of the store that owns `tables` is running.
+    ///
+    /// This is the question both driver entries ask before they
+    /// build a guard of their own, and it is asked here so that it
+    /// is asked through the same poison recovery the guard itself
+    /// uses. A panic that poisoned the tables while no turn was
+    /// running would otherwise refuse every later driver — the
+    /// outcome this type exists to prevent, arrived at one step
+    /// earlier.
+    pub fn in_turn(tables: &Arc<Mutex<HandleTables>>) -> bool {
+        Self::take(tables).scheduler.in_turn()
+    }
+
     /// Lock `tables`, taking them back from a poison a panic left
     /// and clearing it, for the reason the type's documentation
     /// gives.

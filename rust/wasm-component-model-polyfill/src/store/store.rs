@@ -168,7 +168,7 @@ impl<T: 'static> Store<T> {
     /// Whether a turn of this store is running. A driver entered
     /// while another driver of the same store is inside a turn fails
     /// with the recursive-driver cause. Workspace-internal.
-    pub fn turn_in_flight(&self) -> Result<bool> {
+    pub fn turn_in_flight(&self) -> bool {
         self.store_data().turn_in_flight()
     }
 

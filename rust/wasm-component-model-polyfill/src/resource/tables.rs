@@ -83,18 +83,15 @@ impl HandleTables {
     /// a failure between a push and its pop cannot strand a scope or
     /// the lends recorded against it. Does nothing when `task` is not
     /// on the stack.
+    ///
+    /// The steps run through [`TaskExit`], which finishes whichever
+    /// of them a panic interrupted, for the reason that type's
+    /// documentation gives.
     pub fn exit_task(&mut self, task: TaskId) -> Result<(), u32> {
-        if !self.unwind_to(Scope::Task(task)) {
+        if !self.tasks.scopes().contains(&Scope::Task(task)) {
             return Ok(());
         }
-        self.undo_lends(Scope::Task(task));
-        let borrows = self
-            .tasks
-            .task(task)
-            .map(|record| record.num_borrows)
-            .unwrap_or(0);
-        self.restore_may_not_suspend(task);
-        self.tasks.remove_task(task);
+        let borrows = TaskExit::begin(self, task).finish();
         if borrows > 0 { Err(borrows) } else { Ok(()) }
     }
 
@@ -310,13 +307,17 @@ impl HandleTables {
     /// subtask discarded here leaves its waitable set as any other
     /// removal would.
     fn discard_scope(&mut self, scope: Scope) {
-        self.undo_lends(scope);
         match scope {
+            // The scope is off the stack already, so the exit's own
+            // unwind step finds nothing to do and the rest of the
+            // steps are the discard — run through the same guard, so
+            // that a scope discarded on the way to another one is as
+            // safe against a panic as the one being exited.
             Scope::Task(task) => {
-                self.restore_may_not_suspend(task);
-                self.tasks.remove_task(task);
+                TaskExit::begin(self, task).finish();
             }
             Scope::Subtask(subtask) => {
+                self.undo_lends(scope);
                 self.tasks.remove_subtask(subtask);
             }
         }
@@ -595,6 +596,112 @@ impl HandleTables {
 impl Default for HandleTables {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The exit of one task's scope, in flight.
+///
+/// The exit is five record operations in sequence — the scope stack
+/// unwinds to the task's own scope, the lends recorded against it go
+/// back, the borrows it still owes are counted, the may-not-suspend
+/// flag its enter intrinsic saved is restored, and its record is
+/// removed — and only all five together leave the store consistent.
+/// A panic between any two of them leaves a scope half unwound: an
+/// entry still lent with nothing left to give the lend back, or a
+/// record still there under a stack that no longer holds its scope.
+/// The panic poisons the lock the exit ran under, and the guard a
+/// turn holds clears that poison, so the half-unwound scope is what
+/// every later reader of the store would see, with nothing left to
+/// say it is half unwound.
+///
+/// The steps therefore run through this guard. It remembers which of
+/// them are done, and runs the ones that are not when it is dropped
+/// — which is what a panic anywhere in the sequence does to it,
+/// during the unwind. Each step is a record operation over data the
+/// store already holds and none of them panics in turn, so the
+/// finishing drop cannot panic while a panic is already in flight.
+struct TaskExit<'a> {
+    tables: &'a mut HandleTables,
+    task: TaskId,
+    /// The step to run next.
+    step: ExitStep,
+    /// The borrows the task still owed when the step that counts
+    /// them ran, which is what the exit reports to its caller.
+    borrows: u32,
+}
+
+/// Which step of a [`TaskExit`] runs next.
+#[derive(Clone, Copy)]
+enum ExitStep {
+    Unwind,
+    UndoLends,
+    CountBorrows,
+    RestoreMayNotSuspend,
+    RemoveRecord,
+    Done,
+}
+
+impl<'a> TaskExit<'a> {
+    /// Begin the exit of `task`'s scope. A scope that is not on the
+    /// stack leaves the unwind step with nothing to do, which is
+    /// what the discard of a scope already popped wants.
+    fn begin(tables: &'a mut HandleTables, task: TaskId) -> Self {
+        Self {
+            tables,
+            task,
+            step: ExitStep::Unwind,
+            borrows: 0,
+        }
+    }
+
+    /// Run the exit to its end and report the borrows the task left
+    /// outstanding.
+    fn finish(mut self) -> u32 {
+        self.run();
+        self.borrows
+    }
+
+    /// Run whichever steps have not run yet, in order. Running it
+    /// twice is running it once: the second call starts at
+    /// [`ExitStep::Done`] and does nothing.
+    fn run(&mut self) {
+        let scope = Scope::Task(self.task);
+        loop {
+            match self.step {
+                ExitStep::Unwind => {
+                    self.tables.unwind_to(scope);
+                    self.step = ExitStep::UndoLends;
+                }
+                ExitStep::UndoLends => {
+                    self.tables.undo_lends(scope);
+                    self.step = ExitStep::CountBorrows;
+                }
+                ExitStep::CountBorrows => {
+                    self.borrows = self
+                        .tables
+                        .tasks
+                        .task(self.task)
+                        .map(|record| record.num_borrows)
+                        .unwrap_or(0);
+                    self.step = ExitStep::RestoreMayNotSuspend;
+                }
+                ExitStep::RestoreMayNotSuspend => {
+                    self.tables.restore_may_not_suspend(self.task);
+                    self.step = ExitStep::RemoveRecord;
+                }
+                ExitStep::RemoveRecord => {
+                    self.tables.tasks.remove_task(self.task);
+                    self.step = ExitStep::Done;
+                }
+                ExitStep::Done => return,
+            }
+        }
+    }
+}
+
+impl Drop for TaskExit<'_> {
+    fn drop(&mut self) {
+        self.run();
     }
 }
 
@@ -1008,6 +1115,68 @@ mod tests {
             Err(1),
             "and the borrow is still owed to the task that made the call"
         );
+    }
+
+    /// Run `body` and catch the panic it is expected to unwind
+    /// with, keeping the report of that panic out of the test's
+    /// output.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn unwind<R>(body: impl FnOnce() -> R) -> std::thread::Result<R> {
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+        std::panic::set_hook(hook);
+        outcome
+    }
+
+    // The browser target aborts on a panic instead of unwinding, so
+    // there is nothing to catch there and the test is native only.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn it_finishes_the_exit_of_a_task_a_panic_interrupted() {
+        // A task with a subtask above it that a failed host call
+        // left behind, and an owning entry lent to that subtask: the
+        // exit of the task has a scope to discard, a lend to give
+        // back, and two records to remove.
+        let mut tables = HandleTables::new();
+        let table = TableId::fresh();
+        let ty = ResourceTypeId::fresh();
+        let index = tables.insert_own(table, ty, false, 8);
+        let instance = tables.tasks.insert_instance();
+        let task = tables.tasks.push_task(None, None, instance);
+        let subtask = tables.tasks.push_subtask();
+        assert_eq!(tables.lend(table, index), Ok(()), "the borrow lifts out");
+
+        // A panic taken while the exit is in flight, which is what a
+        // panic in any one of its steps comes to. The guard the
+        // steps run through is dropped as the panic unwinds, and
+        // whatever it has not done yet it does then.
+        let unwound = unwind(|| {
+            let _exit = TaskExit::begin(&mut tables, task);
+            panic!("a step of the exit panicked");
+        });
+        assert!(unwound.is_err(), "the panic unwound past the exit");
+
+        assert!(
+            tables.tasks.scopes().is_empty(),
+            "the later reader finds neither the task's scope nor the subtask \
+             above it on the stack"
+        );
+        assert_eq!(
+            tables.remove_own(table, index, ty, false),
+            Ok(8),
+            "and the lend the interrupted exit was giving back is back, so the \
+             entry can be removed"
+        );
+        assert!(
+            tables.tasks.task(task).is_none(),
+            "the task's record left the store with its scope"
+        );
+        assert!(
+            tables.tasks.subtask(subtask).is_none(),
+            "so did the subtask's"
+        );
+        assert_eq!(tables.tasks.thread_count(), 0, "nor is a thread left");
     }
 
     #[test]

@@ -87,12 +87,8 @@ where
 
         if !this.entered {
             this.entered = true;
-            match this.store.turn_in_flight() {
-                Ok(true) => {
-                    return Poll::Ready(Err(Error::Scheduler(SchedulerCause::RecursiveDriver)));
-                }
-                Ok(false) => {}
-                Err(error) => return Poll::Ready(Err(error)),
+            if this.store.turn_in_flight() {
+                return Poll::Ready(Err(Error::Scheduler(SchedulerCause::RecursiveDriver)));
             }
         }
 
