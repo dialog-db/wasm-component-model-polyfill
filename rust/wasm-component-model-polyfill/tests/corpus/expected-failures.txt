@@ -684,7 +684,7 @@ wasmtime/async/sync-streams.wast:186 deferred-feature no instance to invoke
 wasmtime/async/task-builtins.wast:56 deferred-feature component rejected: unsupported component feature: the `thread-yield` trampoline
 wasmtime/async/task-builtins.wast:65 deferred-feature component rejected: unsupported component feature: the `subtask-drop` trampoline
 wasmtime/async/task-builtins.wast:74 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
-wasmtime/async/task-builtins.wast:205 deferred-feature component rejected: unsupported component feature: the `backpressure-inc` trampoline
+wasmtime/async/task-builtins.wast:205 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 wasmtime/async/task-builtins.wast:390 deferred-feature no instance to invoke
 wasmtime/async/task-builtins.wast:391 deferred-feature no instance to invoke
 wasmtime/async/task-builtins.wast:392 deferred-feature no instance to invoke
