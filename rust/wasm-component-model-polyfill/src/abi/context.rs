@@ -27,6 +27,7 @@
 
 use wasm_runtime_layer::{StoreContextMut, Val as RuntimeVal};
 
+use crate::abi::boundary_call::BoundaryCall;
 use crate::abi::instance::BoundaryInstance;
 use crate::abi::options::BoundaryOptions;
 use crate::abi::strategy::AbiStrategy;
@@ -240,6 +241,11 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
     /// Ask the guest for `size` bytes at an explicit `alignment` and
     /// return the pointer it gave back. `valtype` and `position`
     /// only label the error when the request fails.
+    ///
+    /// The request is a call into the guest's `cabi_realloc`, so it
+    /// runs as a [`BoundaryCall`]: on a task of its own, with one
+    /// fresh thread, and with the instance's may-leave flag clear.
+    /// The call ends whether the realloc returned or failed.
     pub fn allocate_aligned(
         &mut self,
         size: usize,
@@ -247,15 +253,18 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
         valtype: &ValueType,
         position: AbiPosition,
     ) -> Result<usize> {
+        let call = BoundaryCall::realloc(&self.instance)?;
         let Self {
             store,
             options,
             strategy,
             ..
         } = self;
-        strategy
+        let allocated = strategy
             .allocate(store, options, size, alignment)
-            .map_err(|cause| Self::labelled(cause, position, valtype))
+            .map_err(|cause| Self::labelled(cause, position, valtype));
+        drop(call);
+        allocated
     }
 
     /// Read `length` bytes at `offset` out of the side a copy
@@ -313,10 +322,16 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
     /// Run the export's `post-return` over the core results the
     /// export returned, once the caller has observed the return
     /// value. Does nothing when the options declare none.
+    ///
+    /// The `post-return` is a call into the guest, so it runs as a
+    /// [`BoundaryCall`] with the instance's may-leave flag clear. It
+    /// runs inside the export's own task, as the reference calls it,
+    /// so it takes no task of its own.
     pub fn post_return(&mut self, core_results: &[RuntimeVal]) -> Result<()> {
         let Some(post_return) = self.options.post_return().cloned() else {
             return Ok(());
         };
+        let _call = BoundaryCall::post_return(&self.instance)?;
         let mut empty: [RuntimeVal; 0] = [];
         post_return
             .call(&mut self.store, core_results, &mut empty)

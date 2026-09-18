@@ -24,7 +24,10 @@
 //! handle tables of the crossing come from, so a call site hands the
 //! context those three things and no table of its own. It is the only object in the
 //! polyfill that reads guest memory, writes guest memory, or asks
-//! the guest for memory.
+//! the guest for memory. The two calls it makes into the guest to do
+//! so, a `cabi_realloc` and an export's `post-return`, run under a
+//! [`boundary_call`], which is what gives a realloc its own task and
+//! clears the instance's may-leave flag for the length of either.
 //!
 //! Workspace-internal: the surface is consumed by `Func::call`, by
 //! the host-trampoline path in [`crate::executor::trampoline`], and
@@ -34,6 +37,7 @@
 //! [Component Model Canonical ABI rules]:
 //!     https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md
 
+pub mod boundary_call;
 pub mod context;
 pub mod flatten;
 pub mod instance;

@@ -8,11 +8,8 @@ use super::thread_id::ThreadId;
 ///
 /// The entry gate reads and writes the first three fields, and the
 /// enter and exit intrinsics of an adapter maintain
-/// `may_not_suspend`. `may_leave` is the rest of the reference's
-/// instance state, held at the value a fresh instance starts with;
-/// the adapters read and write the flags global they compile
-/// against, and the feature that would move this copy of it is not
-/// built yet.
+/// `may_not_suspend`. `may_leave` is clear for the length of a call
+/// the polyfill itself makes into the guest.
 pub struct InstanceRecord {
     /// How many times the guest has raised backpressure without
     /// lowering it again. A task cannot enter the instance while the
@@ -29,10 +26,12 @@ pub struct InstanceRecord {
     /// starts.
     pub exclusive_thread: Option<ThreadId>,
     /// Whether the instance may be left, which the reference clears
-    /// while an adapter translates values across the instance's
-    /// boundary. The adapters read and write the flags global they
-    /// compile against; nothing clears this field yet.
-    #[allow(dead_code)]
+    /// while a call the polyfill itself makes into the guest runs:
+    /// the `cabi_realloc` a crossing asks for memory with, and the
+    /// `post-return` of an export. A built-in that reads the flag
+    /// traps with the cannot-leave cause while it is clear. The
+    /// adapters read and write the flags global they compile
+    /// against, which is a second copy of the same state.
     pub may_leave: bool,
     /// Whether a thread running in this instance is forbidden to
     /// suspend. The enter intrinsic sets it for the duration of a
