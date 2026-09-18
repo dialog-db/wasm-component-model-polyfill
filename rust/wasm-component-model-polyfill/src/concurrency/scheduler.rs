@@ -159,6 +159,11 @@ impl<T: 'static> Scheduler<T> {
         needs_exclusive: bool,
         item: Item<T>,
     ) {
+        // The gate is the one place that knows which instance a
+        // task's start belongs to, so it is where the item learns
+        // it. A turn run for a task that must not block asks each
+        // item that question.
+        let item = item.in_instance(instance);
         if !async_function {
             self.high_priority.push_back(item);
             return;
@@ -223,6 +228,30 @@ impl<T: 'static> Scheduler<T> {
             Some(item) => Some(item),
             None => self.high_priority.pop_front(),
         }
+    }
+
+    /// Take the next ready item that belongs to `instance`, leaving
+    /// every other item where it is.
+    ///
+    /// This is what a turn run for a task that must not block takes.
+    /// Such a task gives way only to the ready work of its own
+    /// instance, so the item another instance queued stays queued
+    /// and the turn that follows the block runs it. The order within
+    /// the instance is the order of the whole queue: the switch slot
+    /// first, then the high-priority queue from its front.
+    pub fn take_ready_in(&mut self, instance: InstanceId) -> Option<Item<T>> {
+        if self
+            .switch_slot
+            .as_ref()
+            .is_some_and(|item| item.instance() == Some(instance))
+        {
+            return self.switch_slot.take();
+        }
+        let position = self
+            .high_priority
+            .iter()
+            .position(|item| item.instance() == Some(instance))?;
+        self.high_priority.remove(position)
     }
 
     /// Move the front of the low-priority queue into the
@@ -492,6 +521,57 @@ mod tests {
         store.turn(Waker::noop()).expect("turn");
 
         assert_eq!(entries(&log), vec!["first", "second"]);
+    }
+
+    #[wcmp_macros::test]
+    fn it_takes_only_the_ready_work_of_the_instance_it_is_asked_for() {
+        let mut store = store();
+        let log = log();
+        let mine = instance(&store);
+        let other = instance(&store);
+
+        // Three items of one instance and one of another, plus one
+        // that names no instance at all.
+        start(
+            &mut store.context(),
+            mine,
+            false,
+            true,
+            marker(&log, "mine"),
+        );
+        start(
+            &mut store.context(),
+            other,
+            false,
+            true,
+            marker(&log, "other"),
+        );
+        start(
+            &mut store.context(),
+            mine,
+            false,
+            true,
+            marker(&log, "mine again"),
+        );
+        store
+            .scheduler_mut()
+            .push_high_priority(marker(&log, "no instance"));
+
+        while let Some(item) = store.scheduler_mut().take_ready_in(mine) {
+            item.run(&mut store.context()).expect("the item runs");
+        }
+
+        assert_eq!(
+            entries(&log),
+            vec!["mine", "mine again"],
+            "the instance's own work ran, in queue order, and nothing else did"
+        );
+        assert_eq!(
+            store.scheduler().queued_items(),
+            2,
+            "the other instance's item and the item that names none are still \
+             queued for a turn of the scheduler"
+        );
     }
 
     #[wcmp_macros::test]

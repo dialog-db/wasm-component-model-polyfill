@@ -9,6 +9,9 @@ use std::fmt;
 /// fails the same way on both. `WrongKind` has no Wasmtime
 /// counterpart: it fires only when a resource lookup lands on a
 /// non-resource entry, which a well-formed adapter never generates.
+/// The two waitable causes read as Wasmtime's own messages for the
+/// same misuse, which it raises from its handle table rather than as
+/// a named trap.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HandleLookupError {
     /// No live entry sits at the index.
@@ -24,6 +27,12 @@ pub enum HandleLookupError {
     /// subtask, a waitable set, or one of the kinds a later feature
     /// reserves.
     WrongKind { index: u32 },
+    /// A live entry sits there, but it is not a waitable: a
+    /// `waitable.join` named it as the waitable to join.
+    NotAWaitable { index: u32 },
+    /// A live entry sits there, but it is not a waitable set: one of
+    /// the waitable set built-ins named it as the set to work on.
+    NotAWaitableSet { index: u32 },
     /// The entry is an owning entry lent out as a borrow, so it
     /// cannot be removed until the call that lent it ends.
     Lent,
@@ -63,6 +72,12 @@ impl fmt::Display for HandleLookupError {
             ),
             Self::WrongKind { index } => {
                 write!(f, "handle index {index} does not name a resource")
+            }
+            Self::NotAWaitable { index } => {
+                write!(f, "handle index {index} is not a waitable")
+            }
+            Self::NotAWaitableSet { index } => {
+                write!(f, "handle index {index} is not a waitable-set")
             }
             Self::Lent => write!(f, "cannot remove owned resource while borrowed"),
             Self::NotOwned { index } => {

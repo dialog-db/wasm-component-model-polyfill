@@ -190,10 +190,12 @@ async fn it_pushes_a_task_for_the_export_and_a_subtask_for_the_host_call() {
             subtasks: 1,
             threads: 1,
             current_is_subtask: true,
-            may_not_suspend: Vec::new(),
+            may_not_suspend: vec![0],
             current_task_instance: Some(0),
         },
-        "the export's task is on the stack with the host call's subtask on top of it"
+        "the export's task is on the stack with the host call's subtask on top \
+         of it, and the instance may not suspend for the length of the call \
+         into its synchronous export"
     );
     assert_eq!(
         after,
@@ -214,16 +216,18 @@ async fn it_pushes_the_callees_task_for_a_call_between_two_components() {
             subtasks: 1,
             threads: 2,
             current_is_subtask: true,
-            may_not_suspend: vec![1],
+            may_not_suspend: vec![1, 2],
             current_task_instance: Some(1),
         },
         "the callee's task sits on the caller's, and the host call's subtask on top of both"
     );
     assert!(
         !during.may_not_suspend.contains(&0),
-        "instance 0 is $b, whose export the host called and whose task is the \
-         outer one; the enter intrinsic flags the callee it is passed, not the \
-         caller"
+        "the two flagged instances are the two synchronous calls in flight: \
+         instance 2 is $b, whose export the host called, and instance 1 is the \
+         callee $a, which the enter intrinsic flagged and which \
+         `current_task_instance` names. Instance 0 is the outer component \
+         instance, which no call entered"
     );
     assert_eq!(
         after,

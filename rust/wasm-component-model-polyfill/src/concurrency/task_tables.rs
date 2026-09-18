@@ -93,6 +93,28 @@ impl TaskTables {
         Some(old)
     }
 
+    /// Mark the instance of `task` as one whose threads may not
+    /// suspend, for the length of the call the task runs, and save
+    /// the flag's old value on the task's implicit thread. The
+    /// task's own exit puts the saved value back, which is where
+    /// Wasmtime saves and restores it too.
+    ///
+    /// Three callers hold the flag this way: an adapter's enter
+    /// intrinsic for a synchronous call between two components, a
+    /// host call into a synchronous export, and the task a core
+    /// module's start function runs in. Each is a call that must
+    /// return before its instance may block. Answers `None` when the
+    /// store holds no such task or no such instance, and holds
+    /// nothing in that case.
+    pub fn hold_may_not_suspend(&mut self, task: TaskId) -> Option<()> {
+        let (instance, thread) = self
+            .task(task)
+            .map(|record| (record.instance, record.implicit_thread))?;
+        let old = self.set_may_not_suspend(instance, true)?;
+        self.thread_mut(thread)?.old_may_not_suspend = Some(old);
+        Some(())
+    }
+
     /// Set the may-leave flag of `instance` and return the value it
     /// had. `None` when the store holds no such instance.
     pub fn set_may_leave(&mut self, instance: InstanceId, value: bool) -> Option<bool> {

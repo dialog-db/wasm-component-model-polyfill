@@ -16,7 +16,7 @@
 use wasm_runtime_layer::{Func as RuntimeFunc, Memory};
 
 use crate::concurrency::InstanceId;
-use crate::resource::ResourceTableRuntime;
+use crate::resource::{ResourceTableRuntime, TableId};
 
 /// Per-component canonical-ABI runtime state. Populated by the
 /// executor's `Extract*` directives during instantiation; consulted
@@ -45,6 +45,11 @@ pub struct AbiRuntimeState {
     /// An adapter names its caller and its callee by that index; the
     /// enter intrinsic maps it onto the instance record.
     pub component_instances: Vec<InstanceId>,
+    /// The handle table of every component instance of this
+    /// instantiation, by the same index. An instance keeps one table
+    /// shared by every handle kind it uses, so a waitable-set entry
+    /// and a resource entry of one instance name the same table.
+    pub handle_tables: Vec<TableId>,
 }
 
 impl AbiRuntimeState {
@@ -57,6 +62,7 @@ impl AbiRuntimeState {
         num_callbacks: usize,
         resource_tables: Vec<Option<ResourceTableRuntime>>,
         component_instances: Vec<InstanceId>,
+        handle_tables: Vec<TableId>,
     ) -> Self {
         Self {
             memories: vec![None; num_memories],
@@ -65,6 +71,7 @@ impl AbiRuntimeState {
             callbacks: vec![None; num_callbacks],
             resource_tables,
             component_instances,
+            handle_tables,
         }
     }
 }

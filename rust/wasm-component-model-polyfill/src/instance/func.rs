@@ -228,7 +228,17 @@ impl Func {
         options: &BoundaryOptions,
     ) -> Result<Box<[Val]>> {
         store.enter_export_task(task)?;
-        let outcome = self.call_in_task(task, instance, store, args, options);
+        // The export's function type is synchronous — a call into an
+        // asynchronous export is refused above — so the call must
+        // return before its instance may block. The flag is held for
+        // the length of the call, as the enter intrinsic holds it
+        // for a synchronous call between two components, and the
+        // task's exit below puts it back whichever way the call
+        // went.
+        let outcome = match store.hold_may_not_suspend(task) {
+            Ok(()) => self.call_in_task(task, instance, store, args, options),
+            Err(err) => Err(err),
+        };
         match outcome {
             Ok(result) => {
                 store.resolve_export_task(task, result.first().cloned())?;

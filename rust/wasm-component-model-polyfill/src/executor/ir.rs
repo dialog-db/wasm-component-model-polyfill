@@ -167,6 +167,13 @@ pub enum Initializer {
     InstantiateModule {
         /// Index into [`ExecutorIr::modules`].
         module_index: usize,
+        /// The component instance the core instance belongs to, by
+        /// the translator's per-instantiation index. `None` for an
+        /// adapter module, which belongs to no component instance.
+        /// The core module's `start` function runs inside
+        /// instantiation, and it is a call into that instance, so it
+        /// runs in a task of it.
+        component_instance: Option<usize>,
         /// One [`ImportSource`] per declared import of the module,
         /// in the same declaration order
         /// [`ModuleEntry::imports`] enumerates.
@@ -179,6 +186,12 @@ pub enum Initializer {
     InstantiateImportedModule {
         /// Where the module comes from; always [`ModuleSource::Import`].
         source: ModuleSource,
+        /// The component instance the core instance belongs to, by
+        /// the translator's per-instantiation index, named as the
+        /// `InstantiateModule` directive above names it. A
+        /// host-supplied module has a `start` function like any
+        /// other, so it runs in a task of that instance too.
+        component_instance: Option<usize>,
         /// The items the component supplies, by two-level name.
         imports: Box<[NamedImportSource]>,
     },
@@ -537,6 +550,53 @@ pub enum TrampolineSpec {
         /// The core signature the guest imports: the flattened
         /// result as parameters, or one `i32` pointer when the
         /// flattened result exceeds sixteen values.
+        signature: CoreSignature,
+    },
+    /// The `waitable-set.new` built-in: a waitable set record enters
+    /// the store and its index in the calling instance's handle
+    /// table is returned.
+    WaitableSetNew {
+        /// The component instance that calls the built-in, by the
+        /// translator's per-instantiation index.
+        instance: usize,
+        /// The core signature the guest imports.
+        signature: CoreSignature,
+    },
+    /// The `waitable-set.wait` built-in: the calling thread waits
+    /// until the named set holds an event, and the event's payloads
+    /// are written through the built-in's own memory.
+    WaitableSetWait {
+        /// The canon options the built-in declared, which name the
+        /// component instance and the memory the payloads are
+        /// written through.
+        options: CanonOptions,
+        /// The core signature the guest imports.
+        signature: CoreSignature,
+    },
+    /// The `waitable-set.poll` built-in: as
+    /// [`TrampolineSpec::WaitableSetWait`], but it never blocks.
+    WaitableSetPoll {
+        /// The canon options the built-in declared.
+        options: CanonOptions,
+        /// The core signature the guest imports.
+        signature: CoreSignature,
+    },
+    /// The `waitable-set.drop` built-in: the named set's entry
+    /// leaves the calling instance's handle table and its record
+    /// leaves the store.
+    WaitableSetDrop {
+        /// The component instance that calls the built-in.
+        instance: usize,
+        /// The core signature the guest imports.
+        signature: CoreSignature,
+    },
+    /// The `waitable.join` built-in: the named waitable joins the
+    /// named set, or leaves the set it is in when the set index is
+    /// zero.
+    WaitableJoin {
+        /// The component instance that calls the built-in.
+        instance: usize,
+        /// The core signature the guest imports.
         signature: CoreSignature,
     },
 }

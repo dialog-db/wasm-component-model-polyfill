@@ -618,8 +618,9 @@ pub enum AbiCause {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum SchedulerCause {
-    /// A driver went idle with nothing ready, no host task pending,
-    /// and its condition unmet. The message is Wasmtime's deadlock
+    /// A driver, or a suspension that fell back to a nested turn,
+    /// went idle with nothing ready, no host task pending, and its
+    /// condition unmet. The message is Wasmtime's deadlock
     /// trap, `Trap::AsyncDeadlock` in `wasmtime-environ`'s
     /// `src/trap_encoding.rs`, so the conformance corpus can match it
     /// by substring.
@@ -643,11 +644,14 @@ pub enum SchedulerCause {
     RecursiveDriver,
 
     /// A guest thread blocked at a point the reference permits
-    /// blocking, but the target has no suspend provider to switch its
+    /// blocking, the store still held work the block could not
+    /// reach, and the target has no suspend provider to switch its
     /// stack. Unlike [`Error::Unsupported`], the feature itself is
     /// supported here; only the capability to serve it on this
     /// target is missing, and a host may want to branch on that
-    /// distinction.
+    /// distinction. A block that the store went idle under fails
+    /// with [`SchedulerCause::Deadlock`] instead, because nothing
+    /// left in the store could have met its condition.
     #[error("blocking here requires a stack switch, but the target has no suspend provider")]
     StackSwitchNeeded,
 }

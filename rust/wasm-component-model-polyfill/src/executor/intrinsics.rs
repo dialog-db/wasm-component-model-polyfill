@@ -228,18 +228,10 @@ fn enter_sync_call(
     if callee_async {
         return Ok(());
     }
-    let old = guard
+    guard
         .tasks
-        .set_may_not_suspend(callee, true)
+        .hold_may_not_suspend(task)
         .ok_or_else(|| anyhow!("the adapter named an instance the store does not hold"))?;
-    let thread = guard
-        .tasks
-        .task(task)
-        .map(|record| record.implicit_thread)
-        .ok_or_else(|| anyhow!("a task pushed by the enter intrinsic has no record"))?;
-    if let Some(record) = guard.tasks.thread_mut(thread) {
-        record.old_may_not_suspend = Some(old);
-    }
     Ok(())
 }
 
@@ -816,6 +808,7 @@ mod tests {
             callbacks: Vec::new(),
             resource_tables: Vec::new(),
             component_instances: vec![caller, callee],
+            handle_tables: Vec::new(),
         }));
 
         // The adapter passes the caller instance, whether the callee

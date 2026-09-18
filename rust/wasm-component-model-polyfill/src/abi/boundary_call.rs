@@ -160,6 +160,7 @@ mod tests {
     use crate::abi::runtime_state::AbiRuntimeState;
     use crate::concurrency::Scope;
     use crate::executor::ir::{CanonOptions, DataModel, StringEncoding};
+    use crate::resource::TableId;
 
     /// A store's records with one component instance in them, the
     /// instance's identity, and the crossing that instance's options
@@ -185,6 +186,7 @@ mod tests {
             0,
             Vec::new(),
             vec![instance],
+            vec![TableId::fresh()],
         )));
         let (_, boundary) =
             BoundaryInstance::resolve(&declared, &state, &tables).expect("resolve the crossing");

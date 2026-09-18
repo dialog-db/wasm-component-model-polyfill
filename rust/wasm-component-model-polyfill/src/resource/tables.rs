@@ -190,7 +190,7 @@ impl HandleTables {
     ) -> Result<WaitableId, HandleLookupError> {
         match self.entry(table, index) {
             Some(HandleKind::Subtask { subtask }) => Ok(self.tasks.subtask_waitable(subtask)),
-            Some(_) => Err(HandleLookupError::WrongKind { index }),
+            Some(_) => Err(HandleLookupError::NotAWaitable { index }),
             None => Err(HandleLookupError::Unknown { index }),
         }
     }
@@ -205,7 +205,7 @@ impl HandleTables {
     ) -> Result<WaitableSetId, HandleLookupError> {
         match self.entry(table, index) {
             Some(HandleKind::WaitableSet { set }) => Ok(set),
-            Some(_) => Err(HandleLookupError::WrongKind { index }),
+            Some(_) => Err(HandleLookupError::NotAWaitableSet { index }),
             None => Err(HandleLookupError::Unknown { index }),
         }
     }

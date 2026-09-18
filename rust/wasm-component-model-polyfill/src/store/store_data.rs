@@ -5,7 +5,7 @@ use core::task::Waker;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::concurrency::{Scheduler, TaskId, TurnGuard};
+use crate::concurrency::{InstanceId, Scheduler, TaskId, TurnGuard};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
 use crate::resource::{HandleLookupError, HandleTables, ResourceHandle, ResourceTypeId};
@@ -250,12 +250,20 @@ impl<T: 'static> StoreData<T> {
         }
     }
 
-    /// Why a nested turn that went idle with its condition unmet
-    /// failed: the cannot-block cause when the current task is one
-    /// that must not block, which is the rule of the reference, and
-    /// the stack-switch cause otherwise, because the reference
-    /// permits that block and only the target cannot serve it.
-    /// Workspace-internal.
+    /// Why a nested turn that gave up with its condition unmet
+    /// failed.
+    ///
+    /// A task that must not block gets the cannot-block cause, which
+    /// is the rule of the reference: it was given the ready work of
+    /// its own instance and that work did not meet the condition.
+    ///
+    /// A task that is allowed to block gets the deadlock cause when
+    /// the store went idle, because nothing left in the store can
+    /// ever meet the condition. It gets the stack-switch cause while
+    /// the store still holds work — a host task that has not
+    /// resolved, or an item only a driver's turn may run — because
+    /// the reference permits that block and only the target has no
+    /// provider to serve it. Workspace-internal.
     pub fn suspend_cause(&self) -> SchedulerCause {
         let current = self
             .tables
@@ -264,9 +272,29 @@ impl<T: 'static> StoreData<T> {
             .and_then(|guard| guard.tasks.current_task());
         if self.must_not_block(current) {
             SchedulerCause::CannotBlock
-        } else {
+        } else if self.has_pending_work() {
             SchedulerCause::StackSwitchNeeded
+        } else {
+            SchedulerCause::Deadlock
         }
+    }
+
+    /// The instance whose ready work is the whole of what a nested
+    /// turn run for the current task may run, or `None` when that
+    /// task is allowed to block and the turn runs every ready item.
+    ///
+    /// A task that must not block gives way only to the ready work
+    /// of its own instance, which is what Wasmtime switches to
+    /// before it raises the cannot-block trap. Workspace-internal.
+    pub fn must_not_block_instance(&self) -> Option<InstanceId> {
+        let guard = self.tables.lock().ok()?;
+        let task = guard.tasks.current_task()?;
+        let instance = guard.tasks.task(task)?.instance;
+        guard
+            .tasks
+            .instance(instance)?
+            .may_not_suspend
+            .then_some(instance)
     }
 
     /// Whether `task` runs in an instance that forbids its threads

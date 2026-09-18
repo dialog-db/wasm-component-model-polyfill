@@ -8,7 +8,6 @@
 //! agnostic: native and web differ only in how the IR is produced
 //! (see [`super::translate`]).
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
@@ -33,6 +32,11 @@ use super::intrinsics::{
     build_backpressure_dec, build_backpressure_inc, build_context_get, build_context_set,
     build_enter_sync_call, build_exit_sync_call, build_resource_transfer, build_transcoder,
     build_trap,
+};
+use super::start_task::StartTask;
+use super::waitable_builtins::{
+    build_waitable_join, build_waitable_set_drop, build_waitable_set_new, build_waitable_set_poll,
+    build_waitable_set_wait,
 };
 use crate::abi::runtime_state::AbiRuntimeState;
 
@@ -112,29 +116,28 @@ pub fn instantiate<T: 'static>(
     }
 
     // One fresh handle table per component instance, shared by every
-    // resource type the instance uses: the canonical ABI keeps handles
-    // per instance, and an index of one type can name an entry of
-    // another, which the typed lookups reject.
-    let mut instance_tables: HashMap<usize, TableId> = HashMap::new();
+    // resource type and every other handle kind the instance uses:
+    // the canonical ABI keeps handles per instance, and an index of
+    // one kind can name an entry of another, which the typed lookups
+    // reject. A waitable-set entry takes an index from the same
+    // table, so the list covers every instance rather than only the
+    // ones that keep a resource.
+    let instance_tables: Vec<TableId> = (0..ir.num_component_instances)
+        .map(|_| TableId::fresh())
+        .collect();
     let resource_tables: Vec<Option<ResourceTableRuntime>> = ir
         .resource_tables
         .iter()
         .map(|spec| {
             spec.as_ref().and_then(|spec| {
-                resource_runtimes
-                    .get(spec.resource_index)
-                    .map(|runtime| ResourceTableRuntime {
-                        table: *instance_tables
-                            .entry(spec.instance)
-                            .or_insert_with(TableId::fresh),
-                        type_id: runtime.type_id,
-                        resource_index: spec.resource_index,
-                        defining: spec.defining,
-                        guest_defined: matches!(
-                            runtime.destructor,
-                            ResourceDestructor::Local { .. }
-                        ),
-                    })
+                let runtime = resource_runtimes.get(spec.resource_index)?;
+                Some(ResourceTableRuntime {
+                    table: *instance_tables.get(spec.instance)?,
+                    type_id: runtime.type_id,
+                    resource_index: spec.resource_index,
+                    defining: spec.defining,
+                    guest_defined: matches!(runtime.destructor, ResourceDestructor::Local { .. }),
+                })
             })
         })
         .collect();
@@ -146,6 +149,7 @@ pub fn instantiate<T: 'static>(
         ir.num_runtime_callbacks,
         resource_tables,
         component_instances,
+        instance_tables,
     )));
 
     // Build every trampoline upfront. Trampolines never depend on
@@ -186,6 +190,7 @@ pub fn instantiate<T: 'static>(
         match initializer {
             Initializer::InstantiateModule {
                 module_index,
+                component_instance,
                 imports,
             } => {
                 let entry = ir
@@ -193,27 +198,53 @@ pub fn instantiate<T: 'static>(
                     .get(*module_index)
                     .ok_or_else(|| internal("module index in IR initializer is out of bounds"))?;
                 let runtime_imports = build_imports(ir, &items, store, entry, imports)?;
+                // A core module's `start` function runs inside this
+                // call, and it is guest code of the component
+                // instance the module belongs to. The task it runs
+                // in is the current scope for the length of the
+                // instantiation, and the instance may not suspend
+                // while it does.
+                let owner = match component_instance {
+                    Some(index) => Some(instance_id_at(&abi_state, *index)?),
+                    None => None,
+                };
+                let start = StartTask::enter(store.tables(), owner)?;
                 let instance = RuntimeInstance::new(
                     store.runtime_mut(),
                     &entry.module.inner,
                     &runtime_imports,
                 )
                 .map_err(InstantiationError::SubstrateFailure)
-                .map_err(Error::from)?;
-                items.core_instances.push(instance);
+                .map_err(Error::from);
+                drop(start);
+                items.core_instances.push(instance?);
             }
-            Initializer::InstantiateImportedModule { source, imports } => {
+            Initializer::InstantiateImportedModule {
+                source,
+                component_instance,
+                imports,
+            } => {
                 let module = lookup_module(linker, component, resolution, source)?;
                 let mut runtime_imports = Imports::default();
                 for import in imports.iter() {
                     let value = resolve_source(ir, &items, store, &import.source)?;
                     runtime_imports.define(&import.module, &import.name, value);
                 }
+                // A host-supplied module's `start` function is guest
+                // code of the component instance the module belongs
+                // to, exactly as a statically-declared module's is,
+                // so it runs in a task of that instance.
+                let owner = match component_instance {
+                    Some(index) => Some(instance_id_at(&abi_state, *index)?),
+                    None => None,
+                };
+                let start = StartTask::enter(store.tables(), owner)?;
                 let instance =
                     RuntimeInstance::new(store.runtime_mut(), &module.inner, &runtime_imports)
                         .map_err(InstantiationError::SubstrateFailure)
-                        .map_err(Error::from)?;
-                items.core_instances.push(instance);
+                        .map_err(Error::from);
+                drop(start);
+                items.core_instances.push(instance?);
             }
             Initializer::ExtractMemory { slot, source } => {
                 let extern_value = resolve_source(ir, &items, store, source)?;
@@ -433,6 +464,45 @@ fn build_runtime_trampoline<T: 'static>(
             store,
             result.clone(),
             options,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::WaitableSetNew {
+            instance,
+            signature,
+        } => Ok(build_waitable_set_new(
+            store,
+            *instance,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::WaitableSetWait { options, signature } => Ok(build_waitable_set_wait(
+            store,
+            options,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::WaitableSetPoll { options, signature } => Ok(build_waitable_set_poll(
+            store,
+            options,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::WaitableSetDrop {
+            instance,
+            signature,
+        } => Ok(build_waitable_set_drop(
+            store,
+            *instance,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::WaitableJoin {
+            instance,
+            signature,
+        } => Ok(build_waitable_join(
+            store,
+            *instance,
             signature,
             abi_state.clone(),
         )),
@@ -707,6 +777,19 @@ fn collect_module_exports<T: 'static>(
 
 fn internal(message: &str) -> Error {
     Error::internal(message)
+}
+
+/// The store-wide identity of the component instance the
+/// translator's per-instantiation `index` names.
+fn instance_id_at(abi_state: &Arc<Mutex<AbiRuntimeState>>, index: usize) -> Result<InstanceId> {
+    let state = abi_state
+        .lock()
+        .map_err(|_| internal("ABI state poisoned"))?;
+    state
+        .component_instances
+        .get(index)
+        .copied()
+        .ok_or_else(|| internal("an initializer names a component instance the plan does not hold"))
 }
 
 /// The runtime data of one resource table of the instantiation.

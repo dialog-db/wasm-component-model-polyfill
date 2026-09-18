@@ -188,7 +188,6 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                         "Trampoline::LowerImport has no matching GlobalInitializer::LowerImport",
                     )
                 })?;
-                let canon = canon_options(&translation, *options)?;
                 let (import_index, path) = import_path(&translation, runtime_import)?;
                 let signature = projector.function(*lower_ty)?;
                 refuse_async_import(&signature)?;
@@ -196,7 +195,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                     import_index,
                     path,
                     signature,
-                    options: lift_canon_options(canon)?,
+                    options: trampoline_options(&translation, *options)?,
                 })
             }
             Trampoline::ResourceDrop { ty, .. } => TrampolineSpec::ResourceDrop {
@@ -256,6 +255,31 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 options: lift_canon_options(canon_options(&translation, *options)?)?,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
+            // The waitable set built-ins. Each one reaches the set
+            // records of the store through the handle table of the
+            // instance the translator names here; the two that
+            // deliver an event also name the memory its payloads are
+            // written through, which their canon options carry.
+            Trampoline::WaitableSetNew { instance } => TrampolineSpec::WaitableSetNew {
+                instance: instance.as_u32() as usize,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::WaitableSetWait { options, .. } => TrampolineSpec::WaitableSetWait {
+                options: trampoline_options(&translation, *options)?,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::WaitableSetPoll { options, .. } => TrampolineSpec::WaitableSetPoll {
+                options: trampoline_options(&translation, *options)?,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::WaitableSetDrop { instance } => TrampolineSpec::WaitableSetDrop {
+                instance: instance.as_u32() as usize,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::WaitableJoin { instance } => TrampolineSpec::WaitableJoin {
+                instance: instance.as_u32() as usize,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
             // Concurrency built-ins and the rest are not built. A
             // `CoreDef::Trampoline` that references one surfaces
             // `Error::Unsupported` in `lift_core_def`, naming the
@@ -282,7 +306,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
         match initializer {
             GlobalInitializer::InstantiateModule(
                 InstantiateModule::Static(static_idx, defs),
-                _,
+                component_instance,
             ) => {
                 let module_index = *module_index_for_static.get(static_idx).ok_or_else(|| {
                     Error::internal("module index from translator missing from projection map")
@@ -294,10 +318,14 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 state.runtime_instance_to_module.push(Some(module_index));
                 state.initializers.push(Initializer::InstantiateModule {
                     module_index,
+                    component_instance: component_instance.map(|i| i.as_u32() as usize),
                     imports: imports.into_boxed_slice(),
                 });
             }
-            GlobalInitializer::InstantiateModule(InstantiateModule::Import(import, args), _) => {
+            GlobalInitializer::InstantiateModule(
+                InstantiateModule::Import(import, args),
+                component_instance,
+            ) => {
                 let (import_index, path) = import_path(&translation, *import)?;
                 let mut imports = Vec::new();
                 for (module, items) in args.iter() {
@@ -314,6 +342,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                     .initializers
                     .push(Initializer::InstantiateImportedModule {
                         source: ModuleSource::Import { import_index, path },
+                        component_instance: component_instance.map(|i| i.as_u32() as usize),
                         imports: imports.into_boxed_slice(),
                     });
             }
@@ -847,6 +876,20 @@ impl ProjectionState {
             item,
         }))
     }
+}
+
+/// The canon options a trampoline declared, by the index the
+/// translator recorded for it.
+fn trampoline_options(
+    translation: &ComponentTranslation,
+    options: OptionsIndex,
+) -> Result<CanonOptions> {
+    let canon = translation
+        .component
+        .options
+        .get(options)
+        .ok_or_else(|| Error::internal("Trampoline OptionsIndex out of bounds"))?;
+    lift_canon_options(canon)
 }
 
 /// Project one canon-options bundle onto the polyfill's own.

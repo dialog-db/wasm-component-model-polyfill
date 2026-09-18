@@ -35,11 +35,21 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 /// progress. A host task that stays pending inside a nested turn
 /// stays in the store for the outer turn, so no wake is lost.
 ///
-/// If the nested turn goes idle with the condition unmet, the
-/// built-in traps. A task that must not block gets the cannot-block
-/// cause, which is the rule of the reference. A task that is allowed
-/// to block gets the stack-switch cause: the reference permits that
-/// block, and only the target cannot serve it.
+/// The rule is lazy, as the reference and Wasmtime state it. A task
+/// whose instance may not suspend first runs the ready work of that
+/// instance and nothing else — no item of another instance, and no
+/// host task — and the built-in then fails with the cannot-block
+/// cause when the condition still does not hold. That is the case
+/// of a start function, of a host call into a synchronous export,
+/// and of a synchronous call between two components.
+///
+/// A task that is allowed to block gives way to everything a nested
+/// turn may run. It fails with the deadlock cause when the store
+/// went idle, because nothing left in the store can meet the
+/// condition, and with the stack-switch cause while the store still
+/// holds work — a host task that has not resolved, or an item only
+/// a driver's turn may run — because the reference permits that
+/// block and only the target has no provider to serve it.
 ///
 /// A nested executor that blocks the native thread is not an option
 /// here. It deadlocks under a current-thread executor, tokio forbids
@@ -82,9 +92,8 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 ///   the outer turn defers and runs it as it always would, so
 ///   nothing is lost.
 /// - **A nested turn nests no further.** An item a nested turn runs
-///   that itself reaches the seam is refused at once, with the same
-///   cause an idle nested turn produces: cannot-block for a task
-///   that must not block, and stack-switch otherwise. Each level is
+///   that itself reaches the seam is refused at once, with the cause
+///   the store gives a suspension that gave up. Each level is
 ///   a real native frame under the guest call that blocked, nothing
 ///   in the reference bounds how many levels a guest can ask for,
 ///   and a deeper level could only reach the same work the level
@@ -244,11 +253,17 @@ impl<T: 'static> SuspendSeam<T> {
         // serves instead, as it does for a trampoline that starts a
         // host task outside a turn.
         let waker = store.active_waker();
+        // A task that must not block gives way only to the ready
+        // work of its own instance. The instance is read once: what
+        // the turn is allowed to run cannot change under it, because
+        // the flag is set for the length of the call this thread is
+        // inside.
+        let only = store.must_not_block_instance();
         loop {
             if condition(store) {
                 return Ok(());
             }
-            match store.nested_turn(&waker)? {
+            match store.nested_turn(&waker, only)? {
                 Outcome::Progress => continue,
                 // Nothing more can progress from inside the guest
                 // call. `Waiting` leaves its host tasks in the store
@@ -299,6 +314,7 @@ mod tests {
 
     use super::super::driver::Driver;
     use super::super::host_task::HostTask;
+    use super::super::instance_id::InstanceId;
     use super::super::item::Item;
     use super::super::item_kind::ItemKind;
 
@@ -481,10 +497,10 @@ mod tests {
     }
 
     /// Make a task of a fresh instance the current scope, as a
-    /// blocking built-in would find it. `may_not_suspend` is the
-    /// instance flag an adapter's enter intrinsic sets for the
-    /// duration of a synchronous call.
-    fn current_task(store: &StoreContext<'_, ()>, may_not_suspend: bool) {
+    /// blocking built-in would find it, and report that instance.
+    /// `may_not_suspend` is the instance flag an adapter's enter
+    /// intrinsic sets for the duration of a synchronous call.
+    fn current_task(store: &StoreContext<'_, ()>, may_not_suspend: bool) -> InstanceId {
         let mut guard = store.tables().lock().expect("tables");
         let instance = guard.tasks.insert_instance();
         guard
@@ -494,6 +510,22 @@ mod tests {
             .may_not_suspend = may_not_suspend;
         let task = guard.tasks.create_task(None, None, instance);
         guard.tasks.push_task_scope(task);
+        instance
+    }
+
+    /// Queue `item` as ready work of `instance`, the way the entry
+    /// gate queues the start of a task's implicit thread. That is
+    /// where an item learns which instance's work it is.
+    fn queue(store: &mut StoreContext<'_, ()>, instance: InstanceId, item: Item<()>) {
+        let task = store
+            .tables()
+            .lock()
+            .expect("tables")
+            .tasks
+            .create_task(None, None, instance);
+        store
+            .start_export_thread(task, instance, false, true, item)
+            .expect("queue the item");
     }
 
     /// Run turns of `store` until it goes idle, as a driver that
@@ -699,7 +731,49 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    fn it_traps_with_the_stack_switch_cause_when_the_task_may_block() {
+    fn it_runs_only_the_ready_work_of_its_own_instance_before_it_cannot_block() {
+        let mut owner = store();
+        let mut store = owner.context();
+        let log = log();
+
+        let mine = current_task(&store, true);
+        let other = store
+            .tables()
+            .lock()
+            .expect("tables")
+            .tasks
+            .insert_instance();
+        queue(&mut store, mine, marker(&log, "mine"));
+        queue(&mut store, other, marker(&log, "other"));
+
+        let outcome = store
+            .run_in_turn(Waker::noop(), |store| {
+                SuspendSeam::suspend(store, |_| false)
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            Error::Scheduler(SchedulerCause::CannotBlock).to_string(),
+            "the ready work of the blocking task's own instance did not meet \
+             the condition, and the reference forbids this task to block"
+        );
+        assert_eq!(
+            entries(&log),
+            vec!["mine"],
+            "the rule is lazy: the task gave way to the ready work of its own \
+             instance, and to nothing else"
+        );
+        assert_eq!(
+            store.scheduler().queued_items(),
+            1,
+            "the other instance's item is still queued for a turn of the \
+             scheduler"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_traps_with_the_deadlock_cause_when_the_store_goes_idle() {
         let mut owner = store();
         let mut store = owner.context();
         current_task(&store, false);
@@ -712,9 +786,42 @@ mod tests {
 
         assert_eq!(
             cause(outcome),
+            Error::Scheduler(SchedulerCause::Deadlock).to_string(),
+            "this task may block, and nothing left in the store can ever meet \
+             the condition it blocked on"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_traps_with_the_stack_switch_cause_while_a_host_task_is_still_pending() {
+        let mut owner = store();
+        let mut store = owner.context();
+        let outer = Waker::from(Arc::new(Outer::default()));
+        current_task(&store, false);
+        // A body that never completes, so the nested turn polls it,
+        // leaves it in the store, and gives up with the condition
+        // unmet.
+        let (_slot, polls) = host_task(&mut store, &outer, usize::MAX);
+
+        let outcome = store
+            .run_in_turn(&outer, |store| SuspendSeam::suspend(store, |_| false))
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
             Error::Scheduler(SchedulerCause::StackSwitchNeeded).to_string(),
-            "the reference permits this block, and only the target has no \
-             provider to serve it"
+            "the store still holds a host task, so the reference permits this \
+             block and only the target has no provider to serve it"
+        );
+        assert_eq!(
+            polls.lock().expect("polls").clone(),
+            vec![true],
+            "the nested turn polled the pending body once, with the outer waker"
+        );
+        assert_eq!(
+            store.scheduler().host_task_count(),
+            1,
+            "the host task that stayed pending stayed in the store"
         );
     }
 
@@ -994,8 +1101,8 @@ mod tests {
 
         assert_eq!(
             cause(first),
-            Error::Scheduler(SchedulerCause::StackSwitchNeeded).to_string(),
-            "nothing could progress, so the first suspension gave up"
+            Error::Scheduler(SchedulerCause::Deadlock).to_string(),
+            "the store was idle, so the first suspension gave up"
         );
 
         // A host task whose future completes on its first poll, so a
@@ -1095,18 +1202,18 @@ mod tests {
     );
 
     #[wcmp_macros::test]
-    async fn it_suspends_a_host_function_the_guest_called_until_a_host_task_completes() {
+    async fn it_refuses_a_block_in_a_host_function_a_synchronous_export_called() {
         let engine = Engine::new().expect("engine");
         let component = Component::new(&engine, CALLS_THE_HOST)
             .await
             .expect("component parses");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
 
-        // Whether the suspension returned with its condition held,
-        // and whether a turn of the store was running when it did —
-        // the export call's, since the host function enters no
-        // driver of its own.
-        let suspension: Arc<Mutex<Option<(bool, bool)>>> = Arc::new(Mutex::new(None));
+        // What the suspension reported, whether a turn of the store
+        // was running when it did — the export call's, since the
+        // host function enters no driver of its own — and how many
+        // host tasks the store still held.
+        let suspension: Arc<Mutex<Option<(String, bool, usize)>>> = Arc::new(Mutex::new(None));
         let recorded = suspension.clone();
 
         let mut linker: Linker<()> = Linker::new(&engine);
@@ -1119,11 +1226,10 @@ mod tests {
                 // No driver, no `&mut Store`.
                 let store = call.store();
 
-                // A host task of this call. Its body is ready at
-                // once, and its lowering fills the slot below — but
-                // a lowering runs as a queued item in a later turn
-                // than the poll that saw the body complete, so the
-                // slot is what the suspension has to wait for.
+                // A host task of this call, whose lowering would
+                // meet the condition below — in a turn this task is
+                // not allowed to take, because the export the guest
+                // is inside is synchronous.
                 let slot: Slot = Arc::new(Mutex::new(None));
                 let filled = slot.clone();
                 let subtask = store.lock_tables()?.tasks.insert_subtask();
@@ -1137,24 +1243,15 @@ mod tests {
                 ));
 
                 let watched = slot.clone();
-                let held = SuspendSeam::suspend(store, move |_store| {
+                let outcome = SuspendSeam::suspend(store, move |_store| {
                     watched.lock().expect("slot").is_some()
-                })
-                .is_ok();
-                *recorded.lock().expect("record") = Some((held, store.turn_in_flight()));
-
-                // What the host task produced, which only the turns
-                // the suspension ran could have put there.
-                let produced = slot.lock().expect("slot").take();
-                let Some(produced) = produced else {
-                    return Err(Error::internal(
-                        "the suspension returned with the host task unlowered",
-                    ));
-                };
-                match produced?.first() {
-                    Some(Val::U32(value)) => Ok(*value),
-                    _ => Err(Error::internal("the host task produced no u32")),
-                }
+                });
+                *recorded.lock().expect("record") = Some((
+                    cause(outcome),
+                    store.turn_in_flight(),
+                    store.scheduler().host_task_count(),
+                ));
+                Ok(x)
             },
         );
 
@@ -1170,22 +1267,27 @@ mod tests {
 
         assert_eq!(
             *suspension.lock().expect("record"),
-            Some((true, true)),
+            Some((
+                Error::Scheduler(SchedulerCause::CannotBlock).to_string(),
+                true,
+                1
+            )),
             "the host function reached the seam through what the trampoline \
-             holds, and the suspension returned with its condition held from \
-             inside the turn of the export call"
+             holds, from inside the turn of the export call; the call into a \
+             synchronous export is one that must not block, and the refused \
+             block left the store's host task for a later turn rather than \
+             polling it"
         );
         assert_eq!(
             result.first(),
-            Some(&Val::U32(41)),
-            "the guest's call returned what the host task produced, so the \
-             nested turns of the suspension polled the body and ran the \
-             lowering it queued from inside the trampoline"
+            Some(&Val::U32(21)),
+            "the host function returned its argument and the guest added one"
         );
         assert_eq!(
             store.scheduler().host_task_count(),
             0,
-            "the host task the call started is resolved and gone"
+            "the turns the call's own driver ran after the call returned did \
+             resolve it"
         );
     }
 }

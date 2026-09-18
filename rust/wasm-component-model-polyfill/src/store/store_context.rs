@@ -228,7 +228,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Workspace-internal; not re-exported by `lib.rs`.
     pub fn turn(&mut self, waker: &Waker) -> Result<Outcome> {
         let _turn = TurnGuard::enter(self.tables(), waker);
-        self.run_turn(waker, false)
+        self.run_turn(waker, false, None)
     }
 
     /// Whether a turn of this store is running. Workspace-internal.
@@ -287,9 +287,24 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// call, so it has no control to return. It reports deferred work
     /// it cannot run as [`Outcome::Yield`], which is the outer turn's
     /// cue to end and the seam's cue to stop.
+    ///
+    /// `only`, when it names an instance, holds the turn to the
+    /// ready work of that instance: it runs no item of another
+    /// instance and polls no host task. That is the lazy blocking
+    /// rule of the reference for a task that must not block, which
+    /// gives way to the ready threads of its own instance and then
+    /// traps. Such a turn reports [`Outcome::Progress`] when it ran
+    /// something and [`Outcome::Idle`] when that instance had
+    /// nothing ready. Workspace-internal.
+    pub fn nested_turn(&mut self, waker: &Waker, only: Option<InstanceId>) -> Result<Outcome> {
+        self.run_turn(waker, true, only)
+    }
+
+    /// The instance a nested turn run for the current task may run
+    /// the work of, or `None` when that task is allowed to block.
     /// Workspace-internal.
-    pub fn nested_turn(&mut self, waker: &Waker) -> Result<Outcome> {
-        self.run_turn(waker, true)
+    pub fn must_not_block_instance(&self) -> Option<InstanceId> {
+        self.store_data().must_not_block_instance()
     }
 
     /// The waker of the turn that is running, or a waker that does
@@ -500,12 +515,23 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// resumptions after a yield, because only a driver's turn can
     /// end and hand control back to the host executor first.
     ///
+    /// `only`, when it names an instance, holds the turn to that
+    /// instance's ready work, which is what a task that must not
+    /// block gives way to. Such a turn polls no host task: a task
+    /// that must not block must not wait on one, and the cause it
+    /// fails with says so.
+    ///
     /// An item that fails ends the turn and its failure is the
     /// turn's. Almost no item can fail: what an item produces it
     /// leaves in the store, and the failure of the call it ran is
     /// part of that. The ones that can are the items whose own
     /// bookkeeping failed, which belongs to no caller.
-    fn run_turn(&mut self, waker: &Waker, nested: bool) -> Result<Outcome> {
+    fn run_turn(
+        &mut self,
+        waker: &Waker,
+        nested: bool,
+        only: Option<InstanceId>,
+    ) -> Result<Outcome> {
         self.open_entry_gate()?;
         if !nested {
             let resumed = self.scheduler_mut().take_resume_after_yield();
@@ -513,10 +539,15 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 item.run(self)?;
             }
         }
+        let mut ran = false;
         loop {
             self.open_entry_gate()?;
-            let ready = self.scheduler_mut().take_ready();
+            let ready = match only {
+                Some(instance) => self.scheduler_mut().take_ready_in(instance),
+                None => self.scheduler_mut().take_ready(),
+            };
             if let Some(item) = ready {
+                ran = true;
                 item.run(self)?;
                 continue;
             }
@@ -524,6 +555,17 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 return Ok(Outcome::Yield);
             }
             break;
+        }
+        if only.is_some() {
+            // The instance's ready work is the whole of what this
+            // turn was allowed to run. Progress sends the seam round
+            // again to test its condition; an idle answer is its cue
+            // to stop and trap with the cannot-block cause.
+            return Ok(if ran {
+                Outcome::Progress
+            } else {
+                Outcome::Idle
+            });
         }
         self.poll_host_tasks(waker)?;
         if self.scheduler().has_immediate_item() {
@@ -635,6 +677,24 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     pub fn enter_export_task(&self, task: TaskId) -> Result<()> {
         self.lock_tables()?.tasks.push_task_scope(task);
         Ok(())
+    }
+
+    /// Mark the instance of an export's task as one whose threads
+    /// may not suspend, for the length of the call, and save the
+    /// flag's old value on the task's thread. The task's own exit
+    /// puts it back.
+    ///
+    /// A host call into a synchronous export holds the flag this
+    /// way, as the enter intrinsic holds it for a synchronous call
+    /// between two components: such a call must return before its
+    /// instance may block, and a built-in that has to block gives
+    /// way only to the ready work of the instance and then fails
+    /// with the cannot-block cause. Workspace-internal.
+    pub fn hold_may_not_suspend(&self, task: TaskId) -> Result<()> {
+        self.lock_tables()?
+            .tasks
+            .hold_may_not_suspend(task)
+            .ok_or_else(|| Error::internal("an export's task is not in the store"))
     }
 
     /// Mark an export's task started: its thread is about to run.

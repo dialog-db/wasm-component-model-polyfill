@@ -24,12 +24,14 @@
 mod compile_module;
 mod instantiate;
 mod resource_destructor;
+mod start_task;
 mod task_return;
 mod translate;
 
 pub mod intrinsics;
 pub mod ir;
 pub mod trampoline;
+pub mod waitable_builtins;
 
 pub use compile_module::compile_module;
 pub use instantiate::instantiate;

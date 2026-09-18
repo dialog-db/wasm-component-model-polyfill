@@ -370,6 +370,7 @@ mod tests {
     use crate::concurrency::InstanceId;
     use crate::engine::Engine;
     use crate::executor::ir::DataModel;
+    use crate::resource::TableId;
     use crate::store::Store;
     use crate::types::PrimitiveType;
     use wasm_runtime_layer::AsContextMut;
@@ -398,6 +399,7 @@ mod tests {
             0,
             Vec::new(),
             vec![instance],
+            vec![TableId::fresh()],
         )))
     }
 
