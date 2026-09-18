@@ -76,8 +76,8 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
     // The translator's defaults keep concurrency support on. Turning
     // it off makes the fused adapter compiler assert on an `async`
     // function instead of reporting it, so the polyfill leaves it on
-    // and provides the `task_may_block` global synchronous adapters
-    // import under that setting.
+    // and provides the enter- and exit-sync-call intrinsics an adapter
+    // imports under that setting.
     let tunables = Tunables::default_u32();
     let mut validator = Validator::new_with_features(engine.config().wasm_features());
     let mut types = ComponentTypesBuilder::new(&validator);
@@ -227,8 +227,9 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
             Trampoline::ResourceTransferBorrow => TrampolineSpec::ResourceTransferBorrow {
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
-            Trampoline::Trap => TrampolineSpec::Trap {
+            Trampoline::Trap(trap) => TrampolineSpec::Trap {
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
+                code: *trap as u8,
             },
             Trampoline::EnterSyncCall => TrampolineSpec::EnterSyncCall {
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
@@ -789,7 +790,6 @@ impl ProjectionState {
             CoreDef::UnsafeIntrinsic(intrinsic) => {
                 Ok(ImportSource::Trampoline(self.intrinsic(*intrinsic)?))
             }
-            CoreDef::TaskMayBlock => Ok(ImportSource::TaskMayBlock),
         }
     }
 

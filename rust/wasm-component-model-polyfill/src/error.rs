@@ -44,8 +44,9 @@ pub enum Error {
         /// A short human-readable description of what failed.
         message: String,
         /// The byte offset at which the parser detected the
-        /// failure.
-        offset: usize,
+        /// failure. The width is the parser's own: a component
+        /// binary is addressed in 64 bits whatever the host is.
+        offset: u64,
     },
 
     /// The bytes were a core WebAssembly module rather than a
@@ -618,7 +619,7 @@ pub enum AbiCause {
 #[non_exhaustive]
 pub enum SchedulerCause {
     /// A driver went idle with nothing ready, no host task pending,
-    /// and its condition unmet. The message is Wasmtime 48's deadlock
+    /// and its condition unmet. The message is Wasmtime's deadlock
     /// trap, `Trap::AsyncDeadlock` in `wasmtime-environ`'s
     /// `src/trap_encoding.rs`, so the conformance corpus can match it
     /// by substring.
@@ -626,7 +627,7 @@ pub enum SchedulerCause {
     Deadlock,
 
     /// A task that must not block went idle while waiting. The
-    /// message is Wasmtime 48's cannot-block trap,
+    /// message is Wasmtime's cannot-block trap,
     /// `Trap::CannotBlockSyncTask` in `wasmtime-environ`'s
     /// `src/trap_encoding.rs`, so the conformance corpus can match it
     /// by substring.
@@ -668,7 +669,7 @@ pub enum WaitableCause {
     SetHasWaitables,
 
     /// A guest dropped a waitable set a thread was waiting on. The
-    /// message is Wasmtime 48's trap,
+    /// message is Wasmtime's trap,
     /// `Trap::WaitableSetDropHasWaiters` in `wasmtime-environ`'s
     /// `src/trap_encoding.rs`, so the conformance corpus can match it
     /// by substring.
@@ -677,7 +678,7 @@ pub enum WaitableCause {
 
     /// A guest dropped a subtask whose resolution had not been
     /// delivered, so the handles the call borrowed were still lent
-    /// out. The message is Wasmtime 48's trap,
+    /// out. The message is Wasmtime's trap,
     /// `Trap::SubtaskDropNotResolved`, under the same rule as
     /// [`WaitableCause::SetHasWaiters`].
     #[error("cannot drop a subtask which has not yet resolved")]
@@ -685,7 +686,7 @@ pub enum WaitableCause {
 
     /// A guest added a waitable to a waitable set while a thread was
     /// waiting on that waitable on its own, or waited on a waitable
-    /// on its own while it was in a set. The message is Wasmtime 48's
+    /// on its own while it was in a set. The message is Wasmtime's
     /// trap, `Trap::WaitableSyncAndAsync`, under the same rule as
     /// [`WaitableCause::SetHasWaiters`].
     #[error("waitable cannot be used synchronously while added to a waitable set")]
@@ -761,7 +762,7 @@ mod tests {
     use super::*;
 
     #[wcmp_macros::test]
-    fn it_renders_the_deadlock_cause_as_wasmtime_48s_trap_message() {
+    fn it_renders_the_deadlock_cause_as_the_trap_message() {
         let err = Error::Scheduler(SchedulerCause::Deadlock);
         assert_eq!(
             err.to_string(),
@@ -770,7 +771,7 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    fn it_renders_the_cannot_block_cause_as_wasmtime_48s_trap_message() {
+    fn it_renders_the_cannot_block_cause_as_the_trap_message() {
         let err = Error::Scheduler(SchedulerCause::CannotBlock);
         assert_eq!(
             err.to_string(),

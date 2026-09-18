@@ -1,0 +1,68 @@
+# Vendored from crates.io `wasmtime_runtime_layer` 48.0.0 with the patches
+# listed in PATCHES.md. The workspace routes the registry name here through
+# `[patch.crates-io]`; the crate is excluded from the workspace so it keeps
+# its own dependency table.
+
+[package]
+edition = "2021"
+name = "wasmtime_runtime_layer"
+version = "48.0.0"
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = """
+WebAssembly runtime compatibility interface implementation for Wasmtime.
+"""
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/DouglasDwyer/wasm_runtime_layer"
+
+[features]
+cranelift = ["wasmtime/cranelift"]
+default = [
+    "cranelift",
+    "std",
+]
+std = [
+    "anyhow/std",
+    "wasmtime/std",
+    "wasm_runtime_layer/std",
+]
+winch = ["wasmtime/winch"]
+
+[lib]
+name = "wasmtime_runtime_layer"
+path = "src/lib.rs"
+
+[dependencies.anyhow]
+version = "1.0"
+default-features = false
+
+[dependencies.fxhash]
+version = "0.2"
+default-features = false
+
+[dependencies.ref-cast]
+version = "1.0"
+default-features = false
+
+[dependencies.smallvec]
+version = "1.11"
+default-features = false
+
+[dependencies.wasm_runtime_layer]
+version = "0.7"
+default-features = false
+
+# PATCH (wcmp): pinned to the Wasmtime the workspace builds against.
+[dependencies.wasmtime]
+version = "=49.0.0-rc.1"
+features = [
+    "anyhow",
+    "runtime",
+    "gc",
+]
+default-features = false

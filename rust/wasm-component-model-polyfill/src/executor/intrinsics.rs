@@ -19,7 +19,7 @@
 //!   which allocates its own index for it; a borrow transfer inserts
 //!   a borrow entry into the destination table for the duration of
 //!   the call.
-//! - A trap intrinsic that raises a Wasmtime trap code.
+//! - A trap intrinsic per Wasmtime trap code an adapter can raise.
 //! - Enter and exit intrinsics around a synchronous call between two
 //!   components. The enter intrinsic pushes the callee's task on the
 //!   store's stack of current scopes and marks the callee instance
@@ -135,24 +135,23 @@ fn core_type_of_flat(slot: FlatType) -> CoreType {
     }
 }
 
-/// Build the `trap` intrinsic: one `i32` Wasmtime trap code in,
-/// a trap out. The message is the one Wasmtime prints for the code.
+/// Build a `trap` intrinsic: no arguments, a trap out. An adapter
+/// imports one of these per trap code it can raise, so the code is
+/// fixed when the intrinsic is built. The message is the one
+/// Wasmtime prints for the code.
 pub fn build_trap<T: 'static>(
     store: &mut StoreContext<'_, T>,
     signature: &CoreSignature,
-) -> RuntimeFunc {
-    RuntimeFunc::new(
+    code: u8,
+) -> Result<RuntimeFunc> {
+    let message = Trap::from_u8(code)
+        .ok_or_else(|| Error::internal(format!("adapter imported an unknown trap code {code}")))?
+        .to_string();
+    Ok(RuntimeFunc::new(
         store.runtime_mut(),
         core_func_type(signature),
-        move |_store_ctx, args, _results| {
-            let code = arg_u32(args, 0)?;
-            let trap = u8::try_from(code)
-                .ok()
-                .and_then(Trap::from_u8)
-                .ok_or_else(|| anyhow!("adapter raised an unknown trap code {code}"))?;
-            Err(anyhow!("{trap}"))
-        },
-    )
+        move |_store_ctx, _args, _results| Err(anyhow!("{message}")),
+    ))
 }
 
 /// Build the `enter-sync-call` intrinsic. The adapter passes the

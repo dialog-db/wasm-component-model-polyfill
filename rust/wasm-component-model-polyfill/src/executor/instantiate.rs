@@ -51,7 +51,6 @@ struct RuntimeItems {
     core_instances: Vec<RuntimeInstance>,
     trampolines: Vec<RuntimeFunc>,
     flags: Vec<RuntimeGlobal>,
-    task_may_block: RuntimeGlobal,
 }
 
 /// Drive instantiation of the component's plan against `store`.
@@ -165,12 +164,10 @@ pub fn instantiate<T: 'static>(
         .map(|_| RuntimeGlobal::new(store.runtime_mut(), RuntimeVal::I32(1), true))
         .collect();
 
-    let task_may_block = RuntimeGlobal::new(store.runtime_mut(), RuntimeVal::I32(1), true);
     let mut items = RuntimeItems {
         core_instances: Vec::new(),
         trampolines,
         flags,
-        task_may_block,
     };
 
     for initializer in ir.initializers.iter() {
@@ -385,7 +382,7 @@ fn build_runtime_trampoline<T: 'static>(
             abi_state.clone(),
             false,
         )),
-        TrampolineSpec::Trap { signature } => Ok(build_trap(store, signature)),
+        TrampolineSpec::Trap { signature, code } => build_trap(store, signature, *code),
         TrampolineSpec::EnterSyncCall { signature } => {
             Ok(build_enter_sync_call(store, signature, abi_state.clone()))
         }
@@ -564,7 +561,6 @@ fn resolve_source<T: 'static>(
             .cloned()
             .map(RuntimeExtern::Global)
             .ok_or_else(|| internal("ImportSource::InstanceFlags index is out of bounds")),
-        ImportSource::TaskMayBlock => Ok(RuntimeExtern::Global(items.task_may_block.clone())),
     }
 }
 

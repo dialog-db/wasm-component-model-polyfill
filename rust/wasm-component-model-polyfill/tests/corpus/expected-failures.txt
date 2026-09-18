@@ -220,11 +220,6 @@ cm/async/partial-stream-copies.wast:238 deferred-feature no instance to invoke
 cm/async/passing-resources.wast:7 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
 cm/async/passing-resources.wast:175 deferred-feature no instance to invoke
 cm/async/passing-resources.wast:176 deferred-feature expected a trap `unknown handle index 3`, got `no instance to invoke`
-cm/async/reentrance.wast:42 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x76 - <unknown>!<wasm function 2> 1: 0x38 - M2!<wasm function 1>: wasm trap: cannot enter component instance
-cm/async/reentrance.wast:60 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x76 - <unknown>!<wasm function 2> 1: 0x27 - CoreOuter!<wasm function 1>: wasm trap: cannot enter component instance
-cm/async/reentrance.wast:99 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x77 - <unknown>!<wasm function 2> 1: 0x3d - M1!<wasm function 0>: wasm trap: cannot enter component instance
-cm/async/reentrance.wast:151 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x77 - <unknown>!<wasm function 2> 1: 0x3f - M2!<wasm function 1>: wasm trap: cannot enter component instance
-cm/async/reentrance.wast:198 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x72 - <unknown>!<wasm function 2> 1: 0x7b - CM!<wasm function 3>: wasm trap: cannot enter component instance
 cm/async/reentrance.wast:202 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
 cm/async/reentrance.wast:237 deferred-feature no instance to invoke
 cm/async/reentrance.wast:242 deferred-feature component rejected: unsupported component feature: the `task-return` trampoline
@@ -486,7 +481,6 @@ cm/values/variants.wast:183 cascade no instance to invoke
 cm/values/variants.wast:184 cascade no instance to invoke
 cm/values/variants.wast:185 cascade no instance to invoke
 cm/values/variants.wast:186 cascade no instance to invoke
-wasmtime/adapter.wast:98 substrate instantiation failed: wasm trap: cannot enter component instance (wasmtime-environ 48 compiles an adapter between a lift and a lower of one instance to an unconditional trap; Wasmtime 49 removed that in #14146)
 wasmtime/alias-region-known-imported-entities.wast:13 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref i31) is not supported in the wasm_runtime_layer
 wasmtime/alias-region-known-imported-entities.wast:64 cascade no instance to invoke
 wasmtime/alias-region-known-imported-entities.wast:65 cascade no instance to invoke
@@ -502,7 +496,7 @@ wasmtime/alias-region-reexported-ambiguous-entities.wast:137 cascade no instance
 wasmtime/alias-region-reexported-ambiguous-entities.wast:138 cascade no instance to invoke
 wasmtime/alias-region-reexported-ambiguous-entities.wast:139 cascade no instance to invoke
 wasmtime/alias-region-reexported-ambiguous-entities.wast:140 cascade no instance to invoke
-wasmtime/alias-region-reexported-entities-to-imported-module.wast:14 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref i31) is not supported in the wasm_runtime_layer
+wasmtime/alias-region-reexported-entities-to-imported-module.wast:14 substrate component rejected: unsupported component feature: non-nullable reference types in core module types (the runtime layer has no i31 reference type, so the polyfill refuses the core module type before instantiation)
 wasmtime/alias-region-reexported-entities-to-imported-module.wast:101 cascade no instance to invoke
 wasmtime/alias-region-reexported-entities-to-imported-module.wast:102 cascade no instance to invoke
 wasmtime/alias-region-reexported-entities-to-imported-module.wast:103 cascade no instance to invoke
@@ -878,10 +872,10 @@ wasmtime/error-context-trap-in-post-return.wast:47 cascade no definition named `
 wasmtime/error-context-trap-in-post-return.wast:48 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
 wasmtime/error-context-trap-in-post-return.wast:49 cascade no definition named `Tester`
 wasmtime/error-context-trap-in-post-return.wast:50 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-wasmtime/exceptions.wast:168 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref (concrete func VMSharedTypeIndex(2))) is not su
+wasmtime/exceptions.wast:168 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref (concrete func VMSharedTypeIndex(6))) is not supported in the wasm_runtime_layer
 wasmtime/exceptions.wast:237 cascade expected a trap `uncaught exception propagated out of component`, got `no instance to invoke`
 wasmtime/modules.wast:482 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
-wasmtime/modules.wast:485 cascade no registered linker instance satisfies import `tag-module` (the component at line 482 did not instantiate)
+wasmtime/modules.wast:485 cascade instantiation failed: link error: no registered linker instance satisfies import `tag-module`: no registered linker instance satisfies import `tag-module` (the component at line 482 did not instantiate)
 wasmtime/tags.wast:3 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
 wasmtime/thread-transparency/blocks.wast:8 deferred-feature component rejected: unsupported component feature: the `waitable-set-new` trampoline
 wasmtime/thread-transparency/blocks.wast:68 cascade no definition named `Tester`

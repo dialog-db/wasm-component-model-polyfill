@@ -6,7 +6,7 @@
 
 #![cfg(test)]
 
-use wasm_component_model_polyfill::{Component, Engine, Error, Linker, Store, Val};
+use wasm_component_model_polyfill::{Component, Engine, Linker, Store, Val};
 use wcmp_macros::component;
 
 #[cfg(target_arch = "wasm32")]
@@ -385,14 +385,13 @@ async fn it_lowers_a_lifted_function_of_the_same_component() {
     );
     instantiate(LOWERS_ITS_OWN_LIFT).await;
 
-    // Calling that adapter from the same instance is the reentrance
-    // the pinned translator (`wasmtime-environ` 48) refuses: it
-    // compiles the adapter to an unconditional `cannot enter
-    // component instance` trap, which the start function below
-    // reaches. Wasmtime 49 lets the call through, as the corpus
-    // expects (`wasmtime/adapter.wast:98`). Until the polyfill moves
-    // to that translator, the outcome is a structured instantiation
-    // error, never a panic.
+    // Calling that adapter from the same instance reenters the
+    // component instance. Wasmtime 49's fused adapter compiler
+    // allows that: the rule that compiled such an adapter to an
+    // unconditional `cannot enter component instance` trap is gone,
+    // so the start function below calls through and the component
+    // instantiates, as the corpus expects
+    // (`wasmtime/adapter.wast:98`).
     const CALLS_ITS_OWN_LIFT: &[u8] = component!(
         r#"
         (component
@@ -414,14 +413,10 @@ async fn it_lowers_a_lifted_function_of_the_same_component() {
         .expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    match linker.instantiate(&mut store, &component).await {
-        Err(Error::Instantiation(_)) => {}
-        Err(other) => panic!("expected an instantiation error, got {other:?}"),
-        Ok(_) => {
-            // The translator no longer refuses the reentrance: the
-            // corpus line can be removed from the expected failures.
-        }
-    }
+    linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the start function calls the same-instance adapter");
 }
 
 #[wcmp_macros::test]

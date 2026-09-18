@@ -259,11 +259,6 @@ pub enum ImportSource {
     /// component boundary, and to trap when a component that may
     /// not be left is called.
     InstanceFlags(usize),
-    /// The `task_may_block` global. A synchronous adapter clears it
-    /// around the callee and restores it afterwards; the polyfill
-    /// has no blocking tasks, so the global starts set and nothing
-    /// else reads it.
-    TaskMayBlock,
 }
 
 /// An export taken from a previously-instantiated core-Wasm
@@ -476,6 +471,10 @@ pub enum TrampolineSpec {
     Trap {
         /// The core signature the adapter imports.
         signature: CoreSignature,
+        /// The trap code, as `wasmtime-environ` numbers them. The
+        /// adapter imports one such intrinsic per code it can raise
+        /// and calls it with no arguments.
+        code: u8,
     },
     /// An adapter enters a synchronous call into another component
     /// instance.
