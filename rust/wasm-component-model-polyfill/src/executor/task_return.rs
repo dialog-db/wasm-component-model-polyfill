@@ -153,7 +153,10 @@ fn task_return<T: 'static>(
 /// scopes, which is the reference's current task. For a
 /// `cabi_realloc` the polyfill called it is the realloc's own task,
 /// whose instance may not be left, which is how the built-in refuses
-/// a realloc that calls it.
+/// a realloc that calls it. The one task that belongs to no
+/// component instance, the destructor task of a resource the host
+/// implements, runs host code only, so guest code never reaches the
+/// built-in from it; that case is an internal error, not a trap.
 fn current_task(tables: &Arc<Mutex<HandleTables>>) -> Result<(TaskId, InstanceId, bool)> {
     let guard = lock(tables)?;
     let task = guard
@@ -164,7 +167,8 @@ fn current_task(tables: &Arc<Mutex<HandleTables>>) -> Result<(TaskId, InstanceId
         .tasks
         .task(task)
         .map(|record| record.instance)
-        .ok_or_else(|| Error::internal("the current task has no record"))?;
+        .ok_or_else(|| Error::internal("the current task has no record"))?
+        .ok_or_else(|| Error::internal("the current task belongs to no component instance"))?;
     let may_leave = guard
         .tasks
         .instance(instance)
