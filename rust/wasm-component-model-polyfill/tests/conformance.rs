@@ -553,6 +553,17 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
         },
     );
     host.func_wrap("return-hi", |_, (): ()| Ok("hi".to_owned()));
+
+    // The `wasmtime` instance the runner registers beside the
+    // spectest for its own misc tests. Its `gc` collects the
+    // engine's garbage, which the polyfill's substrate does on its
+    // own, so the function is here to be called and does nothing. A
+    // file imports it to force a destructor's deferred thread into a
+    // real one partway through.
+    linker
+        .root()
+        .instance("wasmtime")
+        .func_wrap("gc", |_, (): ()| Ok(()));
 }
 
 /// Every message in an error's source chain, joined so a trap

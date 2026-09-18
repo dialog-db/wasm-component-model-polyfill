@@ -515,7 +515,7 @@ fn copy_scope(
         .tasks
         .current_task()
         .and_then(|task| guard.tasks.task(task))
-        .map(|record| record.instance);
+        .and_then(|record| record.instance);
     Ok((instance, scope))
 }
 
@@ -648,7 +648,7 @@ mod tests {
                 panic!("the enter intrinsic pushes the callee's task");
             };
             assert_eq!(
-                guard.tasks.task(task).map(|record| record.instance),
+                guard.tasks.task(task).and_then(|record| record.instance),
                 Some(callee),
                 "the task names the callee instance"
             );

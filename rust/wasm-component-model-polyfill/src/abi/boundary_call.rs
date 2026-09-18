@@ -1,24 +1,33 @@
 //! A call the polyfill itself makes into a guest.
 //!
-//! Two calls cross from the polyfill into a guest while a canonical
-//! ABI crossing is in flight. The first is the `cabi_realloc` a
+//! Three calls cross from the polyfill into a guest without the
+//! guest having asked for anything. The first is the `cabi_realloc` a
 //! crossing asks for memory with. The second is the `post-return` an
-//! export runs once the caller has observed the return value.
-//! Neither is a call into an export, and neither is the guest calling
-//! anything: the polyfill drives both.
+//! export runs once the caller has observed the return value. The
+//! third is the destructor a `resource.drop` runs, whether a guest
+//! dropped the last owning handle or the host released one of its
+//! own. None of the three is a call into an export, and none is the
+//! guest calling anything: the polyfill drives them all.
 //!
 //! The reference lifts `realloc` as a function and invokes it, so
 //! each realloc call is a task with one thread. The thread starts
 //! with zero context slots and its slots end with it, so a slot the
 //! realloc sets reaches neither the export that runs next nor the
 //! task that made the host call whose result is being lowered. The
-//! reference also clears the instance's may-leave flag around both
-//! calls, so a built-in that reads the flag traps with the
-//! cannot-leave cause for as long as one of them runs.
+//! reference lifts a destructor the same way, as a synchronous
+//! function of one `u32` parameter, so a destructor is a task with
+//! one thread under the same rule: it sees zeros, and what it sets
+//! does not reach the thread that dropped the handle.
+//!
+//! The reference clears the instance's may-leave flag around the
+//! realloc and the post-return, so a built-in that reads the flag
+//! traps with the cannot-leave cause for as long as one of them
+//! runs. It does not clear it around a destructor.
 //!
 //! [`BoundaryCall`] is that entry, held for the length of the call.
-//! Its drop undoes both halves, so a call that failed or trapped
-//! leaves neither a task on the stack nor the flag clear.
+//! Its drop undoes whichever halves the entry did, so a call that
+//! failed or trapped leaves neither a task on the stack nor the flag
+//! clear.
 
 use std::sync::{Arc, Mutex};
 
@@ -59,6 +68,35 @@ impl BoundaryCall {
         Self::enter(instance, false)
     }
 
+    /// Enter a call into the destructor of a resource: a task with
+    /// one fresh thread becomes the current scope. `instance` is the
+    /// component instance that implements the resource, and `None`
+    /// when the host does. The instance may still be left, because
+    /// the reference clears the flag around a realloc and a
+    /// post-return and not around a destructor.
+    pub fn destructor(
+        tables: &Arc<Mutex<HandleTables>>,
+        instance: Option<InstanceId>,
+    ) -> Result<Self> {
+        let mut call = Self {
+            tables: None,
+            may_leave: None,
+            task: None,
+        };
+        let mut guard = tables
+            .lock()
+            .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
+        let task = match instance {
+            Some(instance) => guard.tasks.push_task(None, None, instance),
+            None => guard.tasks.push_task_without_instance(),
+        };
+        guard.tasks.start_task(task);
+        drop(guard);
+        call.task = Some(task);
+        call.tables = Some(tables.clone());
+        Ok(call)
+    }
+
     /// Enter the call, pushing a task of its own when `as_task`.
     fn enter(instance: &BoundaryInstance, as_task: bool) -> Result<Self> {
         let mut call = Self {
@@ -96,10 +134,18 @@ impl Drop for BoundaryCall {
             return;
         };
         if let Some(task) = self.task.take() {
-            // The task carries no borrow of its own, so there is
-            // nothing for an exit to check: the scope is popped, the
-            // record and its thread are removed, and a scope a
-            // trapping call left above it goes with them.
+            // The scope is popped, the record and its thread are
+            // removed, and a scope a trapping call left above it
+            // goes with them; what an exit would add, the check
+            // that the task holds no borrow as it ends, is skipped.
+            // A realloc and a post-return carry no borrow of their
+            // own, so for them there is nothing to check. A
+            // destructor is arbitrary guest code: it can call an
+            // import and receive a borrow lowered into its own
+            // task, and the reference traps when such a task
+            // returns holding one. No directive of the corpus
+            // reaches that, and checking here would need a cause
+            // and a test of its own, so the count stays unchecked.
             guard.abandon_task(task);
         }
         if let Some((instance, old)) = self.may_leave.take() {

@@ -134,7 +134,8 @@ async fn run_with_probe(bytes: &[u8], argument: u32) -> (Val, Seen, Seen) {
                     .tasks
                     .current_task()
                     .and_then(|task| guard.tasks.task(task))
-                    .map(|record| record.instance.index() as usize),
+                    .and_then(|record| record.instance)
+                    .map(|instance| instance.index() as usize),
             };
             Ok(x)
         },
@@ -169,7 +170,8 @@ async fn run_with_probe(bytes: &[u8], argument: u32) -> (Val, Seen, Seen) {
             .tasks
             .current_task()
             .and_then(|task| guard.tasks.task(task))
-            .map(|record| record.instance.index() as usize),
+            .and_then(|record| record.instance)
+            .map(|instance| instance.index() as usize),
     };
     drop(guard);
     let during = during.lock().expect("record").clone();

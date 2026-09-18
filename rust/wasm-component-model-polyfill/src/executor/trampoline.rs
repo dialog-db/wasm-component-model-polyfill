@@ -34,6 +34,7 @@ use wasm_runtime_layer::{
     AsContextMut, Func as RuntimeFunc, FuncType, Val as RuntimeVal, ValType as CoreType,
 };
 
+use crate::abi::boundary_call::BoundaryCall;
 use crate::abi::context::BoundaryContext;
 use crate::abi::flatten::{lift_from_flat_slots, lower_into_flat_slots};
 use crate::abi::instance::BoundaryInstance;
@@ -47,7 +48,7 @@ use crate::executor::ir::{CanonOptions, LoweringSpec};
 use crate::linker::{HostCall, HostFuncBody, HostResource};
 
 use super::ResourceDestructor;
-use crate::concurrency::{Scope, SubtaskState};
+use crate::concurrency::{InstanceId, Scope, SubtaskState};
 use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime, ResourceTypeId};
 use crate::store::{StoreContext, StoreData};
 use crate::types::{PrimitiveType, ValueType};
@@ -81,13 +82,16 @@ impl<T> ResourceRuntime<T> {
         }
     }
 
-    /// Construct a runtime bundle for a locally-defined resource: a
-    /// fresh identity and an empty destructor slot that the
+    /// Construct a runtime bundle for a resource `instance` defines:
+    /// a fresh identity and an empty destructor slot that the
     /// `DefineResource` directive fills.
-    pub fn local() -> Self {
+    pub fn local(instance: InstanceId) -> Self {
         Self {
             type_id: ResourceTypeId::fresh(),
-            destructor: ResourceDestructor::Local(Arc::new(Mutex::new(None))),
+            destructor: ResourceDestructor::Local {
+                function: Arc::new(Mutex::new(None)),
+                instance,
+            },
         }
     }
 }
@@ -109,6 +113,14 @@ impl<T> Clone for ResourceRuntime<T> {
 /// keeps, and runs the host destructor with the entry's rep.
 /// Surfaces a structured ABI error if the index does not address a
 /// live entry.
+///
+/// The destructor runs as a task with one fresh thread, which is the
+/// current scope until it returns or fails: the reference lifts the
+/// destructor as a synchronous function of one `u32` parameter and
+/// lowers a call to it. The thread's context slots start at zero and
+/// end with it, so the destructor sees zeros and what it sets does
+/// not reach the thread that dropped the handle. A destructor that
+/// drops another resource nests a second task the same way.
 pub fn build_resource_drop_trampoline<T: 'static>(
     store: &mut StoreContext<'_, T>,
     table: ResourceTableRuntime,
@@ -127,11 +139,15 @@ pub fn build_resource_drop_trampoline<T: 'static>(
             let Some(rep) = drop_handle(&tables, table, index)? else {
                 return Ok(());
             };
+            // The task is entered before the destructor and ends
+            // with the guard, whether the destructor returned or
+            // failed.
+            let _call = BoundaryCall::destructor(&tables, runtime.destructor.instance())?;
             match &runtime.destructor {
                 ResourceDestructor::Host(body) => body(store_ctx.data_mut().host_mut(), rep)
                     .map_err(|err| anyhow!("resource destructor failed: {err}"))?,
-                ResourceDestructor::Local(slot) => {
-                    let destructor = slot
+                ResourceDestructor::Local { function, .. } => {
+                    let destructor = function
                         .lock()
                         .map_err(|_| anyhow!("resource destructor slot poisoned"))?
                         .clone();

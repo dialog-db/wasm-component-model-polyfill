@@ -159,6 +159,11 @@ impl<T: 'static> Store<T> {
     /// invalid-handle ABI cause; a handle lent out as a borrow cannot
     /// be released until the call that borrowed it ends.
     ///
+    /// The destructor runs as a task with one thread of its own, as
+    /// it does when a guest drops the last owning handle: it sees
+    /// two context slots of zero, and what it writes into them ends
+    /// with it.
+    ///
     /// Dropping the store instead runs no destructor: a handle the
     /// host never released is leaked, as in Wasmtime.
     pub fn resource_drop(&mut self, handle: ResourceHandle) -> Result<()> {

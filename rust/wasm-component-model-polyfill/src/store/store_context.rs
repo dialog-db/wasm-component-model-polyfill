@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use wasm_runtime_layer::{AsContextMut, StoreContextMut as RuntimeContextMut, Val as RuntimeVal};
 
+use crate::abi::boundary_call::BoundaryCall;
 use crate::backend::Backend;
 use crate::component::FunctionType;
 use crate::concurrency::{
@@ -169,14 +170,23 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// destructor runs once: the registered closure for a host
     /// resource, or the defining component's own destructor for a
     /// locally-defined one. Workspace-internal.
+    ///
+    /// The destructor runs as a task with one fresh thread, which is
+    /// the current scope until it returns or fails, exactly as a
+    /// destructor a guest's `resource.drop` runs: the reference
+    /// lifts the destructor as a synchronous function of one `u32`
+    /// parameter and lowers a call to it, whoever released the
+    /// handle. The thread's slots start at zero and end with it.
     pub fn resource_drop(&mut self, handle: ResourceHandle) -> Result<()> {
         let rep = self.store_data().remove_host_handle(handle)?;
         let Some(destructor) = self.store_data().destructor(handle.type_id) else {
             return Ok(());
         };
+        let tables = self.tables_handle();
+        let _call = BoundaryCall::destructor(&tables, destructor.instance())?;
         match destructor {
             ResourceDestructor::Host(body) => body(self.data_mut(), rep),
-            ResourceDestructor::Local(slot) => {
+            ResourceDestructor::Local { function: slot, .. } => {
                 let function = slot
                     .lock()
                     .map_err(|_| Error::internal("resource destructor slot poisoned"))?
@@ -819,7 +829,9 @@ mod tests {
     use wcmp_macros::component;
 
     use crate::component::Component;
-    use crate::concurrency::{Driver, Event, HostTask, ItemKind, SuspendProvider, WaitableId};
+    use crate::concurrency::{
+        Driver, Event, HostTask, ItemKind, Scope, SuspendProvider, WaitableId,
+    };
     use crate::engine::Engine;
     use crate::error::SchedulerCause;
     use crate::linker::{HostCall, Linker};
@@ -2016,6 +2028,134 @@ mod tests {
             0,
             "the task the call blocked on stayed in the frame that started it, \
              so the store holds none"
+        );
+    }
+
+    /// What a host destructor saw of the store's records while it
+    /// ran.
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    struct SeenByDestructor {
+        /// How deep the stack of current scopes was.
+        scopes: usize,
+        /// How many task records the store held.
+        tasks: usize,
+        /// How many thread records the store held.
+        threads: usize,
+        /// Whether the current scope was a task.
+        current_is_task: bool,
+        /// The context slots of the current thread.
+        context: [i32; 2],
+    }
+
+    /// Read the store's records as the destructor on the stack sees
+    /// them, then write `value` into slot 0 of the current thread,
+    /// which is what a `context.set` in a guest destructor does.
+    fn record_and_set(tables: &Arc<Mutex<HandleTables>>, value: i32) -> SeenByDestructor {
+        let mut guard = tables.lock().expect("handle tables");
+        let thread = guard.tasks.current_thread();
+        let seen = SeenByDestructor {
+            scopes: guard.tasks.scopes().len(),
+            tasks: guard.tasks.task_count(),
+            threads: guard.tasks.thread_count(),
+            current_is_task: matches!(guard.tasks.current_scope(), Some(Scope::Task(_))),
+            context: thread
+                .and_then(|thread| guard.tasks.thread(thread))
+                .map(|record| record.context)
+                .unwrap_or([0; 2]),
+        };
+        if let Some(record) = thread.and_then(|thread| guard.tasks.thread_mut(thread)) {
+            record.context[0] = value;
+        }
+        seen
+    }
+
+    /// The scopes, tasks, and threads the store holds now.
+    fn records(store: &Store<()>) -> (usize, usize, usize) {
+        let guard = store.tables().lock().expect("handle tables");
+        (
+            guard.tasks.scopes().len(),
+            guard.tasks.task_count(),
+            guard.tasks.thread_count(),
+        )
+    }
+
+    #[wcmp_macros::test]
+    fn it_runs_a_host_resource_destructor_as_a_task_with_one_thread() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+        let tables = store.tables_handle();
+        let seen: Arc<Mutex<Option<SeenByDestructor>>> = Arc::new(Mutex::new(None));
+        let recorded = seen.clone();
+
+        let type_id = ResourceTypeId::fresh();
+        store.register_destructor(
+            type_id,
+            ResourceDestructor::Host(Arc::new(move |_data: &mut (), _rep: u32| {
+                *recorded.lock().expect("record") = Some(record_and_set(&tables, 0xdead));
+                Ok(())
+            })),
+        );
+        let handle = store.resource_new(type_id, 7).expect("mint a handle");
+
+        store.resource_drop(handle).expect("the host releases it");
+
+        assert_eq!(
+            seen.lock().expect("record").clone(),
+            Some(SeenByDestructor {
+                scopes: 1,
+                tasks: 1,
+                threads: 1,
+                current_is_task: true,
+                context: [0, 0],
+            }),
+            "the destructor ran as the current scope, on a task with one fresh \
+             thread whose context slots started at zero"
+        );
+        assert_eq!(
+            records(&store),
+            (0, 0, 0),
+            "the task, its thread, and the slot it set all ended with the \
+             destructor, so nothing of it reaches the host that dropped the \
+             handle"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_ends_the_destructor_task_when_a_host_destructor_fails() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+        let tables = store.tables_handle();
+        let seen: Arc<Mutex<Option<SeenByDestructor>>> = Arc::new(Mutex::new(None));
+        let recorded = seen.clone();
+
+        let type_id = ResourceTypeId::fresh();
+        store.register_destructor(
+            type_id,
+            ResourceDestructor::Host(Arc::new(move |_data: &mut (), _rep: u32| {
+                *recorded.lock().expect("record") = Some(record_and_set(&tables, 0xdead));
+                Err(Error::internal("the destructor failed"))
+            })),
+        );
+        let handle = store.resource_new(type_id, 7).expect("mint a handle");
+
+        let released = store.resource_drop(handle);
+
+        assert!(
+            released.is_err(),
+            "the failing destructor failed the release"
+        );
+        assert_eq!(
+            seen.lock()
+                .expect("record")
+                .as_ref()
+                .map(|seen| seen.current_is_task),
+            Some(true),
+            "the destructor's task was the current scope while it ran"
+        );
+        assert_eq!(
+            records(&store),
+            (0, 0, 0),
+            "nothing of the failed destructor is left in the store"
         );
     }
 }

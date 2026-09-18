@@ -72,6 +72,24 @@ pub fn instantiate<T: 'static>(
 ) -> Result<Instance> {
     let ir: &ExecutorIr = &component.ir;
 
+    // One instance record per component instance of this
+    // instantiation: the entry gate, the backpressure counter, the
+    // exclusive thread, and the two flags a call consults. The
+    // adapters name their instances by the translator's index, which
+    // this list maps onto the store-wide identity. The records come
+    // first because a resource this component defines names the
+    // instance that defines it, which is the instance its
+    // destructor's task belongs to.
+    let component_instances: Vec<InstanceId> = {
+        let mut guard = store
+            .tables()
+            .lock()
+            .map_err(|_| internal("resource handle tables lock poisoned"))?;
+        (0..ir.num_component_instances)
+            .map(|_| guard.tasks.insert_instance())
+            .collect()
+    };
+
     // Resolve each `ResourceSpec` against the linker's registered
     // host resources before building the runtime state. The host
     // destructor closure is captured by every resource trampoline
@@ -79,7 +97,11 @@ pub fn instantiate<T: 'static>(
     let mut resource_runtimes: Vec<ResourceRuntime<T>> = Vec::with_capacity(ir.resources.len());
     for spec in ir.resources.iter() {
         resource_runtimes.push(resolve_resource_runtime(
-            linker, component, resolution, spec,
+            linker,
+            component,
+            resolution,
+            spec,
+            &component_instances,
         )?);
     }
 
@@ -108,26 +130,14 @@ pub fn instantiate<T: 'static>(
                         type_id: runtime.type_id,
                         resource_index: spec.resource_index,
                         defining: spec.defining,
-                        guest_defined: matches!(runtime.destructor, ResourceDestructor::Local(_)),
+                        guest_defined: matches!(
+                            runtime.destructor,
+                            ResourceDestructor::Local { .. }
+                        ),
                     })
             })
         })
         .collect();
-
-    // One instance record per component instance of this
-    // instantiation: the entry gate, the backpressure counter, the
-    // exclusive thread, and the two flags a call consults. The
-    // adapters name their instances by the translator's index, which
-    // this list maps onto the store-wide identity.
-    let component_instances: Vec<InstanceId> = {
-        let mut guard = store
-            .tables()
-            .lock()
-            .map_err(|_| internal("resource handle tables lock poisoned"))?;
-        (0..ir.num_component_instances)
-            .map(|_| guard.tasks.insert_instance())
-            .collect()
-    };
 
     let abi_state = Arc::new(Mutex::new(AbiRuntimeState::with_slabs(
         ir.num_runtime_memories,
@@ -226,8 +236,10 @@ pub fn instantiate<T: 'static>(
                     .get(*resource_index)
                     .zip(ir.resources.get(*resource_index))
                     .ok_or_else(|| internal("DefineResource resource_index out of bounds"))?;
-                let (ResourceSpec::Local { destructor, .. }, ResourceDestructor::Local(slot)) =
-                    (spec, &runtime.destructor)
+                let (
+                    ResourceSpec::Local { destructor, .. },
+                    ResourceDestructor::Local { function: slot, .. },
+                ) = (spec, &runtime.destructor)
                 else {
                     return Err(internal(
                         "DefineResource directive names a resource that is not locally defined",
@@ -483,9 +495,15 @@ fn resolve_resource_runtime<T: 'static>(
     component: &Component,
     resolution: &Resolution,
     spec: &ResourceSpec,
+    component_instances: &[InstanceId],
 ) -> Result<ResourceRuntime<T>> {
     let (import_index, path) = match spec {
-        ResourceSpec::Local { .. } => return Ok(ResourceRuntime::local()),
+        ResourceSpec::Local { instance, .. } => {
+            let instance = *component_instances
+                .get(*instance)
+                .ok_or_else(|| internal("a locally-defined resource names an unknown instance"))?;
+            return Ok(ResourceRuntime::local(instance));
+        }
         ResourceSpec::Imported { import_index, path } => (*import_index, path),
     };
     let (registration, label) =

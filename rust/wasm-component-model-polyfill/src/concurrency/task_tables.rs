@@ -118,6 +118,17 @@ impl TaskTables {
         options: Option<CanonOptions>,
         instance: InstanceId,
     ) -> TaskId {
+        self.create(function, options, Some(instance))
+    }
+
+    /// Create a task, whether or not it belongs to a component
+    /// instance, with its implicit thread.
+    fn create(
+        &mut self,
+        function: Option<FunctionType>,
+        options: Option<CanonOptions>,
+        instance: Option<InstanceId>,
+    ) -> TaskId {
         let index = self.tasks.next_index();
         let task = TaskId::new(index, self.tasks.generation(index));
         let (thread_index, thread_generation) =
@@ -152,6 +163,19 @@ impl TaskTables {
         instance: InstanceId,
     ) -> TaskId {
         let task = self.create_task(function, options, instance);
+        self.scopes.push(Scope::Task(task));
+        task
+    }
+
+    /// Create a task that belongs to no component instance and push
+    /// it as the current scope, with its implicit thread.
+    ///
+    /// The one such task is the destructor of a resource the host
+    /// implements: the host releases the handle with no guest on the
+    /// stack, and the destructor is a closure of its own rather than
+    /// a core function of some instance.
+    pub fn push_task_without_instance(&mut self) -> TaskId {
+        let task = self.create(None, None, None);
         self.scopes.push(Scope::Task(task));
         task
     }

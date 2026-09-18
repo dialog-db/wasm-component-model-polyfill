@@ -350,7 +350,7 @@ impl HandleTables {
             .tasks
             .thread_mut(thread)
             .and_then(|record| record.old_may_not_suspend.take());
-        if let Some(old) = restore {
+        if let (Some(instance), Some(old)) = (instance, restore) {
             self.tasks.set_may_not_suspend(instance, old);
         }
     }

@@ -138,7 +138,7 @@ impl<T: 'static> StoreData<T> {
     pub fn is_guest_defined(&self, type_id: ResourceTypeId) -> bool {
         matches!(
             self.destructors.get(&type_id),
-            Some(ResourceDestructor::Local(_))
+            Some(ResourceDestructor::Local { .. })
         )
     }
 
@@ -278,7 +278,8 @@ impl<T: 'static> StoreData<T> {
             return false;
         };
         task.and_then(|task| guard.tasks.task(task))
-            .and_then(|record| guard.tasks.instance(record.instance))
+            .and_then(|record| record.instance)
+            .and_then(|instance| guard.tasks.instance(instance))
             .map(|record| record.may_not_suspend)
             .unwrap_or(false)
     }

@@ -43,6 +43,11 @@ registers none of the other four: `host.never-return`,
 `host.[method]resource1.never-return`. A file that imports one of the
 four fails as a `deferred-feature`.
 
+The harness also registers the `wasmtime` instance the runner provides
+beside the spectest for its own misc tests, with the one item a file
+of the corpus imports: `gc`, whose function does nothing, because the
+polyfill's substrate collects its own garbage.
+
 The test `it_reports_conformance_progress` runs every file in one
 process and prints a summary per corpus directory: directives, passes,
 the pass percentage, and the expected failures per category. The
@@ -90,8 +95,8 @@ lines of `expected-failures.web.txt`):
 | `cm/async`       | 393        | 19     | 4.8    | deferred-feature 374                                          |
 | `fixtures`       | 17         | 17     | 100.0  | none                                                          |
 | `wasmtime`       | 469        | 428    | 91.3   | deferred-feature 3, substrate 8, cascade 30                   |
-| `wasmtime/async` | 387        | 58     | 15.0   | deferred-feature 329                                          |
-| total            | 2392       | 1556   | 65.1   | deferred-feature 708, substrate 12, validation 20, cascade 96 |
+| `wasmtime/async` | 387        | 66     | 17.1   | deferred-feature 321                                          |
+| total            | 2392       | 1564   | 65.4   | deferred-feature 700, substrate 12, validation 20, cascade 96 |
 
 The `async` rows hold the pass rate down: the polyfill does not
 implement asynchronous functions yet, so almost every directive there

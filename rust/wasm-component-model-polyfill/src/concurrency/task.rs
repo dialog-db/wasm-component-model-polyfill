@@ -32,8 +32,13 @@ pub struct Task {
     /// The canon options of the export's lift, under the same rule
     /// as `function`.
     pub options: Option<CanonOptions>,
-    /// The component instance the export belongs to.
-    pub instance: InstanceId,
+    /// The component instance the export belongs to. `None` for the
+    /// one task that belongs to no component instance: the
+    /// destructor of a resource the host implements, which the host
+    /// releases with no guest in sight. The reference gives every
+    /// resource type an implementing component instance and lifts
+    /// the destructor there; a resource the host registered has none.
+    pub instance: Option<InstanceId>,
     /// How far the call has got.
     pub state: TaskState,
     /// The borrows the task received and has not yet seen dropped.
@@ -57,7 +62,7 @@ impl Task {
     pub fn new(
         function: Option<FunctionType>,
         options: Option<CanonOptions>,
-        instance: InstanceId,
+        instance: Option<InstanceId>,
         implicit_thread: ThreadId,
     ) -> Self {
         Self {

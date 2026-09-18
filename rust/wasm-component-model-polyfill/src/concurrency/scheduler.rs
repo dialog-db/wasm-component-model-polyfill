@@ -306,7 +306,7 @@ impl<T: 'static> Scheduler<T> {
             return;
         };
         let (thread, instance) = (record.implicit_thread, record.instance);
-        let Some(record) = tables.instance_mut(instance) else {
+        let Some(record) = instance.and_then(|instance| tables.instance_mut(instance)) else {
             return;
         };
         if record.exclusive_thread == Some(thread) {

@@ -541,14 +541,6 @@ wasmtime/async/context-in-compositions.wast:434 deferred-feature no instance to 
 wasmtime/async/context-in-compositions.wast:435 deferred-feature no instance to invoke
 wasmtime/async/context-in-compositions.wast:436 deferred-feature no instance to invoke
 wasmtime/async/context-in-compositions.wast:437 deferred-feature no instance to invoke
-wasmtime/async/context-in-resource-drop.wast:50 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x5c - M!<wasm function 5>: resource destructor failed: error while executing at wasm backtrace: 0: 0x4b - Dtor!<wasm function 2> 1: 0x5c - M!<wasm function 5>
-wasmtime/async/context-in-resource-drop.wast:154 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x67 - M!<wasm function 6>: resource destructor failed: error while executing at wasm backtrace: 0: 0x61 - Dtor1!<wasm function 4> 1: 0x67 - M!<wasm function 6>
-wasmtime/async/context-in-resource-drop.wast:242 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x5d - N!<wasm function 5>: resource destructor failed: error while executing at wasm backtrace: 0: 0x4b - Dtor!<wasm function 2> 1: 0x5d - N!<wasm function 5>
-wasmtime/async/context-in-resource-drop.wast:248 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `wasmtime`: no registered linker instance satisfies import `wasmtime`
-wasmtime/async/context-in-resource-drop.wast:325 deferred-feature no instance to invoke
-wasmtime/async/context-in-resource-drop.wast:326 deferred-feature no instance to invoke
-wasmtime/async/context-in-resource-drop.wast:327 deferred-feature no instance to invoke
-wasmtime/async/context-in-resource-drop.wast:328 deferred-feature no instance to invoke
 wasmtime/async/drop-deadlock.wast:25 deferred-feature expected a trap `cannot make further progress`, got `unsupported component feature: host calls into an asynchronous export`
 wasmtime/async/drop-host.wast:5 deferred-feature component rejected: unsupported component feature: asynchronous function types on imports (imports `return-two-slowly`, which has no host task registered)
 wasmtime/async/drop-host.wast:56 deferred-feature expected a trap `cannot drop a subtask which has not yet resolved`, got `no instance to invoke`
