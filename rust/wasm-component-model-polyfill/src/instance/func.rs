@@ -112,6 +112,14 @@ impl Func {
         if store.id() != self.store_id {
             return Err(Error::from(InstantiationError::WrongStore));
         }
+        // A call into an export lifted `async` is a task that
+        // returns a status word and produces its result through
+        // `task.return`. The runtime that reads the word is not
+        // built yet, so the call is refused here rather than lifting
+        // the word as though it were the export's result.
+        if self.options.async_ {
+            return Err(Error::unsupported("host calls into an asynchronous export"));
+        }
         if args.len() != self.signature.parameters.len() {
             return Err(Error::from(AbiError {
                 position: AbiPosition::Argument(0),
@@ -179,8 +187,8 @@ impl Func {
 
         // A synchronous export's task ignores the entry gate, as the
         // reference states: the gate applies to a task whose function
-        // type is `async`, and every export the polyfill lifts today
-        // is synchronous. The exclusive flag is the reference's
+        // type is `async`, and a call into such an export is refused
+        // above. The exclusive flag is the reference's
         // `not opts.async or opts.callback`, which is true here; the
         // gate reads it only for a task that does wait at it.
         store.start_export_thread(task, instance_id, false, true, item)?;

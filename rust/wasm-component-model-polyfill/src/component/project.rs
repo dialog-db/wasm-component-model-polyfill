@@ -201,11 +201,13 @@ impl<'a> TypeProjector<'a> {
     }
 
     /// Project one component-level function type.
+    ///
+    /// An `async` function type is projected with its flag set. The
+    /// projection is the same for an import and for an export; the
+    /// caller refuses an `async` import, because no host function
+    /// the polyfill registers can satisfy one.
     pub fn function(&self, index: TypeFuncIndex) -> Result<FunctionType> {
         let func = &self.types[index];
-        if func.async_ {
-            return Err(Error::unsupported("asynchronous functions"));
-        }
         let params = &self.types[func.params].types;
         let mut parameters = Vec::with_capacity(params.len());
         for (i, ty) in params.iter().enumerate() {
@@ -225,7 +227,11 @@ impl<'a> TypeProjector<'a> {
             1 => Some(self.value_type(&results[0])?),
             _ => return Err(Error::unsupported("functions with more than one result")),
         };
-        Ok(FunctionType { parameters, result })
+        Ok(FunctionType {
+            parameters,
+            result,
+            async_: func.async_,
+        })
     }
 
     /// Project one instance type into the polyfill's typed bag of

@@ -294,6 +294,7 @@ async fn it_defines_an_untyped_host_function() {
                 ty: ValueType::Primitive(PrimitiveType::S32),
             }],
             result: Some(ValueType::Primitive(PrimitiveType::S32)),
+            async_: false,
         },
         |_data, args, results| {
             let Val::S32(n) = args[0] else {
@@ -652,6 +653,7 @@ async fn it_passes_a_string_argument_to_a_host_function() {
                 ty: ValueType::Primitive(PrimitiveType::String),
             }],
             result: None,
+            async_: false,
         },
         |mut observed: HostCall<'_, Arc<Mutex<Option<String>>>>, args, _| {
             let Val::String(s) = &args[0] else {
@@ -710,6 +712,7 @@ async fn it_propagates_a_host_function_error_through_the_call() {
         FunctionType {
             parameters: Vec::new(),
             result: None,
+            async_: false,
         },
         |_: HostCall<'_, ()>, _args, _results| {
             Err(Error::Internal {
@@ -1675,6 +1678,7 @@ async fn it_links_a_resource_nested_two_levels() {
         FunctionType {
             parameters: vec![],
             result: Some(ValueType::Own(ResourceType::new("r"))),
+            async_: false,
         },
         move |call, _, results| {
             results[0] = Val::Own(call.resource_new(r, 42)?);

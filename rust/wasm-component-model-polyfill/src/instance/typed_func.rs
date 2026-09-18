@@ -115,9 +115,14 @@ impl Func {
         P: ComponentParameters,
         R: ComponentResult,
     {
+        // The requested type is never `async`: a host's Rust tuple
+        // says nothing about the effect, and `signatures_compatible`
+        // ignores the flag, so a typed handle to a callback export
+        // is acquired with the same call a synchronous export takes.
         let requested = FunctionType {
             parameters: P::parameter_types(),
             result: R::result_type(),
+            async_: false,
         };
         if !signatures_compatible(&self.signature, &requested) {
             return Err(Error::from(TypeMismatch {
@@ -134,7 +139,11 @@ impl Func {
 
 /// Two function types are compatible for the typed-conversion entry
 /// point when their parameter and result `ValueType`s match
-/// positionally and structurally. Parameter *names* are ignored: the
+/// positionally and structurally. The `async` flag is ignored too: a
+/// callback export and a synchronous export of the same shape take
+/// the same arguments and produce the same result, so a host
+/// acquires a typed handle to either with the same code.
+/// Parameter *names* are ignored as well: the
 /// component-side declares the names of the parameters in WIT, but
 /// the host's typed-conversion call site supplies a Rust tuple
 /// without names — the polyfill synthesises `arg0, arg1, …` for the

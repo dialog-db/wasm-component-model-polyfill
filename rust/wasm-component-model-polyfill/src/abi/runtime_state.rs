@@ -1,10 +1,10 @@
 //! The canonical-ABI runtime state of one instantiation.
 //!
 //! A `canon lift` or `canon lower` names its memory, its
-//! `cabi_realloc`, and its `post-return` by index into slabs the
-//! executor's `Extract*` directives fill during instantiation. This
-//! is those slabs, with the resource tables and the component
-//! instances the same instantiation produced.
+//! `cabi_realloc`, its `post-return`, and its callback by index into
+//! slabs the executor's `Extract*` directives fill during
+//! instantiation. This is those slabs, with the resource tables and
+//! the component instances the same instantiation produced.
 //!
 //! The state lives under [`crate::abi`] because the memory and the
 //! `cabi_realloc` it holds are the guest's, and the lift and lower
@@ -31,6 +31,10 @@ pub struct AbiRuntimeState {
     /// Every `post-return` the instantiation extracted, by runtime
     /// slot.
     pub post_returns: Vec<Option<RuntimeFunc>>,
+    /// Every callback the instantiation extracted, by runtime slot.
+    /// The callback of an export lifted `canon lift async (callback
+    /// ...)` is resumed once per event the export's task receives.
+    pub callbacks: Vec<Option<RuntimeFunc>>,
     /// Every resource table of the instance, by the translator's
     /// table index: the table created for this instantiation, the
     /// identity of the resource type it holds, and whether the table's
@@ -50,6 +54,7 @@ impl AbiRuntimeState {
         num_memories: usize,
         num_reallocs: usize,
         num_post_returns: usize,
+        num_callbacks: usize,
         resource_tables: Vec<Option<ResourceTableRuntime>>,
         component_instances: Vec<InstanceId>,
     ) -> Self {
@@ -57,6 +62,7 @@ impl AbiRuntimeState {
             memories: vec![None; num_memories],
             reallocs: vec![None; num_reallocs],
             post_returns: vec![None; num_post_returns],
+            callbacks: vec![None; num_callbacks],
             resource_tables,
             component_instances,
         }

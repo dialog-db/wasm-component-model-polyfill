@@ -300,6 +300,7 @@ async fn it_gives_back_a_borrow_lent_to_a_host_call_whose_parameter_lift_failed(
                 },
             ],
             result: None,
+            async_: false,
         },
         |_: HostCall<'_, ()>, _args, _results| {
             panic!("the second parameter never lifts, so the host body never runs")

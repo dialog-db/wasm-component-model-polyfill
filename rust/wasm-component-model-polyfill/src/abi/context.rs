@@ -368,6 +368,8 @@ mod tests {
             memory: None,
             realloc: None,
             post_return: None,
+            async_: false,
+            callback: None,
             string_encoding: StringEncoding::Utf8,
             data_model,
         }
@@ -377,6 +379,7 @@ mod tests {
     /// no filled slot.
     fn state(instance: InstanceId) -> Arc<Mutex<AbiRuntimeState>> {
         Arc::new(Mutex::new(AbiRuntimeState::with_slabs(
+            0,
             0,
             0,
             0,
@@ -393,6 +396,7 @@ mod tests {
                 ty: ValueType::Primitive(PrimitiveType::U32),
             }],
             result: Some(ValueType::Primitive(PrimitiveType::U32)),
+            async_: false,
         }
     }
 

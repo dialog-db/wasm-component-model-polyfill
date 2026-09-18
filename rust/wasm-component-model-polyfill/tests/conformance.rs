@@ -485,6 +485,7 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
             })
             .collect(),
         result,
+        async_: false,
     };
 
     host.func_new(

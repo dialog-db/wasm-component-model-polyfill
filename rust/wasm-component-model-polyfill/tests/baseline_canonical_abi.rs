@@ -167,6 +167,7 @@ async fn it_passes_a_record_argument_to_a_host_function() {
                 ty: record_ty,
             }],
             result: Some(ValueType::Primitive(PrimitiveType::S32)),
+            async_: false,
         },
         |_: HostCall<'_, ()>, args, results| {
             let Val::Record(fields) = &args[0] else {
@@ -384,6 +385,7 @@ async fn it_passes_a_variant_argument_to_a_host_function() {
                 ty: variant_ty,
             }],
             result: Some(ValueType::Primitive(PrimitiveType::S32)),
+            async_: false,
         },
         |_: HostCall<'_, ()>, args, results| {
             let Val::Variant {
@@ -550,6 +552,7 @@ async fn it_passes_an_enum_argument_to_a_host_function() {
                 ty: ValueType::Enum(EnumType::new(["red".into(), "green".into(), "blue".into()])),
             }],
             result: Some(ValueType::Primitive(PrimitiveType::S32)),
+            async_: false,
         },
         |_: HostCall<'_, ()>, args, results| {
             let Val::Enum(case) = &args[0] else {
@@ -633,6 +636,7 @@ async fn it_passes_a_flags_argument_to_a_host_function() {
                 ])),
             }],
             result: Some(ValueType::Primitive(PrimitiveType::U32)),
+            async_: false,
         },
         |_: HostCall<'_, ()>, args, results| {
             let Val::Flags(active) = &args[0] else {
@@ -1190,6 +1194,7 @@ async fn it_observes_cabi_realloc_alignment_for_record_allocations() {
                 ty: ValueType::Primitive(PrimitiveType::U32),
             }],
             result: None,
+            async_: false,
         },
         |mut observed: HostCall<'_, Arc<Mutex<Vec<u32>>>>, args, _| {
             let Val::U32(alignment) = args[0] else {
@@ -1365,6 +1370,7 @@ async fn it_spills_a_wide_parameter_tuple_when_calling_a_host_function() {
                 })
                 .collect(),
             result: Some(ValueType::Primitive(PrimitiveType::U32)),
+            async_: false,
         },
         |_: HostCall<'_, ()>, args, results| {
             assert_eq!(args.len(), 17);

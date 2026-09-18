@@ -2,9 +2,9 @@
 //!
 //! A `canon lift` or `canon lower` declares its options as indexes
 //! into the runtime slabs the executor's `Extract*` directives fill:
-//! a memory, a `cabi_realloc`, a `post-return`, a string encoding,
-//! and a data model. [`BoundaryOptions`] is that bundle once the
-//! slots are read, so the crossing holds the memory and the
+//! a memory, a `cabi_realloc`, a `post-return`, a callback, a string
+//! encoding, and a data model. [`BoundaryOptions`] is that bundle
+//! once the slots are read, so the crossing holds the memory and the
 //! functions themselves rather than the indexes that name them.
 //!
 //! Resolving the slots is the reason this type lives under
@@ -46,6 +46,10 @@ pub struct BoundaryOptions {
     /// The export's `post-return`, run once the caller has observed
     /// the return value.
     post_return: Option<RuntimeFunc>,
+    /// The export's callback, resumed once per event the task of an
+    /// asynchronous call receives. Only a lift that declared the
+    /// `async` option has one.
+    callback: Option<RuntimeFunc>,
     /// The encoding a `string`-typed value crosses in.
     string_encoding: StringEncoding,
     /// Where the values of the crossing live.
@@ -54,9 +58,10 @@ pub struct BoundaryOptions {
 
 impl BoundaryOptions {
     /// Resolve the canon options `declared` against a runtime state
-    /// the caller has already locked: the memory, `cabi_realloc`, and
-    /// `post-return` slots the `Extract*` directives filled, and the
-    /// identity of the component instance the options name.
+    /// the caller has already locked: the memory, `cabi_realloc`,
+    /// `post-return`, and callback slots the `Extract*` directives
+    /// filled, and the identity of the component instance the
+    /// options name.
     ///
     /// The lock is the caller's because a call site needs the
     /// instance's tables along with the options, and both come out of
@@ -78,6 +83,9 @@ impl BoundaryOptions {
             post_return: declared
                 .post_return
                 .and_then(|slot| state.post_returns.get(slot).and_then(|f| f.clone())),
+            callback: declared
+                .callback
+                .and_then(|slot| state.callbacks.get(slot).and_then(|f| f.clone())),
             string_encoding: declared.string_encoding,
             data_model: declared.data_model,
         }
@@ -105,6 +113,7 @@ impl BoundaryOptions {
             memory: Some(memory),
             realloc: None,
             post_return: None,
+            callback: None,
             string_encoding: StringEncoding::Utf8,
             data_model: DataModel::LinearMemory,
         })
@@ -136,6 +145,15 @@ impl BoundaryOptions {
     /// The export's `post-return`.
     pub fn post_return(&self) -> Option<&RuntimeFunc> {
         self.post_return.as_ref()
+    }
+
+    /// The export's callback. Nothing resumes one yet: a host call
+    /// into an asynchronous export is refused until the call is
+    /// built, and the callback is extracted and handed out so that
+    /// the call finds it here when it is.
+    #[allow(dead_code)]
+    pub fn callback(&self) -> Option<&RuntimeFunc> {
+        self.callback.as_ref()
     }
 
     /// The encoding a `string`-typed value crosses in.

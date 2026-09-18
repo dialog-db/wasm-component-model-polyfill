@@ -19,7 +19,7 @@ use crate::module::Module;
 /// instantiation, then walks `exports` to expose component-level
 /// function handles.
 ///
-/// The four `num_runtime_*` fields name the slab sizes the
+/// The five `num_runtime_*` fields name the slab sizes the
 /// initializers populate. Slot ordering matches the order in which
 /// the corresponding `Extract*` / `LowerImport` initializer
 /// produces its entry. `CanonOptions` and `ImportSource::Trampoline`
@@ -80,6 +80,9 @@ pub struct ExecutorIr {
     /// The number of runtime post-return slots
     /// `Initializer::ExtractPostReturn` populates.
     pub num_runtime_post_returns: usize,
+    /// The number of runtime callback slots
+    /// `Initializer::ExtractCallback` populates.
+    pub num_runtime_callbacks: usize,
     /// The number of component instances the component contains,
     /// counting nested components. Each carries a `may_leave` flags
     /// global that adapter modules import through
@@ -217,6 +220,18 @@ pub enum Initializer {
         /// Where the underlying core function comes from.
         source: ImportSource,
     },
+
+    /// Extract a core function and bind it to the next runtime-
+    /// callback slot. The callback of an export lifted `canon lift
+    /// async (callback ...)` is resumed once per event the task
+    /// receives, and the validator has already checked that its
+    /// core type is `(func (param i32 i32 i32) (result i32))`.
+    ExtractCallback {
+        /// The runtime-callback slot this directive populates.
+        slot: usize,
+        /// Where the underlying core function comes from.
+        source: ImportSource,
+    },
 }
 
 /// One import an imported core module receives, by the two-level
@@ -324,6 +339,15 @@ pub struct CanonOptions {
     /// [`ExecutorIr`]. `None` when the function does not declare a
     /// post-return option.
     pub post_return: Option<usize>,
+    /// Whether the lift or lower declared the `async` option. A
+    /// lift that declares it returns a status word instead of the
+    /// result, and names the callback below.
+    pub async_: bool,
+    /// Index into the `num_runtime_callbacks` slab on
+    /// [`ExecutorIr`]. `None` when the function declares no
+    /// callback, which for a lift that is `async_` is the stackful
+    /// form the polyfill refuses at translation.
+    pub callback: Option<usize>,
     /// The string encoding the lift or lower uses for
     /// `string`-typed values.
     pub string_encoding: StringEncoding,

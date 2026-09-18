@@ -132,6 +132,7 @@ pub fn instantiate<T: 'static>(
         ir.num_runtime_memories,
         ir.num_runtime_reallocs,
         ir.num_runtime_post_returns,
+        ir.num_runtime_callbacks,
         resource_tables,
         component_instances,
     )));
@@ -283,6 +284,22 @@ pub fn instantiate<T: 'static>(
                     *s = Some(post_return);
                 } else {
                     return Err(internal("ExtractPostReturn slot out of bounds"));
+                }
+            }
+            Initializer::ExtractCallback { slot, source } => {
+                let extern_value = resolve_source(ir, &items, store, source)?;
+                let RuntimeExtern::Func(callback) = extern_value else {
+                    return Err(internal(
+                        "ExtractCallback directive resolved to a non-function item",
+                    ));
+                };
+                let mut state = abi_state
+                    .lock()
+                    .map_err(|_| internal("ABI state poisoned"))?;
+                if let Some(s) = state.callbacks.get_mut(*slot) {
+                    *s = Some(callback);
+                } else {
+                    return Err(internal("ExtractCallback slot out of bounds"));
                 }
             }
         }

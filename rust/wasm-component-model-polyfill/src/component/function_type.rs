@@ -16,6 +16,16 @@ pub struct FunctionType {
     pub parameters: Vec<FunctionParameter>,
     /// The function's optional result type.
     pub result: Option<ValueType>,
+    /// Whether the type carries the `async` effect.
+    ///
+    /// A call of an `async` function is a task: the callee returns
+    /// a status word rather than the lifted result, and produces
+    /// the result through `task.return`. The polyfill reports the
+    /// fact under the name Wasmtime gives it,
+    /// `ComponentFunc::async_`. The typed conversion ignores the
+    /// flag, because the parameters and the result of the two
+    /// forms are the same.
+    pub async_: bool,
 }
 
 /// A single named parameter of a [`FunctionType`].

@@ -649,6 +649,7 @@ async fn it_shares_a_single_resource_type_across_two_imported_interfaces() {
         FunctionType {
             parameters: Vec::new(),
             result: Some(ValueType::Own(ResourceType::new("thing"))),
+            async_: false,
         },
         move |call: HostCall<'_, Vec<u32>>, _args, results| {
             results[0] = Val::Own(call.resource_new(type_id, 9)?);
@@ -663,6 +664,7 @@ async fn it_shares_a_single_resource_type_across_two_imported_interfaces() {
                 ty: ValueType::Own(ResourceType::new("thing")),
             }],
             result: None,
+            async_: false,
         },
         |mut call: HostCall<'_, Vec<u32>>, args, _results| {
             let Val::Own(handle) = &args[0] else {
@@ -706,6 +708,7 @@ async fn it_rejects_two_identities_for_one_declared_resource_type() {
         FunctionType {
             parameters: Vec::new(),
             result: Some(ValueType::Own(ResourceType::new("thing"))),
+            async_: false,
         },
         move |call: HostCall<'_, ()>, _args, results| {
             results[0] = Val::Own(call.resource_new(type_id, 1)?);
@@ -720,6 +723,7 @@ async fn it_rejects_two_identities_for_one_declared_resource_type() {
                 ty: ValueType::Own(ResourceType::new("thing")),
             }],
             result: None,
+            async_: false,
         },
         |_: HostCall<'_, ()>, _args, _results| Ok(()),
     );
@@ -774,6 +778,7 @@ async fn it_lets_a_host_function_mint_a_resource_handle_during_a_guest_call() {
         FunctionType {
             parameters: Vec::new(),
             result: Some(ValueType::Own(ResourceType::new("thing"))),
+            async_: false,
         },
         move |call: HostCall<'_, ()>, _args, results| {
             results[0] = Val::Own(call.resource_new(type_id, 42)?);
@@ -817,6 +822,7 @@ async fn it_rejects_a_host_mint_against_an_unknown_resource_type() {
         FunctionType {
             parameters: Vec::new(),
             result: Some(ValueType::Own(ResourceType::new("thing"))),
+            async_: false,
         },
         move |call: HostCall<'_, ()>, _args, results| {
             results[0] = Val::Own(call.resource_new(stranger, 1)?);
@@ -1014,6 +1020,7 @@ async fn borrower_instance() -> (
             result: Some(ValueType::Primitive(
                 wasm_component_model_polyfill::PrimitiveType::U32,
             )),
+            async_: false,
         },
         |_: HostCall<'_, ()>, args, results| {
             let Val::Borrow(handle) = &args[0] else {
@@ -1180,6 +1187,7 @@ async fn disposal_store() -> (
             result: Some(ValueType::Primitive(
                 wasm_component_model_polyfill::PrimitiveType::U32,
             )),
+            async_: false,
         },
         |_: HostCall<'_, Vec<u32>>, args, results| {
             let Val::Borrow(handle) = &args[0] else {

@@ -15,10 +15,11 @@ use std::collections::HashMap;
 use wasmtime_environ::component::{
     CanonicalOptions as EnvironCanonOptions, CanonicalOptionsDataModel, ComponentTranslation,
     ComponentTypes, ComponentTypesBuilder, CoreDef, CoreExport, Export as EnvironExport,
-    ExportIndex, ExportItem as EnvironExportItem, ExtractMemory, ExtractPostReturn, ExtractRealloc,
-    FixedEncoding, GlobalInitializer, InstantiateModule, LoweredIndex, RuntimeImportIndex,
-    StaticModuleIndex, StringEncoding as EnvironStringEncoding, Trampoline, TrampolineIndex,
-    Transcode, Translator, TypeResourceTable, TypeResourceTableIndex, UnsafeIntrinsic,
+    ExportIndex, ExportItem as EnvironExportItem, ExtractCallback, ExtractMemory,
+    ExtractPostReturn, ExtractRealloc, FixedEncoding, GlobalInitializer, InstantiateModule,
+    LoweredIndex, RuntimeImportIndex, StaticModuleIndex, StringEncoding as EnvironStringEncoding,
+    Trampoline, TrampolineIndex, Transcode, Translator, TypeResourceTable, TypeResourceTableIndex,
+    UnsafeIntrinsic,
 };
 use wasmtime_environ::prelude::Error as TranslatorError;
 use wasmtime_environ::wasmparser::Validator;
@@ -28,7 +29,9 @@ use wasmtime_environ::{
 
 use crate::abi::layout::FlatType;
 
-use crate::component::{ComponentExport, ComponentImport, ExternType, ExternalName, TypeProjector};
+use crate::component::{
+    ComponentExport, ComponentImport, ExternType, ExternalName, FunctionType, TypeProjector,
+};
 use crate::engine::Engine;
 use crate::error::{Error, Result};
 
@@ -40,6 +43,20 @@ use super::ir::{
     ModuleSource, NamedImportSource, ResourceSpec, ResourceTableSpec, StringEncoding,
     TrampolineSpec, TranscodeOp,
 };
+
+/// What the trampoline pre-walk decided about one trampoline.
+enum TrampolineOutcome {
+    /// The polyfill builds this kind: the slot its
+    /// [`TrampolineSpec`] landed in.
+    Built(usize),
+    /// The polyfill does not build this kind, under the name the
+    /// translator gives it (`waitable-set-wait`, `future-new`, and
+    /// the rest of `Trampoline::symbol_name`).
+    Refused(String),
+}
+
+/// What the pre-walk decided for every trampoline of a component.
+type TrampolineOutcomes = HashMap<TrampolineIndex, TrampolineOutcome>;
 
 /// Everything one translation of a component binary produces.
 pub struct Translation {
@@ -152,11 +169,13 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
         )
         .collect();
 
-    // Pre-walk #3: build a `TrampolineSpec` for every trampoline
-    // kind the polyfill implements. The resulting indices are
-    // consulted by `CoreDef::Trampoline` resolution.
+    // Pre-walk #3: decide every trampoline. A kind the polyfill
+    // implements gets a `TrampolineSpec` and the slot it landed in;
+    // every other kind is refused under the name the translator
+    // gives it, so that `CoreDef::Trampoline` resolution can say
+    // which built-in it is.
     let mut trampoline_specs: Vec<TrampolineSpec> = Vec::new();
-    let mut trampoline_to_spec: HashMap<TrampolineIndex, usize> = HashMap::new();
+    let mut trampolines: TrampolineOutcomes = HashMap::new();
     for (trampoline_idx, trampoline) in translation.trampolines.iter() {
         let spec = match trampoline {
             Trampoline::LowerImport {
@@ -175,10 +194,12 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                     .get(*options)
                     .ok_or_else(|| Error::internal("Trampoline OptionsIndex out of bounds"))?;
                 let (import_index, path) = import_path(&translation, runtime_import)?;
+                let signature = projector.function(*lower_ty)?;
+                refuse_async_import(&signature)?;
                 TrampolineSpec::LowerImport(LoweringSpec {
                     import_index,
                     path,
-                    signature: projector.function(*lower_ty)?,
+                    signature,
                     options: lift_canon_options(canon)?,
                 })
             }
@@ -215,14 +236,21 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
             Trampoline::ExitSyncCall => TrampolineSpec::ExitSyncCall {
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
-            // Concurrency built-ins are not built. A
+            // Concurrency built-ins and the rest are not built. A
             // `CoreDef::Trampoline` that references one surfaces
-            // `Error::Unsupported` in `lift_core_def`.
-            _ => continue,
+            // `Error::Unsupported` in `lift_core_def`, naming the
+            // built-in the translator emitted.
+            other => {
+                trampolines.insert(
+                    trampoline_idx,
+                    TrampolineOutcome::Refused(other.symbol_name()),
+                );
+                continue;
+            }
         };
         let slot = trampoline_specs.len();
         trampoline_specs.push(spec);
-        trampoline_to_spec.insert(trampoline_idx, slot);
+        trampolines.insert(trampoline_idx, TrampolineOutcome::Built(slot));
     }
 
     // Main walk. Intrinsics that appear as `CoreDef`s rather than
@@ -241,7 +269,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 })?;
                 let mut imports = Vec::with_capacity(defs.len());
                 for def in defs.iter() {
-                    imports.push(state.lift_core_def(def, &trampoline_to_spec)?);
+                    imports.push(state.lift_core_def(def, &trampolines)?);
                 }
                 state.runtime_instance_to_module.push(Some(module_index));
                 state.initializers.push(Initializer::InstantiateModule {
@@ -257,7 +285,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                         imports.push(NamedImportSource {
                             module: module.clone(),
                             name: name.clone(),
-                            source: state.lift_core_def(def, &trampoline_to_spec)?,
+                            source: state.lift_core_def(def, &trampolines)?,
                         });
                     }
                 }
@@ -284,7 +312,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                     .push(Initializer::ExtractMemory { slot, source });
             }
             GlobalInitializer::ExtractRealloc(ExtractRealloc { index, def }) => {
-                let source = state.lift_core_def(def, &trampoline_to_spec)?;
+                let source = state.lift_core_def(def, &trampolines)?;
                 let slot = index.as_u32() as usize;
                 state.num_runtime_reallocs = state.num_runtime_reallocs.max(slot + 1);
                 state
@@ -292,15 +320,20 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                     .push(Initializer::ExtractRealloc { slot, source });
             }
             GlobalInitializer::ExtractPostReturn(ExtractPostReturn { index, def }) => {
-                let source = state.lift_core_def(def, &trampoline_to_spec)?;
+                let source = state.lift_core_def(def, &trampolines)?;
                 let slot = index.as_u32() as usize;
                 state.num_runtime_post_returns = state.num_runtime_post_returns.max(slot + 1);
                 state
                     .initializers
                     .push(Initializer::ExtractPostReturn { slot, source });
             }
-            GlobalInitializer::ExtractCallback(_) => {
-                return Err(Error::unsupported("asynchronous lifts (callback)"));
+            GlobalInitializer::ExtractCallback(ExtractCallback { index, def }) => {
+                let source = state.lift_core_def(def, &trampolines)?;
+                let slot = index.as_u32() as usize;
+                state.num_runtime_callbacks = state.num_runtime_callbacks.max(slot + 1);
+                state
+                    .initializers
+                    .push(Initializer::ExtractCallback { slot, source });
             }
             GlobalInitializer::ExtractTable(_) => {
                 return Err(Error::unsupported("thread built-ins (table extraction)"));
@@ -318,7 +351,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 let destructor = resource
                     .dtor
                     .as_ref()
-                    .map(|def| state.lift_core_def(def, &trampoline_to_spec))
+                    .map(|def| state.lift_core_def(def, &trampolines))
                     .transpose()?;
                 match resources.get_mut(slot) {
                     Some(ResourceSpec::Local {
@@ -349,7 +382,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
             &translation,
             &projector,
             &mut state,
-            &trampoline_to_spec,
+            &trampolines,
             &mut export_tree,
             &[],
             name,
@@ -375,6 +408,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
             num_runtime_memories: state.num_runtime_memories,
             num_runtime_reallocs: state.num_runtime_reallocs,
             num_runtime_post_returns: state.num_runtime_post_returns,
+            num_runtime_callbacks: state.num_runtime_callbacks,
             num_component_instances: translation.component.num_runtime_component_instances as usize,
         },
     })
@@ -443,12 +477,47 @@ fn project_imports(
 ) -> Result<Box<[ComponentImport]>> {
     let mut imports = Vec::with_capacity(translation.component.import_types.len());
     for (_, (name, extern_)) in translation.component.import_types.iter() {
+        let ty = projector.extern_type(name, extern_)?;
+        refuse_async_extern(&ty)?;
         imports.push(ComponentImport {
             name: ExternalName::from_raw(name),
-            ty: projector.extern_type(name, extern_)?,
+            ty,
         });
     }
     Ok(imports.into_boxed_slice())
+}
+
+/// Refuse an `async` function type on an import. A host function is
+/// the only thing that can satisfy an import, and a host function of
+/// this design is synchronous: it returns its result to the caller
+/// rather than through a task. The refusal is here, at the boundary
+/// that would have asked the host for one, and not in the type
+/// projection, which reports the flag for an export as well.
+fn refuse_async_import(signature: &FunctionType) -> Result<()> {
+    if signature.async_ {
+        return Err(Error::unsupported("asynchronous function types on imports"));
+    }
+    Ok(())
+}
+
+/// Refuse an `async` function type anywhere inside one import's
+/// extern type: the import may be the function itself, or an
+/// instance that holds it at any depth.
+fn refuse_async_extern(ty: &ExternType) -> Result<()> {
+    match ty {
+        ExternType::Function(signature) => refuse_async_import(signature),
+        ExternType::Instance(instance) => {
+            for item in instance.items.iter() {
+                refuse_async_extern(&item.ty)?;
+            }
+            Ok(())
+        }
+        ExternType::Module(_)
+        | ExternType::Component
+        | ExternType::Resource(_)
+        | ExternType::ResourceEquals(_)
+        | ExternType::Value(_) => Ok(()),
+    }
 }
 
 /// Project the component's declared exports, in declaration order.
@@ -501,7 +570,7 @@ fn collect_export_spec(
     translation: &ComponentTranslation,
     projector: &TypeProjector<'_>,
     state: &mut ProjectionState,
-    trampoline_to_spec: &HashMap<TrampolineIndex, usize>,
+    trampolines: &TrampolineOutcomes,
     out: &mut ExportTree<'_>,
     path: &[ExternalName],
     name: &str,
@@ -514,18 +583,29 @@ fn collect_export_spec(
         .ok_or_else(|| Error::internal("export index from translator missing from export_items"))?;
     match export {
         EnvironExport::LiftedFunction { ty, func, options } => {
-            let source = state.lift_core_def(func, trampoline_to_spec)?;
+            let source = state.lift_core_def(func, trampolines)?;
             let canon = translation
                 .component
                 .options
                 .get(*options)
                 .ok_or_else(|| Error::internal("export OptionsIndex out of bounds"))?;
+            let options = lift_canon_options(canon)?;
+            // The stackful form of an asynchronous lift, the one
+            // with no callback, would need the export's core
+            // function to be suspended mid-call. The polyfill runs
+            // the guest on the one real stack, so it refuses the
+            // form rather than accepting a lift it cannot resume.
+            if options.async_ && options.callback.is_none() {
+                return Err(Error::unsupported(
+                    "stackful asynchronous lifts (`canon lift async` without a callback)",
+                ));
+            }
             out.functions.push(ExportSpec {
                 name: name.to_owned(),
                 path: path.into(),
                 source,
                 signature: projector.function(*ty)?,
-                options: lift_canon_options(canon)?,
+                options,
             });
             Ok(())
         }
@@ -561,7 +641,7 @@ fn collect_export_spec(
                     translation,
                     projector,
                     state,
-                    trampoline_to_spec,
+                    trampolines,
                     out,
                     &nested,
                     item_name,
@@ -628,6 +708,7 @@ struct ProjectionState {
     num_runtime_memories: usize,
     num_runtime_reallocs: usize,
     num_runtime_post_returns: usize,
+    num_runtime_callbacks: usize,
     /// Trampoline specs created on demand for intrinsics that appear
     /// as `CoreDef`s. Their indices start at `spec_base`.
     extra_specs: Vec<TrampolineSpec>,
@@ -643,6 +724,7 @@ impl ProjectionState {
             num_runtime_memories: 0,
             num_runtime_reallocs: 0,
             num_runtime_post_returns: 0,
+            num_runtime_callbacks: 0,
             extra_specs: Vec::new(),
             spec_base,
             intrinsic_to_spec: HashMap::new(),
@@ -688,18 +770,19 @@ impl ProjectionState {
     fn lift_core_def(
         &mut self,
         def: &CoreDef,
-        trampoline_to_spec: &HashMap<TrampolineIndex, usize>,
+        trampolines: &TrampolineOutcomes,
     ) -> Result<ImportSource> {
         match def {
             CoreDef::Export(export) => self.lift_core_export(export),
-            CoreDef::Trampoline(trampoline_idx) => {
-                let lowering_index = *trampoline_to_spec.get(trampoline_idx).ok_or_else(|| {
-                    Error::unsupported(
-                        "string transcoders, resource transfer, and concurrency built-ins between components",
-                    )
-                })?;
-                Ok(ImportSource::Trampoline(lowering_index))
-            }
+            CoreDef::Trampoline(trampoline_idx) => match trampolines.get(trampoline_idx) {
+                Some(TrampolineOutcome::Built(slot)) => Ok(ImportSource::Trampoline(*slot)),
+                Some(TrampolineOutcome::Refused(name)) => {
+                    Err(Error::unsupported(format!("the `{name}` trampoline")))
+                }
+                None => Err(Error::internal(
+                    "a core definition names a trampoline the pre-walk did not see",
+                )),
+            },
             CoreDef::InstanceFlags(instance) => {
                 Ok(ImportSource::InstanceFlags(instance.as_u32() as usize))
             }
@@ -757,6 +840,8 @@ fn lift_canon_options(options: &EnvironCanonOptions) -> Result<CanonOptions> {
         memory: options.memory().map(|i| i.as_u32() as usize),
         realloc,
         post_return: options.post_return.map(|i| i.as_u32() as usize),
+        async_: options.async_,
+        callback: options.callback.map(|i| i.as_u32() as usize),
         string_encoding: lift_string_encoding(options.string_encoding),
         data_model,
     })

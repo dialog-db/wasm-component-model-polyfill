@@ -261,11 +261,13 @@ impl<T: ComponentValue> ComponentResult for T {
 // === Helpers ===
 
 /// Build a [`FunctionType`] from a [`ComponentParameters`] +
-/// [`ComponentResult`] pair.
+/// [`ComponentResult`] pair. A host function is synchronous, so the
+/// type it derives never carries the `async` effect.
 pub fn function_type_for<P: ComponentParameters, R: ComponentResult>() -> FunctionType {
     FunctionType {
         parameters: P::parameter_types(),
         result: R::result_type(),
+        async_: false,
     }
 }
 
@@ -288,6 +290,7 @@ fn arity_mismatch(expected: usize, found: usize) -> Error {
                 ty: ValueType::Primitive(PrimitiveType::Bool),
             }],
             result: None,
+            async_: false,
         }),
         actual: TypeRendering::Function(FunctionType {
             parameters: vec![FunctionParameter {
@@ -295,6 +298,7 @@ fn arity_mismatch(expected: usize, found: usize) -> Error {
                 ty: ValueType::Primitive(PrimitiveType::Bool),
             }],
             result: None,
+            async_: false,
         }),
     })
 }

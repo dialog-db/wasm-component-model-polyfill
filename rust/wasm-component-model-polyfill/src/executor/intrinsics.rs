@@ -729,6 +729,7 @@ mod tests {
             memories: Vec::new(),
             reallocs: Vec::new(),
             post_returns: Vec::new(),
+            callbacks: Vec::new(),
             resource_tables: Vec::new(),
             component_instances: vec![caller, callee],
         }));
