@@ -1201,6 +1201,36 @@ mod tests {
         "#
     );
 
+    /// The same shape lifted `canon lift async` with a callback. The
+    /// export calls the host function, adds one to what it returns,
+    /// hands that to `task.return`, and exits. A call into such an
+    /// export is a task the reference allows to block, so the host
+    /// function's trampoline is a frame a suspension is served in
+    /// rather than refused in.
+    const CALLBACK_CALLS_THE_HOST: &[u8] = component!(
+        r#"
+        (component
+          (import "probe" (func $probe (param "x" u32) (result u32)))
+          (core func $probe' (canon lower (func $probe)))
+          (core func $task-return (canon task.return (result u32)))
+          (core module $m
+            (import "" "probe" (func $probe (param i32) (result i32)))
+            (import "" "task.return" (func $task-return (param i32)))
+            (func (export "run") (param i32) (result i32)
+              (call $task-return
+                (i32.add (call $probe (local.get 0)) (i32.const 1)))
+              (i32.const 0))
+            (func (export "run-callback") (param i32 i32 i32) (result i32) unreachable))
+          (core instance $i (instantiate $m
+            (with "" (instance
+              (export "probe" (func $probe'))
+              (export "task.return" (func $task-return))))))
+          (func (export "run") async (param "x" u32) (result u32)
+            (canon lift (core func $i "run") async
+              (callback (core func $i "run-callback")))))
+        "#
+    );
+
     #[wcmp_macros::test]
     async fn it_refuses_a_block_in_a_host_function_a_synchronous_export_called() {
         let engine = Engine::new().expect("engine");
@@ -1288,6 +1318,116 @@ mod tests {
             0,
             "the turns the call's own driver ran after the call returned did \
              resolve it"
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_suspends_a_host_function_a_callback_export_called_until_a_host_task_completes() {
+        let engine = Engine::new().expect("engine");
+        let component = Component::new(&engine, CALLBACK_CALLS_THE_HOST)
+            .await
+            .expect("component parses");
+        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+
+        // What the suspension reported, whether a turn of the store
+        // was running when it did — the export call's, since the host
+        // function enters no driver of its own — and how many host
+        // tasks the store still held.
+        let suspension: Arc<Mutex<Option<(String, bool, usize)>>> = Arc::new(Mutex::new(None));
+        let recorded = suspension.clone();
+
+        let mut linker: Linker<()> = Linker::new(&engine);
+        linker.root().func_wrap(
+            "probe",
+            move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
+                // Everything below runs against the store as the
+                // trampoline reaches it: the core store's context the
+                // runtime layer handed it, and nothing besides. No
+                // driver, no `&mut Store`.
+                let store = call.store();
+
+                // A host task of this call. Its body is ready at
+                // once, and its lowering fills the slot below — but a
+                // lowering runs as a queued item in a later turn than
+                // the poll that saw the body complete, so the slot is
+                // what the suspension has to wait for.
+                let slot: Slot = Arc::new(Mutex::new(None));
+                let filled = slot.clone();
+                let subtask = store.lock_tables()?.tasks.insert_subtask();
+                store.push_host_task(HostTask::from_future(
+                    subtask,
+                    move |_store: &mut StoreContext<'_, ()>, outcome: Result<Vec<Val>>| {
+                        *filled.lock().expect("slot") = Some(outcome);
+                        Ok(())
+                    },
+                    core::future::ready(Ok(vec![Val::U32(x * 2)])),
+                ));
+
+                let watched = slot.clone();
+                let outcome = SuspendSeam::suspend(store, move |_store| {
+                    watched.lock().expect("slot").is_some()
+                });
+                *recorded.lock().expect("record") = Some((
+                    cause(outcome),
+                    store.turn_in_flight(),
+                    store.scheduler().host_task_count(),
+                ));
+
+                // What the host task produced, which only the turns
+                // the suspension ran could have put there.
+                let produced = slot.lock().expect("slot").take();
+                let Some(produced) = produced else {
+                    return Err(Error::internal(
+                        "the suspension returned with the host task unlowered",
+                    ));
+                };
+                match produced?.first() {
+                    Some(Val::U32(value)) => Ok(*value),
+                    _ => Err(Error::internal("the host task produced no u32")),
+                }
+            },
+        );
+
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .await
+            .expect("instantiate");
+        let run = instance.get_func("run").expect("run export");
+        let result = run
+            .call(&mut store, &[Val::U32(20)])
+            .await
+            .expect("call run");
+
+        assert_eq!(
+            *suspension.lock().expect("record"),
+            Some((
+                "the seam returned with the condition held".to_owned(),
+                true,
+                0
+            )),
+            "the host function reached the seam through what the trampoline \
+             holds, from inside the turn of the export call; the call is into \
+             a callback export, which the reference allows to block, so the \
+             nested turn polled the host task and ran its lowering, and the \
+             task that completed left the store"
+        );
+        assert_eq!(
+            result.first(),
+            Some(&Val::U32(41)),
+            "the guest's `task.return` carried what the host task produced \
+             plus one, so the nested turns of the suspension polled the body \
+             and ran the lowering it queued from inside the trampoline"
+        );
+        assert_eq!(
+            store.scheduler().host_task_count(),
+            0,
+            "the host task the call started is resolved and gone"
+        );
+        assert_eq!(
+            store.scheduler().queued_items(),
+            0,
+            "the task exited with its status word, so nothing of it is left \
+             for a later turn"
         );
     }
 }

@@ -760,6 +760,74 @@ mod tests {
     }
 
     #[wcmp_macros::test]
+    fn it_takes_a_switch_slot_item_that_is_the_instances_own_work() {
+        let mut store = store();
+        let log = log();
+        let mine = instance(&store);
+        store
+            .scheduler_mut()
+            .push_high_priority(marker(&log, "queued").in_instance(mine));
+        store
+            .scheduler_mut()
+            .switch_to(marker(&log, "switch").in_instance(mine));
+
+        let item = store
+            .scheduler_mut()
+            .take_ready_in(mine)
+            .expect("the slot holds this instance's work");
+        item.run(&mut store.context()).expect("the item runs");
+
+        assert_eq!(
+            entries(&log),
+            vec!["switch"],
+            "the slot comes before the high-priority queue here as it does in \
+             a turn of the whole scheduler"
+        );
+        assert_eq!(
+            store.scheduler().queued_items(),
+            1,
+            "the slot is empty and the instance's queued item is what is left"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_leaves_a_switch_slot_item_of_another_instance_in_the_slot() {
+        let mut store = store();
+        let log = log();
+        let mine = instance(&store);
+        let other = instance(&store);
+        store
+            .scheduler_mut()
+            .push_high_priority(marker(&log, "mine").in_instance(mine));
+        store
+            .scheduler_mut()
+            .switch_to(marker(&log, "another instance").in_instance(other));
+
+        let item = store
+            .scheduler_mut()
+            .take_ready_in(mine)
+            .expect("the queue holds this instance's work");
+        item.run(&mut store.context()).expect("the item runs");
+
+        assert_eq!(
+            entries(&log),
+            vec!["mine"],
+            "the slot's item is not this instance's work, so the item came \
+             from the queue behind it"
+        );
+
+        // The slot kept its item rather than losing it to the skip: a
+        // turn of the whole scheduler still runs it, and runs it first.
+        let left = store
+            .scheduler_mut()
+            .take_ready()
+            .expect("the switch slot kept its item");
+        left.run(&mut store.context()).expect("the item runs");
+
+        assert_eq!(entries(&log), vec!["mine", "another instance"]);
+    }
+
+    #[wcmp_macros::test]
     fn it_yields_to_the_driver_before_it_runs_a_low_priority_item() {
         let mut store = store();
         let log = log();

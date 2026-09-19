@@ -217,6 +217,16 @@ macro_rules! handle_table {
     }};
 }
 
+/// Put a subtask in the instance's own table and report the index the
+/// table gave it. The entry is a waitable and not a waitable set, so
+/// it is the index a built-in that names a set traps on.
+fn subtask_in_table(store: &mut Store<()>, instance: &Instance) -> u32 {
+    let table = handle_table!(instance);
+    let mut guard = store.tables().lock().expect("handle tables");
+    let subtask = guard.tasks.insert_subtask();
+    guard.insert_subtask(table, subtask)
+}
+
 /// Put a returned subtask in the instance's own table, joined to the
 /// set `set_index` names and holding its ready event, and report the
 /// index the table gave it.
@@ -454,6 +464,64 @@ async fn it_removes_a_waitable_from_its_set_when_the_set_index_is_zero() {
 }
 
 #[wcmp_macros::test]
+async fn it_traps_a_wait_whose_index_is_not_a_set() {
+    let (mut store, instance) = instantiate(SET_BUILTINS).await;
+    let subtask_index = subtask_in_table(&mut store, &instance);
+
+    let message = call_trap(&mut store, &instance, "wait", &[Val::U32(subtask_index)]).await;
+
+    assert!(
+        message.contains("is not a waitable-set"),
+        "a wait resolves its index against the instance's table and a subtask \
+         entry is not a set: {message}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_traps_a_poll_whose_index_is_not_a_set() {
+    let (mut store, instance) = instantiate(SET_BUILTINS).await;
+    let subtask_index = subtask_in_table(&mut store, &instance);
+
+    let message = call_trap(&mut store, &instance, "poll", &[Val::U32(subtask_index)]).await;
+
+    assert!(
+        message.contains("is not a waitable-set"),
+        "a poll checks the index the wait checks, before it asks whether the \
+         set holds an event: {message}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_traps_a_drop_whose_index_is_not_a_set() {
+    let (mut store, instance) = instantiate(SET_BUILTINS).await;
+    let subtask_index = subtask_in_table(&mut store, &instance);
+
+    let message = call_trap(
+        &mut store,
+        &instance,
+        "drop-set",
+        &[Val::U32(subtask_index)],
+    )
+    .await;
+
+    assert!(
+        message.contains("is not a waitable-set"),
+        "a drop names a set, so a subtask entry traps rather than leaving the \
+         table: {message}"
+    );
+    let table = handle_table!(&instance);
+    assert!(
+        store
+            .tables()
+            .lock()
+            .expect("handle tables")
+            .entry(table, subtask_index)
+            .is_some(),
+        "the entry the drop refused is still in the instance's table"
+    );
+}
+
+#[wcmp_macros::test]
 async fn it_traps_a_join_whose_first_index_is_not_a_waitable() {
     let (mut store, instance) = instantiate(SET_BUILTINS).await;
     let set_index = call_u32(&mut store, &instance, "new-set", &[]).await;
@@ -477,12 +545,7 @@ async fn it_traps_a_join_whose_first_index_is_not_a_waitable() {
 #[wcmp_macros::test]
 async fn it_traps_a_join_whose_second_index_is_not_a_set() {
     let (mut store, instance) = instantiate(SET_BUILTINS).await;
-    let subtask_index = {
-        let table = handle_table!(&instance);
-        let mut guard = store.tables().lock().expect("handle tables");
-        let subtask = guard.tasks.insert_subtask();
-        guard.insert_subtask(table, subtask)
-    };
+    let subtask_index = subtask_in_table(&mut store, &instance);
 
     let message = call_trap(
         &mut store,
