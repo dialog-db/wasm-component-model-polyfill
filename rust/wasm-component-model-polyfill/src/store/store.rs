@@ -187,10 +187,16 @@ impl<T: 'static> Store<T> {
     /// a task finish after the call that started it returned, and to
     /// run host tasks that no call owns.
     ///
-    /// `body` does not borrow the store. It reaches the store's host
-    /// data only inside a closure the [`Accessor`] runs, through
-    /// [`Accessor::with`], and a value taken from the host data must
-    /// be cloned out of that closure.
+    /// `body` does not borrow the store, and neither does the
+    /// [`Accessor`] it is handed: the accessor is a token carrying
+    /// the store's identity, so it has no lifetime and `body`'s
+    /// future can hold one across its awaits. `body` reaches the
+    /// store's host data only inside a closure the accessor runs,
+    /// through [`Accessor::with`], and only while a poll of that
+    /// future is running; a value taken from the host data must be
+    /// cloned out of that closure. A reach made where no poll of
+    /// this store is running fails with the store-not-in-poll
+    /// cause.
     ///
     /// Entering this entry while another driver of the same store is
     /// inside a turn fails with the recursive-driver cause. Dropping
@@ -204,9 +210,9 @@ impl<T: 'static> Store<T> {
     /// the other drivers: `body`'s future can wait on something
     /// outside the store, and the waker it was polled with is the
     /// one that brings the entry back.
-    pub async fn run_concurrent<'a, R, F>(&'a mut self, body: F) -> Result<R>
+    pub async fn run_concurrent<R, F>(&mut self, body: F) -> Result<R>
     where
-        F: AsyncFnOnce(&Accessor<'a, T>) -> R,
+        F: AsyncFnOnce(&Accessor<T>) -> R,
     {
         self.context().run_concurrent(body).await
     }

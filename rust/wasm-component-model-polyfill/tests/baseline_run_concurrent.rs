@@ -3,9 +3,14 @@
 //!
 //! The entry is a driver: it polls the store's scheduler until the
 //! closure's future completes. The closure does not borrow the
-//! store. It reaches the store's host data only inside a closure the
-//! accessor runs, and a driver entered from inside that closure
-//! fails with the recursive-driver cause.
+//! store, and neither does the accessor: the accessor is a token
+//! carrying the store's identity, with no lifetime on it, so the
+//! closure's future can hold one across its awaits and even carry
+//! one out of the entry. It reaches the store's host data only
+//! inside a closure the accessor runs, and only while a poll of the
+//! entry's closure is running — a reach made anywhere else fails
+//! with the store-not-in-poll cause. A driver entered from inside
+//! that closure fails with the recursive-driver cause.
 //!
 //! A call into an export is not one of the drivers that can be
 //! entered from there. The entry takes the store the host owns, and
@@ -24,7 +29,7 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
 use wasm_component_model_polyfill::{
-    Component, Engine, Error, Linker, Result, SchedulerCause, Store, Val,
+    Accessor, Component, Engine, Error, Linker, Result, SchedulerCause, Store, Val,
 };
 use wcmp_macros::component;
 
@@ -114,6 +119,107 @@ async fn it_refuses_a_driver_entered_from_inside_the_closure() {
         Error::Scheduler(SchedulerCause::RecursiveDriver).to_string(),
         "the store is inside a turn while the closure runs, so a driver \
          entered from there is refused"
+    );
+}
+
+/// The message an accessor carries when it reached for its store
+/// where no poll of that store was running. It is written out here
+/// rather than built from the cause, so that a change to the words
+/// is a change a test has to be told about.
+const NOT_IN_POLL: &str = "scheduler error: an accessor reached its store outside a poll of that \
+                           store";
+
+#[wcmp_macros::test]
+async fn it_refuses_a_reach_made_outside_any_poll() {
+    let engine = Engine::new().expect("engine");
+    let mut store: Store<Vec<String>> = Store::new(&engine, Vec::new()).expect("store");
+
+    // The accessor borrows nothing, so nothing stops it outliving
+    // the entry that handed it over. What it reaches is the store
+    // the running poll lent, and out here no poll is running.
+    let escaped = store
+        .run_concurrent(async |accessor| accessor.clone())
+        .await
+        .expect("run the closure");
+
+    let refused = escaped
+        .with(|store| store.data().len())
+        .expect_err("the reach is refused");
+
+    assert_eq!(
+        refused.to_string(),
+        NOT_IN_POLL,
+        "the entry has returned, so no poll of the store is running"
+    );
+    assert!(
+        matches!(refused, Error::Scheduler(SchedulerCause::StoreNotInPoll)),
+        "and the cause is the store-not-in-poll one"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_reach_with_the_accessor_of_another_store() {
+    let engine = Engine::new().expect("engine");
+    let mut first: Store<Vec<String>> = Store::new(&engine, Vec::new()).expect("store");
+    let mut second: Store<Vec<String>> = Store::new(&engine, Vec::new()).expect("store");
+
+    let elsewhere = first
+        .run_concurrent(async |accessor| accessor.clone())
+        .await
+        .expect("run the closure");
+
+    // A poll is running here, but it lent the other store: one slot
+    // holds one store, and this accessor does not name it.
+    let seen = second
+        .run_concurrent(async move |_accessor| {
+            elsewhere
+                .with(|store| store.data().len())
+                .expect_err("the reach is refused")
+                .to_string()
+        })
+        .await
+        .expect("run the closure");
+
+    assert_eq!(
+        seen, NOT_IN_POLL,
+        "the poll that is running lent another store, so the reach is refused"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_reach_with_an_accessor_typed_by_other_host_data() {
+    let engine = Engine::new().expect("engine");
+    let mut store: Store<Vec<String>> =
+        Store::new(&engine, vec!["host data".to_owned()]).expect("store");
+
+    // An accessor is built from a store's identity, which a host
+    // holding the store can read, and the host picks the accessor's
+    // host data type: nothing about this line is out of reach from
+    // out here. The store's host data is a `Vec<String>` and this
+    // accessor asks for a `u32`, so a reach that lent it the store
+    // would read one as the other.
+    let mistyped: Accessor<u32> = Accessor::new(store.id());
+
+    // A poll of this very store is running, so the identity in the
+    // accessor matches what the slot names. The host data type does
+    // not, and the reach is refused on that.
+    let refused = store
+        .run_concurrent(async move |_accessor| {
+            let refused = mistyped
+                .with(|store| *store.data())
+                .expect_err("the reach is refused");
+            (refused.to_string(), refused)
+        })
+        .await
+        .expect("run the closure");
+
+    assert_eq!(
+        refused.0, NOT_IN_POLL,
+        "no store with this identity and this host data is inside a poll"
+    );
+    assert!(
+        matches!(refused.1, Error::Scheduler(SchedulerCause::StoreNotInPoll)),
+        "and the cause is the store-not-in-poll one"
     );
 }
 

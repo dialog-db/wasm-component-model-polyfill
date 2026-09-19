@@ -123,7 +123,7 @@ pub enum Error {
     Abi(#[source] Box<AbiError>),
 
     /// The concurrency scheduler could not carry a driver through a
-    /// turn. The carried [`SchedulerCause`] names which of the four
+    /// turn. The carried [`SchedulerCause`] names which of the five
     /// ways this can happen occurred.
     #[error("scheduler error: {0}")]
     Scheduler(#[source] SchedulerCause),
@@ -690,6 +690,20 @@ pub enum SchedulerCause {
     /// had yet to return.
     #[error("blocking here requires a stack switch, but the target has no suspend provider")]
     StackSwitchNeeded,
+
+    /// An accessor reached for its store where no poll of that store
+    /// was running: outside every poll, or from inside a poll of
+    /// another store. The accessor is a token — it carries a store's
+    /// identity and borrows nothing — and the store it names is
+    /// reachable only while a poll of that store has left the
+    /// store's context in the thread's slot. Wasmtime panics on the
+    /// same misuse; the polyfill answers with this cause, because
+    /// reaching through an accessor already returns a result. A
+    /// reach made from inside another reach of the same store, where
+    /// a poll is running but the store is out on loan, fails with
+    /// [`SchedulerCause::RecursiveDriver`] instead.
+    #[error("an accessor reached its store outside a poll of that store")]
+    StoreNotInPoll,
 }
 
 /// The structured reason a waitable operation failed.
@@ -934,6 +948,15 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "scheduler error: blocking here requires a stack switch, but the target has no suspend provider"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_renders_the_store_not_in_poll_cause() {
+        let err = Error::Scheduler(SchedulerCause::StoreNotInPoll);
+        assert_eq!(
+            err.to_string(),
+            "scheduler error: an accessor reached its store outside a poll of that store"
         );
     }
 

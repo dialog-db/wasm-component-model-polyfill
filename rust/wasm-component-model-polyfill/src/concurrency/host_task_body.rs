@@ -16,8 +16,11 @@ use super::accessor::Accessor;
 /// store's host data gets there through the accessor the store
 /// hands into every poll, and only for the length of the closure
 /// that accessor runs, so a value taken from the host data must be
-/// cloned out of the closure. A body that needs nothing from the
-/// store is a plain future, which
+/// cloned out of the closure. The accessor is a token: it carries
+/// the store's identity and borrows nothing, so a body that awaits
+/// can clone one out of the poll that handed it over and hold it
+/// across the await, reaching the store again in a later poll. A
+/// body that needs nothing from the store is a plain future, which
 /// [`HostTask::from_future`](super::HostTask::from_future) wraps.
 ///
 /// The `Send` half of the bound is the one per-target line. It is
@@ -32,11 +35,8 @@ pub trait HostTaskBody<T: 'static>: Send + 'static {
     /// that is polling. A body that completes answers with what the
     /// host call produced, which the store lowers into the subtask
     /// that awaits it.
-    fn poll(
-        &mut self,
-        accessor: &Accessor<'_, T>,
-        context: &mut Context<'_>,
-    ) -> Poll<Result<Vec<Val>>>;
+    fn poll(&mut self, accessor: &Accessor<T>, context: &mut Context<'_>)
+    -> Poll<Result<Vec<Val>>>;
 }
 
 /// The bound the body of a host task carries. See the native
@@ -44,9 +44,6 @@ pub trait HostTaskBody<T: 'static>: Send + 'static {
 #[cfg(target_arch = "wasm32")]
 pub trait HostTaskBody<T: 'static>: 'static {
     /// Poll the body once. See the native definition.
-    fn poll(
-        &mut self,
-        accessor: &Accessor<'_, T>,
-        context: &mut Context<'_>,
-    ) -> Poll<Result<Vec<Val>>>;
+    fn poll(&mut self, accessor: &Accessor<T>, context: &mut Context<'_>)
+    -> Poll<Result<Vec<Val>>>;
 }

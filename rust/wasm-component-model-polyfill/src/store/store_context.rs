@@ -1,6 +1,8 @@
 //! The store as one turn, one item, or one trampoline reaches it.
 
-use core::task::{Poll, Waker};
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll, Waker};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use wasm_runtime_layer::{AsContextMut, StoreContextMut as RuntimeContextMut, Val as RuntimeVal};
@@ -9,9 +11,9 @@ use crate::abi::boundary_call::BoundaryCall;
 use crate::backend::Backend;
 use crate::component::FunctionType;
 use crate::concurrency::{
-    Accessor, CallStatus, EventSlot, HostTask, InstanceId, Item, LowerKind, Outcome, ResultChannel,
-    Scheduler, SubtaskId, SubtaskState, SuspendSeam, TaskId, TaskState, TurnGuard, WaitableSetId,
-    YieldWake,
+    Accessor, CallStatus, EventSlot, HostTask, InstanceId, Item, LowerKind, Outcome, PollScope,
+    ResultChannel, Scheduler, SubtaskId, SubtaskState, SuspendSeam, TaskId, TaskState, TurnGuard,
+    WaitableSetId, YieldWake,
 };
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
@@ -419,14 +421,10 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     ) -> Result<CallStatus> {
         let subtask = task.subtask();
         let waker = self.active_waker();
-        let outcome = {
-            // The body reaches the host data through this accessor
-            // and through nothing else, for the length of a closure
-            // it runs with it.
-            let accessor = Accessor::new(self.reborrow());
-            accessor.attend(&waker)?;
-            task.poll(&accessor, &waker)
-        };
+        // The body reaches the host data through the accessor this
+        // poll hands it and through nothing else, for the length of
+        // a closure it runs with it.
+        let outcome = task.poll(self, &waker);
 
         match outcome {
             Poll::Ready(Ok(values)) => {
@@ -525,12 +523,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                     return true;
                 }
                 let waker = store.active_waker();
-                let accessor = Accessor::new(store.reborrow());
-                if let Err(error) = accessor.attend(&waker) {
-                    produced = Some(Err(error));
-                    return true;
-                }
-                match task.poll(&accessor, &waker) {
+                match task.poll(store, &waker) {
                     Poll::Ready(value) => {
                         produced = Some(value);
                         true
@@ -690,10 +683,11 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// A host task that joined since the last turn counts as woken,
     /// and the waker the executor holds is the driver's, so polling
     /// them all is what "the ones the executor woke" comes to while
-    /// one waker serves the whole store. Each poll is handed an
-    /// accessor to this store, which is how a body that has to read
-    /// the host data reaches it. A body that completes queues the
-    /// lowering of what it produced into the subtask that awaits it.
+    /// one waker serves the whole store. Each poll puts this store
+    /// in the thread's slot and hands the body an accessor to it,
+    /// which is how a body that has to read the host data reaches
+    /// it. A body that completes queues the lowering of what it
+    /// produced into the subtask that awaits it.
     fn poll_host_tasks(&mut self, waker: &Waker) -> Result<()> {
         let mut tasks = self.scheduler_mut().take_host_tasks();
         if tasks.is_empty() {
@@ -701,14 +695,10 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         }
         let mut pending = Vec::with_capacity(tasks.len());
         let mut completed = Vec::new();
-        {
-            let accessor = Accessor::new(self.reborrow());
-            accessor.attend(waker)?;
-            for mut task in tasks.drain(..) {
-                match task.poll(&accessor, waker) {
-                    Poll::Ready(value) => completed.push((task, value)),
-                    Poll::Pending => pending.push(task),
-                }
+        for mut task in tasks.drain(..) {
+            match task.poll(self, waker) {
+                Poll::Ready(value) => completed.push((task, value)),
+                Poll::Pending => pending.push(task),
             }
         }
         self.scheduler_mut().restore_host_tasks(pending);
@@ -987,9 +977,19 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// and return what that future resolved to.
     ///
     /// This is the body of [`Store::run_concurrent`], which is the
-    /// entry a host calls. It takes the context by value because the
-    /// accessor it hands `body` lends the store for as long as the
-    /// entry's own future lives.
+    /// entry a host calls. It takes the context by value because it
+    /// owns the store for as long as its own future lives: it runs
+    /// its turns against that store directly, and lends it to the
+    /// closure only for the length of one poll.
+    ///
+    /// The accessor it hands `body` is a token. It carries the
+    /// store's identity and borrows nothing, so `body`'s future can
+    /// hold one across its awaits. What it reaches is the thread's
+    /// slot, which this entry fills with the store around each poll
+    /// of `body`'s future and empties again before that poll
+    /// returns — so a reach made from the closure's future outside
+    /// a poll, or from anywhere else, fails with the
+    /// store-not-in-poll cause.
     ///
     /// This is a driver: one poll of the returned future is a turn,
     /// and guest code runs only inside a turn.
@@ -1010,7 +1010,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Workspace-internal.
     pub async fn run_concurrent<R, F>(self, body: F) -> Result<R>
     where
-        F: AsyncFnOnce(&Accessor<'a, T>) -> R,
+        F: AsyncFnOnce(&Accessor<T>) -> R,
     {
         // The refusal happens before the accessor exists, so a
         // refused entry leaves the store untouched.
@@ -1018,7 +1018,8 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             return Err(Error::Scheduler(SchedulerCause::RecursiveDriver));
         }
 
-        let accessor = Accessor::new(self);
+        let mut store = self;
+        let accessor = Accessor::new(store.id());
         let mut future = core::pin::pin!(body(&accessor));
         let mut yield_wake: Option<YieldWake> = None;
 
@@ -1033,17 +1034,14 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 }
                 yield_wake = None;
             }
-            if let Err(error) = accessor.attend(waker) {
-                return Poll::Ready(Err(error));
-            }
 
             loop {
-                if let Poll::Ready(value) = future.as_mut().poll(context) {
+                if let Poll::Ready(value) = poll_lent(&mut store, future.as_mut(), context) {
                     return Poll::Ready(Ok(value));
                 }
-                let outcome = match accessor.lend(|store| store.turn(waker)) {
-                    Ok(Ok(outcome)) => outcome,
-                    Ok(Err(error)) | Err(error) => return Poll::Ready(Err(error)),
+                let outcome = match store.turn(waker) {
+                    Ok(outcome) => outcome,
+                    Err(error) => return Poll::Ready(Err(error)),
                 };
                 match outcome {
                     Outcome::Progress => continue,
@@ -1062,7 +1060,8 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                     // task it does not wait for, and against one
                     // that never returns it would wait for ever.
                     Outcome::Waiting => {
-                        if let Poll::Ready(value) = future.as_mut().poll(context) {
+                        if let Poll::Ready(value) = poll_lent(&mut store, future.as_mut(), context)
+                        {
                             return Poll::Ready(Ok(value));
                         }
                         // That poll can have queued an item through
@@ -1073,11 +1072,10 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                         // by definition, and it is not what the
                         // entry parks on — a host task that never
                         // returns would otherwise strand the item.
-                        match accessor.lend(|store| store.has_ready_item()) {
-                            Ok(true) => continue,
-                            Ok(false) => return Poll::Pending,
-                            Err(error) => return Poll::Ready(Err(error)),
+                        if store.has_ready_item() {
+                            continue;
                         }
+                        return Poll::Pending;
                     }
                     // An idle store is not a deadlock here: what
                     // `body` waits on can be outside the store. The
@@ -1086,7 +1084,8 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                     // their condition once more: the turn that has
                     // just run is what it was waiting for.
                     Outcome::Idle => {
-                        if let Poll::Ready(value) = future.as_mut().poll(context) {
+                        if let Poll::Ready(value) = poll_lent(&mut store, future.as_mut(), context)
+                        {
                             return Poll::Ready(Ok(value));
                         }
                         // That poll can have left work in the store:
@@ -1095,11 +1094,10 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                         // starts there is work only a turn runs.
                         // Parking on it would wait for a wake that
                         // the parked work is what produces.
-                        match accessor.lend(|store| store.has_pending_work()) {
-                            Ok(true) => continue,
-                            Ok(false) => return Poll::Pending,
-                            Err(error) => return Poll::Ready(Err(error)),
+                        if store.has_pending_work() {
+                            continue;
                         }
+                        return Poll::Pending;
                     }
                 }
             }
@@ -1108,11 +1106,25 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     }
 }
 
+/// Poll the `run_concurrent` closure's future with `store` in this
+/// thread's slot, so that the accessor the closure holds reaches
+/// the store for the length of the poll and no longer.
+///
+/// The store goes back out of the slot before the poll returns,
+/// whether the future returned or unwound, which is what makes the
+/// entry's own turns — run against the store it owns, between these
+/// polls — the only other thing that reaches it.
+fn poll_lent<T: 'static, F: Future>(
+    store: &mut StoreContext<'_, T>,
+    future: Pin<&mut F>,
+    context: &mut Context<'_>,
+) -> Poll<F::Output> {
+    let _poll = PollScope::enter(store, context.waker());
+    future.poll(context)
+}
+
 #[cfg(test)]
 mod tests {
-    use core::future::Future;
-    use core::pin::Pin;
-    use core::task::Context;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
     use wcmp_macros::component;

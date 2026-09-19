@@ -13,6 +13,7 @@ use super::host_result_lowering::HostResultLowering;
 use super::host_task_body::HostTaskBody;
 use super::item::Item;
 use super::item_kind::ItemKind;
+use super::poll_scope::PollScope;
 use super::subtask_id::SubtaskId;
 
 /// The boxed lowering of one host task's result, with the `Send`
@@ -89,12 +90,24 @@ impl<T: 'static> HostTask<T> {
         self.handle_index = handle_index;
     }
 
-    /// Poll the body with `waker`, which is the waker of the turn
-    /// that is running, and `accessor`, which reaches the store for
-    /// the length of a closure the body runs through it.
-    pub fn poll(&mut self, accessor: &Accessor<'_, T>, waker: &Waker) -> Poll<Result<Vec<Val>>> {
+    /// Poll the body against `store`, with `waker`, which is the
+    /// waker of the turn that is running.
+    ///
+    /// This is where the store goes into the thread's slot and comes
+    /// out again: the poll runs inside a [`PollScope`], so the
+    /// accessor the body is handed — and any accessor the body kept
+    /// from an earlier poll — reaches the store for the length of a
+    /// closure it runs through it, and reaches nothing once this
+    /// poll has returned. Workspace-internal.
+    pub fn poll(
+        &mut self,
+        store: &mut StoreContext<'_, T>,
+        waker: &Waker,
+    ) -> Poll<Result<Vec<Val>>> {
+        let accessor = Accessor::new(store.id());
         let mut context = Context::from_waker(waker);
-        self.body.poll(accessor, &mut context)
+        let _poll = PollScope::enter(store, waker);
+        self.body.poll(&accessor, &mut context)
     }
 
     /// Lower `outcome` into the subtask that awaits it, here and
@@ -183,7 +196,7 @@ struct FutureBody<F>(Pin<Box<F>>);
 impl<T: 'static, F: HostFuture> HostTaskBody<T> for FutureBody<F> {
     fn poll(
         &mut self,
-        _accessor: &Accessor<'_, T>,
+        _accessor: &Accessor<T>,
         context: &mut Context<'_>,
     ) -> Poll<Result<Vec<Val>>> {
         core::future::Future::poll(self.0.as_mut(), context)
@@ -192,6 +205,7 @@ impl<T: 'static, F: HostFuture> HostTaskBody<T> for FutureBody<F> {
 
 #[cfg(test)]
 mod tests {
+    use core::future::Future;
     use std::sync::{Arc, Mutex};
 
     use crate::engine::Engine;
@@ -215,7 +229,7 @@ mod tests {
     impl HostTaskBody<String> for ReadsHostData {
         fn poll(
             &mut self,
-            accessor: &Accessor<'_, String>,
+            accessor: &Accessor<String>,
             _context: &mut Context<'_>,
         ) -> Poll<Result<Vec<Val>>> {
             self.polled += 1;
@@ -292,6 +306,126 @@ mod tests {
         assert!(
             !store.turn_in_flight(),
             "the turn the body ran a closure inside left the outer turn as it found it"
+        );
+    }
+
+    /// A future that is pending the first time it is polled and
+    /// ready afterwards: one await for a body to hold something
+    /// across.
+    #[derive(Default)]
+    struct PendingOnce(bool);
+
+    impl Future for PendingOnce {
+        type Output = ();
+
+        fn poll(mut self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<()> {
+            if self.0 {
+                return Poll::Ready(());
+            }
+            self.0 = true;
+            Poll::Pending
+        }
+    }
+
+    /// A body that is a future of its own, holding the accessor
+    /// across an await.
+    ///
+    /// The accessor borrows nothing, so the body clones the token
+    /// the first poll hands it into a future that owns it. That
+    /// future awaits, and reaches the store's host data on the
+    /// other side of the await — in a later poll, with a later
+    /// borrow of the store in the thread's slot, through the token
+    /// it has been holding all along.
+    ///
+    /// The boxed future is `Send` on both targets because
+    /// everything it holds is; the native half of the host-task
+    /// bound requires it, and the browser half is content with it.
+    struct HoldsTheAccessor {
+        started: Option<BodyFuture>,
+        seen: Arc<Mutex<Option<String>>>,
+    }
+
+    /// The future [`HoldsTheAccessor`] builds on its first poll: the
+    /// body's own future, owning the accessor it awaits across.
+    type BodyFuture = Pin<Box<dyn Future<Output = Result<Vec<Val>>> + Send>>;
+
+    impl HostTaskBody<String> for HoldsTheAccessor {
+        fn poll(
+            &mut self,
+            accessor: &Accessor<String>,
+            context: &mut Context<'_>,
+        ) -> Poll<Result<Vec<Val>>> {
+            let seen = self.seen.clone();
+            let started = self.started.get_or_insert_with(|| {
+                let accessor = accessor.clone();
+                Box::pin(async move {
+                    PendingOnce::default().await;
+                    // The borrow the closure is given outlives
+                    // nothing, so what the body keeps is a clone.
+                    let data = accessor.with(|store| store.data().clone())?;
+                    *seen.lock().expect("what the body read") = Some(data);
+                    Ok(vec![Val::U32(7)])
+                })
+            });
+            started.as_mut().poll(context)
+        }
+    }
+
+    #[wcmp_macros::test]
+    async fn it_holds_the_accessor_across_an_await_and_reaches_the_host_data_later() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, "host data".to_owned()).expect("store");
+        let table = TableId::fresh();
+        let subtask = store.tables().lock().expect("tables").tasks.push_subtask();
+        let seen = Arc::new(Mutex::new(None));
+        let lowered = Arc::new(Mutex::new(None));
+        let slot = lowered.clone();
+
+        let status = store
+            .context()
+            .start_host_task(
+                HostTask::new(
+                    subtask,
+                    move |_store: &mut StoreContext<'_, String>, outcome: Result<Vec<Val>>| {
+                        *slot.lock().expect("the lowering's slot") =
+                            Some(outcome.expect("the body's value"));
+                        Ok(())
+                    },
+                    HoldsTheAccessor {
+                        started: None,
+                        seen: seen.clone(),
+                    },
+                ),
+                table,
+                LowerKind::Async,
+            )
+            .expect("start the host task");
+
+        assert_eq!(
+            status.state(),
+            SubtaskState::Started.value(),
+            "the body's future is waiting at its await"
+        );
+        assert!(
+            seen.lock().expect("what the body read").is_none(),
+            "the body has not reached the other side of the await yet"
+        );
+
+        // The turn that polls the body past its await, and the one
+        // that runs the lowering it queued.
+        store.turn(Waker::noop()).expect("a turn");
+        store.turn(Waker::noop()).expect("a turn");
+
+        assert_eq!(
+            seen.lock().expect("what the body read").as_deref(),
+            Some("host data"),
+            "the accessor the future has been holding since its first poll \
+             reached the host data in a later poll"
+        );
+        assert_eq!(
+            lowered.lock().expect("the lowering's slot").as_deref(),
+            Some(&[Val::U32(7)][..]),
+            "the body's value crossed through the lowering"
         );
     }
 }

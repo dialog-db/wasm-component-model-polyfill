@@ -7,9 +7,13 @@
 //! a host future that polls it: one poll is a turn, guest code runs
 //! only inside a turn, and every entry point that reaches a guest is
 //! a driver. [`Accessor`] is what the store's `run_concurrent` entry
-//! hands its closure: the one way a future that does not borrow the
-//! store still reaches the store's host data, and only during a
-//! poll. [`SchedulerState`] is the part of the scheduler that lives
+//! hands its closure: a token carrying the store's identity, which
+//! is the one way a future that does not borrow the store still
+//! reaches the store's host data, and only during a poll.
+//! [`PollScope`] is where the store waits for it — the slot the
+//! store leaves its context in for the length of one poll, which is
+//! what makes the accessor a token rather than a borrow.
+//! [`SchedulerState`] is the part of the scheduler that lives
 //! behind the store's handle tables rather than in the store's data:
 //! the waker of the running turn and the count of the turns that
 //! are running, which a resource trampoline and a lift/lower
@@ -21,8 +25,10 @@
 //! [`HostTask`] is one call of a host `async` function: a body the
 //! store polls once per turn, and the lowering that carries what it
 //! produced into the subtask that awaits it. The store polls a body
-//! with an [`Accessor`] of its own, so a body that has to read the
-//! host data reaches it the way a `run_concurrent` closure does.
+//! inside a [`PollScope`] of its own and hands it an [`Accessor`],
+//! so a body that has to read the host data reaches it the way a
+//! `run_concurrent` closure does — and, because the accessor
+//! borrows nothing, can hold one across its awaits.
 //! [`CallStatus`] is the word the call returns to the guest, and
 //! [`LowerKind`] is which lowering the guest called through.
 //!
@@ -85,6 +91,7 @@ mod item_action;
 mod item_kind;
 mod lower_kind;
 mod outcome;
+mod poll_scope;
 mod readiness;
 mod record_table;
 mod scheduler;
@@ -123,6 +130,7 @@ pub use item::Item;
 pub use item_kind::ItemKind;
 pub use lower_kind::LowerKind;
 pub use outcome::Outcome;
+pub use poll_scope::PollScope;
 pub use scheduler::Scheduler;
 pub use scheduler_state::SchedulerState;
 pub use scope::Scope;
