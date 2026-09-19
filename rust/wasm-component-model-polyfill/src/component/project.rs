@@ -221,15 +221,12 @@ impl<'a> TypeProjector<'a> {
                 ty: self.value_type(ty)?,
             });
         }
-        let results = &self.types[func.results].types;
-        let result = match results.len() {
-            0 => None,
-            1 => Some(self.value_type(&results[0])?),
-            _ => return Err(Error::unsupported("functions with more than one result")),
-        };
         Ok(FunctionType {
             parameters,
-            result,
+            // The translator records a function's results as the
+            // same tuple of none or one type a `canon task.return`
+            // declares, so the one projection serves both.
+            result: self.result_tuple(func.results)?,
             async_: func.async_,
         })
     }
@@ -239,8 +236,10 @@ impl<'a> TypeProjector<'a> {
     /// The built-in takes the result values of the current task as
     /// its own parameters, and the translator records them as a
     /// tuple of none or one type. The polyfill admits at most one
-    /// result, as [`function`](Self::function) does, so a wider
-    /// tuple is refused for the same reason.
+    /// result, so a wider tuple is refused. The results of a
+    /// function type are recorded as that same tuple, so
+    /// [`function`](Self::function) projects its result through
+    /// here.
     pub fn result_tuple(&self, index: TypeTupleIndex) -> Result<Option<ValueType>> {
         let results = &self.types[index].types;
         match results.len() {
@@ -377,5 +376,71 @@ impl<'a> TypeProjector<'a> {
                 ));
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wasmtime_environ::component::{ComponentTypesBuilder, Export as EnvironExport, Translator};
+    use wasmtime_environ::wasmparser::Validator;
+    use wasmtime_environ::{ScopeVec, Tunables};
+    use wcmp_macros::component;
+
+    use super::*;
+    use crate::engine_config::EngineConfig;
+
+    /// A component whose one export takes two parameters and returns
+    /// nothing. Its parameters are the two-wide tuple the test needs.
+    const TWO_PARAMETERS: &[u8] = component!(
+        r#"
+        (component
+          (core module $m
+            (func (export "run") (param i32 i32)))
+          (core instance $i (instantiate $m))
+          (func (export "run") (param "a" u32) (param "b" u32)
+            (canon lift (core func $i "run"))))
+        "#
+    );
+
+    #[wcmp_macros::test]
+    fn it_refuses_a_result_tuple_wider_than_one() {
+        // No `canon task.return` declares two results: validation
+        // admits at most one, so the refusal is unreachable from a
+        // component. The translator interns the parameters of a
+        // function as the same kind of tuple it interns its results
+        // as, so a two-parameter function supplies a tuple the
+        // projection has to refuse.
+        let scope = ScopeVec::new();
+        let tunables = Tunables::default_u32();
+        let mut validator = Validator::new_with_features(EngineConfig::default().wasm_features());
+        let mut builder = ComponentTypesBuilder::new(&validator);
+        let (translation, _) = Translator::new(&tunables, &mut validator, &mut builder, &scope)
+            .translate(TWO_PARAMETERS)
+            .expect("the component translates");
+        let (types, _) = builder.finish(&translation.component);
+        let projector = TypeProjector::new(&types, &translation.component);
+
+        let (_, (export_index, _)) = translation
+            .component
+            .exports
+            .raw_iter()
+            .next()
+            .expect("the component exports its function");
+        let EnvironExport::LiftedFunction { ty, .. } =
+            translation.component.export_items[*export_index]
+        else {
+            panic!("the export is a lifted function");
+        };
+        let parameters = types[ty].params;
+
+        let err = projector
+            .result_tuple(parameters)
+            .expect_err("a two-wide tuple is not a result the polyfill admits");
+
+        assert!(
+            matches!(&err, Error::Unsupported { feature } if feature
+                == "functions with more than one result"),
+            "the refusal names the unsupported shape, not {err}"
+        );
     }
 }

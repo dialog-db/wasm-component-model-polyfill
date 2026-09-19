@@ -191,8 +191,9 @@ pub use crate::concurrency::Accessor;
 pub use crate::engine::Engine;
 pub use crate::engine_config::EngineConfig;
 pub use crate::error::{
-    AbiCause, AbiError, AbiPosition, Error, InstantiationError, LinkError, Result, SchedulerCause,
-    TaskCause, TypeMismatch, TypeMismatchPosition, TypeRendering, WaitableCause,
+    AbiCause, AbiError, AbiPosition, Error, InstantiationError, LinkError, Result,
+    ReturnMismatchKind, SchedulerCause, TaskCause, TypeMismatch, TypeMismatchPosition,
+    TypeRendering, WaitableCause,
 };
 pub use crate::identifier::{IdentifierParseError, InterfaceIdentifier, PackageName};
 pub use crate::instance::{

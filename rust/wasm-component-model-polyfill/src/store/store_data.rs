@@ -178,7 +178,7 @@ impl<T: 'static> StoreData<T> {
                 };
                 Error::from(AbiError {
                     position: AbiPosition::Argument(0),
-                    valtype: ValueType::Own(ResourceType::new("resource")),
+                    valtype: Some(ValueType::Own(ResourceType::new("resource"))),
                     cause: AbiCause::InvalidHandle { reason },
                 })
             })

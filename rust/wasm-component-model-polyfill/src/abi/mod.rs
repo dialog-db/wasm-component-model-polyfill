@@ -78,7 +78,7 @@ pub fn entries_to_map(
     let malformed = || {
         crate::error::Error::from(crate::error::AbiError {
             position,
-            valtype: ty.clone(),
+            valtype: Some(ty.clone()),
             cause: crate::error::AbiCause::InvalidEncoding {
                 message: "a map entry did not lift as a key-value pair".to_owned(),
             },

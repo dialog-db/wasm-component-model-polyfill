@@ -99,7 +99,7 @@ impl<'a, T: 'static> HostCall<'a, T> {
         let Some(known) = known else {
             return Err(Error::from(AbiError {
                 position: AbiPosition::Result,
-                valtype: ValueType::Own(ResourceType::new("resource")),
+                valtype: Some(ValueType::Own(ResourceType::new("resource"))),
                 cause: AbiCause::UnregisteredResourceType,
             }));
         };

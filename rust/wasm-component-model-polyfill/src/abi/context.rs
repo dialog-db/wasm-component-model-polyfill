@@ -336,7 +336,7 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
             .map_err(|cause| {
                 Error::from(AbiError {
                     position: AbiPosition::Result,
-                    valtype: ValueType::Primitive(crate::types::PrimitiveType::Bool),
+                    valtype: Some(ValueType::Primitive(crate::types::PrimitiveType::Bool)),
                     cause: AbiCause::SubstrateFailure(cause),
                 })
             })
@@ -347,7 +347,7 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
     fn labelled(cause: AbiCause, position: AbiPosition, valtype: &ValueType) -> Error {
         Error::from(AbiError {
             position,
-            valtype: valtype.clone(),
+            valtype: Some(valtype.clone()),
             cause,
         })
     }

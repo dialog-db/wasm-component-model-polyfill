@@ -479,16 +479,33 @@ impl core::fmt::Display for TypeRendering {
 /// Carried by [`Error::Abi`]. The `position` names the slot the
 /// failure occurred at; `valtype` carries the polyfill's value-type
 /// shape involved, and `cause` is the structured reason.
+///
+/// A few failures at a crossing process no value type: the
+/// scope-exit rule of a borrow is one, and it fails a call that
+/// returns nothing as readily as one that returns something. Those
+/// carry no `valtype`, and the rendering leaves the type out rather
+/// than naming one they were not processing.
 #[derive(Debug, Error)]
-#[error("at {position} (type {valtype:?}): {cause}")]
+#[error("at {position}{}: {cause}", type_label(valtype))]
 pub struct AbiError {
     /// Where the failure was observed.
     pub position: AbiPosition,
-    /// The value type the lift or lower was processing.
-    pub valtype: ValueType,
+    /// The value type the lift or lower was processing, when it was
+    /// processing one.
+    pub valtype: Option<ValueType>,
     /// The structured cause of the failure.
     #[source]
     pub cause: AbiCause,
+}
+
+/// The ` (type T)` an [`AbiError`] renders between its position and
+/// its cause, and nothing at all when the failure names no value
+/// type.
+fn type_label(valtype: &Option<ValueType>) -> String {
+    match valtype {
+        Some(valtype) => format!(" (type {valtype:?})"),
+        None => String::new(),
+    }
 }
 
 /// Which slot a canonical-ABI failure was observed at.
@@ -722,11 +739,16 @@ pub enum TaskCause {
     ReturnedTwice,
 
     /// The result type or the options of a `task.return` differ from
-    /// the ones the task's function was lifted with. The message is
-    /// Wasmtime 48's trap, `Trap::TaskReturnInvalid`, under the same
-    /// rule as [`TaskCause::NoResult`].
-    #[error("invalid `task.return` signature and/or options for current task")]
-    ReturnMismatch,
+    /// the ones the task's function was lifted with. The message
+    /// opens with Wasmtime 48's trap, `Trap::TaskReturnInvalid`,
+    /// under the same rule as [`TaskCause::NoResult`], and names the
+    /// comparison that failed after it: the trap says only that one
+    /// of the three did.
+    #[error("{}: {kind}", TaskCause::RETURN_MISMATCH)]
+    ReturnMismatch {
+        /// Which of the three comparisons the built-in failed.
+        kind: ReturnMismatchKind,
+    },
 
     /// A guest ran `task.return` in a task whose lift is not `async`.
     /// The reference traps on the same condition; Wasmtime has no
@@ -754,6 +776,50 @@ pub enum TaskCause {
     /// same rule as [`TaskCause::NoResult`].
     #[error("cannot leave component instance")]
     CannotLeave,
+}
+
+impl TaskCause {
+    /// Wasmtime's whole message for a `task.return` mismatch, which
+    /// the rendering of [`TaskCause::ReturnMismatch`] opens with. The
+    /// conformance corpus matches the trap by substring, so the
+    /// prefix has to stay as Wasmtime writes it; the comparison that
+    /// failed follows it.
+    const RETURN_MISMATCH: &'static str =
+        "invalid `task.return` signature and/or options for current task";
+}
+
+/// Which of the three comparisons a `task.return` failed.
+///
+/// The built-in compares its result type, its string encoding, and
+/// its memory against the ones the task's function was lifted with,
+/// and a difference in any one of them traps. Wasmtime's trap says
+/// only that one of the three differed; the polyfill carries which,
+/// so a reader of the trap — and a test of it — does not have to
+/// guess.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ReturnMismatchKind {
+    /// The result type the built-in was declared with is not the
+    /// result of the function the task is a call into. The
+    /// comparison is structural.
+    ResultType,
+    /// The string encoding the built-in's options declare is not the
+    /// one the task's lift declared.
+    StringEncoding,
+    /// The memory the built-in's options name is not the task's
+    /// memory. Options that name no memory pass the comparison, so
+    /// this is only ever a built-in that names one.
+    Memory,
+}
+
+impl core::fmt::Display for ReturnMismatchKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::ResultType => write!(f, "the result type is not the task's"),
+            Self::StringEncoding => write!(f, "the string encoding is not the task's"),
+            Self::Memory => write!(f, "the memory is not the task's"),
+        }
+    }
 }
 
 /// A `Result` whose error variant is the polyfill's [`Error`].
@@ -883,8 +949,25 @@ mod tests {
                 "task error: `task.return` or `task.cancel` called more than once for current task",
             ),
             (
-                TaskCause::ReturnMismatch,
-                "task error: invalid `task.return` signature and/or options for current task",
+                TaskCause::ReturnMismatch {
+                    kind: ReturnMismatchKind::ResultType,
+                },
+                "task error: invalid `task.return` signature and/or options for current task: \
+                 the result type is not the task's",
+            ),
+            (
+                TaskCause::ReturnMismatch {
+                    kind: ReturnMismatchKind::StringEncoding,
+                },
+                "task error: invalid `task.return` signature and/or options for current task: \
+                 the string encoding is not the task's",
+            ),
+            (
+                TaskCause::ReturnMismatch {
+                    kind: ReturnMismatchKind::Memory,
+                },
+                "task error: invalid `task.return` signature and/or options for current task: \
+                 the memory is not the task's",
             ),
             (
                 TaskCause::ReturnFromSynchronousTask,
@@ -915,9 +998,13 @@ mod tests {
                 Trap::TaskCancelOrReturnTwice,
                 TaskCause::ReturnedTwice.to_string(),
             ),
+            // The rendering of the mismatch cause names the
+            // comparison that failed after the trap's own words, so
+            // what the trap has to match is the prefix the cause
+            // opens with.
             (
                 Trap::TaskReturnInvalid,
-                TaskCause::ReturnMismatch.to_string(),
+                TaskCause::RETURN_MISMATCH.to_owned(),
             ),
             (
                 Trap::UnsupportedCallbackCode,

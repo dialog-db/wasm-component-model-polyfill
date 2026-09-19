@@ -357,7 +357,7 @@ pub fn lift_handle<T: 'static>(
     let tables = ctx.instance().tables().cloned().ok_or_else(|| {
         Error::from(AbiError {
             position,
-            valtype: ty.clone(),
+            valtype: Some(ty.clone()),
             cause: AbiCause::InvalidHandle {
                 reason: "no handle-tables ledger available to the lift context".to_owned(),
             },
@@ -375,7 +375,7 @@ pub fn lift_handle<T: 'static>(
         .ok_or_else(|| {
             Error::from(AbiError {
                 position,
-                valtype: ty.clone(),
+                valtype: Some(ty.clone()),
                 cause: AbiCause::InvalidHandle {
                     reason: "the handle's type names no resource table of the instance".to_owned(),
                 },
@@ -384,7 +384,7 @@ pub fn lift_handle<T: 'static>(
     let invalid = |reason: String| {
         Error::from(AbiError {
             position,
-            valtype: ty.clone(),
+            valtype: Some(ty.clone()),
             cause: AbiCause::InvalidHandle { reason },
         })
     };
@@ -436,7 +436,7 @@ pub fn lift_handle<T: 'static>(
 fn invalid_encoding(ty: &ValueType, position: AbiPosition, message: &str) -> Error {
     Error::from(AbiError {
         position,
-        valtype: ty.clone(),
+        valtype: Some(ty.clone()),
         cause: AbiCause::InvalidEncoding {
             message: message.to_owned(),
         },

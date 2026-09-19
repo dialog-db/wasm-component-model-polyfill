@@ -281,7 +281,7 @@ fn write_discriminant<T: 'static>(
         4 => ctx.write_bytes(offset, &(tag as u32).to_le_bytes(), position, ty),
         _ => Err(Error::from(AbiError {
             position,
-            valtype: ty.clone(),
+            valtype: Some(ty.clone()),
             cause: AbiCause::InvalidEncoding {
                 message: format!("unexpected discriminant width: {width}"),
             },
@@ -310,7 +310,7 @@ pub fn lower_handle<T: 'static>(
     let tables = ctx.instance().tables().ok_or_else(|| {
         Error::from(AbiError {
             position,
-            valtype: ty.clone(),
+            valtype: Some(ty.clone()),
             cause: AbiCause::InvalidHandle {
                 reason: "no handle-tables ledger available to the lower context".to_owned(),
             },
@@ -321,7 +321,7 @@ pub fn lower_handle<T: 'static>(
         .ok_or_else(|| {
             Error::from(AbiError {
                 position,
-                valtype: ty.clone(),
+                valtype: Some(ty.clone()),
                 cause: AbiCause::InvalidHandle {
                     reason: "the handle's type names no resource table of the instance".to_owned(),
                 },
@@ -330,7 +330,7 @@ pub fn lower_handle<T: 'static>(
     if table.type_id != handle.type_id {
         return Err(Error::from(AbiError {
             position,
-            valtype: ty.clone(),
+            valtype: Some(ty.clone()),
             cause: AbiCause::UnregisteredResourceType,
         }));
     }
@@ -355,7 +355,7 @@ pub fn lower_handle<T: 'static>(
             .ok_or_else(|| {
                 Error::from(AbiError {
                     position,
-                    valtype: ty.clone(),
+                    valtype: Some(ty.clone()),
                     cause: AbiCause::InvalidHandle {
                         reason: "a borrow can only be lowered during a call".to_owned(),
                     },
@@ -375,7 +375,7 @@ pub fn lower_handle<T: 'static>(
         .map_err(|e| {
             Error::from(AbiError {
                 position,
-                valtype: ty.clone(),
+                valtype: Some(ty.clone()),
                 cause: AbiCause::InvalidHandle {
                     reason: match e {
                         HandleLookupError::Unknown { index } => {
@@ -392,7 +392,7 @@ pub fn lower_handle<T: 'static>(
 fn host_value_mismatch(ty: &ValueType, position: AbiPosition) -> Error {
     Error::from(AbiError {
         position,
-        valtype: ty.clone(),
+        valtype: Some(ty.clone()),
         cause: AbiCause::HostValueMismatch,
     })
 }

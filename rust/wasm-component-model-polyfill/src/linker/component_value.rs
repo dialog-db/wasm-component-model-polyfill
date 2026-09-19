@@ -274,7 +274,7 @@ pub fn function_type_for<P: ComponentParameters, R: ComponentResult>() -> Functi
 fn value_mismatch(_val: &Val) -> Error {
     Error::from(AbiError {
         position: AbiPosition::Argument(0),
-        valtype: ValueType::Primitive(PrimitiveType::Bool),
+        valtype: Some(ValueType::Primitive(PrimitiveType::Bool)),
         cause: AbiCause::HostValueMismatch,
     })
 }
@@ -306,7 +306,7 @@ fn arity_mismatch(expected: usize, found: usize) -> Error {
 fn missing_result() -> Error {
     Error::from(AbiError {
         position: AbiPosition::Result,
-        valtype: ValueType::Primitive(PrimitiveType::Bool),
+        valtype: Some(ValueType::Primitive(PrimitiveType::Bool)),
         cause: AbiCause::HostValueMismatch,
     })
 }
@@ -314,7 +314,7 @@ fn missing_result() -> Error {
 fn unexpected_result_present() -> Error {
     Error::from(AbiError {
         position: AbiPosition::Result,
-        valtype: ValueType::Primitive(PrimitiveType::Bool),
+        valtype: Some(ValueType::Primitive(PrimitiveType::Bool)),
         cause: AbiCause::HostValueMismatch,
     })
 }

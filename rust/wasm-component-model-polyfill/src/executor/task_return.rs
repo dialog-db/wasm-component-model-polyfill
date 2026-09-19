@@ -46,12 +46,12 @@ use crate::abi::lift;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::backend::Backend;
 use crate::concurrency::{InstanceId, Scope, TaskId, TaskState};
-use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, TaskCause};
+use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, ReturnMismatchKind, TaskCause};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CanonOptions, CoreSignature};
 use crate::resource::HandleTables;
 use crate::store::{StoreContext, StoreData};
-use crate::types::{PrimitiveType, ValueType};
+use crate::types::ValueType;
 use crate::value::Val;
 
 /// Build the `task.return` built-in one `canon task.return`
@@ -117,11 +117,8 @@ fn task_return<T: 'static>(
         Some(options) if options.async_ => options,
         _ => return Err(Error::Task(TaskCause::ReturnFromSynchronousTask)),
     };
-    if result.cloned() != context.task_result_type()
-        || declared.string_encoding != lift_options.string_encoding
-        || !same_memory(declared.memory, lift_options.memory)
-    {
-        return Err(Error::Task(TaskCause::ReturnMismatch));
+    if let Some(kind) = mismatch(declared, result, &context, &lift_options) {
+        return Err(Error::Task(TaskCause::ReturnMismatch { kind }));
     }
 
     let value = match result {
@@ -205,14 +202,35 @@ fn resolve(
     Ok(())
 }
 
+/// Which of the three comparisons the built-in fails, or `None`
+/// when it passes all three. The order is the reference's: the
+/// result type, then the string encoding, then the memory.
+fn mismatch<T: 'static>(
+    declared: &CanonOptions,
+    result: Option<&ValueType>,
+    context: &BoundaryContext<'_, T>,
+    lift_options: &CanonOptions,
+) -> Option<ReturnMismatchKind> {
+    if result.cloned() != context.task_result_type() {
+        Some(ReturnMismatchKind::ResultType)
+    } else if declared.string_encoding != lift_options.string_encoding {
+        Some(ReturnMismatchKind::StringEncoding)
+    } else if !same_memory(declared.memory, lift_options.memory) {
+        Some(ReturnMismatchKind::Memory)
+    } else {
+        None
+    }
+}
+
 /// Whether the memory the built-in's options name is the memory the
 /// task's lift named.
 ///
 /// The comparison is of runtime memory slots, not of memory
-/// instances. The translator interns a slot on the core export a
-/// memory is extracted from, so two options that name the same slot
-/// always name the same memory instance: the check never lets a real
-/// mismatch through. It is conservative in the other direction. A
+/// instances. `wasmtime_environ::component::Translator` interns a
+/// slot on the core export a memory is extracted from — the slots
+/// are that translator's, not the polyfill's — so two options that
+/// name the same slot always name the same memory instance: the
+/// check never lets a real mismatch through. It is conservative in the other direction. A
 /// core module that re-exports a memory it imported gives the same
 /// memory instance two core exports, and so two slots; a built-in
 /// that names one of them while the task's lift names the other
@@ -250,13 +268,13 @@ fn pointer_argument(args: &[RuntimeVal]) -> Result<usize> {
 }
 
 /// The outstanding-borrows failure of a scope exit, labelled with
-/// the built-in's result type when it has one.
+/// the built-in's result type when it has one. A built-in that
+/// returns nothing labels the failure with no type: the borrow is
+/// owed by the task, not by a value the return was processing.
 fn outstanding_borrows(count: u32, result: Option<&ValueType>) -> Error {
     Error::from(AbiError {
         position: AbiPosition::Result,
-        valtype: result
-            .cloned()
-            .unwrap_or(ValueType::Primitive(PrimitiveType::Bool)),
+        valtype: result.cloned(),
         cause: AbiCause::OutstandingBorrows {
             count: count as usize,
         },
@@ -282,7 +300,7 @@ mod tests {
     use crate::executor::ir::{DataModel, StringEncoding};
     use crate::resource::TableId;
     use crate::store::Store;
-    use crate::types::TupleType;
+    use crate::types::{PrimitiveType, TupleType};
 
     /// One store as a built-in reaches it: the store itself, its
     /// records, the canonical-ABI runtime state of one
@@ -417,8 +435,24 @@ mod tests {
     }
 
     /// Wasmtime's message for a `task.return` whose result type or
-    /// options do not match the task's lift.
+    /// options do not match the task's lift. The conformance corpus
+    /// matches the trap by this substring, so a test of one
+    /// comparison asserts it as well as the comparison's own words.
     const MISMATCH: &str = "invalid `task.return` signature and/or options for current task";
+
+    /// The whole message the mismatch of `kind` renders as: the
+    /// message above and the comparison that failed. Every mismatch
+    /// message still carries Wasmtime's words, which is what the
+    /// corpus matches.
+    fn mismatch_message(kind: ReturnMismatchKind) -> String {
+        let message = Error::Task(TaskCause::ReturnMismatch { kind }).to_string();
+        assert!(
+            message.contains(MISMATCH),
+            "the corpus matches the mismatch trap by Wasmtime's words, which {message:?} no \
+             longer carries"
+        );
+        message
+    }
 
     #[wcmp_macros::test]
     fn it_resolves_the_current_task_with_the_lifted_result() {
@@ -522,7 +556,10 @@ mod tests {
             )
             .expect_err("a `u64` result does not resolve a `u32` task");
 
-        assert!(reports(err, MISMATCH), "the return-mismatch cause");
+        assert!(
+            reports(err, &mismatch_message(ReturnMismatchKind::ResultType)),
+            "the return-mismatch cause, naming the result-type comparison"
+        );
         assert_eq!(records.resolved(task), None, "the task is still pending");
     }
 
@@ -539,7 +576,10 @@ mod tests {
             )
             .expect_err("the built-in's encoding is not the lift's");
 
-        assert!(reports(err, MISMATCH), "the return-mismatch cause");
+        assert!(
+            reports(err, &mismatch_message(ReturnMismatchKind::StringEncoding)),
+            "the return-mismatch cause, naming the string-encoding comparison"
+        );
         assert_eq!(records.resolved(task), None, "the task is still pending");
     }
 
@@ -558,7 +598,78 @@ mod tests {
             )
             .expect_err("the built-in's memory is not the task's");
 
-        assert!(reports(err, MISMATCH), "the return-mismatch cause");
+        assert!(
+            reports(err, &mismatch_message(ReturnMismatchKind::Memory)),
+            "the return-mismatch cause, naming the memory comparison"
+        );
+        assert_eq!(records.resolved(task), None, "the task is still pending");
+    }
+
+    #[wcmp_macros::test]
+    fn it_traps_when_the_built_in_returns_nothing_and_the_task_expects_a_result() {
+        // The result-type comparison is of two `Option`s, so a
+        // built-in declared with no result at all fails it against a
+        // task whose function has one.
+        let mut records = Records::new(1);
+        let task = records.push_task(Some(u32_type()), lift_options());
+
+        let err = records
+            .call(None, &options(None, StringEncoding::Utf8, false), &[])
+            .expect_err("no result does not resolve a task that expects one");
+
+        assert!(
+            reports(err, &mismatch_message(ReturnMismatchKind::ResultType)),
+            "the return-mismatch cause, naming the result-type comparison"
+        );
+        assert_eq!(records.resolved(task), None, "the task is still pending");
+    }
+
+    #[wcmp_macros::test]
+    fn it_traps_when_the_built_in_returns_a_result_and_the_task_expects_none() {
+        // The reverse: the task's function returns nothing, so a
+        // built-in that carries a result fails the same comparison.
+        let mut records = Records::new(1);
+        let task = records.push_task(None, lift_options());
+
+        let err = records
+            .call(
+                Some(u32_type()),
+                &options(Some(0), StringEncoding::Utf8, false),
+                &[RuntimeVal::I32(7)],
+            )
+            .expect_err("a `u32` result does not resolve a task that expects none");
+
+        assert!(
+            reports(err, &mismatch_message(ReturnMismatchKind::ResultType)),
+            "the return-mismatch cause, naming the result-type comparison"
+        );
+        assert_eq!(records.resolved(task), None, "the task is still pending");
+    }
+
+    #[wcmp_macros::test]
+    fn it_fails_the_lift_when_options_that_name_no_memory_carry_a_result_that_needs_one() {
+        // Validation lets a `task.return` leave the memory out only
+        // when its result needs none, so this built-in is one no
+        // component produces. It passes the memory comparison — the
+        // comparison lets options that name no memory through — and
+        // then fails in the lift, which has no memory to read the
+        // string out of, rather than reading some other memory.
+        let mut records = Records::new(1);
+        let string = ValueType::Primitive(PrimitiveType::String);
+        let task = records.push_task(Some(string.clone()), lift_options());
+
+        let err = records
+            .call(
+                Some(string),
+                &options(None, StringEncoding::Utf8, false),
+                &[RuntimeVal::I32(8), RuntimeVal::I32(2)],
+            )
+            .expect_err("the string cannot be read without a memory");
+
+        assert!(
+            reports(err, "out-of-bounds memory access"),
+            "the lift reports the absent memory as a read it cannot serve"
+        );
         assert_eq!(records.resolved(task), None, "the task is still pending");
     }
 

@@ -131,7 +131,7 @@ impl Func {
         if args.len() != self.signature.parameters.len() {
             return Err(Error::from(AbiError {
                 position: AbiPosition::Argument(0),
-                valtype: ValueType::Primitive(PrimitiveType::Bool),
+                valtype: Some(ValueType::Primitive(PrimitiveType::Bool)),
                 cause: AbiCause::InvalidEncoding {
                     message: format!(
                         "expected {} arguments, got {}",
@@ -252,9 +252,14 @@ impl Func {
                 store.resolve_export_task(task, result.first().cloned())?;
                 match store.exit_export_task(task)? {
                     Ok(()) => Ok(result),
+                    // The borrow the export still owes is owed at
+                    // the end of the call, not at a value the call
+                    // was processing, so the failure names the
+                    // export's result type when it has one and no
+                    // type at all when it does not.
                     Err(count) => Err(Error::from(AbiError {
                         position: AbiPosition::Result,
-                        valtype: ValueType::Primitive(PrimitiveType::Bool),
+                        valtype: self.signature.result.clone(),
                         cause: AbiCause::OutstandingBorrows {
                             count: count as usize,
                         },
@@ -411,7 +416,7 @@ impl Func {
                 _ => {
                     return Err(Error::from(AbiError {
                         position,
-                        valtype: result_ty.clone(),
+                        valtype: Some(result_ty.clone()),
                         cause: AbiCause::InvalidEncoding {
                             message: "missing or non-i32 result-pointer slot".to_owned(),
                         },

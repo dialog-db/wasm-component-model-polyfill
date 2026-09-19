@@ -748,7 +748,7 @@ fn take_runtime_val(
 fn invalid_encoding(ty: &ValueType, position: AbiPosition, message: &str) -> Error {
     Error::from(AbiError {
         position,
-        valtype: ty.clone(),
+        valtype: Some(ty.clone()),
         cause: AbiCause::InvalidEncoding {
             message: message.to_owned(),
         },
@@ -758,7 +758,7 @@ fn invalid_encoding(ty: &ValueType, position: AbiPosition, message: &str) -> Err
 fn host_value_mismatch(ty: &ValueType, position: AbiPosition) -> Error {
     Error::from(AbiError {
         position,
-        valtype: ty.clone(),
+        valtype: Some(ty.clone()),
         cause: AbiCause::HostValueMismatch,
     })
 }

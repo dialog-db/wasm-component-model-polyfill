@@ -197,7 +197,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                         .map_err(|err| {
                             Error::from(AbiError {
                                 position: AbiPosition::Argument(0),
-                                valtype: ValueType::Own(ResourceType::new("resource")),
+                                valtype: Some(ValueType::Own(ResourceType::new("resource"))),
                                 cause: AbiCause::SubstrateFailure(err),
                             })
                         })?;

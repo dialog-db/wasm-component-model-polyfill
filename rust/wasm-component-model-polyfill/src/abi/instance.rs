@@ -84,6 +84,16 @@ impl BoundaryInstance {
     /// whose crossing belongs to a task takes the instance off the
     /// task, which is the instance the reference builds its context
     /// from.
+    ///
+    /// The resource tables stay as [`Self::resolve`] read them, and
+    /// there is nothing to re-resolve them from: the tables are the
+    /// instantiation's, indexed by the translator's table index, and
+    /// one instantiation has one such vector however many component
+    /// instances it holds. The `id` and the instance the options
+    /// name also address the same component instance in every
+    /// component the translator accepts today, because a built-in is
+    /// reachable only from the core modules of the instance whose
+    /// definition declares it.
     pub fn with_id(mut self, id: InstanceId) -> Self {
         self.id = Some(id);
         self

@@ -283,7 +283,7 @@ fn read_handle(
 fn invalid_handle_reason(reason: String) -> Error {
     Error::from(AbiError {
         position: AbiPosition::Argument(0),
-        valtype: ValueType::Primitive(PrimitiveType::U32),
+        valtype: Some(ValueType::Primitive(PrimitiveType::U32)),
         cause: AbiCause::InvalidHandle { reason },
     })
 }
@@ -291,7 +291,7 @@ fn invalid_handle_reason(reason: String) -> Error {
 fn invalid_handle(index: u32) -> Error {
     Error::from(AbiError {
         position: AbiPosition::Argument(0),
-        valtype: ValueType::Primitive(PrimitiveType::U32),
+        valtype: Some(ValueType::Primitive(PrimitiveType::U32)),
         cause: AbiCause::InvalidHandle {
             reason: format!("unknown handle index {index}"),
         },
@@ -501,7 +501,7 @@ fn invoke_trampoline<T: 'static>(
     let host_val = host_results.into_iter().next().ok_or_else(|| {
         Error::from(AbiError {
             position: AbiPosition::Result,
-            valtype: result_ty.clone(),
+            valtype: Some(result_ty.clone()),
             cause: AbiCause::HostValueMismatch,
         })
     })?;
@@ -526,7 +526,7 @@ fn invoke_trampoline<T: 'static>(
             if slots.len() != results.len() {
                 return Err(Error::from(AbiError {
                     position: AbiPosition::Result,
-                    valtype: result_ty.clone(),
+                    valtype: Some(result_ty.clone()),
                     cause: AbiCause::InvalidEncoding {
                         message: format!(
                             "lowered {} flat result slots for a core signature with {}",
@@ -582,7 +582,7 @@ fn pointer_argument(
         }
         _ => Err(Error::from(AbiError {
             position,
-            valtype: ty.clone(),
+            valtype: Some(ty.clone()),
             cause: AbiCause::InvalidEncoding {
                 message: "expected an i32 pointer argument".to_owned(),
             },

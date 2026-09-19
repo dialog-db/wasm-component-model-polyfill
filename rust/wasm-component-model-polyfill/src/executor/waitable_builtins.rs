@@ -399,7 +399,7 @@ fn lock_tables(
 fn misaligned_event_pointer() -> Error {
     Error::from(AbiError {
         position: AbiPosition::Argument(1),
-        valtype: ValueType::Primitive(PrimitiveType::U32),
+        valtype: Some(ValueType::Primitive(PrimitiveType::U32)),
         cause: AbiCause::InvalidEncoding {
             message: format!("event pointer not aligned to {EVENT_PAYLOAD_ALIGNMENT}"),
         },
