@@ -47,6 +47,7 @@ pub struct StoreData<T: 'static> {
     id: StoreId,
     tables: Arc<Mutex<HandleTables>>,
     destructors: HashMap<ResourceTypeId, ResourceDestructor<T>>,
+    resource_types: HashMap<ResourceTypeId, ResourceType>,
     scheduler: Scheduler<T>,
 }
 
@@ -61,6 +62,7 @@ impl<T: 'static> StoreData<T> {
             id: StoreId::fresh(),
             tables: Arc::new(Mutex::new(HandleTables::new())),
             destructors: HashMap::new(),
+            resource_types: HashMap::new(),
             scheduler: Scheduler::new(),
         }
     }
@@ -115,14 +117,35 @@ impl<T: 'static> StoreData<T> {
         &mut self.scheduler
     }
 
-    /// Record the destructor of a resource type an instance
-    /// introduced. Workspace-internal.
-    pub fn register_destructor(
+    /// Record what the store knows about a resource type an instance
+    /// introduced: the destructor to run when a handle to it is
+    /// released, and the type as the component that introduced it
+    /// names it.
+    ///
+    /// The name is what an error about a handle of the type renders,
+    /// and a resource type reaches the store from more than one
+    /// place — an instantiation knows the component's name for it,
+    /// a host that registered one against a linker and never
+    /// instantiated anything does not. So the name is optional, and
+    /// a store that never learned one says nothing about the type
+    /// rather than inventing a name for it. Workspace-internal.
+    pub fn register_resource(
         &mut self,
         type_id: ResourceTypeId,
+        resource_type: Option<ResourceType>,
         destructor: ResourceDestructor<T>,
     ) {
         self.destructors.entry(type_id).or_insert(destructor);
+        if let Some(resource_type) = resource_type {
+            self.resource_types.entry(type_id).or_insert(resource_type);
+        }
+    }
+
+    /// The resource type `type_id` names, as the component that
+    /// introduced it names it, when the store learned a name for it.
+    /// Workspace-internal.
+    pub fn resource_type(&self, type_id: ResourceTypeId) -> Option<ResourceType> {
+        self.resource_types.get(&type_id).cloned()
     }
 
     /// The destructor recorded for `type_id`, if an instance
@@ -178,7 +201,7 @@ impl<T: 'static> StoreData<T> {
                 };
                 Error::from(AbiError {
                     position: AbiPosition::Argument(0),
-                    valtype: Some(ValueType::Own(ResourceType::new("resource"))),
+                    valtype: self.resource_type(handle.type_id).map(ValueType::Own),
                     cause: AbiCause::InvalidHandle { reason },
                 })
             })

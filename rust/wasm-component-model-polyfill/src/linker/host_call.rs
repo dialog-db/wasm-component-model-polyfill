@@ -3,7 +3,6 @@
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::resource::{ResourceHandle, ResourceTableRuntime, ResourceTypeId};
 use crate::store::StoreContext;
-use crate::types::{ResourceType, ValueType};
 
 /// The context a registered host function runs against, scoped to
 /// one call from the guest.
@@ -97,9 +96,13 @@ impl<'a, T: 'static> HostCall<'a, T> {
             .find(|table| table.type_id == type_id)
             .copied();
         let Some(known) = known else {
+            // The instance holds no resource type under this
+            // identity, so there is no `own<T>` the refusal could
+            // name: naming one would be naming the very type the
+            // cause says does not exist.
             return Err(Error::from(AbiError {
                 position: AbiPosition::Result,
-                valtype: Some(ValueType::Own(ResourceType::new("resource"))),
+                valtype: None,
                 cause: AbiCause::UnregisteredResourceType,
             }));
         };

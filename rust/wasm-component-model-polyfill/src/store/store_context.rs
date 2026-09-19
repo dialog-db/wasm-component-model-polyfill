@@ -17,7 +17,6 @@ use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCaus
 use crate::executor::ResourceDestructor;
 use crate::executor::ir::CanonOptions;
 use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId, TableId};
-use crate::types::{ResourceType, ValueType};
 use crate::value::Val;
 
 use super::store_data::StoreData;
@@ -149,17 +148,6 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         self.store_data_mut().scheduler_mut()
     }
 
-    /// Record the destructor of a resource type an instance
-    /// introduced. Workspace-internal.
-    pub fn register_destructor(
-        &mut self,
-        type_id: ResourceTypeId,
-        destructor: ResourceDestructor<T>,
-    ) {
-        self.store_data_mut()
-            .register_destructor(type_id, destructor);
-    }
-
     /// Mint a fresh `own<T>` handle in this store's resource table
     /// for the given registered resource type. Workspace-internal.
     pub fn resource_new(&self, type_id: ResourceTypeId, rep: u32) -> Result<ResourceHandle> {
@@ -196,9 +184,14 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                     function
                         .call(&mut self.runtime, &[RuntimeVal::I32(rep as i32)], &mut [])
                         .map_err(|err| {
+                            // The call that failed is the core
+                            // destructor's, whose one argument is the
+                            // resource's `u32` rep, not the own
+                            // handle the caller released, so the
+                            // failure names no value type.
                             Error::from(AbiError {
                                 position: AbiPosition::Argument(0),
-                                valtype: Some(ValueType::Own(ResourceType::new("resource"))),
+                                valtype: None,
                                 cause: AbiCause::SubstrateFailure(err),
                             })
                         })?;
@@ -2300,8 +2293,9 @@ mod tests {
         let recorded = seen.clone();
 
         let type_id = ResourceTypeId::fresh();
-        store.register_destructor(
+        store.register_resource(
             type_id,
+            None,
             ResourceDestructor::Host(Arc::new(move |_data: &mut (), _rep: u32| {
                 *recorded.lock().expect("record") = Some(record_and_set(&tables, 0xdead));
                 Ok(())
@@ -2341,8 +2335,9 @@ mod tests {
         let recorded = seen.clone();
 
         let type_id = ResourceTypeId::fresh();
-        store.register_destructor(
+        store.register_resource(
             type_id,
+            None,
             ResourceDestructor::Host(Arc::new(move |_data: &mut (), _rep: u32| {
                 *recorded.lock().expect("record") = Some(record_and_set(&tables, 0xdead));
                 Err(Error::internal("the destructor failed"))

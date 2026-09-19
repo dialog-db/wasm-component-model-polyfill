@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use crate::abi::layout::FlatType;
 use crate::component::{ExternalName, FunctionType};
 use crate::module::Module;
-use crate::types::ValueType;
+use crate::types::{ResourceType, ValueType};
 
 /// The executor's IR for a single parsed component.
 ///
@@ -670,6 +670,12 @@ pub struct ResourceTableSpec {
     /// Whether that instance is the one that defines the resource. The
     /// defining instance handles reps directly for borrows.
     pub defining: bool,
+    /// The resource the table holds, as the component names it: the
+    /// label the resource is imported or exported under, and the
+    /// index of this table. An error about a handle of the type
+    /// renders this, so the name a user reads is the one the
+    /// component's own types give.
+    pub resource_type: ResourceType,
 }
 
 /// Per-resource metadata captured during translation, indexed by the

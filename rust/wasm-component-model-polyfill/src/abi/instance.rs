@@ -5,7 +5,7 @@
 //! — and reads the handle table it resolves a handle against off the
 //! instance. This type is that instance as the polyfill holds it:
 //! the store-wide identity of the component instance, the store's
-//! handle tables, and the resource tables of the instance. A
+//! handle tables, and the resource tables of the instantiation. A
 //! crossing that carries an `own<T>` or a `borrow<T>` reaches both
 //! tables through here, so the context of the crossing takes the
 //! instance and derives the tables from it rather than taking each
@@ -46,9 +46,9 @@ pub struct BoundaryInstance {
 impl BoundaryInstance {
     /// The options and the instance of one crossing, read out of the
     /// instantiation's runtime state under a single lock of it: the
-    /// slots the options name and the instance's resource tables sit
-    /// in the same state, and a call site needs both before it can
-    /// build a context.
+    /// slots the options name and the instantiation's resource
+    /// tables sit in the same state, and a call site needs both
+    /// before it can build a context.
     pub fn resolve(
         declared: &CanonOptions,
         abi_state: &Arc<Mutex<AbiRuntimeState>>,

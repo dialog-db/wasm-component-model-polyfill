@@ -91,7 +91,10 @@ impl<'a> TypeProjector<'a> {
         }
     }
 
-    fn resource(&self, index: TypeResourceTableIndex) -> ResourceType {
+    /// The resource one resource table holds, as the component names
+    /// it: the label the resource is imported or exported under, and,
+    /// for a table a concrete instance keeps, the table's index.
+    pub fn resource(&self, index: TypeResourceTableIndex) -> ResourceType {
         let label = self
             .labels
             .get(&index)

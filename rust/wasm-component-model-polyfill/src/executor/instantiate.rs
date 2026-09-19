@@ -8,6 +8,7 @@
 //! agnostic: native and web differ only in how the IR is produced
 //! (see [`super::translate`]).
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
@@ -25,6 +26,7 @@ use crate::linker::{HostFuncBody, ImportBinding, InstanceRegistration, Linker, R
 use crate::module::Module;
 use crate::resource::{ResourceTableRuntime, TableId};
 use crate::store::StoreContext;
+use crate::types::ResourceType;
 
 use super::ResourceDestructor;
 use super::build_task_return;
@@ -110,10 +112,28 @@ pub fn instantiate<T: 'static>(
         )?);
     }
 
+    // The component's name for each resource, by the resource's
+    // index. A resource has one name and as many tables as there are
+    // instances that keep it, so the first table that names a
+    // resource settles its name.
+    let mut resource_names: HashMap<usize, ResourceType> = HashMap::new();
+    for spec in ir.resource_tables.iter().flatten() {
+        resource_names
+            .entry(spec.resource_index)
+            .or_insert_with(|| spec.resource_type.clone());
+    }
+
     // The store learns every destructor this instantiation introduces,
-    // so a handle the host holds can be released through the store.
-    for runtime in &resource_runtimes {
-        store.register_destructor(runtime.type_id, runtime.destructor.clone());
+    // so a handle the host holds can be released through the store,
+    // and the component's name for the resource beside it, so an
+    // error about a handle the host holds names the type the way the
+    // component's own types do.
+    for (index, runtime) in resource_runtimes.iter().enumerate() {
+        store.store_data_mut().register_resource(
+            runtime.type_id,
+            resource_names.get(&index).cloned(),
+            runtime.destructor.clone(),
+        );
     }
 
     // One fresh handle table per component instance, shared by every

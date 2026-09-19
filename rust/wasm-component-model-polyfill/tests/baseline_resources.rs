@@ -1235,6 +1235,32 @@ async fn it_refuses_to_release_a_handle_twice() {
 }
 
 #[wcmp_macros::test]
+async fn it_names_the_resource_type_when_it_refuses_a_released_handle() {
+    let (mut store, type_id, _instance) = disposal_store().await;
+    let handle = store.resource_new(type_id, 5).expect("mint");
+    store.resource_drop(handle).expect("first release");
+    let err = store
+        .resource_drop(handle)
+        .expect_err("a released handle is not live");
+    let Error::Abi(abi) = &err else {
+        panic!("expected a canonical-ABI error, got {err:?}");
+    };
+    assert_eq!(
+        abi.valtype.as_ref().and_then(|valtype| match valtype {
+            ValueType::Own(resource) => Some(resource.label()),
+            _ => None,
+        }),
+        Some("thing"),
+        "the refusal processes an own handle, so it names the resource type \
+         the component imported it under, got {err}"
+    );
+    assert!(
+        err.to_string().contains("label: \"thing\""),
+        "the rendered message names that type too, got {err}"
+    );
+}
+
+#[wcmp_macros::test]
 async fn it_releases_a_locally_defined_resource_through_the_store() {
     let (mut store, instance) = local_resource_instance().await;
     let handle = make_handle(&mut store, &instance, 9).await;

@@ -162,6 +162,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                         resource_index: ty.as_u32() as usize,
                         instance: instance.as_u32() as usize,
                         defining,
+                        resource_type: projector.resource(TypeResourceTableIndex::from_u32(i)),
                     })
                 }
                 TypeResourceTable::Abstract(_) => None,
