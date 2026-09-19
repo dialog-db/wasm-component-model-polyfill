@@ -358,43 +358,50 @@ impl<T: 'static> StoreData<T> {
         }
     }
 
-    /// Why a nested turn that gave up with its condition unmet
-    /// failed.
+    /// Why a suspension whose nested turns gave up with the
+    /// condition unmet failed. Three rules, in this order.
     ///
-    /// A task that must not block gets the cannot-block cause, which
-    /// is the rule of the reference: it was given the ready work of
-    /// its own instance and that work did not meet the condition.
+    /// Any instance of the store with a synchronous call in
+    /// progress gives the cannot-block cause. The flag is the
+    /// may-not-suspend flag of the instance record, read across
+    /// every instance rather than on the blocked task's own: a
+    /// synchronous caller reaches an `async`-typed callee through a
+    /// synchronous call, and the callee is allowed to block while
+    /// its caller is not, so the callee blocking for ever is the
+    /// caller failing to return and the cause names the caller's
+    /// rule. It is also the reference's own rule for the blocked
+    /// task itself, which was given the ready work of its instance
+    /// and found the condition still unmet. This is what Wasmtime
+    /// reports where it would otherwise raise its deadlock trap.
     ///
-    /// A task that is allowed to block gets the stack-switch cause
-    /// while the store still holds work — a host task that has not
-    /// resolved, or an item only a driver's turn may run — because
-    /// the reference permits that block and only the target has no
-    /// provider to serve it.
+    /// A host task that has not resolved gives the stack-switch
+    /// cause, because the reference permits that block and only the
+    /// target has no provider to serve it. The future of a call
+    /// that blocked on one of its own counts: it is pending, it can
+    /// still resolve, and it is in the frame that blocked rather
+    /// than in the store.
     ///
-    /// A task that is allowed to block and finds the store idle gets
-    /// the cannot-block cause when any instance is inside a
-    /// synchronous call that has not returned, and the deadlock
-    /// cause otherwise. This is the rule Wasmtime applies where it
-    /// would raise its deadlock trap. A synchronous caller reaches
-    /// an `async`-typed callee through a synchronous call, and the
-    /// callee is allowed to block while its caller is not: the
-    /// callee blocking forever is the caller failing to return, so
-    /// the cause names the caller's rule. Workspace-internal.
+    /// An idle store gives the deadlock cause, because nothing left
+    /// in it can ever meet the condition. An item a turn is still
+    /// holding back does not change that answer: a nested turn runs
+    /// every item it is allowed to run, so an item left over is one
+    /// no turn of this store can release. Workspace-internal.
     pub fn suspend_cause(&self) -> SchedulerCause {
-        let current = self
-            .tables
-            .lock()
-            .ok()
-            .and_then(|guard| guard.tasks.current_task());
-        if self.must_not_block(current) {
+        if self.any_must_not_block() {
             SchedulerCause::CannotBlock
-        } else if self.has_pending_work() {
+        } else if self.host_future_pending() {
             SchedulerCause::StackSwitchNeeded
-        } else if self.any_must_not_block() {
-            SchedulerCause::CannotBlock
         } else {
             SchedulerCause::Deadlock
         }
+    }
+
+    /// Whether a host future that can still resolve is pending: one
+    /// of the store's host tasks, or the future of a call that
+    /// blocked on it, which stays in the frame that started it.
+    fn host_future_pending(&self) -> bool {
+        self.scheduler.host_task_count() > 0
+            || self.scheduler.suspend_seam().blocked_on_a_call_future()
     }
 
     /// The instance whose ready work is the whole of what a nested

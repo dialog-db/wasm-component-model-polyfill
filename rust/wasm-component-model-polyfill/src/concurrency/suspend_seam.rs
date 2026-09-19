@@ -35,30 +35,54 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 /// progress. A host task that stays pending inside a nested turn
 /// stays in the store for the outer turn, so no wake is lost.
 ///
-/// The rule is lazy, as the reference and Wasmtime state it. A task
-/// whose instance may not suspend first runs the ready work of that
-/// instance and nothing else — no item of another instance, and no
-/// host task — and the built-in then fails with the cannot-block
-/// cause when the condition still does not hold. That is the case
-/// of a start function, of a host call into a synchronous export,
-/// and of a synchronous call between two components.
+/// Four rules hold for the fallback. The first three say what a
+/// task that blocks waits for and what it is told when the wait
+/// cannot end. The fourth says what happens when the work the wait
+/// runs blocks in its turn.
 ///
-/// A task that is allowed to block gives way to everything a nested
-/// turn may run. It fails with the stack-switch cause while the
-/// store still holds work — a host task that has not resolved, or
-/// an item only a driver's turn may run — because the reference
-/// permits that block and only the target has no provider to serve
-/// it.
+/// - **A yielded item runs inside a nested turn once no other item
+///   is ready.** A yield gives way to every other ready item, so
+///   the nested turn runs a resumption after a yield only when it
+///   has run every other ready item and polled every host task. A
+///   driver's turn keeps the rule it always had: it defers the
+///   resumption, ends, and returns control to the host executor
+///   before the item runs. A nested turn has no control to return,
+///   and a task waiting on what a yielded item will produce would
+///   otherwise wait for ever on work the store was holding back, so
+///   the nested turn runs the item where it stands.
+/// - **The cause says why the wait cannot end.** When the nested
+///   turns cannot progress and the condition is still unmet, the
+///   built-in traps. The cause is the cannot-block cause when any
+///   instance of the store has a synchronous call in progress,
+///   which is the may-not-suspend flag of the instance record: some
+///   call has not returned, and the callee blocking for ever is
+///   that caller failing to return, so the cause names the caller's
+///   rule. It is the stack-switch cause when a host task is still
+///   pending — the future of a call that blocked on one of its own
+///   included — because the reference permits that block and only
+///   the target has no provider to serve it. It is the deadlock
+///   cause when the store is idle, because nothing left in the
+///   store can ever meet the condition.
+/// - **A task that must not block gives way to its own instance
+///   alone.** The rule is lazy, as the reference and Wasmtime state
+///   it. A task whose instance may not suspend runs the ready work
+///   of that instance and nothing else — no item of another
+///   instance, and no host task — and the built-in then fails with
+///   the cannot-block cause when the condition still does not hold.
+///   That is the case of a start function, of a host call into a
+///   synchronous export, and of a synchronous call between two
+///   components. A task that is allowed to block runs every ready
+///   item and polls every host task.
+/// - **Nested turns nest.** An item a nested turn runs can block
+///   and open a nested turn of its own, one real frame further down
+///   the stack. Each level runs what the level above it has not
+///   reached, and the guest's own call nesting bounds the depth: a
+///   level exists only for an item the level above took out of the
+///   store, so the work the store holds is what the depth is drawn
+///   from.
 ///
-/// When the store goes idle instead, the cause turns on whether a
-/// synchronous call is still in flight, which is how Wasmtime
-/// reports it where it would otherwise raise its deadlock trap. An
-/// instance that still carries may-not-suspend at idle says some
-/// call has not returned, and the block fails with the cannot-block
-/// cause: the callee blocking forever is that caller failing to
-/// return, so the cause names the caller's rule. With no such call
-/// in flight the block fails with the deadlock cause, because
-/// nothing left in the store can meet the condition.
+/// A provider in the slot serves the whole of that instead. It
+/// suspends the thread and ends the turn, and no nested turn runs.
 ///
 /// A nested executor that blocks the native thread is not an option
 /// here. It deadlocks under a current-thread executor, tokio forbids
@@ -81,37 +105,10 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 /// a host task it polls can find it. The two therefore stay
 /// separate, and they compose: a body's closure that reaches a
 /// blocking built-in gets a nested turn, and an item that nested
-/// turn runs which reaches the seam again is refused by the rule
-/// below.
-///
-/// Two rules bound what a nested turn may do, and both follow from
-/// where it runs — inside a guest call, with no way to hand control
-/// back to the host executor and no way to unwind the frames beneath
-/// it.
-///
-/// - **A nested turn leaves every resumption after a yield alone.**
-///   It neither takes the resume-after-yield slot nor fills it, and
-///   it runs nothing from the low-priority queue. A yield gives way
-///   to every other ready item and its resumption first returns
-///   control to the host executor; a nested turn cannot return that
-///   control, so only the outer turn resumes a yielded item. A
-///   nested turn that finds nothing left but deferred work reports
-///   [`Outcome::Yield`] and stops, and the suspension traps if its
-///   condition is still unmet. The deferred item stays queued and
-///   the outer turn defers and runs it as it always would, so
-///   nothing is lost.
-/// - **A nested turn nests no further.** An item a nested turn runs
-///   that itself reaches the seam is refused at once, with the cause
-///   the store gives a suspension that gave up. Each level is
-///   a real native frame under the guest call that blocked, nothing
-///   in the reference bounds how many levels a guest can ask for,
-///   and a deeper level could only reach the same work the level
-///   above it already offers. Depth one is therefore the whole of
-///   the fallback, and a target that fills the provider slot serves
-///   the rest by switching stacks.
+/// turn runs which reaches the seam again gets one of its own.
 pub struct SuspendSeam<T: 'static> {
     provider: Option<BoxedProvider<T>>,
-    in_nested_turn: bool,
+    blocked_call_futures: usize,
 }
 
 impl<T: 'static> SuspendSeam<T> {
@@ -120,7 +117,7 @@ impl<T: 'static> SuspendSeam<T> {
     pub fn new() -> Self {
         Self {
             provider: None,
-            in_nested_turn: false,
+            blocked_call_futures: 0,
         }
     }
 
@@ -129,10 +126,11 @@ impl<T: 'static> SuspendSeam<T> {
         self.provider.is_some()
     }
 
-    /// Whether a nested turn of this store is running, which is what
-    /// bounds the fallback to one level.
-    pub fn in_nested_turn(&self) -> bool {
-        self.in_nested_turn
+    /// Whether a call of this store blocked on a host future of its
+    /// own: one the store does not hold and no turn can poll, which
+    /// only the frame that started it can carry forward.
+    pub fn blocked_on_a_call_future(&self) -> bool {
+        self.blocked_call_futures > 0
     }
 
     /// Fill the capability with `provider`.
@@ -200,28 +198,82 @@ impl<T: 'static> SuspendSeam<T> {
         Self::resume(outcome)
     }
 
+    /// Run `body` with the store marked as holding a call that
+    /// blocked on a host future of its own.
+    ///
+    /// Such a future stays in the frame that started it rather than
+    /// joining the store's host tasks, because the call it belongs
+    /// to is still on the guest's stack. Without the mark the store
+    /// would look idle while a future that can still resolve is
+    /// pending, and a block that gave up would name the deadlock
+    /// cause where the stack-switch cause is the true one. The mark
+    /// is what the cause of a suspension reads to tell the two
+    /// apart.
+    ///
+    /// The mark comes back off through an unwind, as the provider
+    /// does: one a panic left raised would turn every later
+    /// deadlock of the store into a stack switch.
+    pub fn while_blocked_on_a_call_future<R>(
+        store: &mut StoreContext<'_, T>,
+        body: impl FnOnce(&mut StoreContext<'_, T>) -> R,
+    ) -> R {
+        store
+            .scheduler_mut()
+            .suspend_seam_mut()
+            .blocked_call_futures += 1;
+        let outcome = Self::caught(|| body(&mut *store));
+        let seam = store.scheduler_mut().suspend_seam_mut();
+        seam.blocked_call_futures = seam.blocked_call_futures.saturating_sub(1);
+        Self::resume(outcome)
+    }
+
     /// The fallback: turns of the store's scheduler run from inside
     /// the guest call that blocked, until the condition holds or
     /// nothing can progress.
+    ///
+    /// Nothing marks the seam as running one. Nested turns nest: an
+    /// item this loop runs that reaches the seam again gets a loop
+    /// of its own, one real frame further down the stack, and the
+    /// work the store holds is what bounds the depth.
     fn run_nested_turns(
         store: &mut StoreContext<'_, T>,
         condition: &mut dyn FnMut(&mut StoreContext<'_, T>) -> bool,
     ) -> Result<()> {
-        // The fallback is one level deep. An item a nested turn runs
-        // that reaches the seam again gets the condition checked and
-        // then the refusal, because a second level would add a
-        // native frame under the guest call without reaching any
-        // work the level above it does not already offer.
-        if store.scheduler().suspend_seam().in_nested_turn() {
+        // The waker of the outer turn, so that a host task polled
+        // here carries the waker the executor already holds. There
+        // is none when no turn is running — a thread resumed outside
+        // any poll of a driver — and a waker that does nothing
+        // serves instead, as it does for a trampoline that starts a
+        // host task outside a turn.
+        let waker = store.active_waker();
+        // A task that must not block gives way only to the ready
+        // work of its own instance. The instance is read once: what
+        // the turn is allowed to run cannot change under it, because
+        // the flag is set for the length of the call this thread is
+        // inside.
+        let only = store.must_not_block_instance();
+        loop {
             if condition(store) {
                 return Ok(());
             }
-            return Err(Error::Scheduler(store.suspend_cause()));
+            match store.nested_turn(&waker, only)? {
+                Outcome::Progress => continue,
+                // Nothing more can progress from inside the guest
+                // call. `Waiting` leaves its host tasks in the store
+                // for the outer turn to poll again. `Yield` is the
+                // answer a driver's turn gives for a resumption it
+                // deferred, and a nested turn gives it for nothing:
+                // it runs that resumption itself and reports
+                // progress. Ending the loop is what it would mean
+                // here all the same, since a turn that ran nothing
+                // and deferred nothing has nothing left to offer.
+                Outcome::Yield | Outcome::Waiting | Outcome::Idle => break,
+            }
         }
-        store.scheduler_mut().suspend_seam_mut().in_nested_turn = true;
-        let outcome = Self::caught(|| Self::nested_turn_loop(&mut *store, condition));
-        store.scheduler_mut().suspend_seam_mut().in_nested_turn = false;
-        Self::resume(outcome)
+        if condition(store) {
+            return Ok(());
+        }
+        Err(Error::Scheduler(store.suspend_cause()))
     }
 
     /// Run `body` and hand back what it did, an unwind included.
@@ -247,47 +299,6 @@ impl<T: 'static> SuspendSeam<T> {
             Ok(value) => value,
             Err(panic) => std::panic::resume_unwind(panic),
         }
-    }
-
-    /// The nested turns themselves, with the seam already marked as
-    /// running one.
-    fn nested_turn_loop(
-        store: &mut StoreContext<'_, T>,
-        condition: &mut dyn FnMut(&mut StoreContext<'_, T>) -> bool,
-    ) -> Result<()> {
-        // The waker of the outer turn, so that a host task polled
-        // here carries the waker the executor already holds. There
-        // is none when no turn is running — a thread resumed outside
-        // any poll of a driver — and a waker that does nothing
-        // serves instead, as it does for a trampoline that starts a
-        // host task outside a turn.
-        let waker = store.active_waker();
-        // A task that must not block gives way only to the ready
-        // work of its own instance. The instance is read once: what
-        // the turn is allowed to run cannot change under it, because
-        // the flag is set for the length of the call this thread is
-        // inside.
-        let only = store.must_not_block_instance();
-        loop {
-            if condition(store) {
-                return Ok(());
-            }
-            match store.nested_turn(&waker, only)? {
-                Outcome::Progress => continue,
-                // Nothing more can progress from inside the guest
-                // call. `Waiting` leaves its host tasks in the store
-                // for the outer turn to poll again, and `Yield` says
-                // the only work left is a resumption after a yield,
-                // which the nested turn left queued: that resumption
-                // first returns control to the host executor, and
-                // only the outer turn can return it.
-                Outcome::Yield | Outcome::Waiting | Outcome::Idle => break,
-            }
-        }
-        if condition(store) {
-            return Ok(());
-        }
-        Err(Error::Scheduler(store.suspend_cause()))
     }
 }
 
@@ -467,6 +478,49 @@ mod tests {
                 log.lock().expect("log").push(enter);
                 let _ = SuspendSeam::suspend(store, |_| false);
                 log.lock().expect("log").push(leave);
+                Ok(())
+            },
+        )
+    }
+
+    /// An item that records that it ran, blocks until `flag` is
+    /// set, records what the suspension reported, and records that
+    /// its call returned. The pair of log entries brackets
+    /// everything the suspension ran, and `flag` is what an item
+    /// the suspension runs sets.
+    fn waiter(
+        log: &Log,
+        enter: &'static str,
+        leave: &'static str,
+        flag: &Arc<Mutex<bool>>,
+        reported: &Arc<Mutex<Option<String>>>,
+    ) -> Item<()> {
+        let log = log.clone();
+        let flag = flag.clone();
+        let reported = reported.clone();
+        Item::new(
+            ItemKind::TaskStart,
+            move |store: &mut StoreContext<'_, ()>| {
+                log.lock().expect("log").push(enter);
+                let watched = flag.clone();
+                let outcome = SuspendSeam::suspend(store, move |_| *watched.lock().expect("flag"));
+                *reported.lock().expect("record") = Some(cause(outcome));
+                log.lock().expect("log").push(leave);
+                Ok(())
+            },
+        )
+    }
+
+    /// An item that sets `flag`, which is what a waiter above
+    /// blocked on, and records that it ran.
+    fn releases(log: &Log, name: &'static str, flag: &Arc<Mutex<bool>>) -> Item<()> {
+        let log = log.clone();
+        let flag = flag.clone();
+        Item::new(
+            ItemKind::TaskStart,
+            move |_store: &mut StoreContext<'_, ()>| {
+                *flag.lock().expect("flag") = true;
+                log.lock().expect("log").push(name);
                 Ok(())
             },
         )
@@ -928,7 +982,7 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    fn it_runs_every_deferred_item_exactly_once_after_a_suspension_gave_up() {
+    fn it_runs_every_deferred_item_exactly_once_inside_a_nested_turn() {
         let mut owner = store();
         let mut store = owner.context();
         let log = log();
@@ -953,16 +1007,16 @@ mod tests {
 
         assert_eq!(
             seen.lock().expect("record").clone(),
-            Some(Error::Scheduler(SchedulerCause::StackSwitchNeeded).to_string()),
-            "the nested turn had nothing it was allowed to run, so the \
-             suspension gave up"
+            Some(Error::Scheduler(SchedulerCause::Deadlock).to_string()),
+            "the nested turn ran the deferred work and the store then went \
+             idle, so nothing left in it could ever meet the condition"
         );
         assert_eq!(
             entries(&log),
             vec!["A", "B"],
-            "every deferred item ran, each exactly once: the nested turn \
-             neither took the resume-after-yield slot nor filled it, so the \
-             outer turn's own deferral overwrote nothing"
+            "every deferred item ran, each exactly once: the nested turn took \
+             them one at a time, in the order they were queued, and left \
+             nothing for the outer turn to run twice"
         );
         assert_eq!(
             store.scheduler().queued_items(),
@@ -972,7 +1026,7 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    fn it_never_resumes_a_yielded_item_inside_the_guest_call_that_blocked() {
+    fn it_runs_a_yielded_item_inside_a_nested_turn_once_nothing_else_is_ready() {
         let mut owner = store();
         let mut store = owner.context();
         let log = log();
@@ -981,9 +1035,8 @@ mod tests {
             .push_low_priority(marker(&log, "yielded"));
 
         // Both ready items block. The second one reaches the seam
-        // from inside the first one's nested turn, which is where a
-        // turn nested one deeper used to find the resumption sitting
-        // in the resume-after-yield slot and run it.
+        // from inside the first one's nested turn, and the
+        // resumption after the yield is what is left once it has.
         store
             .scheduler_mut()
             .push_high_priority(blocker(&log, "outer enter", "outer leave"));
@@ -998,103 +1051,256 @@ mod tests {
             vec![
                 "outer enter",
                 "inner enter",
+                "yielded",
                 "inner leave",
-                "outer leave",
-                "yielded"
+                "outer leave"
             ],
-            "the resumption after the yield ran last, outside every guest \
-             call that blocked, and only once the driver had returned control \
-             to the host executor"
+            "the resumption after the yield gave way to every other ready \
+             item and then ran inside the innermost nested turn, rather than \
+             waiting for a turn of the driver that no blocked call can reach"
         );
     }
 
     #[wcmp_macros::test]
-    fn it_refuses_a_suspension_reached_from_inside_a_nested_turn() {
+    fn it_leaves_a_yielded_item_to_the_executor_in_a_drivers_turn() {
         let mut owner = store();
         let mut store = owner.context();
         let log = log();
-        let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-
-        // The item that blocks first. Its nested turn runs the two
-        // items queued behind it.
         store
             .scheduler_mut()
-            .push_high_priority(blocker(&log, "outer enter", "outer leave"));
+            .push_low_priority(marker(&log, "yielded"));
 
-        // The item the nested turn runs, which reaches the seam
-        // itself and would be a second level.
-        let recorded = seen.clone();
-        let written = log.clone();
-        store.scheduler_mut().push_high_priority(Item::new(
-            ItemKind::TaskStart,
-            move |store: &mut StoreContext<'_, ()>| {
-                written.lock().expect("log").push("inner enter");
-                let outcome = SuspendSeam::suspend(store, |_| false);
-                *recorded.lock().expect("record") = Some(cause(outcome));
-                written.lock().expect("log").push("inner leave");
-                Ok(())
-            },
+        let mut driver = Box::pin(Driver::new(
+            store.reborrow(),
+            None,
+            |_store: &mut StoreContext<'_, ()>, _waker: &Waker| -> Option<Result<()>> { None },
+        ));
+        let outcome = poll_once(&mut driver, Waker::noop());
+
+        assert!(
+            outcome.is_pending(),
+            "the turn deferred the resumption and ended, so the driver \
+             returns pending"
+        );
+        assert!(
+            entries(&log).is_empty(),
+            "a driver's turn returns control to the host executor before a \
+             yielded item runs, which is the half of the yield rule a nested \
+             turn cannot keep"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_opens_another_nested_turn_for_an_item_a_nested_turn_ran() {
+        let mut owner = store();
+        let mut store = owner.context();
+        let log = log();
+        let outer_flag = Arc::new(Mutex::new(false));
+        let inner_flag = Arc::new(Mutex::new(false));
+        let outer_seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let inner_seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+        // The item that blocks first. Its nested turn runs the item
+        // behind it, which blocks in its turn.
+        store.scheduler_mut().push_high_priority(waiter(
+            &log,
+            "outer enter",
+            "outer leave",
+            &outer_flag,
+            &outer_seen,
+        ));
+        store.scheduler_mut().push_high_priority(waiter(
+            &log,
+            "inner enter",
+            "inner leave",
+            &inner_flag,
+            &inner_seen,
         ));
 
-        // Ready work behind it. A second level would have run this
-        // from inside the inner item's own guest call.
+        // What each of the two conditions waits for. The second
+        // level reaches the first of these, and the first level
+        // reaches the second once the level under it has returned.
         store
             .scheduler_mut()
-            .push_high_priority(marker(&log, "behind"));
+            .push_high_priority(releases(&log, "frees the inner", &inner_flag));
+        store
+            .scheduler_mut()
+            .push_high_priority(releases(&log, "frees the outer", &outer_flag));
 
         drain(&mut store);
 
         assert_eq!(
-            seen.lock().expect("record").clone(),
-            Some(Error::Scheduler(SchedulerCause::StackSwitchNeeded).to_string()),
-            "the fallback is one level deep, so the item the nested turn ran \
-             was refused rather than given a nested turn of its own"
+            inner_seen.lock().expect("record").clone(),
+            Some("the seam returned with the condition held".to_owned()),
+            "the item the first nested turn ran blocked and was given a \
+             nested turn of its own, which ran the work that met its \
+             condition"
+        );
+        assert_eq!(
+            outer_seen.lock().expect("record").clone(),
+            Some("the seam returned with the condition held".to_owned()),
+            "the first suspension returned once the level under it had \
+             returned and its own condition was met"
         );
         assert_eq!(
             entries(&log),
             vec![
                 "outer enter",
                 "inner enter",
+                "frees the inner",
+                "frees the outer",
                 "inner leave",
-                "behind",
                 "outer leave"
             ],
-            "the refusal returned at once, and the one nested turn went on to \
-             the work behind it rather than running that work one frame deeper"
+            "the second level ran the work the first had not reached — a turn \
+             runs every ready item before its outcome is read — and the two \
+             suspensions returned innermost first, as the real frames they \
+             sit on unwind"
         );
     }
 
     #[wcmp_macros::test]
-    fn it_refuses_a_nested_suspension_with_the_cannot_block_cause_in_a_sync_task() {
+    fn it_fails_a_suspension_inside_a_nested_turn_of_a_sync_task_with_the_cannot_block_cause() {
         let mut owner = store();
         let mut store = owner.context();
-        current_task(&store, true);
+        let mine = current_task(&store, true);
 
+        // Two items of the instance whose call must return. The
+        // first blocks, its nested turn runs the second, and the
+        // second blocks from inside that turn.
         let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-        store.scheduler_mut().push_high_priority(Item::new(
-            ItemKind::TaskStart,
-            |store: &mut StoreContext<'_, ()>| {
+        queue(
+            &mut store,
+            mine,
+            Item::new(ItemKind::TaskStart, |store: &mut StoreContext<'_, ()>| {
                 let _ = SuspendSeam::suspend(store, |_| false);
                 Ok(())
-            },
-        ));
+            }),
+        );
         let recorded = seen.clone();
-        store.scheduler_mut().push_high_priority(Item::new(
-            ItemKind::TaskStart,
-            move |store: &mut StoreContext<'_, ()>| {
-                let outcome = SuspendSeam::suspend(store, |_| false);
-                *recorded.lock().expect("record") = Some(cause(outcome));
-                Ok(())
-            },
-        ));
+        queue(
+            &mut store,
+            mine,
+            Item::new(
+                ItemKind::TaskStart,
+                move |store: &mut StoreContext<'_, ()>| {
+                    let outcome = SuspendSeam::suspend(store, |_| false);
+                    *recorded.lock().expect("record") = Some(cause(outcome));
+                    Ok(())
+                },
+            ),
+        );
 
         drain(&mut store);
 
         assert_eq!(
             seen.lock().expect("record").clone(),
             Some(Error::Scheduler(SchedulerCause::CannotBlock).to_string()),
-            "the refusal takes the cause of the current task, so a task the \
-             reference forbids to block still gets the cannot-block trap"
+            "a call of the instance has not returned, so a block that cannot \
+             progress names the caller's rule however deep the nesting is"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_traps_with_the_cannot_block_cause_while_another_instance_is_inside_a_synchronous_call() {
+        let mut owner = store();
+        let mut store = owner.context();
+        // The task that blocks is one the reference allows to
+        // block, and the store is idle. Another instance is inside
+        // a synchronous call all the same.
+        current_task(&store, false);
+        let mut guard = store.tables().lock().expect("tables");
+        let other = guard.tasks.insert_instance();
+        guard
+            .tasks
+            .instance_mut(other)
+            .expect("instance record")
+            .may_not_suspend = true;
+        drop(guard);
+
+        let outcome = store
+            .run_in_turn(Waker::noop(), |store| {
+                SuspendSeam::suspend(store, |_| false)
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            Error::Scheduler(SchedulerCause::CannotBlock).to_string(),
+            "the flag of every instance is read, not the blocked task's \
+             alone: the callee blocking for ever is the caller failing to \
+             return, so the cause names the caller's rule"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_runs_the_ready_work_of_every_instance_when_the_task_may_block() {
+        let mut owner = store();
+        let mut store = owner.context();
+        let log = log();
+
+        let mine = current_task(&store, false);
+        let other = store
+            .tables()
+            .lock()
+            .expect("tables")
+            .tasks
+            .insert_instance();
+        queue(&mut store, mine, marker(&log, "mine"));
+        queue(&mut store, other, marker(&log, "other"));
+
+        let outcome = store
+            .run_in_turn(Waker::noop(), |store| {
+                SuspendSeam::suspend(store, |_| false)
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            Error::Scheduler(SchedulerCause::Deadlock).to_string(),
+            "this task may block, and nothing left in the store can ever meet \
+             the condition it blocked on"
+        );
+        assert_eq!(
+            entries(&log),
+            vec!["mine", "other"],
+            "a task the reference allows to block gives way to every ready \
+             item, whichever instance queued it"
+        );
+        assert_eq!(
+            store.scheduler().queued_items(),
+            0,
+            "nothing was left queued"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_traps_with_the_stack_switch_cause_while_a_call_blocks_on_a_future_of_its_own() {
+        let mut owner = store();
+        let mut store = owner.context();
+        current_task(&store, false);
+
+        // The store holds no host task: the future of a call that
+        // blocked on one of its own stays in the frame that started
+        // it, and the mark is what says so.
+        let outcome = SuspendSeam::while_blocked_on_a_call_future(&mut store, |store| {
+            store
+                .run_in_turn(Waker::noop(), |store| {
+                    SuspendSeam::suspend(store, |_| false)
+                })
+                .expect("the outer turn runs")
+        });
+
+        assert_eq!(
+            cause(outcome),
+            Error::Scheduler(SchedulerCause::StackSwitchNeeded).to_string(),
+            "a future that can still resolve is pending, so the reference \
+             permits this block and only the target has no provider to serve \
+             it"
+        );
+        assert!(
+            !store.scheduler().suspend_seam().blocked_on_a_call_future(),
+            "the mark came back off when the blocked call's frame ended"
         );
     }
 
@@ -1128,9 +1334,8 @@ mod tests {
         assert_eq!(
             cause(second),
             "the seam returned with the condition held",
-            "the seam released its nested-turn marker when the first \
-             suspension returned, so the next one is not refused as a second \
-             level"
+            "a suspension that gave up leaves the seam as it found it, so the \
+             next one runs its nested turns too"
         );
         assert_eq!(polls.lock().expect("polls").clone(), vec![true]);
     }
@@ -1163,30 +1368,36 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn it_clears_the_nested_turn_marker_when_a_nested_turn_panicked() {
+    fn it_clears_the_blocked_call_marker_when_a_blocked_call_panicked() {
         let mut owner = store();
         let mut store = owner.context();
 
         let unwound = unwind(|| {
-            SuspendSeam::suspend(&mut store, |_store: &mut StoreContext<'_, ()>| -> bool {
-                panic!("the condition panicked")
-            })
+            SuspendSeam::while_blocked_on_a_call_future(
+                &mut store,
+                |_store: &mut StoreContext<'_, ()>| -> bool { panic!("the blocked call panicked") },
+            )
         });
 
-        assert!(unwound.is_err(), "the condition's panic unwound the seam");
+        assert!(unwound.is_err(), "the blocked call's panic unwound");
         assert!(
-            !store.scheduler().suspend_seam().in_nested_turn(),
-            "the seam is no longer marked as running a nested turn"
+            !store.scheduler().suspend_seam().blocked_on_a_call_future(),
+            "the seam no longer holds the mark of a call blocked on a future \
+             of its own"
         );
 
         let again = store
-            .run_in_turn(Waker::noop(), |store| SuspendSeam::suspend(store, |_| true))
+            .run_in_turn(Waker::noop(), |store| {
+                SuspendSeam::suspend(store, |_| false)
+            })
             .expect("the outer turn runs");
 
         assert_eq!(
             cause(again),
-            "the seam returned with the condition held",
-            "the next suspension is served rather than refused as a second level"
+            Error::Scheduler(SchedulerCause::Deadlock).to_string(),
+            "the store is idle and no future of any frame is pending, so a \
+             mark the panic left raised would have named the stack-switch \
+             cause here"
         );
     }
 

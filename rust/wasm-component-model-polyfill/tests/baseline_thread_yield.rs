@@ -31,11 +31,11 @@
 //! item.
 //!
 //! The queued callback of the second instance yields in its turn.
-//! That yield is the one the seam refuses, because it comes from an
-//! item the nested turn of the first yield is running and the seam
-//! nests one level only. The built-in swallows that refusal, so the
-//! callback runs on to its second entry and the outer yield returns
-//! as if nothing had happened.
+//! That yield comes from an item the nested turn of the first yield
+//! is running, and nested turns nest: it opens a nested turn of its
+//! own, one frame further down. Nothing is ready by then, so the
+//! inner yield gives way to nothing, returns zero, and the callback
+//! runs on to its second entry.
 
 #![cfg(test)]
 
@@ -419,26 +419,26 @@ async fn it_runs_a_queued_item_of_another_task_from_a_callback_task() {
 }
 
 #[wcmp_macros::test]
-async fn it_returns_zero_from_a_yield_the_seam_refuses_a_second_nesting() {
+async fn it_returns_zero_from_a_yield_inside_a_nested_turn() {
     let (mut store, instance, log) = instantiate(TWO_INSTANCES).await;
     queue_the_other_instance(&mut store, &instance, &log).await;
 
     let answer = call_u32(&mut store, &instance, "give-way", &[Val::U32(7)]).await;
 
-    // The other instance's callback is an item of the nested turn the
-    // outer yield ran, so its own yield asks the seam for a second
-    // level of nesting and is refused. The built-in swallows the
-    // refusal: the callback logged 4 after it, and the refusal
-    // reached neither the callback nor the task that yielded first.
+    // The other instance's callback is an item of the nested turn
+    // the outer yield ran, so its own yield opens a nested turn one
+    // frame further down. Nothing is ready there, so it gives way to
+    // nothing and returns zero: the callback logged 4 after it, and
+    // the task that yielded first ran on afterwards.
     assert_eq!(
         entries(&log),
         vec![1, 2, 4, 3],
-        "the nested callback ran past its own yield rather than trapping"
+        "the nested callback ran past its own yield"
     );
     assert_eq!(
         call_u32(&mut store, &instance, "nested-word", &[]).await,
         0,
-        "the refused yield returned zero"
+        "the yield of the item the nested turn ran returned zero"
     );
     assert_eq!(answer, 7, "the outer callback task returned its own result");
 }

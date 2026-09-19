@@ -17,34 +17,31 @@
 //! must not block with no ready work of its own instance therefore
 //! yields to nothing, as Wasmtime runs it.
 //!
-//! The built-in never fails on its own. One refusal of the seam is
-//! what it has to swallow to keep that promise: the refusal a
-//! second level of nesting gets. An item the nested turn runs that
-//! calls the built-in again asks the seam to nest once more, the
-//! seam nests one level only, and its refusal reaches that inner
-//! yield before the condition has been asked even once. It says
-//! nothing except that the seam would not nest, and a yield asks
-//! for nothing a further level could give, so the built-in returns
-//! zero through it.
-//!
-//! The seam's other causes do not reach the built-in at all. The
-//! condition holds by the time the fallback's loop ends, however
-//! the loop ended, so the check that stands between the loop and
-//! the cannot-block, deadlock and stack-switch causes always
-//! succeeds. They are swallowed by the same arm because they would
-//! mean the same thing if the seam ever raised one: that the turn
-//! did not meet a condition a yield never asked it to meet.
+//! The built-in never fails on its own, and the seam's causes do
+//! not reach it. The condition holds by the time the fallback's
+//! loop ends, however the loop ended, so the check that stands
+//! between the loop and the cannot-block, deadlock and stack-switch
+//! causes always succeeds. The built-in swallows them all the same,
+//! because any one of them would mean the same thing here: that the
+//! turn did not meet a condition a yield never asked it to meet.
 //!
 //! An error the nested turn raised while it ran an item is a
 //! different thing: it is the failure of that work, it would have
 //! failed the turn that ran it, and the built-in hands it on rather
 //! than losing it.
 //!
+//! An item the nested turn runs that calls the built-in again opens
+//! a nested turn one frame further down, because nested turns nest.
+//! Such a yield gives way to whatever the level above it has not
+//! reached, which is often nothing, and returns zero either way.
+//!
 //! From inside a guest frame with no stack switch the polyfill
-//! cannot hand control to the host executor, so a yield here does
-//! not run a resumption the low-priority queue holds: that is the
-//! nested turn's rule. A callback task that wants the executor to
-//! run returns the yield status word instead.
+//! cannot hand control to the host executor. A yield here therefore
+//! runs a resumption the low-priority queue holds where a driver's
+//! turn would first give the executor its turn: that is the nested
+//! turn's rule, and it is what keeps a task blocked on such a
+//! resumption from waiting for ever. A callback task that wants the
+//! executor to run returns the yield status word instead.
 //!
 //! The `cancellable` immediate the translator drops has no effect
 //! here, and it is not the reference's. `canon thread.yield` takes
@@ -121,9 +118,9 @@ fn thread_yield<T: 'static>(
     let mut store = StoreContext::new(store_ctx.as_context_mut());
     match SuspendSeam::suspend(&mut store, |_| std::mem::replace(&mut given_back, true)) {
         Ok(()) => Ok(()),
-        // The seam refusing to nest a second level is not a failure
-        // of the yield, and it is the one refusal a yield can meet;
-        // see the module documentation.
+        // A cause the seam raised says the turn did not meet a
+        // condition a yield never asked it to meet, so it is not a
+        // failure of the yield; see the module documentation.
         Err(Error::Scheduler(_)) => Ok(()),
         Err(error) => Err(trap(error)),
     }

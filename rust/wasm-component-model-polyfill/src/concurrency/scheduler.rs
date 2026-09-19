@@ -295,6 +295,42 @@ impl<T: 'static> Scheduler<T> {
         self.high_priority.remove(position)
     }
 
+    /// Take the next resumption after a yield: the one already in
+    /// the resume-after-yield slot first, then the front of the
+    /// low-priority queue.
+    ///
+    /// This is what a nested turn takes once nothing else is ready.
+    /// A driver's turn defers instead, so that the item runs only
+    /// after control has gone back to the host executor; a nested
+    /// turn runs from inside a guest call and has no control to
+    /// give back, so it runs the item where it stands.
+    pub fn take_deferred(&mut self) -> Option<Item<T>> {
+        match self.resume_after_yield.take() {
+            Some(item) => Some(item),
+            None => self.low_priority.pop_front(),
+        }
+    }
+
+    /// Take the next resumption after a yield that belongs to
+    /// `instance`, leaving every other one where it is. This is what
+    /// a nested turn run for a task that must not block takes, which
+    /// gives way to the work of its own instance and to nothing
+    /// else.
+    pub fn take_deferred_in(&mut self, instance: InstanceId) -> Option<Item<T>> {
+        if self
+            .resume_after_yield
+            .as_ref()
+            .is_some_and(|item| item.instance() == Some(instance))
+        {
+            return self.resume_after_yield.take();
+        }
+        let position = self
+            .low_priority
+            .iter()
+            .position(|item| item.instance() == Some(instance))?;
+        self.low_priority.remove(position)
+    }
+
     /// Move the front of the low-priority queue into the
     /// resume-after-yield slot, so the turn can end and the driver
     /// can return control to the host executor before the item runs.
@@ -825,6 +861,68 @@ mod tests {
         left.run(&mut store.context()).expect("the item runs");
 
         assert_eq!(entries(&log), vec!["mine", "another instance"]);
+    }
+
+    #[wcmp_macros::test]
+    fn it_takes_the_resume_after_yield_slot_before_the_low_priority_queue() {
+        let mut store = store();
+        let log = log();
+        store.scheduler_mut().push_low_priority(marker(&log, "one"));
+        store.scheduler_mut().push_low_priority(marker(&log, "two"));
+        assert!(
+            store.scheduler_mut().defer_low_priority(),
+            "the front of the queue moves into the resume-after-yield slot"
+        );
+
+        while let Some(item) = store.scheduler_mut().take_deferred() {
+            item.run(&mut store.context()).expect("the item runs");
+        }
+
+        assert_eq!(
+            entries(&log),
+            vec!["one", "two"],
+            "the slot's item came first and the queue followed, which is the \
+             order a driver's turns would have run them in"
+        );
+        assert_eq!(
+            store.scheduler().queued_items(),
+            0,
+            "nothing deferred was left behind"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_takes_only_the_deferred_work_of_the_instance_it_is_asked_for() {
+        let mut store = store();
+        let log = log();
+        let mine = instance(&store);
+        let other = instance(&store);
+        store
+            .scheduler_mut()
+            .push_low_priority(marker(&log, "other").in_instance(other));
+        store
+            .scheduler_mut()
+            .push_low_priority(marker(&log, "mine").in_instance(mine));
+        store
+            .scheduler_mut()
+            .push_low_priority(marker(&log, "no instance"));
+
+        while let Some(item) = store.scheduler_mut().take_deferred_in(mine) {
+            item.run(&mut store.context()).expect("the item runs");
+        }
+
+        assert_eq!(
+            entries(&log),
+            vec!["mine"],
+            "a task that must not block gives way to the deferred work of its \
+             own instance and to nothing else"
+        );
+        assert_eq!(
+            store.scheduler().queued_items(),
+            2,
+            "the other instance's item and the item that names none are still \
+             queued for a turn of the scheduler"
+        );
     }
 
     #[wcmp_macros::test]

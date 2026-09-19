@@ -320,22 +320,35 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// thing: the suspend seam's own documentation sets the two side
     /// by side.
     ///
-    /// It also leaves every resumption after a yield alone: it
-    /// neither takes the resume-after-yield slot nor fills it. Such
-    /// a resumption runs only after a driver has returned control to
-    /// the host executor, and a nested turn runs from inside a guest
-    /// call, so it has no control to return. It reports deferred work
-    /// it cannot run as [`Outcome::Yield`], which is the outer turn's
-    /// cue to end and the seam's cue to stop.
+    /// Four rules hold for the fallback, and two of them are this
+    /// turn's.
+    ///
+    /// A nested turn runs a resumption after a yield itself, once
+    /// it has run every other ready item and polled every host
+    /// task. It takes that resumption out of the resume-after-yield
+    /// slot or off the front of the low-priority queue, runs it,
+    /// and reports [`Outcome::Progress`]. It never fills the slot
+    /// and never reports [`Outcome::Yield`]. A driver's turn keeps
+    /// the other half of the yield rule: it defers the resumption,
+    /// ends, and returns control to the host executor before the
+    /// item runs. A nested turn runs from inside a guest call and
+    /// has no control to return, and a task blocked on what a
+    /// yielded item will produce would otherwise wait for ever on
+    /// work the store was holding back.
     ///
     /// `only`, when it names an instance, holds the turn to the
-    /// ready work of that instance: it runs no item of another
-    /// instance and polls no host task. That is the lazy blocking
-    /// rule of the reference for a task that must not block, which
-    /// gives way to the ready threads of its own instance and then
-    /// traps. Such a turn reports [`Outcome::Progress`] when it ran
+    /// work of that instance: it runs no item of another instance
+    /// and polls no host task. That is the lazy blocking rule of
+    /// the reference for a task that must not block, which gives
+    /// way to the ready threads of its own instance and then traps.
+    /// Such a turn reports [`Outcome::Progress`] when it ran
     /// something and [`Outcome::Idle`] when that instance had
-    /// nothing ready. Workspace-internal.
+    /// nothing to run.
+    ///
+    /// The other two rules belong to the seam: the cause a
+    /// suspension that cannot progress fails with, and that an item
+    /// a nested turn runs may block and open a nested turn of its
+    /// own. Workspace-internal.
     pub fn nested_turn(&mut self, waker: &Waker, only: Option<InstanceId>) -> Result<Outcome> {
         self.run_turn(waker, true, only)
     }
@@ -499,47 +512,56 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             return Err(Error::Scheduler(SchedulerCause::StackSwitchNeeded));
         }
 
-        let mut produced: Option<Result<Vec<Val>>> = None;
-        let suspended = SuspendSeam::suspend(self, |store| {
-            if produced.is_some() {
-                return true;
-            }
-            let waker = store.active_waker();
-            let accessor = Accessor::new(store.reborrow());
-            if let Err(error) = accessor.attend(&waker) {
-                produced = Some(Err(error));
-                return true;
-            }
-            match task.poll(&accessor, &waker) {
-                Poll::Ready(value) => {
-                    produced = Some(value);
-                    true
+        // The future is pending and the store does not hold it, so
+        // nothing a turn can see says the store is still waiting on
+        // something. The mark says it for as long as this frame
+        // holds the future, and a suspension that gives up under it
+        // therefore names the stack-switch cause rather than the
+        // deadlock cause.
+        SuspendSeam::while_blocked_on_a_call_future(self, move |store| {
+            let mut produced: Option<Result<Vec<Val>>> = None;
+            let suspended = SuspendSeam::suspend(store, |store| {
+                if produced.is_some() {
+                    return true;
                 }
-                Poll::Pending => false,
-            }
-        });
+                let waker = store.active_waker();
+                let accessor = Accessor::new(store.reborrow());
+                if let Err(error) = accessor.attend(&waker) {
+                    produced = Some(Err(error));
+                    return true;
+                }
+                match task.poll(&accessor, &waker) {
+                    Poll::Ready(value) => {
+                        produced = Some(value);
+                        true
+                    }
+                    Poll::Pending => false,
+                }
+            });
 
-        match (suspended, produced) {
-            (Ok(()), Some(Ok(values))) => {
-                self.lock_tables()?
-                    .exit_subtask(subtask, SubtaskState::Returned);
-                task.lower(self, Ok(values))?;
-                Ok(CallStatus::returned())
+            match (suspended, produced) {
+                (Ok(()), Some(Ok(values))) => {
+                    store
+                        .lock_tables()?
+                        .exit_subtask(subtask, SubtaskState::Returned);
+                    task.lower(store, Ok(values))?;
+                    Ok(CallStatus::returned())
+                }
+                // The body failed, the suspension failed, or the
+                // provider returned with the condition unmet. Each
+                // is a call that never returned, so the subtask
+                // resolves as a cancellation and the failure travels
+                // out to the guest's call.
+                (Ok(()), Some(Err(error))) | (Err(error), _) => {
+                    store.lock_tables()?.abandon_subtask(subtask);
+                    Err(error)
+                }
+                (Ok(()), None) => {
+                    store.lock_tables()?.abandon_subtask(subtask);
+                    Err(Error::Scheduler(store.suspend_cause()))
+                }
             }
-            // The body failed, the suspension failed, or the
-            // provider returned with the condition unmet. Each is a
-            // call that never returned, so the subtask resolves as a
-            // cancellation and the failure travels out to the
-            // guest's call.
-            (Ok(()), Some(Err(error))) | (Err(error), _) => {
-                self.lock_tables()?.abandon_subtask(subtask);
-                Err(error)
-            }
-            (Ok(()), None) => {
-                self.lock_tables()?.abandon_subtask(subtask);
-                Err(Error::Scheduler(self.suspend_cause()))
-            }
-        }
+        })
     }
 
     /// Give a host task to the store. The next turn polls it with
@@ -551,15 +573,17 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// The body of one turn, with the waker already recorded.
     ///
     /// `nested` marks the turn the suspend seam runs from inside a
-    /// guest call. Only a turn that is not nested touches the
-    /// resumptions after a yield, because only a driver's turn can
-    /// end and hand control back to the host executor first.
+    /// guest call. The two turns differ over the resumptions after
+    /// a yield: a driver's turn defers one and ends, so that
+    /// control goes back to the host executor before the item runs,
+    /// and a nested turn, which has no control to give back, runs
+    /// the resumption itself once nothing else is ready.
     ///
     /// `only`, when it names an instance, holds the turn to that
-    /// instance's ready work, which is what a task that must not
-    /// block gives way to. Such a turn polls no host task: a task
-    /// that must not block must not wait on one, and the cause it
-    /// fails with says so.
+    /// instance's work, which is what a task that must not block
+    /// gives way to. Such a turn polls no host task: a task that
+    /// must not block must not wait on one, and the cause it fails
+    /// with says so.
     ///
     /// An item that fails ends the turn and its failure is the
     /// turn's. Almost no item can fail: what an item produces it
@@ -596,11 +620,18 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             }
             break;
         }
-        if only.is_some() {
-            // The instance's ready work is the whole of what this
-            // turn was allowed to run. Progress sends the seam round
-            // again to test its condition; an idle answer is its cue
-            // to stop and trap with the cannot-block cause.
+        if let Some(instance) = only {
+            // The instance's own work is the whole of what this turn
+            // was allowed to run, a resumption of that instance
+            // after a yield included: nothing else of it is ready,
+            // so the yield has given way to everything it can.
+            // Progress sends the seam round again to test its
+            // condition; an idle answer is its cue to stop and trap
+            // with the cannot-block cause.
+            if let Some(item) = self.scheduler_mut().take_deferred_in(instance) {
+                item.run(self)?;
+                return Ok(Outcome::Progress);
+            }
             return Ok(if ran {
                 Outcome::Progress
             } else {
@@ -611,12 +642,19 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         if self.scheduler().has_immediate_item() {
             return Ok(Outcome::Progress);
         }
-        // Only deferred work is left. A nested turn reaches this and
-        // gives way: the resumption belongs to the outer turn, after
-        // the driver has returned control to the host executor. A
-        // driver's turn does not reach it, because the loop above
-        // deferred its front and returned already.
-        if self.scheduler().has_deferred_item() {
+        // Only deferred work is left. A nested turn runs it: every
+        // other ready item has run and every host task has been
+        // polled, so the yield has given way to all there was, and
+        // the turn has no control to hand the host executor first.
+        // A driver's turn does not reach this, because the loop
+        // above deferred the front of the queue and returned
+        // already.
+        if nested {
+            if let Some(item) = self.scheduler_mut().take_deferred() {
+                item.run(self)?;
+                return Ok(Outcome::Progress);
+            }
+        } else if self.scheduler().has_deferred_item() {
             return Ok(Outcome::Yield);
         }
         if self.scheduler().host_task_count() == 0 {
