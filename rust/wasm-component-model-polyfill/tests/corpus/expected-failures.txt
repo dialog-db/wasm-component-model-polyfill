@@ -209,7 +209,7 @@ cm/async/during-sync-scheduling-candidates.wast:414 deferred-feature component r
 cm/async/during-sync-scheduling-candidates.wast:482 deferred-feature no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:483 deferred-feature no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:484 deferred-feature no instance to invoke
-cm/async/empty-wait.wast:6 deferred-feature component rejected: unsupported component feature: the `waitable-join` trampoline
+cm/async/empty-wait.wast:6 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 cm/async/empty-wait.wast:199 deferred-feature no instance to invoke
 cm/async/futures-must-write.wast:5 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 cm/async/futures-must-write.wast:117 deferred-feature no instance to invoke
@@ -380,7 +380,7 @@ cm/async/trap-if-transfer-in-waitable-set.wast:48 deferred-feature no definition
 cm/async/trap-if-transfer-in-waitable-set.wast:49 deferred-feature expected a trap `cannot lift future while it's in a waitable set`, got `no instance to invoke`
 cm/async/trap-if-transfer-in-waitable-set.wast:50 deferred-feature no definition named `Tester`
 cm/async/trap-if-transfer-in-waitable-set.wast:51 deferred-feature expected a trap `cannot lift stream while it's in a waitable set`, got `no instance to invoke`
-cm/async/wait-during-callback.wast:2 deferred-feature component rejected: unsupported component feature: the `waitable-join` trampoline
+cm/async/wait-during-callback.wast:2 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 cm/async/wait-during-callback.wast:77 deferred-feature no instance to invoke
 cm/async/zero-length.wast:7 deferred-feature component rejected: unsupported component feature: `stream<T>` values
 cm/async/zero-length.wast:223 deferred-feature no instance to invoke
