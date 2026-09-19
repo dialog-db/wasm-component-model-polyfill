@@ -92,11 +92,11 @@ lines of `expected-failures.web.txt`):
 | Corpus           | Directives | Passed | Pass % | Expected failures by category                                |
 | ---------------- | ---------- | ------ | ------ | -------------------------------------------------------------- |
 | `cm`             | 1126       | 1034   | 91.8   | deferred-feature 2, substrate 4, validation 20, cascade 66    |
-| `cm/async`       | 393        | 20     | 5.1    | deferred-feature 373                                          |
+| `cm/async`       | 393        | 21     | 5.3    | deferred-feature 372                                          |
 | `fixtures`       | 17         | 17     | 100.0  | none                                                          |
 | `wasmtime`       | 469        | 430    | 91.7   | deferred-feature 3, substrate 8, cascade 28                   |
-| `wasmtime/async` | 387        | 70     | 18.1   | deferred-feature 317                                          |
-| total            | 2392       | 1571   | 65.7   | deferred-feature 695, substrate 12, validation 20, cascade 94 |
+| `wasmtime/async` | 387        | 72     | 18.6   | deferred-feature 315                                          |
+| total            | 2392       | 1574   | 65.8   | deferred-feature 692, substrate 12, validation 20, cascade 94 |
 
 The `async` rows hold the pass rate down: the polyfill does not
 implement asynchronous functions yet, so almost every directive there

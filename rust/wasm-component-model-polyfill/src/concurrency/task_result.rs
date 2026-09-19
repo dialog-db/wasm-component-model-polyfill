@@ -4,6 +4,15 @@ use std::sync::{Arc, Mutex};
 
 use crate::value::Val;
 
+/// The channel a caller that is not on the stack watches for a
+/// task's result.
+///
+/// The outer `Option` is empty until the task resolves. The inner one
+/// is the result itself, absent for a function that declares none.
+/// Both sides hold the channel: the task fills it as it resolves, and
+/// the caller's driver takes the value out.
+pub type ResultChannel = Arc<Mutex<Option<Option<Val>>>>;
+
 /// Where a task's result goes when the task resolves.
 ///
 /// A task whose caller is on the stack — every call of the
@@ -21,9 +30,9 @@ pub enum TaskResult {
     /// that declares no result.
     Returned(Option<Val>),
     /// The channel of a caller that is not on the stack. The slot is
-    /// filled once, with the result the task returned. Reserved for
-    /// the drivers that let a task outlive the call that started it;
-    /// nothing constructs this variant yet.
-    #[allow(dead_code)]
-    Channel(Arc<Mutex<Option<Option<Val>>>>),
+    /// filled once, with the result the task returned. A host call
+    /// into an asynchronous export takes this shape: the task
+    /// outlives the call, so the call's driver watches the channel
+    /// rather than the record.
+    Channel(ResultChannel),
 }

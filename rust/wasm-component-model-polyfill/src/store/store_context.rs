@@ -9,14 +9,15 @@ use crate::abi::boundary_call::BoundaryCall;
 use crate::backend::Backend;
 use crate::component::FunctionType;
 use crate::concurrency::{
-    Accessor, CallStatus, HostTask, InstanceId, Item, LowerKind, Outcome, Scheduler, SubtaskId,
-    SubtaskState, SuspendSeam, TaskId, TurnGuard, YieldWake,
+    Accessor, CallStatus, EventSlot, HostTask, InstanceId, Item, LowerKind, Outcome, ResultChannel,
+    Scheduler, SubtaskId, SubtaskState, SuspendSeam, TaskId, TaskState, TurnGuard, WaitableSetId,
+    YieldWake,
 };
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
 use crate::executor::ir::CanonOptions;
 use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId, TableId};
-use crate::types::{ResourceType, ValueType};
+use crate::types::{PrimitiveType, ResourceType, ValueType};
 use crate::value::Val;
 
 use super::store_data::StoreData;
@@ -585,11 +586,17 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         Ok(Outcome::Waiting)
     }
 
-    /// Let through every task the entry gate can release. Costs
-    /// nothing while no task waits, which is every turn of the
-    /// synchronous baseline.
+    /// Make ready every piece of work the store was holding back:
+    /// the callback items whose condition now holds, then the tasks
+    /// the entry gate can release. Costs nothing while the store
+    /// holds neither, which is every turn of the synchronous
+    /// baseline.
+    ///
+    /// The held callbacks go first, so that a task whose wait a
+    /// previous turn satisfied resumes ahead of a task that has yet
+    /// to enter its instance.
     fn open_entry_gate(&mut self) -> Result<()> {
-        if self.scheduler().waiting_at_gate() == 0 {
+        if self.scheduler().waiting_at_gate() == 0 && self.scheduler().held_callbacks() == 0 {
             return Ok(());
         }
         // The tables are reached through a handle of their own, so
@@ -597,6 +604,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         // which the store's data holds, do not overlap.
         let tables = self.tables_handle();
         let mut guard = Self::lock(&tables)?;
+        self.scheduler_mut().release_held_callbacks(&mut guard)?;
         self.scheduler_mut().open_entry_gate(&mut guard.tasks);
         Ok(())
     }
@@ -672,6 +680,126 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         Ok(())
     }
 
+    /// Give an export's task a channel to resolve through and hand
+    /// the caller its half.
+    ///
+    /// A host call into an asynchronous export takes this: the task
+    /// outlives the call, so `task.return` sends the result through
+    /// the channel and the call's driver takes it out, rather than
+    /// the call reading the record of a task that may be gone by
+    /// then. Workspace-internal.
+    pub fn attach_result_channel(&self, task: TaskId) -> Result<ResultChannel> {
+        self.lock_tables()?
+            .tasks
+            .attach_result_channel(task)
+            .ok_or_else(|| Error::internal("an export's task is not in the store"))
+    }
+
+    /// Whether an export's task has resolved: the reference's
+    /// `state == RESOLVED`. The exit of a callback task's implicit
+    /// thread reads it, because a thread that exits without a result
+    /// is the no-result trap. Workspace-internal.
+    pub fn export_task_resolved(&self, task: TaskId) -> Result<bool> {
+        Ok(self
+            .lock_tables()?
+            .tasks
+            .task(task)
+            .ok_or_else(|| Error::internal("an export's task is not in the store"))?
+            .state
+            == TaskState::Resolved)
+    }
+
+    /// Whether a thread holds `instance` exclusively. A callback item
+    /// asks before it runs: the instance is one task's at a time, so
+    /// an item that finds it taken waits for the holder to release it.
+    /// Workspace-internal.
+    pub fn instance_is_held(&self, instance: InstanceId) -> Result<bool> {
+        Ok(self
+            .lock_tables()?
+            .tasks
+            .instance(instance)
+            .is_some_and(|record| record.exclusive_thread.is_some()))
+    }
+
+    /// Give the instance back that an export task's implicit thread
+    /// holds exclusively. A callback task releases it between events,
+    /// so a synchronous export of the same instance can run while the
+    /// task waits. Workspace-internal.
+    pub fn release_exclusive_thread(&mut self, task: TaskId) -> Result<()> {
+        let tables = self.tables_handle();
+        let mut guard = Self::lock(&tables)?;
+        self.scheduler()
+            .release_exclusive_thread(&mut guard.tasks, task);
+        Ok(())
+    }
+
+    /// Give `instance` to an export task's implicit thread, which a
+    /// callback item does before it runs core code.
+    /// Workspace-internal.
+    pub fn take_exclusive_thread(&mut self, task: TaskId, instance: InstanceId) -> Result<()> {
+        let tables = self.tables_handle();
+        let mut guard = Self::lock(&tables)?;
+        self.scheduler()
+            .take_exclusive_thread(&mut guard.tasks, task, instance);
+        Ok(())
+    }
+
+    /// Deliver the wait a callback task's status word asked for.
+    ///
+    /// The set is looked up in `table`, the instance's own handle
+    /// table, and the task's exclusive hold on the instance is
+    /// released either way. A set that already holds an event
+    /// delivers it and `item` is queued at once, with that event in
+    /// `slot`. A set that holds none parks the task's implicit thread
+    /// on it and the item waits with it, until a later turn finds the
+    /// set filled. Workspace-internal.
+    pub fn wait_callback_on_set(
+        &mut self,
+        task: TaskId,
+        instance: InstanceId,
+        table: TableId,
+        set_index: u32,
+        slot: EventSlot,
+        item: Item<T>,
+    ) -> Result<()> {
+        let tables = self.tables_handle();
+        let mut guard = Self::lock(&tables)?;
+        let set = Self::waitable_set_at(&guard, table, set_index)?;
+        let thread = guard
+            .tasks
+            .task(task)
+            .map(|record| record.implicit_thread)
+            .ok_or_else(|| Error::internal("an export's task is not in the store"))?;
+        self.scheduler()
+            .release_exclusive_thread(&mut guard.tasks, task);
+        match guard.wait_on_waitable_set(set, thread)? {
+            Some(event) => {
+                slot.fill(event);
+                self.scheduler_mut().push_high_priority(item);
+            }
+            None => self
+                .scheduler_mut()
+                .hold_for_event(instance, thread, set, slot, item),
+        }
+        Ok(())
+    }
+
+    /// The waitable set the entry at `index` of `table` names, or the
+    /// failure a status word that named something else produces.
+    fn waitable_set_at(tables: &HandleTables, table: TableId, index: u32) -> Result<WaitableSetId> {
+        tables
+            .waitable_set_from_handle(table, index)
+            .map_err(|err| {
+                Error::from(AbiError {
+                    position: AbiPosition::Result,
+                    valtype: Some(ValueType::Primitive(PrimitiveType::U32)),
+                    cause: AbiCause::InvalidHandle {
+                        reason: err.to_string(),
+                    },
+                })
+            })
+    }
+
     /// Make an export's task the current scope, as its thread starts
     /// to run. Workspace-internal.
     pub fn enter_export_task(&self, task: TaskId) -> Result<()> {
@@ -734,6 +862,30 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         self.scheduler_mut()
             .exit_implicit_thread(&mut guard.tasks, task);
         Ok(guard.exit_task(task))
+    }
+
+    /// Pop the scope of an export's task without ending the task, as
+    /// the callback loop of an asynchronous export does when core
+    /// code returns: the record stays in the store, because the
+    /// status word decides what the task does next.
+    /// Workspace-internal.
+    pub fn leave_export_task(&self, task: TaskId) -> Result<()> {
+        self.lock_tables()?.leave_task_scope(task);
+        Ok(())
+    }
+
+    /// End an export's task whose scope is already popped, which is
+    /// the reference's `exit_implicit_thread` for a callback task:
+    /// the instance the task held exclusively goes back and its
+    /// record leaves the store, exactly as a synchronous task's does
+    /// when its call returns. The inner `Err` carries the count of
+    /// borrows the guest did not drop. Workspace-internal.
+    pub fn end_export_task(&mut self, task: TaskId) -> Result<core::result::Result<(), u32>> {
+        let tables = self.tables_handle();
+        let mut guard = Self::lock(&tables)?;
+        self.scheduler()
+            .exit_implicit_thread(&mut guard.tasks, task);
+        Ok(guard.end_task(task))
     }
 
     /// Pop the export's task on its failure path, with no borrow

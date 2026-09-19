@@ -14,11 +14,13 @@ use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::{lift, lower};
 use crate::component::FunctionType;
-use crate::concurrency::{Driver, Item, ItemKind, Scope, TaskId};
+use crate::concurrency::{Driver, InstanceId, Item, ItemKind, ResultChannel, Scope, TaskId};
 use crate::error::{
     AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result, SchedulerCause,
 };
 use crate::executor::ir::CanonOptions;
+use crate::executor::{CallbackTask, status_word};
+use crate::resource::TableId;
 use crate::store::{Store, StoreContext, StoreId};
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
@@ -30,6 +32,16 @@ use crate::value::Val;
 /// the value out. Both sides hold it, because the item outlives the
 /// future when the future is dropped.
 type CallOutcome = Arc<Mutex<Option<Result<Box<[Val]>>>>>;
+
+/// Where the start of an asynchronous call leaves the failure that
+/// belongs to the caller.
+///
+/// A call into an export lifted `async` resolves through the task's
+/// own channel, which carries a result and not a failure. The item
+/// that starts the task leaves what failed here instead: the lowering
+/// of the arguments, a trap in the export's core function, or the
+/// status word that function returned.
+type CallFailure = Arc<Mutex<Option<Error>>>;
 
 /// A handle to one exported function of a component [`Instance`].
 ///
@@ -102,13 +114,14 @@ impl Func {
     /// future cancels nothing, and the task runs in the next turn of
     /// any driver.
     ///
-    /// An export whose lift is `async` is not called this way: it
-    /// returns a status word and delivers its result through
-    /// `task.return`, and the host side that reads the word is not
-    /// built, so the call is refused with [`Error::Unsupported`]
-    /// naming a host call into an asynchronous export. The refusal
-    /// comes before the call has created a task or queued anything,
-    /// so it leaves the store untouched.
+    /// An export lifted `canon lift async` with a callback does not
+    /// return its result by returning. It calls `task.return`, which
+    /// is what resolves the call, and its core function returns a
+    /// status word that says whether the task is over or wants to be
+    /// resumed. Such a task waits at its instance's entry gate before
+    /// it starts, has no `post-return`, and can outlive the call: a
+    /// callback that has yet to run stays in the store, and a failure
+    /// it raises belongs to whichever driver's turn runs it.
     ///
     /// Entering the call while another driver of the same store is
     /// inside a turn fails with the recursive-driver cause, and a
@@ -119,14 +132,6 @@ impl Func {
         let mut store = store.context();
         if store.id() != self.store_id {
             return Err(Error::from(InstantiationError::WrongStore));
-        }
-        // A call into an export lifted `async` is a task that
-        // returns a status word and produces its result through
-        // `task.return`. The runtime that reads the word is not
-        // built yet, so the call is refused here rather than lifting
-        // the word as though it were the export's result.
-        if self.options.async_ {
-            return Err(Error::unsupported("host calls into an asynchronous export"));
         }
         if args.len() != self.signature.parameters.len() {
             return Err(Error::from(AbiError {
@@ -170,6 +175,16 @@ impl Func {
         let task =
             store.create_export_task(self.signature.clone(), self.options.clone(), instance_id)?;
 
+        // A call into an export lifted `async` is a task that returns
+        // a status word and produces its result through
+        // `task.return`. The task outlives the call, so the call
+        // watches the task's channel rather than a slot of its own.
+        if self.options.async_ {
+            return self
+                .call_async(store, task, instance_id, instance, options, args)
+                .await;
+        }
+
         // The item is `'static`: it outlives this future, because
         // dropping the future cancels nothing. It therefore carries
         // its own copy of everything the call needs — the resolved
@@ -205,6 +220,150 @@ impl Func {
             outcome.lock().ok().and_then(|mut slot| slot.take())
         })
         .await
+    }
+
+    /// Invoke an export lifted `canon lift async` with a callback.
+    ///
+    /// The call is a task whose implicit thread waits at the entry
+    /// gate of its instance while backpressure is set or another task
+    /// holds the instance exclusively. Once through the gate, the
+    /// item lowers the arguments, marks the task started, calls the
+    /// core function, and hands the status word it returned to the
+    /// callback loop. There is no post-return: the reference calls
+    /// one only on the synchronous path.
+    ///
+    /// The call's future resolves when `task.return` sets the task's
+    /// result, and it returns the lifted value. The export's core
+    /// function has by then returned a status word, or it is still on
+    /// the stack below `task.return`, and the driver sees the result
+    /// in the same turn after it returns. The task does not end with
+    /// the call: a task that yielded or waited leaves a callback item
+    /// in the store, which runs in the turn of whichever driver comes
+    /// next, and an error that item raises fails that driver rather
+    /// than this call.
+    ///
+    /// A turn that finds the task at the gate or waiting, with
+    /// nothing else ready, fails the call with the deadlock cause.
+    async fn call_async<T: 'static>(
+        &self,
+        mut store: StoreContext<'_, T>,
+        task: TaskId,
+        instance_id: InstanceId,
+        instance: BoundaryInstance,
+        options: BoundaryOptions,
+        args: &[Val],
+    ) -> Result<Box<[Val]>> {
+        let callback = options
+            .callback()
+            .cloned()
+            .ok_or_else(|| Error::internal("an `async` export's lift named no callback"))?;
+        let table = self.handle_table()?;
+        let loop_ = CallbackTask::new(task, instance_id, table, callback);
+        let channel: ResultChannel = store.attach_result_channel(task)?;
+
+        let failure: CallFailure = Arc::new(Mutex::new(None));
+        let queued = failure.clone();
+        let replica = self.replica();
+        let arguments = args.to_vec();
+        let item = Item::new(
+            ItemKind::TaskStart,
+            move |store: &mut StoreContext<'_, T>| {
+                let started =
+                    replica.start_async_task(task, &loop_, &instance, store, &arguments, &options);
+                if let Err(error) = started
+                    && let Ok(mut slot) = queued.lock()
+                {
+                    *slot = Some(error);
+                }
+                // What the start produced is in the task's channel
+                // and what it failed with is in the slot beside it,
+                // so the item itself has nothing left to fail with.
+                Ok(())
+            },
+        );
+
+        // The entry gate applies: the function type is `async`, and a
+        // callback task needs the instance exclusively, because the
+        // core code it runs between events must not overlap another
+        // exclusive task of the same instance.
+        store.start_export_thread(task, instance_id, true, true, item)?;
+
+        Driver::new(store, Some(task), move |_store, _waker| {
+            if let Some(error) = failure.lock().ok().and_then(|mut slot| slot.take()) {
+                return Some(Err(error));
+            }
+            let result = channel.lock().ok().and_then(|mut slot| slot.take())?;
+            Some(Ok(result.into_iter().collect()))
+        })
+        .await
+    }
+
+    /// Run the start of an asynchronous call's task: the task becomes
+    /// the current scope, the arguments are lowered, the core
+    /// function runs, the scope is popped, and the status word goes
+    /// to the callback loop. A failure anywhere in that ends the task
+    /// and travels out to the call.
+    fn start_async_task<T: 'static>(
+        &self,
+        task: TaskId,
+        loop_: &CallbackTask,
+        instance: &BoundaryInstance,
+        store: &mut StoreContext<'_, T>,
+        args: &[Val],
+        options: &BoundaryOptions,
+    ) -> Result<()> {
+        store.enter_export_task(task)?;
+        match self.call_async_core(task, instance, store, args, options) {
+            Ok(word) => {
+                store.leave_export_task(task)?;
+                loop_.handle_status_word(store, word)
+            }
+            Err(error) => {
+                store.abandon_export_task(task)?;
+                Err(error)
+            }
+        }
+    }
+
+    /// Lower the arguments and call the core function of an
+    /// asynchronous export, and report the status word it returned.
+    /// A `cabi_realloc` the lowering calls is a task of its own, as
+    /// the reference lifts it.
+    fn call_async_core<T: 'static>(
+        &self,
+        task: TaskId,
+        instance: &BoundaryInstance,
+        store: &mut StoreContext<'_, T>,
+        args: &[Val],
+        options: &BoundaryOptions,
+    ) -> Result<i32> {
+        let core_args = self.lower_args(store, args, instance, task, options)?;
+        let mut core_results = vec![RuntimeVal::I32(0); 1];
+
+        // The arguments are lowered, so the task's thread runs now.
+        store.start_export_task(task)?;
+        self.inner
+            .call(store.runtime_mut(), &core_args, &mut core_results)
+            .map_err(|err| Error::from(InstantiationError::SubstrateFailure(err)))?;
+        status_word(&core_results)
+    }
+
+    /// The handle table of the component instance this export belongs
+    /// to, which is where a status word resolves a waitable set
+    /// index. It is read the way a built-in reads it: through the
+    /// instance index the export's canon options name.
+    fn handle_table(&self) -> Result<TableId> {
+        let state = self
+            .abi_state
+            .lock()
+            .map_err(|_| Error::internal("ABI runtime state lock poisoned"))?;
+        state
+            .handle_tables
+            .get(self.options.instance)
+            .copied()
+            .ok_or_else(|| {
+                Error::internal("an export's lift names a component instance with no handle table")
+            })
     }
 
     /// A `'static` copy of this handle, for the item that runs the

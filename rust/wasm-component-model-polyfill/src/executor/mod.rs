@@ -21,6 +21,7 @@
 //!
 //! [`wasm_runtime_layer`]: https://docs.rs/wasm_runtime_layer
 
+mod callback_task;
 mod compile_module;
 mod instantiate;
 mod resource_destructor;
@@ -33,6 +34,7 @@ pub mod ir;
 pub mod trampoline;
 pub mod waitable_builtins;
 
+pub use callback_task::{CallbackTask, status_word};
 pub use compile_module::compile_module;
 pub use instantiate::instantiate;
 pub use resource_destructor::ResourceDestructor;

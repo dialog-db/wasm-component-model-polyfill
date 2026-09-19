@@ -17,6 +17,7 @@ use super::subtask_id::SubtaskId;
 use super::subtask_state::SubtaskState;
 use super::task::Task;
 use super::task_id::TaskId;
+use super::task_result::{ResultChannel, TaskResult};
 use super::task_state::TaskState;
 use super::thread::Thread;
 use super::thread_id::ThreadId;
@@ -165,6 +166,20 @@ impl TaskTables {
             "the task took the index its identity was minted against"
         );
         task
+    }
+
+    /// Give `task` a channel to resolve through and hand the caller
+    /// its half.
+    ///
+    /// A task whose caller is on the stack leaves its result in the
+    /// record. A task whose caller is not — a host call into an
+    /// asynchronous export, whose task outlives the call — resolves
+    /// through this channel instead, and the call's driver watches it.
+    /// `None` when the store holds no such task.
+    pub fn attach_result_channel(&mut self, task: TaskId) -> Option<ResultChannel> {
+        let channel: ResultChannel = ResultChannel::default();
+        self.task_mut(task)?.result = TaskResult::Channel(channel.clone());
+        Some(channel)
     }
 
     /// Make `task` the current scope.

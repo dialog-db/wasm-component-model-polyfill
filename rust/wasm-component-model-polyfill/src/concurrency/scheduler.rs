@@ -3,11 +3,16 @@
 use std::collections::VecDeque;
 
 use super::SuspendSeam;
+use super::event_slot::EventSlot;
 use super::host_task::HostTask;
 use super::instance_id::InstanceId;
 use super::item::Item;
 use super::task_id::TaskId;
 use super::task_tables::TaskTables;
+use super::thread_id::ThreadId;
+use super::waitable_set_id::WaitableSetId;
+use crate::error::Result;
+use crate::resource::HandleTables;
 
 /// One task held at an instance's entry gate.
 ///
@@ -19,6 +24,40 @@ struct GateEntry<T: 'static> {
     instance: InstanceId,
     needs_exclusive: bool,
     item: Item<T>,
+}
+
+/// One callback item the scheduler holds until the store can run it.
+///
+/// A held item is not ready: a turn that finds nothing but held
+/// items goes idle, and the driver that polled it fails with the
+/// cause an idle store gives. That is the deadlock trap of a
+/// callback task that waits on a set no turn ever fills.
+struct HeldCallback<T: 'static> {
+    /// The component instance the item's task belongs to.
+    instance: InstanceId,
+    /// What the item waits for.
+    condition: HeldFor,
+    /// Where the event the item receives is left for it.
+    slot: EventSlot,
+    /// The item itself.
+    item: Item<T>,
+}
+
+/// What a held callback item waits for.
+enum HeldFor {
+    /// An event on the waitable set the task's implicit thread is
+    /// parked on. The item is queued when a waitable of the set
+    /// holds an event, carrying that event.
+    Event {
+        /// The thread parked on the set, whose wait ends as the item
+        /// is queued.
+        thread: ThreadId,
+        /// The set the thread waits on.
+        set: WaitableSetId,
+    },
+    /// The instance's exclusive thread, which another task holds.
+    /// The item is queued when the holder releases it.
+    ExclusiveThread,
 }
 
 /// The store's ready queues, its host tasks, and its entry gate.
@@ -59,6 +98,7 @@ pub struct Scheduler<T: 'static> {
     low_priority: VecDeque<Item<T>>,
     resume_after_yield: Option<Item<T>>,
     entry_gate: VecDeque<GateEntry<T>>,
+    held_callbacks: VecDeque<HeldCallback<T>>,
     host_tasks: Vec<HostTask<T>>,
     suspend_seam: SuspendSeam<T>,
 }
@@ -72,6 +112,7 @@ impl<T: 'static> Scheduler<T> {
             low_priority: VecDeque::new(),
             resume_after_yield: None,
             entry_gate: VecDeque::new(),
+            held_callbacks: VecDeque::new(),
             host_tasks: Vec::new(),
             suspend_seam: SuspendSeam::new(),
         }
@@ -296,18 +337,129 @@ impl<T: 'static> Scheduler<T> {
         !self.low_priority.is_empty() || self.resume_after_yield.is_some()
     }
 
-    /// How many items the store holds, ready or held at the gate.
+    /// How many items the store holds, ready, held at the gate, or
+    /// held until the store can run them.
     pub fn queued_items(&self) -> usize {
         usize::from(self.switch_slot.is_some())
             + self.high_priority.len()
             + self.low_priority.len()
             + usize::from(self.resume_after_yield.is_some())
             + self.entry_gate.len()
+            + self.held_callbacks.len()
     }
 
     /// How many tasks wait at an entry gate.
     pub fn waiting_at_gate(&self) -> usize {
         self.entry_gate.len()
+    }
+
+    /// How many callback items the store holds until it can run them.
+    pub fn held_callbacks(&self) -> usize {
+        self.held_callbacks.len()
+    }
+
+    /// Hold `item` until a waitable of `set` holds an event. `thread`
+    /// is the task's implicit thread, which the caller parked on the
+    /// set; the wait ends when the item is queued.
+    ///
+    /// This is the second half of the wait status word: a callback
+    /// task that returned it with a set holding no event leaves the
+    /// item here, and the turn that finds the set filled queues it
+    /// with the event the set delivers.
+    pub fn hold_for_event(
+        &mut self,
+        instance: InstanceId,
+        thread: ThreadId,
+        set: WaitableSetId,
+        slot: EventSlot,
+        item: Item<T>,
+    ) {
+        self.held_callbacks.push_back(HeldCallback {
+            instance,
+            condition: HeldFor::Event { thread, set },
+            slot,
+            item,
+        });
+    }
+
+    /// Hold `item` until the exclusive thread of `instance` is free.
+    ///
+    /// A callback item runs core code, so it needs the instance to
+    /// itself. One that a turn reaches while another task holds the
+    /// instance is deferred here rather than run, and the turn that
+    /// finds the instance free queues it again with the event it
+    /// already carries.
+    pub fn hold_for_exclusive(&mut self, instance: InstanceId, slot: EventSlot, item: Item<T>) {
+        self.held_callbacks.push_back(HeldCallback {
+            instance,
+            condition: HeldFor::ExclusiveThread,
+            slot,
+            item,
+        });
+    }
+
+    /// Queue every held callback item whose condition now holds, in
+    /// the order the items were held.
+    ///
+    /// An item held for an event is queued with the event the set
+    /// delivers, and the wait its thread began ends as it is queued.
+    /// An item held for the exclusive thread is queued with the event
+    /// it already carries. Both go on the high-priority queue: the
+    /// readiness is fresh, and a yield that gave way has given way
+    /// already.
+    ///
+    /// An item whose release fails is dropped and its error ends the
+    /// turn. Every other item is still held when the next turn looks.
+    pub fn release_held_callbacks(&mut self, tables: &mut HandleTables) -> Result<()> {
+        if self.held_callbacks.is_empty() {
+            return Ok(());
+        }
+        // Only the entry whose own release failed is given up. Every
+        // other entry goes back in the order it was held, examined or
+        // not: an item held for one instance or set is no less held
+        // because the store lost a record another item named.
+        let mut held: VecDeque<HeldCallback<T>> = VecDeque::new();
+        let mut failure = None;
+        while let Some(entry) = self.held_callbacks.pop_front() {
+            if let Err(error) = self.release_one(entry, tables, &mut held) {
+                failure = Some(error);
+                break;
+            }
+        }
+        held.append(&mut self.held_callbacks);
+        self.held_callbacks = held;
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    /// Queue `entry` when its condition holds, and leave it on `held`
+    /// when it does not.
+    fn release_one(
+        &mut self,
+        entry: HeldCallback<T>,
+        tables: &mut HandleTables,
+        held: &mut VecDeque<HeldCallback<T>>,
+    ) -> Result<()> {
+        let ready = match entry.condition {
+            HeldFor::ExclusiveThread => tables
+                .tasks
+                .instance(entry.instance)
+                .is_none_or(|record| record.exclusive_thread.is_none()),
+            HeldFor::Event { set, .. } => tables.tasks.set_has_pending_event(set)?,
+        };
+        if !ready {
+            held.push_back(entry);
+            return Ok(());
+        }
+        if let HeldFor::Event { thread, set } = entry.condition {
+            entry
+                .slot
+                .fill(tables.finish_wait_on_waitable_set(set, thread)?);
+        }
+        self.high_priority.push_back(entry.item);
+        Ok(())
     }
 
     /// The reference's `has_backpressure`, for one waiting task.
@@ -331,6 +483,21 @@ impl<T: 'static> Scheduler<T> {
     /// synchronous export is such a task: it ignores the gate, so it
     /// never claimed anything to give back.
     pub fn exit_implicit_thread(&self, tables: &mut TaskTables, task: TaskId) {
+        self.release_exclusive_thread(tables, task);
+    }
+
+    /// Give the instance back that `task`'s implicit thread holds
+    /// exclusively, if it holds one.
+    ///
+    /// The callback loop of an asynchronous export spells this on its
+    /// own, between events: the exclusive thread is held while core
+    /// code runs and released while the task waits or gives way, so a
+    /// synchronous export of the same instance can run in between.
+    ///
+    /// The release is keyed on the thread rather than on the task's
+    /// canon options, so a task whose thread never claimed the
+    /// instance leaves whoever holds it alone.
+    pub fn release_exclusive_thread(&self, tables: &mut TaskTables, task: TaskId) {
         let Some(record) = tables.task(task) else {
             return;
         };
@@ -341,6 +508,19 @@ impl<T: 'static> Scheduler<T> {
         if record.exclusive_thread == Some(thread) {
             record.exclusive_thread = None;
         }
+    }
+
+    /// Give the instance to `task`'s implicit thread, which is what a
+    /// callback item does before it runs the callback: the instance
+    /// is held for the length of the core code and released again
+    /// when the status word says the task waits or gives way.
+    pub fn take_exclusive_thread(
+        &self,
+        tables: &mut TaskTables,
+        task: TaskId,
+        instance: InstanceId,
+    ) {
+        Self::claim_exclusive(tables, task, instance, true);
     }
 
     /// Give the instance to the task's implicit thread when the task
@@ -377,11 +557,16 @@ mod tests {
     use crate::engine::Engine;
     use crate::store::{Store, StoreContext};
 
+    use super::super::event::Event;
+    use super::super::event_slot::EventSlot;
     use super::super::instance_id::InstanceId;
     use super::super::item::Item;
     use super::super::item_kind::ItemKind;
     use super::super::outcome::Outcome;
+    use super::super::subtask_state::SubtaskState;
     use super::super::task_id::TaskId;
+    use super::super::thread_id::ThreadId;
+    use super::super::waitable_set_id::WaitableSetId;
 
     /// What the items of one test wrote as they ran, in order.
     type Log = Arc<Mutex<Vec<&'static str>>>;
@@ -796,5 +981,196 @@ mod tests {
             "the task at the gate took the instance the failed call gave back"
         );
         assert_eq!(store.scheduler().waiting_at_gate(), 0);
+    }
+
+    /// A fresh waitable set record, with a fresh task's implicit
+    /// thread parked on it: what a callback task that returned the
+    /// wait word leaves behind.
+    fn waiting_on_a_set(store: &Store<()>, instance: InstanceId) -> (WaitableSetId, ThreadId) {
+        let mut guard = store.tables().lock().expect("tables");
+        let set = guard.tasks.insert_waitable_set();
+        let task = guard.tasks.create_task(None, None, instance);
+        let thread = guard.tasks.task(task).expect("task record").implicit_thread;
+        guard
+            .tasks
+            .begin_wait(set, thread)
+            .expect("park the thread");
+        (set, thread)
+    }
+
+    /// Give `set` a waitable that holds an event, the way the feature
+    /// that adds the first waitable kind will.
+    fn fill_event(store: &Store<()>, set: WaitableSetId) {
+        let mut guard = store.tables().lock().expect("tables");
+        let subtask = guard.tasks.insert_subtask();
+        let waitable = guard.tasks.subtask_waitable(subtask);
+        guard
+            .tasks
+            .join_waitable_set(waitable, Some(set))
+            .expect("the subtask joins the set");
+        guard
+            .tasks
+            .set_pending_event(waitable, Event::subtask(3, SubtaskState::Started))
+            .expect("the subtask is ready");
+    }
+
+    #[wcmp_macros::test]
+    fn it_holds_a_callback_item_until_its_set_holds_an_event() {
+        let mut store = store();
+        let log = log();
+        let instance = instance(&store);
+        let (set, thread) = waiting_on_a_set(&store, instance);
+        let slot = EventSlot::new();
+        store.scheduler_mut().hold_for_event(
+            instance,
+            thread,
+            set,
+            slot.clone(),
+            marker(&log, "resumed"),
+        );
+
+        let parked = store.turn(Waker::noop()).expect("turn with an empty set");
+
+        assert_eq!(
+            parked,
+            Outcome::Idle,
+            "a held item is not ready, so the turn goes idle and its driver deadlocks"
+        );
+        assert!(entries(&log).is_empty());
+        assert_eq!(store.scheduler().held_callbacks(), 1);
+
+        fill_event(&store, set);
+        let woken = store.turn(Waker::noop()).expect("turn with a filled set");
+
+        assert_eq!(woken, Outcome::Idle, "the item ran and nothing is left");
+        assert_eq!(entries(&log), vec!["resumed"]);
+        assert_eq!(store.scheduler().held_callbacks(), 0);
+        assert_eq!(
+            slot.take().triple(),
+            (1, 3, 1),
+            "the item was queued with the event the set delivered"
+        );
+        assert_eq!(
+            store
+                .tables()
+                .lock()
+                .expect("tables")
+                .tasks
+                .waitable_set(set)
+                .expect("set record")
+                .num_waiting,
+            0,
+            "the wait ended as the item was queued"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_holds_a_callback_item_until_the_exclusive_thread_is_free() {
+        let mut store = store();
+        let log = log();
+        let instance = instance(&store);
+        // Another task of the same instance holds it, which is what a
+        // callback item that a turn reaches too early finds.
+        let holder = start(
+            &mut store.context(),
+            instance,
+            true,
+            true,
+            marker(&log, "holder"),
+        );
+        store.scheduler_mut().hold_for_exclusive(
+            instance,
+            EventSlot::holding(Event::none()),
+            marker(&log, "deferred"),
+        );
+
+        let held = store
+            .turn(Waker::noop())
+            .expect("turn with the instance taken");
+
+        assert_eq!(
+            entries(&log),
+            vec!["holder"],
+            "the item that needed the instance did not run"
+        );
+        assert_eq!(held, Outcome::Idle);
+        assert_eq!(store.scheduler().held_callbacks(), 1);
+
+        store
+            .scheduler()
+            .release_exclusive_thread(&mut store.tables().lock().expect("tables").tasks, holder);
+        store.turn(Waker::noop()).expect("turn with it released");
+
+        assert_eq!(
+            entries(&log),
+            vec!["holder", "deferred"],
+            "the item ran once the holder released the instance"
+        );
+        assert_eq!(store.scheduler().held_callbacks(), 0);
+    }
+
+    #[wcmp_macros::test]
+    fn it_keeps_the_other_callbacks_held_when_one_fails_to_release() {
+        let mut store = store();
+        let log = log();
+        let instance = instance(&store);
+        // A task of the instance holds it, so neither item held for
+        // the exclusive thread is ready in the turn that fails.
+        let holder = start(
+            &mut store.context(),
+            instance,
+            true,
+            true,
+            marker(&log, "holder"),
+        );
+        let (set, thread) = waiting_on_a_set(&store, instance);
+        store.scheduler_mut().hold_for_exclusive(
+            instance,
+            EventSlot::holding(Event::none()),
+            marker(&log, "first"),
+        );
+        store.scheduler_mut().hold_for_event(
+            instance,
+            thread,
+            set,
+            EventSlot::new(),
+            marker(&log, "broken"),
+        );
+        store.scheduler_mut().hold_for_exclusive(
+            instance,
+            EventSlot::holding(Event::none()),
+            marker(&log, "last"),
+        );
+        // The set the middle item waits on leaves the store under it,
+        // so looking the set up fails. A guest cannot drop a set a
+        // thread waits on, so the test ends the wait first.
+        {
+            let mut guard = store.tables().lock().expect("tables");
+            guard.tasks.end_wait(set, thread).expect("end the wait");
+            guard.tasks.drop_waitable_set(set).expect("drop the set");
+        }
+
+        store
+            .turn(Waker::noop())
+            .expect_err("the set the held item named is gone");
+
+        assert!(entries(&log).is_empty(), "the turn failed before it ran");
+        assert_eq!(
+            store.scheduler().held_callbacks(),
+            2,
+            "only the item whose own release failed was given up"
+        );
+
+        store
+            .scheduler()
+            .release_exclusive_thread(&mut store.tables().lock().expect("tables").tasks, holder);
+        store.turn(Waker::noop()).expect("turn with it released");
+
+        assert_eq!(
+            entries(&log),
+            vec!["holder", "first", "last"],
+            "both surviving items ran, in the order they were held"
+        );
+        assert_eq!(store.scheduler().held_callbacks(), 0);
     }
 }

@@ -73,6 +73,7 @@ mod call_status;
 mod driver;
 mod event;
 mod event_code;
+mod event_slot;
 mod host_future;
 mod host_result_lowering;
 mod host_task;
@@ -115,6 +116,7 @@ pub use accessor::Accessor;
 pub use call_status::CallStatus;
 pub use driver::Driver;
 pub use event::Event;
+pub use event_slot::EventSlot;
 pub use host_task::HostTask;
 pub use instance_id::InstanceId;
 pub use item::Item;
@@ -129,9 +131,11 @@ pub use subtask_state::SubtaskState;
 pub use suspend_provider::SuspendProvider;
 pub use suspend_seam::SuspendSeam;
 pub use task_id::TaskId;
+pub use task_result::ResultChannel;
 // Where a task's result went is read back only by the tests of the
 // built-in that puts it there; every caller of `Task::resolve` in the
-// crate takes the value from the call it is resolving.
+// crate takes the value from the call it is resolving, and a call
+// whose task outlives it takes the value from the channel instead.
 #[cfg(test)]
 pub use task_result::TaskResult;
 pub use task_state::TaskState;

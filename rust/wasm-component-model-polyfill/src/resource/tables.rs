@@ -95,6 +95,32 @@ impl HandleTables {
         if borrows > 0 { Err(borrows) } else { Ok(()) }
     }
 
+    /// End `task` whether or not its scope is still on the stack, on
+    /// its success path. Behaves as [`exit_task`](Self::exit_task) in
+    /// every other respect.
+    ///
+    /// The callback loop of an asynchronous export ends a task this
+    /// way. Such a task is entered and left once per event: the scope
+    /// is pushed when core code runs and popped when it returns, and
+    /// the status word it returned is what says whether the task is
+    /// over. The exit therefore comes after the pop, with no scope
+    /// left to unwind.
+    pub fn end_task(&mut self, task: TaskId) -> Result<(), u32> {
+        let borrows = TaskExit::begin(self, task).finish();
+        if borrows > 0 { Err(borrows) } else { Ok(()) }
+    }
+
+    /// Pop `task`'s scope without ending the task: the record stays
+    /// in the store and the task can be entered again.
+    ///
+    /// This is what the callback loop of an asynchronous export does
+    /// when core code returns. Every scope the core code left above
+    /// the task is discarded with it, under the rule
+    /// [`exit_task`](Self::exit_task) states.
+    pub fn leave_task_scope(&mut self, task: TaskId) {
+        while !self.unwind_one(Scope::Task(task)) {}
+    }
+
     /// End the innermost task on the stack on its success path, for
     /// the one caller that cannot name the task it pushed: an
     /// adapter's enter and exit intrinsics are two separate calls
