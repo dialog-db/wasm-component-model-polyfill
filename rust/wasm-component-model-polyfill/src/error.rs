@@ -636,19 +636,26 @@ pub enum AbiCause {
 #[non_exhaustive]
 pub enum SchedulerCause {
     /// A driver, or a suspension that fell back to a nested turn,
-    /// went idle with nothing ready, no host task pending, and its
-    /// condition unmet. The message is Wasmtime's deadlock
-    /// trap, `Trap::AsyncDeadlock` in `wasmtime-environ`'s
-    /// `src/trap_encoding.rs`, so the conformance corpus can match it
-    /// by substring.
+    /// went idle with nothing ready, no host task pending, no
+    /// synchronous call left to return, and its condition unmet. An
+    /// idle store that still holds such a call — an instance still
+    /// carrying may-not-suspend — fails with
+    /// [`SchedulerCause::CannotBlock`] instead. The message is
+    /// Wasmtime's deadlock trap, `Trap::AsyncDeadlock` in
+    /// `wasmtime-environ`'s `src/trap_encoding.rs`, so the
+    /// conformance corpus can match it by substring.
     #[error("deadlock detected: event loop cannot make further progress")]
     Deadlock,
 
-    /// A task that must not block went idle while waiting. The
-    /// message is Wasmtime's cannot-block trap,
-    /// `Trap::CannotBlockSyncTask` in `wasmtime-environ`'s
-    /// `src/trap_encoding.rs`, so the conformance corpus can match it
-    /// by substring.
+    /// A task that must not block went idle while waiting, or a
+    /// task that may block found the store idle while an instance
+    /// still carried may-not-suspend — some synchronous call had not
+    /// returned. Wasmtime reports this trap in the second case too:
+    /// the callee blocking forever is that caller failing to return,
+    /// so the cause names the caller's rule. The message is
+    /// Wasmtime's cannot-block trap, `Trap::CannotBlockSyncTask` in
+    /// `wasmtime-environ`'s `src/trap_encoding.rs`, so the
+    /// conformance corpus can match it by substring.
     #[error("cannot block a synchronous task before returning")]
     CannotBlock,
 
@@ -668,7 +675,10 @@ pub enum SchedulerCause {
     /// target is missing, and a host may want to branch on that
     /// distinction. A block that the store went idle under fails
     /// with [`SchedulerCause::Deadlock`] instead, because nothing
-    /// left in the store could have met its condition.
+    /// left in the store could have met its condition — or with
+    /// [`SchedulerCause::CannotBlock`] when an instance still
+    /// carried may-not-suspend at idle, because a synchronous call
+    /// had yet to return.
     #[error("blocking here requires a stack switch, but the target has no suspend provider")]
     StackSwitchNeeded,
 }

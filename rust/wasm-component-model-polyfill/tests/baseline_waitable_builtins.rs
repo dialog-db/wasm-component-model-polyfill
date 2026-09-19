@@ -7,6 +7,11 @@
 //! a task that must not block, and from a `realloc`, where the
 //! instance's may-leave flag is clear.
 //!
+//! One more component calls the wait from the far end of a
+//! synchronous call chain, in an `async`-typed export that is
+//! allowed to block. The chain's caller is not, so the wait fails
+//! with the cannot-block cause and not as a deadlock.
+//!
 //! In this design the subtask is the one waitable kind the polyfill
 //! builds, and nothing in these components starts a subtask. The
 //! waitables the tests join and deliver are therefore inserted
@@ -293,6 +298,61 @@ async fn it_fails_a_wait_on_an_empty_set_with_the_cannot_block_cause() {
     assert!(
         message.contains("cannot block a synchronous task before returning"),
         "a synchronous export must return before its instance may block: {message}"
+    );
+}
+
+/// Two components in a synchronous call chain, where the callee's
+/// export is typed `async` and lifted synchronously.
+///
+/// The host calls `$Outer`'s `f`, a synchronous export, so `$Outer`
+/// is inside a call that must return. `f` calls `$Inner`'s `g`
+/// through a synchronous lowering. `g` is typed `async`, so the
+/// enter intrinsic leaves `$Inner` free to block, and `g` blocks on
+/// a `waitable-set.wait` over a set it just created and nothing
+/// joined. Nothing in the store can ever fill that set.
+const CHAIN_INTO_ASYNC: &[u8] = component!(
+    r#"
+    (component
+      (component $Inner
+        (core module $mem (memory (export "memory") 1))
+        (core instance $mem (instantiate $mem))
+        (core func $new (canon waitable-set.new))
+        (core func $wait (canon waitable-set.wait (memory (core memory $mem "memory"))))
+        (core module $m
+          (import "" "waitable-set.new" (func $new (result i32)))
+          (import "" "waitable-set.wait" (func $wait (param i32 i32) (result i32)))
+          (func (export "g")
+            (drop (call $wait (call $new) (i32.const 0)))))
+        (core instance $i (instantiate $m (with "" (instance
+          (export "waitable-set.new" (func $new))
+          (export "waitable-set.wait" (func $wait))))))
+        (func (export "g") async (canon lift (core func $i "g"))))
+      (component $Outer
+        (import "inner" (instance $inner (export "g" (func async))))
+        (core func $g (canon lower (func $inner "g")))
+        (core module $m
+          (import "" "g" (func $g))
+          (func (export "f") (call $g)))
+        (core instance $i (instantiate $m
+          (with "" (instance (export "g" (func $g))))))
+        (func (export "f") (canon lift (core func $i "f"))))
+      (instance $inner (instantiate $Inner))
+      (instance $outer (instantiate $Outer (with "inner" (instance $inner))))
+      (export "f" (func $outer "f")))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_fails_a_wait_reached_through_a_synchronous_call_with_the_cannot_block_cause() {
+    let (mut store, instance) = instantiate(CHAIN_INTO_ASYNC).await;
+
+    let message = call_trap(&mut store, &instance, "f", &[]).await;
+
+    assert!(
+        message.contains("cannot block a synchronous task before returning"),
+        "the `async`-typed callee is allowed to block, but its synchronous \
+         caller must return, so a store that goes idle under it fails by the \
+         caller's rule rather than as a deadlock: {message}"
     );
 }
 

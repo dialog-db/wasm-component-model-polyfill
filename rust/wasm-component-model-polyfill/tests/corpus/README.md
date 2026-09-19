@@ -85,7 +85,7 @@ alike.
 
 ## Baseline
 
-The progress summary on the native target, as of 2026-09-18 (`tests
+The progress summary on the native target, as of 2026-09-19 (`tests
 conformance` prints the current one; the browser differs by the eight
 lines of `expected-failures.web.txt`):
 
@@ -94,11 +94,11 @@ lines of `expected-failures.web.txt`):
 | `cm`             | 1126       | 1034   | 91.8   | deferred-feature 2, substrate 4, validation 20, cascade 66    |
 | `cm/async`       | 393        | 21     | 5.3    | deferred-feature 372                                          |
 | `fixtures`       | 17         | 17     | 100.0  | none                                                          |
-| `wasmtime`       | 469        | 430    | 91.7   | deferred-feature 3, substrate 8, cascade 28                   |
+| `wasmtime`       | 469        | 431    | 91.9   | deferred-feature 2, substrate 8, cascade 28                   |
 | `wasmtime/async` | 387        | 72     | 18.6   | deferred-feature 315                                          |
-| total            | 2392       | 1574   | 65.8   | deferred-feature 692, substrate 12, validation 20, cascade 94 |
+| total            | 2392       | 1575   | 65.8   | deferred-feature 691, substrate 12, validation 20, cascade 94 |
 
 The `async` rows hold the pass rate down: the polyfill does not
 implement asynchronous functions yet, so almost every directive there
 is an expected `deferred-feature` failure, while `cm` and `wasmtime`
-alone still pass at 91.8% and 91.7%.
+alone still pass at 91.8% and 91.9%.

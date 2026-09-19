@@ -241,7 +241,20 @@ impl<T: 'static> StoreData<T> {
 
     /// Why a driver that went idle failed: the cannot-block cause
     /// when the task it waits on is one that must not block, and the
-    /// deadlock cause otherwise. Workspace-internal.
+    /// deadlock cause otherwise.
+    ///
+    /// While no suspend provider is installed — the seam's slot is
+    /// empty on both targets today — the task the driver waits on is
+    /// the only call that can be in flight here. A synchronous call
+    /// between two components holds a native frame for its whole
+    /// length, and a driver is polled with no such frame under it,
+    /// so no other instance can be inside a call that must return.
+    /// The nested turn of the suspend seam is the path that runs
+    /// under one, and [`suspend_cause`](Self::suspend_cause) is what
+    /// answers there. A provider that switched stacks would lift
+    /// that frame off the driver's, and the driver would then have
+    /// to serve the same rules `suspend_cause` does.
+    /// Workspace-internal.
     pub fn idle_cause(&self, task: Option<TaskId>) -> SchedulerCause {
         if self.must_not_block(task) {
             SchedulerCause::CannotBlock
@@ -257,13 +270,21 @@ impl<T: 'static> StoreData<T> {
     /// is the rule of the reference: it was given the ready work of
     /// its own instance and that work did not meet the condition.
     ///
-    /// A task that is allowed to block gets the deadlock cause when
-    /// the store went idle, because nothing left in the store can
-    /// ever meet the condition. It gets the stack-switch cause while
-    /// the store still holds work — a host task that has not
+    /// A task that is allowed to block gets the stack-switch cause
+    /// while the store still holds work — a host task that has not
     /// resolved, or an item only a driver's turn may run — because
     /// the reference permits that block and only the target has no
-    /// provider to serve it. Workspace-internal.
+    /// provider to serve it.
+    ///
+    /// A task that is allowed to block and finds the store idle gets
+    /// the cannot-block cause when any instance is inside a
+    /// synchronous call that has not returned, and the deadlock
+    /// cause otherwise. This is the rule Wasmtime applies where it
+    /// would raise its deadlock trap. A synchronous caller reaches
+    /// an `async`-typed callee through a synchronous call, and the
+    /// callee is allowed to block while its caller is not: the
+    /// callee blocking forever is the caller failing to return, so
+    /// the cause names the caller's rule. Workspace-internal.
     pub fn suspend_cause(&self) -> SchedulerCause {
         let current = self
             .tables
@@ -274,6 +295,8 @@ impl<T: 'static> StoreData<T> {
             SchedulerCause::CannotBlock
         } else if self.has_pending_work() {
             SchedulerCause::StackSwitchNeeded
+        } else if self.any_must_not_block() {
+            SchedulerCause::CannotBlock
         } else {
             SchedulerCause::Deadlock
         }
@@ -312,5 +335,20 @@ impl<T: 'static> StoreData<T> {
             .and_then(|instance| guard.tasks.instance(instance))
             .map(|record| record.may_not_suspend)
             .unwrap_or(false)
+    }
+
+    /// Whether any instance of the store forbids its threads to
+    /// suspend, which says that some call in flight must return
+    /// before the store may block. A store whose tables are
+    /// unreachable answers `false`, as `must_not_block` does.
+    fn any_must_not_block(&self) -> bool {
+        let Ok(guard) = self.tables.lock() else {
+            return false;
+        };
+        guard
+            .tasks
+            .instances()
+            .iter()
+            .any(|record| record.may_not_suspend)
     }
 }

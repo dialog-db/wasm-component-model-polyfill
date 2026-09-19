@@ -44,12 +44,21 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 /// and of a synchronous call between two components.
 ///
 /// A task that is allowed to block gives way to everything a nested
-/// turn may run. It fails with the deadlock cause when the store
-/// went idle, because nothing left in the store can meet the
-/// condition, and with the stack-switch cause while the store still
-/// holds work — a host task that has not resolved, or an item only
-/// a driver's turn may run — because the reference permits that
-/// block and only the target has no provider to serve it.
+/// turn may run. It fails with the stack-switch cause while the
+/// store still holds work — a host task that has not resolved, or
+/// an item only a driver's turn may run — because the reference
+/// permits that block and only the target has no provider to serve
+/// it.
+///
+/// When the store goes idle instead, the cause turns on whether a
+/// synchronous call is still in flight, which is how Wasmtime
+/// reports it where it would otherwise raise its deadlock trap. An
+/// instance that still carries may-not-suspend at idle says some
+/// call has not returned, and the block fails with the cannot-block
+/// cause: the callee blocking forever is that caller failing to
+/// return, so the cause names the caller's rule. With no such call
+/// in flight the block fails with the deadlock cause, because
+/// nothing left in the store can meet the condition.
 ///
 /// A nested executor that blocks the native thread is not an option
 /// here. It deadlocks under a current-thread executor, tokio forbids
