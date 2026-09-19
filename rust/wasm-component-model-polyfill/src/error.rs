@@ -590,6 +590,15 @@ pub enum AbiCause {
     /// the host, but no host registration carries the matching
     /// resource type identity. Typically observed when a host
     /// receives an `own<T>` it never registered a destructor for.
+    ///
+    /// Every failure with this cause names the resource type at
+    /// issue in the error's `valtype`, and names it as an `own<T>`
+    /// or a `borrow<T>`: lowering a handle names the handle slot the
+    /// component declared, and a host mint against an identity the
+    /// calling instance holds no table for names the type the store
+    /// knows that identity by. It names nothing only when there is
+    /// no name to give — an identity no registration and no
+    /// instantiation of the store ever introduced.
     #[error("no host registration matches the transferred resource type")]
     UnregisteredResourceType,
 

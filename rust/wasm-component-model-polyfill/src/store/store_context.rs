@@ -17,6 +17,7 @@ use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCaus
 use crate::executor::ResourceDestructor;
 use crate::executor::ir::CanonOptions;
 use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId, TableId};
+use crate::types::ResourceType;
 use crate::value::Val;
 
 use super::store_data::StoreData;
@@ -146,6 +147,51 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Workspace-internal.
     pub fn scheduler_mut(&mut self) -> &mut Scheduler<T> {
         self.store_data_mut().scheduler_mut()
+    }
+
+    /// Record what the store knows about a resource type an
+    /// instantiation introduced: the destructor to run when a handle
+    /// to it is released, and the name an error about one of its
+    /// handles renders, when the caller knows one.
+    ///
+    /// This is the seam an instantiation registers through. The
+    /// store's own state is reached through the context rather than
+    /// through [`StoreData`] directly, so that every write to it
+    /// passes one entry. Workspace-internal.
+    pub fn register_resource(
+        &mut self,
+        type_id: ResourceTypeId,
+        name: Option<ResourceType>,
+        destructor: ResourceDestructor<T>,
+    ) {
+        self.store_data_mut()
+            .register_resource(type_id, name, destructor);
+    }
+
+    /// Record the label a component instantiated into this store
+    /// imports or defines `type_id` under, which is the name an
+    /// error about one of its handles renders. It outranks any
+    /// fallback the store already holds; among labels components
+    /// taught, the first wins. Workspace-internal.
+    pub fn name_resource(&mut self, type_id: ResourceTypeId, name: ResourceType) {
+        self.store_data_mut().name_resource(type_id, name);
+    }
+
+    /// Record a label to fall back on for `type_id` while no
+    /// component in this store has named it: a host resource the
+    /// linker carries that no component instantiated here brought
+    /// in. It never displaces a label a component taught, and a
+    /// component that names the identity later displaces it.
+    /// Workspace-internal.
+    pub fn fallback_resource_name(&mut self, type_id: ResourceTypeId, name: ResourceType) {
+        self.store_data_mut().fallback_resource_name(type_id, name);
+    }
+
+    /// The name the store renders for the resource type `type_id`,
+    /// when it learned one. An error about a handle of the type
+    /// names it this way. Workspace-internal.
+    pub fn resource_type(&self, type_id: ResourceTypeId) -> Option<ResourceType> {
+        self.store_data().resource_type(type_id)
     }
 
     /// Mint a fresh `own<T>` handle in this store's resource table
@@ -1042,6 +1088,7 @@ mod tests {
     use crate::linker::{HostCall, Linker};
     use crate::resource::HandleKind;
     use crate::store::Store;
+    use crate::types::ValueType;
 
     use super::*;
 
@@ -2293,7 +2340,7 @@ mod tests {
         let recorded = seen.clone();
 
         let type_id = ResourceTypeId::fresh();
-        store.register_resource(
+        store.context().register_resource(
             type_id,
             None,
             ResourceDestructor::Host(Arc::new(move |_data: &mut (), _rep: u32| {
@@ -2335,7 +2382,7 @@ mod tests {
         let recorded = seen.clone();
 
         let type_id = ResourceTypeId::fresh();
-        store.register_resource(
+        store.context().register_resource(
             type_id,
             None,
             ResourceDestructor::Host(Arc::new(move |_data: &mut (), _rep: u32| {
@@ -2363,6 +2410,91 @@ mod tests {
             records(&store),
             (0, 0, 0),
             "nothing of the failed destructor is left in the store"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_keeps_the_first_name_it_learns_for_a_resource_type() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+
+        // One identity under two labels, which is what a host
+        // resource registered against two interfaces is. The store
+        // keeps the first of them and renders that one; it does not
+        // carry the set.
+        let type_id = ResourceTypeId::fresh();
+        store.context().register_resource(
+            type_id,
+            Some(ResourceType::new("first")),
+            ResourceDestructor::Host(Arc::new(|_data: &mut (), _rep: u32| Ok(()))),
+        );
+        store
+            .context()
+            .name_resource(type_id, ResourceType::new("second"));
+
+        let handle = store.resource_new(type_id, 1).expect("mint a handle");
+        store.resource_drop(handle).expect("the host releases it");
+        let err = store
+            .resource_drop(handle)
+            .expect_err("a released handle is not live");
+
+        let Error::Abi(abi) = &err else {
+            panic!("expected a canonical-ABI error, got {err:?}");
+        };
+        assert_eq!(
+            abi.valtype.as_ref().and_then(|valtype| match valtype {
+                ValueType::Own(resource) => Some(resource.label()),
+                _ => None,
+            }),
+            Some("first"),
+            "the store renders the first name it learned for the identity, \
+             not the last, got {err}"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_lets_a_components_label_displace_a_fallback_name() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+
+        // A fallback is what the sweep of a linker's registrations
+        // leaves behind for an identity no component brought in. A
+        // component that names the same identity afterwards is the
+        // better name, so it takes over; a second fallback after it
+        // does not take it back.
+        let type_id = ResourceTypeId::fresh();
+        store
+            .context()
+            .fallback_resource_name(type_id, ResourceType::new("swept"));
+        store
+            .context()
+            .name_resource(type_id, ResourceType::new("imported"));
+        store
+            .context()
+            .fallback_resource_name(type_id, ResourceType::new("swept-again"));
+        store.context().register_resource(
+            type_id,
+            None,
+            ResourceDestructor::Host(Arc::new(|_data: &mut (), _rep: u32| Ok(()))),
+        );
+
+        let handle = store.resource_new(type_id, 1).expect("mint a handle");
+        store.resource_drop(handle).expect("the host releases it");
+        let err = store
+            .resource_drop(handle)
+            .expect_err("a released handle is not live");
+
+        let Error::Abi(abi) = &err else {
+            panic!("expected a canonical-ABI error, got {err:?}");
+        };
+        assert_eq!(
+            abi.valtype.as_ref().and_then(|valtype| match valtype {
+                ValueType::Own(resource) => Some(resource.label()),
+                _ => None,
+            }),
+            Some("imported"),
+            "a label a component taught outranks a fallback, whichever \
+             order the store learns them in, got {err}"
         );
     }
 }

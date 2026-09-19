@@ -9,9 +9,7 @@ use crate::backend::Backend;
 use crate::concurrency::{Accessor, Outcome, Scheduler};
 use crate::engine::Engine;
 use crate::error::Result;
-use crate::executor::ResourceDestructor;
 use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId};
-use crate::types::ResourceType;
 
 use super::store_context::StoreContext;
 use super::store_data::StoreData;
@@ -140,19 +138,6 @@ impl<T: 'static> Store<T> {
         self.store_data().resource_new(type_id, rep)
     }
 
-    /// Record the destructor of a resource type an instance
-    /// introduced, with the component's name for the type when the
-    /// caller knows one. Workspace-internal.
-    pub fn register_resource(
-        &mut self,
-        type_id: ResourceTypeId,
-        resource_type: Option<ResourceType>,
-        destructor: ResourceDestructor<T>,
-    ) {
-        self.store_data_mut()
-            .register_resource(type_id, resource_type, destructor);
-    }
-
     /// Release a handle the host holds. The handle's entry leaves the
     /// host's table for its resource type, and the resource's
     /// destructor runs once: the registered closure for a host
@@ -260,6 +245,7 @@ mod tests {
 
     use crate::concurrency::{HostTask, Item, ItemKind};
     use crate::engine::Engine;
+    use crate::executor::ResourceDestructor;
     use crate::value::Val;
 
     use super::*;
@@ -274,7 +260,7 @@ mod tests {
         let destructor_runs = Arc::new(AtomicUsize::new(0));
         let counted = destructor_runs.clone();
         let type_id = ResourceTypeId::fresh();
-        store.register_resource(
+        store.context().register_resource(
             type_id,
             None,
             ResourceDestructor::Host(Arc::new(move |_data: &mut (), _rep: u32| {

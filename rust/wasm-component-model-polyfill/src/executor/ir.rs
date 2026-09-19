@@ -672,9 +672,13 @@ pub struct ResourceTableSpec {
     pub defining: bool,
     /// The resource the table holds, as the component names it: the
     /// label the resource is imported or exported under, and the
-    /// index of this table. An error about a handle of the type
-    /// renders this, so the name a user reads is the one the
-    /// component's own types give.
+    /// index of this table. This is the only label a resource the
+    /// component defines has, so an error about a handle of such a
+    /// resource renders it. A resource the component imports is
+    /// named instead from the label the linker registered the host
+    /// resource under, which is the same label the component
+    /// imports it by, because that label is what the resolver
+    /// matched the registration on.
     pub resource_type: ResourceType,
 }
 

@@ -24,7 +24,7 @@ use crate::error::{Error, InstantiationError, LinkError, Result};
 use crate::instance::{ExportedFunction, ExportedModule, Instance};
 use crate::linker::{HostFuncBody, ImportBinding, InstanceRegistration, Linker, Resolution};
 use crate::module::Module;
-use crate::resource::{ResourceTableRuntime, TableId};
+use crate::resource::{ResourceTableRuntime, ResourceTypeId, TableId};
 use crate::store::StoreContext;
 use crate::types::ResourceType;
 
@@ -112,28 +112,56 @@ pub fn instantiate<T: 'static>(
         )?);
     }
 
-    // The component's name for each resource, by the resource's
-    // index. A resource has one name and as many tables as there are
-    // instances that keep it, so the first table that names a
-    // resource settles its name.
-    let mut resource_names: HashMap<usize, ResourceType> = HashMap::new();
+    // The component's own name for each resource it defines, by the
+    // resource's index. This is the only source of a name for a
+    // resource the component defines: nothing outside the binary
+    // declares one. A resource has as many tables as there are
+    // component instances that keep it, and a table names it as its
+    // own instance's interface does, so the labels can differ from
+    // table to table; the first table wins, which is the same
+    // first-name-wins rule the store applies.
+    let mut declared_names: HashMap<usize, ResourceType> = HashMap::new();
     for spec in ir.resource_tables.iter().flatten() {
-        resource_names
+        declared_names
             .entry(spec.resource_index)
             .or_insert_with(|| spec.resource_type.clone());
     }
 
-    // The store learns every destructor this instantiation introduces,
-    // so a handle the host holds can be released through the store,
-    // and the component's name for the resource beside it, so an
-    // error about a handle the host holds names the type the way the
-    // component's own types do.
+    // The store learns every destructor this instantiation
+    // introduces, so a handle the host holds can be released through
+    // the store, and the name to render for the resource beside it.
+    // A resource the component defines is named by the component's
+    // own declaration; an imported one is named by the label the
+    // host registered it under, which is also the label the
+    // component imports it under, because that label is what the
+    // resolver matched the registration by.
     for (index, runtime) in resource_runtimes.iter().enumerate() {
-        store.store_data_mut().register_resource(
-            runtime.type_id,
-            resource_names.get(&index).cloned(),
-            runtime.destructor.clone(),
-        );
+        let name = match &runtime.destructor {
+            ResourceDestructor::Local { .. } => declared_names.get(&index).cloned(),
+            ResourceDestructor::Host(_) => runtime.name.clone(),
+        };
+        store.register_resource(runtime.type_id, name, runtime.destructor.clone());
+    }
+
+    // The host resources the linker holds are then swept for their
+    // labels, so that an error about a handle of one no component
+    // brought in renders the label it was registered under rather
+    // than nothing at all. The linker knows that label for every
+    // registration, whether or not a component ever imports it, and
+    // the store is the only place an error can read it from.
+    //
+    // Only the name travels: the destructor of a resource no
+    // instance of this store holds is not the store's to run. And it
+    // travels as a fallback, not as a name, because the sweep cannot
+    // tell which of the linker's registrations a later
+    // instantiation into this store will import: it visits every one
+    // of them, including identities this component never mentions.
+    // A fallback yields to the label a component's own import or
+    // definition teaches, whether that component is instantiated
+    // before this one or after it, so no store renders a label that
+    // none of its components ever used while one of them did.
+    for (type_id, label) in linker_resource_labels(linker) {
+        store.fallback_resource_name(type_id, ResourceType::new(label));
     }
 
     // One fresh handle table per component instance, shared by every
@@ -613,7 +641,42 @@ fn resolve_resource_runtime<T: 'static>(
             import: component.imports[import_index].name.clone(),
         })
     })?;
-    Ok(ResourceRuntime::from_registration(host))
+    Ok(ResourceRuntime::from_registration(host, &label))
+}
+
+/// Every host resource the linker holds, as the identity it was
+/// registered against and the label it was registered under: the
+/// root namespace's registrations, then each interface's, then the
+/// nested registrations of a plain-named instance import.
+///
+/// An identity registered under several labels — one host resource
+/// value against two interfaces, which is what a shared resource
+/// type identity is for — appears once per label. The caller keeps
+/// the first it is handed, so the labels are sorted: the order the
+/// linker stores its interfaces in is a hash order, and a name a
+/// user reads must not depend on it.
+fn linker_resource_labels<T: 'static>(linker: &Linker<T>) -> Vec<(ResourceTypeId, String)> {
+    fn collect<T: 'static>(
+        registration: &InstanceRegistration<T>,
+        into: &mut Vec<(ResourceTypeId, String)>,
+    ) {
+        for (label, resource) in registration.resources.iter() {
+            into.push((resource.type_id, label.clone()));
+        }
+        for nested in registration.instances.values() {
+            collect(nested, into);
+        }
+    }
+
+    let mut labels = Vec::new();
+    collect(linker.root_registration(), &mut labels);
+    for key in linker.registered_keys() {
+        if let Some(registration) = linker.registration_for(key) {
+            collect(registration, &mut labels);
+        }
+    }
+    labels.sort_by(|a, b| a.1.cmp(&b.1));
+    labels
 }
 
 /// The module a [`ModuleSource`] names: a compiled module of the

@@ -51,7 +51,7 @@ use super::ResourceDestructor;
 use crate::concurrency::{InstanceId, Scope, SubtaskState};
 use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime, ResourceTypeId};
 use crate::store::{StoreContext, StoreData};
-use crate::types::{PrimitiveType, ValueType};
+use crate::types::{PrimitiveType, ResourceType, ValueType};
 use crate::value::Val;
 
 /// Per-resource runtime data captured by every resource trampoline.
@@ -68,16 +68,25 @@ pub struct ResourceRuntime<T> {
     /// destructor recorded at instantiation by it, and every handle
     /// lookup passes it as the type check the entry has to match.
     pub type_id: ResourceTypeId,
+    /// The name an error about a handle of this resource renders,
+    /// for a resource a host registration carries: the label the
+    /// registration was made under. A resource the component defines
+    /// carries none here — nothing outside the binary names it — and
+    /// the instantiation reads its name off the component's own
+    /// resource tables instead.
+    pub name: Option<ResourceType>,
     /// The destructor invoked when the guest drops the last handle
     /// to a resource.
     pub destructor: ResourceDestructor<T>,
 }
 
 impl<T> ResourceRuntime<T> {
-    /// Construct a runtime bundle from a host registration carrier.
-    pub fn from_registration(host: &HostResource<T>) -> Self {
+    /// Construct a runtime bundle from a host registration carrier
+    /// and the label the registration was found under.
+    pub fn from_registration(host: &HostResource<T>, label: &str) -> Self {
         Self {
             type_id: host.type_id,
+            name: Some(ResourceType::new(label)),
             destructor: ResourceDestructor::Host(host.destructor.clone()),
         }
     }
@@ -88,6 +97,7 @@ impl<T> ResourceRuntime<T> {
     pub fn local(instance: InstanceId) -> Self {
         Self {
             type_id: ResourceTypeId::fresh(),
+            name: None,
             destructor: ResourceDestructor::Local {
                 function: Arc::new(Mutex::new(None)),
                 instance,
@@ -100,6 +110,7 @@ impl<T> Clone for ResourceRuntime<T> {
     fn clone(&self) -> Self {
         Self {
             type_id: self.type_id,
+            name: self.name.clone(),
             destructor: self.destructor.clone(),
         }
     }

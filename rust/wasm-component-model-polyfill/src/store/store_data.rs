@@ -47,8 +47,31 @@ pub struct StoreData<T: 'static> {
     id: StoreId,
     tables: Arc<Mutex<HandleTables>>,
     destructors: HashMap<ResourceTypeId, ResourceDestructor<T>>,
-    resource_types: HashMap<ResourceTypeId, ResourceType>,
+    resource_types: HashMap<ResourceTypeId, LearnedName>,
     scheduler: Scheduler<T>,
+}
+
+/// A name the store learned for a resource type, with who taught it,
+/// which is what settles whether a later name replaces it.
+enum LearnedName {
+    /// A component instantiated into this store imports or defines
+    /// the resource type under this label. This is a name a user of
+    /// the store can read in the component's own source.
+    Component(ResourceType),
+    /// No component in this store has named the resource type. This
+    /// is the label a linker the store was instantiated from
+    /// registered it under, kept so that an error about one of its
+    /// handles renders something rather than nothing.
+    Fallback(ResourceType),
+}
+
+impl LearnedName {
+    /// The label itself, whoever taught it.
+    fn label(&self) -> &ResourceType {
+        match self {
+            Self::Component(name) | Self::Fallback(name) => name,
+        }
+    }
 }
 
 impl<T: 'static> StoreData<T> {
@@ -117,35 +140,84 @@ impl<T: 'static> StoreData<T> {
         &mut self.scheduler
     }
 
-    /// Record what the store knows about a resource type an instance
-    /// introduced: the destructor to run when a handle to it is
-    /// released, and the type as the component that introduced it
-    /// names it.
+    /// Record what the store knows about a resource type an
+    /// instantiation introduced: the destructor to run when a handle
+    /// to it is released, and the name an error about one of its
+    /// handles renders.
     ///
-    /// The name is what an error about a handle of the type renders,
-    /// and a resource type reaches the store from more than one
-    /// place — an instantiation knows the component's name for it,
-    /// a host that registered one against a linker and never
-    /// instantiated anything does not. So the name is optional, and
-    /// a store that never learned one says nothing about the type
-    /// rather than inventing a name for it. Workspace-internal.
+    /// The name is optional because a resource type reaches the
+    /// store from more than one place and not all of them carry one.
+    /// A store that never learned a name says nothing about the type
+    /// rather than inventing one for it. Workspace-internal.
     pub fn register_resource(
         &mut self,
         type_id: ResourceTypeId,
-        resource_type: Option<ResourceType>,
+        name: Option<ResourceType>,
         destructor: ResourceDestructor<T>,
     ) {
         self.destructors.entry(type_id).or_insert(destructor);
-        if let Some(resource_type) = resource_type {
-            self.resource_types.entry(type_id).or_insert(resource_type);
+        if let Some(name) = name {
+            self.name_resource(type_id, name);
         }
     }
 
-    /// The resource type `type_id` names, as the component that
-    /// introduced it names it, when the store learned a name for it.
+    /// Record the label a component instantiated into this store
+    /// imports or defines `type_id` under, which is the name an
+    /// error about one of its handles renders.
+    ///
+    /// One identity carries several names routinely. The shared
+    /// resource-type identity of PDD013 is one case — a single host
+    /// resource value registered against the label of two interfaces
+    /// is one identity under two labels. A component that keeps a
+    /// resource in several of its instances is another: it holds one
+    /// table per instance, and each table names the resource as its
+    /// own interface does. And a store takes more than one
+    /// instantiation, so two components can name one identity
+    /// differently.
+    ///
+    /// The store keeps one of those names rather than the set,
+    /// because the `own<T>` an error renders names exactly one
+    /// resource type: a set would have to collapse to a single name
+    /// at every rendering, and collapsing it once, here, keeps the
+    /// rule in one place.
+    ///
+    /// Which name that is follows a rule in two tiers. A label a
+    /// component's own import or definition teaches — this method —
+    /// outranks a label no component in the store has used, which
+    /// [`StoreData::fallback_resource_name`] records; teaching one
+    /// replaces a fallback already stored. Within a tier the first
+    /// name taught wins, so the first component to bring an identity
+    /// in is the one whose label the store keeps, however many
+    /// components follow it. Workspace-internal.
+    pub fn name_resource(&mut self, type_id: ResourceTypeId, name: ResourceType) {
+        if let Some(LearnedName::Component(_)) = self.resource_types.get(&type_id) {
+            return;
+        }
+        self.resource_types
+            .insert(type_id, LearnedName::Component(name));
+    }
+
+    /// Record a label to fall back on for `type_id` while no
+    /// component in this store has named it: the label a linker
+    /// registered a host resource under, which is all an error has
+    /// to render when nothing has imported the resource.
+    ///
+    /// It is the lower of the two tiers [`StoreData::name_resource`]
+    /// describes. It never displaces a name a component taught, and
+    /// a component that names the identity later displaces it.
     /// Workspace-internal.
+    pub fn fallback_resource_name(&mut self, type_id: ResourceTypeId, name: ResourceType) {
+        self.resource_types
+            .entry(type_id)
+            .or_insert(LearnedName::Fallback(name));
+    }
+
+    /// The name the store renders for the resource type `type_id`,
+    /// when it learned one. Workspace-internal.
     pub fn resource_type(&self, type_id: ResourceTypeId) -> Option<ResourceType> {
-        self.resource_types.get(&type_id).cloned()
+        self.resource_types
+            .get(&type_id)
+            .map(|learned| learned.label().clone())
     }
 
     /// The destructor recorded for `type_id`, if an instance

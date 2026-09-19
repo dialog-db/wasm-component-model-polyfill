@@ -13,9 +13,9 @@
 use std::sync::{Arc, Mutex};
 
 use wasm_component_model_polyfill::{
-    AbiCause, Component, Engine, Error, FunctionParameter, FunctionType, HostCall, HostResource,
-    InterfaceIdentifier, Linker, ResourceHandle, ResourceType, ResourceTypeId, Store, Val,
-    ValueType,
+    AbiCause, AbiPosition, Component, Engine, Error, FunctionParameter, FunctionType, HostCall,
+    HostResource, InterfaceIdentifier, Linker, ResourceHandle, ResourceType, ResourceTypeId, Store,
+    Val, ValueType,
 };
 use wcmp_macros::component;
 
@@ -846,6 +846,12 @@ async fn it_rejects_a_host_mint_against_an_unknown_resource_type() {
         text.contains("no host registration matches the transferred resource type"),
         "expected the unregistered-resource-type cause in the error, got {text}"
     );
+    assert!(
+        text.contains("at result: no host registration"),
+        "an identity no registration and no instantiation of the store ever \
+         introduced has no name to render, so the refusal names no value \
+         type, got {text}"
+    );
 }
 
 #[wcmp_macros::test]
@@ -993,23 +999,15 @@ const BORROWER: &[u8] = component!(
     "#
 );
 
-async fn borrower_instance() -> (
-    Store<()>,
-    wasm_component_model_polyfill::Instance,
-    ResourceTypeId,
-) {
-    let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, BORROWER)
-        .await
-        .expect("component parses");
-    let mut linker: Linker<()> = Linker::new(&engine);
+/// A linker carrying everything [`BORROWER`] imports, with the
+/// `thing` resource registered from `resource` under the label the
+/// component imports it by. Returns the identity to mint with.
+fn borrower_linker(engine: &Engine, resource: HostResource<()>) -> (Linker<()>, ResourceTypeId) {
+    let mut linker: Linker<()> = Linker::new(engine);
     let iface: InterfaceIdentifier = "pdd014-tests:host/things@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker.instance(&iface).resource(
-        "thing",
-        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
-    );
+    let type_id = linker.instance(&iface).resource_with("thing", resource);
     linker.instance(&iface).func_new(
         "rep",
         FunctionType {
@@ -1029,6 +1027,24 @@ async fn borrower_instance() -> (
             results[0] = Val::U32(handle.rep);
             Ok(())
         },
+    );
+    (linker, type_id)
+}
+
+async fn borrower_instance() -> (
+    Store<()>,
+    wasm_component_model_polyfill::Instance,
+    ResourceTypeId,
+) {
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, BORROWER)
+        .await
+        .expect("component parses");
+    let (linker, type_id) = borrower_linker(
+        &engine,
+        HostResource::new(
+            |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
+        ),
     );
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
@@ -1307,4 +1323,344 @@ async fn it_lets_an_instance_drop_before_its_store() {
     store
         .resource_drop(handle)
         .expect("a handle minted by a dropped instance still releases");
+}
+
+// ----------------------------------------------------------------
+// Naming: which label an error about a handle carries.
+// ----------------------------------------------------------------
+
+/// Read the label of the `own<T>` an ABI error names, or `None` when
+/// it names no value type at all.
+fn owned_label(err: &Error) -> Option<String> {
+    let Error::Abi(abi) = err else {
+        panic!("expected a canonical-ABI error, got {err:?}");
+    };
+    match abi.valtype.as_ref() {
+        Some(ValueType::Own(resource)) => Some(resource.label().to_owned()),
+        Some(other) => panic!("expected an own handle, got {other:?}"),
+        None => None,
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_names_a_shared_resource_by_the_label_the_component_imported_it_under() {
+    // One `HostResource` value registered against two labels is one
+    // identity under two names, which PDD013's shared resource type
+    // identity allows. The store keeps one of them: the label the
+    // component itself imported the resource under, because an
+    // instantiation teaches the store every name the component
+    // brings in before it sweeps up the linker's remaining labels.
+    //
+    // `alias` sorts before `thing`, and the sweep visits labels in
+    // sorted order, so a store that learned the sweep's names first
+    // would render `alias` here.
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, BORROWER)
+        .await
+        .expect("component parses");
+    let thing: HostResource<()> = HostResource::new(
+        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
+    );
+    let (mut linker, type_id) = borrower_linker(&engine, thing.clone());
+    linker.root().resource_with("alias", thing);
+
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let _instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    let handle = store.resource_new(type_id, 1).expect("mint");
+    store.resource_drop(handle).expect("first release");
+    let err = store
+        .resource_drop(handle)
+        .expect_err("a released handle is not live");
+
+    assert_eq!(
+        owned_label(&err).as_deref(),
+        Some("thing"),
+        "one identity under two labels renders the one the component \
+         imported it under, got {err}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_names_a_host_resource_no_component_imported() {
+    // A resource registered against the linker that no component
+    // ever brings in still has a label — the linker knows it — so
+    // the store learns it at instantiation and an error about one of
+    // its handles renders it rather than nothing.
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, BORROWER)
+        .await
+        .expect("component parses");
+    let (mut linker, _thing) = borrower_linker(
+        &engine,
+        HostResource::new(
+            |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
+        ),
+    );
+    let gadget = linker.root().resource(
+        "gadget",
+        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
+    );
+
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let _instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    let handle = store.resource_new(gadget, 1).expect("mint");
+    store
+        .resource_drop(handle)
+        .expect("released; no instance of this store holds its destructor");
+    let err = store
+        .resource_drop(handle)
+        .expect_err("a released handle is not live");
+
+    assert_eq!(
+        owned_label(&err).as_deref(),
+        Some("gadget"),
+        "a host resource the component never imported renders the label it \
+         was registered under, got {err}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_names_a_shared_resource_by_the_importer_after_an_earlier_instantiation() {
+    // The same identity under two labels as the test above, but the
+    // store takes two components: one that imports nothing, then
+    // `BORROWER`. The first instantiation sweeps the linker for
+    // labels and meets this identity as `alias`, a label no
+    // component in the store ever uses; the second brings it in as
+    // `thing`. A swept label is only ever a fallback, so the
+    // importer's label takes over and the error still reads
+    // `thing`.
+    let engine = Engine::new().expect("engine");
+    let quiet = Component::new(&engine, LOCAL_RESOURCE)
+        .await
+        .expect("component parses");
+    let borrower = Component::new(&engine, BORROWER)
+        .await
+        .expect("component parses");
+    let thing: HostResource<()> = HostResource::new(
+        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
+    );
+    let (mut linker, type_id) = borrower_linker(&engine, thing.clone());
+    linker.root().resource_with("alias", thing);
+
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let _quiet_instance = linker
+        .instantiate(&mut store, &quiet)
+        .await
+        .expect("instantiate the component that imports nothing");
+    let _borrower_instance = linker
+        .instantiate(&mut store, &borrower)
+        .await
+        .expect("instantiate the importer");
+    let handle = store.resource_new(type_id, 1).expect("mint");
+    store.resource_drop(handle).expect("first release");
+    let err = store
+        .resource_drop(handle)
+        .expect_err("a released handle is not live");
+
+    assert_eq!(
+        owned_label(&err).as_deref(),
+        Some("thing"),
+        "an earlier instantiation's sweep does not fix the name of an \
+         identity a later component imports under its own label, got {err}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_names_an_unimported_resource_by_the_first_of_its_labels_in_order() {
+    // One identity under two labels that no component in the store
+    // imports: both reach the store as fallbacks from the sweep, so
+    // the sweep's order is what decides between them. The linker
+    // holds its interfaces in a hash order, which must not reach a
+    // name a user reads, so the sweep sorts the labels and the store
+    // keeps the first. `gizmo` sorts before `widget`, and it is the
+    // root registration that holds `widget` here, so nothing but the
+    // sort can be producing the answer.
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, BORROWER)
+        .await
+        .expect("component parses");
+    let (mut linker, _thing) = borrower_linker(
+        &engine,
+        HostResource::new(
+            |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
+        ),
+    );
+    let spare: HostResource<()> = HostResource::new(
+        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
+    );
+    let widget = linker.root().resource_with("widget", spare.clone());
+    let other: InterfaceIdentifier = "pdd014-tests:host/gizmos@0.1.0"
+        .parse()
+        .expect("identifier");
+    let gizmo = linker.instance(&other).resource_with("gizmo", spare);
+    assert_eq!(widget, gizmo, "one host resource value is one identity");
+
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let _instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    let handle = store.resource_new(widget, 1).expect("mint");
+    store
+        .resource_drop(handle)
+        .expect("released; no instance of this store holds its destructor");
+    let err = store
+        .resource_drop(handle)
+        .expect_err("a released handle is not live");
+
+    assert_eq!(
+        owned_label(&err).as_deref(),
+        Some("gizmo"),
+        "an identity no component imported renders the first of its labels \
+         in sorted order, whatever order the linker holds them in, got {err}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_names_a_locally_defined_resource_when_it_refuses_a_released_handle() {
+    // A resource the component defines has no host registration to
+    // take a name from, so the name comes from the component's own
+    // resource tables — the label it exports the type under.
+    let (mut store, instance) = local_resource_instance().await;
+    let handle = make_handle(&mut store, &instance, 9).await;
+    store.resource_drop(handle).expect("first release");
+    let err = store
+        .resource_drop(handle)
+        .expect_err("a released handle is not live");
+
+    assert_eq!(
+        owned_label(&err).as_deref(),
+        Some("thing"),
+        "a locally-defined resource renders the label the component \
+         declares it under, got {err}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_names_the_resource_type_a_refused_host_mint_asked_for() {
+    // The mint entry point refuses an identity the calling instance
+    // holds no table for. The refusal names that type, under the
+    // name the store knows the identity by, exactly as the lower
+    // path names the handle slot it refused.
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, MINTER)
+        .await
+        .expect("component parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let iface: InterfaceIdentifier = "pdd011-tests:host/things@0.1.0"
+        .parse()
+        .expect("identifier");
+    linker.instance(&iface).resource(
+        "thing",
+        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
+    );
+    let gadget = linker.root().resource(
+        "gadget",
+        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
+    );
+    linker.instance(&iface).func_new(
+        "make",
+        FunctionType {
+            parameters: Vec::new(),
+            result: Some(ValueType::Own(ResourceType::new("thing"))),
+            async_: false,
+        },
+        move |call: HostCall<'_, ()>, _args, results| {
+            // `gadget` is registered against the linker but is not a
+            // resource type of the instance being served.
+            results[0] = Val::Own(call.resource_new(gadget, 1)?);
+            Ok(())
+        },
+    );
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    let run = instance.get_func("run").expect("run export");
+    let err = run
+        .call(&mut store, &[])
+        .await
+        .expect_err("minting against a type the instance does not hold fails");
+
+    // The host error crosses the substrate as a trap, so the
+    // rendering is read off the error chain's text.
+    let text = format!("{err:?}");
+    assert!(
+        text.contains("no host registration matches the transferred resource type"),
+        "expected the unregistered-resource-type cause, got {text}"
+    );
+    assert!(
+        text.contains("label: \"gadget\""),
+        "the refusal names the resource type the mint asked for, got {text}"
+    );
+}
+
+/// A component that defines a resource whose in-binary destructor
+/// traps.
+const TRAPPING_LOCAL_RESOURCE: &[u8] = component!(
+    r#"
+    (component
+      (core module $d
+        (func (export "dtor") (param i32) unreachable))
+      (core instance $di (instantiate $d))
+      (type $thing (resource (rep i32) (dtor (core func $di "dtor"))))
+      (core func $new (canon resource.new $thing))
+      (core module $m
+        (import "" "new" (func $new (param i32) (result i32)))
+        (func (export "make") (param i32) (result i32) local.get 0 call $new))
+      (core instance $i (instantiate $m
+        (with "" (instance (export "new" (func $new))))))
+      (export $thing' "thing" (type $thing))
+      (func (export "make") (param "rep" u32) (result (own $thing'))
+        (canon lift (core func $i "make"))))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_reports_a_substrate_failure_when_a_local_destructor_traps() {
+    // Releasing a locally-defined resource through the store calls
+    // the component's own destructor. A destructor that traps fails
+    // the release with the substrate-failure cause, at the
+    // destructor's one argument — the resource's rep, not the own
+    // handle the host released, so the failure names no value type.
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, TRAPPING_LOCAL_RESOURCE)
+        .await
+        .expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    let handle = make_handle(&mut store, &instance, 3).await;
+
+    let err = store
+        .resource_drop(handle)
+        .expect_err("a destructor that traps fails the release");
+
+    let Error::Abi(abi) = &err else {
+        panic!("expected a canonical-ABI error, got {err:?}");
+    };
+    assert!(
+        matches!(abi.cause, AbiCause::SubstrateFailure(_)),
+        "expected the substrate-failure cause, got {err:?}"
+    );
+    assert_eq!(
+        abi.position,
+        AbiPosition::Argument(0),
+        "the failing call is the destructor's, whose one argument is the rep"
+    );
+    assert!(
+        abi.valtype.is_none(),
+        "that argument is a core `u32`, not the own handle the host released, \
+         so the failure names no value type, got {err}"
+    );
 }
