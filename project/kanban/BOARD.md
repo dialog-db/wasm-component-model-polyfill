@@ -44,7 +44,6 @@ kanban-plugin: basic
 - [ ] [[83a089]]
 - [ ] [[7328e7]]
 - [ ] [[772afe]]
-- [ ] [[085569]]
 
 ## Ready
 
@@ -63,6 +62,7 @@ kanban-plugin: basic
 - [ ] [[e5eec4]]
 - [ ] [[21accc]]
 - [ ] [[ae5bc0]]
+- [ ] [[085569]]
 
 ---
 
