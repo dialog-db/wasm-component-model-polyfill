@@ -266,7 +266,7 @@ cm/async/switch-to-ready-callback.wast:366 deferred-feature no definition named 
 cm/async/switch-to-ready-callback.wast:367 deferred-feature expected a trap `deadlock detected: event loop cannot make further progress`, got `no instance to invoke`
 cm/async/switch-to-ready-callback.wast:368 deferred-feature no definition named `Tester`
 cm/async/switch-to-ready-callback.wast:369 deferred-feature no instance to invoke
-cm/async/sync-barges-in.wast:6 deferred-feature component rejected: unsupported component feature: the `thread-yield` trampoline
+cm/async/sync-barges-in.wast:6 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 cm/async/sync-barges-in.wast:322 deferred-feature no definition named `Tester`
 cm/async/sync-barges-in.wast:323 deferred-feature no instance to invoke
 cm/async/sync-streams.wast:7 deferred-feature component rejected: unsupported component feature: `stream<T>` values
@@ -555,7 +555,7 @@ wasmtime/async/exceptions.wast:67 deferred-feature no definition named `A`
 wasmtime/async/exceptions.wast:68 deferred-feature expected a trap `thrown Wasm exception`, got `no instance to invoke`
 wasmtime/async/exceptions.wast:69 deferred-feature no definition named `A`
 wasmtime/async/exceptions.wast:70 deferred-feature expected a trap `thrown Wasm exception`, got `no instance to invoke`
-wasmtime/async/exceptions.wast:73 deferred-feature component rejected: unsupported component feature: the `thread-yield` trampoline
+wasmtime/async/exceptions.wast:73 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 wasmtime/async/exceptions.wast:143 deferred-feature no definition named `A`
 wasmtime/async/exceptions.wast:144 deferred-feature expected a trap `thrown Wasm exception`, got `no instance to invoke`
 wasmtime/async/exceptions.wast:145 deferred-feature no definition named `A`
@@ -617,7 +617,7 @@ wasmtime/async/many-params-with-retptr.wast:9 deferred-feature component rejecte
 wasmtime/async/many-params-with-retptr.wast:176 deferred-feature expected a trap `unreachable`, got `no instance to invoke`
 wasmtime/async/partial-stream-copies.wast:14 deferred-feature component rejected: unsupported component feature: `stream<T>` values
 wasmtime/async/partial-stream-copies.wast:243 deferred-feature no instance to invoke
-wasmtime/async/reenter-during-yield.wast:5 deferred-feature component rejected: unsupported component feature: the `thread-yield` trampoline
+wasmtime/async/reenter-during-yield.wast:5 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 wasmtime/async/reenter-during-yield.wast:81 deferred-feature no instance to invoke
 wasmtime/async/reentrance.wast:4 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 wasmtime/async/reentrance.wast:92 deferred-feature no instance to invoke
@@ -626,7 +626,6 @@ wasmtime/async/stackful.wast:19 deferred-feature component rejected: unsupported
 wasmtime/async/stackful.wast:64 deferred-feature no instance to invoke
 wasmtime/async/stackful.wast:67 deferred-feature component rejected: unsupported component feature: the `component-sync-start-call` trampoline
 wasmtime/async/stackful.wast:107 deferred-feature no instance to invoke
-wasmtime/async/stackful.wast:132 deferred-feature component rejected: unsupported component feature: the `thread-yield` trampoline
 wasmtime/async/stream-big-read-and-writes.wast:4 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
 wasmtime/async/stream-big-read-and-writes.wast:42 deferred-feature no instance to invoke
 wasmtime/async/stream-big-read-and-writes.wast:43 deferred-feature expected a trap `stream read/write count too large`, got `no instance to invoke`
@@ -679,7 +678,6 @@ wasmtime/async/sync-and-async-waitable.wast:5 deferred-feature component rejecte
 wasmtime/async/sync-and-async-waitable.wast:123 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
 wasmtime/async/sync-streams.wast:14 deferred-feature component rejected: unsupported component feature: `stream<T>` values
 wasmtime/async/sync-streams.wast:186 deferred-feature no instance to invoke
-wasmtime/async/task-builtins.wast:56 deferred-feature component rejected: unsupported component feature: the `thread-yield` trampoline
 wasmtime/async/task-builtins.wast:65 deferred-feature component rejected: unsupported component feature: the `subtask-drop` trampoline
 wasmtime/async/task-builtins.wast:74 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
 wasmtime/async/task-builtins.wast:205 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline

@@ -280,6 +280,18 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 instance: instance.as_u32() as usize,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
+            // The one thread built-in the polyfill implements. The
+            // `cancellable` field is dropped here. It is the
+            // trampoline IR's own and not the reference's: `canon
+            // thread.yield` carries no such immediate, and the
+            // release after this one drops the field. It marks a
+            // caller that may be told a cancellation is pending,
+            // and nothing in this design makes one pending, so the
+            // built-in answers zero either way.
+            Trampoline::ThreadYield { instance, .. } => TrampolineSpec::ThreadYield {
+                instance: instance.as_u32() as usize,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
             // Concurrency built-ins and the rest are not built. A
             // `CoreDef::Trampoline` that references one surfaces
             // `Error::Unsupported` in `lift_core_def`, naming the

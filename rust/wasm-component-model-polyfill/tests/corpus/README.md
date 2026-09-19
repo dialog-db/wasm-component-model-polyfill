@@ -95,8 +95,8 @@ lines of `expected-failures.web.txt`):
 | `cm/async`       | 393        | 21     | 5.3    | deferred-feature 372                                          |
 | `fixtures`       | 17         | 17     | 100.0  | none                                                          |
 | `wasmtime`       | 469        | 431    | 91.9   | deferred-feature 2, substrate 8, cascade 28                   |
-| `wasmtime/async` | 387        | 72     | 18.6   | deferred-feature 315                                          |
-| total            | 2392       | 1575   | 65.8   | deferred-feature 691, substrate 12, validation 20, cascade 94 |
+| `wasmtime/async` | 387        | 74     | 19.1   | deferred-feature 313                                          |
+| total            | 2392       | 1577   | 65.9   | deferred-feature 689, substrate 12, validation 20, cascade 94 |
 
 The `async` rows hold the pass rate down: the polyfill does not
 implement asynchronous functions yet, so almost every directive there

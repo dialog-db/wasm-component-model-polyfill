@@ -27,6 +27,7 @@ mod instantiate;
 mod resource_destructor;
 mod start_task;
 mod task_return;
+mod thread_yield;
 mod translate;
 
 pub mod intrinsics;
@@ -39,4 +40,5 @@ pub use compile_module::compile_module;
 pub use instantiate::instantiate;
 pub use resource_destructor::ResourceDestructor;
 pub use task_return::build_task_return;
+pub use thread_yield::build_thread_yield;
 pub use translate::translate;

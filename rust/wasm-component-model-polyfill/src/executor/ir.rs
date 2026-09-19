@@ -605,6 +605,16 @@ pub enum TrampolineSpec {
         /// The core signature the guest imports.
         signature: CoreSignature,
     },
+    /// The `thread.yield` built-in: the calling thread gives way to
+    /// the work the store already holds, and the built-in returns
+    /// zero.
+    ThreadYield {
+        /// The component instance that calls the built-in.
+        instance: usize,
+        /// The core signature the guest imports: no parameters and
+        /// one `i32` result.
+        signature: CoreSignature,
+    },
 }
 
 /// The core-Wasm signature of an intrinsic an adapter module

@@ -28,6 +28,7 @@ use crate::store::StoreContext;
 
 use super::ResourceDestructor;
 use super::build_task_return;
+use super::build_thread_yield;
 use super::intrinsics::{
     build_backpressure_dec, build_backpressure_inc, build_context_get, build_context_set,
     build_enter_sync_call, build_exit_sync_call, build_resource_transfer, build_transcoder,
@@ -501,6 +502,15 @@ fn build_runtime_trampoline<T: 'static>(
             instance,
             signature,
         } => Ok(build_waitable_join(
+            store,
+            *instance,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::ThreadYield {
+            instance,
+            signature,
+        } => Ok(build_thread_yield(
             store,
             *instance,
             signature,
