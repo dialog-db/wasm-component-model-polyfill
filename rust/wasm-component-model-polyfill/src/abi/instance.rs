@@ -37,9 +37,9 @@ pub struct BoundaryInstance {
     /// carries `own<T>` or `borrow<T>` valtypes; `None` is rejected
     /// at first contact.
     tables: Option<Arc<Mutex<HandleTables>>>,
-    /// Every resource table of the component instance, by table
-    /// index. A handle's declared type names the index; this maps it
-    /// to the table the instance keeps and the resource it holds.
+    /// Every resource table of the instantiation, by table index. A
+    /// handle's declared type names the index; this maps it to the
+    /// table the instantiation keeps and the resource it holds.
     resource_tables: Vec<Option<ResourceTableRuntime>>,
 }
 
@@ -110,8 +110,7 @@ impl BoundaryInstance {
         self.tables.as_ref()
     }
 
-    /// Every resource table of the component instance, by table
-    /// index.
+    /// Every resource table of the instantiation, by table index.
     pub fn resource_tables(&self) -> &[Option<ResourceTableRuntime>] {
         &self.resource_tables
     }

@@ -830,6 +830,33 @@ mod tests {
     use wasmtime_environ::Trap;
 
     use super::*;
+    use crate::types::PrimitiveType;
+
+    #[wcmp_macros::test]
+    fn it_renders_an_abi_error_with_a_type_label_only_when_it_carries_a_value_type() {
+        for (error, rendered) in [
+            (
+                AbiError {
+                    position: AbiPosition::Argument(1),
+                    valtype: Some(ValueType::Primitive(PrimitiveType::U32)),
+                    cause: AbiCause::HostValueMismatch,
+                },
+                "canonical ABI error: at argument 1 (type Primitive(U32)): host value \
+                 variant does not match declared value type",
+            ),
+            (
+                AbiError {
+                    position: AbiPosition::Result,
+                    valtype: None,
+                    cause: AbiCause::OutstandingBorrows { count: 1 },
+                },
+                "canonical ABI error: at result: 1 borrow handles outstanding at \
+                 host-call return",
+            ),
+        ] {
+            assert_eq!(Error::from(error).to_string(), rendered);
+        }
+    }
 
     #[wcmp_macros::test]
     fn it_renders_the_deadlock_cause_as_the_trap_message() {

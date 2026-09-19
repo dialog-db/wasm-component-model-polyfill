@@ -136,7 +136,7 @@ impl Func {
         if args.len() != self.signature.parameters.len() {
             return Err(Error::from(AbiError {
                 position: AbiPosition::Argument(0),
-                valtype: Some(ValueType::Primitive(PrimitiveType::Bool)),
+                valtype: None,
                 cause: AbiCause::InvalidEncoding {
                     message: format!(
                         "expected {} arguments, got {}",

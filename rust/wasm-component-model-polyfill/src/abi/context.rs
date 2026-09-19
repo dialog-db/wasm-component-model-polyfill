@@ -336,7 +336,7 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
             .map_err(|cause| {
                 Error::from(AbiError {
                     position: AbiPosition::Result,
-                    valtype: Some(ValueType::Primitive(crate::types::PrimitiveType::Bool)),
+                    valtype: None,
                     cause: AbiCause::SubstrateFailure(cause),
                 })
             })

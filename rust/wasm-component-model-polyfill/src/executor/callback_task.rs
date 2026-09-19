@@ -46,7 +46,6 @@ use crate::concurrency::{Event, EventSlot, InstanceId, Item, ItemKind, TaskId};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result, TaskCause};
 use crate::resource::TableId;
 use crate::store::StoreContext;
-use crate::types::{PrimitiveType, ValueType};
 
 /// How many low bits of a status word are the code.
 const CODE_BITS: u32 = 4;
@@ -255,7 +254,7 @@ pub fn status_word(results: &[RuntimeVal]) -> Result<i32> {
 fn outstanding_borrows(count: u32) -> Error {
     Error::from(AbiError {
         position: AbiPosition::Result,
-        valtype: Some(ValueType::Primitive(PrimitiveType::Bool)),
+        valtype: None,
         cause: AbiCause::OutstandingBorrows {
             count: count as usize,
         },

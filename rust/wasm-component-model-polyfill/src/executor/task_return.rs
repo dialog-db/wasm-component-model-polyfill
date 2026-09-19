@@ -230,13 +230,14 @@ fn mismatch<T: 'static>(
 /// slot on the core export a memory is extracted from — the slots
 /// are that translator's, not the polyfill's — so two options that
 /// name the same slot always name the same memory instance: the
-/// check never lets a real mismatch through. It is conservative in the other direction. A
-/// core module that re-exports a memory it imported gives the same
-/// memory instance two core exports, and so two slots; a built-in
-/// that names one of them while the task's lift names the other
-/// traps with the return-mismatch cause here, where Wasmtime's
-/// comparison of memory pointers would pass. No component the
-/// translator accepts today produces that shape.
+/// check never lets a real mismatch through. It is conservative
+/// in the other direction. A core module that re-exports a memory
+/// it imported gives the same memory instance two core exports,
+/// and so two slots; a built-in that names one of them while the
+/// task's lift names the other traps with the return-mismatch
+/// cause here, where Wasmtime's comparison of memory pointers
+/// would pass. No component the translator accepts today produces
+/// that shape.
 ///
 /// Options that name no memory pass, because validation lets the
 /// built-in leave the memory out only when the result needs none.
@@ -650,10 +651,14 @@ mod tests {
     fn it_fails_the_lift_when_options_that_name_no_memory_carry_a_result_that_needs_one() {
         // Validation lets a `task.return` leave the memory out only
         // when its result needs none, so this built-in is one no
-        // component produces. It passes the memory comparison — the
-        // comparison lets options that name no memory through — and
-        // then fails in the lift, which has no memory to read the
-        // string out of, rather than reading some other memory.
+        // component produces, and the three implementations part
+        // ways on it. The reference traps at the memory comparison.
+        // Wasmtime lifts the string through the task's own memory
+        // and succeeds. The polyfill passes the comparison — it
+        // lets options that name no memory through — and then
+        // faults out of bounds in the lift, which has no memory to
+        // read from. The shape is validation-illegal, so nothing
+        // observes the difference.
         let mut records = Records::new(1);
         let string = ValueType::Primitive(PrimitiveType::String);
         let task = records.push_task(Some(string.clone()), lift_options());
@@ -726,9 +731,14 @@ mod tests {
     #[wcmp_macros::test]
     fn it_traps_when_the_task_still_owes_a_borrow() {
         // The scope-exit rule of a borrow applies to a return as it
-        // applies to every other end of a call.
+        // applies to every other end of a call, and it refuses a
+        // task that returns nothing as readily as one that returns
+        // a value. The failure of such a task processes no value
+        // type — the borrow is owed by the task, not by a value the
+        // return was lifting — so it carries none and the rendering
+        // leaves the type label out.
         let mut records = Records::new(1);
-        let task = records.push_task(Some(u32_type()), lift_options());
+        let task = records.push_task(None, lift_options());
         records
             .tables
             .lock()
@@ -739,16 +749,18 @@ mod tests {
             .num_borrows = 1;
 
         let err = records
-            .call(
-                Some(u32_type()),
-                &options(Some(0), StringEncoding::Utf8, false),
-                &[RuntimeVal::I32(7)],
-            )
+            .call(None, &options(Some(0), StringEncoding::Utf8, false), &[])
             .expect_err("the outstanding borrow refuses the return");
 
+        let rendered = format!("{err:?}");
         assert!(
-            reports(err, "borrow handles outstanding"),
-            "the outstanding-borrows cause"
+            rendered.contains("borrow handles outstanding"),
+            "the outstanding-borrows cause, but the failure rendered as {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("(type "),
+            "a return that carries no result names no value type, but the failure \
+             rendered as {rendered:?}"
         );
         assert_eq!(records.resolved(task), None, "the task is still pending");
     }

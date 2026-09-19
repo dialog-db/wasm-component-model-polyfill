@@ -17,7 +17,7 @@ use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCaus
 use crate::executor::ResourceDestructor;
 use crate::executor::ir::CanonOptions;
 use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId, TableId};
-use crate::types::{PrimitiveType, ResourceType, ValueType};
+use crate::types::{ResourceType, ValueType};
 use crate::value::Val;
 
 use super::store_data::StoreData;
@@ -792,7 +792,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             .map_err(|err| {
                 Error::from(AbiError {
                     position: AbiPosition::Result,
-                    valtype: Some(ValueType::Primitive(PrimitiveType::U32)),
+                    valtype: None,
                     cause: AbiCause::InvalidHandle {
                         reason: err.to_string(),
                     },
