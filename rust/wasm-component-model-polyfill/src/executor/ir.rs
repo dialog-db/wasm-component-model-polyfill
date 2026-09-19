@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use crate::abi::layout::FlatType;
 use crate::component::{ExternalName, FunctionType};
+use crate::concurrency::LowerKind;
 use crate::module::Module;
 use crate::types::{ResourceType, ValueType};
 
@@ -408,8 +409,19 @@ pub enum StringEncoding {
 }
 
 /// Per-`LowerImport` metadata: where to draw the host registration
-/// from, the canon options the lowering uses, and the lifted
-/// (component-level) function type the host is expected to satisfy.
+/// from, the canon options the lowering uses, which lowering the
+/// `canon lower` declared, and the lifted (component-level) function
+/// type the host is expected to satisfy.
+///
+/// The lowering's kind and the `async` effect on `signature` are
+/// separate axes. The kind is the `async` option of the `canon
+/// lower`: it decides the core signature the guest calls through and
+/// what the guest gets back when the call does not finish at once.
+/// The effect on the type is the callee's: it decides how the callee
+/// produces its result, and it is what the `canon lift` at the other
+/// end of the call reads. A guest may lower an async-typed import
+/// either way, so both kinds reach this spec carrying the effect;
+/// only an asynchronous lower requires it.
 #[derive(Clone, Debug)]
 pub struct LoweringSpec {
     /// Index into the resolved component imports — the same indexing
@@ -425,6 +437,12 @@ pub struct LoweringSpec {
     /// host's `Val` shape and the core-wasm flat values the
     /// trampoline shuttles.
     pub options: CanonOptions,
+    /// Which lowering the `canon lower` declared, read from the
+    /// `async` option of `options` at translation. The two kinds
+    /// present different core signatures to the guest, so the
+    /// trampoline is built from this and not from the effect the
+    /// callee's type carries.
+    pub kind: LowerKind,
 }
 
 /// What a trampoline slot in [`ExecutorIr::trampoline_specs`] does.

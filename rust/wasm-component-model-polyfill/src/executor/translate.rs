@@ -29,9 +29,8 @@ use wasmtime_environ::{
 
 use crate::abi::layout::FlatType;
 
-use crate::component::{
-    ComponentExport, ComponentImport, ExternType, ExternalName, FunctionType, TypeProjector,
-};
+use crate::component::{ComponentExport, ComponentImport, ExternType, ExternalName, TypeProjector};
+use crate::concurrency::LowerKind;
 use crate::engine::Engine;
 use crate::error::{Error, Result};
 
@@ -191,12 +190,14 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 })?;
                 let (import_index, path) = import_path(&translation, runtime_import)?;
                 let signature = projector.function(*lower_ty)?;
-                refuse_async_import(&signature)?;
+                let options = trampoline_options(&translation, *options)?;
+                let kind = lower_kind(&options)?;
                 TrampolineSpec::LowerImport(LoweringSpec {
                     import_index,
                     path,
                     signature,
-                    options: trampoline_options(&translation, *options)?,
+                    options,
+                    kind,
                 })
             }
             Trampoline::ResourceDrop { ty, .. } => TrampolineSpec::ResourceDrop {
@@ -554,7 +555,6 @@ fn project_imports(
     let mut imports = Vec::with_capacity(translation.component.import_types.len());
     for (_, (name, extern_)) in translation.component.import_types.iter() {
         let ty = projector.extern_type(name, extern_)?;
-        refuse_async_extern(&ty)?;
         imports.push(ComponentImport {
             name: ExternalName::from_raw(name),
             ty,
@@ -563,37 +563,27 @@ fn project_imports(
     Ok(imports.into_boxed_slice())
 }
 
-/// Refuse an `async` function type on an import. A host function is
-/// the only thing that can satisfy an import, and a host function of
-/// this design is synchronous: it returns its result to the caller
-/// rather than through a task. The refusal is here, at the boundary
-/// that would have asked the host for one, and not in the type
-/// projection, which reports the flag for an export as well.
-fn refuse_async_import(signature: &FunctionType) -> Result<()> {
-    if signature.async_ {
-        return Err(Error::unsupported("asynchronous function types on imports"));
+/// Which lowering a `canon lower` declared, from the `async` option
+/// of its canon options.
+///
+/// An asynchronous lower carries its parameters, its result, or both
+/// through linear memory whenever they do not fit the four flat
+/// slots it has, so validation requires the `memory` option on it
+/// whatever the lowered type is. A component that declares one
+/// without a memory is invalid, and the translation says so here
+/// rather than at the first call that would have read the memory.
+fn lower_kind(options: &CanonOptions) -> Result<LowerKind> {
+    if !options.async_ {
+        return Ok(LowerKind::Sync);
     }
-    Ok(())
-}
-
-/// Refuse an `async` function type anywhere inside one import's
-/// extern type: the import may be the function itself, or an
-/// instance that holds it at any depth.
-fn refuse_async_extern(ty: &ExternType) -> Result<()> {
-    match ty {
-        ExternType::Function(signature) => refuse_async_import(signature),
-        ExternType::Instance(instance) => {
-            for item in instance.items.iter() {
-                refuse_async_extern(&item.ty)?;
-            }
-            Ok(())
-        }
-        ExternType::Module(_)
-        | ExternType::Component
-        | ExternType::Resource(_)
-        | ExternType::ResourceEquals(_)
-        | ExternType::Value(_) => Ok(()),
+    if options.memory.is_none() {
+        return Err(Error::InvalidComponentBinary {
+            message: "`canon lower` with the `async` option requires the `memory` option"
+                .to_owned(),
+            offset: 0,
+        });
     }
+    Ok(LowerKind::Async)
 }
 
 /// Project the component's declared exports, in declaration order.

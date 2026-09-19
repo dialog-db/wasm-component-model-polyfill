@@ -25,6 +25,17 @@ pub struct FunctionType {
     /// `ComponentFunc::async_`. The typed conversion ignores the
     /// flag, because the parameters and the result of the two
     /// forms are the same.
+    ///
+    /// The flag is the callee's half of the call and says nothing
+    /// about the caller's. How a caller reaches the function — a
+    /// `canon lift` or a `canon lower`, each with or without its own
+    /// `async` option — is the other axis, and the two move
+    /// separately: an async-typed function may be lifted or lowered
+    /// synchronously just as well. Only the reverse is constrained,
+    /// because a canonical definition may declare the `async` option
+    /// only for a function whose type carries the effect. A host
+    /// reads this flag on an import exactly as it reads it on an
+    /// export.
     pub async_: bool,
 }
 

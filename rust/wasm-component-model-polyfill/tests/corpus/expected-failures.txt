@@ -507,15 +507,15 @@ wasmtime/async/backpressure-deadlock.wast:14 deferred-feature component rejected
 wasmtime/async/backpressure-deadlock.wast:107 deferred-feature expected a trap `deadlock detected`, got `no instance to invoke`
 wasmtime/async/callback-yield-then-exit.wast:7 deferred-feature component rejected: unsupported component feature: the `component-sync-start-call` trampoline
 wasmtime/async/callback-yield-then-exit.wast:50 deferred-feature no instance to invoke
-wasmtime/async/cancel-host.wast:7 deferred-feature component rejected: unsupported component feature: asynchronous function types on imports (imports `[method]resource1.never-return`, which has no host task registered)
+wasmtime/async/cancel-host.wast:7 validation component rejected: invalid component binary at offset 0: `canon lower` with the `async` option requires the `memory` option
 wasmtime/async/cancel-host.wast:80 deferred-feature no instance to invoke
-wasmtime/async/cancel-host.wast:85 deferred-feature component rejected: unsupported component feature: asynchronous function types on imports (imports `return-two-slowly`, which has no host task registered)
+wasmtime/async/cancel-host.wast:85 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
 wasmtime/async/cancel-host.wast:167 deferred-feature no instance to invoke
-wasmtime/async/cancel-host.wast:172 deferred-feature component rejected: unsupported component feature: asynchronous function types on imports (imports `return-two-slowly`, which has no host task registered)
+wasmtime/async/cancel-host.wast:172 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
 wasmtime/async/cancel-host.wast:256 deferred-feature expected a trap ``subtask.cancel` called after terminal status delivered`, got `no instance to invoke`
-wasmtime/async/cancel-host.wast:264 deferred-feature component rejected: unsupported component feature: asynchronous function types on imports (imports `echo-slowly`, which has no host task registered)
+wasmtime/async/cancel-host.wast:264 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
 wasmtime/async/cancel-host.wast:385 deferred-feature no instance to invoke
-wasmtime/async/cancel-host.wast:389 deferred-feature component rejected: unsupported component feature: asynchronous function types on imports (imports `return-two-slowly`, which has no host task registered)
+wasmtime/async/cancel-host.wast:389 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
 wasmtime/async/cancel-host.wast:476 deferred-feature no instance to invoke
 wasmtime/async/cancel-sibling-subtask.wast:4 deferred-feature component rejected: unsupported component feature: the `task-cancel` trampoline
 wasmtime/async/cancel-sibling-subtask.wast:145 deferred-feature no definition named `A`
@@ -539,7 +539,7 @@ wasmtime/async/context-in-compositions.wast:434 deferred-feature no instance to 
 wasmtime/async/context-in-compositions.wast:435 deferred-feature no instance to invoke
 wasmtime/async/context-in-compositions.wast:436 deferred-feature no instance to invoke
 wasmtime/async/context-in-compositions.wast:437 deferred-feature no instance to invoke
-wasmtime/async/drop-host.wast:5 deferred-feature component rejected: unsupported component feature: asynchronous function types on imports (imports `return-two-slowly`, which has no host task registered)
+wasmtime/async/drop-host.wast:5 deferred-feature component rejected: unsupported component feature: the `subtask-drop` trampoline
 wasmtime/async/drop-host.wast:56 deferred-feature expected a trap `cannot drop a subtask which has not yet resolved`, got `no instance to invoke`
 wasmtime/async/drop-waitable-set-stackful.wast:13 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 wasmtime/async/drop-waitable-set-stackful.wast:105 deferred-feature expected a trap `cannot drop waitable set with waiters`, got `no instance to invoke`
@@ -612,7 +612,6 @@ wasmtime/async/intra-streams.wast:179 deferred-feature component rejected: unsup
 wasmtime/async/intra-streams.wast:239 deferred-feature no instance to invoke
 wasmtime/async/join-during-sync-read.wast:8 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
 wasmtime/async/join-during-sync-read.wast:66 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
-wasmtime/async/lower.wast:4 deferred-feature component rejected: unsupported component feature: asynchronous function types on imports
 wasmtime/async/many-params-with-retptr.wast:9 deferred-feature component rejected: unsupported component feature: the `component-sync-start-call` trampoline
 wasmtime/async/many-params-with-retptr.wast:176 deferred-feature expected a trap `unreachable`, got `no instance to invoke`
 wasmtime/async/partial-stream-copies.wast:14 deferred-feature component rejected: unsupported component feature: `stream<T>` values

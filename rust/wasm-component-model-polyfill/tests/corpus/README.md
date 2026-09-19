@@ -16,11 +16,17 @@ The polyfill runs the callback form of an asynchronous export and the
 task built-ins that come with it, so part of `cm/async/` and
 `wasmtime/async/` passes: a host call into such an export, `task.return`,
 backpressure, the waitable set built-ins, `thread.yield`, and the context
-slots. The rest is an expected failure of category `deferred-feature`,
-for one of six reasons: a call into an asynchronous export from a sibling
-component, a future or stream built-in, the stackful lift, a thread
-built-in other than `thread.yield`, cancellation, or an asynchronous host
-item.
+slots. A component whose import is lowered asynchronously translates and
+instantiates too; only a guest that makes such a call fails, because the
+call path behind it is not built yet. The rest is an expected failure of
+category `deferred-feature`, for one of six reasons: a call into an
+asynchronous export from a sibling component, a future or stream
+built-in, the stackful lift, a thread built-in other than `thread.yield`,
+cancellation, or a call to an asynchronous host item. One directive is a
+`validation` failure instead, the first component of
+`wasmtime/async/cancel-host.wast`: it lowers asynchronously without the
+`memory` option, which the reference requires and Wasmtime does not
+enforce.
 
 `expected-failures.txt` lists every directive the polyfill does not pass
 yet, one per line, as `<path>:<line> <category> <reason>`. The harness
@@ -100,8 +106,8 @@ lines of `expected-failures.web.txt`):
 | `cm/async`       | 393        | 21     | 5.3    | deferred-feature 372                                          |
 | `fixtures`       | 17         | 17     | 100.0  | none                                                          |
 | `wasmtime`       | 469        | 431    | 91.9   | deferred-feature 2, substrate 8, cascade 28                   |
-| `wasmtime/async` | 387        | 74     | 19.1   | deferred-feature 313                                          |
-| total            | 2392       | 1577   | 65.9   | deferred-feature 689, substrate 12, validation 20, cascade 94 |
+| `wasmtime/async` | 387        | 75     | 19.4   | deferred-feature 311, validation 1                            |
+| total            | 2392       | 1578   | 66.0   | deferred-feature 687, substrate 12, validation 21, cascade 94 |
 
 The `async` rows still hold the pass rate down. The polyfill runs a host
 call into a callback export and the task built-ins that export uses, but

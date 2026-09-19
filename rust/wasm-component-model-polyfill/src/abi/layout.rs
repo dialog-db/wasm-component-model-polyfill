@@ -30,6 +30,14 @@ pub const MAX_FLAT_PARAMS: usize = 16;
 /// through a pointer into linear memory.
 pub const MAX_FLAT_RESULTS: usize = 1;
 
+/// The largest number of flat core-Wasm parameter slots an
+/// asynchronous lower passes directly. The canonical ABI holds such
+/// a lower to a lower limit than [`MAX_FLAT_PARAMS`]; beyond it the
+/// whole parameter tuple spills into linear memory and one `i32`
+/// pointer is passed. The matching result limit is zero, so an
+/// asynchronous lower never returns a flat result.
+pub const MAX_FLAT_ASYNC_PARAMS: usize = 4;
+
 /// Round `offset` up to the next multiple of `alignment`. The
 /// alignment must be a power of two.
 pub fn align_to(offset: usize, alignment: usize) -> usize {

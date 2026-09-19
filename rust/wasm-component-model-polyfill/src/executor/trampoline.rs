@@ -24,6 +24,16 @@
 //! module the lowered import is passed into, so the slots are filled
 //! between trampoline construction and the trampoline's first call.
 //!
+//! That is the shape of a synchronous lower. A lowered import whose
+//! `canon lower` declares the `async` option presents a different
+//! core type to the guest — at most four flat parameters, the result
+//! always through a return-area pointer, and one `i32` result, the
+//! status word — and gives the guest control back before the callee
+//! returns. The trampoline is built with that type, and calling it
+//! fails with [`Error::Unsupported`] until the call path behind it
+//! lands, so a component that lowers asynchronously still links and
+//! instantiates.
+//!
 //! [`Func`]: wasm_runtime_layer::Func
 //! [`HostFunc<T>`]: crate::linker::HostFunc
 
@@ -38,7 +48,10 @@ use crate::abi::boundary_call::BoundaryCall;
 use crate::abi::context::BoundaryContext;
 use crate::abi::flatten::{lift_from_flat_slots, lower_into_flat_slots};
 use crate::abi::instance::BoundaryInstance;
-use crate::abi::layout::{FlatType, flat_types, params_spill, result_spills, spill_layout};
+use crate::abi::layout::{
+    FlatType, MAX_FLAT_ASYNC_PARAMS, flat_param_count, flat_types, params_spill, result_spills,
+    spill_layout,
+};
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::{lift, lower};
 use crate::backend::Backend;
@@ -48,7 +61,7 @@ use crate::executor::ir::{CanonOptions, LoweringSpec};
 use crate::linker::{HostCall, HostFuncBody, HostResource};
 
 use super::ResourceDestructor;
-use crate::concurrency::{InstanceId, Scope, SubtaskState};
+use crate::concurrency::{InstanceId, LowerKind, Scope, SubtaskState};
 use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime, ResourceTypeId};
 use crate::store::{StoreContext, StoreData};
 use crate::types::{PrimitiveType, ResourceType, ValueType};
@@ -318,46 +331,73 @@ pub fn build_trampoline<T: 'static>(
     abi_state: Arc<Mutex<AbiRuntimeState>>,
     host_func: Arc<HostFuncBody<T>>,
 ) -> RuntimeFunc {
-    let func_type = derive_runtime_func_type(&spec.signature);
+    let func_type = derive_runtime_func_type(&spec.signature, spec.kind);
     let signature = spec.signature.clone();
     let options = spec.options.clone();
+    let kind = spec.kind;
     let tables = store.tables_handle();
 
     RuntimeFunc::new(
         store.runtime_mut(),
         func_type,
         move |store_ctx, args, results| {
-            invoke_trampoline(
-                store_ctx,
-                &signature,
-                &options,
-                &abi_state,
-                &tables,
-                host_func.as_ref(),
-                args,
-                results,
-            )
+            match kind {
+                // An asynchronous lower hands the call back to the
+                // guest as a subtask it waits on, which is a call
+                // path of its own. The component instantiates and
+                // links, and only a guest that actually makes the
+                // call meets the refusal.
+                LowerKind::Async => Err(Error::unsupported(
+                    "asynchronous host calls (an import lowered with the `async` option)",
+                )),
+                LowerKind::Sync => invoke_trampoline(
+                    store_ctx,
+                    &signature,
+                    &options,
+                    &abi_state,
+                    &tables,
+                    host_func.as_ref(),
+                    args,
+                    results,
+                ),
+            }
             .map_err(|err| anyhow!("trampoline invocation failed: {err}"))
         },
     )
 }
 
 /// Derive the core-Wasm function type the lowered import presents
-/// to the guest. The signature's parameters and result are flattened
-/// per the canonical ABI. A parameter tuple wider than
-/// `MAX_FLAT_PARAMS` collapses to one `i32` pointer; a result wider
-/// than `MAX_FLAT_RESULTS` adds an `i32` return-area pointer as the
-/// final parameter.
-fn derive_runtime_func_type(signature: &FunctionType) -> FuncType {
+/// to the guest, from the component-level `signature` and the kind
+/// of lowering the `canon lower` declared. The two kinds flatten the
+/// same type differently, so the kind — and not the `async` effect
+/// the type carries — is what picks the rule.
+///
+/// A synchronous lower flattens the parameters and the result per
+/// the canonical ABI's ordinary limits: a parameter tuple wider than
+/// `MAX_FLAT_PARAMS` collapses to one `i32` pointer, and a result
+/// wider than `MAX_FLAT_RESULTS` adds an `i32` return-area pointer
+/// as the final parameter instead of being returned.
+///
+/// An asynchronous lower keeps at most `MAX_FLAT_ASYNC_PARAMS`
+/// flat parameters and takes one `i32` pointer instead when the
+/// flattened parameters exceed that; it never returns the result,
+/// which always travels through a return-area pointer appended to
+/// the parameters; and it returns one `i32`, the status word that
+/// names the subtask's state and its index.
+fn derive_runtime_func_type(signature: &FunctionType, kind: LowerKind) -> FuncType {
+    match kind {
+        LowerKind::Sync => sync_runtime_func_type(signature),
+        LowerKind::Async => async_runtime_func_type(signature),
+    }
+}
+
+/// The core type of a synchronous lower.
+fn sync_runtime_func_type(signature: &FunctionType) -> FuncType {
     let mut params: Vec<CoreType> = Vec::new();
     if params_spill(signature) {
         params.push(CoreType::I32);
     } else {
-        for p in &signature.parameters {
-            for slot in flat_types(&p.ty) {
-                params.push(core_type_of_flat(slot));
-            }
-        }
+        params.extend(flat_parameters(signature));
     }
 
     let mut results: Vec<CoreType> = Vec::new();
@@ -372,6 +412,48 @@ fn derive_runtime_func_type(signature: &FunctionType) -> FuncType {
     }
 
     FuncType::new(params, results)
+}
+
+/// The core type of an asynchronous lower.
+fn async_runtime_func_type(signature: &FunctionType) -> FuncType {
+    let mut params: Vec<CoreType> = Vec::new();
+    if async_params_spill(signature) {
+        params.push(CoreType::I32);
+    } else {
+        params.extend(flat_parameters(signature));
+    }
+
+    // The reference spells the return-area test as a flattened
+    // width greater than zero, but no component type flattens to no
+    // slots at all: a record, tuple, variant, flags or enum must
+    // carry at least one member, and a fixed-length list at least
+    // one element. So presence of a result is the same test, and it
+    // is the one the validator the guest module is checked against
+    // applies. Testing the width here would derive one parameter
+    // fewer than that validator expects if a zero-slot type ever
+    // became legal.
+    if signature.result.is_some() {
+        params.push(CoreType::I32);
+    }
+
+    FuncType::new(params, [CoreType::I32])
+}
+
+/// Whether the parameter tuple of an asynchronous lower spills into
+/// linear memory rather than travelling in flat slots.
+fn async_params_spill(signature: &FunctionType) -> bool {
+    !matches!(flat_param_count(signature), Some(n) if n <= MAX_FLAT_ASYNC_PARAMS)
+}
+
+/// The core types of the signature's parameters, in order, as they
+/// are passed when the tuple does not spill.
+fn flat_parameters(signature: &FunctionType) -> Vec<CoreType> {
+    signature
+        .parameters
+        .iter()
+        .flat_map(|p| flat_types(&p.ty))
+        .map(core_type_of_flat)
+        .collect()
 }
 
 fn core_type_of_flat(slot: FlatType) -> CoreType {
@@ -607,4 +689,158 @@ fn lock_tables(
     tables
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::component::FunctionParameter;
+
+    /// A signature of `count` `u32` parameters, each flattening to
+    /// one `i32` slot, and the given result.
+    fn signature(count: usize, result: Option<ValueType>) -> FunctionType {
+        FunctionType {
+            parameters: (0..count)
+                .map(|i| FunctionParameter {
+                    name: format!("p{i}"),
+                    ty: ValueType::Primitive(PrimitiveType::U32),
+                })
+                .collect(),
+            result,
+            async_: false,
+        }
+    }
+
+    /// A signature of the given parameter types, in order, and the
+    /// given result, for the cases where a parameter flattens to
+    /// more than one slot.
+    fn signature_of(parameters: &[ValueType], result: Option<ValueType>) -> FunctionType {
+        FunctionType {
+            parameters: parameters
+                .iter()
+                .enumerate()
+                .map(|(i, ty)| FunctionParameter {
+                    name: format!("p{i}"),
+                    ty: ty.clone(),
+                })
+                .collect(),
+            result,
+            async_: false,
+        }
+    }
+
+    /// The `u32` result type the signatures below carry, which
+    /// flattens to one slot.
+    fn u32_result() -> Option<ValueType> {
+        Some(ValueType::Primitive(PrimitiveType::U32))
+    }
+
+    /// The core type of a lowering, as the pair a reader compares.
+    fn core_type(signature: &FunctionType, kind: LowerKind) -> (Vec<CoreType>, Vec<CoreType>) {
+        let derived = derive_runtime_func_type(signature, kind);
+        (derived.params().to_vec(), derived.results().to_vec())
+    }
+
+    #[wcmp_macros::test]
+    fn it_keeps_the_flat_parameters_of_an_asynchronous_lower_within_four() {
+        // Four `u32` parameters are four flat slots, the most an
+        // asynchronous lower passes directly. The result is the
+        // status word alone, because the type has no result.
+        let (params, results) = core_type(&signature(4, None), LowerKind::Async);
+        assert_eq!(params, vec![CoreType::I32; 4]);
+        assert_eq!(results, vec![CoreType::I32]);
+    }
+
+    #[wcmp_macros::test]
+    fn it_spills_the_parameters_of_an_asynchronous_lower_beyond_four() {
+        // The fifth slot puts the tuple over the limit, so the whole
+        // of it travels through one pointer into linear memory —
+        // where a synchronous lower would still pass five slots.
+        let five = signature(5, None);
+        let (params, results) = core_type(&five, LowerKind::Async);
+        assert_eq!(params, vec![CoreType::I32]);
+        assert_eq!(results, vec![CoreType::I32]);
+
+        let (sync_params, sync_results) = core_type(&five, LowerKind::Sync);
+        assert_eq!(sync_params, vec![CoreType::I32; 5]);
+        assert_eq!(sync_results, Vec::new());
+    }
+
+    #[wcmp_macros::test]
+    fn it_measures_an_asynchronous_lower_in_flat_slots_not_in_parameters() {
+        // A `string` flattens to two slots, a pointer and a length,
+        // so three of them are six slots from three parameters. The
+        // limit is on the slots, so the tuple spills even though the
+        // parameters number fewer than four.
+        let string = ValueType::Primitive(PrimitiveType::String);
+        let three_strings = signature_of(&[string.clone(), string.clone(), string], None);
+
+        let (params, results) = core_type(&three_strings, LowerKind::Async);
+        assert_eq!(params, vec![CoreType::I32]);
+        assert_eq!(results, vec![CoreType::I32]);
+
+        // Six slots are well within the synchronous limit, which is
+        // what shows the three parameters really are six slots.
+        let (sync_params, sync_results) = core_type(&three_strings, LowerKind::Sync);
+        assert_eq!(sync_params, vec![CoreType::I32; 6]);
+        assert_eq!(sync_results, Vec::new());
+    }
+
+    #[wcmp_macros::test]
+    fn it_keeps_the_return_pointer_of_an_asynchronous_lower_out_of_the_limit() {
+        // Four flat slots are the most that travel directly, and a
+        // result adds the return-area pointer as a fifth parameter.
+        // The pointer is not itself counted against the limit, so
+        // the parameters stay flat rather than spilling.
+        let (params, results) = core_type(&signature(4, u32_result()), LowerKind::Async);
+        assert_eq!(params, vec![CoreType::I32; 5]);
+        assert_eq!(results, vec![CoreType::I32]);
+    }
+
+    #[wcmp_macros::test]
+    fn it_returns_the_result_of_an_asynchronous_lower_through_a_pointer() {
+        // One `u32` result fits a flat slot, and an asynchronous
+        // lower returns it through a pointer all the same: the
+        // pointer is the last parameter and the one `i32` result is
+        // the status word.
+        let (params, results) = core_type(&signature(1, u32_result()), LowerKind::Async);
+        assert_eq!(params, vec![CoreType::I32, CoreType::I32]);
+        assert_eq!(results, vec![CoreType::I32]);
+
+        // The pointer follows the spilled parameter pointer too, so
+        // a wide call takes exactly two.
+        let (params, results) = core_type(&signature(5, u32_result()), LowerKind::Async);
+        assert_eq!(params, vec![CoreType::I32, CoreType::I32]);
+        assert_eq!(results, vec![CoreType::I32]);
+    }
+
+    #[wcmp_macros::test]
+    fn it_gives_an_asynchronous_lower_without_a_result_no_return_pointer() {
+        // With no result there is nothing to write back, so the
+        // parameters stand alone and the status word is still the
+        // one `i32` the call returns.
+        let (params, results) = core_type(&signature(2, None), LowerKind::Async);
+        assert_eq!(params, vec![CoreType::I32; 2]);
+        assert_eq!(results, vec![CoreType::I32]);
+    }
+
+    #[wcmp_macros::test]
+    fn it_leaves_the_signature_of_a_synchronous_lower_unchanged() {
+        // The synchronous lower keeps the canonical ABI's ordinary
+        // limits: up to sixteen flat parameters, the result in a
+        // flat slot, and no status word.
+        let (params, results) = core_type(&signature(5, u32_result()), LowerKind::Sync);
+        assert_eq!(params, vec![CoreType::I32; 5]);
+        assert_eq!(results, vec![CoreType::I32]);
+
+        let (params, results) = core_type(&signature(0, None), LowerKind::Sync);
+        assert_eq!(params, Vec::new());
+        assert_eq!(results, Vec::new());
+
+        // Seventeen slots are one too many, and the tuple spills.
+        let (params, results) = core_type(&signature(17, None), LowerKind::Sync);
+        assert_eq!(params, vec![CoreType::I32]);
+        assert_eq!(results, Vec::new());
+    }
 }

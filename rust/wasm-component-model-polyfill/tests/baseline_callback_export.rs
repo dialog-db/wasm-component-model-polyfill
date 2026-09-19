@@ -19,8 +19,8 @@
 //! fails that driver rather than the call.
 //!
 //! The stackful form of the lift, the one with no callback, is
-//! refused at translation, and so is an `async` function type on an
-//! import: no host function the polyfill registers can satisfy one.
+//! refused at translation: the polyfill runs the guest on the one
+//! real stack and cannot resume an export suspended mid-call.
 
 #![cfg(test)]
 
@@ -244,23 +244,6 @@ const STACKFUL_EXPORT: &[u8] = component!(
       (core instance $i (instantiate $m))
       (func (export "answer") async (param "x" u32) (result u32)
         (canon lift (core func $i "answer") async)))
-    "#
-);
-
-/// A component that imports an `async` function at the root.
-const ASYNC_IMPORT: &[u8] = component!(
-    r#"
-    (component
-      (import "answer" (func $answer async (param "x" u32) (result u32))))
-    "#
-);
-
-/// A component that imports an `async` function inside an interface.
-const ASYNC_IMPORT_IN_AN_INTERFACE: &[u8] = component!(
-    r#"
-    (component
-      (import "pdd-tests:host/answers@0.1.0" (instance
-        (export "answer" (func async (param "x" u32) (result u32))))))
     "#
 );
 
@@ -759,28 +742,6 @@ async fn it_refuses_a_stackful_asynchronous_lift() {
         .expect_err("the stackful lift is refused");
     assert!(
         matches!(&err, Error::Unsupported { feature } if feature.contains("stackful")),
-        "expected Error::Unsupported, got {err:?}"
-    );
-}
-
-#[wcmp_macros::test]
-async fn it_refuses_an_asynchronous_function_type_on_an_import() {
-    // No host function of this design returns its result through a
-    // task, so an `async` import is refused where it is listed —
-    // whether the import is the function or an interface holding it.
-    let err = parse(ASYNC_IMPORT)
-        .await
-        .expect_err("the asynchronous import is refused");
-    assert!(
-        matches!(&err, Error::Unsupported { feature } if feature.contains("on imports")),
-        "expected Error::Unsupported, got {err:?}"
-    );
-
-    let err = parse(ASYNC_IMPORT_IN_AN_INTERFACE)
-        .await
-        .expect_err("the asynchronous import is refused inside an interface");
-    assert!(
-        matches!(&err, Error::Unsupported { feature } if feature.contains("on imports")),
         "expected Error::Unsupported, got {err:?}"
     );
 }
