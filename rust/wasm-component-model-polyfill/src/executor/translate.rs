@@ -24,7 +24,7 @@ use wasmtime_environ::component::{
 use wasmtime_environ::prelude::Error as TranslatorError;
 use wasmtime_environ::wasmparser::Validator;
 use wasmtime_environ::{
-    EntityIndex as EnvironEntityIndex, ScopeVec, Tunables, WasmError, WasmValType,
+    EntityIndex as EnvironEntityIndex, ScopeVec, Tunables, WasmError, WasmHeapType, WasmValType,
 };
 
 use crate::abi::layout::FlatType;
@@ -37,10 +37,10 @@ use crate::error::{Error, Result};
 use crate::module::Module;
 
 use super::ir::{
-    CanonOptions, CoreInstanceExport, CoreSignature, CoreSourceItem, DataModel, EntityIndex,
-    ExecutorIr, ExportSpec, ImportSource, Initializer, LoweringSpec, ModuleEntry, ModuleExportSpec,
-    ModuleSource, NamedImportSource, ResourceSpec, ResourceTableSpec, StringEncoding,
-    TrampolineSpec, TranscodeOp,
+    CanonOptions, CoreInstanceExport, CoreParameter, CoreSignature, CoreSourceItem, DataModel,
+    EntityIndex, ExecutorIr, ExportSpec, ImportSource, Initializer, LoweringSpec, ModuleEntry,
+    ModuleExportSpec, ModuleSource, NamedImportSource, ResourceSpec, ResourceTableSpec,
+    StringEncoding, TrampolineSpec, TranscodeOp,
 };
 
 /// What the trampoline pre-walk decided about one trampoline.
@@ -254,6 +254,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 results, options, ..
             } => TrampolineSpec::TaskReturn {
                 result: projector.result_tuple(*results)?,
+                result_tuple: results.as_u32() as usize,
                 options: lift_canon_options(canon_options(&translation, *options)?)?,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
@@ -290,6 +291,28 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
             // caller that may be told a cancellation is pending,
             // and nothing in this design makes one pending, so the
             // built-in answers zero either way.
+            // The prepare-and-start pair of a fused adapter whose
+            // lower or lift is asynchronous. Prepare names the
+            // memory the callee's lift declared, which the callee's
+            // `task.return` has to name too; everything else about
+            // the call travels as an argument, the two generated
+            // functions as `funcref`s among them.
+            Trampoline::PrepareCall { memory } => TrampolineSpec::PrepareCall {
+                memory: memory.map(|slot| slot.as_u32() as usize),
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            // A synchronous start reaches an asynchronously lifted
+            // callee alone, and the callback is what the callee's
+            // status word is handed to. A lift that named none is
+            // the stackful form, which the polyfill refuses.
+            Trampoline::SyncStartCall { callback } => TrampolineSpec::SyncStartCall {
+                callback: callback.map(|slot| slot.as_u32() as usize).ok_or_else(|| {
+                    Error::unsupported(
+                        "stackful asynchronous lifts (`canon lift async` without a callback)",
+                    )
+                })?,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
             Trampoline::ThreadYield { instance, .. } => TrampolineSpec::ThreadYield {
                 instance: instance.as_u32() as usize,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
@@ -505,13 +528,27 @@ fn core_signature(
     let func = component_types.module_types()[interned].unwrap_func();
     let mut params = Vec::with_capacity(func.params().len());
     for ty in func.params() {
-        params.push(lift_core_val_type(ty)?);
+        params.push(lift_core_parameter(ty)?);
     }
     let mut results = Vec::with_capacity(func.results().len());
     for ty in func.results() {
         results.push(lift_core_val_type(ty)?);
     }
     Ok(CoreSignature { params, results })
+}
+
+/// Project one parameter of an intrinsic's core signature. A
+/// `funcref` is a parameter of the prepare-and-start intrinsics
+/// alone, which carry the two functions the adapter generated for a
+/// call and the callee's own core function; every other reference
+/// type is refused.
+fn lift_core_parameter(ty: &WasmValType) -> Result<CoreParameter> {
+    match ty {
+        WasmValType::Ref(reference) if reference.heap_type == WasmHeapType::Func => {
+            Ok(CoreParameter::FuncRef)
+        }
+        other => lift_core_val_type(other).map(CoreParameter::Value),
+    }
 }
 
 fn lift_core_val_type(ty: &WasmValType) -> Result<FlatType> {
@@ -807,7 +844,7 @@ impl ProjectionState {
             params: intrinsic
                 .core_params()
                 .iter()
-                .map(lift_core_val_type)
+                .map(lift_core_parameter)
                 .collect::<Result<Vec<_>>>()?,
             results: intrinsic
                 .core_results()

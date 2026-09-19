@@ -208,13 +208,13 @@ impl Func {
             },
         );
 
-        // A synchronous export's task ignores the entry gate, as the
-        // reference states: the gate applies to a task whose function
-        // type is `async`, and a call into such an export is refused
-        // above. The exclusive flag is the reference's
+        // A synchronous export of a synchronous function ignores the
+        // entry gate, as the reference states: the gate applies to a
+        // task whose function type is `async`, which a synchronous
+        // lift can carry. The exclusive flag is the reference's
         // `not opts.async or opts.callback`, which is true here; the
         // gate reads it only for a task that does wait at it.
-        store.start_export_thread(task, instance_id, false, true, item)?;
+        store.start_export_thread(task, instance_id, self.signature.async_, true, item)?;
 
         Driver::new(store, Some(task), move |_store, _waker| {
             outcome.lock().ok().and_then(|mut slot| slot.take())
@@ -395,14 +395,20 @@ impl Func {
         options: &BoundaryOptions,
     ) -> Result<Box<[Val]>> {
         store.enter_export_task(task)?;
-        // The export's function type is synchronous — a call into an
-        // asynchronous export is refused above — so the call must
-        // return before its instance may block. The flag is held for
-        // the length of the call, as the enter intrinsic holds it
-        // for a synchronous call between two components, and the
-        // task's exit below puts it back whichever way the call
-        // went.
-        let outcome = match store.hold_may_not_suspend(task) {
+        // A host call into a sync-typed export must return before its
+        // instance may block, so the flag is held for the length of
+        // the call, as the enter intrinsic holds it for a synchronous
+        // call between two components; the task's exit below puts it
+        // back whichever way the call went. An async-typed export
+        // lifted synchronously is allowed to block, and the flag
+        // stays as it was: the reference lets such a callee give way
+        // while its own caller waits.
+        let held = if self.signature.async_ {
+            Ok(())
+        } else {
+            store.hold_may_not_suspend(task)
+        };
+        let outcome = match held {
             Ok(()) => self.call_in_task(task, instance, store, args, options),
             Err(err) => Err(err),
         };

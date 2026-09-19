@@ -73,3 +73,40 @@ core module of a component before it constructs the runtime layer's `Module`.
 The patch adds `wasm-bindgen-futures` for the promise-to-future bridge. The
 proposal for upstream is an asynchronous constructor on `WasmModule` itself, so
 the handoff through the engine becomes unnecessary.
+
+## 7. Function references as host-function arguments (`src/lib.rs`, `src/func.rs`)
+
+Upstream's `value_from_js_typed` refuses a `funcref`, so a host function
+declared with one panics on its first call. The prepare-and-start intrinsics a
+fused adapter imports carry the two functions the adapter generated for a call,
+and the callee's core function, as `funcref` parameters. The patch converts
+such an argument into a `Func` recorded in the store, so the host can call it
+back.
+
+The JS API hands over the function object alone and says nothing about its
+signature, so the record is marked as carrying none. A call to such a function
+reads its result count and types off the slice the caller supplied, with one
+rule on top: a `BigInt` is always an `i64`, because the JS API represents that
+core type and no other as one. A caller that cannot name a result type asks
+for an `f64` and reads every number back faithfully, since a number passed on
+to another wasm call reaches an `i32`, an `f32`, or an `f64` through the JS
+API's own coercion. A null reference converts to `Val::FuncRef(None)`.
+
+## 8. Host functions of more than eight parameters (`src/func.rs`)
+
+Upstream builds the JS shim of a host function with `Closure::new`, which
+`wasm_bindgen` implements for at most eight arguments, and reaches
+`unimplemented!()` above that. The prepare-call intrinsic takes eight fixed
+arguments followed by the caller's own flat arguments, which the canonical ABI
+allows sixteen of, so the limit is reached by any call between components that
+passes an argument. The patch adds a variadic wrapper: the closure takes one
+JS array, and a small JS shim built with `Function::new_with_args` collects the
+call's `arguments` into it, so the guest still imports an ordinary function of
+the declared arity.
+
+The shim is built with `Function::new_with_args`, which is `new Function` under
+another name, so a page whose content-security policy forbids it would need the
+shim as a `wasm_bindgen(inline_js)` snippet instead. A newer `js-sys` than the
+one this workspace locks gates that constructor behind its `unsafe-eval`
+feature, which a bump would have to enable. The proposal for upstream is
+closures of arbitrary arity, which would remove the shim altogether.

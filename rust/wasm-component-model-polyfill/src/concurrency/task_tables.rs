@@ -46,6 +46,7 @@ pub struct TaskTables {
     waitable_sets: RecordTable<WaitableSet>,
     instances: Vec<InstanceRecord>,
     scopes: Vec<Scope>,
+    prepared_call: Option<SubtaskId>,
 }
 
 impl TaskTables {
@@ -58,7 +59,27 @@ impl TaskTables {
             waitable_sets: RecordTable::new(),
             instances: Vec::new(),
             scopes: Vec::new(),
+            prepared_call: None,
         }
+    }
+
+    /// Hold `subtask` as the call the prepare intrinsic just set up,
+    /// for the start intrinsic that follows it.
+    ///
+    /// One slot suffices. A fused adapter calls the two intrinsics
+    /// back to back, with nothing between them but the constants of
+    /// the start call, so no second prepare can reach this before
+    /// the start of the first has taken it out. A call the callee
+    /// makes in its turn prepares from inside the start, by which
+    /// time the slot is empty again.
+    pub fn prepare_call(&mut self, subtask: SubtaskId) {
+        self.prepared_call = Some(subtask);
+    }
+
+    /// Take the call the prepare intrinsic set up, which is what a
+    /// start intrinsic runs. `None` when no prepare preceded it.
+    pub fn take_prepared_call(&mut self) -> Option<SubtaskId> {
+        self.prepared_call.take()
     }
 
     /// Add the record of a fresh component instance and return its

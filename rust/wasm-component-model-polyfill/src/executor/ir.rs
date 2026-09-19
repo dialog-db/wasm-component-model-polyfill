@@ -566,6 +566,11 @@ pub enum TrampolineSpec {
         /// unless it equals the result of the function the current
         /// task is a call into.
         result: Option<ValueType>,
+        /// The interned index of that same result tuple. A task the
+        /// prepare intrinsic created carries no projected function
+        /// type, because the adapter names the type by index at run
+        /// time, so the comparison for such a task is of indices.
+        result_tuple: usize,
         /// The canon options the built-in was declared with: the
         /// lift of the result runs under them, and their string
         /// encoding and memory must equal the ones the task's own
@@ -623,6 +628,33 @@ pub enum TrampolineSpec {
         /// The core signature the guest imports.
         signature: CoreSignature,
     },
+    /// The `prepare-call` intrinsic of a fused adapter whose lower
+    /// or lift is asynchronous: it creates the callee's task and the
+    /// caller's subtask, and records on the subtask the two
+    /// functions the adapter generated for the call.
+    PrepareCall {
+        /// The runtime memory slot the callee's lift named, which
+        /// the callee's `task.return` must name too. `None` when the
+        /// lift named no memory.
+        memory: Option<usize>,
+        /// The core signature the adapter imports: the two
+        /// `funcref`s, the six numbers the protocol carries, and
+        /// then the caller's own flat arguments.
+        signature: CoreSignature,
+    },
+    /// The `sync-start-call` intrinsic of a fused adapter whose
+    /// lower is synchronous and whose lift is asynchronous: it runs
+    /// the prepared call and blocks the caller until it resolves.
+    SyncStartCall {
+        /// The runtime callback slot of the callee's lift. The
+        /// stackful form of `canon lift async` names none, and
+        /// translation refuses it, so the slot is always filled here.
+        callback: usize,
+        /// The core signature the adapter imports: the callee's
+        /// `funcref` and its flat parameter count in, and the
+        /// caller's flat results out.
+        signature: CoreSignature,
+    },
     /// The `thread.yield` built-in: the calling thread gives way to
     /// the work the store already holds, and the built-in returns
     /// zero.
@@ -640,9 +672,25 @@ pub enum TrampolineSpec {
 #[derive(Clone, Debug)]
 pub struct CoreSignature {
     /// The parameter types, in order.
-    pub params: Vec<FlatType>,
+    pub params: Vec<CoreParameter>,
     /// The result types, in order.
     pub results: Vec<FlatType>,
+}
+
+/// One parameter of an intrinsic's core signature.
+///
+/// Every intrinsic but the prepare-and-start pair takes flat
+/// canonical-ABI values alone. The prepare intrinsic carries the two
+/// functions the adapter generated for the call, and a start
+/// intrinsic carries the callee's core function, each as a
+/// `funcref`, so a parameter is one or the other. No intrinsic
+/// returns a `funcref`, so a result is always a flat value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CoreParameter {
+    /// A flat canonical-ABI value.
+    Value(FlatType),
+    /// A function reference.
+    FuncRef,
 }
 
 /// The conversion a [`TrampolineSpec::Transcoder`] performs. The

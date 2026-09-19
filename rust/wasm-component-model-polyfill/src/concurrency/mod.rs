@@ -75,7 +75,9 @@
 //! baseline is the case of one task per instance at a time.
 
 mod accessor;
+mod call_bridge;
 mod call_status;
+mod caller_kind;
 mod driver;
 mod event;
 mod event_code;
@@ -120,7 +122,9 @@ mod yield_wake;
 // `TaskTables`, so only the names other modules spell are
 // re-exported here.
 pub use accessor::Accessor;
+pub use call_bridge::CallBridge;
 pub use call_status::CallStatus;
+pub use caller_kind::CallerKind;
 pub use driver::Driver;
 pub use event::Event;
 pub use event_slot::EventSlot;

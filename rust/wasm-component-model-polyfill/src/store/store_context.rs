@@ -747,6 +747,42 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         Ok(())
     }
 
+    /// Queue the item the scheduler's switch slot holds as the start
+    /// of `task`'s implicit thread, past the entry gate of
+    /// `instance`. A task the gate holds clears the slot and waits
+    /// at the gate in arrival order. Workspace-internal.
+    pub fn start_switched_export_thread(
+        &mut self,
+        task: TaskId,
+        instance: InstanceId,
+        async_function: bool,
+        needs_exclusive: bool,
+    ) -> Result<()> {
+        let tables = self.tables_handle();
+        let mut guard = Self::lock(&tables)?;
+        self.scheduler_mut().enter_implicit_thread_in_switch_slot(
+            &mut guard.tasks,
+            task,
+            instance,
+            async_function,
+            needs_exclusive,
+        );
+        Ok(())
+    }
+
+    /// Run the one item the scheduler's switch slot holds, and
+    /// nothing else. This is the nested turn restricted to the
+    /// thread the scheduler must switch to next, which is what the
+    /// trampoline of a call between two components runs from inside
+    /// the caller's frame. Does nothing when the slot is empty.
+    /// Workspace-internal.
+    pub fn run_switch_slot(&mut self) -> Result<()> {
+        let Some(item) = self.scheduler_mut().take_switch_slot() else {
+            return Ok(());
+        };
+        item.run(self)
+    }
+
     /// Give an export's task a channel to resolve through and hand
     /// the caller its half.
     ///

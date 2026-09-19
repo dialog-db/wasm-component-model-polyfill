@@ -179,18 +179,9 @@ impl<T: 'static> Scheduler<T> {
     }
 
     /// Start the implicit thread of `task`, which belongs to
-    /// `instance`, by running `item`.
-    ///
-    /// This is the reference's `enter_implicit_thread`. A task of a
-    /// synchronous export ignores the gate and becomes ready at once,
-    /// as the reference states. A task of an `async` export waits at
-    /// the gate when the instance's backpressure is set, when it
-    /// needs the exclusive thread and one is set, or when tasks are
-    /// already waiting — the last so that a fresh arrival cannot
-    /// overtake a task that is already queued. `needs_exclusive` is
-    /// the reference's `not opts.async or opts.callback`: a task
-    /// lifted synchronously and a callback task each need the
-    /// instance to themselves.
+    /// `instance`, by queueing `item` as fresh readiness once the
+    /// entry gate lets the task through. The gate rules are the ones
+    /// [`past_entry_gate`](Self::past_entry_gate) states.
     pub fn enter_implicit_thread(
         &mut self,
         tables: &mut TaskTables,
@@ -200,14 +191,81 @@ impl<T: 'static> Scheduler<T> {
         needs_exclusive: bool,
         item: Item<T>,
     ) {
+        if let Some(item) = self.past_entry_gate(
+            tables,
+            task,
+            instance,
+            async_function,
+            needs_exclusive,
+            item,
+        ) {
+            self.high_priority.push_back(item);
+        }
+    }
+
+    /// Start the implicit thread of `task` with the item the switch
+    /// slot holds, which is what a call between two components does:
+    /// the callee runs next, from inside the trampoline the caller
+    /// is in.
+    ///
+    /// The gate rules are the ones
+    /// [`enter_implicit_thread`](Self::enter_implicit_thread)
+    /// states. A task the gate lets through leaves its item in the
+    /// switch slot, so the caller's trampoline runs it. A task the
+    /// gate holds clears the slot: the item is not ready, and it
+    /// waits at the gate in arrival order like any other. Does
+    /// nothing when the slot is empty.
+    pub fn enter_implicit_thread_in_switch_slot(
+        &mut self,
+        tables: &mut TaskTables,
+        task: TaskId,
+        instance: InstanceId,
+        async_function: bool,
+        needs_exclusive: bool,
+    ) {
+        let Some(item) = self.switch_slot.take() else {
+            return;
+        };
+        self.switch_slot = self.past_entry_gate(
+            tables,
+            task,
+            instance,
+            async_function,
+            needs_exclusive,
+            item,
+        );
+    }
+
+    /// Take `item` through the entry gate of `instance`: hand it
+    /// back when the gate lets the task through, and queue it at the
+    /// gate when the gate holds it.
+    ///
+    /// This is the reference's `enter_implicit_thread`. A task of a
+    /// synchronous export of a synchronous function ignores the gate
+    /// and becomes ready at once, as the reference states. A task of
+    /// an `async`-typed function waits at the gate when the
+    /// instance's backpressure is set, when it needs the exclusive
+    /// thread and one is set, or when tasks are already waiting —
+    /// the last so that a fresh arrival cannot overtake a task that
+    /// is already queued. `needs_exclusive` is the reference's `not
+    /// opts.async or opts.callback`: a task lifted synchronously and
+    /// a callback task each need the instance to themselves.
+    fn past_entry_gate(
+        &mut self,
+        tables: &mut TaskTables,
+        task: TaskId,
+        instance: InstanceId,
+        async_function: bool,
+        needs_exclusive: bool,
+        item: Item<T>,
+    ) -> Option<Item<T>> {
         // The gate is the one place that knows which instance a
         // task's start belongs to, so it is where the item learns
         // it. A turn run for a task that must not block asks each
         // item that question.
         let item = item.in_instance(instance);
         if !async_function {
-            self.high_priority.push_back(item);
-            return;
+            return Some(item);
         }
         let waiting = tables
             .instance(instance)
@@ -223,10 +281,17 @@ impl<T: 'static> Scheduler<T> {
                 needs_exclusive,
                 item,
             });
-            return;
+            return None;
         }
         Self::claim_exclusive(tables, task, instance, needs_exclusive);
-        self.high_priority.push_back(item);
+        Some(item)
+    }
+
+    /// Take the item the switch slot holds, which is what the
+    /// trampoline of a call between two components runs. `None` when
+    /// the entry gate took the item instead.
+    pub fn take_switch_slot(&mut self) -> Option<Item<T>> {
+        self.switch_slot.take()
     }
 
     /// Release every task the entry gate can let through, in arrival

@@ -28,6 +28,12 @@
 //! - The two context slots of the current thread, which an adapter
 //!   saves and restores around the callee.
 //!
+//! An adapter whose lower or lift is asynchronous imports two more:
+//! the prepare intrinsic of [`super::prepare_call`] and one of the
+//! start intrinsics, of which [`super::sync_start_call`] is the
+//! synchronous one. They are large enough to have modules of their
+//! own, and they are the only intrinsics that take a `funcref`.
+//!
 //! A guest module imports two more host functions here without an
 //! adapter in between: the `backpressure.inc` and `backpressure.dec`
 //! built-ins, which raise and lower the counter that shuts one
@@ -49,7 +55,7 @@ use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::transcode::transcode;
 use crate::concurrency::{InstanceId, Scope, ThreadId};
 use crate::error::{Error, Result, TaskCause};
-use crate::executor::ir::{CoreSignature, TranscodeOp};
+use crate::executor::ir::{CoreParameter, CoreSignature, TranscodeOp};
 use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime};
 use crate::store::StoreContext;
 
@@ -128,9 +134,16 @@ fn current_thread(guard: &HandleTables) -> anyhow::Result<ThreadId> {
 /// The runtime-layer function type for a [`CoreSignature`].
 pub fn core_func_type(signature: &CoreSignature) -> FuncType {
     FuncType::new(
-        signature.params.iter().copied().map(core_type_of_flat),
+        signature.params.iter().copied().map(core_type_of_parameter),
         signature.results.iter().copied().map(core_type_of_flat),
     )
+}
+
+fn core_type_of_parameter(parameter: CoreParameter) -> CoreType {
+    match parameter {
+        CoreParameter::Value(slot) => core_type_of_flat(slot),
+        CoreParameter::FuncRef => CoreType::FuncRef,
+    }
 }
 
 fn core_type_of_flat(slot: FlatType) -> CoreType {

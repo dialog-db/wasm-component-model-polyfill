@@ -31,6 +31,18 @@
 //! that has already resolved cannot resolve again, and a task that
 //! still owes a borrow cannot return, which is the scope-exit rule
 //! every other end of a call applies.
+//!
+//! A task the prepare intrinsic of a fused adapter created takes a
+//! different crossing. The adapter generated a return function for
+//! the call, and running that function is the crossing: it lowers
+//! the callee's result straight into the caller's memory, and the
+//! built-in lifts no value of the host's at all. The reference calls
+//! that moment `on_resolve`. Such a task also compares its result
+//! type by the interned index of the tuple the adapter named, since
+//! the adapter names the type at run time and the polyfill has no
+//! projection of it; that is the comparison Wasmtime makes for the
+//! same call. The two traps that follow the lift come before the
+//! crossing there, because the return function must not run twice.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -41,12 +53,15 @@ use wasm_runtime_layer::{
 use crate::abi::context::BoundaryContext;
 use crate::abi::flatten::lift_from_flat_slots;
 use crate::abi::instance::BoundaryInstance;
-use crate::abi::layout::{MAX_FLAT_PARAMS, flat_count};
+use crate::abi::layout::{FlatType, MAX_FLAT_PARAMS, flat_count};
 use crate::abi::lift;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::backend::Backend;
-use crate::concurrency::{InstanceId, Scope, TaskId, TaskState};
-use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, ReturnMismatchKind, TaskCause};
+use crate::concurrency::{InstanceId, Scope, SubtaskId, TaskId, TaskState};
+use crate::error::{
+    AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result, ReturnMismatchKind,
+    TaskCause,
+};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CanonOptions, CoreSignature};
 use crate::resource::HandleTables;
@@ -61,6 +76,7 @@ use crate::value::Val;
 pub fn build_task_return<T: 'static>(
     store: &mut StoreContext<'_, T>,
     result: Option<ValueType>,
+    result_tuple: usize,
     options: &CanonOptions,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
@@ -75,6 +91,7 @@ pub fn build_task_return<T: 'static>(
                 store_ctx,
                 &declared,
                 result.as_ref(),
+                result_tuple,
                 &abi_state,
                 &tables,
                 args,
@@ -90,12 +107,14 @@ fn task_return<T: 'static>(
     mut store_ctx: RuntimeContextMut<'_, StoreData<T>, Backend>,
     declared: &CanonOptions,
     result: Option<&ValueType>,
+    result_tuple: usize,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     tables: &Arc<Mutex<HandleTables>>,
     args: &[RuntimeVal],
 ) -> Result<()> {
-    let (task, task_instance, may_leave) = current_task(tables)?;
-    if !may_leave {
+    let current = current_task(tables)?;
+    let (task, task_instance) = (current.task, current.instance);
+    if !current.may_leave {
         return Err(Error::Task(TaskCause::CannotLeave));
     }
 
@@ -117,8 +136,28 @@ fn task_return<T: 'static>(
         Some(options) if options.async_ => options,
         _ => return Err(Error::Task(TaskCause::ReturnFromSynchronousTask)),
     };
-    if let Some(kind) = mismatch(declared, result, &context, &lift_options) {
+    // The result type is compared structurally for a task whose
+    // function type the polyfill projected, and by the interned
+    // index of the result tuple for a task the prepare intrinsic
+    // created. An adapter names that type by index at run time and
+    // there is nothing to project it against, so the index is what
+    // travels; it is also the comparison Wasmtime makes for the same
+    // call.
+    let result_matches = match current.result_tuple {
+        Some(prepared) => prepared == result_tuple,
+        None => result.cloned() == context.task_result_type(),
+    };
+    if let Some(kind) = mismatch(result_matches, declared, &lift_options) {
         return Err(Error::Task(TaskCause::ReturnMismatch { kind }));
+    }
+
+    // A task the prepare intrinsic created does not lift its result
+    // into a value of the host's. The adapter generated a return
+    // function for the call, and running it is the crossing: it
+    // lowers the callee's result straight into the caller's memory.
+    if let Some(subtask) = current.subtask {
+        drop(context);
+        return cross_through_return_function(&mut store_ctx, tables, task, subtask, result, args);
     }
 
     let value = match result {
@@ -143,8 +182,24 @@ fn task_return<T: 'static>(
     resolve(tables, task, value, result)
 }
 
-/// The task the built-in resolves, the instance that task belongs
-/// to, and whether that instance may be left.
+/// What the built-in reads off the task it is about to resolve.
+struct Current {
+    /// The task itself.
+    task: TaskId,
+    /// The component instance the task belongs to.
+    instance: InstanceId,
+    /// Whether that instance may be left.
+    may_leave: bool,
+    /// The subtask of the call the task is the callee of, for a call
+    /// between two components the prepare intrinsic set up. `None`
+    /// for a call from the host.
+    subtask: Option<SubtaskId>,
+    /// The interned result tuple the adapter named for such a call.
+    result_tuple: Option<usize>,
+}
+
+/// The task the built-in resolves, with what the traps below
+/// consult.
 ///
 /// The task is the innermost one on the store's stack of current
 /// scopes, which is the reference's current task. For a
@@ -154,24 +209,154 @@ fn task_return<T: 'static>(
 /// component instance, the destructor task of a resource the host
 /// implements, runs host code only, so guest code never reaches the
 /// built-in from it; that case is an internal error, not a trap.
-fn current_task(tables: &Arc<Mutex<HandleTables>>) -> Result<(TaskId, InstanceId, bool)> {
+fn current_task(tables: &Arc<Mutex<HandleTables>>) -> Result<Current> {
     let guard = lock(tables)?;
     let task = guard
         .tasks
         .current_task()
         .ok_or_else(|| Error::internal("`task.return` ran with no task on the stack"))?;
-    let instance = guard
+    let record = guard
         .tasks
         .task(task)
-        .map(|record| record.instance)
-        .ok_or_else(|| Error::internal("the current task has no record"))?
+        .ok_or_else(|| Error::internal("the current task has no record"))?;
+    let (subtask, result_tuple) = (record.subtask, record.result_tuple);
+    let instance = record
+        .instance
         .ok_or_else(|| Error::internal("the current task belongs to no component instance"))?;
     let may_leave = guard
         .tasks
         .instance(instance)
         .map(|record| record.may_leave)
         .ok_or_else(|| Error::internal("the current task names no instance record"))?;
-    Ok((task, instance, may_leave))
+    Ok(Current {
+        task,
+        instance,
+        may_leave,
+        subtask,
+        result_tuple,
+    })
+}
+
+/// Cross the callee's result into the caller by running the return
+/// function the fused adapter generated for the call.
+///
+/// This is the reference's `on_resolve`, and it runs where the
+/// reference runs it: at the callee's `task.return`, before the
+/// callee's callback continues. The function takes the built-in's
+/// own arguments, with the caller's return pointer appended when the
+/// caller takes its result through one, and gives back the caller's
+/// flat results, which the start intrinsic hands to the caller as it
+/// returns.
+///
+/// The function is the caller's code, so it runs with the caller's
+/// task as the current scope. The callee's scope goes back on the
+/// stack afterwards, whichever way the crossing went, because the
+/// callee's core function or callback is still below this frame.
+fn cross_through_return_function<T: 'static>(
+    store_ctx: &mut RuntimeContextMut<'_, StoreData<T>, Backend>,
+    tables: &Arc<Mutex<HandleTables>>,
+    task: TaskId,
+    subtask: SubtaskId,
+    result: Option<&ValueType>,
+    args: &[RuntimeVal],
+) -> Result<()> {
+    // The two traps of a resolution come before the crossing here,
+    // where the reference and Wasmtime both put them: a second
+    // `task.return` must not run the return function twice, and a
+    // task that still owes a borrow must not hand its result on.
+    let (return_, arguments, mut results, caller) = {
+        let guard = lock(tables)?;
+        let record = guard
+            .tasks
+            .task(task)
+            .ok_or_else(|| Error::internal("the current task has no record"))?;
+        if record.state == TaskState::Resolved {
+            return Err(Error::Task(TaskCause::ReturnedTwice));
+        }
+        if record.num_borrows > 0 {
+            return Err(outstanding_borrows(record.num_borrows, result));
+        }
+        let bridge = guard
+            .tasks
+            .subtask(subtask)
+            .and_then(|record| record.bridge.as_ref())
+            .ok_or_else(|| Error::internal("a prepared call carries no generated functions"))?;
+        let mut arguments = args.to_vec();
+        if bridge.caller.has_return_pointer() {
+            arguments.push(
+                bridge
+                    .arguments
+                    .last()
+                    .cloned()
+                    .ok_or_else(|| Error::internal("a prepared call passed no return pointer"))?,
+            );
+        }
+        let results: Vec<RuntimeVal> = bridge.caller_results.iter().copied().map(zero).collect();
+        let caller = guard
+            .tasks
+            .thread(bridge.caller_thread)
+            .map(|thread| thread.task);
+        (bridge.return_.clone(), arguments, results, caller)
+    };
+
+    // The function is the caller's code, so the callee's scope comes
+    // off the stack for the crossing and the caller's task is what
+    // the crossing counts against. For a synchronous lower the
+    // caller is already the scope under the callee; a callee resumed
+    // from a queued item has nothing of the caller's under it, and
+    // the caller's scope is pushed for the crossing alone.
+    let pushed = {
+        let mut guard = lock(tables)?;
+        guard.leave_task_scope(task);
+        match caller {
+            Some(caller) if guard.tasks.current_task() != Some(caller) => {
+                guard.tasks.push_task_scope(caller);
+                true
+            }
+            _ => false,
+        }
+    };
+    let crossed = return_
+        .call(store_ctx.as_context_mut(), &arguments, &mut results)
+        .map_err(|err| Error::from(InstantiationError::SubstrateFailure(err)));
+    {
+        // The callee's scope goes back whichever way the crossing
+        // went: its core function or its callback is still on the
+        // stack below this frame.
+        let mut guard = lock(tables)?;
+        if pushed {
+            guard.tasks.pop_scope();
+        }
+        guard.tasks.push_task_scope(task);
+    }
+    crossed?;
+
+    let mut guard = lock(tables)?;
+    if let Some(bridge) = guard
+        .tasks
+        .subtask_mut(subtask)
+        .and_then(|record| record.bridge.as_mut())
+    {
+        bridge.flat_results = results;
+    }
+    guard.tasks.subtask_returned(subtask)?;
+    guard
+        .tasks
+        .task_mut(task)
+        .ok_or_else(|| Error::internal("the current task has no record"))?
+        .resolve(None);
+    Ok(())
+}
+
+/// A zero of one flat type, which is what a result slot the callee
+/// has yet to fill holds.
+fn zero(ty: FlatType) -> RuntimeVal {
+    match ty {
+        FlatType::I32 => RuntimeVal::I32(0),
+        FlatType::I64 => RuntimeVal::I64(0),
+        FlatType::F32 => RuntimeVal::F32(0.0),
+        FlatType::F64 => RuntimeVal::F64(0.0),
+    }
 }
 
 /// Store `value` as the task's result, once the lift has produced it.
@@ -205,13 +390,12 @@ fn resolve(
 /// Which of the three comparisons the built-in fails, or `None`
 /// when it passes all three. The order is the reference's: the
 /// result type, then the string encoding, then the memory.
-fn mismatch<T: 'static>(
+fn mismatch(
+    result_matches: bool,
     declared: &CanonOptions,
-    result: Option<&ValueType>,
-    context: &BoundaryContext<'_, T>,
     lift_options: &CanonOptions,
 ) -> Option<ReturnMismatchKind> {
-    if result.cloned() != context.task_result_type() {
+    if !result_matches {
         Some(ReturnMismatchKind::ResultType)
     } else if declared.string_encoding != lift_options.string_encoding {
         Some(ReturnMismatchKind::StringEncoding)
@@ -298,7 +482,7 @@ mod tests {
     use crate::component::FunctionType;
     use crate::concurrency::{InstanceId, TaskResult};
     use crate::engine::Engine;
-    use crate::executor::ir::{DataModel, StringEncoding};
+    use crate::executor::ir::{CoreParameter, DataModel, StringEncoding};
     use crate::resource::TableId;
     use crate::store::Store;
     use crate::types::{PrimitiveType, TupleType};
@@ -373,8 +557,11 @@ mod tests {
             let signature = CoreSignature {
                 params: match &result {
                     None => Vec::new(),
-                    Some(ty) if spills(ty) => vec![FlatType::I32],
-                    Some(ty) => flat_types(ty),
+                    Some(ty) if spills(ty) => vec![CoreParameter::Value(FlatType::I32)],
+                    Some(ty) => flat_types(ty)
+                        .into_iter()
+                        .map(CoreParameter::Value)
+                        .collect(),
                 },
                 results: Vec::new(),
             };
@@ -382,6 +569,7 @@ mod tests {
             let func = build_task_return(
                 &mut self.store.context(),
                 result,
+                0,
                 options,
                 &signature,
                 abi_state,

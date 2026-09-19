@@ -2,7 +2,9 @@
 
 use crate::resource::TableId;
 
+use super::call_bridge::CallBridge;
 use super::subtask_state::SubtaskState;
+use super::task_id::TaskId;
 use super::waitable_state::WaitableState;
 
 /// The record of one call out through an import.
@@ -36,6 +38,15 @@ pub struct Subtask {
     /// Nothing requests cancellation yet.
     #[allow(dead_code)]
     pub cancel_requested: bool,
+    /// The callee's task, for a call into another component's
+    /// export. `None` for a call into a host function, which has no
+    /// task of its own.
+    pub callee: Option<TaskId>,
+    /// The two functions the fused adapter generated for the call,
+    /// for a call the prepare intrinsic set up. `None` for a call
+    /// into a host function, where the polyfill lifts and lowers the
+    /// values itself.
+    pub bridge: Option<CallBridge>,
 }
 
 impl Subtask {
@@ -48,6 +59,8 @@ impl Subtask {
             resolve_delivered: false,
             waitable: WaitableState::new(),
             cancel_requested: false,
+            callee: None,
+            bridge: None,
         }
     }
 }

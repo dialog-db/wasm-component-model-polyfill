@@ -6,6 +6,7 @@ use crate::resource::TableId;
 use crate::value::Val;
 
 use super::instance_id::InstanceId;
+use super::subtask_id::SubtaskId;
 use super::task_result::TaskResult;
 use super::task_state::TaskState;
 use super::thread_id::ThreadId;
@@ -54,6 +55,20 @@ pub struct Task {
     pub lenders: Vec<(TableId, u32)>,
     /// Where the task's result goes.
     pub result: TaskResult,
+    /// The subtask of the call this task is the callee of, for a
+    /// call between two components the prepare intrinsic set up.
+    /// The callee's `task.return` reaches the return function of
+    /// the call through it. `None` for a call from the host and for
+    /// the task an adapter's enter intrinsic pushes.
+    pub subtask: Option<SubtaskId>,
+    /// The interned index of the result tuple the callee's lift
+    /// declared, as the adapter names it at run time. A prepared
+    /// call has no projected function type, so this is what the
+    /// callee's `task.return` compares its own declared type
+    /// against, which is the comparison Wasmtime makes for the same
+    /// call. `None` for every other task, whose function type is
+    /// known and compared structurally.
+    pub result_tuple: Option<usize>,
 }
 
 impl Task {
@@ -75,6 +90,8 @@ impl Task {
             threads: vec![implicit_thread],
             lenders: Vec::new(),
             result: TaskResult::Pending,
+            subtask: None,
+            result_tuple: None,
         }
     }
 

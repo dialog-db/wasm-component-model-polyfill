@@ -29,6 +29,8 @@ use crate::store::StoreContext;
 use crate::types::ResourceType;
 
 use super::ResourceDestructor;
+use super::build_prepare_call;
+use super::build_sync_start_call;
 use super::build_task_return;
 use super::build_thread_yield;
 use super::intrinsics::{
@@ -507,11 +509,13 @@ fn build_runtime_trampoline<T: 'static>(
         )),
         TrampolineSpec::TaskReturn {
             result,
+            result_tuple,
             options,
             signature,
         } => Ok(build_task_return(
             store,
             result.clone(),
+            *result_tuple,
             options,
             signature,
             abi_state.clone(),
@@ -552,6 +556,21 @@ fn build_runtime_trampoline<T: 'static>(
         } => Ok(build_waitable_join(
             store,
             *instance,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::PrepareCall { memory, signature } => Ok(build_prepare_call(
+            store,
+            *memory,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::SyncStartCall {
+            callback,
+            signature,
+        } => Ok(build_sync_start_call(
+            store,
+            *callback,
             signature,
             abi_state.clone(),
         )),

@@ -56,6 +56,7 @@ pub use table::Table;
 
 use self::{
     conversion::{FromJs, ToJs, ToStoredJs},
+    func::FuncInner,
     module::{ModuleInner, ParsedModule},
 };
 
@@ -423,9 +424,33 @@ impl FromJs for ValType {
     }
 }
 
+/// PATCH (wcmp): convert a JsValue for a call whose signature the
+/// backend does not know.
+///
+/// A function reference that reached the host as an argument carries
+/// no signature, so a result of a call to it has no declared type of
+/// its own. The slice the caller supplied says what the caller
+/// expects, and that is what the conversion follows, with one rule
+/// on top: a `BigInt` is always an `i64`, because the JS API
+/// represents that core type and no other as one. A caller that
+/// cannot name a result's type asks for an `f64` and reads back
+/// every number faithfully, since a number passed on to another wasm
+/// call reaches an `i32`, an `f32`, or an `f64` through the JS API's
+/// own coercion.
+pub(crate) fn value_from_js_untyped<T>(
+    store: &mut StoreInner<T>,
+    ty: &ValType,
+    value: JsValue,
+) -> Option<Val<Engine>> {
+    if value.is_bigint() {
+        return Some(Val::I64(i64::from_js(value)?));
+    }
+    value_from_js_typed(store, ty, value)
+}
+
 /// Convert the JsValue into a Value of the supplied type
 pub(crate) fn value_from_js_typed<T>(
-    _: &mut StoreInner<T>,
+    store: &mut StoreInner<T>,
     ty: &ValType,
     value: JsValue,
 ) -> Option<Val<Engine>> {
@@ -439,7 +464,22 @@ pub(crate) fn value_from_js_typed<T>(
             tracing::error!("v128 values are not supported in the js_wasm_runtime_layer backend");
             None
         }
-        ValType::FuncRef | ValType::ExternRef => {
+        // PATCH (wcmp): a function reference passed to a host
+        // function arrives as the JS object of an exported wasm
+        // function. The store records it so the host can call it
+        // back; the JS API carries no signature with it, so the
+        // record says so and the call takes its result types from
+        // the caller. A null reference stays null.
+        ValType::FuncRef => {
+            if value.is_null() || value.is_undefined() {
+                return Some(Val::FuncRef(None));
+            }
+            let function: js_sys::Function = value.dyn_into().ok()?;
+            Some(Val::FuncRef(Some(
+                store.insert_func(FuncInner::of_unknown_signature(function)),
+            )))
+        }
+        ValType::ExternRef => {
             #[cfg(feature = "tracing")]
             tracing::error!(
                 "conversion to a function or extern outside of a module is not permitted"
