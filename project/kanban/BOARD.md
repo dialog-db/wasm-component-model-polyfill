@@ -39,11 +39,10 @@ kanban-plugin: basic
 
 ## In Progress
 
-- [ ] [[7328e7]]
-
 ## Needs Review
 
 - [ ] [[83a089]]
+- [ ] [[7328e7]]
 - [ ] [[772afe]]
 - [ ] [[085569]]
 
