@@ -1,0 +1,18 @@
+---
+id: dd5efd
+title: The link rule refuses a mismatched registration kind
+type: feature
+blocked_by: [4305c8, 76d25c]
+labels: [PDD020, concurrency]
+created: 2026-09-19T06:40:54Z
+---
+
+## What to build
+In `check_function_item` in `src/linker/resolve.rs`, enforce Wasmtime 49's rule on the registration kind: an async-typed import (`FunctionType.async_` true) satisfied by `func_new` or `func_wrap` fails to link, and a sync-typed import satisfied by `func_new_concurrent` or `func_wrap_concurrent` fails to link. `LinkError` in `src/error.rs` gains two causes, one per mismatch, each rendering Wasmtime's message for it; take the text from Wasmtime 49's `crates/wasmtime/src/runtime/component/func/host.rs` and `linker.rs` at `v49.0.0-rc.1`, and pin it in the tests. A synchronous host function would serve an async-typed import correctly, since it resolves at once, so the rule is Wasmtime's choice rather than the reference's; the polyfill follows it so that a host's registrations move between the two unchanged, and the doc on the two causes says so. Both concurrent entries register and link for an async-typed import, and both synchronous entries keep linking for a sync-typed one.
+
+## Acceptance criteria
+- [ ] An async-typed import satisfied by `func_wrap` fails to link with Wasmtime's message, proved by a repository test.
+- [ ] A sync-typed import satisfied by `func_wrap_concurrent` fails to link with Wasmtime's other message, proved by a repository test.
+- [ ] Both `func_wrap_concurrent` and `func_new_concurrent` register and link for an async-typed import, proved by repository tests.
+- [ ] `lint` passes and `tests all` is green on both targets with the conformance summary unchanged.
+
