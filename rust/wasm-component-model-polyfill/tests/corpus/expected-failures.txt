@@ -548,7 +548,15 @@ wasmtime/async/error-context.wast:84 deferred-feature no definition named `A`
 wasmtime/async/error-context.wast:85 deferred-feature no instance to invoke
 wasmtime/async/error-context.wast:86 deferred-feature expected a trap `invalid debug message pointer`, got `no instance to invoke`
 wasmtime/async/exceptions.wast:73 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
+wasmtime/async/exceptions.wast:143 cascade no definition named `A`
+wasmtime/async/exceptions.wast:144 cascade expected a trap `thrown Wasm exception`, got `no instance to invoke`
+wasmtime/async/exceptions.wast:145 cascade no definition named `A`
+wasmtime/async/exceptions.wast:146 cascade expected a trap `thrown Wasm exception`, got `no instance to invoke`
 wasmtime/async/exceptions.wast:149 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
+wasmtime/async/exceptions.wast:215 cascade no definition named `A`
+wasmtime/async/exceptions.wast:216 cascade expected a trap `thrown Wasm exception`, got `no instance to invoke`
+wasmtime/async/exceptions.wast:217 cascade no definition named `A`
+wasmtime/async/exceptions.wast:218 cascade expected a trap `thrown Wasm exception`, got `no instance to invoke`
 wasmtime/async/fused.wast:7 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 wasmtime/async/fused.wast:56 deferred-feature no instance to invoke
 wasmtime/async/fused.wast:59 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline

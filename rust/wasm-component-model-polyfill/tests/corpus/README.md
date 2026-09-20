@@ -97,17 +97,17 @@ alike.
 ## Baseline
 
 The progress summary on the native target, as of 2026-09-19 (`tests
-conformance` prints the current one; the browser differs by the
-fourteen lines of `expected-failures.web.txt`):
+conformance` prints the current one; the browser differs by the ten
+lines of `expected-failures.web.txt`):
 
-| Corpus           | Directives | Passed | Pass % | Expected failures by category                                |
+| Corpus           | Directives | Passed | Pass % | Expected failures by category                                  |
 | ---------------- | ---------- | ------ | ------ | -------------------------------------------------------------- |
-| `cm`             | 1126       | 1034   | 91.8   | deferred-feature 2, substrate 4, validation 20, cascade 66    |
-| `cm/async`       | 393        | 22     | 5.6    | deferred-feature 371                                          |
-| `fixtures`       | 17         | 17     | 100.0  | none                                                          |
-| `wasmtime`       | 469        | 431    | 91.9   | deferred-feature 2, substrate 8, cascade 28                   |
-| `wasmtime/async` | 387        | 96     | 24.8   | deferred-feature 290, validation 1                            |
-| total            | 2392       | 1600   | 66.9   | deferred-feature 665, substrate 12, validation 21, cascade 94 |
+| `cm`             | 1126       | 1034   | 91.8   | deferred-feature 2, substrate 4, validation 20, cascade 66     |
+| `cm/async`       | 393        | 22     | 5.6    | deferred-feature 371                                           |
+| `fixtures`       | 17         | 17     | 100.0  | none                                                           |
+| `wasmtime`       | 469        | 431    | 91.9   | deferred-feature 2, substrate 8, cascade 28                    |
+| `wasmtime/async` | 387        | 88     | 22.7   | deferred-feature 290, validation 1, cascade 8                  |
+| total            | 2392       | 1592   | 66.6   | deferred-feature 665, substrate 12, validation 21, cascade 102 |
 
 The `async` rows still hold the pass rate down. The polyfill runs a host
 call into a callback export, the task built-ins that export uses, and a

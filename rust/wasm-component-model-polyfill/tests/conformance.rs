@@ -172,6 +172,14 @@ impl Runner {
             }
             WastDirective::ModuleDefinition(mut quote) => {
                 let name = quote.name().map(|id| id.name().to_owned());
+                // A definition that fails leaves no definition of its
+                // name, so a later directive that names it reports the
+                // cascade rather than running whatever the name was
+                // bound to before.
+                if let Some(name) = &name {
+                    self.definitions.remove(name);
+                }
+                self.last_definition = None;
                 let bytes = quote.encode().map_err(|err| format!("encode: {err}"))?;
                 let component = self.component(&bytes).await?;
                 if let Some(name) = name {
@@ -971,6 +979,110 @@ async fn it_reports_conformance_progress() {
                 .unwrap_or_else(|err| panic!("cannot write the summary to {web_target}: {err}"));
             println!("summary written to {target} and {web_target}");
         }
+    }
+}
+
+/// The harness's own behavior, on `.wast` text written for the test
+/// rather than vendored: bookkeeping the corpora cannot assert,
+/// because a corpus file only ever states what the reference
+/// implementation does.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Run `text` as a file and return one string per directive:
+    /// `None` where the directive passed, the failure's reason where
+    /// it did not.
+    async fn outcomes(text: &str) -> Vec<Option<String>> {
+        let mut runner = Runner::new(&EngineConfig::new()).await;
+        let (directives, failures) = runner.run(text).await;
+        let mut lines: Vec<Option<String>> = vec![None; directives];
+        let numbers: Vec<usize> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.starts_with('('))
+            .map(|(index, _)| index + 1)
+            .collect();
+        assert_eq!(numbers.len(), directives, "one directive per opening line");
+        for failure in failures {
+            let index = numbers
+                .iter()
+                .position(|line| *line == failure.line)
+                .unwrap_or_else(|| panic!("failure on line {} is not a directive", failure.line));
+            lines[index] = Some(failure.reason);
+        }
+        lines
+    }
+
+    /// A core module whose function leaves two values on the stack
+    /// where its result type declares one: text that encodes and that
+    /// no conforming implementation accepts.
+    const INVALID: &str = "(component definition $A
+  (component
+    (core module $m
+      (func (export \"f\") (result i32) i32.const 1 i32.const 2)
+    )
+    (core instance (instantiate $m))
+  ))";
+
+    #[wcmp_macros::test]
+    async fn it_binds_a_definition_that_succeeds() {
+        let outcomes =
+            outcomes("(component definition $A (component))\n(component instance $A $A)\n").await;
+        assert_eq!(outcomes, vec![None, None]);
+    }
+
+    #[wcmp_macros::test]
+    async fn it_unbinds_a_name_whose_definition_fails_to_translate() {
+        let text = format!(
+            "(component definition $A (component))\n{INVALID}\n(component instance $A $A)\n"
+        );
+        let outcomes = outcomes(&text).await;
+        assert_eq!(outcomes[0], None, "the first definition translates");
+        assert!(
+            outcomes[1]
+                .as_deref()
+                .is_some_and(|reason| reason.contains("component rejected")),
+            "the second definition must fail to translate, got {:?}",
+            outcomes[1]
+        );
+        assert_eq!(
+            outcomes[2].as_deref(),
+            Some("no definition named `A`"),
+            "the name must be unbound, not still bound to the first component"
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_unbinds_a_name_whose_definition_fails_to_encode() {
+        let text = "(component definition $A (component))
+(component definition $A (component (export \"f\" (func $missing))))
+(component instance $A $A)
+";
+        let outcomes = outcomes(text).await;
+        assert_eq!(outcomes[0], None, "the first definition translates");
+        assert!(
+            outcomes[1]
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("encode:")),
+            "the second definition must fail to encode, got {:?}",
+            outcomes[1]
+        );
+        assert_eq!(outcomes[2].as_deref(), Some("no definition named `A`"));
+    }
+
+    #[wcmp_macros::test]
+    async fn it_forgets_the_last_definition_when_a_definition_fails() {
+        let text =
+            format!("(component definition $A (component))\n{INVALID}\n(component instance)\n");
+        let outcomes = outcomes(&text).await;
+        assert_eq!(outcomes[0], None, "the first definition translates");
+        assert!(outcomes[1].is_some(), "the second definition must fail");
+        assert_eq!(
+            outcomes[2].as_deref(),
+            Some("no definition to instantiate"),
+            "an unnamed instance must not run the definition before the failure"
+        );
     }
 }
 
