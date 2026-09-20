@@ -15,4 +15,9 @@ The root re-routing of non-instance interface-named imports (`resolve_imports` i
 - [ ] The dead `(Plain, _)` arm is gone and the dispatch comment describes the live arms.
 - [ ] `lint` passes and `tests all` is green on both targets with the conformance summary unchanged.
 
+## Dispatch log
+- 2026-09-20T20:43:05Z dispatched implementor `card-7adde9-2f3112d2` (implement session, PDD020 thread, budget 3, seed `1941093` with 639a90, 4587d2, 5345f4 landed pending gate)
+- 2026-09-20T22:34:37Z implementor reported done at `b83affa` (refactor `b6853fb`, doc `e9ab51f`, tests `b83affa` on seed `2433b7d`; resource and module tests positive and negative; **the type-import criterion cannot be met as written** — `wasmtime-environ` erases non-resource type imports before translation (`inline.rs:110-114`) and bails on component/value imports, so the `UnsupportedRegistration` arm is defensive; an end-to-end erasure test and a `resolve_root` unit test with hand-built imports delivered instead; dead `(Plain, _)` arm removed, `resolve_one` takes destructured arguments; `HostFunctionRegistrationPlain` keeps its name with a historical note; `lint` green, `tests all` native 684 / web 674, conformance unchanged). No overlap with other landings. Fetched, moved to needs-review, paused the implementor.
+- 2026-09-20T22:34:37Z launched reviewer `review-7adde9-01991eea`; delivered `sandbox-guest/card-7adde9-2f3112d2` (tip b83affa) as `delivered/card-7adde9-2f3112d2`.
 
+## Review notes
