@@ -283,6 +283,13 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 instance: instance.as_u32() as usize,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
+            // The one subtask built-in the polyfill implements. It
+            // names the instance whose handle table holds the entry,
+            // as the waitable built-ins beside it do.
+            Trampoline::SubtaskDrop { instance } => TrampolineSpec::SubtaskDrop {
+                instance: instance.as_u32() as usize,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
             // The one thread built-in the polyfill implements. The
             // `cancellable` field is dropped here. It is the
             // trampoline IR's own and not the reference's: `canon

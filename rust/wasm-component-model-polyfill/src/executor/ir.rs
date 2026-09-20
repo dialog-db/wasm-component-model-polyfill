@@ -628,6 +628,15 @@ pub enum TrampolineSpec {
         /// The core signature the guest imports.
         signature: CoreSignature,
     },
+    /// The `subtask.drop` built-in: the named subtask's entry leaves
+    /// the calling instance's handle table, and the records the
+    /// entry named leave the store with it.
+    SubtaskDrop {
+        /// The component instance that calls the built-in.
+        instance: usize,
+        /// The core signature the guest imports.
+        signature: CoreSignature,
+    },
     /// The `prepare-call` intrinsic of a fused adapter whose lower
     /// or lift is asynchronous: it creates the callee's task and the
     /// caller's subtask, and records on the subtask the two

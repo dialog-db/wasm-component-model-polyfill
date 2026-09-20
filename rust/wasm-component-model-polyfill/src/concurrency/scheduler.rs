@@ -1344,8 +1344,13 @@ mod tests {
         (set, thread)
     }
 
-    /// Give `set` a waitable that holds an event, the way the feature
-    /// that adds the first waitable kind will.
+    /// Give `set` a waitable that holds an event: a subtask that
+    /// started, the way a callee whose parameters were lifted leaves
+    /// one.
+    ///
+    /// The record is moved to its started state as well as given the
+    /// event, because delivery reads the state off the record rather
+    /// than out of the slot.
     fn fill_event(store: &Store<()>, set: WaitableSetId) {
         let mut guard = store.tables().lock().expect("tables");
         let subtask = guard.tasks.insert_subtask();
@@ -1354,6 +1359,7 @@ mod tests {
             .tasks
             .join_waitable_set(waitable, Some(set))
             .expect("the subtask joins the set");
+        guard.tasks.start_subtask(subtask);
         guard
             .tasks
             .set_pending_event(waitable, Event::subtask(3, SubtaskState::Started))

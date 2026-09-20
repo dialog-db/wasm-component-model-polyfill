@@ -536,8 +536,6 @@ wasmtime/async/context-in-compositions.wast:434 cascade no instance to invoke
 wasmtime/async/context-in-compositions.wast:435 cascade no instance to invoke
 wasmtime/async/context-in-compositions.wast:436 cascade no instance to invoke
 wasmtime/async/context-in-compositions.wast:437 cascade no instance to invoke
-wasmtime/async/drop-host.wast:5 deferred-feature component rejected: unsupported component feature: the `subtask-drop` trampoline
-wasmtime/async/drop-host.wast:56 cascade expected a trap `cannot drop a subtask which has not yet resolved`, got `no instance to invoke`
 wasmtime/async/drop-waitable-set-stackful.wast:13 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 wasmtime/async/drop-waitable-set-stackful.wast:105 cascade expected a trap `cannot drop waitable set with waiters`, got `no instance to invoke`
 wasmtime/async/error-context.wast:5 deferred-feature component rejected: unsupported component feature: the `error-context-new` trampoline
@@ -665,7 +663,6 @@ wasmtime/async/sync-and-async-waitable.wast:5 deferred-feature component rejecte
 wasmtime/async/sync-and-async-waitable.wast:123 cascade expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
 wasmtime/async/sync-streams.wast:14 deferred-feature component rejected: unsupported component feature: `stream<T>` values
 wasmtime/async/sync-streams.wast:186 cascade no instance to invoke
-wasmtime/async/task-builtins.wast:65 deferred-feature component rejected: unsupported component feature: the `subtask-drop` trampoline
 wasmtime/async/task-builtins.wast:74 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
 wasmtime/async/task-builtins.wast:205 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
 wasmtime/async/task-builtins.wast:390 cascade no instance to invoke

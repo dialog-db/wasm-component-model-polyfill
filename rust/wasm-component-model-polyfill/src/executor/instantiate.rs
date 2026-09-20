@@ -40,8 +40,8 @@ use super::intrinsics::{
 };
 use super::start_task::StartTask;
 use super::waitable_builtins::{
-    build_waitable_join, build_waitable_set_drop, build_waitable_set_new, build_waitable_set_poll,
-    build_waitable_set_wait,
+    build_subtask_drop, build_waitable_join, build_waitable_set_drop, build_waitable_set_new,
+    build_waitable_set_poll, build_waitable_set_wait,
 };
 use crate::abi::runtime_state::AbiRuntimeState;
 
@@ -554,6 +554,15 @@ fn build_runtime_trampoline<T: 'static>(
             instance,
             signature,
         } => Ok(build_waitable_join(
+            store,
+            *instance,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::SubtaskDrop {
+            instance,
+            signature,
+        } => Ok(build_subtask_drop(
             store,
             *instance,
             signature,

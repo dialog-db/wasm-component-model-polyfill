@@ -38,6 +38,16 @@ pub struct Subtask {
     /// Nothing requests cancellation yet.
     #[allow(dead_code)]
     pub cancel_requested: bool,
+    /// The subtask's index in the caller instance's handle table,
+    /// while the caller holds an entry for it. A call that resolves
+    /// before the lower returns is never given one, and
+    /// `subtask.drop` takes the entry away again.
+    ///
+    /// The index is the first payload of every subtask event, and
+    /// its presence is what says a starting subtask has a caller to
+    /// notify: a callee the gate held is started later, when the
+    /// caller already holds the entry the lower returned.
+    pub handle: Option<u32>,
     /// The callee's task, for a call into another component's
     /// export. `None` for a call into a host function, which has no
     /// task of its own.
@@ -59,6 +69,7 @@ impl Subtask {
             resolve_delivered: false,
             waitable: WaitableState::new(),
             cancel_requested: false,
+            handle: None,
             callee: None,
             bridge: None,
         }

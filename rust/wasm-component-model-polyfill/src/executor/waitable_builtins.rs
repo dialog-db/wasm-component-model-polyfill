@@ -1,19 +1,21 @@
-//! The waitable set built-ins.
+//! The waitable built-ins.
 //!
 //! A waitable set is a group of waitables one thread waits on
 //! together. A guest creates one, joins waitables to it, waits on it
 //! or polls it, and drops it, through five canonical built-ins:
 //! `waitable-set.new`, `waitable-set.wait`, `waitable-set.poll`,
-//! `waitable-set.drop`, and `waitable.join`. Each one reaches the
-//! set records of the store through the handle table of the
-//! component instance that called it, where a set lives in the entry
-//! kind the handle table reserves for it.
+//! `waitable-set.drop`, and `waitable.join`. A sixth, `subtask.drop`,
+//! works on a single waitable rather than on a set: it takes the
+//! entry of a resolved subtask away. Each one reaches the records of
+//! the store through the handle table of the component instance that
+//! called it, where a set or a subtask lives in the entry kind the
+//! handle table reserves for it.
 //!
-//! Three rules are common to all five. Each traps with the
+//! Three rules are common to all of them. Each traps with the
 //! cannot-leave cause when the instance's may-leave flag is clear,
 //! which is the case while a `realloc` or a `post-return` of that
 //! instance runs. Each but `waitable-set.new` traps when the index
-//! it is given does not name a waitable set. And the two that
+//! it is given does not name what the built-in works on. And the two that
 //! deliver an event write its two payloads as `u32` values at the
 //! pointer and at the pointer plus four, through the memory the
 //! built-in's own canon options name, and return the event's code.
@@ -174,6 +176,52 @@ pub fn build_waitable_join<T: 'static>(
                 index => Some(set_at(&guard, table, index)?),
             };
             guard.tasks.join_waitable_set(waitable, set).map_err(trap)
+        },
+    )
+}
+
+/// Build the `subtask.drop` built-in: the named subtask's entry
+/// leaves the instance's handle table, and the records the entry
+/// named leave the store with it.
+///
+/// A subtask is the record of a call the guest made and has taken
+/// delivery of. The built-in refuses every other case: an index that
+/// names no entry, an index that names an entry of another kind, and
+/// a subtask whose resolution has not been delivered — a call still
+/// running, and also one whose result is ready but whose event the
+/// guest has not taken, because the handles the call borrowed are
+/// still lent out and the one notice the guest gets is still
+/// waiting.
+///
+/// What leaves the store with the entry is the subtask record and,
+/// for a call into another component's export, the callee's task
+/// record once its implicit thread has exited. A call into a host
+/// function has no task of its own, so the subtask's record is all
+/// of it.
+pub fn build_subtask_drop<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    instance: usize,
+    signature: &CoreSignature,
+    abi_state: Arc<Mutex<AbiRuntimeState>>,
+) -> RuntimeFunc {
+    let tables = store.tables_handle();
+    RuntimeFunc::new(
+        store.runtime_mut(),
+        core_func_type(signature),
+        move |_store_ctx, args, _results| {
+            let subtask_index = arg_u32(args, 0)?;
+            let (id, table) = calling_instance(&abi_state, instance)?;
+            let mut guard = lock_tables(&tables)?;
+            trap_if_cannot_leave(&guard, id)?;
+            let subtask = guard
+                .subtask_from_handle(table, subtask_index)
+                .map_err(|err| anyhow!("wasm trap: {err}"))?;
+            // The record's own check comes first: a subtask whose
+            // resolution is still owed traps and keeps its entry.
+            let waitable = guard.tasks.subtask_waitable(subtask);
+            guard.tasks.drop_waitable(waitable).map_err(trap)?;
+            guard.remove(table, subtask_index);
+            Ok(())
         },
     )
 }

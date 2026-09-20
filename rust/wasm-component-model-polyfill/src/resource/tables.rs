@@ -221,6 +221,22 @@ impl HandleTables {
         }
     }
 
+    /// The subtask the entry at `index` of `table` names.
+    /// `subtask.drop` reaches its record this way, and it is the one
+    /// built-in that takes a subtask handle rather than a waitable
+    /// one.
+    pub fn subtask_from_handle(
+        &self,
+        table: TableId,
+        index: u32,
+    ) -> Result<SubtaskId, HandleLookupError> {
+        match self.entry(table, index) {
+            Some(HandleKind::Subtask { subtask }) => Ok(subtask),
+            Some(_) => Err(HandleLookupError::NotASubtask { index }),
+            None => Err(HandleLookupError::Unknown { index }),
+        }
+    }
+
     /// The waitable set the entry at `index` of `table` names. A
     /// built-in that takes a waitable-set handle reaches its record
     /// this way.
@@ -503,9 +519,16 @@ impl HandleTables {
 
     /// Insert a subtask entry that names the subtask record
     /// `subtask`, and return the handle-table index.
+    ///
+    /// The record is told where it landed. The index is the first
+    /// payload of every event the subtask delivers, and its presence
+    /// is what says the caller has an entry to be told about at all.
     pub fn insert_subtask(&mut self, table: TableId, subtask: SubtaskId) -> u32 {
-        self.for_table_mut(table)
-            .insert_entry(HandleKind::Subtask { subtask })
+        let index = self
+            .for_table_mut(table)
+            .insert_entry(HandleKind::Subtask { subtask });
+        self.tasks.set_subtask_handle(subtask, index);
+        index
     }
 
     /// Insert a waitable-set entry that names the waitable set `set`,

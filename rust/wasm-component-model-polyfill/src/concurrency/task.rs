@@ -61,6 +61,13 @@ pub struct Task {
     /// the call through it. `None` for a call from the host and for
     /// the task an adapter's enter intrinsic pushes.
     pub subtask: Option<SubtaskId>,
+    /// Whether the task's implicit thread has exited. A task of a
+    /// call the caller still holds a subtask entry for outlives its
+    /// thread: the entry names the record, so the record stays in
+    /// the store until `subtask.drop` takes the entry away. The flag
+    /// is what the removal of the entry reads to know the record has
+    /// nothing left to run.
+    pub thread_exited: bool,
     /// The interned index of the result tuple the callee's lift
     /// declared, as the adapter names it at run time. A prepared
     /// call has no projected function type, so this is what the
@@ -91,6 +98,7 @@ impl Task {
             lenders: Vec::new(),
             result: TaskResult::Pending,
             subtask: None,
+            thread_exited: false,
             result_tuple: None,
         }
     }

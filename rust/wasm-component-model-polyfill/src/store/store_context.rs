@@ -451,8 +451,16 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 LowerKind::Async => {
                     let index = {
                         let mut guard = self.lock_tables()?;
-                        let index = guard.insert_subtask(caller, subtask);
+                        // The subtask starts before its entry is
+                        // made, because the status word this call
+                        // returns is what tells the caller it
+                        // started. A subtask that started while the
+                        // caller already held an entry would take on
+                        // the start event instead, which is the
+                        // callee the entry gate held and not this
+                        // call.
                         guard.tasks.start_subtask(subtask);
+                        let index = guard.insert_subtask(caller, subtask);
                         // The guest runs on while the host side does,
                         // so the subtask is no longer the scope the
                         // guest's work counts against. Its record

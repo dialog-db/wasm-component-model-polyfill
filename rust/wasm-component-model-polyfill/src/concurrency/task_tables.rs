@@ -266,10 +266,38 @@ impl TaskTables {
 
     /// Move a subtask to its started state: its parameters were
     /// lifted and the callee is running.
+    ///
+    /// A subtask the caller already holds a handle for takes on the
+    /// subtask event as it starts, because the caller has an entry
+    /// to be told about. That is the callee the entry gate held: the
+    /// lower returned `STARTING` with the index, and the callee's
+    /// parameters were lifted in a later turn. A subtask started
+    /// while the lower is still on the stack has no entry yet, and
+    /// the status word the lower returns is what tells the caller.
     pub fn start_subtask(&mut self, subtask: SubtaskId) {
         if let Some(record) = self.subtask_mut(subtask) {
             record.state = SubtaskState::Started;
         }
+        if let Some(index) = self.subtask_handle(subtask) {
+            let _ = self.record_subtask_event(subtask, index);
+        }
+    }
+
+    /// Record that `subtask` sits at `index` in the caller
+    /// instance's handle table. The handle tables make the entry and
+    /// tell the record here, so that a later event knows the index
+    /// it carries and the removal of the entry knows what to take
+    /// with it.
+    pub fn set_subtask_handle(&mut self, subtask: SubtaskId, index: u32) {
+        if let Some(record) = self.subtask_mut(subtask) {
+            record.handle = Some(index);
+        }
+    }
+
+    /// Where `subtask` sits in the caller instance's handle table,
+    /// or `None` when the caller holds no entry for it.
+    pub fn subtask_handle(&self, subtask: SubtaskId) -> Option<u32> {
+        self.subtask(subtask).and_then(|record| record.handle)
     }
 
     /// Pop the current scope, if there is one.
@@ -466,25 +494,72 @@ impl TaskTables {
     }
 
     /// Remove a task record and every thread it contains.
+    ///
+    /// A guest callee whose caller still holds a subtask entry keeps
+    /// its record: the entry names it, and `subtask.drop` is what
+    /// takes it away. Such a task loses its threads here, because
+    /// its implicit thread has exited, and the flag that says so is
+    /// what [`remove_subtask`](Self::remove_subtask) reads when the
+    /// entry goes. The record is left in the store and `None` comes
+    /// back, which is what a caller that removed nothing sees.
     pub fn remove_task(&mut self, task: TaskId) -> Option<Task> {
         let index = self.task_index(task)?;
-        let record = self.tasks.remove(index)?;
-        for thread in &record.threads {
-            if let Some(index) = self.thread_index(*thread) {
-                self.threads.remove(index);
+        if self.entry_holds_task(task) {
+            self.end_threads_of(task);
+            if let Some(record) = self.tasks.get_mut(index) {
+                record.thread_exited = true;
             }
+            return None;
         }
-        Some(record)
+        self.end_threads_of(task);
+        self.tasks.remove(index)
     }
 
     /// Remove a subtask record. The subtask leaves the set it joined
     /// on its way out, whichever path removed it: a freed index is
     /// handed out again, and a membership left behind would name
     /// whichever record takes the index next.
+    ///
+    /// A guest callee's task record leaves with it once the callee's
+    /// implicit thread has exited, which is the other half of the
+    /// rule [`remove_task`](Self::remove_task) states. A host call
+    /// has no callee task, so its record is the subtask's alone.
     pub fn remove_subtask(&mut self, subtask: SubtaskId) -> Option<Subtask> {
         let index = self.subtask_index(subtask)?;
         self.leave_waitable_set(WaitableId::Subtask(subtask));
-        self.subtasks.remove(index)
+        let record = self.subtasks.remove(index)?;
+        if let Some(callee) = record.callee
+            && self.task(callee).is_some_and(|callee| callee.thread_exited)
+            && let Some(index) = self.task_index(callee)
+        {
+            self.tasks.remove(index);
+        }
+        Some(record)
+    }
+
+    /// Whether a subtask entry the caller still holds names `task`
+    /// as its callee.
+    fn entry_holds_task(&self, task: TaskId) -> bool {
+        self.task(task)
+            .and_then(|record| record.subtask)
+            .and_then(|subtask| self.subtask(subtask))
+            .is_some_and(|record| record.handle.is_some())
+    }
+
+    /// Remove every thread record `task` contains, and empty its
+    /// list of them.
+    fn end_threads_of(&mut self, task: TaskId) {
+        let Some(threads) = self
+            .task_mut(task)
+            .map(|record| std::mem::take(&mut record.threads))
+        else {
+            return;
+        };
+        for thread in threads {
+            if let Some(index) = self.thread_index(thread) {
+                self.threads.remove(index);
+            }
+        }
     }
 
     // ---- waitables and waitable sets ----
@@ -752,6 +827,12 @@ impl TaskTables {
     /// been delivered refuses the take, and the paired operation on
     /// the handle tables — which delivers the resolution first — is
     /// the only way to take such an event.
+    ///
+    /// The state a subtask event carries is read here rather than
+    /// when the slot was filled, because delivery is what the guest
+    /// observes: a subtask that started and then returned before
+    /// anything took its event delivers `RETURNED` alone, and the
+    /// `STARTED` it passed through is never seen.
     pub fn take_pending_event(&mut self, waitable: WaitableId) -> Result<Option<Event>> {
         if let WaitableId::Subtask(subtask) = waitable {
             let record = self.subtask_record(subtask)?;
@@ -760,6 +841,9 @@ impl TaskTables {
                     "a subtask's event was taken before its resolution was delivered",
                 ));
             }
+            let state = record.state;
+            let taken = self.waitable_state_mut(waitable)?.pending_event.take();
+            return Ok(taken.map(|event| Event::subtask(event.payloads()[0], state)));
         }
         Ok(self.waitable_state_mut(waitable)?.pending_event.take())
     }
@@ -936,6 +1020,91 @@ mod tests {
             tables.waitable_set_of(waitable).expect("the waitable"),
             None,
             "the refused join left the waitable naming no set"
+        );
+    }
+
+    /// A prepared call between two components, as the records hold
+    /// it: the callee's task, the caller's subtask, and the two
+    /// pointing at each other.
+    fn prepared_call(tables: &mut TaskTables) -> (TaskId, SubtaskId) {
+        let instance = tables.insert_instance();
+        let task = tables.create_task(None, None, instance);
+        let subtask = tables.insert_subtask();
+        if let Some(record) = tables.subtask_mut(subtask) {
+            record.callee = Some(task);
+        }
+        if let Some(record) = tables.task_mut(task) {
+            record.subtask = Some(subtask);
+        }
+        (task, subtask)
+    }
+
+    #[wcmp_macros::test]
+    fn it_removes_a_guest_callees_task_record_when_no_entry_names_it() {
+        // A call the caller was never given an entry for — the
+        // synchronous lower, whose subtask resolves before the lower
+        // returns. Nothing names the callee's record once its thread
+        // has exited, so it leaves at once.
+        let mut tables = TaskTables::new();
+        let (task, _subtask) = prepared_call(&mut tables);
+
+        assert!(tables.remove_task(task).is_some(), "the task's record left");
+        assert!(tables.task(task).is_none());
+        assert_eq!(tables.thread_count(), 0, "with its implicit thread");
+    }
+
+    #[wcmp_macros::test]
+    fn it_keeps_a_guest_callees_task_record_until_its_entry_is_gone() {
+        // The caller holds an entry for the call, so the callee's
+        // record outlives its thread: the entry names it, and the
+        // drop of the entry is what takes it away.
+        let mut tables = TaskTables::new();
+        let (task, subtask) = prepared_call(&mut tables);
+        tables.set_subtask_handle(subtask, 1);
+
+        assert!(
+            tables.remove_task(task).is_none(),
+            "the thread exited and nothing was removed"
+        );
+        assert!(
+            tables.task(task).is_some(),
+            "the record stands while the entry names it"
+        );
+        assert_eq!(
+            tables.thread_count(),
+            0,
+            "its implicit thread exited all the same"
+        );
+
+        tables.remove_subtask(subtask);
+
+        assert!(
+            tables.task(task).is_none(),
+            "the entry's removal took the callee's record with it"
+        );
+        assert_eq!(tables.task_count(), 0);
+    }
+
+    #[wcmp_macros::test]
+    fn it_keeps_a_guest_callees_task_record_whose_thread_is_still_running() {
+        // The other order: the entry goes while the callee's thread
+        // is still running, which a callback export that returned its
+        // result and went on waiting leaves. The record stays until
+        // the thread exits, and leaves then.
+        let mut tables = TaskTables::new();
+        let (task, subtask) = prepared_call(&mut tables);
+        tables.set_subtask_handle(subtask, 1);
+
+        tables.remove_subtask(subtask);
+
+        assert!(
+            tables.task(task).is_some(),
+            "the callee's thread has not exited yet"
+        );
+
+        assert!(
+            tables.remove_task(task).is_some(),
+            "and the record leaves when it does"
         );
     }
 }
