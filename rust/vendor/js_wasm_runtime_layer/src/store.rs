@@ -4,7 +4,9 @@ use core::{
     ops::{Deref, DerefMut},
 };
 
+use js_sys::{Function, Map};
 use slab::Slab;
+use wasm_bindgen::JsValue;
 use wasm_runtime_layer::backend::{
     AsContext, AsContextMut, WasmEngine, WasmStore, WasmStoreContext, WasmStoreContextMut,
 };
@@ -105,6 +107,7 @@ impl<T: 'static> WasmStore<T, Engine> for Store<T> {
             drop_resources: Vec::new(),
             data,
             pending_host_error: None,
+            funcref_records: None,
         }))
     }
 
@@ -189,6 +192,17 @@ pub struct StoreInner<T: 'static> {
     /// because a trap there is not catchable; this slot restores that:
     /// the outer call reports the first host error when the guest fails.
     pub(crate) pending_host_error: Option<anyhow::Error>,
+
+    /// PATCH (wcmp): the function record this store already made for
+    /// each function reference it converted, keyed by the JS function
+    /// object the reference is.
+    ///
+    /// A conversion with nothing to look in records a function on
+    /// every call and nothing ever removes one, so a store that runs
+    /// prepared calls grows without bound. The map is built the first
+    /// time a reference is converted, so a store that never converts
+    /// one never allocates it.
+    funcref_records: Option<Map>,
 }
 
 impl<T: 'static> StoreInner<T> {
@@ -197,6 +211,49 @@ impl<T: 'static> StoreInner<T> {
         Func {
             id: self.funcs.insert(func),
         }
+    }
+
+    /// PATCH (wcmp): the [`Func`] of a function reference the host
+    /// received as an argument: the record this store already holds
+    /// for that function object, or a new one for a function it has
+    /// not seen.
+    ///
+    /// The JS API hands out one object per function address — the
+    /// agent keeps a cache of exported functions and returns the same
+    /// object for the same address — so the object is the function's
+    /// identity, and one record serves every conversion of it. The
+    /// record carries no state of its own, only the function and the
+    /// mark that says its signature is unknown, so sharing one
+    /// changes nothing a caller can observe.
+    ///
+    /// A record is never removed. A reference the host received
+    /// outlives the call that passed it: the prepare intrinsic keeps
+    /// the two functions the adapter generated until the call it
+    /// prepared starts, and an asynchronous lower keeps them until
+    /// the callee resolves. The store is therefore what bounds their
+    /// lifetime, and what this bounds is the count: a store holds one
+    /// record per function object it ever saw, so a repeated call
+    /// adds none.
+    pub(crate) fn func_of_reference(&mut self, function: Function) -> Func {
+        let key: &JsValue = function.as_ref();
+        if let Some(records) = &self.funcref_records {
+            if let Some(id) = records.get(key).as_f64() {
+                return Func { id: id as usize };
+            }
+        }
+        let func = self.insert_func(FuncInner::of_unknown_signature(function.clone()));
+        self.funcref_records
+            .get_or_insert_with(Map::new)
+            .set(function.as_ref(), &JsValue::from_f64(func.id as f64));
+        func
+    }
+
+    /// PATCH (wcmp): how many function records this store holds.
+    ///
+    /// The count is what says whether a conversion reused a record or
+    /// made one, which the test of a repeated call reads.
+    pub fn func_count(&self) -> usize {
+        self.funcs.len()
     }
 
     /// Inserts a new global and returns its id

@@ -56,7 +56,6 @@ pub use table::Table;
 
 use self::{
     conversion::{FromJs, ToJs, ToStoredJs},
-    func::FuncInner,
     module::{ModuleInner, ParsedModule},
 };
 
@@ -470,14 +469,17 @@ pub(crate) fn value_from_js_typed<T>(
         // back; the JS API carries no signature with it, so the
         // record says so and the call takes its result types from
         // the caller. A null reference stays null.
+        //
+        // The store keeps one record per function object, and a
+        // conversion of a function it already saw reads that one
+        // back, so the calls of one store share the records their
+        // first call made; see `StoreInner::func_of_reference`.
         ValType::FuncRef => {
             if value.is_null() || value.is_undefined() {
                 return Some(Val::FuncRef(None));
             }
             let function: js_sys::Function = value.dyn_into().ok()?;
-            Some(Val::FuncRef(Some(
-                store.insert_func(FuncInner::of_unknown_signature(function)),
-            )))
+            Some(Val::FuncRef(Some(store.func_of_reference(function))))
         }
         ValType::ExternRef => {
             #[cfg(feature = "tracing")]

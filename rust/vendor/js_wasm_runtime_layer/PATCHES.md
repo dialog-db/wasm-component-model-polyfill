@@ -74,7 +74,7 @@ The patch adds `wasm-bindgen-futures` for the promise-to-future bridge. The
 proposal for upstream is an asynchronous constructor on `WasmModule` itself, so
 the handoff through the engine becomes unnecessary.
 
-## 7. Function references as host-function arguments (`src/lib.rs`, `src/func.rs`)
+## 7. Function references as host-function arguments (`src/lib.rs`, `src/func.rs`, `src/store.rs`)
 
 Upstream's `value_from_js_typed` refuses a `funcref`, so a host function
 declared with one panics on its first call. The prepare-and-start intrinsics a
@@ -91,6 +91,20 @@ core type and no other as one. A caller that cannot name a result type asks
 for an `f64` and reads every number back faithfully, since a number passed on
 to another wasm call reaches an `i32`, an `f32`, or an `f64` through the JS
 API's own coercion. A null reference converts to `Val::FuncRef(None)`.
+
+A record is the store's for as long as the store lives: the crate removes
+nothing from its slabs, and a reference the host received outlives the call
+that passed it anyway, since the prepare intrinsic keeps the functions of a
+call until the call it prepared starts. The store therefore keeps one record
+per function object rather than one per conversion. It holds a JS `Map` from
+the function object to the record's index, built the first time a reference is
+converted, and a conversion of a function it has already seen reads that record
+back. Object identity is the function's identity here, because the JS API
+returns one object per function address. Three references cross the boundary on
+every prepared call, so without the map a store grows by three records per
+guest-to-guest call and never gives one back; with it, the second call and
+every call after it record nothing. `StoreInner::func_count` reports how many
+records a store holds, which is what a test of a repeated call reads.
 
 ## 8. Host functions of more than eight parameters (`src/func.rs`)
 

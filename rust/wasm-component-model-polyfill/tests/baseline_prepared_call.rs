@@ -9,10 +9,12 @@
 //! caller has its flat results when the intrinsic returns.
 //!
 //! The tests here cover what no corpus file reaches from a repository
-//! test: the lazy rule of a sync-typed caller's block, and what a
-//! trap in the callee leaves behind. The four combinations of lower
-//! and lift are the corpus's own, in `wasmtime/async/fused.wast` and
-//! the files beside it.
+//! test: the lazy rule of a sync-typed caller's block, what a trap in
+//! the callee leaves behind, and — in the browser, whose backend has
+//! to record the `funcref` arguments of a call — what a call repeated
+//! many times leaves in the store. The four combinations of lower and
+//! lift are the corpus's own, in `wasmtime/async/fused.wast` and the
+//! files beside it.
 
 #![cfg(test)]
 
@@ -225,6 +227,22 @@ fn subtask_count(store: &Store<()>) -> usize {
         .subtask_count()
 }
 
+/// How many core function records the browser's backend holds for
+/// this store.
+///
+/// The browser backend records a `funcref` a host function received
+/// as an argument in the store, because the JS object it arrives as
+/// is not a handle the host can hold on its own. Nothing removes
+/// such a record, so the count is what says whether a repeated call
+/// keeps making them. The native backend has no such record, so the
+/// measurement is the browser's alone.
+#[cfg(target_arch = "wasm32")]
+fn function_record_count(store: &mut Store<()>) -> usize {
+    use wasm_runtime_layer::AsContextMut;
+
+    store.inner_mut().as_context_mut().inner.func_count()
+}
+
 /// Whether any component instance of the store is held exclusively
 /// by a thread.
 fn any_instance_is_held(store: &Store<()>) -> bool {
@@ -350,5 +368,49 @@ async fn it_still_refuses_the_built_ins_this_design_does_not_own() {
     assert!(
         matches!(&err, Error::Unsupported { feature } if feature.contains("thread-index")),
         "expected `thread-index` to be refused, got {err:?}"
+    );
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wcmp_macros::test]
+async fn it_records_the_functions_of_a_prepared_call_once_however_often_it_runs() {
+    // Each prepared call hands the host three `funcref` arguments:
+    // the two functions the adapter generated for the call, and the
+    // callee's core function. Each of them arrives as a JS object,
+    // which the browser backend has to record in the store before
+    // the host can call it back, and a record outlives the call that
+    // made it: the prepare intrinsic keeps its functions until the
+    // call it prepared starts. The functions are the same three
+    // objects every time, though, so the second call and every call
+    // after it reuses what the first one recorded, and a store that
+    // runs the same call all day holds the records of one.
+    let (mut store, instance) = instantiate(RESOLVES_AT_ONCE).await;
+    let run = instance.get_func("run").expect("the caller's export");
+    let before_any_call = function_record_count(&mut store);
+
+    let result = run
+        .call(&mut store, &[Val::U32(1)])
+        .await
+        .expect("the call returns");
+    assert_eq!(result.as_ref(), &[Val::U32(3)]);
+    let after_one_call = function_record_count(&mut store);
+    assert!(
+        after_one_call > before_any_call,
+        "the first call records the functions it converted, \
+         so there is something for a later call to reuse \
+         ({before_any_call} before, {after_one_call} after)"
+    );
+
+    for _ in 0..8 {
+        let result = run
+            .call(&mut store, &[Val::U32(1)])
+            .await
+            .expect("the call returns");
+        assert_eq!(result.as_ref(), &[Val::U32(3)]);
+    }
+    assert_eq!(
+        function_record_count(&mut store),
+        after_one_call,
+        "eight more calls of the same export record no further functions"
     );
 }
