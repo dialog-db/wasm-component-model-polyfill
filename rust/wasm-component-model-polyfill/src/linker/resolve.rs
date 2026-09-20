@@ -134,8 +134,9 @@ pub fn resolve_imports<T: 'static>(
     let mut bindings = Vec::with_capacity(component.imports.len());
     for import in component.imports.iter() {
         let binding = match (&import.name, &import.ty) {
-            (ExternalName::Interface(_), ExternType::Instance(instance)) => {
-                let binding = resolve_one(import, &registered).map_err(Error::from)?;
+            (ExternalName::Interface(id), ExternType::Instance(instance)) => {
+                let binding =
+                    resolve_one(import, id, instance, &registered).map_err(Error::from)?;
                 if let ImportBinding::Resolved { chosen } = &binding {
                     // Item-level type check: every function item the
                     // import declares must have a registered host function
@@ -401,37 +402,32 @@ fn resolve_root<T: 'static>(
     }
 }
 
-/// Match an interface-named instance import against the registered
-/// linker-instance keys. Only such an import reaches here; every
-/// other shape resolves through the root namespace, so the two
-/// remaining arms guard the caller's dispatch rather than describe
-/// shapes a component can present.
+/// Choose the registered linker instance that satisfies an
+/// interface-named instance import, by the semver rules at the top
+/// of this module. Only that one shape reaches here: every other
+/// import, whatever its name looks like, resolves through the root
+/// namespace instead, so the caller hands the import's identifier
+/// and instance type in already destructured.
+///
+/// A miss is not always a failure. An instance that needs nothing
+/// from the host binds as [`ImportBinding::Vacuous`], which is how
+/// Wasmtime links such an import with no definition at all. Any
+/// other instance's miss is an unresolved import, or an
+/// incompatible version when the linker holds a candidate outside
+/// the import's compatibility range.
 #[allow(clippy::result_large_err)]
 fn resolve_one(
     import: &ComponentImport,
+    id: &InterfaceIdentifier,
+    instance: &InstanceType,
     registered: &[&InterfaceIdentifier],
 ) -> core::result::Result<ImportBinding, LinkError> {
-    match (&import.name, &import.ty) {
-        (ExternalName::Interface(id), ExternType::Instance(instance))
-            if instance_is_vacuous(instance) =>
-        {
-            match find_match(id, registered.iter().copied()) {
-                Some(chosen) => Ok(ImportBinding::Resolved {
-                    chosen: chosen.clone(),
-                }),
-                None => Ok(ImportBinding::Vacuous),
-            }
-        }
-        (ExternalName::Interface(id), _) => match find_match(id, registered.iter().copied()) {
-            Some(chosen) => Ok(ImportBinding::Resolved {
-                chosen: chosen.clone(),
-            }),
-            None => Err(unresolved_or_incompatible(import, id, registered)),
-        },
-        (ExternalName::Plain(_), _) => Err(LinkError::UnsupportedRegistration {
-            import: import.name.clone(),
-            reason: "plain-named imports resolve through the root namespace",
+    match find_match(id, registered.iter().copied()) {
+        Some(chosen) => Ok(ImportBinding::Resolved {
+            chosen: chosen.clone(),
         }),
+        None if instance_is_vacuous(instance) => Ok(ImportBinding::Vacuous),
+        None => Err(unresolved_or_incompatible(import, id, registered)),
     }
 }
 
@@ -834,5 +830,43 @@ mod tests {
         let registered = [id("wasi:io/run@0.2.0")];
         let chosen = find_match(&import, registered.iter()).cloned();
         assert_eq!(chosen, None);
+    }
+
+    /// The root namespace answers for a host function, a resource,
+    /// a module, and a plain-named instance. A type, a component,
+    /// or a value import is none of those, and no registration a
+    /// host can make would satisfy one, so the resolver refuses the
+    /// import outright rather than reporting it missing.
+    ///
+    /// No component binary reaches this arm today. The translator
+    /// drops a type import that is not a resource — it is type
+    /// information for the component's own use and asks the host
+    /// for nothing — and refuses a root-level component or value
+    /// import before the polyfill sees it. The imports below are
+    /// built by hand for that reason.
+    #[wcmp_macros::test]
+    fn it_refuses_an_import_whose_sort_the_root_namespace_cannot_hold() {
+        let engine = crate::Engine::new().expect("engine construction succeeds");
+        let linker: Linker<()> = Linker::new(&engine);
+        let name = "pdd-tests:host/point@0.1.0";
+        for ty in [
+            ExternType::Component,
+            ExternType::Value(ValueType::Primitive(crate::types::PrimitiveType::U32)),
+        ] {
+            let import = ComponentImport {
+                name: ExternalName::Interface(id(name)),
+                ty,
+            };
+            match resolve_root(&import, name, &linker) {
+                Err(Error::Link(inner)) => match *inner {
+                    LinkError::UnsupportedRegistration { import, reason } => {
+                        assert_eq!(import, ExternalName::Interface(id(name)));
+                        assert_eq!(reason, "imports of types, components, or values");
+                    }
+                    other => panic!("expected an unsupported registration, got {other:?}"),
+                },
+                other => panic!("expected a link error, got {other:?}"),
+            }
+        }
     }
 }

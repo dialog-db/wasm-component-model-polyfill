@@ -9,9 +9,10 @@
 use std::sync::{Arc, Mutex};
 use wasm_component_model_polyfill::{
     Component, Engine, Error, ExternType, ExternalName, FunctionParameter, FunctionType, HostCall,
-    InterfaceIdentifier, LinkError, Linker, PrimitiveType, ResourceType, Store, Val, ValueType,
+    InterfaceIdentifier, LinkError, Linker, Module, PrimitiveType, ResourceType, Store, Val,
+    ValueType,
 };
-use wcmp_macros::component;
+use wcmp_macros::{component, wasm};
 
 #[cfg(target_arch = "wasm32")]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
@@ -2067,4 +2068,264 @@ async fn it_refuses_a_mismatched_signature_under_an_interface_name() {
         ),
         "expected a type mismatch naming `{ANSWERS}`, got {err:?}",
     );
+}
+
+/// A component that imports a *resource type* under an interface
+/// name and re-exports a function that drops a handle to it.
+///
+/// The import's name says where a host would look the item up and
+/// nothing about the import's sort, so a resource named this way
+/// resolves through the root namespace under the whole name, just
+/// as the function above does.
+const INTERFACE_NAMED_RESOURCE: &[u8] = component!(
+    r#"
+    (component
+      (import "pdd-tests:host/thing@0.1.0" (type $thing (sub resource)))
+      (core func $thing-drop (canon resource.drop $thing))
+      (core module $m
+        (func (import "host" "drop") (param i32))
+        (func (export "consume") (param i32)
+          local.get 0
+          call 0))
+      (core instance $core (instantiate $m
+        (with "host" (instance
+          (export "drop" (func $thing-drop))))))
+      (func (export "consume") (param "h" (own $thing))
+        (canon lift (core func $core "consume"))))
+    "#
+);
+
+/// The interface identifier the resource import above is named by,
+/// and the string a host registers the resource under on the root
+/// view.
+const THING: &str = "pdd-tests:host/thing@0.1.0";
+
+#[wcmp_macros::test]
+async fn it_links_a_resource_import_under_an_interface_name_through_the_root_namespace() {
+    // The host registers the resource on the root view under the
+    // import's whole name, and the identity it gets back mints a
+    // handle the guest can drop: the destructor sees the host's rep.
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, INTERFACE_NAMED_RESOURCE)
+        .await
+        .expect("component parses");
+
+    let mut linker: Linker<Arc<Mutex<Vec<u32>>>> = Linker::new(&engine);
+    let type_id = linker
+        .root()
+        .resource(THING, |data: &mut Arc<Mutex<Vec<u32>>>, rep: u32| {
+            data.lock().expect("dropped lock").push(rep);
+            Ok(())
+        });
+
+    let dropped = Arc::new(Mutex::new(Vec::<u32>::new()));
+    let mut store: Store<Arc<Mutex<Vec<u32>>>> =
+        Store::new(&engine, dropped.clone()).expect("store construction succeeds");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the root registration under the interface name satisfies the import");
+    let consume = instance.get_func("consume").expect("`consume` is exported");
+    let handle = store
+        .resource_new(type_id, 7)
+        .expect("resource_new succeeds");
+    let results = consume
+        .call(&mut store, &[Val::Own(handle)])
+        .await
+        .expect("call succeeds");
+    assert!(results.is_empty(), "consume returns no values");
+    assert_eq!(*dropped.lock().expect("dropped lock"), vec![7]);
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_resource_import_under_an_interface_name_with_no_root_registration() {
+    // Nothing registered is an unresolved import that names the
+    // interface-named import — and a *linker instance* registered
+    // under the same identifier does not satisfy it either, however
+    // its items are labelled. The import wants one host resource,
+    // and the root namespace is where one host item lives.
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, INTERFACE_NAMED_RESOURCE)
+        .await
+        .expect("component parses");
+    let thing: InterfaceIdentifier = THING.parse().expect("identifier parses");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+
+    let empty: Linker<()> = Linker::new(&engine);
+    let err = match empty.instantiate(&mut store, &component).await {
+        Ok(_) => panic!("a resource import with nothing registered must not link"),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(
+            &err,
+            Error::Link(inner)
+                if matches!(
+                    &**inner,
+                    LinkError::UnresolvedImport { import }
+                        if *import == ExternalName::Interface(thing.clone())
+                )
+        ),
+        "expected an unresolved import naming `{THING}`, got {err:?}",
+    );
+
+    let mut by_interface: Linker<()> = Linker::new(&engine);
+    by_interface
+        .instance(&thing)
+        .resource("thing", |_data: &mut (), _rep: u32| Ok(()));
+    let err = match by_interface.instantiate(&mut store, &component).await {
+        Ok(_) => panic!("a linker instance must not satisfy a resource import"),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(
+            &err,
+            Error::Link(inner) if matches!(&**inner, LinkError::UnresolvedImport { .. })
+        ),
+        "expected an unresolved import, got {err:?}",
+    );
+}
+
+/// A component that imports a core module under an interface name,
+/// instantiates it, and lifts the module's `f`. A module import is
+/// the third sort the root namespace answers for whatever the shape
+/// of the name it is written under.
+const INTERFACE_NAMED_MODULE: &[u8] = component!(
+    r#"
+    (component
+      (import "pdd-tests:host/machine@0.1.0" (core module $m
+        (export "f" (func (result i32)))))
+      (core instance $i (instantiate $m))
+      (func (export "f") (result u32) (canon lift (core func $i "f"))))
+    "#
+);
+
+/// The interface identifier the module import above is named by,
+/// and the string a host registers the module under on the root
+/// view.
+const MACHINE: &str = "pdd-tests:host/machine@0.1.0";
+
+/// A core module satisfying the module type `MACHINE` is imported
+/// with.
+const PROVIDES_F: &[u8] = wasm!(
+    r#"
+    (module (func (export "f") (result i32) i32.const 101))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_links_a_module_import_under_an_interface_name_through_the_root_namespace() {
+    // The host registers the module on the root view under the
+    // import's whole name; the component instantiates it and the
+    // lifted export returns the module's value.
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, INTERFACE_NAMED_MODULE)
+        .await
+        .expect("component parses");
+    let module = Module::new(&engine, PROVIDES_F)
+        .await
+        .expect("the module compiles");
+
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker.root().module(MACHINE, &module);
+
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the root registration under the interface name satisfies the import");
+    let f = instance
+        .get_func("f")
+        .expect("`f` is exported")
+        .typed::<(), u32>()
+        .expect("typed conversion succeeds");
+    assert_eq!(f.call(&mut store, ()).await.expect("call succeeds"), 101);
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_module_import_under_an_interface_name_with_no_root_registration() {
+    // As for the function and the resource: nothing registered is an
+    // unresolved import naming the interface-named import, and a
+    // linker instance under the same identifier holds items rather
+    // than the single item the import asks for.
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, INTERFACE_NAMED_MODULE)
+        .await
+        .expect("component parses");
+    let module = Module::new(&engine, PROVIDES_F)
+        .await
+        .expect("the module compiles");
+    let machine: InterfaceIdentifier = MACHINE.parse().expect("identifier parses");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+
+    let empty: Linker<()> = Linker::new(&engine);
+    let err = match empty.instantiate(&mut store, &component).await {
+        Ok(_) => panic!("a module import with nothing registered must not link"),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(
+            &err,
+            Error::Link(inner)
+                if matches!(
+                    &**inner,
+                    LinkError::UnresolvedImport { import }
+                        if *import == ExternalName::Interface(machine.clone())
+                )
+        ),
+        "expected an unresolved import naming `{MACHINE}`, got {err:?}",
+    );
+
+    let mut by_interface: Linker<()> = Linker::new(&engine);
+    by_interface.instance(&machine).module("m", &module);
+    let err = match by_interface.instantiate(&mut store, &component).await {
+        Ok(_) => panic!("a linker instance must not satisfy a module import"),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(
+            &err,
+            Error::Link(inner) if matches!(&**inner, LinkError::UnresolvedImport { .. })
+        ),
+        "expected an unresolved import, got {err:?}",
+    );
+}
+
+/// A component that imports a *type* under an interface name. The
+/// type is a record the component also defines, and the import
+/// asserts the two are equal.
+const INTERFACE_NAMED_TYPE: &[u8] = component!(
+    r#"
+    (component
+      (type $point (record (field "x" u32) (field "y" u32)))
+      (import "pdd-tests:host/point@0.1.0" (type (eq $point))))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_drops_a_type_import_under_an_interface_name_before_resolution() {
+    // A type import that is not a resource asks the host for
+    // nothing: it carries type information for the component's own
+    // use, and translation drops it rather than recording an import
+    // the host would have to answer. The component declares no
+    // import at all, so an empty linker instantiates it and the
+    // resolver never sees the type sort. The resolver's refusal of
+    // a type import is covered as a unit test of `resolve_root`,
+    // which is the only way to present that arm a type at all.
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, INTERFACE_NAMED_TYPE)
+        .await
+        .expect("component parses");
+    assert!(
+        component.imports.is_empty(),
+        "a non-resource type import is not a host import, got {:?}",
+        component.imports,
+    );
+
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("a component whose only type import was dropped needs no registration");
 }

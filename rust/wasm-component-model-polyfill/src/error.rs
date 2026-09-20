@@ -486,6 +486,14 @@ pub enum TypeMismatchPosition {
     /// against a plain-named import, an item inside a plain-named
     /// instance import, or an import that is not an instance and
     /// carries an interface name.
+    ///
+    /// The `Plain` in the variant's name is historical. It once
+    /// described the shape of the name the registration sat under,
+    /// back when only a plain-named import resolved through the
+    /// root; it now marks the root namespace itself, and `name` is
+    /// as often an interface identifier as a plain name. The
+    /// variant keeps its name so that host code matching on it goes
+    /// on compiling.
     HostFunctionRegistrationPlain {
         /// The root-namespace name the registration was attached to,
         /// which is the import's own name as the component writes
