@@ -160,6 +160,15 @@ impl Runner {
                 // running against whatever was current before.
                 self.current = None;
                 let name = quote.name().map(|id| id.name().to_owned());
+                // A directive that fails leaves neither a named
+                // instance nor a linker registration under its name,
+                // so a later directive that names it, or imports the
+                // items the name reflects, reports the cascade rather
+                // than running against whatever the name was bound to
+                // before.
+                if let Some(name) = &name {
+                    self.unbind(name);
+                }
                 let bytes = quote.encode().map_err(|err| format!("encode: {err}"))?;
                 let component = self.component(&bytes).await?;
                 let index = self.instantiate(&component).await?;
@@ -333,6 +342,17 @@ impl Runner {
             .map_err(|err| format!("instantiation failed: {}", chain(&err)))?;
         self.instances.push(instance);
         Ok(self.instances.len() - 1)
+    }
+
+    /// Undo `register_named` for a name: drop the named instance and
+    /// the root-level linker entry the registration reflects it into.
+    /// `Linker`'s public surface adds registrations and never removes
+    /// one, so the harness clears the root registration's nested entry
+    /// directly; the field is workspace-internal and addresses exactly
+    /// what `register_named` writes.
+    fn unbind(&mut self, name: &str) {
+        self.named.remove(name);
+        self.linker.root().registration.instances.remove(name);
     }
 
     /// Reflect a named component's module exports into the linker
@@ -1083,6 +1103,85 @@ mod tests {
             Some("no definition to instantiate"),
             "an unnamed instance must not run the definition before the failure"
         );
+    }
+
+    /// A named component that lifts one function and re-exports the
+    /// core module behind it: instantiating it binds `$A` for a later
+    /// `invoke` and reflects `m` into the linker under `A`.
+    const NAMED: &str = "(component $A
+  (core module $m (func (export \"f\") (result i32) i32.const 1))
+  (core instance $i (instantiate $m))
+  (func (export \"f\") (result u32) (canon lift (core func $i \"f\")))
+  (export \"m\" (core module $m))
+)";
+
+    /// The same shape, named the same, with the stack-height error of
+    /// `INVALID`: text that encodes and that no conforming
+    /// implementation accepts.
+    const NAMED_INVALID: &str = "(component $A
+  (core module $m (func (export \"f\") (result i32) i32.const 1 i32.const 2))
+  (core instance (instantiate $m))
+)";
+
+    /// A component that imports the module export `NAMED` reflects
+    /// into the linker under `A`.
+    const IMPORTS_A: &str = "(component
+  (import \"A\" (instance (export \"m\" (core module (export \"f\" (func (result i32)))))))
+)";
+
+    #[wcmp_macros::test]
+    async fn it_binds_and_registers_a_named_component_that_succeeds() {
+        let text = format!("{NAMED}\n(invoke $A \"f\")\n{IMPORTS_A}\n");
+        let outcomes = outcomes(&text).await;
+        assert_eq!(outcomes, vec![None, None, None]);
+    }
+
+    #[wcmp_macros::test]
+    async fn it_unbinds_a_name_whose_component_fails_to_translate() {
+        let text = format!("{NAMED}\n{NAMED_INVALID}\n(invoke $A \"f\")\n");
+        let outcomes = outcomes(&text).await;
+        assert_eq!(outcomes[0], None, "the first component translates");
+        assert!(
+            outcomes[1]
+                .as_deref()
+                .is_some_and(|reason| reason.contains("component rejected")),
+            "the second component must fail to translate, got {:?}",
+            outcomes[1]
+        );
+        assert_eq!(
+            outcomes[2].as_deref(),
+            Some("no instance named `A`"),
+            "the name must be unbound, not still bound to the first instance"
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_unregisters_a_name_whose_component_fails_to_translate() {
+        let text = format!("{NAMED}\n{NAMED_INVALID}\n{IMPORTS_A}\n");
+        let outcomes = outcomes(&text).await;
+        assert_eq!(outcomes[0], None, "the first component translates");
+        assert!(outcomes[1].is_some(), "the second component must fail");
+        assert!(
+            outcomes[2].is_some(),
+            "the registration must be gone, not still reflecting the first instance"
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_unbinds_a_name_whose_component_fails_to_encode() {
+        let text = format!(
+            "{NAMED}\n(component $A (component (export \"f\" (func $missing))))\n(invoke $A \"f\")\n"
+        );
+        let outcomes = outcomes(&text).await;
+        assert_eq!(outcomes[0], None, "the first component translates");
+        assert!(
+            outcomes[1]
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("encode:")),
+            "the second component must fail to encode, got {:?}",
+            outcomes[1]
+        );
+        assert_eq!(outcomes[2].as_deref(), Some("no instance named `A`"));
     }
 }
 
