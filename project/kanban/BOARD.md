@@ -27,20 +27,20 @@ kanban-plugin: basic
 - [ ] [[8c7efb]]
 - [ ] [[98606b]]
 - [ ] [[9cf784]]
-- [ ] [[6a9407]]
 - [ ] [[09a985]]
 - [ ] [[c3d3a3]]
 
 ## In Progress
 
-- [ ] [[dd5efd]]
-- [ ] [[2dadf3]]
 - [ ] [[90d05d]]
 
 ## Needs Review
 
 - [ ] [[c723cc]]
 - [ ] [[1b6304]]
+- [ ] [[dd5efd]]
+- [ ] [[2dadf3]]
+- [ ] [[6a9407]]
 
 ## Ready
 
