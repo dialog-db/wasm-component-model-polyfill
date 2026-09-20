@@ -2,7 +2,7 @@
 id: 7adde9
 title: Cover the other sorts an interface-named import can carry
 type: chore
-blocked_by: []
+blocked_by: [c7c8a5]
 labels: [PDD020, concurrency]
 created: 2026-09-20T13:32:31Z
 ---
