@@ -19,14 +19,21 @@ backpressure, the waitable set built-ins, `thread.yield`, the context
 slots, and a synchronous lower of such an export from a sibling
 component. A component whose import is lowered asynchronously translates
 and instantiates too; only a guest that makes such a call fails, because
-the call path behind it is not built yet. The rest is an expected failure
-of category `deferred-feature`, for one of six reasons: an asynchronous
-lower, a future or stream built-in, the stackful lift, a thread built-in
-other than `thread.yield`, cancellation, or a call to an asynchronous
-host item. One directive is a `validation` failure instead, the first
-component of `wasmtime/async/cancel-host.wast`: it lowers asynchronously
-without the `memory` option, which the reference requires and Wasmtime
-does not enforce.
+the call path behind it is not built yet. The directive that first
+meets what is missing is an expected failure of category
+`deferred-feature`, for one of six reasons: an asynchronous lower, a
+future or stream built-in, the stackful lift, a thread built-in other
+than `thread.yield`, cancellation, or a call to an asynchronous host
+item. One directive is a `validation` failure instead, the first
+component of `wasmtime/async/cancel-host.wast`: it lowers
+asynchronously without the `memory` option, which the reference
+requires and Wasmtime does not enforce. Most of the rest is `cascade`:
+a component definition that fails leaves its name unbound and no
+instance current, so every later directive in the file that names the
+definition or invokes the instance fails as bookkeeping rather than on
+its own merits. The async files define a component once and then drive
+it over dozens of directives, so those rows carry far more `cascade`
+lines than `deferred-feature` ones.
 
 `expected-failures.txt` lists every directive the polyfill does not pass
 yet, one per line, as `<path>:<line> <category> <reason>`. The harness
@@ -98,22 +105,30 @@ alike.
 
 ## Baseline
 
-The progress summary on the native target, as of 2026-09-19 (`tests
-conformance` prints the current one; the browser differs by the ten
-lines of `expected-failures.web.txt`):
+The progress summary on the native target, as of 2026-09-20 (`tests
+conformance` prints the current one):
 
 | Corpus           | Directives | Passed | Pass % | Expected failures by category                                  |
 | ---------------- | ---------- | ------ | ------ | -------------------------------------------------------------- |
 | `cm`             | 1126       | 1034   | 91.8   | deferred-feature 2, substrate 4, validation 20, cascade 66     |
-| `cm/async`       | 393        | 22     | 5.6    | deferred-feature 371                                           |
+| `cm/async`       | 393        | 22     | 5.6    | deferred-feature 49, cascade 322                               |
 | `fixtures`       | 17         | 17     | 100.0  | none                                                           |
 | `wasmtime`       | 469        | 431    | 91.9   | deferred-feature 2, substrate 8, cascade 28                    |
-| `wasmtime/async` | 387        | 88     | 22.7   | deferred-feature 290, validation 1, cascade 8                  |
-| total            | 2392       | 1592   | 66.6   | deferred-feature 665, substrate 12, validation 21, cascade 102 |
+| `wasmtime/async` | 387        | 88     | 22.7   | deferred-feature 93, validation 1, cascade 205                 |
+| total            | 2392       | 1592   | 66.6   | deferred-feature 146, substrate 12, validation 21, cascade 621 |
+
+The browser's summary differs by the ten lines of
+`expected-failures.web.txt`, which move ten passing directives into
+`substrate`: `cm/async` passes 21 (5.3%), `wasmtime` 425 (90.6%),
+`wasmtime/async` 85 (22.0%), and the total is 1582 (66.1%) with
+substrate 22. Every other cell is the same.
 
 The `async` rows still hold the pass rate down. The polyfill runs a host
 call into a callback export, the task built-ins that export uses, and a
 synchronous lower of a call between two components, but the six reasons
-above cover most of what those directories exercise, so most directives
-there are expected `deferred-feature` failures, while `cm` and
-`wasmtime` alone pass at 91.8% and 91.9%.
+above cover most of what those directories exercise. Each component
+those directories define that the polyfill rejects is a
+`deferred-feature` failure, and every later directive in the same file
+that names it is a `cascade` one, which is why the two async rows
+together hold 527 of the 621 cascade lines, while `cm` and `wasmtime`
+alone pass at 91.8% and 91.9%.
