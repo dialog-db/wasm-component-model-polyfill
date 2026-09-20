@@ -16,3 +16,5 @@ In `check_function_item` in `src/linker/resolve.rs`, enforce Wasmtime 49's rule 
 - [ ] Both `func_wrap_concurrent` and `func_new_concurrent` register and link for an async-typed import, proved by repository tests.
 - [ ] `lint` passes and `tests all` is green on both targets with the conformance summary unchanged.
 
+## Review notes
+- 2026-09-20T00:40:16Z from the 76d25c review, for this card's implementor: (a) `linker/mod.rs:14-16`, `host_func_kind.rs:22-28`, `host_func.rs:51-55` already state this card's rule in the present tense — make them true rather than restating; (b) `function_type_for` hard-codes `async_: false`, so a typed concurrent registration's signature reads sync and `HostFuncKind` is the only record that it is concurrent — branch the rule on the kind, never on the registration's own `async_`; (c) the `Error::Unsupported` arm at `trampoline.rs:370` (sync lower of a concurrent registration) is untested and reachable only while the rule is absent — once the rule holds it becomes unreachable from a linked component, so decide whether a test or a doc note is the right closure.
