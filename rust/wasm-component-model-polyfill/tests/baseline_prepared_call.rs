@@ -137,6 +137,84 @@ const WAITS_FOR_EVER_UNDER_AN_ASYNC_CALLER: &[u8] = component!(
     "#
 );
 
+/// The same shape with a callee whose first status word is the yield
+/// word, so the callee parks with a callback item on the
+/// low-priority queue and never resolves. The callback traps, so a
+/// turn that ran the item would say so.
+const YIELDS_FIRST: &[u8] = component!(
+    r#"
+    (component
+      (component $callee
+        (core module $m
+          (func (export "cb") (param i32 i32 i32) (result i32) unreachable)
+          (func (export "answer") (param i32) (result i32) (i32.const 1)))
+        (core instance $i (instantiate $m))
+        (func (export "answer") async (param "x" u32) (result u32)
+          (canon lift (core func $i "answer") async (callback (core func $i "cb")))))
+      (component $caller
+        (import "answer" (func $answer async (param "x" u32) (result u32)))
+        (core func $lowered (canon lower (func $answer)))
+        (core module $m
+          (import "" "answer" (func $answer (param i32) (result i32)))
+          (func (export "run") (param i32) (result i32)
+            (i32.add (call $answer (local.get 0)) (i32.const 1))))
+        (core instance $i (instantiate $m
+          (with "" (instance (export "answer" (func $lowered))))))
+        (func (export "run") (param "x" u32) (result u32)
+          (canon lift (core func $i "run"))))
+      (instance $a (instantiate $callee))
+      (instance $b (instantiate $caller (with "answer" (func $a "answer"))))
+      (export "run" (func $b "run")))
+    "#
+);
+
+/// The same shape again, with a callee that raises and lowers its
+/// own instance's backpressure through two synchronous exports. A
+/// call of `run` made while the counter is up leaves the callee's
+/// start item at the entry gate: the callee never runs at all, and
+/// the caller's wait fails with nothing of the callee on the stack.
+/// The callee's core function traps, so a turn that ran the item
+/// would say so.
+const BLOCKED_AT_THE_GATE: &[u8] = component!(
+    r#"
+    (component
+      (component $callee
+        (core func $inc (canon backpressure.inc))
+        (core func $dec (canon backpressure.dec))
+        (core module $m
+          (import "" "backpressure.inc" (func $inc))
+          (import "" "backpressure.dec" (func $dec))
+          (func (export "cb") (param i32 i32 i32) (result i32) unreachable)
+          (func (export "answer") (param i32) (result i32) unreachable)
+          (func (export "block") (call $inc))
+          (func (export "unblock") (call $dec)))
+        (core instance $i (instantiate $m
+          (with "" (instance
+            (export "backpressure.inc" (func $inc))
+            (export "backpressure.dec" (func $dec))))))
+        (func (export "answer") async (param "x" u32) (result u32)
+          (canon lift (core func $i "answer") async (callback (core func $i "cb"))))
+        (func (export "block") (canon lift (core func $i "block")))
+        (func (export "unblock") (canon lift (core func $i "unblock"))))
+      (component $caller
+        (import "answer" (func $answer async (param "x" u32) (result u32)))
+        (core func $lowered (canon lower (func $answer)))
+        (core module $m
+          (import "" "answer" (func $answer (param i32) (result i32)))
+          (func (export "run") (param i32) (result i32)
+            (i32.add (call $answer (local.get 0)) (i32.const 1))))
+        (core instance $i (instantiate $m
+          (with "" (instance (export "answer" (func $lowered))))))
+        (func (export "run") (param "x" u32) (result u32)
+          (canon lift (core func $i "run"))))
+      (instance $a (instantiate $callee))
+      (instance $b (instantiate $caller (with "answer" (func $a "answer"))))
+      (export "run" (func $b "run"))
+      (export "block" (func $a "block"))
+      (export "unblock" (func $a "unblock")))
+    "#
+);
+
 /// The same shape with a callee whose core function traps.
 const TRAPS: &[u8] = component!(
     r#"
@@ -298,6 +376,20 @@ fn any_instance_is_held(store: &Store<()>) -> bool {
         .any(|record| record.exclusive_thread.is_some())
 }
 
+/// Take one turn of the store's scheduler and name what it achieved.
+///
+/// The turn is the whole of a driver's poll, without a call to give
+/// it a condition, which is what makes it the way to pin what a
+/// driver would find. Its answer is named rather than returned,
+/// because the enumeration the store answers with is not part of the
+/// crate's public surface.
+fn turn(store: &mut Store<()>) -> String {
+    let outcome = store
+        .turn(core::task::Waker::noop())
+        .expect("the turn itself does not fail");
+    format!("{outcome:?}")
+}
+
 #[wcmp_macros::test]
 async fn it_accepts_the_prepare_and_start_trampolines_of_a_synchronous_lower() {
     // The adapter between the two components imports the prepare and
@@ -387,6 +479,125 @@ async fn it_releases_the_call_when_the_wait_fails_with_the_cannot_block_cause() 
         !any_instance_is_held(&store),
         "the callee's exclusive thread is released by the failure"
     );
+}
+
+#[wcmp_macros::test]
+async fn it_drops_the_callees_queued_callback_when_the_wait_fails_after_a_yield() {
+    // The callee's first status word is the yield word, so it parks
+    // with a callback item on the low-priority queue and the
+    // sync-typed caller's wait fails. The item names a task whose
+    // record the failure took out of the store, so the item goes
+    // with the record: the next driver turn finds nothing to run.
+    let (mut store, instance) = instantiate(YIELDS_FIRST).await;
+    let run = instance.get_func("run").expect("the caller's export");
+    let err = run
+        .call(&mut store, &[Val::U32(1)])
+        .await
+        .expect_err("a sync-typed caller cannot wait for its callee");
+    let message = chain(&err);
+    assert!(
+        message.contains("cannot block a synchronous task before returning"),
+        "expected the cannot-block cause, got {message}"
+    );
+    assert_eq!(task_count(&store), 0, "neither task is left in the store");
+    assert_eq!(subtask_count(&store), 0, "the subtask left the store");
+    assert_eq!(
+        store.scheduler().queued_items(),
+        0,
+        "the callback item the yield left went with the task's record"
+    );
+
+    // The turn the next driver takes. The callee's callback traps,
+    // so a turn that ran the orphaned item would fail with that
+    // trap, and a turn that ran it against the missing record would
+    // fail with the polyfill's own invariant cause. It does neither:
+    // it finds nothing ready and goes idle.
+    assert_eq!(turn(&mut store), "Idle");
+}
+
+#[wcmp_macros::test]
+async fn it_drops_the_callees_held_callback_when_the_wait_fails_during_a_wait() {
+    // The callee's first status word waits on a set nothing ever
+    // fills, so the scheduler holds its callback item and the
+    // sync-typed caller's wait fails. The held item goes with the
+    // task's record, and the wait it was holding for ends with it,
+    // so the set the callee made has no waiter left.
+    let (mut store, instance) = instantiate(WAITS_FOR_EVER).await;
+    let run = instance.get_func("run").expect("the caller's export");
+    let err = run
+        .call(&mut store, &[Val::U32(1)])
+        .await
+        .expect_err("a sync-typed caller cannot wait for its callee");
+    let message = chain(&err);
+    assert!(
+        message.contains("cannot block a synchronous task before returning"),
+        "expected the cannot-block cause, got {message}"
+    );
+    assert_eq!(task_count(&store), 0, "neither task is left in the store");
+    assert_eq!(
+        store.scheduler().held_callbacks(),
+        0,
+        "the held callback item went with the task's record"
+    );
+    assert_eq!(
+        store.scheduler().queued_items(),
+        0,
+        "and nothing else of the callee's is queued"
+    );
+
+    assert_eq!(turn(&mut store), "Idle");
+}
+
+#[wcmp_macros::test]
+async fn it_drops_the_callees_start_item_when_the_wait_fails_at_the_entry_gate() {
+    // The callee's instance has its backpressure raised, so the
+    // gate holds the callee's start item and the callee never runs
+    // at all. The sync-typed caller's wait fails with nothing of the
+    // callee on the stack, and the start item goes with the task's
+    // record — the gate's count of the tasks waiting to enter with
+    // it, so the gate is not left shut against the calls that come
+    // after.
+    let (mut store, instance) = instantiate(BLOCKED_AT_THE_GATE).await;
+    instance
+        .get_func("block")
+        .expect("the callee's backpressure export")
+        .call(&mut store, &[])
+        .await
+        .expect("the callee raises its own backpressure");
+
+    let run = instance.get_func("run").expect("the caller's export");
+    let err = run
+        .call(&mut store, &[Val::U32(1)])
+        .await
+        .expect_err("a sync-typed caller cannot wait for a callee the gate holds");
+    let message = chain(&err);
+    assert!(
+        message.contains("cannot block a synchronous task before returning"),
+        "expected the cannot-block cause, got {message}"
+    );
+    assert_eq!(task_count(&store), 0, "neither task is left in the store");
+    assert_eq!(subtask_count(&store), 0, "the subtask left the store");
+    assert_eq!(
+        store.scheduler().waiting_at_gate(),
+        0,
+        "the start item the gate held went with the task's record"
+    );
+    assert_eq!(
+        store.scheduler().queued_items(),
+        0,
+        "and nothing else of the callee's is queued"
+    );
+
+    // The gate opens again with nothing behind it. The callee's core
+    // function traps, so a turn that let the orphaned start item
+    // through would fail with that trap.
+    instance
+        .get_func("unblock")
+        .expect("the callee's backpressure export")
+        .call(&mut store, &[])
+        .await
+        .expect("the callee lowers its own backpressure");
+    assert_eq!(turn(&mut store), "Idle");
 }
 
 #[wcmp_macros::test]

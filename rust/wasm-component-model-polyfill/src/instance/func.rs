@@ -209,7 +209,8 @@ impl Func {
                 // nothing left to fail with.
                 Ok(())
             },
-        );
+        )
+        .for_task(task);
 
         // A synchronous export of a synchronous function ignores the
         // entry gate, as the reference states: the gate applies to a
@@ -378,7 +379,8 @@ impl Func {
                     // to fail with.
                     Ok(())
                 },
-            );
+            )
+            .for_task(task);
 
             // The entry gate applies: the function type is `async`,
             // and a callback task needs the instance exclusively,
@@ -402,7 +404,8 @@ impl Func {
                 // and nothing left to fail with.
                 Ok(())
             },
-        );
+        )
+        .for_task(task);
 
         // A synchronous export's task ignores the entry gate, as the
         // reference states: the gate applies to a task whose
@@ -472,7 +475,8 @@ impl Func {
                 // so the item itself has nothing left to fail with.
                 Ok(())
             },
-        );
+        )
+        .for_task(task);
 
         // The entry gate applies: the function type is `async`, and a
         // callback task needs the instance exclusively, because the

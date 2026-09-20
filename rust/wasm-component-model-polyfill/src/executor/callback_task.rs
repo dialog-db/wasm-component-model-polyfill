@@ -39,6 +39,12 @@
 //! An error the item raises fails the driver whose turn ran it, not
 //! the call that started the task. That is Wasmtime's rule for a task
 //! that keeps running after it has returned its result.
+//!
+//! An item outlives the call that queued it but not the task it
+//! resumes. A yield and a wait each leave an item naming the task,
+//! and the store's rule is that a task's pending work goes with its
+//! record: whichever way the task ends, the item goes with it. The
+//! item therefore never has to ask whether the task is still there.
 
 use wasm_runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
 
@@ -166,7 +172,8 @@ impl CallbackTask {
 
     /// The item that resumes this task with the event `slot` holds.
     /// It is the instance's own work, so a turn held to that instance
-    /// runs it.
+    /// runs it, and it is this task's own work, so it goes with the
+    /// task's record when that record leaves the store.
     fn item<T: 'static>(&self, slot: EventSlot) -> Item<T> {
         let resumed = self.clone();
         Item::new(
@@ -174,6 +181,7 @@ impl CallbackTask {
             move |store: &mut StoreContext<'_, T>| resumed.run(store, slot),
         )
         .in_instance(self.instance)
+        .for_task(self.task)
     }
 
     /// Run one callback invocation, which is what the item does.

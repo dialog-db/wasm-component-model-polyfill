@@ -6,6 +6,7 @@ use crate::store::StoreContext;
 use super::instance_id::InstanceId;
 use super::item_action::ItemAction;
 use super::item_kind::ItemKind;
+use super::task_id::TaskId;
 
 /// The boxed action of one item, with the `Send` bound the native
 /// target puts on everything a store holds.
@@ -30,6 +31,7 @@ type BoxedAction<T> = Box<dyn FnOnce(&mut StoreContext<'_, T>) -> Result<()> + '
 pub struct Item<T: 'static> {
     kind: ItemKind,
     instance: Option<InstanceId>,
+    task: Option<TaskId>,
     action: BoxedAction<T>,
 }
 
@@ -37,11 +39,13 @@ impl<T: 'static> Item<T> {
     /// Build an item of `kind` that runs `action` against the store.
     /// The item names no instance until
     /// [`in_instance`](Self::in_instance) says which one it belongs
-    /// to.
+    /// to, and no task until [`for_task`](Self::for_task) says whose
+    /// work it is.
     pub fn new(kind: ItemKind, action: impl ItemAction<T>) -> Self {
         Self {
             kind,
             instance: None,
+            task: None,
             action: Box::new(action),
         }
     }
@@ -68,6 +72,20 @@ impl<T: 'static> Item<T> {
         self
     }
 
+    /// Say which task this item's work belongs to.
+    ///
+    /// An item queued for a task is that task's pending work, and a
+    /// task's pending work goes with its record: the scheduler drops
+    /// every item that names a task whose record leaves the store,
+    /// so no item can run against a task that is not there. An item
+    /// that belongs to no one task — a host task's result lowering,
+    /// the resumption of a thread — names none, and nothing drops
+    /// it.
+    pub fn for_task(mut self, task: TaskId) -> Self {
+        self.task = Some(task);
+        self
+    }
+
     /// What this item does when it runs.
     pub fn kind(&self) -> ItemKind {
         self.kind
@@ -77,6 +95,11 @@ impl<T: 'static> Item<T> {
     /// names one.
     pub fn instance(&self) -> Option<InstanceId> {
         self.instance
+    }
+
+    /// The task this item's work belongs to, when it names one.
+    pub fn task(&self) -> Option<TaskId> {
+        self.task
     }
 
     /// Run the item against `store`, consuming it.

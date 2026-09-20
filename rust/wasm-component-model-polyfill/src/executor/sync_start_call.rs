@@ -44,6 +44,18 @@
 //! subtask resolves as a cancellation and leaves the store, and the
 //! callee's task ends, so the instance its thread held exclusively
 //! goes back and the next call finds the store as this one did.
+//!
+//! A callee this reaches has usually left an item behind. It is the
+//! one caller of the callback loop that can fail while its callee
+//! is parked: a callee that gave way left a callback item on the
+//! low-priority queue, one that waited left a held callback item,
+//! and one the gate never let through left the start item at the
+//! gate. Every one of them names the callee's task, and the store's
+//! rule for a dead task's pending work is that it goes with the
+//! record: ending the task drops them. No item is left to run the
+//! callee's callback for a task the store no longer holds, which is
+//! what would otherwise reach the polyfill's own invariant cause
+//! from a component that did nothing wrong.
 
 use std::sync::{Arc, Mutex};
 
@@ -263,6 +275,10 @@ impl Prepared {
 /// trampoline or from a later turn when the gate held it. What it
 /// fails with belongs to the caller, so it leaves it in `failure`
 /// rather than failing the turn that ran it.
+///
+/// The item names the callee's task, so a gate that is still
+/// holding it when the call fails gives it up with the task's
+/// record rather than starting a callee the caller has given up on.
 fn start_item<T: 'static>(
     subtask: SubtaskId,
     task: TaskId,
@@ -284,6 +300,7 @@ fn start_item<T: 'static>(
             Ok(())
         },
     )
+    .for_task(task)
 }
 
 /// Run the callee: lower the arguments through the start function,
@@ -416,6 +433,10 @@ fn abandon<T: 'static>(store: &mut StoreContext<'_, T>, subtask: SubtaskId) {
 /// is. The borrows the callee did not drop go with the record, for
 /// the reason a callback task's own failure path gives: the call
 /// has already failed, so there is nothing left to report them to.
+///
+/// The item the callee parked with goes with the record too. The
+/// module documentation says which item each way of parking leaves,
+/// and the scheduler's says what dropping one gives back.
 fn release_wait<T: 'static>(store: &mut StoreContext<'_, T>, subtask: SubtaskId, task: TaskId) {
     abandon(store, subtask);
     remove_subtask(&store.tables_handle(), subtask);

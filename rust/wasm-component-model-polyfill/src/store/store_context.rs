@@ -981,11 +981,18 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// exit is what removes that record. A release that ran after the
     /// record was gone would find nothing and give nothing back, and
     /// the gate would stay shut for the life of the instance.
+    ///
+    /// Whatever the task still has queued goes with the record, for
+    /// the same reason and in the same breath: an item that named
+    /// the task is work the task will never do, and the scheduler's
+    /// own documentation states what dropping it gives back.
     pub fn exit_export_task(&mut self, task: TaskId) -> Result<core::result::Result<(), u32>> {
         let tables = self.tables_handle();
         let mut guard = Self::lock(&tables)?;
         self.scheduler_mut()
             .exit_implicit_thread(&mut guard.tasks, task);
+        self.scheduler_mut()
+            .discard_task_items(&mut guard.tasks, task);
         Ok(guard.exit_task(task))
     }
 
@@ -1003,13 +1010,20 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// the reference's `exit_implicit_thread` for a callback task:
     /// the instance the task held exclusively goes back and its
     /// record leaves the store, exactly as a synchronous task's does
-    /// when its call returns. The inner `Err` carries the count of
+    /// when its call returns, and whatever the task still has queued
+    /// goes with the record under the rule
+    /// [`exit_export_task`](Self::exit_export_task) states. This is
+    /// the end a callback task parked between events reaches when
+    /// the call that started it fails, so it is the end that really
+    /// has items to give up. The inner `Err` carries the count of
     /// borrows the guest did not drop. Workspace-internal.
     pub fn end_export_task(&mut self, task: TaskId) -> Result<core::result::Result<(), u32>> {
         let tables = self.tables_handle();
         let mut guard = Self::lock(&tables)?;
         self.scheduler()
             .exit_implicit_thread(&mut guard.tasks, task);
+        self.scheduler_mut()
+            .discard_task_items(&mut guard.tasks, task);
         Ok(guard.end_task(task))
     }
 
@@ -1020,12 +1034,15 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// back. The task's implicit thread ends first, for the reason
     /// [`exit_export_task`](Self::exit_export_task) gives: a call
     /// that failed gives the instance back exactly as one that
-    /// returned does. Workspace-internal.
+    /// returned does, and gives up what the task still has queued
+    /// with it. Workspace-internal.
     pub fn abandon_export_task(&mut self, task: TaskId) -> Result<()> {
         let tables = self.tables_handle();
         let mut guard = Self::lock(&tables)?;
         self.scheduler_mut()
             .exit_implicit_thread(&mut guard.tasks, task);
+        self.scheduler_mut()
+            .discard_task_items(&mut guard.tasks, task);
         guard.abandon_task(task);
         Ok(())
     }

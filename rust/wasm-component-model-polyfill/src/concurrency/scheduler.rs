@@ -85,6 +85,34 @@ enum HeldFor {
 /// browser, and the store's handle tables are, so it cannot live
 /// beside them.
 ///
+/// An item queued for a task is that task's pending work, and a
+/// task's pending work goes with its record. When a task's record
+/// leaves the store, every item that names that task is dropped
+/// wherever it waits — in a ready queue, in the switch or
+/// resume-after-yield slot, at an entry gate, or among the held
+/// callbacks — and whatever holding it reserved is given back:
+/// [`discard_task_items`](Scheduler::discard_task_items) is that
+/// sweep, and it is the second half of ending a task.
+///
+/// The rule is a drop rather than a check at the point an item runs
+/// because an item does not only run. It also reserves: a start item
+/// at the gate counts against the instance's tally of tasks waiting
+/// to enter, and a held callback keeps the task's implicit thread
+/// parked on a waitable set. An item that merely returned early when
+/// it found no record would leave both reservations standing, and
+/// the gate would stay shut against every later call of that
+/// instance. Dropping the item is also what keeps guest code from
+/// running for a task the store no longer has: a callback item runs
+/// the export's callback before anything it does could notice the
+/// record is gone.
+///
+/// A task ends this way on every path. The ordinary one is the exit
+/// status word, where the task has nothing queued and the sweep
+/// finds nothing. The path that makes the rule necessary is a call
+/// that fails while its callee is parked: the failure ends the
+/// callee's task, and the item the callee left behind would
+/// otherwise outlive it.
+///
 /// The suspend capability is named here too. It is the seam a
 /// blocking built-in asks to suspend the current guest thread, and
 /// the slot a target fills to serve that block by switching stacks.
@@ -561,6 +589,62 @@ impl<T: 'static> Scheduler<T> {
         }
         self.high_priority.push_back(entry.item);
         Ok(())
+    }
+
+    /// Drop every item that names `task`, wherever it is waiting,
+    /// and undo what holding it reserved.
+    ///
+    /// This is the second half of ending a task, and the store's own
+    /// rule for a dead task's pending work: the record and the work
+    /// queued against it leave together. The module documentation
+    /// states why the rule is a drop rather than a check at the
+    /// point an item runs.
+    ///
+    /// Each place an item can be waiting is swept, and each place
+    /// keeps the order of the items that stay:
+    ///
+    /// - The switch slot, the two ready queues, and the
+    ///   resume-after-yield slot hold items that are ready or nearly
+    ///   so. Dropping one reserves nothing to give back.
+    /// - The entry gate holds the start of a task that has not run.
+    ///   The count of the tasks waiting to enter the instance falls
+    ///   with the entry, or the gate would stay shut against every
+    ///   call that came after this one.
+    /// - The held callbacks hold an item waiting for an event or for
+    ///   the instance's exclusive thread. One waiting for an event
+    ///   has parked the task's implicit thread on a waitable set, so
+    ///   the wait ends with the item and the set is left with no
+    ///   waiter that can never be answered. A set the store no
+    ///   longer holds fails that step, and the item is dropped all
+    ///   the same: it is the record the wait was for that has gone.
+    pub fn discard_task_items(&mut self, tables: &mut TaskTables, task: TaskId) {
+        let names_task = |item: &Item<T>| item.task() == Some(task);
+        if self.switch_slot.as_ref().is_some_and(&names_task) {
+            self.switch_slot = None;
+        }
+        if self.resume_after_yield.as_ref().is_some_and(&names_task) {
+            self.resume_after_yield = None;
+        }
+        self.high_priority.retain(|item| !names_task(item));
+        self.low_priority.retain(|item| !names_task(item));
+        self.entry_gate.retain(|entry| {
+            if entry.task != task {
+                return true;
+            }
+            if let Some(record) = tables.instance_mut(entry.instance) {
+                record.waiting_to_enter = record.waiting_to_enter.saturating_sub(1);
+            }
+            false
+        });
+        self.held_callbacks.retain(|entry| {
+            if !names_task(&entry.item) {
+                return true;
+            }
+            if let HeldFor::Event { thread, set } = entry.condition {
+                let _ = tables.end_wait(set, thread);
+            }
+            false
+        });
     }
 
     /// The reference's `has_backpressure`, for one waiting task.
@@ -1333,6 +1417,15 @@ mod tests {
     /// thread parked on it: what a callback task that returned the
     /// wait word leaves behind.
     fn waiting_on_a_set(store: &Store<()>, instance: InstanceId) -> (WaitableSetId, ThreadId) {
+        let (_task, set, thread) = task_waiting_on_a_set(store, instance);
+        (set, thread)
+    }
+
+    /// The same, with the task named, for a test that ends it.
+    fn task_waiting_on_a_set(
+        store: &Store<()>,
+        instance: InstanceId,
+    ) -> (TaskId, WaitableSetId, ThreadId) {
         let mut guard = store.tables().lock().expect("tables");
         let set = guard.tasks.insert_waitable_set();
         let task = guard.tasks.create_task(None, None, instance);
@@ -1341,7 +1434,143 @@ mod tests {
             .tasks
             .begin_wait(set, thread)
             .expect("park the thread");
-        (set, thread)
+        (task, set, thread)
+    }
+
+    /// A fresh task of `instance` with nothing queued for it.
+    fn task(store: &Store<()>, instance: InstanceId) -> TaskId {
+        store
+            .tables()
+            .lock()
+            .expect("tables")
+            .tasks
+            .create_task(None, None, instance)
+    }
+
+    /// How many tasks of `instance` the entry gate counts as waiting
+    /// to enter, which is what shuts the gate against a fresh
+    /// arrival.
+    fn waiting_to_enter(store: &Store<()>, instance: InstanceId) -> u32 {
+        store
+            .tables()
+            .lock()
+            .expect("tables")
+            .tasks
+            .instance(instance)
+            .expect("instance record")
+            .waiting_to_enter
+    }
+
+    /// How many threads `set` counts as waiting on it.
+    fn waiters_on(store: &Store<()>, set: WaitableSetId) -> u32 {
+        store
+            .tables()
+            .lock()
+            .expect("tables")
+            .tasks
+            .waitable_set(set)
+            .expect("set record")
+            .num_waiting
+    }
+
+    #[wcmp_macros::test]
+    fn it_drops_every_item_of_a_task_whose_record_leaves_the_store() {
+        // One task's work sits in every place an item can wait, with
+        // another task's work beside it in each. Ending the first
+        // task takes its items and nothing else.
+        let mut store = store();
+        let log = log();
+        let instance = instance(&store);
+        let (dead, set, thread) = task_waiting_on_a_set(&store, instance);
+        let live = task(&store, instance);
+
+        // The gate is shut, so the start of each task waits at it.
+        set_backpressure(&store, instance, 1);
+        for (task, name) in [(dead, "dead gated"), (live, "live gated")] {
+            store
+                .context()
+                .start_export_thread(
+                    task,
+                    instance,
+                    true,
+                    true,
+                    marker(&log, name).for_task(task),
+                )
+                .expect("queue the task's start");
+        }
+        store
+            .scheduler_mut()
+            .switch_to(marker(&log, "dead switch").for_task(dead));
+        for (task, name) in [(dead, "dead high"), (live, "live high")] {
+            store
+                .scheduler_mut()
+                .push_high_priority(marker(&log, name).for_task(task));
+        }
+        for (task, name) in [(dead, "dead low"), (live, "live low")] {
+            store
+                .scheduler_mut()
+                .push_low_priority(marker(&log, name).for_task(task));
+        }
+        store.scheduler_mut().hold_for_event(
+            instance,
+            thread,
+            set,
+            EventSlot::new(),
+            marker(&log, "dead held").for_task(dead),
+        );
+        store.scheduler_mut().hold_for_exclusive(
+            instance,
+            EventSlot::new(),
+            marker(&log, "live held").for_task(live),
+        );
+        assert_eq!(store.scheduler().queued_items(), 9);
+        assert_eq!(waiting_to_enter(&store, instance), 2);
+        assert_eq!(waiters_on(&store, set), 1);
+
+        {
+            let tables = store.tables_handle();
+            let mut guard = tables.lock().expect("tables");
+            store
+                .scheduler_mut()
+                .discard_task_items(&mut guard.tasks, dead);
+        }
+
+        assert_eq!(
+            store.scheduler().queued_items(),
+            4,
+            "the five items of the task that ended went, and the four beside them stayed"
+        );
+        assert_eq!(
+            store.scheduler().waiting_at_gate(),
+            1,
+            "the start the gate held for the task that ended went with it"
+        );
+        assert_eq!(
+            waiting_to_enter(&store, instance),
+            1,
+            "and the gate no longer counts it, so a later call is not held behind it"
+        );
+        assert_eq!(
+            store.scheduler().held_callbacks(),
+            1,
+            "the held callback of the task that ended went with it"
+        );
+        assert_eq!(
+            waiters_on(&store, set),
+            0,
+            "and the wait it was held for ended, so the set has no waiter left"
+        );
+
+        // What is left runs, in the order it was queued. The switch
+        // slot is empty, because the one item it held was the dead
+        // task's.
+        while let Some(item) = store.scheduler_mut().take_ready() {
+            item.run(&mut store.context()).expect("the item runs");
+        }
+        while let Some(item) = store.scheduler_mut().take_deferred() {
+            item.run(&mut store.context()).expect("the item runs");
+        }
+        assert_eq!(entries(&log), vec!["live high", "live low"]);
     }
 
     /// Give `set` a waitable that holds an event: a subtask that
