@@ -128,6 +128,7 @@ pub use caller_kind::CallerKind;
 pub use driver::Driver;
 pub use event::Event;
 pub use event_slot::EventSlot;
+pub use host_future::HostFuture;
 pub use host_task::HostTask;
 pub use instance_id::InstanceId;
 pub use item::Item;

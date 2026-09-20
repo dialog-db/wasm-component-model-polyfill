@@ -22,7 +22,7 @@ use crate::component::{Component, ExternType, ExternalName};
 use crate::concurrency::InstanceId;
 use crate::error::{Error, InstantiationError, LinkError, Result};
 use crate::instance::{ExportedFunction, ExportedModule, Instance};
-use crate::linker::{HostFuncBody, ImportBinding, InstanceRegistration, Linker, Resolution};
+use crate::linker::{HostFuncKind, ImportBinding, InstanceRegistration, Linker, Resolution};
 use crate::module::Module;
 use crate::resource::{ResourceTableRuntime, ResourceTypeId, TableId};
 use crate::store::StoreContext;
@@ -726,14 +726,15 @@ fn lookup_module<T: 'static>(
 }
 
 /// Look up the host-function payload registered against the import
-/// the lowering targets. Returns the closure as an `Arc` for the
-/// trampoline to capture.
+/// the lowering targets. Returns the registration's kind, which
+/// carries a handle on the body of whichever of the two registration
+/// forms it is, for the trampoline to capture.
 fn lookup_host_func<T: 'static>(
     linker: &Linker<T>,
     component: &Component,
     resolution: &Resolution,
     spec: &LoweringSpec,
-) -> Result<Arc<HostFuncBody<T>>> {
+) -> Result<HostFuncKind<T>> {
     let (registration, item_name) =
         registration_and_item(linker, component, resolution, spec.import_index, &spec.path)?;
     let host = registration.func(&item_name).ok_or_else(|| {
@@ -741,7 +742,7 @@ fn lookup_host_func<T: 'static>(
             import: component.imports[spec.import_index].name.clone(),
         })
     })?;
-    Ok(host.call.clone())
+    Ok(host.kind.clone())
 }
 
 /// Build the [`Imports`] table for a single module instantiation by

@@ -19,20 +19,28 @@ use crate::value::Val;
 /// It is absent in the browser: a JavaScript promise wrapped as a
 /// future is not `Send`, and awaiting one is the whole purpose of a
 /// browser host function.
+///
+/// `Out` is what the future produces. The default is the value
+/// vector one call answers with, which is what a store polls a host
+/// task for and what the future of an untyped registration produces.
+/// The future of a typed registration produces the closure's own
+/// return type instead, and the registration turns that into the
+/// vector, so one trait carries both forms and the per-target line
+/// stays in one place.
 #[cfg(not(target_arch = "wasm32"))]
-pub trait HostFuture: Future<Output = Result<Vec<Val>>> + Send + 'static {}
+pub trait HostFuture<Out = Result<Vec<Val>>>: Future<Output = Out> + Send + 'static {}
 
 #[cfg(not(target_arch = "wasm32"))]
-impl<F> HostFuture for F where F: Future<Output = Result<Vec<Val>>> + Send + 'static {}
+impl<Out, F> HostFuture<Out> for F where F: Future<Output = Out> + Send + 'static {}
 
 /// The bound the future of a host `async` function carries. See the
-/// native definition for what it is and why the `Send` half is
-/// absent here.
+/// native definition for what it is, what `Out` is, and why the
+/// `Send` half is absent here.
 #[cfg(target_arch = "wasm32")]
-pub trait HostFuture: Future<Output = Result<Vec<Val>>> + 'static {}
+pub trait HostFuture<Out = Result<Vec<Val>>>: Future<Output = Out> + 'static {}
 
 #[cfg(target_arch = "wasm32")]
-impl<F> HostFuture for F where F: Future<Output = Result<Vec<Val>>> + 'static {}
+impl<Out, F> HostFuture<Out> for F where F: Future<Output = Out> + 'static {}
 
 #[cfg(test)]
 mod tests {
@@ -43,6 +51,28 @@ mod tests {
     /// built fails to compile here.
     fn accepts<F: HostFuture>(future: F) -> F {
         future
+    }
+
+    /// Take a future whose value is the return of a typed
+    /// registration's closure and give it back. The `Out` parameter
+    /// is what lets the one bound cover that form as well as the
+    /// value vector.
+    fn accepts_typed<F: HostFuture<Result<u32>>>(future: F) -> F {
+        future
+    }
+
+    /// The bound takes the future of a typed registration, whose
+    /// value is the closure's own return rather than the value
+    /// vector the registration turns it into.
+    #[wcmp_macros::test]
+    async fn it_takes_a_future_of_a_typed_registrations_return() {
+        let future = accepts_typed(async { Ok(7u32) });
+
+        assert_eq!(
+            future.await.expect("the future's value"),
+            7,
+            "the future the bound took runs and produces the closure's return"
+        );
     }
 
     /// The native bound takes a future that is `Send`, which is what

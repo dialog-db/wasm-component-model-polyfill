@@ -58,7 +58,7 @@ use crate::backend::Backend;
 use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::{CanonOptions, LoweringSpec};
-use crate::linker::{HostCall, HostFuncBody, HostResource};
+use crate::linker::{HostCall, HostFuncBody, HostFuncKind, HostResource};
 
 use super::ResourceDestructor;
 use crate::concurrency::{InstanceId, LowerKind, Scope, SubtaskState};
@@ -323,13 +323,15 @@ fn invalid_handle(index: u32) -> Error {
 }
 
 /// Build a runtime-layer host function that implements the lowered
-/// import described by `spec`, dispatching to `host_func` and
-/// drawing memory/realloc from `abi_state` at call time.
+/// import described by `spec`, dispatching to `host_func` — the
+/// registration's kind, which says whether the call runs a closure to
+/// completion or starts a host task — and drawing memory/realloc from
+/// `abi_state` at call time.
 pub fn build_trampoline<T: 'static>(
     store: &mut StoreContext<'_, T>,
     spec: &LoweringSpec,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-    host_func: Arc<HostFuncBody<T>>,
+    host_func: HostFuncKind<T>,
 ) -> RuntimeFunc {
     let func_type = derive_runtime_func_type(&spec.signature, spec.kind);
     let signature = spec.signature.clone();
@@ -341,25 +343,34 @@ pub fn build_trampoline<T: 'static>(
         store.runtime_mut(),
         func_type,
         move |store_ctx, args, results| {
-            match kind {
+            match (kind, &host_func) {
                 // An asynchronous lower hands the call back to the
                 // guest as a subtask it waits on, which is a call
                 // path of its own. The component instantiates and
                 // links, and only a guest that actually makes the
                 // call meets the refusal.
-                LowerKind::Async => Err(Error::unsupported(
+                (LowerKind::Async, _) => Err(Error::unsupported(
                     "asynchronous host calls (an import lowered with the `async` option)",
                 )),
-                LowerKind::Sync => invoke_trampoline(
+                (LowerKind::Sync, HostFuncKind::Synchronous(call)) => invoke_trampoline(
                     store_ctx,
                     &signature,
                     &options,
                     &abi_state,
                     &tables,
-                    host_func.as_ref(),
+                    call.as_ref(),
                     args,
                     results,
                 ),
+                // A concurrent registration answers with a future the
+                // store owns as a host task, and starting one is the
+                // other half of the call path above. The registration
+                // links, and only a guest that makes the call meets
+                // the refusal.
+                (LowerKind::Sync, HostFuncKind::Concurrent(_)) => Err(Error::unsupported(
+                    "calls of a host `async` function (an import registered through \
+                     `func_new_concurrent` or `func_wrap_concurrent`)",
+                )),
             }
             .map_err(|err| anyhow!("trampoline invocation failed: {err}"))
         },

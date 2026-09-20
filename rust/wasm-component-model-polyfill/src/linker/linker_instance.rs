@@ -5,9 +5,11 @@
 use core::marker::PhantomData;
 
 use crate::component::FunctionType;
-use crate::error::Result;
+use crate::concurrency::{Accessor, HostFuture};
+use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::module::Module;
 use crate::resource::ResourceTypeId;
+use crate::types::ValueType;
 use crate::value::Val;
 
 use super::component_value::{ComponentParameters, ComponentResult, function_type_for};
@@ -23,7 +25,8 @@ use super::registration::InstanceRegistration;
 /// that satisfy *this* interface": it is obtained from
 /// [`Linker::instance`] and carries the back-reference the linker
 /// uses to look up or insert a per-interface registration entry.
-/// Two registration modes are exposed:
+/// Four function registration modes are exposed, two for a
+/// synchronous host function and two for a host `async` function:
 ///
 /// - [`Self::func_new`] (untyped): take an explicit
 ///   [`FunctionType`] and a closure over [`HostCall`],
@@ -31,11 +34,19 @@ use super::registration::InstanceRegistration;
 /// - [`Self::func_wrap`] (typed): take a closure with statically-
 ///   typed Rust arguments and return; the polyfill derives the
 ///   declared signature from the closure's generic parameters.
+/// - [`Self::func_new_concurrent`] (untyped): take an explicit
+///   [`FunctionType`] and a closure over [`Accessor`] and an owned
+///   `Vec<Val>` that answers with the future of one call.
+/// - [`Self::func_wrap_concurrent`] (typed): take the same closure
+///   with statically-typed Rust arguments and return, and derive the
+///   declared signature as [`Self::func_wrap`] does.
 ///
-/// Both modes converge on a single [`HostFunc<T>`] that the linker
+/// Every mode converges on a single [`HostFunc<T>`] that the linker
 /// stores against the item's name, then the resolver's link-time
 /// type check consults when matching the registration against the
-/// component's declared import.
+/// component's declared import. The registration records which of
+/// the two forms it is, and that is what the link rule and the
+/// trampoline read.
 ///
 /// A third mode, [`Self::resource`], registers a host-owned
 /// resource type with a synchronous destructor closure. It produces
@@ -188,5 +199,413 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
             Ok(())
         });
         self.registration.funcs.insert(name.into(), host);
+    }
+
+    /// Register an *untyped* host `async` function: one whose call
+    /// produces a future rather than a result.
+    ///
+    /// The closure takes the accessor of the store the call runs
+    /// against and the lifted arguments, and answers with the future
+    /// of that one call. Both are owned, where the synchronous entry
+    /// lends slices, because nothing the future borrows from the call
+    /// survives it: the trampoline hands the future to the store and
+    /// returns to the guest, so the future outlives the frame the
+    /// call was made on.
+    ///
+    /// The future runs as a host task the store polls. The turns that
+    /// follow the call poll it, with the waker of whichever driver is
+    /// running the store, until it completes; the store then lowers
+    /// its value into the subtask the guest waits on. So the future is
+    /// `'static`, and `Send` besides on the native target, which is
+    /// what keeps a store `Send`. The browser bound is `'static`
+    /// alone, so a future that awaits a JavaScript promise satisfies
+    /// it.
+    ///
+    /// The accessor is a token, not a borrow. It carries the store's
+    /// identity, borrows nothing, and reaches the store only inside
+    /// the closure [`Accessor::with`] runs, and only while a poll of
+    /// that store is running. A future therefore clones the token it
+    /// is handed, holds the clone across its awaits, and reaches the
+    /// store again in a later poll; a value read out of the host data
+    /// must be cloned out of the closure, and a reach made where no
+    /// poll of the store is running fails rather than lending the
+    /// store.
+    ///
+    /// The caller supplies the declared [`FunctionType`] here, as
+    /// [`Self::func_new`] does; the resolver checks it against the
+    /// component's import at link time. When the future completes, its
+    /// vector must hold one value if `ty` declares a result and none
+    /// otherwise: a result vector of the wrong length fails the call,
+    /// as an untyped synchronous registration's mismatched value does.
+    pub fn func_new_concurrent<F, Fut>(
+        &mut self,
+        name: impl Into<String>,
+        ty: FunctionType,
+        func: F,
+    ) where
+        F: Fn(&Accessor<T>, Vec<Val>) -> Fut + Send + Sync + 'static,
+        Fut: HostFuture,
+    {
+        let declared = ty.result.clone();
+        let host = HostFunc::concurrent(ty, move |accessor, args| {
+            let future = func(accessor, args);
+            let declared = declared.clone();
+            Box::pin(async move {
+                let values = future.await?;
+                let expected = usize::from(declared.is_some());
+                if values.len() != expected {
+                    return Err(result_arity(declared));
+                }
+                Ok(values)
+            })
+        });
+        self.registration.funcs.insert(name.into(), host);
+    }
+
+    /// Register a *typed* host `async` function: one whose call
+    /// produces a future rather than a result.
+    ///
+    /// The closure's argument tuple and return type derive the
+    /// declared [`FunctionType`] via [`ComponentParameters`] and
+    /// [`ComponentResult`], exactly as [`Self::func_wrap`] derives
+    /// it; the resolver checks the derived signature against the
+    /// component's import at link time.
+    ///
+    /// The closure takes the accessor of the store the call runs
+    /// against and the decoded arguments, and answers with the future
+    /// of that one call. That future runs as a host task the store
+    /// polls: the turns that follow the call poll it, with the waker
+    /// of whichever driver is running the store, until it completes,
+    /// and the store then lowers its value into the subtask the guest
+    /// waits on. So the future is `'static`, and `Send` besides on the
+    /// native target, which is what keeps a store `Send`. The browser
+    /// bound is `'static` alone, so a future that awaits a JavaScript
+    /// promise satisfies it.
+    ///
+    /// The accessor is a token, not a borrow. It carries the store's
+    /// identity, borrows nothing, and reaches the store only inside
+    /// the closure [`Accessor::with`] runs, and only while a poll of
+    /// that store is running. A closure that returns an `async` block
+    /// therefore clones the token it is handed into the block, awaits,
+    /// and reaches the host data through the clone on the other side
+    /// of the await; a value read out of the host data must be cloned
+    /// out of the closure, and a reach made where no poll of the store
+    /// is running fails rather than lending the store.
+    ///
+    /// The vector the call answers with is the closure's return, so
+    /// its length is the declared result's by construction: one value
+    /// when `Ret` is a value type and none when it is `()`. A result
+    /// vector of the wrong length fails the call, which only the
+    /// untyped entry can produce.
+    pub fn func_wrap_concurrent<Params, Ret, F, Fut>(&mut self, name: impl Into<String>, func: F)
+    where
+        Params: ComponentParameters,
+        Ret: ComponentResult,
+        F: Fn(&Accessor<T>, Params) -> Fut + Send + Sync + 'static,
+        Fut: HostFuture<Result<Ret>>,
+    {
+        let signature = function_type_for::<Params, Ret>();
+        let host = HostFunc::concurrent(signature, move |accessor, args| {
+            // The arguments are decoded before the closure runs, so
+            // an argument the registered Rust signature does not
+            // accept is what the future answers with rather than
+            // something the call can report: the call is under way by
+            // the time there is a future at all.
+            let params = match Params::from_vals(&args) {
+                Ok(params) => params,
+                Err(error) => return Box::pin(core::future::ready(Err(error))),
+            };
+            let future = func(accessor, params);
+            Box::pin(async move { Ok(future.await?.into_val().into_iter().collect()) })
+        });
+        self.registration.funcs.insert(name.into(), host);
+    }
+}
+
+/// The failure a concurrent registration's future reports when the
+/// vector it completed with is not the length the registration's
+/// declared result asks for: one value when there is a result and
+/// none when there is not.
+///
+/// The cause is the one an untyped synchronous registration's
+/// mismatched value carries, because it is the same mistake seen a
+/// call later — the host answered with something the declared type
+/// does not describe — and `declared` names the result at issue, or
+/// nothing when the declaration has no result to name.
+fn result_arity(declared: Option<ValueType>) -> Error {
+    Error::from(AbiError {
+        position: AbiPosition::Result,
+        valtype: declared,
+        cause: AbiCause::HostValueMismatch,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::task::{Context, Poll};
+
+    use crate::component::FunctionParameter;
+    use crate::engine::Engine;
+    use crate::store::Store;
+    use crate::types::PrimitiveType;
+
+    use super::super::host_func::ConcurrentHostFuncBody;
+    use super::super::host_func_kind::HostFuncKind;
+    use super::*;
+
+    /// A future that is pending the first time it is polled and ready
+    /// afterwards: one await for a registered closure's `async` block
+    /// to hold the accessor across.
+    ///
+    /// It wakes the waker it was polled with before it parks. The
+    /// tests await it inside the `run_concurrent` entry, and that
+    /// entry parks when the store goes idle with the closure
+    /// unfinished, so a future with nothing outside the store to wake
+    /// it has to wake the turn itself — which is what a future waiting
+    /// on the host's executor, a timer or a promise, does for it.
+    #[derive(Default)]
+    struct PendingOnce(bool);
+
+    impl Future for PendingOnce {
+        type Output = ();
+
+        fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
+            if self.0 {
+                return Poll::Ready(());
+            }
+            self.0 = true;
+            context.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+
+    /// The declared type of a function that takes one `u32` and
+    /// returns one `u32`, carrying the `async` effect: the type an
+    /// async-typed import of that shape has, which is what a host
+    /// declares at an untyped concurrent registration.
+    fn async_typed() -> FunctionType {
+        FunctionType {
+            parameters: vec![FunctionParameter {
+                name: "arg0".to_owned(),
+                ty: ValueType::Primitive(PrimitiveType::U32),
+            }],
+            result: Some(ValueType::Primitive(PrimitiveType::U32)),
+            async_: true,
+        }
+    }
+
+    /// The body of a concurrent registration, or a failure naming what
+    /// the registration turned out to be.
+    fn concurrent<T: 'static>(host: &HostFunc<T>) -> &ConcurrentHostFuncBody<T> {
+        match &host.kind {
+            HostFuncKind::Concurrent(start) => start.as_ref(),
+            HostFuncKind::Synchronous(_) => panic!("the registration is a synchronous one"),
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_records_a_concurrent_kind_and_the_derived_type_for_the_typed_entry() {
+        let mut registration = InstanceRegistration::<String>::new();
+
+        LinkerInstance::new(&mut registration).func_wrap_concurrent(
+            "greet",
+            |accessor: &Accessor<String>, (extra,): (u32,)| {
+                let accessor = accessor.clone();
+                async move {
+                    let reached = accessor.with(|store| store.data().len())?;
+                    Ok(u32::try_from(reached).expect("the host data's length") + extra)
+                }
+            },
+        );
+
+        let host = registration.func("greet").expect("the registration");
+        assert_eq!(
+            host.signature,
+            function_type_for::<(u32,), u32>(),
+            "the closure's types derive the signature the resolver sees, as `func_wrap` derives it"
+        );
+        assert!(
+            matches!(host.kind, HostFuncKind::Concurrent(_)),
+            "the registration records the concurrent kind"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_records_a_concurrent_kind_and_the_declared_type_for_the_untyped_entry() {
+        let mut registration = InstanceRegistration::<String>::new();
+
+        LinkerInstance::new(&mut registration).func_new_concurrent(
+            "greet",
+            async_typed(),
+            |_accessor: &Accessor<String>, args: Vec<Val>| async move { Ok(args) },
+        );
+
+        let host = registration.func("greet").expect("the registration");
+        assert_eq!(
+            host.signature,
+            async_typed(),
+            "the type declared at the registration is the one the resolver sees, whole"
+        );
+        assert!(
+            matches!(host.kind, HostFuncKind::Concurrent(_)),
+            "the registration records the concurrent kind"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_records_a_synchronous_kind_for_the_two_synchronous_entries() {
+        let mut registration = InstanceRegistration::<String>::new();
+        let mut instance = LinkerInstance::new(&mut registration);
+
+        instance.func_new("untyped", async_typed(), |_call, _args, _results| Ok(()));
+        instance.func_wrap("typed", |_call: HostCall<'_, String>, (arg,): (u32,)| {
+            Ok(arg)
+        });
+
+        for name in ["untyped", "typed"] {
+            let host = registration.func(name).expect("the registration");
+            assert!(
+                matches!(host.kind, HostFuncKind::Synchronous(_)),
+                "the synchronous entries record the synchronous kind, for `{name}`"
+            );
+        }
+    }
+
+    #[wcmp_macros::test]
+    async fn it_awaits_and_then_reaches_the_host_data_through_the_accessor() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, "host data".to_owned()).expect("store");
+        let mut registration = InstanceRegistration::<String>::new();
+
+        LinkerInstance::new(&mut registration).func_wrap_concurrent(
+            "greet",
+            |accessor: &Accessor<String>, (extra,): (u32,)| {
+                // The accessor is a token, so the block owns a clone of
+                // it and holds that clone across the await. What it
+                // reaches, it reaches in a later poll of the future.
+                let accessor = accessor.clone();
+                async move {
+                    PendingOnce::default().await;
+                    let reached = accessor.with(|store| {
+                        store.data_mut().push_str(" reached");
+                        store.data().len()
+                    })?;
+                    Ok(u32::try_from(reached).expect("the host data's length") + extra)
+                }
+            },
+        );
+
+        let host = registration
+            .func("greet")
+            .expect("the registration")
+            .clone();
+        let values = store
+            .run_concurrent(async |accessor: &Accessor<String>| {
+                concurrent(&host)(accessor, vec![Val::U32(2)]).await
+            })
+            .await
+            .expect("run the closure")
+            .expect("the call's value");
+
+        assert_eq!(
+            values,
+            vec![Val::U32(19)],
+            "the closure's return crossed as the value vector: the length of \
+             \"host data reached\" and the argument"
+        );
+        assert_eq!(
+            store.data(),
+            "host data reached",
+            "what the future wrote to the host data, after its await, stayed there"
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_fails_a_call_whose_result_vector_is_not_the_declared_length() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+        let mut registration = InstanceRegistration::<()>::new();
+
+        // The declared type names one result, and the future completes
+        // with none.
+        LinkerInstance::new(&mut registration).func_new_concurrent(
+            "greet",
+            async_typed(),
+            |_accessor: &Accessor<()>, _args: Vec<Val>| async move { Ok(Vec::new()) },
+        );
+
+        let host = registration
+            .func("greet")
+            .expect("the registration")
+            .clone();
+        let failure = store
+            .run_concurrent(async |accessor: &Accessor<()>| {
+                concurrent(&host)(accessor, vec![Val::U32(2)]).await
+            })
+            .await
+            .expect("run the closure")
+            .expect_err("the call fails");
+
+        assert_eq!(
+            failure.to_string(),
+            Error::from(AbiError {
+                position: AbiPosition::Result,
+                valtype: Some(ValueType::Primitive(PrimitiveType::U32)),
+                cause: AbiCause::HostValueMismatch,
+            })
+            .to_string(),
+            "a result vector of the wrong length fails the call, naming the declared result"
+        );
+    }
+
+    /// The browser bound takes a future that is not `Send`. A closure
+    /// whose `async` block awaits a JavaScript promise and then reaches
+    /// the host data is the browser host function the bound exists for,
+    /// and the typed entry takes it.
+    #[cfg(target_arch = "wasm32")]
+    #[wcmp_macros::test]
+    async fn it_takes_a_closure_whose_block_awaits_a_promise_in_the_browser() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, "host data".to_owned()).expect("store");
+        let mut registration = InstanceRegistration::<String>::new();
+
+        LinkerInstance::new(&mut registration).func_wrap_concurrent(
+            "greet",
+            |accessor: &Accessor<String>, (extra,): (u32,)| {
+                let accessor = accessor.clone();
+                async move {
+                    let promise = js_sys::Promise::resolve(&wasm_bindgen::JsValue::from_f64(3.0));
+                    let resolved = wasm_bindgen_futures::JsFuture::from(promise)
+                        .await
+                        .expect("the promise resolves");
+                    let from_promise = resolved.as_f64().expect("the promise's value") as u32;
+                    let reached = accessor.with(|store| store.data().len())?;
+                    Ok(u32::try_from(reached).expect("the host data's length")
+                        + from_promise
+                        + extra)
+                }
+            },
+        );
+
+        let host = registration
+            .func("greet")
+            .expect("the registration")
+            .clone();
+        let values = store
+            .run_concurrent(async |accessor: &Accessor<String>| {
+                concurrent(&host)(accessor, vec![Val::U32(2)]).await
+            })
+            .await
+            .expect("run the closure")
+            .expect("the call's value");
+
+        assert_eq!(
+            values,
+            vec![Val::U32(14)],
+            "the future awaited the promise and then reached the host data: the \
+             length of \"host data\", the promise's value, and the argument"
+        );
     }
 }
