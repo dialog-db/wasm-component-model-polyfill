@@ -632,6 +632,14 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             });
         }
         self.poll_host_tasks(waker)?;
+        // A host task's body reaches the store through its accessor,
+        // so a poll of one can have satisfied what the store was
+        // holding back: a callback whose wait it filled the event
+        // for, or a task the gate can now release. The gate is
+        // therefore opened once more before the turn decides it has
+        // nothing left to run, or work that became ready in the poll
+        // would wait for the wake that running it is what produces.
+        self.open_entry_gate()?;
         if self.scheduler().has_immediate_item() {
             return Ok(Outcome::Progress);
         }

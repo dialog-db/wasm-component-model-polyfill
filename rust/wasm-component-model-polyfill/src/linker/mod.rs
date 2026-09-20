@@ -34,7 +34,7 @@ mod resolve;
 
 pub use component_value::{ComponentParameters, ComponentResult, ComponentValue};
 pub use host_call::HostCall;
-pub use host_func::HostFuncBody;
+pub use host_func::HostFuncFuture;
 pub use host_func_kind::HostFuncKind;
 pub use host_resource::{DestructorBody, HostResource};
 pub use linker::Linker;

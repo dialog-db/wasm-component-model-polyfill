@@ -27,6 +27,9 @@
 #[path = "conformance/report.rs"]
 mod report;
 
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -454,18 +457,62 @@ struct ResourceState {
     last_drop: AtomicU32,
 }
 
+/// A future that is pending the first time it is polled and ready
+/// with `value` afterwards: what a single yield on Wasmtime's
+/// executor does to the body of a host `async` function, expressed
+/// against the polyfill's store, which polls a host task once per
+/// turn.
+///
+/// The waker is woken before the future parks, because a driver that
+/// finds only a host task pending parks too: the wake is what brings
+/// it back for the turn that completes the call.
+struct YieldOnce<V> {
+    polled: bool,
+    value: Option<V>,
+}
+
+impl<V> YieldOnce<V> {
+    fn new(value: V) -> Self {
+        Self {
+            polled: false,
+            value: Some(value),
+        }
+    }
+}
+
+impl<V: Unpin> Future for YieldOnce<V> {
+    type Output = Result<V, Error>;
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        if this.polled {
+            let value = this.value.take().expect("the future is polled once ready");
+            return Poll::Ready(Ok(value));
+        }
+        this.polled = true;
+        context.waker().wake_by_ref();
+        Poll::Pending
+    }
+}
+
 /// Register the host items Wasmtime's wast runner provides for its
 /// component tests (`crates/wast/src/spectest.rs`,
 /// `link_component_spectest`), so the directives that import them
-/// run as they do there. `host-echo-u32` is declared `async func`, so
-/// the link rule wants the concurrent entry for it and the harness
-/// registers it with `func_wrap_concurrent`, as the runner does; its
-/// future resolves at once, without yielding. The remaining
-/// asynchronous items (`never-return`, `return-two-slowly`,
-/// `echo-slowly`, and `[method]resource1.never-return`) need a host
-/// task that actually yields, which the polyfill does not support
-/// calling yet, so they are left out; every directive that imports one
-/// of them is a deferred feature.
+/// run as they do there.
+///
+/// Five of them are declared `async func`, so the link rule wants a
+/// concurrent registration for each, and each behaves as the runner
+/// makes it behave. `host-echo-u32` resolves at once with its
+/// argument. `never-return` and `[method]resource1.never-return` stay
+/// pending for ever. `echo-slowly` and `return-two-slowly` are
+/// pending once and resolve at the next poll, which is what the
+/// runner's single `yield_now` on Wasmtime's executor comes to.
+///
+/// `[method]resource1.never-return` takes a `borrow<resource1>`, and
+/// the typed entries derive no signature for a resource handle, so it
+/// goes through the untyped concurrent entry with the signature
+/// written out — exactly as the synchronous methods of the same
+/// resource go through the untyped synchronous entry.
 async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
     linker
         .root()
@@ -579,6 +626,23 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
             );
             Ok(())
         },
+    );
+    host.func_wrap_concurrent("never-return", |_: &Accessor<()>, (): ()| {
+        core::future::pending::<Result<(), Error>>()
+    });
+    host.func_wrap_concurrent("return-two-slowly", |_: &Accessor<()>, (): ()| {
+        YieldOnce::new(2i32)
+    });
+    host.func_wrap_concurrent("echo-slowly", |_: &Accessor<()>, (a,): (u32,)| {
+        YieldOnce::new(a)
+    });
+    host.func_new_concurrent(
+        "[method]resource1.never-return",
+        FunctionType {
+            async_: true,
+            ..signature(&[("self", borrow())], None)
+        },
+        |_: &Accessor<()>, _args: Vec<Val>| core::future::pending::<Result<Vec<Val>, Error>>(),
     );
     host.func_wrap("return-hi", |_, (): ()| Ok("hi".to_owned()));
 

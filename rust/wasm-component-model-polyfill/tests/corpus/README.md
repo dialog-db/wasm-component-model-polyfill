@@ -17,15 +17,16 @@ task built-ins that come with it, so part of `cm/async/` and
 `wasmtime/async/` passes: a host call into such an export, `task.return`,
 backpressure, the waitable set built-ins, `thread.yield`, the context
 slots, and a synchronous lower of such an export from a sibling
-component. A component whose import is lowered asynchronously translates
-and instantiates too; only a guest that makes such a call fails, because
-the call path behind it is not built yet. The directive that first
-meets what is missing is an expected failure of category
-`deferred-feature`, for one of six reasons: an asynchronous lower, a
-future or stream built-in, the stackful lift, a thread built-in other
-than `thread.yield`, cancellation, or a call to an asynchronous host
-item. One directive is a `validation` failure instead, the first
-component of `wasmtime/async/cancel-host.wast`: it lowers
+component. A guest that lowers a host `async` function asynchronously
+reaches it too: the call answers with the status word, a future that is
+still running becomes a subtask the guest waits on, and the result
+crosses back when the future completes. The directive that first meets
+what is missing is an expected failure of category `deferred-feature`,
+for one of seven reasons: an asynchronous lower of another component's
+export, a future or stream built-in, the stackful lift, a thread
+built-in other than `thread.yield`, cancellation, `subtask.drop`, or an
+error context. One directive is a `validation` failure instead, the
+first component of `wasmtime/async/cancel-host.wast`: it lowers
 asynchronously without the `memory` option, which the reference
 requires and Wasmtime does not enforce. Most of the rest is `cascade`:
 a component definition that fails leaves its name unbound and no
@@ -53,15 +54,19 @@ wast runner provides: the `host` instance, `host-return-two`, and
 the rest of its component spectest (`crates/wast/src/spectest.rs`
 upstream), plus the module exports of every named component a file
 instantiates, reflected under the component's name as the runner
-does. The runner defines five of those items as asynchronous. The
-harness registers one of them, `host-echo-u32`, through the concurrent
-entry the runner uses, because the link rule holds an `async func`
-import to a concurrent registration; its future answers with the
-argument and never pends. It registers none of the other four:
-`host.never-return`,
-`host.return-two-slowly`, `host.echo-slowly`, and
-`host.[method]resource1.never-return`. A file that imports one of the
-four fails as a `deferred-feature`.
+does. The runner defines five of those items as asynchronous, and the
+harness registers all five through a concurrent entry, because the link
+rule holds an `async func` import to a concurrent registration. Each
+behaves as the runner makes it behave: `host-echo-u32` answers with its
+argument and never pends; `host.never-return` and
+`host.[method]resource1.never-return` stay pending for ever; and
+`host.echo-slowly` and `host.return-two-slowly` are pending once and
+resolve at the next poll, which is what the runner's single yield on
+Wasmtime's executor comes to. Four go through the typed entry, and
+`host.[method]resource1.never-return` through the untyped one, because
+the typed entries derive no signature for the `borrow` it takes — the
+same reason the synchronous methods of that resource are registered
+untyped.
 
 The harness also registers the `wasmtime` instance the runner provides
 beside the spectest for its own misc tests, with the one item a file
@@ -124,11 +129,14 @@ The browser's summary differs by the ten lines of
 substrate 22. Every other cell is the same.
 
 The `async` rows still hold the pass rate down. The polyfill runs a host
-call into a callback export, the task built-ins that export uses, and a
-synchronous lower of a call between two components, but the six reasons
-above cover most of what those directories exercise. Each component
-those directories define that the polyfill rejects is a
-`deferred-feature` failure, and every later directive in the same file
-that names it is a `cascade` one, which is why the two async rows
-together hold 527 of the 621 cascade lines, while `cm` and `wasmtime`
-alone pass at 91.8% and 91.9%.
+call into a callback export, the task built-ins that export uses, a
+synchronous lower of a call between two components, and an asynchronous
+lower of a host `async` function, but the seven reasons above cover most
+of what those directories exercise. Each component those directories
+define that the polyfill rejects is a `deferred-feature` failure, and
+every later directive in the same file that names it is a `cascade`
+one, which is why the two async rows together hold 527 of the 621
+cascade lines, while `cm` and `wasmtime` alone pass at 91.8% and 91.9%.
+The asynchronous lower of a host function moved no directive of the
+corpora: every file that would exercise it is held up by a built-in the
+polyfill does not serve yet.

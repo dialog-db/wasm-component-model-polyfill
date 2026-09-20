@@ -15,9 +15,11 @@
 //! separately: an async-typed import may be lowered either way, and
 //! only the `async` option itself requires the effect on the type.
 //!
-//! A component that lowers asynchronously translates, links, and
-//! instantiates. Only a guest that makes such a call meets the
-//! refusal, because the call path behind it is not built yet.
+//! A component that lowers asynchronously translates, links,
+//! instantiates, and calls: through that lower the guest reaches a
+//! host `async` function and is answered with the status word. The
+//! call path itself is proved in `baseline_async_lower.rs`; what is
+//! proved here is that the shape of the lower reaches it.
 //!
 //! Linking against such an import is held to the *form* of the host's
 //! registration. An async-typed import wants a concurrent
@@ -238,17 +240,20 @@ async fn it_instantiates_a_component_whose_import_is_lowered_asynchronously() {
         .await
         .expect("the component instantiates");
 
-    // The call path behind an asynchronous lower is not built, so
-    // the guest's call into it fails where it is made.
-    let err = instance
+    // The guest's `run` hands the status word straight back. The
+    // registration's future resolves on its first poll, so the call
+    // returned before the lower did and the word is the returned
+    // state alone, with no subtask index above it.
+    let status = instance
         .get_func("run")
         .expect("the component exports `run`")
         .call(&mut store, &[])
         .await
-        .expect_err("the asynchronous host call is refused");
-    assert!(
-        chain(&err).contains("asynchronous host calls"),
-        "expected the asynchronous host call to be named, got {err:?}"
+        .expect("the asynchronous host call runs");
+    assert_eq!(
+        status.first(),
+        Some(&Val::U32(2)),
+        "the guest saw the returned state with no index"
     );
 }
 

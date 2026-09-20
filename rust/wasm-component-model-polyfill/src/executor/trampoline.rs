@@ -29,10 +29,34 @@
 //! core type to the guest — at most four flat parameters, the result
 //! always through a return-area pointer, and one `i32` result, the
 //! status word — and gives the guest control back before the callee
-//! returns. The trampoline is built with that type, and calling it
-//! fails with [`Error::Unsupported`] until the call path behind it
-//! lands, so a component that lowers asynchronously still links and
-//! instantiates.
+//! returns. The arguments cross exactly as above; what differs is
+//! what the trampoline answers with. It answers with the status
+//! word, which is the state of the call's subtask and, when the call
+//! has not finished, the index of the entry the guest waits on.
+//!
+//! A synchronous registration reached through such a lower runs its
+//! closure to completion as it always does, so the result crosses
+//! through the return area and the guest sees the returned state
+//! with no entry behind it. A concurrent registration answers with
+//! the future of one call instead: the trampoline builds a host task
+//! from that future, with a lowering that writes the result through
+//! the boundary context of the subtask, and hands it to the store.
+//! The store polls it once. A future that is ready lowers its result
+//! there and then, and the guest sees the returned state. A future
+//! that is not joins the store's host tasks, its subtask enters the
+//! caller's handle table, and the guest sees the started state with
+//! that index; a later turn lowers the result, resolves the subtask,
+//! and fills the subtask event that `waitable-set.wait` and
+//! `waitable-set.poll` deliver.
+//!
+//! The remaining pairing — a concurrent registration reached through
+//! a *synchronous* lower — has to block the guest thread where it
+//! stands, which is a path of its own, and calling it fails with
+//! [`Error::Unsupported`] until that path lands. The link rule holds
+//! a concurrent registration to an async-typed import, which does
+//! not put the pairing out of reach: the two axes move separately,
+//! so a guest may lower an async-typed import without the `async`
+//! option and reach the host synchronously.
 //!
 //! [`Func`]: wasm_runtime_layer::Func
 //! [`HostFunc<T>`]: crate::linker::HostFunc
@@ -52,17 +76,20 @@ use crate::abi::layout::{
     FlatType, MAX_FLAT_ASYNC_PARAMS, flat_param_count, flat_types, params_spill, result_spills,
     spill_layout,
 };
+use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::{lift, lower};
 use crate::backend::Backend;
 use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::{CanonOptions, LoweringSpec};
-use crate::linker::{HostCall, HostFuncBody, HostFuncKind, HostResource};
+use crate::linker::{HostCall, HostFuncFuture, HostFuncKind, HostResource};
 
 use super::ResourceDestructor;
-use crate::concurrency::{InstanceId, LowerKind, Scope, SubtaskState};
-use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime, ResourceTypeId};
+use crate::concurrency::{
+    Accessor, CallStatus, HostTask, InstanceId, LowerKind, Scope, SubtaskId, SubtaskState,
+};
+use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime, ResourceTypeId, TableId};
 use crate::store::{StoreContext, StoreData};
 use crate::types::{PrimitiveType, ResourceType, ValueType};
 use crate::value::Val;
@@ -343,42 +370,10 @@ pub fn build_trampoline<T: 'static>(
         store.runtime_mut(),
         func_type,
         move |store_ctx, args, results| {
-            match (kind, &host_func) {
-                // An asynchronous lower hands the call back to the
-                // guest as a subtask it waits on, which is a call
-                // path of its own. The component instantiates and
-                // links, and only a guest that actually makes the
-                // call meets the refusal.
-                (LowerKind::Async, _) => Err(Error::unsupported(
-                    "asynchronous host calls (an import lowered with the `async` option)",
-                )),
-                (LowerKind::Sync, HostFuncKind::Synchronous(call)) => invoke_trampoline(
-                    store_ctx,
-                    &signature,
-                    &options,
-                    &abi_state,
-                    &tables,
-                    call.as_ref(),
-                    args,
-                    results,
-                ),
-                // A concurrent registration answers with a future the
-                // store owns as a host task, and starting one is the
-                // other half of the call path above. The registration
-                // links, and only a guest that makes the call meets
-                // the refusal.
-                //
-                // The link rule holds a concurrent registration to an
-                // async-typed import, which does not put this arm out
-                // of reach: the two axes move separately, so a guest
-                // may lower an async-typed import without the `async`
-                // option and reach the host synchronously. That is the
-                // shape this arm refuses.
-                (LowerKind::Sync, HostFuncKind::Concurrent(_)) => Err(Error::unsupported(
-                    "calls of a host `async` function (an import registered through \
-                     `func_new_concurrent` or `func_wrap_concurrent`)",
-                )),
-            }
+            invoke_trampoline(
+                store_ctx, &signature, &options, kind, &abi_state, &tables, &host_func, args,
+                results,
+            )
             .map_err(|err| anyhow!("trampoline invocation failed: {err}"))
         },
     )
@@ -483,26 +478,55 @@ fn core_type_of_flat(slot: FlatType) -> CoreType {
     }
 }
 
+/// What one call of the host side of a lowered import produced: the
+/// values a synchronous registration's closure returned, or the
+/// future a concurrent registration answered with.
+enum HostOutcome {
+    /// A synchronous registration ran its closure to completion. The
+    /// vector holds one value when the type declares a result and
+    /// none otherwise.
+    Values(Vec<Val>),
+    /// A concurrent registration answered with the future of this one
+    /// call. The store owns it as a host task from here on.
+    Future(HostFuncFuture),
+}
+
 /// The body of a trampoline closure. Reads the per-call canon
 /// options state, lifts arguments, dispatches to the host func, and
-/// lowers the return.
+/// answers with the return — the lowered result of a synchronous
+/// lower, or the status word of an asynchronous one.
 #[allow(clippy::too_many_arguments)]
 fn invoke_trampoline<T: 'static>(
     mut store_ctx: wasm_runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
     signature: &FunctionType,
-    options: &CanonOptions,
+    declared: &CanonOptions,
+    kind: LowerKind,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     tables: &Arc<Mutex<HandleTables>>,
-    host_func: &HostFuncBody<T>,
+    host_func: &HostFuncKind<T>,
     args: &[RuntimeVal],
     results: &mut [RuntimeVal],
 ) -> Result<()> {
+    // A concurrent registration reached through a synchronous lower
+    // has to block the guest thread where it stands, which is a call
+    // path of its own. The refusal comes before anything is recorded,
+    // so a component that never makes the call is unaffected.
+    if matches!(
+        (kind, host_func),
+        (LowerKind::Sync, HostFuncKind::Concurrent(_))
+    ) {
+        return Err(Error::unsupported(
+            "calls of a host `async` function (an import registered through \
+             `func_new_concurrent` or `func_wrap_concurrent`)",
+        ));
+    }
+
     // The canon options of the lowering and the instance they name,
     // read out of the instance's runtime state under one lock of it.
     // Each crossing of the call builds its boundary context from the
     // two, and the instance is where the handle tables of the
     // crossing come from.
-    let (options, instance) = BoundaryInstance::resolve(options, abi_state, tables)?;
+    let (options, instance) = BoundaryInstance::resolve(declared, abi_state, tables)?;
 
     // A call from the guest into the host is a subtask: it goes on
     // the stack of current scopes and stays there while the host side
@@ -520,7 +544,7 @@ fn invoke_trampoline<T: 'static>(
         StoreData<T>,
         Backend,
     >|
-     -> Result<(Vec<Val>, Option<usize>)> {
+     -> Result<(HostOutcome, Option<usize>)> {
         let mut cursor = 0usize;
         let mut lift_ctx = BoundaryContext::new(
             store_ctx.as_context_mut(),
@@ -528,7 +552,7 @@ fn invoke_trampoline<T: 'static>(
             instance.clone(),
             Some(Scope::Subtask(subtask)),
         );
-        let lifted = if params_spill(signature) {
+        let lifted = if parameters_spill(signature, kind) {
             lift_spilled_arguments(&mut lift_ctx, signature, args, &mut cursor)?
         } else {
             let mut lifted: Vec<Val> = Vec::with_capacity(signature.parameters.len());
@@ -545,15 +569,14 @@ fn invoke_trampoline<T: 'static>(
             lifted
         };
 
-        // When the result is too wide for flat slots, the caller
-        // passes a return-area pointer as the final argument.
+        // A synchronous lower passes a return-area pointer as the
+        // final argument only when the result is too wide for flat
+        // slots; an asynchronous lower always passes one, because it
+        // never returns the result at all.
         let return_area_ptr = match &signature.result {
-            Some(result_ty) if result_spills(signature) => Some(pointer_argument(
-                args,
-                &mut cursor,
-                result_ty,
-                AbiPosition::Result,
-            )?),
+            Some(result_ty) if result_travels_through_memory(signature, kind) => Some(
+                pointer_argument(args, &mut cursor, result_ty, AbiPosition::Result)?,
+            ),
             _ => None,
         };
 
@@ -563,22 +586,38 @@ fn invoke_trampoline<T: 'static>(
         // The parameters are lifted, so the callee has started.
         lock_tables(tables)?.tasks.start_subtask(subtask);
 
-        let host_arity = usize::from(signature.result.is_some());
-        let mut host_results: Vec<Val> = vec![Val::Bool(false); host_arity];
-        // The host function runs against the whole store: the
-        // polyfill's own state rides in the core store's data, so
-        // the context the runtime layer handed this trampoline
-        // reaches the scheduler, the suspend seam, and the host
-        // tasks from inside the guest call, with nothing captured.
-        let call = HostCall::new(
-            StoreContext::new(store_ctx.as_context_mut()),
-            instance.resource_tables().to_vec(),
-        );
-        host_func(call, &lifted, &mut host_results)?;
-        Ok((host_results, return_area_ptr))
+        let outcome = match host_func {
+            HostFuncKind::Synchronous(body) => {
+                let host_arity = usize::from(signature.result.is_some());
+                let mut host_results: Vec<Val> = vec![Val::Bool(false); host_arity];
+                // The host function runs against the whole store: the
+                // polyfill's own state rides in the core store's data,
+                // so the context the runtime layer handed this
+                // trampoline reaches the scheduler, the suspend seam,
+                // and the host tasks from inside the guest call, with
+                // nothing captured.
+                let call = HostCall::new(
+                    StoreContext::new(store_ctx.as_context_mut()),
+                    instance.resource_tables().to_vec(),
+                );
+                body(call, &lifted, &mut host_results)?;
+                HostOutcome::Values(host_results)
+            }
+            // A concurrent registration's body runs only far enough
+            // to obtain the future of this one call. It is handed a
+            // token for the store rather than a borrow of it, because
+            // the future outlives this frame: the store owns it and
+            // polls it, and it reaches the store again only inside a
+            // poll.
+            HostFuncKind::Concurrent(start) => {
+                let accessor: Accessor<T> = Accessor::new(store_ctx.data().id());
+                HostOutcome::Future(start(&accessor, lifted))
+            }
+        };
+        Ok((outcome, return_area_ptr))
     })(&mut store_ctx);
 
-    let (host_results, return_area_ptr) = match called {
+    let (outcome, return_area_ptr) = match called {
         Ok(outcome) => outcome,
         Err(err) => {
             // The call never returned, so the subtask's resolution is
@@ -593,21 +632,74 @@ fn invoke_trampoline<T: 'static>(
         }
     };
 
-    // The success path resolves the subtask before results are
-    // written back: a synchronous lower delivers the resolution as it
-    // returns, which gives back every handle the guest lent for the
-    // call. A borrow the host lowers back out belongs to the caller's
-    // task, which is why the subtask leaves the stack first, and why
-    // the crossing of the result counts against the scope the pop
-    // uncovers.
+    match outcome {
+        HostOutcome::Values(host_results) => return_host_values(
+            &mut store_ctx,
+            signature,
+            kind,
+            tables,
+            options,
+            instance,
+            subtask,
+            host_results,
+            return_area_ptr,
+            results,
+        ),
+        HostOutcome::Future(future) => start_host_call(
+            &mut store_ctx,
+            signature,
+            declared,
+            kind,
+            abi_state,
+            options,
+            instance,
+            subtask,
+            future,
+            return_area_ptr,
+            results,
+        ),
+    }
+}
+
+/// Finish a call whose host side ran to completion: the closure of a
+/// synchronous registration, reached through either lower.
+///
+/// The subtask resolves before the results are written back: such a
+/// call delivers its resolution as it returns, which gives back every
+/// handle the guest lent for it. A borrow the host lowers back out
+/// belongs to the caller's task, which is why the subtask leaves the
+/// stack first, and why the crossing of the result counts against the
+/// scope the pop uncovers.
+///
+/// Through an asynchronous lower the guest is told the call returned
+/// and is given no entry to wait on, which is what a call that
+/// resolved before the lower returned reports.
+#[allow(clippy::too_many_arguments)]
+fn return_host_values<T: 'static>(
+    store_ctx: &mut wasm_runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
+    signature: &FunctionType,
+    kind: LowerKind,
+    tables: &Arc<Mutex<HandleTables>>,
+    options: BoundaryOptions,
+    instance: BoundaryInstance,
+    subtask: SubtaskId,
+    host_results: Vec<Val>,
+    return_area_ptr: Option<usize>,
+    results: &mut [RuntimeVal],
+) -> Result<()> {
     let caller = {
         let mut guard = lock_tables(tables)?;
         guard.exit_subtask(subtask, SubtaskState::Returned);
         guard.tasks.current_scope()
     };
 
+    let status_word = matches!(kind, LowerKind::Async);
     let Some(result_ty) = &signature.result else {
-        return Ok(());
+        return if status_word {
+            write_status(results, CallStatus::returned())
+        } else {
+            Ok(())
+        };
     };
     let host_val = host_results.into_iter().next().ok_or_else(|| {
         Error::from(AbiError {
@@ -624,7 +716,7 @@ fn invoke_trampoline<T: 'static>(
             &host_val,
             result_ty,
             AbiPosition::Result,
-        ),
+        )?,
         None => {
             let mut slots: Vec<RuntimeVal> = Vec::new();
             lower_into_flat_slots(
@@ -650,8 +742,126 @@ fn invoke_trampoline<T: 'static>(
             for (dst, src) in results.iter_mut().zip(slots) {
                 *dst = src;
             }
-            Ok(())
         }
+    }
+    if status_word {
+        write_status(results, CallStatus::returned())?;
+    }
+    Ok(())
+}
+
+/// Start a call whose host side answered with a future: a concurrent
+/// registration reached through an asynchronous lower.
+///
+/// The future becomes a host task, with a lowering that writes the
+/// result through the boundary context of this call's subtask. The
+/// store polls it once and says what the guest is told: the returned
+/// state when the future was ready, and the started state with the
+/// subtask's index in the caller's handle table when it was not.
+#[allow(clippy::too_many_arguments)]
+fn start_host_call<T: 'static>(
+    store_ctx: &mut wasm_runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
+    signature: &FunctionType,
+    declared: &CanonOptions,
+    kind: LowerKind,
+    abi_state: &Arc<Mutex<AbiRuntimeState>>,
+    options: BoundaryOptions,
+    instance: BoundaryInstance,
+    subtask: SubtaskId,
+    future: HostFuncFuture,
+    return_area_ptr: Option<usize>,
+    results: &mut [RuntimeVal],
+) -> Result<()> {
+    let caller_table = caller_handle_table(abi_state, declared.instance)?;
+    let result_ty = signature.result.clone();
+    // The lowering carries what the crossing of the result needs,
+    // because it runs in a turn of its own: the call the guest made
+    // has returned by then, so there is no frame left to read the
+    // options, the instance, or the return area back from.
+    let lowering = move |store: &mut StoreContext<'_, T>, produced: Result<Vec<Val>>| {
+        let values = produced?;
+        let Some(result_ty) = result_ty else {
+            return Ok(());
+        };
+        let ptr = return_area_ptr.ok_or_else(|| {
+            Error::internal("an asynchronous lower with a result kept no return area")
+        })?;
+        let host_val = values.into_iter().next().ok_or_else(|| {
+            Error::from(AbiError {
+                position: AbiPosition::Result,
+                valtype: Some(result_ty.clone()),
+                cause: AbiCause::HostValueMismatch,
+            })
+        })?;
+        let mut lower_ctx = BoundaryContext::new(
+            store.runtime_mut().as_context_mut(),
+            options,
+            instance,
+            Some(Scope::Subtask(subtask)),
+        );
+        lower(
+            &mut lower_ctx,
+            ptr,
+            &host_val,
+            &result_ty,
+            AbiPosition::Result,
+        )
+    };
+
+    let task = HostTask::from_future(subtask, lowering, future);
+    let mut store = StoreContext::new(store_ctx.as_context_mut());
+    let status = store.start_host_task(task, caller_table, kind)?;
+    write_status(results, status)
+}
+
+/// The handle table of the component instance that made the call,
+/// where a subtask the guest has to wait on gets its entry. The
+/// lowering names the instance by the translator's per-instantiation
+/// index, which is the same index the waitable built-ins use.
+fn caller_handle_table(
+    abi_state: &Arc<Mutex<AbiRuntimeState>>,
+    instance: usize,
+) -> Result<TableId> {
+    let state = abi_state
+        .lock()
+        .map_err(|_| Error::internal("ABI runtime state lock poisoned"))?;
+    state.handle_tables.get(instance).copied().ok_or_else(|| {
+        Error::internal(format!(
+            "a lowered import named component instance {instance}, which this instantiation does \
+             not hold"
+        ))
+    })
+}
+
+/// Write the status word an asynchronous lower answers with.
+fn write_status(results: &mut [RuntimeVal], status: CallStatus) -> Result<()> {
+    let Some(slot) = results.first_mut() else {
+        return Err(Error::internal(
+            "an asynchronous lower was built with no status word to return",
+        ));
+    };
+    *slot = RuntimeVal::I32(status.value() as i32);
+    Ok(())
+}
+
+/// Whether the parameter tuple travels through one pointer into
+/// linear memory rather than in flat slots. The two lowerings measure
+/// the same tuple against different limits.
+fn parameters_spill(signature: &FunctionType, kind: LowerKind) -> bool {
+    match kind {
+        LowerKind::Sync => params_spill(signature),
+        LowerKind::Async => async_params_spill(signature),
+    }
+}
+
+/// Whether the result travels through a return-area pointer the guest
+/// passes. A synchronous lower passes one only for a result too wide
+/// for flat slots; an asynchronous lower never returns the result, so
+/// it always passes one.
+fn result_travels_through_memory(signature: &FunctionType, kind: LowerKind) -> bool {
+    match kind {
+        LowerKind::Sync => result_spills(signature),
+        LowerKind::Async => true,
     }
 }
 
