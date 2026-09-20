@@ -752,6 +752,30 @@ mod tests {
         start_with(store, instance, async_function, needs_exclusive, |_| item)
     }
 
+    /// Queue the start of a fresh task of `instance` through the
+    /// switch slot, which is what a call between two components
+    /// does: the item goes in the slot, and the gate decides whether
+    /// it stays there for the caller's trampoline to run.
+    fn start_switched(
+        store: &mut StoreContext<'_, ()>,
+        instance: InstanceId,
+        async_function: bool,
+        needs_exclusive: bool,
+        item: Item<()>,
+    ) -> TaskId {
+        let task = store
+            .tables()
+            .lock()
+            .expect("tables")
+            .tasks
+            .create_task(None, None, instance);
+        store.scheduler_mut().switch_to(item);
+        store
+            .start_switched_export_thread(task, instance, async_function, needs_exclusive)
+            .expect("queue the task's start");
+        task
+    }
+
     /// An item that runs one export call the way `Func::run_task`
     /// runs it, without a guest: the task becomes the current scope,
     /// it resolves with no result, and then it exits. Nothing else
@@ -1112,6 +1136,97 @@ mod tests {
         store.turn(Waker::noop()).expect("turn");
 
         assert_eq!(entries(&log), vec!["early", "late"]);
+    }
+
+    #[wcmp_macros::test]
+    fn it_clears_the_switch_slot_when_the_gate_holds_the_switched_task() {
+        let mut store = store();
+        let log = log();
+        let instance = instance(&store);
+        // One task of the instance holds it exclusively and a second
+        // already waits at the gate behind it, so the callee of a
+        // call between two components arrives third.
+        start(
+            &mut store.context(),
+            instance,
+            true,
+            true,
+            marker(&log, "holder"),
+        );
+        start(
+            &mut store.context(),
+            instance,
+            true,
+            true,
+            marker(&log, "early"),
+        );
+
+        start_switched(
+            &mut store.context(),
+            instance,
+            true,
+            true,
+            marker(&log, "callee"),
+        );
+
+        // The caller's trampoline runs the slot next, and finds it
+        // empty: the callee is not ready, so nothing runs inside the
+        // caller's frame.
+        store
+            .context()
+            .run_switch_slot()
+            .expect("the caller's trampoline runs the slot");
+
+        assert!(
+            entries(&log).is_empty(),
+            "the gate held the callee, so the slot the trampoline ran was empty"
+        );
+        assert!(
+            store.scheduler_mut().take_switch_slot().is_none(),
+            "the held task left nothing in the slot"
+        );
+        assert_eq!(
+            store.scheduler().waiting_at_gate(),
+            2,
+            "the callee waits at the gate behind the task that arrived before it"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_starts_a_switched_task_the_gate_held_after_the_earlier_arrivals() {
+        let mut store = store();
+        let log = log();
+        let instance = instance(&store);
+        // The two earlier tasks each end their call the way the
+        // export path ends one, so the instance goes back and the
+        // gate lets the next task through.
+        start_with(&mut store.context(), instance, true, true, |task| {
+            export_call(&log, "holder", task)
+        });
+        start_with(&mut store.context(), instance, true, true, |task| {
+            export_call(&log, "early", task)
+        });
+        start_switched(
+            &mut store.context(),
+            instance,
+            true,
+            true,
+            marker(&log, "callee"),
+        );
+
+        store
+            .context()
+            .run_switch_slot()
+            .expect("the caller's trampoline runs the slot");
+        store.turn(Waker::noop()).expect("turn");
+
+        assert_eq!(
+            entries(&log),
+            vec!["holder", "early", "callee"],
+            "the callee the gate held started in arrival order, behind the \
+             tasks that were already waiting"
+        );
+        assert_eq!(store.scheduler().waiting_at_gate(), 0);
     }
 
     #[wcmp_macros::test]
