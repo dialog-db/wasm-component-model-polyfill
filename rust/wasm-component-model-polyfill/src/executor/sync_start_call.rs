@@ -38,6 +38,12 @@
 //! unwinds through the start item into the slot the item leaves it
 //! in, and the intrinsic fails the caller's call with it. That is
 //! the message the synchronous baseline gives the same trap.
+//!
+//! A wait that fails is the caller's failure rather than the
+//! callee's, and it gives back what the trap path gives back: the
+//! subtask resolves as a cancellation and leaves the store, and the
+//! callee's task ends, so the instance its thread held exclusively
+//! goes back and the next call finds the store as this one did.
 
 use std::sync::{Arc, Mutex};
 
@@ -167,7 +173,10 @@ fn sync_start_call<T: 'static>(
         remove_subtask(&tables, subtask);
         return Err(error);
     }
-    blocked?;
+    if let Err(error) = blocked {
+        release_wait(store, subtask, prepared.task);
+        return Err(error);
+    }
 
     // The resolution is delivered as the lower returns, which gives
     // back every handle the caller lent for the call. The subtask
@@ -386,6 +395,31 @@ fn abandon<T: 'static>(store: &mut StoreContext<'_, T>, subtask: SubtaskId) {
     };
     let _ = guard.tasks.subtask_cancelled(subtask);
     let _ = guard.deliver_subtask_resolution(subtask);
+}
+
+/// Give back what a call whose wait failed still holds.
+///
+/// The wait fails with a scheduler cause — the caller must not
+/// block, the store is idle, or the target has no stack switch to
+/// serve the suspension — and each of them says the callee will
+/// never resolve for this caller. The store is therefore left as it
+/// was before the call, which is what the trap path leaves it as,
+/// reached the other way: the subtask resolves as a cancellation,
+/// which gives back every handle the caller lent, its record goes,
+/// and the callee's task ends, which gives back the instance that
+/// task's implicit thread held exclusively.
+///
+/// The task ends rather than being abandoned because its scope is
+/// already off the stack by the time a wait can fail: the callee
+/// either parked between events or never ran at all, and an
+/// abandon finds no scope to unwind and leaves the record where it
+/// is. The borrows the callee did not drop go with the record, for
+/// the reason a callback task's own failure path gives: the call
+/// has already failed, so there is nothing left to report them to.
+fn release_wait<T: 'static>(store: &mut StoreContext<'_, T>, subtask: SubtaskId, task: TaskId) {
+    abandon(store, subtask);
+    remove_subtask(&store.tables_handle(), subtask);
+    let _ = store.end_export_task(task);
 }
 
 /// Remove the subtask record of a call that failed, once the

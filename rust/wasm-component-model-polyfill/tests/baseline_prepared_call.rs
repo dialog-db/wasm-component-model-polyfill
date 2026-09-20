@@ -95,6 +95,48 @@ const WAITS_FOR_EVER: &[u8] = component!(
     "#
 );
 
+/// The same callee that waits for ever, called by a caller whose
+/// own export is lifted asynchronously with a callback. Such a
+/// caller is allowed to block, so its wait does not fail with the
+/// cannot-block cause: it runs nested turns until the store is idle
+/// and fails with the deadlock cause instead.
+const WAITS_FOR_EVER_UNDER_AN_ASYNC_CALLER: &[u8] = component!(
+    r#"
+    (component
+      (component $callee
+        (core func $set-new (canon waitable-set.new))
+        (core module $m
+          (import "" "waitable-set.new" (func $set-new (result i32)))
+          (func (export "cb") (param i32 i32 i32) (result i32) unreachable)
+          (func (export "answer") (param i32) (result i32)
+            (i32.or (i32.shl (call $set-new) (i32.const 4)) (i32.const 2))))
+        (core instance $i (instantiate $m
+          (with "" (instance (export "waitable-set.new" (func $set-new))))))
+        (func (export "answer") async (param "x" u32) (result u32)
+          (canon lift (core func $i "answer") async (callback (core func $i "cb")))))
+      (component $caller
+        (import "answer" (func $answer async (param "x" u32) (result u32)))
+        (core func $lowered (canon lower (func $answer)))
+        (core func $task-return (canon task.return (result u32)))
+        (core module $m
+          (import "" "answer" (func $answer (param i32) (result i32)))
+          (import "" "task.return" (func $task-return (param i32)))
+          (func (export "cb") (param i32 i32 i32) (result i32) unreachable)
+          (func (export "run") (param i32) (result i32)
+            (call $task-return (i32.add (call $answer (local.get 0)) (i32.const 1)))
+            (i32.const 0)))
+        (core instance $i (instantiate $m
+          (with "" (instance
+            (export "answer" (func $lowered))
+            (export "task.return" (func $task-return))))))
+        (func (export "run") async (param "x" u32) (result u32)
+          (canon lift (core func $i "run") async (callback (core func $i "cb")))))
+      (instance $a (instantiate $callee))
+      (instance $b (instantiate $caller (with "answer" (func $a "answer"))))
+      (export "run" (func $b "run")))
+    "#
+);
+
 /// The same shape with a callee whose core function traps.
 const TRAPS: &[u8] = component!(
     r#"
@@ -313,6 +355,66 @@ async fn it_blocks_a_sync_typed_caller_only_after_the_callee_did_not_resolve_at_
     assert!(
         message.contains("cannot block a synchronous task before returning"),
         "expected the cannot-block cause, got {message}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_releases_the_call_when_the_wait_fails_with_the_cannot_block_cause() {
+    // The caller is sync-typed, so it may not block, and the callee
+    // waits on a set nothing fills. The wait is the caller's failure
+    // rather than the callee's, and it gives back what a trap in the
+    // callee gives back: the subtask leaves the store, the callee's
+    // task ends, and the instance that task held exclusively goes
+    // back with it.
+    let (mut store, instance) = instantiate(WAITS_FOR_EVER).await;
+    let run = instance.get_func("run").expect("the caller's export");
+    let err = run
+        .call(&mut store, &[Val::U32(1)])
+        .await
+        .expect_err("a sync-typed caller cannot wait for its callee");
+    let message = chain(&err);
+    assert!(
+        message.contains("cannot block a synchronous task before returning"),
+        "expected the cannot-block cause, got {message}"
+    );
+    assert_eq!(
+        task_count(&store),
+        0,
+        "neither the caller's task nor the callee's is left in the store"
+    );
+    assert_eq!(subtask_count(&store), 0, "the subtask left the store");
+    assert!(
+        !any_instance_is_held(&store),
+        "the callee's exclusive thread is released by the failure"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_releases_the_call_when_the_wait_fails_with_the_deadlock_cause() {
+    // The same callee under a caller that is allowed to block. The
+    // wait runs nested turns until the store is idle and then fails
+    // with the deadlock cause, and the release is the one the
+    // cannot-block failure makes.
+    let (mut store, instance) = instantiate(WAITS_FOR_EVER_UNDER_AN_ASYNC_CALLER).await;
+    let run = instance.get_func("run").expect("the caller's export");
+    let err = run
+        .call(&mut store, &[Val::U32(1)])
+        .await
+        .expect_err("the callee never resolves, so the store goes idle");
+    let message = chain(&err);
+    assert!(
+        message.contains("cannot make further progress"),
+        "expected the deadlock cause, got {message}"
+    );
+    assert_eq!(
+        task_count(&store),
+        0,
+        "neither the caller's task nor the callee's is left in the store"
+    );
+    assert_eq!(subtask_count(&store), 0, "the subtask left the store");
+    assert!(
+        !any_instance_is_held(&store),
+        "the callee's exclusive thread is released by the failure"
     );
 }
 
