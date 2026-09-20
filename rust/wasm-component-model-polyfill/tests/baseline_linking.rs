@@ -1874,3 +1874,183 @@ async fn it_rejects_a_registration_of_the_wrong_kind() {
         Ok(_) => panic!("an import with nothing registered must not link"),
     }
 }
+
+/// A component that imports a function under an *interface* name and
+/// calls it.
+///
+/// The Component Model constrains an import's sort from the shape of
+/// its name only for the annotated plain names — `[constructor]`,
+/// `[method]`, `[static]` — and for an `implements`-annotated
+/// import, so an interface name on a function import is a shape a
+/// component can present. Such an import asks for a single host
+/// item, which is what the root namespace holds, so the resolver
+/// looks for it there under the whole name.
+const INTERFACE_NAMED_FUNCTION: &[u8] = component!(
+    r#"
+    (component
+      (import "pdd-tests:host/answers@0.1.0" (func $answer (param "x" u32) (result u32)))
+      (core func $lowered (canon lower (func $answer)))
+      (core module $m
+        (import "" "answer" (func $answer (param i32) (result i32)))
+        (func (export "run") (result i32) (call $answer (i32.const 20))))
+      (core instance $i (instantiate $m
+        (with "" (instance (export "answer" (func $lowered))))))
+      (func (export "run") (result u32) (canon lift (core func $i "run"))))
+    "#
+);
+
+/// The interface identifier the above component's import is named
+/// by, and the string a host registers it under on the root view.
+const ANSWERS: &str = "pdd-tests:host/answers@0.1.0";
+
+#[wcmp_macros::test]
+async fn it_links_a_function_import_under_an_interface_name_through_the_root_namespace() {
+    // The host registers the function on the root view under the
+    // import's whole name, as it would in Wasmtime, and the guest's
+    // call reaches the closure.
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, INTERFACE_NAMED_FUNCTION)
+        .await
+        .expect("component parses");
+
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker
+        .root()
+        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2));
+
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the root registration under the interface name satisfies the import");
+    let run = instance
+        .get_func("run")
+        .expect("`run` is exported")
+        .typed::<(), u32>()
+        .expect("typed");
+    assert_eq!(run.call(&mut store, ()).await.expect("call succeeds"), 40);
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_function_import_under_an_interface_name_with_no_root_registration() {
+    // Nothing registered is an unresolved import that names the
+    // interface-named import — and a *linker instance* registered
+    // under the same identifier does not satisfy it either. The
+    // import wants one host item; a linker instance holds an
+    // interface's worth of them, and none of them is the import.
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, INTERFACE_NAMED_FUNCTION)
+        .await
+        .expect("component parses");
+    let answers: InterfaceIdentifier = ANSWERS.parse().expect("identifier parses");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+
+    let empty: Linker<()> = Linker::new(&engine);
+    let err = match empty.instantiate(&mut store, &component).await {
+        Ok(_) => panic!("an import with nothing registered must not link"),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(
+            &err,
+            Error::Link(inner)
+                if matches!(
+                    &**inner,
+                    LinkError::UnresolvedImport { import }
+                        if *import == ExternalName::Interface(answers.clone())
+                )
+        ),
+        "expected an unresolved import naming `{ANSWERS}`, got {err:?}",
+    );
+
+    let mut by_interface: Linker<()> = Linker::new(&engine);
+    by_interface
+        .instance(&answers)
+        .func_wrap("answer", |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2));
+    let err = match by_interface.instantiate(&mut store, &component).await {
+        Ok(_) => panic!("a linker instance must not satisfy a function import"),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(
+            &err,
+            Error::Link(inner) if matches!(&**inner, LinkError::UnresolvedImport { .. })
+        ),
+        "expected an unresolved import, got {err:?}",
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_registration_of_another_kind_under_an_interface_name() {
+    // The kind check runs on the root entry whatever the import's
+    // name looks like: an instance registered under the name the
+    // component imports as a function is `expected func found
+    // instance`, as it is for a plain name.
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, INTERFACE_NAMED_FUNCTION)
+        .await
+        .expect("component parses");
+    let answers: InterfaceIdentifier = ANSWERS.parse().expect("identifier parses");
+
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker
+        .root()
+        .instance(ANSWERS)
+        .func_wrap("answer", |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2));
+
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let err = match linker.instantiate(&mut store, &component).await {
+        Ok(_) => panic!("an instance where a function is imported must not link"),
+        Err(err) => err,
+    };
+    match err {
+        Error::Link(inner) => match *inner {
+            LinkError::KindMismatch {
+                import,
+                item,
+                expected,
+                found,
+            } => {
+                assert_eq!(import, ExternalName::Interface(answers));
+                assert_eq!(item, None);
+                assert_eq!(expected, "func");
+                assert_eq!(found, "instance");
+            }
+            other => panic!("expected a kind mismatch, got {other:?}"),
+        },
+        other => panic!("expected a link error, got {other:?}"),
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_mismatched_signature_under_an_interface_name() {
+    // The signature comparison runs too, and the diagnostic names
+    // the root entry the registration was attached to.
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, INTERFACE_NAMED_FUNCTION)
+        .await
+        .expect("component parses");
+
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker
+        .root()
+        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u64,)| Ok(x * 2));
+
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let err = match linker.instantiate(&mut store, &component).await {
+        Ok(_) => panic!("a mismatched signature must not link"),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(
+            &err,
+            Error::TypeMismatch(mismatch)
+                if matches!(
+                    &mismatch.position,
+                    wasm_component_model_polyfill::TypeMismatchPosition::
+                        HostFunctionRegistrationPlain { name } if name == ANSWERS
+                )
+        ),
+        "expected a type mismatch naming `{ANSWERS}`, got {err:?}",
+    );
+}

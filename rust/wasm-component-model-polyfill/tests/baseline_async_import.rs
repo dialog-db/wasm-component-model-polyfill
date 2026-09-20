@@ -542,3 +542,115 @@ async fn it_refuses_a_synchronous_call_of_a_concurrent_registration() {
         "expected the host `async` function call to be named, got {err:?}"
     );
 }
+
+/// A component that imports an `async` function, and a synchronous
+/// one of the same shape, under *interface* names rather than plain
+/// ones. Neither import is an instance, so both resolve through the
+/// root namespace under the whole name — and the rule that holds a
+/// registration's form to the import's `async` effect reads them
+/// there as it reads a plain-named import.
+const ASYNC_IMPORT_UNDER_AN_INTERFACE_NAME: &[u8] = component!(
+    r#"
+    (component
+      (import "pdd-tests:host/answers@0.1.0"
+        (func $answer async (param "x" u32) (result u32)))
+      (import "pdd-tests:host/doubles@0.1.0"
+        (func $double (param "x" u32) (result u32))))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_holds_the_registration_form_of_an_import_under_an_interface_name() {
+    // A function import that carries an interface name is a function
+    // import: it reaches the same registration-kind check as one
+    // named plainly, and the cause names the import rather than an
+    // item inside it.
+    let engine = Engine::new().expect("engine");
+
+    let mut synchronous: Linker<()> = Linker::new(&engine);
+    synchronous.root().func_wrap(
+        "pdd-tests:host/answers@0.1.0",
+        |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2),
+    );
+    synchronous.root().func_wrap(
+        "pdd-tests:host/doubles@0.1.0",
+        |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2),
+    );
+    let cause = link_error(
+        link_failure(
+            &engine,
+            &synchronous,
+            (),
+            ASYNC_IMPORT_UNDER_AN_INTERFACE_NAME,
+        )
+        .await,
+    );
+    match &cause {
+        LinkError::SynchronousRegistrationForAsyncImport { import, item } => {
+            assert!(
+                matches!(import, ExternalName::Interface(_)),
+                "the cause carries the import's interface name: {import:?}"
+            );
+            assert_eq!(import.to_string(), "pdd-tests:host/answers@0.1.0");
+            assert_eq!(item.as_deref(), None);
+        }
+        other => panic!("expected the synchronous-registration cause, got {other:?}"),
+    }
+
+    // The other half of the rule, on the sync-typed import beside it.
+    let mut concurrent: Linker<()> = Linker::new(&engine);
+    concurrent.root().func_new_concurrent(
+        "pdd-tests:host/answers@0.1.0",
+        declared(true),
+        |_accessor: &Accessor<()>, args: Vec<Val>| async move { Ok(args) },
+    );
+    concurrent.root().func_new_concurrent(
+        "pdd-tests:host/doubles@0.1.0",
+        declared(false),
+        |_accessor: &Accessor<()>, args: Vec<Val>| async move { Ok(args) },
+    );
+    let cause = link_error(
+        link_failure(
+            &engine,
+            &concurrent,
+            (),
+            ASYNC_IMPORT_UNDER_AN_INTERFACE_NAME,
+        )
+        .await,
+    );
+    match &cause {
+        LinkError::ConcurrentRegistrationForSyncImport { import, item } => {
+            assert_eq!(import.to_string(), "pdd-tests:host/doubles@0.1.0");
+            assert_eq!(item.as_deref(), None);
+        }
+        other => panic!("expected the concurrent-registration cause, got {other:?}"),
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_links_a_concurrent_registration_for_an_async_import_under_an_interface_name() {
+    // The pairing the rule wants links: the async-typed import takes
+    // the concurrent entry and the sync-typed one takes the
+    // synchronous entry, both registered on the root view under the
+    // interface names the component writes.
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, ASYNC_IMPORT_UNDER_AN_INTERFACE_NAME)
+        .await
+        .expect("component parses");
+
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker.root().func_wrap_concurrent(
+        "pdd-tests:host/answers@0.1.0",
+        |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
+    );
+    linker.root().func_wrap(
+        "pdd-tests:host/doubles@0.1.0",
+        |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2),
+    );
+
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the root registrations under the interface names satisfy both imports");
+}

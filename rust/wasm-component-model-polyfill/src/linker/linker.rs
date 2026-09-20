@@ -82,7 +82,8 @@ impl<T: 'static> Linker<T> {
     }
 
     /// The root namespace's registration entry. Consulted by the
-    /// resolver for plain-named imports.
+    /// resolver for every import that is not an interface-named
+    /// instance.
     ///
     /// Workspace-internal; not re-exported by `lib.rs`.
     pub fn root_registration(&self) -> &InstanceRegistration<T> {
@@ -90,12 +91,19 @@ impl<T: 'static> Linker<T> {
     }
 
     /// Address the root namespace: the host items a component
-    /// imports under a plain name, for example
+    /// imports under a name of their own, for example
     /// `(import "log" (func …))`. The view is the same
     /// [`LinkerInstance`] an interface accessor returns, so the
     /// registration operations are the same. A plain-named instance
     /// import, `(import "host" (instance …))`, is addressed through
     /// [`LinkerInstance::instance`] on this view.
+    ///
+    /// An import that is not an instance resolves here whatever its
+    /// name looks like, so a function import written under an
+    /// interface name, `(import "pkg:ns/iface@0.1.0" (func …))`, is
+    /// registered on this view under that whole name. Only an
+    /// instance import named by an interface identifier goes to
+    /// [`Linker::instance`] instead.
     ///
     /// Calling `root` twice returns a view onto the same entry.
     pub fn root(&mut self) -> LinkerInstance<'_, T> {

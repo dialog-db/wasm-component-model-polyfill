@@ -444,7 +444,7 @@ pub struct TypeMismatch {
 #[non_exhaustive]
 pub enum TypeMismatchPosition {
     /// A host function was being registered against an
-    /// interface-named component import. The interface and the item
+    /// interface-named instance import. The interface and the item
     /// inside it are named.
     HostFunctionRegistration {
         /// The interface the registration is attached to.
@@ -452,11 +452,14 @@ pub enum TypeMismatchPosition {
         /// The item name inside the interface.
         item: String,
     },
-    /// A host function was being registered against a plain-named
-    /// component import.
+    /// A host function was being registered in the root namespace:
+    /// against a plain-named import, an item inside a plain-named
+    /// instance import, or an import that is not an instance and
+    /// carries an interface name.
     HostFunctionRegistrationPlain {
-        /// The plain (kebab-case) import name the registration was
-        /// attached to.
+        /// The root-namespace name the registration was attached to,
+        /// which is the import's own name as the component writes
+        /// it.
         name: String,
     },
     /// A typed export call asserted a signature against an export

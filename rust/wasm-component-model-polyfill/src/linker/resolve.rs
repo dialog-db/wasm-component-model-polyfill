@@ -18,19 +18,53 @@
 //! compatibility range, resolution selects the *highest-versioned*
 //! candidate.
 //!
-//! Beyond identifier matching, the resolver also checks that each
-//! interface item the component imports has a registered host
-//! function whose declared signature is structurally equal to the
-//! item's. Missing items surface as
-//! [`LinkError::UnresolvedImport`]; signature mismatches surface as
-//! [`Error::TypeMismatch`].
+//! Identifier matching decides *which* registered linker instance
+//! satisfies an import, and it only comes into play for the imports
+//! that want one. An import's *type*, not the shape of its name,
+//! chooses the namespace it resolves through:
+//!
+//! - An instance-typed import named by an interface identifier
+//!   resolves against the registered linker instances, by the rules
+//!   above.
+//! - Every other import resolves through the root namespace, under
+//!   the import's own name written out in full. That covers the
+//!   plain-named function, resource, and module imports, and it
+//!   covers the same three sorts written under an interface name:
+//!   `(import "pkg:ns/iface@0.1.0" (func async ...))` looks for a
+//!   host function registered on the root view under the name
+//!   `pkg:ns/iface@0.1.0`.
+//!
+//! An interface name on a function import is a valid shape rather
+//! than a malformed one. The Component Model constrains an import's
+//! sort from its name only for the annotated plain names —
+//! `[constructor]`, `[method]`, `[static]` — and for an
+//! `implements`-annotated import, which must be instance-typed;
+//! nothing requires an interface name to carry an instance. Such an
+//! import asks for a single host item rather than an interface's
+//! worth of them, and a single host item is what the root namespace
+//! holds. Wasmtime reads every top-level import the same way,
+//! looking its literal name up in the root of the linker whatever
+//! the import's sort. A root entry matches by name alone: the
+//! compatibility range above governs the registered interface keys
+//! and never the root's.
+//!
+//! Beyond identifier matching, the resolver checks every item an
+//! import asks for against the registration that satisfies it. A
+//! function item needs a registered host function whose declared
+//! signature is structurally equal to the item's, and an import that
+//! is itself a function is held to the same comparison against its
+//! root entry. A missing item surfaces as
+//! [`LinkError::UnresolvedImport`]; an item the host registered
+//! under another kind surfaces as [`LinkError::KindMismatch`];
+//! signature mismatches surface as [`Error::TypeMismatch`].
 //!
 //! It also holds each function registration's *form* to the import's
-//! `async` effect: an async-typed import wants a concurrent
-//! registration and a sync-typed import wants a synchronous one, and
-//! either pairing the wrong way round fails to link. The rule is
-//! Wasmtime's rather than the reference's; the two causes it raises
-//! say why the polyfill keeps it.
+//! `async` effect, wherever that function sits: an async-typed
+//! import wants a concurrent registration and a sync-typed import
+//! wants a synchronous one, and either pairing the wrong way round
+//! fails to link. The rule is Wasmtime's rather than the
+//! reference's; the two causes it raises say why the polyfill keeps
+//! it.
 //!
 //! [`LinkerInstance`]: super::LinkerInstance
 
@@ -66,10 +100,12 @@ pub enum ImportBinding {
     /// The linker may still have had a matching entry; this variant
     /// records that it was not consulted.
     Vacuous,
-    /// The import is plain-named and was satisfied through the root
-    /// namespace: the root entry itself for a function or resource
-    /// import, or the nested entry under the plain name for an
-    /// instance import.
+    /// The import was satisfied through the root namespace: the root
+    /// entry itself for a function, resource, or module import, or
+    /// the nested entry under the import's name for a plain-named
+    /// instance import. A function, resource, or module import
+    /// carries this binding whether its name is plain or an
+    /// interface identifier.
     Root,
 }
 
@@ -87,10 +123,9 @@ pub struct Resolution {
 ///
 /// Failures fall into three categories: identifier-resolution
 /// failures (missing match, ambiguous match, unsatisfiable semver)
-/// and root-namespace misses for plain-named imports surface as
-/// [`Error::Link`]; signature mismatches between a host registration
-/// and the component's declared item surface as
-/// [`Error::TypeMismatch`].
+/// and root-namespace misses surface as [`Error::Link`]; signature
+/// mismatches between a host registration and the component's
+/// declared item surface as [`Error::TypeMismatch`].
 pub fn resolve_imports<T: 'static>(
     component: &Component,
     linker: &Linker<T>,
@@ -98,9 +133,8 @@ pub fn resolve_imports<T: 'static>(
     let registered: Vec<&InterfaceIdentifier> = linker.registered_keys().collect();
     let mut bindings = Vec::with_capacity(component.imports.len());
     for import in component.imports.iter() {
-        let binding = match &import.name {
-            ExternalName::Plain(name) => resolve_plain(import, name, linker)?,
-            ExternalName::Interface(_) => {
+        let binding = match (&import.name, &import.ty) {
+            (ExternalName::Interface(_), ExternType::Instance(instance)) => {
                 let binding = resolve_one(import, &registered).map_err(Error::from)?;
                 if let ImportBinding::Resolved { chosen } = &binding {
                     // Item-level type check: every function item the
@@ -111,10 +145,21 @@ pub fn resolve_imports<T: 'static>(
                             import: import.name.clone(),
                         })
                     })?;
-                    check_items(import, registration, &ItemPosition::interface(chosen))?;
+                    check_instance_items(
+                        &import.name,
+                        &instance.items,
+                        registration,
+                        &ItemPosition::interface(chosen),
+                    )?;
                 }
                 binding
             }
+            // An interface name sits on an import that is not an
+            // instance the same way a plain name does: it names one
+            // host item, and one host item lives in the root
+            // namespace under the name as written.
+            (ExternalName::Interface(id), _) => resolve_root(import, &id.to_string(), linker)?,
+            (ExternalName::Plain(name), _) => resolve_root(import, name, linker)?,
         };
         bindings.push(binding);
     }
@@ -148,7 +193,7 @@ fn check_shared_identities<T: 'static>(
                 let Some(registration) = linker.root_registration().instance(name) else {
                     continue;
                 };
-                (registration, ItemPosition::plain(name))
+                (registration, ItemPosition::root(&import.name, name))
             }
             _ => continue,
         };
@@ -191,11 +236,17 @@ struct ItemPosition<'a> {
 }
 
 enum PositionRoot<'a> {
-    /// An item of an interface-named import.
+    /// An item of an interface-named instance import.
     Interface(&'a InterfaceIdentifier),
-    /// An item of a plain-named import: the function itself, or an
-    /// item of a plain-named instance.
-    Plain(&'a str),
+    /// An item resolved through the root namespace: the import
+    /// itself, or an item of a root-namespace instance. `name` is
+    /// the key the root registration holds it under, which is the
+    /// import's own name as written; `import` is that name in the
+    /// form a diagnostic carries it.
+    Root {
+        import: &'a ExternalName,
+        name: &'a str,
+    },
 }
 
 impl<'a> ItemPosition<'a> {
@@ -206,9 +257,9 @@ impl<'a> ItemPosition<'a> {
         }
     }
 
-    fn plain(name: &'a str) -> Self {
+    fn root(import: &'a ExternalName, name: &'a str) -> Self {
         Self {
-            root: PositionRoot::Plain(name),
+            root: PositionRoot::Root { import, name },
             nested: Vec::new(),
         }
     }
@@ -221,7 +272,7 @@ impl<'a> ItemPosition<'a> {
         Self {
             root: match self.root {
                 PositionRoot::Interface(interface) => PositionRoot::Interface(interface),
-                PositionRoot::Plain(plain) => PositionRoot::Plain(plain),
+                PositionRoot::Root { import, name } => PositionRoot::Root { import, name },
             },
             nested,
         }
@@ -245,28 +296,30 @@ impl<'a> ItemPosition<'a> {
                 interface: interface.clone(),
                 item: self.qualified(item),
             },
-            PositionRoot::Plain(name) => TypeMismatchPosition::HostFunctionRegistrationPlain {
-                name: if self.nested.is_empty() && name == item {
-                    item.to_owned()
-                } else {
-                    format!("{name}.{}", self.qualified(item))
-                },
-            },
+            PositionRoot::Root { name, .. } => {
+                TypeMismatchPosition::HostFunctionRegistrationPlain {
+                    name: if self.nested.is_empty() && name == item {
+                        item.to_owned()
+                    } else {
+                        format!("{name}.{}", self.qualified(item))
+                    },
+                }
+            }
         }
     }
 
     fn import_name(&self) -> ExternalName {
         match self.root {
             PositionRoot::Interface(chosen) => ExternalName::Interface(chosen.clone()),
-            PositionRoot::Plain(name) => ExternalName::Plain(name.to_owned()),
+            PositionRoot::Root { import, .. } => import.clone(),
         }
     }
 
     /// The item name a kind-mismatch diagnostic carries: `None` when
-    /// the item is the plain-named import itself.
+    /// the item is the root-namespace import itself.
     fn item(&self, item: &str) -> Option<String> {
         match self.root {
-            PositionRoot::Plain(name) if self.nested.is_empty() && name == item => None,
+            PositionRoot::Root { name, .. } if self.nested.is_empty() && name == item => None,
             _ => Some(self.qualified(item)),
         }
     }
@@ -283,11 +336,17 @@ fn instance_is_vacuous(instance: &InstanceType) -> bool {
     })
 }
 
-/// Resolve a plain-named import through the root namespace. A
-/// function or resource import is an item of the root entry under
-/// its own name; an instance import is the nested entry under its
-/// name, whose items are checked as an interface's would be.
-fn resolve_plain<T: 'static>(
+/// Resolve an import through the root namespace under `name`, the
+/// import's own name written out in full. A function, resource, or
+/// module import is an item of the root entry under that name; a
+/// plain-named instance import is the nested entry under it, whose
+/// items are checked as an interface's would be.
+///
+/// Every plain-named import comes here, and so does every
+/// interface-named import that is not an instance: the name says
+/// where a host would look the item up and nothing about the
+/// import's sort.
+fn resolve_root<T: 'static>(
     import: &ComponentImport,
     name: &str,
     linker: &Linker<T>,
@@ -300,7 +359,12 @@ fn resolve_plain<T: 'static>(
     };
     match &import.ty {
         ExternType::Function(declared) => {
-            check_function_item(&ItemPosition::plain(name), name, declared, root)?;
+            check_function_item(
+                &ItemPosition::root(&import.name, name),
+                name,
+                declared,
+                root,
+            )?;
             Ok(ImportBinding::Root)
         }
         ExternType::Resource(_) | ExternType::ResourceEquals(_) => {
@@ -313,7 +377,12 @@ fn resolve_plain<T: 'static>(
         }
         ExternType::Instance(instance) => match root.instance(name) {
             Some(registration) => {
-                check_items(import, registration, &ItemPosition::plain(name))?;
+                check_instance_items(
+                    &import.name,
+                    &instance.items,
+                    registration,
+                    &ItemPosition::root(&import.name, name),
+                )?;
                 Ok(ImportBinding::Root)
             }
             None => {
@@ -327,11 +396,16 @@ fn resolve_plain<T: 'static>(
         },
         _ => Err(Error::from(LinkError::UnsupportedRegistration {
             import: import.name.clone(),
-            reason: "plain-named imports of types, components, or values",
+            reason: "imports of types, components, or values",
         })),
     }
 }
 
+/// Match an interface-named instance import against the registered
+/// linker-instance keys. Only such an import reaches here; every
+/// other shape resolves through the root namespace, so the two
+/// remaining arms guard the caller's dispatch rather than describe
+/// shapes a component can present.
 #[allow(clippy::result_large_err)]
 fn resolve_one(
     import: &ComponentImport,
@@ -359,21 +433,6 @@ fn resolve_one(
             reason: "plain-named imports resolve through the root namespace",
         }),
     }
-}
-
-fn check_items<T: 'static>(
-    import: &ComponentImport,
-    registration: &InstanceRegistration<T>,
-    position: &ItemPosition<'_>,
-) -> Result<()> {
-    let items: &[InstanceItem] = match &import.ty {
-        ExternType::Instance(instance) => &instance.items,
-        // Non-instance interface-typed imports (e.g. an interface-
-        // named function or resource) don't have item lists; the
-        // identifier match alone is the contract for now.
-        _ => return Ok(()),
-    };
-    check_instance_items(&import.name, items, registration, position)
 }
 
 /// Check the items of one instance type against the registration

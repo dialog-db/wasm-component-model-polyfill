@@ -588,13 +588,14 @@ fn build_runtime_trampoline<T: 'static>(
 
 /// The registration an import resolved to, and the item name to
 /// look up in it, or the structured link error when the resolver
-/// recorded no registration for it. An interface-named import
-/// resolves to the chosen interface entry; a plain-named instance
-/// import resolves to the nested root entry under its name; either
-/// is then walked one nested registration per leading segment of
-/// `path`, and the last segment is the item. A plain-named function,
+/// recorded no registration for it. An interface-named instance
+/// import resolves to the chosen interface entry; a plain-named
+/// instance import resolves to the nested root entry under its name;
+/// either is then walked one nested registration per leading segment
+/// of `path`, and the last segment is the item. A function,
 /// resource, or module import resolves to the root entry under the
-/// import's own name, with an empty `path`.
+/// import's own name — plain or an interface identifier, as the
+/// resolver's rule has it — with an empty `path`.
 fn registration_and_item<'l, T: 'static>(
     linker: &'l Linker<T>,
     component: &Component,
@@ -616,13 +617,17 @@ fn registration_and_item<'l, T: 'static>(
             linker.registration_for(chosen).ok_or_else(unresolved)?
         }
         Some(ImportBinding::Root) => {
-            let ExternalName::Plain(name) = &import.name else {
-                return Err(internal("a root binding on an interface-named import"));
-            };
             let root = linker.root_registration();
             match &import.ty {
-                ExternType::Instance(_) => root.instance(name).ok_or_else(unresolved)?,
-                _ => return Ok((root, name.clone())),
+                ExternType::Instance(_) => {
+                    let ExternalName::Plain(name) = &import.name else {
+                        return Err(internal(
+                            "a root binding on an interface-named instance import",
+                        ));
+                    };
+                    root.instance(name).ok_or_else(unresolved)?
+                }
+                _ => return Ok((root, import.name.to_string())),
             }
         }
         Some(ImportBinding::Vacuous) | None => return Err(unresolved()),
