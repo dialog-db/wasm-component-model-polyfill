@@ -592,6 +592,21 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// must not block must not wait on one, and the cause it fails
     /// with says so.
     ///
+    /// The entry gate is opened at the top of the turn, before each
+    /// item the turn takes, and once more after the host tasks have
+    /// been polled. The last of those is what makes work a host
+    /// task's body released or queued past the gate ready before the
+    /// turn reports `Waiting` or `Idle`: a body reaches the store
+    /// through its accessor, so a poll of one can fill the wait a
+    /// callback is held for, or free the instance a start is held
+    /// at the gate for, and work that became ready there would
+    /// otherwise wait for the wake that running it is what produces.
+    ///
+    /// None of that breaks a deadlock. A task that waits on a start
+    /// while holding the instance that start needs waits for
+    /// something only it can give back, so the gate stays shut and
+    /// the turn reports `Waiting` or `Idle` as it found it.
+    ///
     /// An item that fails ends the turn and its failure is the
     /// turn's. Almost no item can fail: what an item produces it
     /// leaves in the store, and the failure of the call it ran is
@@ -1971,6 +1986,228 @@ mod tests {
             counted.count(),
             1,
             "the next turn polled it with the driver's waker, so no wake is lost"
+        );
+    }
+
+    /// What the items of the entry-gate tests below recorded as they
+    /// ran, in order.
+    type Log = Arc<Mutex<Vec<&'static str>>>;
+
+    /// A fresh, empty log.
+    fn log() -> Log {
+        Arc::new(Mutex::new(Vec::new()))
+    }
+
+    /// What the items have recorded so far.
+    fn entries(log: &Log) -> Vec<&'static str> {
+        log.lock().expect("log").clone()
+    }
+
+    /// An item that records that it ran.
+    fn marker(log: &Log, name: &'static str) -> Item<()> {
+        let log = log.clone();
+        Item::new(
+            ItemKind::TaskStart,
+            move |_store: &mut StoreContext<'_, ()>| {
+                log.lock().expect("log").push(name);
+                Ok(())
+            },
+        )
+    }
+
+    /// An item that runs one export call the way the export path
+    /// runs one: the task becomes the current scope, it resolves
+    /// with no result, and then it exits. The exit is what ends the
+    /// task's implicit thread, so the instance it held goes back and
+    /// the next task waiting at the gate can take it.
+    fn export_call(log: &Log, name: &'static str, task: TaskId) -> Item<()> {
+        let log = log.clone();
+        Item::new(
+            ItemKind::TaskStart,
+            move |store: &mut StoreContext<'_, ()>| {
+                log.lock().expect("log").push(name);
+                store.enter_export_task(task)?;
+                store.resolve_export_task(task, None)?;
+                store
+                    .exit_export_task(task)?
+                    .expect("the call dropped every borrow it took");
+                Ok(())
+            },
+        )
+    }
+
+    /// Queue the start of a fresh task of `instance`, with the gate
+    /// arguments a call into an export lifted `async` with a
+    /// callback carries: the function type is `async`, so the gate
+    /// applies, and the task needs the instance exclusively. This is
+    /// what `Func::call_concurrent` queues for such an export.
+    fn start_callback_task(
+        store: &mut StoreContext<'_, ()>,
+        instance: InstanceId,
+        build: impl FnOnce(TaskId) -> Item<()>,
+    ) -> TaskId {
+        let task = store
+            .tables()
+            .lock()
+            .expect("tables")
+            .tasks
+            .create_task(None, None, instance);
+        store
+            .start_export_thread(task, instance, true, true, build(task))
+            .expect("queue the task's start");
+        task
+    }
+
+    /// Build the store state the two entry-gate tests share: an
+    /// instance a callback task holds, one call into that instance
+    /// already waiting at its gate, and a host task whose body
+    /// queues a second call there and then gives the instance back.
+    ///
+    /// The body reaches the store through its accessor, which is the
+    /// one thing a host task's body can do to the store, and the two
+    /// things it does there are the two a host `async` function's
+    /// body really does: the start is what `Func::call_concurrent`
+    /// queues, and the release is the call a callback task's own
+    /// loop makes between events. It is spelled here rather than run
+    /// as a callback, because no guest code runs while a host task's
+    /// body is polled: the ready queues are empty by then, and only
+    /// the bodies can still change what the store holds.
+    fn gate_the_host_tasks_open(store: &mut Store<()>, log: &Log) {
+        let instance = store.lock_tables().expect("tables").tasks.insert_instance();
+        let holder = store
+            .lock_tables()
+            .expect("tables")
+            .tasks
+            .create_task(None, None, instance);
+        store
+            .context()
+            .take_exclusive_thread(holder, instance)
+            .expect("the callback task takes the instance");
+
+        // An earlier call into the same instance, which the gate
+        // holds because the callback task has the instance.
+        let waiting = log.clone();
+        start_callback_task(&mut store.context(), instance, move |task| {
+            export_call(&waiting, "early", task)
+        });
+
+        let subtask = store.lock_tables().expect("tables").tasks.push_subtask();
+        let accessor: Accessor<()> = Accessor::new(store.id());
+        let queued = log.clone();
+        let mut reached = false;
+        store.context().push_host_task(HostTask::from_future(
+            subtask,
+            |_store: &mut StoreContext<'_, ()>, _outcome: Result<Vec<Val>>| Ok(()),
+            core::future::poll_fn(move |_context| -> Poll<Result<Vec<Val>>> {
+                if !reached {
+                    reached = true;
+                    accessor
+                        .with(|store: &mut StoreContext<'_, ()>| {
+                            let recorded = queued.clone();
+                            start_callback_task(store, instance, move |_task| {
+                                marker(&recorded, "queued")
+                            });
+                            store.release_exclusive_thread(holder)
+                        })
+                        .expect("reach the store")
+                        .expect("give the instance back");
+                }
+                // The body never resolves, so nothing but the gate
+                // can carry the turn that polls it forward.
+                Poll::Pending
+            }),
+        ));
+    }
+
+    #[wcmp_macros::test]
+    async fn it_queues_the_starts_its_host_tasks_released_behind_what_their_polls_queued() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+        let log = log();
+        gate_the_host_tasks_open(&mut store, &log);
+
+        // A second host task, whose body is ready. The turn queues
+        // the lowering of what it produced as it polls it, and the
+        // starts the gate releases afterwards queue behind that.
+        let subtask = store.lock_tables().expect("tables").tasks.push_subtask();
+        let lowered = log.clone();
+        store.context().push_host_task(HostTask::from_future(
+            subtask,
+            move |_store: &mut StoreContext<'_, ()>, _outcome: Result<Vec<Val>>| {
+                lowered.lock().expect("log").push("lowered");
+                Ok(())
+            },
+            core::future::ready(Ok(vec![Val::U32(1)])),
+        ));
+
+        let polled = store
+            .turn(Waker::noop())
+            .expect("the turn that polls the bodies");
+
+        assert_eq!(
+            polled,
+            Outcome::Progress,
+            "the gate opened after the polls, so the turn has work to run \
+             rather than a host task to wait on"
+        );
+        assert_eq!(
+            store.scheduler().waiting_at_gate(),
+            1,
+            "the gate let the start that was waiting at it through as the \
+             turn ended; the one the body queued behind it waits for the \
+             instance that start took"
+        );
+        assert!(
+            entries(&log).is_empty(),
+            "nothing has run yet: the lowering and the start the gate \
+             released are queued for the turn that follows"
+        );
+
+        store.turn(Waker::noop()).expect("the turn that runs them");
+
+        assert_eq!(
+            entries(&log),
+            vec!["lowered", "early", "queued"],
+            "the lowering the poll queued ran first, and the two starts \
+             followed it in the order they arrived at the gate: the one that \
+             was waiting there before the turn, then the one the body queued"
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_runs_a_start_its_host_tasks_released_without_another_poll_of_the_driver() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+        let log = log();
+        gate_the_host_tasks_open(&mut store, &log);
+
+        // Nothing is ready and the one host task never resolves, so
+        // the work the gate holds is the only thing the turn can
+        // carry forward. A turn that reported `Waiting` here would
+        // park the driver on a wake that running that work is what
+        // produces.
+        let watched = log.clone();
+        let mut driver = Box::pin(Driver::new(store.context(), None, move |_store, _waker| {
+            watched
+                .lock()
+                .expect("log")
+                .contains(&"queued")
+                .then(|| Ok(()))
+        }));
+
+        let outcome = poll_once(&mut driver, Waker::noop());
+
+        assert!(
+            matches!(outcome, Poll::Ready(Ok(()))),
+            "the start the body queued past the gate ran inside the poll the \
+             body was polled in, with no second poll of the driver"
+        );
+        assert_eq!(
+            entries(&log),
+            vec!["early", "queued"],
+            "and it ran behind the start that was already waiting at the \
+             gate, which took the instance first and gave it back as its \
+             call ended"
         );
     }
 
