@@ -261,7 +261,10 @@ pub enum LinkError {
     /// component imports as another kind: a function where an
     /// instance is imported, an instance where a module is, and so
     /// on. The kinds are named in Wasmtime's words.
-    #[error("import `{import}`: expected {expected} found {found}")]
+    #[error(
+        "import `{import}`:{} expected {expected} found {found}",
+        ItemContext(item)
+    )]
     KindMismatch {
         /// The name of the import whose kind disagreed.
         import: ExternalName,
@@ -294,11 +297,12 @@ pub enum LinkError {
     /// message says that neither pair is what an `async func` import
     /// wants.
     #[error(
-        "import `{import}`: type mismatch with async: this import is declared `async func` in \
+        "import `{import}`:{} type mismatch with async: this import is declared `async func` in \
          WIT, but was satisfied with a sync-style host function (`func_new`/`func_wrap`, or \
          `func_new_async`/`func_wrap_async` — despite the name, these implement a \
          *sync*-WIT-typed function via blocking host code, not an `async func` import); use \
-         `func_new_concurrent`/`func_wrap_concurrent` instead"
+         `func_new_concurrent`/`func_wrap_concurrent` instead",
+        ItemContext(item)
     )]
     SynchronousRegistrationForAsyncImport {
         /// The name of the import whose type is `async func`.
@@ -321,11 +325,12 @@ pub enum LinkError {
     /// runtimes unchanged. The message is Wasmtime's, and names
     /// `func_new_async`/`func_wrap_async` for the same reason.
     #[error(
-        "import `{import}`: type mismatch with async: this import's WIT type is a plain \
+        "import `{import}`:{} type mismatch with async: this import's WIT type is a plain \
          (non-`async`) function, but was satisfied with \
          `func_new_concurrent`/`func_wrap_concurrent`, which is only for `async func`-typed \
          imports; use `func_new`/`func_wrap` (or `func_new_async`/`func_wrap_async` for \
-         blocking host code) instead"
+         blocking host code) instead",
+        ItemContext(item)
     )]
     ConcurrentRegistrationForSyncImport {
         /// The name of the import whose type is a plain function.
@@ -364,6 +369,31 @@ pub enum LinkError {
         /// import (e.g. `"host function"`, `"host resource"`).
         reason: &'static str,
     },
+}
+
+/// The clause a [`LinkError`] message inserts between the import it
+/// names and the reason the link failed, when the failure is an item
+/// inside an instance import rather than the import itself.
+///
+/// Wasmtime reports such a failure as a chain: the import's name is
+/// the outer context, an `instance export ... has the wrong type`
+/// line sits under it, and the reason sits under that. The polyfill
+/// carries the same three parts in one flat message, so a failure on
+/// an interface import with several function items says which item
+/// it was. An item-less failure renders nothing, leaving the message
+/// exactly as it reads when the import itself is at fault.
+///
+/// The name is the item's qualified name: the nested instance items
+/// walked from the import, joined with dots, and the item last.
+struct ItemContext<'a>(&'a Option<String>);
+
+impl core::fmt::Display for ItemContext<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.0 {
+            Some(item) => write!(f, " instance export `{item}` has the wrong type:"),
+            None => Ok(()),
+        }
+    }
 }
 
 /// The reason instantiation failed after linking succeeded.
@@ -929,6 +959,57 @@ mod tests {
 
     use super::*;
     use crate::types::PrimitiveType;
+
+    /// A [`LinkError`] that carries an item name renders it between
+    /// the import it names and the reason, and one that does not
+    /// renders the reason straight after the import.
+    #[wcmp_macros::test]
+    fn it_renders_the_item_of_a_link_failure_inside_an_instance_import() {
+        let import = ExternalName::Plain("host".to_owned());
+        let kind_mismatch = |item: Option<&str>| LinkError::KindMismatch {
+            import: import.clone(),
+            item: item.map(str::to_owned),
+            expected: "func",
+            found: "resource",
+        };
+        assert_eq!(
+            kind_mismatch(Some("f")).to_string(),
+            "import `host`: instance export `f` has the wrong type: expected func found resource"
+        );
+        assert_eq!(
+            kind_mismatch(None).to_string(),
+            "import `host`: expected func found resource"
+        );
+
+        // A nested item is named by the path walked to it.
+        assert_eq!(
+            kind_mismatch(Some("inner.f")).to_string(),
+            "import `host`: instance export `inner.f` has the wrong type: expected func found \
+             resource"
+        );
+
+        // The two registration-kind causes render the item the same
+        // way, ahead of their own (long) reason.
+        let sync = LinkError::SynchronousRegistrationForAsyncImport {
+            import: import.clone(),
+            item: Some("answer".to_owned()),
+        };
+        assert!(
+            sync.to_string()
+                .starts_with("import `host`: instance export `answer` has the wrong type: type "),
+            "the synchronous-registration cause does not name its item: {sync}"
+        );
+        let concurrent = LinkError::ConcurrentRegistrationForSyncImport {
+            import,
+            item: Some("answer".to_owned()),
+        };
+        assert!(
+            concurrent
+                .to_string()
+                .starts_with("import `host`: instance export `answer` has the wrong type: type "),
+            "the concurrent-registration cause does not name its item: {concurrent}"
+        );
+    }
 
     #[wcmp_macros::test]
     fn it_renders_an_abi_error_with_a_type_label_only_when_it_carries_a_value_type() {

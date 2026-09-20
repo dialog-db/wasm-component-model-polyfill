@@ -1820,6 +1820,11 @@ async fn it_rejects_a_registration_of_the_wrong_kind() {
         Ok(_) => panic!("a function where an instance is imported must not link"),
         Err(err) => err,
     };
+    // The import itself is at fault, so the message names no item.
+    assert_eq!(
+        err.to_string(),
+        "link error: import `host-return-two`: expected instance found func"
+    );
     assert_eq!(
         kind_mismatch(err),
         (
@@ -1846,12 +1851,21 @@ async fn it_rejects_a_registration_of_the_wrong_kind() {
         )
     );
 
-    // An item inside an instance import names the item.
+    // An item inside an instance import names the item, in the
+    // structured cause and in the message: Wasmtime's error chain
+    // puts `instance export `f` has the wrong type` between the
+    // import it names and the reason, and the flat message carries
+    // the same three parts in the same order.
     let component = Component::new(&engine, IMPORTS_ITEM).await.expect("parses");
     let err = match linker.instantiate(&mut store, &component).await {
         Ok(_) => panic!("a resource where a function item is imported must not link"),
         Err(err) => err,
     };
+    assert_eq!(
+        err.to_string(),
+        "link error: import `host`: instance export `f` has the wrong type: expected func found \
+         resource"
+    );
     assert_eq!(
         kind_mismatch(err),
         (

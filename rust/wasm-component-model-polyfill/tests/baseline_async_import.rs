@@ -398,6 +398,9 @@ async fn it_refuses_a_sync_typed_import_satisfied_by_a_concurrent_registration()
 async fn it_names_the_item_of_an_interface_import_the_rule_refuses() {
     // The rule runs at every position a function item sits in, and
     // the cause carries the item's name inside an interface import.
+    // The message names it too, in the clause Wasmtime's error chain
+    // puts between the import and the reason: an interface import
+    // with several function items says which item failed.
     let engine = Engine::new().expect("engine");
     let mut linker: Linker<()> = Linker::new(&engine);
     linker
@@ -413,6 +416,13 @@ async fn it_names_the_item_of_an_interface_import_the_rule_refuses() {
         }
         other => panic!("expected the synchronous-registration cause, got {other:?}"),
     }
+    assert_eq!(
+        cause.to_string(),
+        format!(
+            "import `pdd-tests:host/answers@0.1.0`: instance export `answer` has the wrong type: \
+             {SYNC_REGISTRATION_MESSAGE}"
+        )
+    );
 }
 
 #[wcmp_macros::test]
