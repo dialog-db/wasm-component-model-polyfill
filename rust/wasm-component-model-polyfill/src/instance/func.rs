@@ -2,6 +2,7 @@
 //!
 //! [`Instance`]: super::Instance
 
+use core::task::Poll;
 use std::sync::{Arc, Mutex};
 
 use wasm_runtime_layer::{AsContextMut, Val as RuntimeVal};
@@ -14,7 +15,9 @@ use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::{lift, lower};
 use crate::component::FunctionType;
-use crate::concurrency::{Driver, InstanceId, Item, ItemKind, ResultChannel, Scope, TaskId};
+use crate::concurrency::{
+    Accessor, Driver, InstanceId, Item, ItemKind, ResultChannel, Scope, TaskId,
+};
 use crate::error::{
     AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result, SchedulerCause,
 };
@@ -220,6 +223,195 @@ impl Func {
             outcome.lock().ok().and_then(|mut slot| slot.take())
         })
         .await
+    }
+
+    /// Invoke the function from inside a poll of the store, with the
+    /// given polyfill-typed arguments.
+    ///
+    /// This is the entry a host calls while something else is
+    /// driving the store: the closure of the store's
+    /// `run_concurrent` entry, or the body of a host `async`
+    /// function. The accessor is the token those two are handed, and
+    /// it is how this call reaches the store. A call made where no
+    /// poll of the accessor's store is running fails with the
+    /// store-not-in-poll cause, and one made from inside another
+    /// reach fails with the recursive-driver cause.
+    ///
+    /// `T` is the host-data type of the [`Store`] the instance was
+    /// created in. An accessor naming a different store fails with
+    /// the store-not-in-poll cause, and an export of a different
+    /// store returns [`InstantiationError::WrongStore`].
+    ///
+    /// The call creates the export's task and queues the start of
+    /// its implicit thread behind the entry gate of its instance,
+    /// exactly as [`Self::call`] does. A synchronous export's task
+    /// ignores the gate and becomes ready at once. An export lifted
+    /// `canon lift async` with a callback waits at the gate while
+    /// another task of the same instance holds the instance
+    /// exclusively, and starts when that holder releases it — on
+    /// return for a synchronous task, and between events for a
+    /// callback task. The returned future resolves when the task's
+    /// result is set and yields the lifted result; `post-return`,
+    /// for a synchronous export that declares one, runs after the
+    /// result is lifted, as it does for [`Self::call`].
+    ///
+    /// The future is spawn-like. Dropping it cancels nothing: the
+    /// task stays in the store and runs on in the next turn of any
+    /// driver. The task progresses only while a driver runs turns,
+    /// which in practice means while the future is awaited inside
+    /// the `run_concurrent` closure. This entry is not itself a
+    /// driver, and [`Self::call`], which is one, cannot be entered
+    /// from that closure at all, because it takes the store by
+    /// `&mut` and the closure holds only the accessor.
+    ///
+    /// A store that goes idle with the task unresolved leaves the
+    /// `run_concurrent` entry pending rather than failing, and this
+    /// future never resolves. It does not fail on idle, because the
+    /// closure around it can still unblock the task with another
+    /// call; a host that wants a bound on the wait bounds the whole
+    /// entry with a timeout.
+    ///
+    /// [`Store`]: crate::Store
+    pub async fn call_concurrent<T: 'static>(
+        &self,
+        accessor: &Accessor<T>,
+        args: &[Val],
+    ) -> Result<Box<[Val]>> {
+        // The start runs inside one reach into the store, which is a
+        // turn: it queues the task's start and runs none of it. What
+        // it hands back is what the task leaves behind, which
+        // outlives this future.
+        let (channel, failure) = accessor.with(|store| self.start_concurrent(store, args))??;
+
+        core::future::poll_fn(move |_context| {
+            // The failure is read first. A synchronous task can
+            // resolve and then fail on the borrows the guest still
+            // owes, and that failure is the call's, as it is for
+            // `Func::call`.
+            if let Some(error) = failure.lock().ok().and_then(|mut slot| slot.take()) {
+                return Poll::Ready(Err(error));
+            }
+            match channel.lock().ok().and_then(|mut slot| slot.take()) {
+                Some(result) => Poll::Ready(Ok(result.into_iter().collect())),
+                // No waker is registered here. The driver around
+                // this future polls it again after every turn it
+                // runs, and a turn is the only thing that carries
+                // the task forward.
+                None => Poll::Pending,
+            }
+        })
+        .await
+    }
+
+    /// Start the task of one concurrent call and hand back what that
+    /// call watches: the task's result channel, and the slot the
+    /// start leaves a failure of the caller's in.
+    ///
+    /// Everything happens inside the one reach into the store, so a
+    /// call whose arguments or whose export are wrong fails before
+    /// anything is queued and leaves the store untouched.
+    fn start_concurrent<T: 'static>(
+        &self,
+        store: &mut StoreContext<'_, T>,
+        args: &[Val],
+    ) -> Result<(ResultChannel, CallFailure)> {
+        if store.id() != self.store_id {
+            return Err(Error::from(InstantiationError::WrongStore));
+        }
+        if args.len() != self.signature.parameters.len() {
+            return Err(Error::from(AbiError {
+                position: AbiPosition::Argument(0),
+                valtype: None,
+                cause: AbiCause::InvalidEncoding {
+                    message: format!(
+                        "expected {} arguments, got {}",
+                        self.signature.parameters.len(),
+                        args.len()
+                    ),
+                },
+            }));
+        }
+
+        let (options, instance) =
+            BoundaryInstance::resolve(&self.options, &self.abi_state, &store.tables_handle())?;
+        let instance_id = instance.id().ok_or_else(|| {
+            Error::internal("an export's lift names a component instance the plan does not hold")
+        })?;
+
+        // The caller is not on the stack when the task resolves, so
+        // the task is given a channel to resolve through and the
+        // call watches that rather than the record, which a
+        // synchronous task's own exit takes out of the store.
+        let task =
+            store.create_export_task(self.signature.clone(), self.options.clone(), instance_id)?;
+        let channel = store.attach_result_channel(task)?;
+        let failure: CallFailure = Arc::new(Mutex::new(None));
+
+        // The item is `'static`: it outlives this future, because
+        // dropping the future cancels nothing. It therefore carries
+        // its own copy of everything the call needs — the resolved
+        // options among them.
+        let queued = failure.clone();
+        let replica = self.replica();
+        let arguments = args.to_vec();
+
+        if self.options.async_ {
+            let callback = options
+                .callback()
+                .cloned()
+                .ok_or_else(|| Error::internal("an `async` export's lift named no callback"))?;
+            let table = self.handle_table()?;
+            let loop_ = CallbackTask::new(task, instance_id, table, callback);
+            let item = Item::new(
+                ItemKind::TaskStart,
+                move |store: &mut StoreContext<'_, T>| {
+                    let started = replica
+                        .start_async_task(task, &loop_, &instance, store, &arguments, &options);
+                    if let Err(error) = started
+                        && let Ok(mut slot) = queued.lock()
+                    {
+                        *slot = Some(error);
+                    }
+                    // What the start produced is in the task's
+                    // channel and what it failed with is in the slot
+                    // beside it, so the item itself has nothing left
+                    // to fail with.
+                    Ok(())
+                },
+            );
+
+            // The entry gate applies: the function type is `async`,
+            // and a callback task needs the instance exclusively,
+            // because the core code it runs between events must not
+            // overlap another exclusive task of the same instance.
+            store.start_export_thread(task, instance_id, true, true, item)?;
+            return Ok((channel, failure));
+        }
+
+        let item = Item::new(
+            ItemKind::TaskStart,
+            move |store: &mut StoreContext<'_, T>| {
+                let outcome = replica.run_task(task, &instance, store, &arguments, &options);
+                if let Err(error) = outcome
+                    && let Ok(mut slot) = queued.lock()
+                {
+                    *slot = Some(error);
+                }
+                // What the task returned went through the channel as
+                // it resolved, so the item has nothing left to carry
+                // and nothing left to fail with.
+                Ok(())
+            },
+        );
+
+        // A synchronous export's task ignores the entry gate, as the
+        // reference states: the gate applies to a task whose
+        // function type is `async`. The exclusive flag is the
+        // reference's `not opts.async or opts.callback`, which is
+        // true here; the gate reads it only for a task that does
+        // wait at it.
+        store.start_export_thread(task, instance_id, false, true, item)?;
+        Ok((channel, failure))
     }
 
     /// Invoke an export lifted `canon lift async` with a callback.

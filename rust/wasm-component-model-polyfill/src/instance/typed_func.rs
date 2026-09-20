@@ -19,9 +19,11 @@
 use core::marker::PhantomData;
 
 use crate::component::FunctionType;
+use crate::concurrency::Accessor;
 use crate::error::{Error, Result, TypeMismatch, TypeMismatchPosition, TypeRendering};
 use crate::linker::{ComponentParameters, ComponentResult};
 use crate::store::Store;
+use crate::value::Val;
 
 use super::func::Func;
 
@@ -87,15 +89,49 @@ where
     pub async fn call<T: 'static>(&self, store: &mut Store<T>, args: P) -> Result<R> {
         let lowered = args.into_vals();
         let results = self.inner.call(store, &lowered).await?;
-        match results.len() {
-            0 => R::from_val(None),
-            1 => R::from_val(Some(&results[0])),
-            n => Err(Error::Internal {
-                message: format!(
-                    "typed export call observed {n} return values; an export admits at most one"
-                ),
-            }),
-        }
+        typed_result(&results)
+    }
+
+    /// Invoke the export from inside a poll of the store, with
+    /// native Rust values.
+    ///
+    /// This is the typed counterpart to [`Func::call_concurrent`]:
+    /// `args` is the parameter tuple `P` and the return is the
+    /// native Rust value `R`, and everything else is that entry's.
+    /// The call reaches the store through the accessor a
+    /// `run_concurrent` closure or a host `async` function's body
+    /// holds, creates the export's task, and queues its start behind
+    /// the entry gate of the export's instance. The returned future
+    /// resolves when the task's result is set. It is spawn-like:
+    /// dropping it cancels nothing, the task progresses only while a
+    /// driver runs turns, and a store that goes idle with the task
+    /// unresolved leaves the future pending rather than failing it.
+    ///
+    /// `T` is the host-data type of the [`Store`] the export's
+    /// owning [`Instance`] was created in.
+    ///
+    /// [`Func::call_concurrent`]: super::Func::call_concurrent
+    /// [`Store`]: crate::Store
+    /// [`Instance`]: super::Instance
+    pub async fn call_concurrent<T: 'static>(&self, accessor: &Accessor<T>, args: P) -> Result<R> {
+        let lowered = args.into_vals();
+        let results = self.inner.call_concurrent(accessor, &lowered).await?;
+        typed_result(&results)
+    }
+}
+
+/// The native Rust value an export's returned values stand for. A
+/// component function declares at most one result, so anything else
+/// is the polyfill disagreeing with itself.
+fn typed_result<R: ComponentResult>(results: &[Val]) -> Result<R> {
+    match results.len() {
+        0 => R::from_val(None),
+        1 => R::from_val(Some(&results[0])),
+        n => Err(Error::Internal {
+            message: format!(
+                "typed export call observed {n} return values; an export admits at most one"
+            ),
+        }),
     }
 }
 
