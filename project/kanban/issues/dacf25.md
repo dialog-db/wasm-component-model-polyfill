@@ -15,4 +15,7 @@ created: 2026-09-20T15:40:21Z
 - [ ] Both registration-kind causes are pinned with a full string with and without an item.
 - [ ] `lint` passes and `tests all` is green on both targets with the conformance summary unchanged.
 
+## Dispatch log
+- 2026-09-20T23:48:26Z dispatched implementor `card-dacf25-2bde1c97` (implement session, PDD020 thread, budget 3, seed `e8d0d34` with 639a90, 4587d2, 5345f4, 7adde9 landed pending gate)
 
+## Review notes
