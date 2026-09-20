@@ -154,21 +154,6 @@ fn import<'a>(component: &'a Component, wire_name: &str) -> &'a ComponentImport 
         .unwrap_or_else(|| panic!("import `{wire_name}` not found"))
 }
 
-/// Every message in an error's source chain, joined so that a cause
-/// the substrate wrapped can be matched wherever it put it.
-fn chain(error: &Error) -> String {
-    let mut out = String::new();
-    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
-    while let Some(link) = current {
-        if !out.is_empty() {
-            out.push_str(": ");
-        }
-        out.push_str(&link.to_string());
-        current = link.source();
-    }
-    out
-}
-
 #[wcmp_macros::test]
 async fn it_reports_async_on_an_imported_function_type() {
     // The `async` effect of the import's type reaches the public
@@ -517,13 +502,14 @@ async fn it_reads_the_registration_form_rather_than_its_declared_async_flag() {
 }
 
 #[wcmp_macros::test]
-async fn it_refuses_a_synchronous_call_of_a_concurrent_registration() {
+async fn it_calls_a_concurrent_registration_through_a_synchronous_lower() {
     // The rule holds a concurrent registration to an async-typed
     // import, and the two axes still move separately: this component
     // lowers the async-typed import without the `async` option, so the
-    // guest reaches the host synchronously. That call path is the one
-    // the trampoline has not built, and the component links and
-    // instantiates before a guest meets the refusal.
+    // guest reaches the host synchronously and expects the result when
+    // the call returns. A future ready on its first poll gives it
+    // there and then; the block that a future which is not yet ready
+    // needs is proved in `baseline_sync_lower.rs`.
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, SYNCHRONOUS_LOWER_OF_AN_ASYNC_IMPORT)
         .await
@@ -541,15 +527,16 @@ async fn it_refuses_a_synchronous_call_of_a_concurrent_registration() {
         .await
         .expect("the component instantiates");
 
-    let err = instance
+    let result = instance
         .get_func("run")
         .expect("the component exports `run`")
         .call(&mut store, &[])
         .await
-        .expect_err("the synchronous call of a host `async` function is refused");
-    assert!(
-        chain(&err).contains("calls of a host `async` function"),
-        "expected the host `async` function call to be named, got {err:?}"
+        .expect("the synchronous call of a host `async` function returns");
+    assert_eq!(
+        result.first(),
+        Some(&Val::U32(14)),
+        "the host's result crossed as the synchronous lower returned"
     );
 }
 

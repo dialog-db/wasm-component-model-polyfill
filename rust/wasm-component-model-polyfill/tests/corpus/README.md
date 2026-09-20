@@ -21,21 +21,23 @@ component. A guest that lowers a host `async` function asynchronously
 reaches it too: the call answers with the status word, a future that is
 still running becomes a subtask the guest waits on, the result crosses
 back when the future completes, and `subtask.drop` takes the subtask's
-entry away once the guest has taken delivery of it. The directive that
-first meets what is missing is an expected failure of category
-`deferred-feature`, for one of six reasons: an asynchronous lower of
-another component's export, a future or stream built-in, the stackful
-lift, a thread built-in other than `thread.yield`, cancellation, or an
-error context. One directive is a `validation` failure instead, the
-first component of `wasmtime/async/cancel-host.wast`: it lowers
-asynchronously without the `memory` option, which the reference
-requires and Wasmtime does not enforce. Most of the rest is `cascade`:
-a component definition that fails leaves its name unbound and no
-instance current, so every later directive in the file that names the
-definition or invokes the instance fails as bookkeeping rather than on
-its own merits. The async files define a component once and then drive
-it over dozens of directives, so those rows carry far more `cascade`
-lines than `deferred-feature` ones.
+entry away once the guest has taken delivery of it. A guest that lowers
+one synchronously reaches it as well: the call blocks the guest thread
+where it stands until the future resolves, and a future that never
+resolves traps. The directive that first meets what is missing is an
+expected failure of category `deferred-feature`, for one of six
+reasons: an asynchronous lower of another component's export, a future
+or stream built-in, the stackful lift, a thread built-in other than
+`thread.yield`, cancellation, or an error context. One directive is a
+`validation` failure instead, the first component of
+`wasmtime/async/cancel-host.wast`: it lowers asynchronously without the
+`memory` option, which the reference requires and Wasmtime does not
+enforce. Most of the rest is `cascade`: a component definition that
+fails leaves its name unbound and no instance current, so every later
+directive in the file that names the definition or invokes the instance
+fails as bookkeeping rather than on its own merits. The async files
+define a component once and then drive it over dozens of directives, so
+those rows carry far more `cascade` lines than `deferred-feature` ones.
 
 `expected-failures.txt` lists every directive the polyfill does not pass
 yet, one per line, as `<path>:<line> <category> <reason>`. The harness
@@ -131,14 +133,15 @@ substrate 22. Every other cell is the same.
 
 The `async` rows still hold the pass rate down. The polyfill runs a host
 call into a callback export, the task built-ins that export uses, a
-synchronous lower of a call between two components, and an asynchronous
-lower of a host `async` function, but the six reasons above cover most
-of what those directories exercise. Each component those directories
-define that the polyfill rejects is a `deferred-feature` failure, and
+synchronous lower of a call between two components, and either lower of
+a host `async` function, but the six reasons above cover most of what
+those directories exercise. Each component those directories define
+that the polyfill rejects is a `deferred-feature` failure, and
 every later directive in the same file that names it is a `cascade`
 one, which is why the two async rows together hold 526 of the 620
 cascade lines, while `cm` and `wasmtime` alone pass at 91.8% and 91.9%.
 `subtask.drop` moved three directives of `wasmtime/async`: the whole of
 `drop-host.wast`, and the component of `task-builtins.wast` that
-declares the built-in. Every other file that would exercise it is held
-up by a built-in the polyfill does not serve yet.
+declares the built-in. Neither lower of a host function moved a
+directive of the corpora: every file that would exercise one is held up
+by a built-in the polyfill does not serve yet.

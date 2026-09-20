@@ -407,10 +407,11 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Through a synchronous lower the guest expects the result when
     /// the call returns, so a body that is still running has to block
     /// the guest thread where it stands. That block goes through the
-    /// suspend seam, so the seam's provider slot decides it: a target
-    /// that has filled the slot serves the block, and a target that
-    /// has not fails the call with the stack-switch cause and gives
-    /// the subtask back.
+    /// suspend seam on every target, and the body is polled at every
+    /// check of the block's condition, so a body that resolves after
+    /// a few polls resolves inside the block and the call returns its
+    /// result. A body that stays pending leaves the store waiting and
+    /// the call fails with the cause the seam selects.
     ///
     /// Workspace-internal; not re-exported by `lib.rs`.
     pub fn start_host_task(
@@ -485,14 +486,24 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// function comes to: the guest expects the result when the call
     /// returns, so the call cannot return until the body does.
     ///
-    /// PDD018 gives the rule: through a synchronous lower the call
-    /// succeeds if the first poll resolved the body, or if the
-    /// suspend seam is filled on this target, and otherwise the
-    /// trampoline fails with the stack-switch cause. The seam is
-    /// what the block goes through, so the slot decides it here
-    /// rather than the target being read off somewhere else. The
-    /// slot is empty on both targets today, so this call fails as it
-    /// always has.
+    /// The block goes through the suspend seam on every target. A
+    /// target that has filled the seam's provider slot serves it
+    /// there; a target that has not takes the seam's nested turns,
+    /// which run the guest work of other tasks and poll the store's
+    /// host tasks from inside the guest call that blocked. Either
+    /// way the body of this call is polled at every check of the
+    /// condition below, so a body that is pending once and ready
+    /// afterwards — which is what a body that yields once comes to —
+    /// resolves inside the block and the call returns its result
+    /// through the lower's flat results. A body that stays pending
+    /// leaves the store waiting, and the seam's cause selection says
+    /// why the wait could not end: the stack-switch cause from a
+    /// caller that is allowed to block, and the cannot-block cause
+    /// when some sync-typed call of the store has yet to return.
+    ///
+    /// The subtask's resolution is delivered as the call returns,
+    /// which gives back the handles the guest lent for it, exactly
+    /// as a call whose first poll resolved the body delivers it.
     ///
     /// The task stays in this frame while the thread is suspended.
     /// It belongs to a call the guest still has on the stack, and
@@ -513,11 +524,6 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         mut task: HostTask<T>,
         subtask: SubtaskId,
     ) -> Result<CallStatus> {
-        if !self.scheduler().suspend_seam().has_provider() {
-            self.lock_tables()?.abandon_subtask(subtask);
-            return Err(Error::Scheduler(SchedulerCause::StackSwitchNeeded));
-        }
-
         // The future is pending and the store does not hold it, so
         // nothing a turn can see says the store is still waiting on
         // something. The mark says it for as long as this frame
@@ -1990,9 +1996,10 @@ mod tests {
 
         assert!(
             matches!(error, Error::Scheduler(SchedulerCause::StackSwitchNeeded)),
-            "a synchronous lower of a future that is still running fails with the \
-             stack-switch cause while no target fills the suspend seam, and failed \
-             with {error} instead"
+            "a synchronous lower of a future that never resolves runs its nested \
+             turns until the store is idle, and the store still holding that \
+             future is what names the stack-switch cause; it failed with {error} \
+             instead"
         );
         assert_eq!(
             store.scheduler().host_task_count(),
@@ -2229,7 +2236,7 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    async fn it_fails_a_synchronous_lower_from_a_trampoline_with_no_provider() {
+    async fn it_blocks_a_synchronous_lower_through_a_nested_turn_with_no_provider() {
         let engine = Engine::new().expect("engine");
         let component = Component::new(&engine, CALLS_THE_HOST)
             .await
@@ -2240,6 +2247,8 @@ mod tests {
         // out as, and how many host tasks the store held afterwards.
         let started: Arc<Mutex<Option<(String, usize)>>> = Arc::new(Mutex::new(None));
         let recorded = started.clone();
+        let slot: Lowered = Arc::new(Mutex::new(None));
+        let filled = slot.clone();
 
         let mut linker: Linker<()> = Linker::new(&engine);
         linker.root().func_wrap(
@@ -2247,11 +2256,15 @@ mod tests {
             move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
                 let store = call.store();
                 let subtask = store.lock_tables()?.tasks.push_subtask();
-                let error = store
+                let lowering = filled.clone();
+                let status = store
                     .start_host_task(
                         HostTask::from_future(
                             subtask,
-                            |_store: &mut StoreContext<'_, ()>, _outcome: Result<Vec<Val>>| Ok(()),
+                            move |_store: &mut StoreContext<'_, ()>, outcome: Result<Vec<Val>>| {
+                                *lowering.lock().expect("the lowering's slot") = Some(outcome);
+                                Ok(())
+                            },
                             ReadyOnSecondPoll {
                                 polls: 0,
                                 value: x * 2,
@@ -2260,13 +2273,12 @@ mod tests {
                         TableId::fresh(),
                         LowerKind::Sync,
                     )
-                    .err()
                     .map_or_else(
-                        || "the call succeeded".to_owned(),
                         |error| error.to_string(),
+                        |status| status.value().to_string(),
                     );
                 *recorded.lock().expect("record") =
-                    Some((error, store.scheduler().host_task_count()));
+                    Some((status, store.scheduler().host_task_count()));
                 Ok(x)
             },
         );
@@ -2283,20 +2295,21 @@ mod tests {
 
         assert_eq!(
             *started.lock().expect("record"),
-            Some((
-                Error::Scheduler(SchedulerCause::StackSwitchNeeded).to_string(),
-                0
-            )),
-            "the trampoline reached `start_host_task`, and a synchronous lower \
-             of a body that is still running consulted the seam's empty \
-             provider slot and failed with the stack-switch cause, leaving no \
-             host task behind"
+            Some((CallStatus::returned().value().to_string(), 0)),
+            "with no provider in the slot the block took the seam's nested \
+             turns, whose condition polled the body again and found it ready, \
+             so the call returned with no host task left in the store"
+        );
+        assert_eq!(
+            lowered(&slot),
+            vec![Val::U32(40)],
+            "what the body produced crossed through the lowering of the call \
+             that blocked on it"
         );
         assert_eq!(
             result.first(),
             Some(&Val::U32(21)),
-            "the guest's call returned, since the host function reported the \
-             refusal rather than failing its own call"
+            "the guest's call returned"
         );
     }
 

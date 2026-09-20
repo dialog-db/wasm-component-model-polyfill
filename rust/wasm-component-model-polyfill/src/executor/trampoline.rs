@@ -507,20 +507,6 @@ fn invoke_trampoline<T: 'static>(
     args: &[RuntimeVal],
     results: &mut [RuntimeVal],
 ) -> Result<()> {
-    // A concurrent registration reached through a synchronous lower
-    // has to block the guest thread where it stands, which is a call
-    // path of its own. The refusal comes before anything is recorded,
-    // so a component that never makes the call is unaffected.
-    if matches!(
-        (kind, host_func),
-        (LowerKind::Sync, HostFuncKind::Concurrent(_))
-    ) {
-        return Err(Error::unsupported(
-            "calls of a host `async` function (an import registered through \
-             `func_new_concurrent` or `func_wrap_concurrent`)",
-        ));
-    }
-
     // The canon options of the lowering and the instance they name,
     // read out of the instance's runtime state under one lock of it.
     // Each crossing of the call builds its boundary context from the
@@ -645,19 +631,37 @@ fn invoke_trampoline<T: 'static>(
             return_area_ptr,
             results,
         ),
-        HostOutcome::Future(future) => start_host_call(
-            &mut store_ctx,
-            signature,
-            declared,
-            kind,
-            abi_state,
-            options,
-            instance,
-            subtask,
-            future,
-            return_area_ptr,
-            results,
-        ),
+        // Which lower the guest called through decides what becomes
+        // of the future: an asynchronous lower hands the call back as
+        // a subtask, and a synchronous one blocks the guest thread on
+        // it until it resolves.
+        HostOutcome::Future(future) => match kind {
+            LowerKind::Async => start_host_call(
+                &mut store_ctx,
+                signature,
+                declared,
+                abi_state,
+                options,
+                instance,
+                subtask,
+                future,
+                return_area_ptr,
+                results,
+            ),
+            LowerKind::Sync => block_on_host_call(
+                &mut store_ctx,
+                signature,
+                declared,
+                abi_state,
+                tables,
+                options,
+                instance,
+                subtask,
+                future,
+                return_area_ptr,
+                results,
+            ),
+        },
     }
 }
 
@@ -692,7 +696,44 @@ fn return_host_values<T: 'static>(
         guard.exit_subtask(subtask, SubtaskState::Returned);
         guard.tasks.current_scope()
     };
+    write_host_result(
+        store_ctx,
+        signature,
+        kind,
+        options,
+        instance,
+        caller,
+        host_results,
+        return_area_ptr,
+        results,
+    )
+}
 
+/// Write what the host side of one call produced into the guest,
+/// through the lower the guest called through.
+///
+/// The subtask of the call has left the stack by the time this runs,
+/// so `caller` is the scope the pop uncovered and the crossing of the
+/// result counts against it: a borrow the host lowers back out
+/// belongs to the caller's task.
+///
+/// A synchronous lower writes the result itself — through the return
+/// area the guest passed when the result is too wide for flat slots,
+/// and into the flat result slots otherwise. An asynchronous lower
+/// writes the return area as well, and then the status word, which is
+/// the one thing its core signature returns.
+#[allow(clippy::too_many_arguments)]
+fn write_host_result<T: 'static>(
+    store_ctx: &mut wasm_runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
+    signature: &FunctionType,
+    kind: LowerKind,
+    options: BoundaryOptions,
+    instance: BoundaryInstance,
+    caller: Option<Scope>,
+    host_results: Vec<Val>,
+    return_area_ptr: Option<usize>,
+    results: &mut [RuntimeVal],
+) -> Result<()> {
     let status_word = matches!(kind, LowerKind::Async);
     let Some(result_ty) = &signature.result else {
         return if status_word {
@@ -763,7 +804,6 @@ fn start_host_call<T: 'static>(
     store_ctx: &mut wasm_runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
     signature: &FunctionType,
     declared: &CanonOptions,
-    kind: LowerKind,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     options: BoundaryOptions,
     instance: BoundaryInstance,
@@ -810,8 +850,84 @@ fn start_host_call<T: 'static>(
 
     let task = HostTask::from_future(subtask, lowering, future);
     let mut store = StoreContext::new(store_ctx.as_context_mut());
-    let status = store.start_host_task(task, caller_table, kind)?;
+    let status = store.start_host_task(task, caller_table, LowerKind::Async)?;
     write_status(results, status)
+}
+
+/// Block on a call whose host side answered with a future: a
+/// concurrent registration reached through a synchronous lower.
+///
+/// The guest expects the result when the call returns, so the store
+/// blocks the guest thread on the future where it stands. The block
+/// runs through the suspend seam and polls the future at every check
+/// of its condition, so a future that resolves after a few polls
+/// resolves inside it; a future that stays pending fails the call
+/// with the cause the seam selects, and the failure travels out to
+/// the guest's call.
+///
+/// The whole of the call is therefore over by the time the block
+/// returns: the subtask has resolved, which gave back the handles the
+/// guest lent for it, and the lowering has carried what the body
+/// produced back to this frame. What is left is the crossing of the
+/// result, which runs exactly where a synchronous registration's
+/// crossing runs.
+#[allow(clippy::too_many_arguments)]
+fn block_on_host_call<T: 'static>(
+    store_ctx: &mut wasm_runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
+    signature: &FunctionType,
+    declared: &CanonOptions,
+    abi_state: &Arc<Mutex<AbiRuntimeState>>,
+    tables: &Arc<Mutex<HandleTables>>,
+    options: BoundaryOptions,
+    instance: BoundaryInstance,
+    subtask: SubtaskId,
+    future: HostFuncFuture,
+    return_area_ptr: Option<usize>,
+    results: &mut [RuntimeVal],
+) -> Result<()> {
+    let caller_table = caller_handle_table(abi_state, declared.instance)?;
+    // The call resolves in this frame, so its lowering has nothing to
+    // carry but the values themselves: the options, the instance and
+    // the return area are all still here to cross with.
+    let produced: Arc<Mutex<Option<Vec<Val>>>> = Arc::new(Mutex::new(None));
+    let slot = produced.clone();
+    let lowering = move |_store: &mut StoreContext<'_, T>, outcome: Result<Vec<Val>>| {
+        *lock_produced(&slot)? = Some(outcome?);
+        Ok(())
+    };
+
+    let task = HostTask::from_future(subtask, lowering, future);
+    {
+        let mut store = StoreContext::new(store_ctx.as_context_mut());
+        // The status a synchronous lower comes back with is always
+        // the returned state, since the call is over: what the guest
+        // is told is the result itself, written below.
+        store.start_host_task(task, caller_table, LowerKind::Sync)?;
+    }
+
+    let caller = lock_tables(tables)?.tasks.current_scope();
+    let host_results = lock_produced(&produced)?.take().ok_or_else(|| {
+        Error::internal("a synchronous lower's block returned without the call's result")
+    })?;
+    write_host_result(
+        store_ctx,
+        signature,
+        LowerKind::Sync,
+        options,
+        instance,
+        caller,
+        host_results,
+        return_area_ptr,
+        results,
+    )
+}
+
+/// Borrow the slot a blocked synchronous lower leaves its result in.
+fn lock_produced(
+    slot: &Arc<Mutex<Option<Vec<Val>>>>,
+) -> Result<std::sync::MutexGuard<'_, Option<Vec<Val>>>> {
+    slot.lock()
+        .map_err(|_| Error::internal("a synchronous lower's result slot is poisoned"))
 }
 
 /// The handle table of the component instance that made the call,
