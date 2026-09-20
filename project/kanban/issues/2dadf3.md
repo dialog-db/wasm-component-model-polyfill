@@ -15,4 +15,7 @@ In `src/executor/sync_start_call.rs` (around line 170), only the trap path calls
 - [ ] The same holds for the deadlock cause.
 - [ ] `lint` passes and `tests all` is green on both targets with the conformance summary unchanged.
 
+## Dispatch log
+- 2026-09-20T04:45:52Z dispatched implementor `card-2dadf3-b22e6007` (implement session, PDD020 thread, budget 3, seed `74821db` with 708ab2 and 5e5da6 ready)
 
+## Review notes

@@ -18,6 +18,7 @@ In `check_function_item` in `src/linker/resolve.rs`, enforce Wasmtime 49's rule 
 
 ## Dispatch log
 - 2026-09-20T01:43:42Z dispatched implementor `card-dd5efd-aa08410f` (implement session, PDD020 thread, budget 3, seed `9d36b33` with 76d25c ready and 708ab2 landed but not yet tip-gated)
+- 2026-09-20T04:02:53Z the session paused on a usage limit at ~02:56Z and every running VM stopped with it; resumed implementor `card-dd5efd-aa08410f` (branch at `767984e`, gates unfinished) with a self-contained prompt.
 
 ## Review notes
 - 2026-09-20T00:40:16Z from the 76d25c review, for this card's implementor: (a) `linker/mod.rs:14-16`, `host_func_kind.rs:22-28`, `host_func.rs:51-55` already state this card's rule in the present tense — make them true rather than restating; (b) `function_type_for` hard-codes `async_: false`, so a typed concurrent registration's signature reads sync and `HostFuncKind` is the only record that it is concurrent — branch the rule on the kind, never on the registration's own `async_`; (c) the `Error::Unsupported` arm at `trampoline.rs:370` (sync lower of a concurrent registration) is untested and reachable only while the rule is absent — once the rule holds it becomes unreachable from a linked component, so decide whether a test or a doc note is the right closure.
