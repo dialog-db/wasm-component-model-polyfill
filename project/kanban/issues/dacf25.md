@@ -2,7 +2,7 @@
 id: dacf25
 title: An unresolved import inside an instance names the missing item
 type: chore
-blocked_by: []
+blocked_by: [d6887f]
 labels: [PDD020, concurrency]
 created: 2026-09-20T15:40:21Z
 ---
