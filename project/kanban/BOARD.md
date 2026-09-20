@@ -31,6 +31,7 @@ kanban-plugin: basic
 - [ ] [[c3d3a3]]
 - [ ] [[d6887f]]
 - [ ] [[c7c8a5]]
+- [ ] [[4587d2]]
 
 ## In Progress
 
