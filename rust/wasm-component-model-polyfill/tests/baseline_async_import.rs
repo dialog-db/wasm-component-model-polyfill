@@ -18,12 +18,29 @@
 //! A component that lowers asynchronously translates, links, and
 //! instantiates. Only a guest that makes such a call meets the
 //! refusal, because the call path behind it is not built yet.
+//!
+//! Linking against such an import is held to the *form* of the host's
+//! registration. An async-typed import wants a concurrent
+//! registration, `func_new_concurrent` or `func_wrap_concurrent`, and
+//! a sync-typed import wants a synchronous one, `func_new` or
+//! `func_wrap`; either pairing the wrong way round fails to link with
+//! the message Wasmtime gives it. A synchronous host function would
+//! serve an async-typed import correctly, since it resolves at once,
+//! so the rule is Wasmtime's choice rather than the reference's, and
+//! the polyfill follows it so that a host's registrations move
+//! between the two runtimes unchanged.
+//!
+//! The rule reads the registration's form and not the signature it
+//! declares, because a typed concurrent registration derives a
+//! signature whose `async_` is false: the closure's argument tuple
+//! and return type say nothing about the effect.
 
 #![cfg(test)]
 
 use wasm_component_model_polyfill::{
-    Component, ComponentImport, Engine, Error, ExternType, ExternalName, FunctionType, HostCall,
-    Linker, Store,
+    Accessor, Component, ComponentImport, Engine, Error, ExternType, ExternalName,
+    FunctionParameter, FunctionType, HostCall, LinkError, Linker, PrimitiveType, Store, Val,
+    ValueType,
 };
 use wcmp_macros::component;
 
@@ -80,6 +97,25 @@ const ASYNCHRONOUS_LOWER_WITHOUT_MEMORY: &[u8] = component!(
     (component
       (import "answer" (func $answer async (param "x" u32)))
       (core func $lowered (canon lower (func $answer) async))
+      (core module $m
+        (import "" "answer" (func $answer (param i32) (result i32)))
+        (func (export "run") (result i32)
+          (call $answer (i32.const 7))))
+      (core instance $i (instantiate $m
+        (with "" (instance (export "answer" (func $lowered))))))
+      (func (export "run") (result u32) (canon lift (core func $i "run"))))
+    "#
+);
+
+/// A component that lowers an async-typed import *without* the
+/// `async` option, which the two axes allow: the lowered core
+/// function keeps the synchronous flattening, one flat parameter and
+/// one flat result, and the guest reaches the host on its own stack.
+const SYNCHRONOUS_LOWER_OF_AN_ASYNC_IMPORT: &[u8] = component!(
+    r#"
+    (component
+      (import "answer" (func $answer async (param "x" u32) (result u32)))
+      (core func $lowered (canon lower (func $answer)))
       (core module $m
         (import "" "answer" (func $answer (param i32) (result i32)))
         (func (export "run") (result i32)
@@ -188,12 +224,12 @@ async fn it_instantiates_a_component_whose_import_is_lowered_asynchronously() {
         .await
         .expect("component parses");
 
+    // The import's type is `async func`, so the link rule wants a
+    // concurrent registration for it.
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().func_wrap(
+    linker.root().func_wrap_concurrent(
         "answer",
-        |_call: HostCall<'_, ()>, (x,): (u32,)| -> wasm_component_model_polyfill::Result<u32> {
-            Ok(x * 2)
-        },
+        |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
     );
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
@@ -228,5 +264,276 @@ async fn it_refuses_an_asynchronous_lower_without_the_memory_option() {
     assert!(
         matches!(&err, Error::InvalidComponentBinary { message, .. } if message.contains("memory")),
         "expected Error::InvalidComponentBinary naming the memory option, got {err:?}"
+    );
+}
+
+/// Wasmtime 49's message for an async-typed import satisfied by a
+/// synchronous registration, verbatim from `typecheck_async` in
+/// `crates/wasmtime/src/runtime/component/func/host.rs` at
+/// `v49.0.0-rc.1`. Pinned here so the polyfill's rendering stays the
+/// text a host reads from either runtime.
+const SYNC_REGISTRATION_MESSAGE: &str = "type mismatch with async: this import is declared \
+     `async func` in WIT, but was satisfied with a sync-style host function \
+     (`func_new`/`func_wrap`, or `func_new_async`/`func_wrap_async` — despite the name, these \
+     implement a *sync*-WIT-typed function via blocking host code, not an `async func` import); \
+     use `func_new_concurrent`/`func_wrap_concurrent` instead";
+
+/// Wasmtime 49's message for the other mismatch, a sync-typed import
+/// satisfied by a concurrent registration, from the same function.
+const CONCURRENT_REGISTRATION_MESSAGE: &str = "type mismatch with async: this import's WIT type \
+     is a plain (non-`async`) function, but was satisfied with \
+     `func_new_concurrent`/`func_wrap_concurrent`, which is only for `async func`-typed imports; \
+     use `func_new`/`func_wrap` (or `func_new_async`/`func_wrap_async` for blocking host code) \
+     instead";
+
+/// The declared type of the two `answer`/`double` imports, with the
+/// `async` effect the caller names. The untyped registration entries
+/// take the type explicitly, so a test can declare either flag and
+/// see that the rule does not read it.
+fn declared(async_: bool) -> FunctionType {
+    FunctionType {
+        parameters: vec![FunctionParameter {
+            name: "x".to_owned(),
+            ty: ValueType::Primitive(PrimitiveType::U32),
+        }],
+        result: Some(ValueType::Primitive(PrimitiveType::U32)),
+        async_,
+    }
+}
+
+/// The [`LinkError`] behind a link failure, or a panic naming what the
+/// failure turned out to be.
+fn link_error(err: Error) -> LinkError {
+    match err {
+        Error::Link(inner) => *inner,
+        other => panic!("expected a link error, got {other:?}"),
+    }
+}
+
+/// Link `bytes` against `linker` and give back the failure.
+async fn link_failure<T: 'static>(
+    engine: &Engine,
+    linker: &Linker<T>,
+    data: T,
+    bytes: &[u8],
+) -> Error {
+    let component = Component::new(engine, bytes)
+        .await
+        .expect("component parses");
+    let mut store: Store<T> = Store::new(engine, data).expect("store");
+    match linker.instantiate(&mut store, &component).await {
+        Ok(_) => panic!("the mismatched registration kind must not link"),
+        Err(err) => err,
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_an_async_typed_import_satisfied_by_a_synchronous_registration() {
+    // `func_wrap` is a synchronous registration, and Wasmtime refuses
+    // it for an `async func` import however well its signature fits.
+    // The polyfill refuses it with the same text.
+    let engine = Engine::new().expect("engine");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker
+        .root()
+        .func_wrap("answer", |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2));
+    linker
+        .root()
+        .func_wrap("double", |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2));
+
+    let err = link_failure(&engine, &linker, (), ASYNC_IMPORT).await;
+    let cause = link_error(err);
+    assert!(
+        matches!(
+            &cause,
+            LinkError::SynchronousRegistrationForAsyncImport { import, item }
+                if *import == ExternalName::Plain("answer".to_owned()) && item.is_none()
+        ),
+        "expected the synchronous-registration cause naming `answer`, got {cause:?}"
+    );
+    assert_eq!(
+        cause.to_string(),
+        format!("import `answer`: {SYNC_REGISTRATION_MESSAGE}")
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_sync_typed_import_satisfied_by_a_concurrent_registration() {
+    // The other half of the rule. `answer` is satisfied the way it
+    // wants, so the failure the component reaches is `double`'s:
+    // `func_wrap_concurrent` is only for an `async func` import.
+    let engine = Engine::new().expect("engine");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker.root().func_wrap_concurrent(
+        "answer",
+        |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
+    );
+    linker.root().func_wrap_concurrent(
+        "double",
+        |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
+    );
+
+    let err = link_failure(&engine, &linker, (), ASYNC_IMPORT).await;
+    let cause = link_error(err);
+    assert!(
+        matches!(
+            &cause,
+            LinkError::ConcurrentRegistrationForSyncImport { import, item }
+                if *import == ExternalName::Plain("double".to_owned()) && item.is_none()
+        ),
+        "expected the concurrent-registration cause naming `double`, got {cause:?}"
+    );
+    assert_eq!(
+        cause.to_string(),
+        format!("import `double`: {CONCURRENT_REGISTRATION_MESSAGE}")
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_names_the_item_of_an_interface_import_the_rule_refuses() {
+    // The rule runs at every position a function item sits in, and
+    // the cause carries the item's name inside an interface import.
+    let engine = Engine::new().expect("engine");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker
+        .instance(&"pdd-tests:host/answers@0.1.0".parse().expect("identifier"))
+        .func_wrap("answer", |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2));
+
+    let err = link_failure(&engine, &linker, (), ASYNC_IMPORT_IN_AN_INTERFACE).await;
+    let cause = link_error(err);
+    match &cause {
+        LinkError::SynchronousRegistrationForAsyncImport { import, item } => {
+            assert_eq!(import.to_string(), "pdd-tests:host/answers@0.1.0");
+            assert_eq!(item.as_deref(), Some("answer"));
+        }
+        other => panic!("expected the synchronous-registration cause, got {other:?}"),
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_links_both_concurrent_entries_for_an_async_typed_import() {
+    // Both concurrent entries register and link for the async-typed
+    // import, beside a synchronous entry for the sync-typed one. The
+    // typed entry derives a signature whose `async_` is false, so a
+    // link that reads the signature rather than the form would refuse
+    // the first of the two.
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, ASYNC_IMPORT)
+        .await
+        .expect("component parses");
+
+    let mut typed: Linker<()> = Linker::new(&engine);
+    typed.root().func_wrap_concurrent(
+        "answer",
+        |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
+    );
+    typed
+        .root()
+        .func_wrap("double", |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2));
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    typed
+        .instantiate(&mut store, &component)
+        .await
+        .expect("`func_wrap_concurrent` links for an async-typed import");
+
+    let mut untyped: Linker<()> = Linker::new(&engine);
+    untyped.root().func_new_concurrent(
+        "answer",
+        declared(true),
+        |_accessor: &Accessor<()>, args: Vec<Val>| async move { Ok(args) },
+    );
+    untyped
+        .root()
+        .func_new("double", declared(false), |_call, _args, _results| Ok(()));
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    untyped
+        .instantiate(&mut store, &component)
+        .await
+        .expect("`func_new_concurrent` links for an async-typed import");
+}
+
+#[wcmp_macros::test]
+async fn it_reads_the_registration_form_rather_than_its_declared_async_flag() {
+    // The untyped entries take the declared type whole, so a host can
+    // name the `async` effect on either form. The rule reads the form
+    // all the same: a synchronous registration that declares the
+    // effect still cannot serve the async-typed import, and a
+    // concurrent registration that omits it still cannot serve the
+    // sync-typed one.
+    let engine = Engine::new().expect("engine");
+
+    let mut claims_async: Linker<()> = Linker::new(&engine);
+    claims_async
+        .root()
+        .func_new("answer", declared(true), |_call, _args, _results| Ok(()));
+    claims_async
+        .root()
+        .func_new("double", declared(false), |_call, _args, _results| Ok(()));
+    let cause = link_error(link_failure(&engine, &claims_async, (), ASYNC_IMPORT).await);
+    assert!(
+        matches!(
+            &cause,
+            LinkError::SynchronousRegistrationForAsyncImport { import, .. }
+                if *import == ExternalName::Plain("answer".to_owned())
+        ),
+        "a declared `async` effect does not make a synchronous registration concurrent: {cause:?}"
+    );
+
+    let mut claims_sync: Linker<()> = Linker::new(&engine);
+    claims_sync.root().func_new_concurrent(
+        "answer",
+        declared(true),
+        |_accessor: &Accessor<()>, args: Vec<Val>| async move { Ok(args) },
+    );
+    claims_sync.root().func_new_concurrent(
+        "double",
+        declared(false),
+        |_accessor: &Accessor<()>, args: Vec<Val>| async move { Ok(args) },
+    );
+    let cause = link_error(link_failure(&engine, &claims_sync, (), ASYNC_IMPORT).await);
+    assert!(
+        matches!(
+            &cause,
+            LinkError::ConcurrentRegistrationForSyncImport { import, .. }
+                if *import == ExternalName::Plain("double".to_owned())
+        ),
+        "an omitted `async` effect does not make a concurrent registration synchronous: {cause:?}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_synchronous_call_of_a_concurrent_registration() {
+    // The rule holds a concurrent registration to an async-typed
+    // import, and the two axes still move separately: this component
+    // lowers the async-typed import without the `async` option, so the
+    // guest reaches the host synchronously. That call path is the one
+    // the trampoline has not built, and the component links and
+    // instantiates before a guest meets the refusal.
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, SYNCHRONOUS_LOWER_OF_AN_ASYNC_IMPORT)
+        .await
+        .expect("component parses");
+
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker.root().func_wrap_concurrent(
+        "answer",
+        |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
+    );
+
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the component instantiates");
+
+    let err = instance
+        .get_func("run")
+        .expect("the component exports `run`")
+        .call(&mut store, &[])
+        .await
+        .expect_err("the synchronous call of a host `async` function is refused");
+    assert!(
+        chain(&err).contains("calls of a host `async` function"),
+        "expected the host `async` function call to be named, got {err:?}"
     );
 }

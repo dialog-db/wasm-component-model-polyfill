@@ -33,7 +33,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use wasm_component_model_polyfill::{
-    Component, Engine, EngineConfig, Error, ExternType, ExternalName, FunctionParameter,
+    Accessor, Component, Engine, EngineConfig, Error, ExternType, ExternalName, FunctionParameter,
     FunctionType, HostResource, Instance, Linker, Module, PrimitiveType, ResourceType, Store, Val,
     ValField, ValueType,
 };
@@ -437,23 +437,23 @@ struct ResourceState {
 /// Register the host items Wasmtime's wast runner provides for its
 /// component tests (`crates/wast/src/spectest.rs`,
 /// `link_component_spectest`), so the directives that import them
-/// run as they do there. Wasmtime registers `host-echo-u32` as an
-/// asynchronous host function that resolves without yielding; a
-/// synchronous host function called through an asynchronous lower
-/// returns `RETURNED` at once, the same observable behavior, so it is
-/// registered here with `func_wrap`. The remaining asynchronous items
-/// (`never-return`, `return-two-slowly`, `echo-slowly`, and
-/// `[method]resource1.never-return`) need a host task that actually
-/// yields, which the polyfill does not support registering yet, so
-/// they are left out; every directive that imports one of them is a
-/// deferred feature.
+/// run as they do there. `host-echo-u32` is declared `async func`, so
+/// the link rule wants the concurrent entry for it and the harness
+/// registers it with `func_wrap_concurrent`, as the runner does; its
+/// future resolves at once, without yielding. The remaining
+/// asynchronous items (`never-return`, `return-two-slowly`,
+/// `echo-slowly`, and `[method]resource1.never-return`) need a host
+/// task that actually yields, which the polyfill does not support
+/// calling yet, so they are left out; every directive that imports one
+/// of them is a deferred feature.
 async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
     linker
         .root()
         .func_wrap("host-return-two", |_, (): ()| Ok(2u32));
-    linker
-        .root()
-        .func_wrap("host-echo-u32", |_, (v,): (u32,)| Ok(v));
+    linker.root().func_wrap_concurrent(
+        "host-echo-u32",
+        |_: &Accessor<()>, (v,): (u32,)| async move { Ok(v) },
+    );
 
     let simple_module = Module::new(engine, SIMPLE_MODULE)
         .await

@@ -25,6 +25,13 @@
 //! [`LinkError::UnresolvedImport`]; signature mismatches surface as
 //! [`Error::TypeMismatch`].
 //!
+//! It also holds each function registration's *form* to the import's
+//! `async` effect: an async-typed import wants a concurrent
+//! registration and a sync-typed import wants a synchronous one, and
+//! either pairing the wrong way round fails to link. The rule is
+//! Wasmtime's rather than the reference's; the two causes it raises
+//! say why the polyfill keeps it.
+//!
 //! [`LinkerInstance`]: super::LinkerInstance
 
 use std::collections::HashMap;
@@ -40,6 +47,7 @@ use crate::identifier::InterfaceIdentifier;
 use crate::resource::ResourceTypeId;
 use crate::types::{ResourceType, ValueType};
 
+use super::host_func_kind::HostFuncKind;
 use super::linker::Linker;
 use super::module_matching::module_satisfies;
 use super::registration::InstanceRegistration;
@@ -531,6 +539,7 @@ fn check_function_item<T: 'static>(
             import: import_name,
         }));
     };
+    check_registration_kind(position, item_name, declared, &host.kind)?;
     if !function_types_compatible(&host.signature, declared) {
         return Err(Error::from(TypeMismatch {
             position: position.for_item(item_name),
@@ -539,6 +548,49 @@ fn check_function_item<T: 'static>(
         }));
     }
     Ok(())
+}
+
+/// Hold the registration's form to the import's `async` effect: an
+/// async-typed import wants a concurrent registration, and a
+/// sync-typed one wants a synchronous registration.
+///
+/// The check reads the registration's [`HostFuncKind`] and never its
+/// declared signature's own `async_`. The kind is the only reliable
+/// record of the form: a typed registration derives its signature
+/// from the closure's argument tuple and return type, which say
+/// nothing about the `async` effect, so `func_wrap_concurrent`
+/// derives a signature whose `async_` is false; and an untyped
+/// registration takes whatever `FunctionType` the host names, which
+/// need not agree with the form it registered under. The kind is
+/// fixed by which of the four entries the host called.
+///
+/// This runs before the signature comparison, as Wasmtime's
+/// `typecheck_async` does, so a host that reached for the wrong entry
+/// reads that rather than a parameter-by-parameter mismatch.
+///
+/// [`HostFuncKind`]: super::HostFuncKind
+fn check_registration_kind<T: 'static>(
+    position: &ItemPosition<'_>,
+    item_name: &str,
+    declared: &FunctionType,
+    kind: &HostFuncKind<T>,
+) -> Result<()> {
+    let concurrent = matches!(kind, HostFuncKind::Concurrent(_));
+    match (declared.async_, concurrent) {
+        (true, false) => Err(Error::from(
+            LinkError::SynchronousRegistrationForAsyncImport {
+                import: position.import_name(),
+                item: position.item(item_name),
+            },
+        )),
+        (false, true) => Err(Error::from(
+            LinkError::ConcurrentRegistrationForSyncImport {
+                import: position.import_name(),
+                item: position.item(item_name),
+            },
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Two function types are compatible when their result types and

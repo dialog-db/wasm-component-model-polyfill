@@ -47,9 +47,11 @@ the rest of its component spectest (`crates/wast/src/spectest.rs`
 upstream), plus the module exports of every named component a file
 instantiates, reflected under the component's name as the runner
 does. The runner defines five of those items as asynchronous. The
-harness registers one of them, `host-echo-u32`, as a synchronous
-function, because it returns its argument and never pends. It
-registers none of the other four: `host.never-return`,
+harness registers one of them, `host-echo-u32`, through the concurrent
+entry the runner uses, because the link rule holds an `async func`
+import to a concurrent registration; its future answers with the
+argument and never pends. It registers none of the other four:
+`host.never-return`,
 `host.return-two-slowly`, `host.echo-slowly`, and
 `host.[method]resource1.never-return`. A file that imports one of the
 four fails as a `deferred-feature`.

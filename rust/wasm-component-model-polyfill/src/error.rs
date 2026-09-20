@@ -274,6 +274,68 @@ pub enum LinkError {
         found: &'static str,
     },
 
+    /// An import whose WIT type is declared `async func` was
+    /// satisfied by a synchronous registration, one made through
+    /// `LinkerInstance::func_new` or `LinkerInstance::func_wrap`.
+    ///
+    /// Nothing in the Component Model requires this. A synchronous
+    /// host function would serve an async-typed import correctly,
+    /// because it resolves at once, and how a caller reaches the
+    /// function is an axis of its own separate from the callee's
+    /// type. The rule is Wasmtime's choice, and the polyfill follows
+    /// it so that a host's registrations move between the two
+    /// runtimes unchanged: a pairing one refuses is a pairing the
+    /// other refuses, with the same text.
+    ///
+    /// The message is Wasmtime's, which is why it names
+    /// `func_new_async`/`func_wrap_async` — entries Wasmtime offers
+    /// and the polyfill does not. They appear because they are the
+    /// other sync-style pair a host might have reached for, and the
+    /// message says that neither pair is what an `async func` import
+    /// wants.
+    #[error(
+        "import `{import}`: type mismatch with async: this import is declared `async func` in \
+         WIT, but was satisfied with a sync-style host function (`func_new`/`func_wrap`, or \
+         `func_new_async`/`func_wrap_async` — despite the name, these implement a \
+         *sync*-WIT-typed function via blocking host code, not an `async func` import); use \
+         `func_new_concurrent`/`func_wrap_concurrent` instead"
+    )]
+    SynchronousRegistrationForAsyncImport {
+        /// The name of the import whose type is `async func`.
+        import: ExternalName,
+        /// The item inside an instance import whose registration
+        /// disagreed, or `None` when the import itself is the
+        /// function.
+        item: Option<String>,
+    },
+
+    /// An import whose WIT type is a plain, non-`async` function was
+    /// satisfied by a concurrent registration, one made through
+    /// `LinkerInstance::func_new_concurrent` or
+    /// `LinkerInstance::func_wrap_concurrent`.
+    ///
+    /// This is the other half of
+    /// [`Self::SynchronousRegistrationForAsyncImport`], and is
+    /// Wasmtime's choice in the same way: the polyfill refuses the
+    /// pairing so that a host's registrations move between the two
+    /// runtimes unchanged. The message is Wasmtime's, and names
+    /// `func_new_async`/`func_wrap_async` for the same reason.
+    #[error(
+        "import `{import}`: type mismatch with async: this import's WIT type is a plain \
+         (non-`async`) function, but was satisfied with \
+         `func_new_concurrent`/`func_wrap_concurrent`, which is only for `async func`-typed \
+         imports; use `func_new`/`func_wrap` (or `func_new_async`/`func_wrap_async` for \
+         blocking host code) instead"
+    )]
+    ConcurrentRegistrationForSyncImport {
+        /// The name of the import whose type is a plain function.
+        import: ExternalName,
+        /// The item inside an instance import whose registration
+        /// disagreed, or `None` when the import itself is the
+        /// function.
+        item: Option<String>,
+    },
+
     /// The core module registered for a module-typed import does not
     /// satisfy the module type the import declares: an export the
     /// type lists is missing or has the wrong type, or the module

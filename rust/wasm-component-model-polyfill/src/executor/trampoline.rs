@@ -367,6 +367,13 @@ pub fn build_trampoline<T: 'static>(
                 // other half of the call path above. The registration
                 // links, and only a guest that makes the call meets
                 // the refusal.
+                //
+                // The link rule holds a concurrent registration to an
+                // async-typed import, which does not put this arm out
+                // of reach: the two axes move separately, so a guest
+                // may lower an async-typed import without the `async`
+                // option and reach the host synchronously. That is the
+                // shape this arm refuses.
                 (LowerKind::Sync, HostFuncKind::Concurrent(_)) => Err(Error::unsupported(
                     "calls of a host `async` function (an import registered through \
                      `func_new_concurrent` or `func_wrap_concurrent`)",
