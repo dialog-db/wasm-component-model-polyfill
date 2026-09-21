@@ -80,12 +80,18 @@ impl Error for JsErrorMsg {
 
 impl From<&JsValue> for JsErrorMsg {
     fn from(value: &JsValue) -> Self {
+        // PATCH (wcmp): a value whose `message` is not a string — a
+        // `WebAssembly.Exception` a guest threw, for one — reaches the
+        // debug rendering rather than a panic. `Reflect::get` answers
+        // `Ok(undefined)` for a property the object does not have, so
+        // upstream's `expect` fires on every such value.
         if let Some(v) = value.dyn_ref::<JsString>() {
             Self { message: v.into() }
-        } else if let Ok(v) = Reflect::get(value, &"message".into()) {
-            Self {
-                message: v.as_string().expect("A string object"),
-            }
+        } else if let Some(message) = Reflect::get(value, &"message".into())
+            .ok()
+            .and_then(|v| v.as_string())
+        {
+            Self { message }
         } else {
             Self {
                 message: format!("{value:?}"),

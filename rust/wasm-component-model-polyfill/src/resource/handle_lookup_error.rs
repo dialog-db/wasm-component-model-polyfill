@@ -9,9 +9,12 @@ use std::fmt;
 /// fails the same way on both. `WrongKind` has no Wasmtime
 /// counterpart: it fires only when a resource lookup lands on a
 /// non-resource entry, which a well-formed adapter never generates.
-/// The three waitable causes read as Wasmtime's own messages for the
+/// The three waitable causes follow Wasmtime's own wording for the
 /// same misuse, which it raises from its handle table rather than as
-/// a named trap.
+/// a named trap, with the handle index added: Wasmtime says only
+/// that the handle is not a waitable, a waitable set, or a subtask,
+/// and a guest that misuses one index among many is better served by
+/// being told which.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HandleLookupError {
     /// No live entry sits at the index.

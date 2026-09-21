@@ -290,14 +290,6 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 instance: instance.as_u32() as usize,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
-            // The one thread built-in the polyfill implements. The
-            // `cancellable` field is dropped here. It is the
-            // trampoline IR's own and not the reference's: `canon
-            // thread.yield` carries no such immediate, and the
-            // release after this one drops the field. It marks a
-            // caller that may be told a cancellation is pending,
-            // and nothing in this design makes one pending, so the
-            // built-in answers zero either way.
             // The prepare-and-start pair of a fused adapter whose
             // lower or lift is asynchronous. Prepare names the
             // memory the callee's lift declared, which the callee's
@@ -320,6 +312,28 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 })?,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
+            // An asynchronous start reaches both lifts the polyfill
+            // serves, and the adapter says which at the call rather
+            // than here: a callback slot alone does not tell a
+            // synchronous lift from the stackful form, since neither
+            // names one. The stackful form is refused where a
+            // component declares it and again at the call.
+            Trampoline::AsyncStartCall {
+                callback,
+                post_return,
+            } => TrampolineSpec::AsyncStartCall {
+                callback: callback.map(|slot| slot.as_u32() as usize),
+                post_return: post_return.map(|slot| slot.as_u32() as usize),
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            // The one thread built-in the polyfill implements. The
+            // `cancellable` field is dropped here. It is the
+            // trampoline IR's own and not the reference's: `canon
+            // thread.yield` carries no such immediate, and the
+            // release after this one drops the field. It marks a
+            // caller that may be told a cancellation is pending,
+            // and nothing in this design makes one pending, so the
+            // built-in answers zero either way.
             Trampoline::ThreadYield { instance, .. } => TrampolineSpec::ThreadYield {
                 instance: instance.as_u32() as usize,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,

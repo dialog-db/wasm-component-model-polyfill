@@ -664,6 +664,25 @@ pub enum TrampolineSpec {
         /// caller's flat results out.
         signature: CoreSignature,
     },
+    /// The `async-start-call` intrinsic of a fused adapter whose
+    /// lower is asynchronous: it runs the prepared call and answers
+    /// with the status word, so the caller gets control back before
+    /// the callee necessarily returns.
+    AsyncStartCall {
+        /// The runtime callback slot of an asynchronously lifted
+        /// callee. `None` for a synchronously lifted one, and for
+        /// the stackful form, which the adapter distinguishes only
+        /// by the flag word it passes at the call.
+        callback: Option<usize>,
+        /// The runtime post-return slot of a synchronously lifted
+        /// callee, which runs once its results have crossed. `None`
+        /// when the callee's lift declared none.
+        post_return: Option<usize>,
+        /// The core signature the adapter imports: the callee's
+        /// `funcref`, its flat parameter and result counts, and the
+        /// flag word in; the status word out.
+        signature: CoreSignature,
+    },
     /// The `thread.yield` built-in: the calling thread gives way to
     /// the work the store already holds, and the built-in returns
     /// zero.

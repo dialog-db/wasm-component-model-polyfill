@@ -157,7 +157,7 @@ fn task_return<T: 'static>(
     // lowers the callee's result straight into the caller's memory.
     if let Some(subtask) = current.subtask {
         drop(context);
-        return cross_through_return_function(&mut store_ctx, tables, task, subtask, result, args);
+        return cross_result_into_caller(&mut store_ctx, tables, task, subtask, result, args);
     }
 
     let value = match result {
@@ -242,17 +242,18 @@ fn current_task(tables: &Arc<Mutex<HandleTables>>) -> Result<Current> {
 ///
 /// This is the reference's `on_resolve`, and it runs where the
 /// reference runs it: at the callee's `task.return`, before the
-/// callee's callback continues. The function takes the built-in's
-/// own arguments, with the caller's return pointer appended when the
-/// caller takes its result through one, and gives back the caller's
-/// flat results, which the start intrinsic hands to the caller as it
-/// returns.
+/// callee's callback continues, or — for a synchronously lifted
+/// callee, which has no `task.return` — as its core function
+/// returns. The function takes the callee's result as flat values,
+/// with the caller's return pointer appended when the caller takes
+/// its result through one, and gives back the caller's flat results,
+/// which a synchronous start hands to the caller as it returns.
 ///
 /// The function is the caller's code, so it runs with the caller's
 /// task as the current scope. The callee's scope goes back on the
 /// stack afterwards, whichever way the crossing went, because the
 /// callee's core function or callback is still below this frame.
-fn cross_through_return_function<T: 'static>(
+pub fn cross_result_into_caller<T: 'static>(
     store_ctx: &mut RuntimeContextMut<'_, StoreData<T>, Backend>,
     tables: &Arc<Mutex<HandleTables>>,
     task: TaskId,

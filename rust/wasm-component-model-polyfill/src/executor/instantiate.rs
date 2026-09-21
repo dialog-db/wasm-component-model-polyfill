@@ -29,6 +29,7 @@ use crate::store::StoreContext;
 use crate::types::ResourceType;
 
 use super::ResourceDestructor;
+use super::build_async_start_call;
 use super::build_prepare_call;
 use super::build_sync_start_call;
 use super::build_task_return;
@@ -580,6 +581,17 @@ fn build_runtime_trampoline<T: 'static>(
         } => Ok(build_sync_start_call(
             store,
             *callback,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::AsyncStartCall {
+            callback,
+            post_return,
+            signature,
+        } => Ok(build_async_start_call(
+            store,
+            *callback,
+            *post_return,
             signature,
             abi_state.clone(),
         )),

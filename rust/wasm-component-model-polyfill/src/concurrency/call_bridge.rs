@@ -4,6 +4,7 @@
 use wasm_runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
 
 use crate::abi::layout::FlatType;
+use crate::resource::TableId;
 
 use super::caller_kind::CallerKind;
 use super::thread_id::ThreadId;
@@ -43,6 +44,12 @@ pub struct CallBridge {
     /// function runs in and the caller the start intrinsic returns
     /// to.
     pub caller_thread: ThreadId,
+    /// The handle table of the caller's component instance, where
+    /// the subtask's entry goes when an asynchronous lower hands the
+    /// call back to the caller. The adapter names the caller's
+    /// instance to the prepare intrinsic and nowhere else, so the
+    /// table is resolved there and travels here.
+    pub caller_table: TableId,
     /// The flat result types the caller takes, which the start
     /// intrinsic fills in from its own core signature: the return
     /// function produces exactly these. Empty for a caller that

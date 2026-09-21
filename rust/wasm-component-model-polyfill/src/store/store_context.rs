@@ -622,6 +622,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         if !nested {
             let resumed = self.scheduler_mut().take_resume_after_yield();
             if let Some(item) = resumed {
+                self.scheduler_mut().note_item_run();
                 item.run(self)?;
             }
         }
@@ -634,6 +635,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             };
             if let Some(item) = ready {
                 ran = true;
+                self.scheduler_mut().note_item_run();
                 item.run(self)?;
                 continue;
             }
@@ -651,6 +653,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             // condition; an idle answer is its cue to stop and trap
             // with the cannot-block cause.
             if let Some(item) = self.scheduler_mut().take_deferred_in(instance) {
+                self.scheduler_mut().note_item_run();
                 item.run(self)?;
                 return Ok(Outcome::Progress);
             }
@@ -681,6 +684,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         // already.
         if nested {
             if let Some(item) = self.scheduler_mut().take_deferred() {
+                self.scheduler_mut().note_item_run();
                 item.run(self)?;
                 return Ok(Outcome::Progress);
             }
@@ -817,6 +821,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         let Some(item) = self.scheduler_mut().take_switch_slot() else {
             return Ok(());
         };
+        self.scheduler_mut().note_item_run();
         item.run(self)
     }
 

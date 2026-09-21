@@ -43,7 +43,7 @@ use crate::concurrency::{CallBridge, CallerKind, InstanceId, SubtaskId, ThreadId
 use crate::error::{Error, Result};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CanonOptions, CoreSignature, DataModel, StringEncoding};
-use crate::resource::HandleTables;
+use crate::resource::{HandleTables, TableId};
 use crate::store::StoreContext;
 
 /// How many arguments of the prepare intrinsic describe the call.
@@ -76,6 +76,7 @@ fn prepare_call(
 ) -> Result<()> {
     let start = funcref_argument(args, 0)?;
     let return_ = funcref_argument(args, 1)?;
+    let caller_index = u32_argument(args, 2)? as usize;
     let callee_index = u32_argument(args, 3)? as usize;
     let result_tuple = u32_argument(args, 4)? as usize;
     let callee_async_typed = u32_argument(args, 5)? != 0;
@@ -87,6 +88,11 @@ fn prepare_call(
         .to_vec();
 
     let callee = instance_at(abi_state, callee_index)?;
+    // The caller's instance is named here and nowhere else, so its
+    // handle table is resolved here: an asynchronous start puts the
+    // subtask's entry in that table, and by then the adapter has
+    // stopped saying whose call it is.
+    let caller_table = handle_table_at(abi_state, caller_index)?;
     let options = CanonOptions {
         instance: callee_index,
         memory,
@@ -131,6 +137,7 @@ fn prepare_call(
             caller,
             callee_async_typed,
             caller_thread,
+            caller_table,
             caller_results: Vec::new(),
             flat_results: Vec::new(),
         });
@@ -190,6 +197,22 @@ pub fn u32_argument(args: &[RuntimeVal], index: usize) -> Result<u32> {
             "an adapter intrinsic expected an i32 argument",
         )),
     }
+}
+
+/// The handle table of the component instance the adapter names by
+/// the translator's per-instantiation index.
+fn handle_table_at(abi_state: &Arc<Mutex<AbiRuntimeState>>, index: usize) -> Result<TableId> {
+    abi_state
+        .lock()
+        .map_err(|_| Error::internal("ABI runtime state lock poisoned"))?
+        .handle_tables
+        .get(index)
+        .copied()
+        .ok_or_else(|| {
+            Error::internal(format!(
+                "adapter named component instance {index}, which has no handle table"
+            ))
+        })
 }
 
 /// The store-wide identity of the component instance the adapter

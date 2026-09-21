@@ -601,10 +601,21 @@ impl TaskTables {
     /// moves to its returned state. Its resolution is delivered
     /// separately, when the caller's thread takes the subtask event
     /// or a synchronous lower returns.
+    ///
+    /// A subtask the caller holds a handle for takes on the subtask
+    /// event as it resolves, which is the reference's `on_resolve`
+    /// reaching `on_progress`. That is what a caller which already
+    /// took the `STARTED` event and went back to waiting is waiting
+    /// for: nothing else would fill the slot again, and delivery
+    /// rebuilding the state saves only a caller whose `STARTED` was
+    /// never taken.
     pub fn subtask_returned(&mut self, subtask: SubtaskId) -> Result<()> {
         self.subtask_mut(subtask)
             .ok_or_else(|| Error::internal("subtask record is not in the store"))?
             .state = SubtaskState::Returned;
+        if let Some(index) = self.subtask_handle(subtask) {
+            self.record_subtask_event(subtask, index)?;
+        }
         Ok(())
     }
 

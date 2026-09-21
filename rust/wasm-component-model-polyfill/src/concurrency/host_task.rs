@@ -172,17 +172,22 @@ impl<T: 'static> HostTask<T> {
                     .tables()
                     .lock()
                     .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
+                // The call is over either way, and the subtask's
+                // readiness is the subtask event a thread waiting on
+                // it takes delivery of. The event carries the
+                // subtask's index in the caller instance's handle
+                // table and the state it resolved to. Returning
+                // records it from the subtask's own handle, which a
+                // subtask this item resolves always has — it was
+                // entered in the caller's table when the first poll
+                // left the body running — so only the cancelled side
+                // records it here.
                 if produced && crossing.is_ok() {
                     guard.tasks.subtask_returned(subtask)?;
                 } else {
                     guard.tasks.subtask_cancelled(subtask)?;
+                    guard.tasks.record_subtask_event(subtask, handle_index)?;
                 }
-                // The call is over either way, and the subtask's
-                // readiness is the subtask event a thread waiting on it
-                // takes delivery of. The event carries the subtask's
-                // index in the caller instance's handle table and the
-                // state it resolved to.
-                guard.tasks.record_subtask_event(subtask, handle_index)?;
                 crossing
             },
         )

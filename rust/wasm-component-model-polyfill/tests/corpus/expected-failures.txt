@@ -12,9 +12,8 @@
 #   defect            a wrong result from a feature the polyfill claims
 #   cascade           a consequence of an earlier failure in the same file
 
-cm/async/async-calls-sync.wast:12 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
-cm/async/async-calls-sync.wast:250 cascade no instance to invoke
-cm/async/async-calls-sync.wast:251 cascade no instance to invoke
+cm/async/async-calls-sync.wast:250 deferred-feature the callee spin-waits in its event loop until the outer caller unblocks it, so only that caller can release it, which needs a stack switch: the call fails with `deadlock detected: event loop cannot make further progress`
+cm/async/async-calls-sync.wast:251 deferred-feature the callee spin-waits in its event loop until the outer caller unblocks it, so only that caller can release it, which needs a stack switch: the call fails with `deadlock detected: event loop cannot make further progress`
 cm/async/big-interleaving-test.wast:14 deferred-feature component rejected: unsupported component feature: the `task-cancel` trampoline
 cm/async/big-interleaving-test.wast:862 cascade no definition named `Tester`
 cm/async/big-interleaving-test.wast:864 cascade no instance to invoke
@@ -86,59 +85,8 @@ cm/async/cancel-subtask.wast:217 cascade no instance to invoke
 cm/async/closed-stream.wast:4 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
 cm/async/closed-stream.wast:101 cascade no definition named `Tester`
 cm/async/closed-stream.wast:102 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:4 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
-cm/async/cross-abi-calls.wast:472 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:473 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:474 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:475 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:476 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:477 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:478 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:479 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:480 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:481 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:482 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:483 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:484 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:485 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:486 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:487 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:488 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:489 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:490 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:491 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:492 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:493 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:494 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:495 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:496 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:497 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:498 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:499 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:500 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:501 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:502 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:503 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:504 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:505 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:506 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:507 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:508 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:509 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:510 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:511 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:512 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:513 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:514 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:515 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:516 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:517 cascade no instance to invoke
-cm/async/cross-abi-calls.wast:518 cascade no definition named `C`
-cm/async/cross-abi-calls.wast:519 cascade no instance to invoke
 cm/async/cross-task-future.wast:2 deferred-feature component rejected: unsupported component feature: `future<T>` values
 cm/async/cross-task-future.wast:103 cascade no instance to invoke
-cm/async/deadlock.wast:4 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
-cm/async/deadlock.wast:73 cascade expected a trap `wasm trap: deadlock detected: event loop cannot make further progress`, got `no instance to invoke`
 cm/async/drop-cross-task-borrow.wast:9 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 cm/async/drop-cross-task-borrow.wast:304 cascade no definition named `Test`
 cm/async/drop-cross-task-borrow.wast:305 cascade no instance to invoke
@@ -151,11 +99,6 @@ cm/async/drop-stream.wast:157 cascade no definition named `Tester`
 cm/async/drop-stream.wast:158 cascade expected a trap `cannot remove busy stream`, got `no instance to invoke`
 cm/async/drop-stream.wast:159 cascade no definition named `Tester`
 cm/async/drop-stream.wast:160 cascade expected a trap `cannot drop busy stream`, got `no instance to invoke`
-cm/async/drop-subtask.wast:5 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
-cm/async/drop-subtask.wast:139 cascade no instance to invoke
-cm/async/drop-subtask.wast:140 cascade expected a trap `cannot drop a subtask which has not yet resolved`, got `no instance to invoke`
-cm/async/drop-waitable-set.wast:5 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
-cm/async/drop-waitable-set.wast:84 cascade expected a trap `cannot drop waitable set with waiters`, got `no instance to invoke`
 cm/async/during-sync-call-exclusive-resume.wast:9 deferred-feature component rejected: unsupported component feature: the `thread-index` trampoline
 cm/async/during-sync-call-exclusive-resume.wast:59 cascade no instance to invoke
 cm/async/during-sync-call-exclusive-resume.wast:60 cascade no instance to invoke
@@ -218,10 +161,7 @@ cm/async/partial-stream-copies.wast:238 cascade no instance to invoke
 cm/async/passing-resources.wast:7 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
 cm/async/passing-resources.wast:175 cascade no instance to invoke
 cm/async/passing-resources.wast:176 cascade expected a trap `unknown handle index 3`, got `no instance to invoke`
-cm/async/reentrance.wast:242 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
-cm/async/reentrance.wast:346 cascade no instance to invoke
-cm/async/reentrance.wast:352 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
-cm/async/reentrance.wast:429 cascade expected a trap `deadlock detected: event loop cannot make further progress`, got `no instance to invoke`
+cm/async/reentrance.wast:429 defect expected a trap `deadlock detected: event loop cannot make further progress`, got `wasm trap: wasm `unreachable` instruction executed` (the cycle's wait is answered instead of going idle, so the caller runs on to its own `unreachable`)
 cm/async/reentrance.wast:442 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
 cm/async/reentrance.wast:548 cascade no instance to invoke
 cm/async/reentrance.wast:557 deferred-feature component rejected: unsupported component feature: the `thread-index` trampoline
@@ -470,11 +410,7 @@ cm/values/post-return.wast:253 cascade no definition named `Tester`
 cm/values/post-return.wast:254 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
 cm/values/post-return.wast:255 cascade no definition named `Tester`
 cm/values/post-return.wast:256 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/variants.wast:83 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
-cm/values/variants.wast:183 cascade no instance to invoke
-cm/values/variants.wast:184 cascade no instance to invoke
-cm/values/variants.wast:185 cascade no instance to invoke
-cm/values/variants.wast:186 cascade no instance to invoke
+cm/values/variants.wast:186 deferred-feature the invoked export is lifted stackfully: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
 wasmtime/alias-region-known-imported-entities.wast:13 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref i31) is not supported in the wasm_runtime_layer
 wasmtime/alias-region-known-imported-entities.wast:64 cascade no instance to invoke
 wasmtime/alias-region-known-imported-entities.wast:65 cascade no instance to invoke
@@ -502,8 +438,6 @@ wasmtime/async/async-builtins.wast:5 deferred-feature component rejected: unsupp
 wasmtime/async/async-builtins.wast:15 deferred-feature component rejected: unsupported component feature: the `stream-cancel-write` trampoline
 wasmtime/async/async-builtins.wast:25 deferred-feature component rejected: unsupported component feature: the `future-cancel-read` trampoline
 wasmtime/async/async-builtins.wast:35 deferred-feature component rejected: unsupported component feature: the `future-cancel-write` trampoline
-wasmtime/async/backpressure-deadlock.wast:14 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
-wasmtime/async/backpressure-deadlock.wast:107 cascade expected a trap `deadlock detected`, got `no instance to invoke`
 wasmtime/async/cancel-host.wast:7 validation component rejected: invalid component binary at offset 0: `canon lower` with the `async` option requires the `memory` option
 wasmtime/async/cancel-host.wast:80 cascade no instance to invoke
 wasmtime/async/cancel-host.wast:85 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
@@ -519,7 +453,7 @@ wasmtime/async/cancel-sibling-subtask.wast:145 cascade no definition named `A`
 wasmtime/async/cancel-sibling-subtask.wast:146 cascade no instance to invoke
 wasmtime/async/cancel-sibling-subtask.wast:149 cascade no definition named `A`
 wasmtime/async/cancel-sibling-subtask.wast:150 cascade no instance to invoke
-wasmtime/async/cancel-starting-subtask-does-not-leak.wast:9 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
+wasmtime/async/cancel-starting-subtask-does-not-leak.wast:9 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
 wasmtime/async/cancel-starting-subtask-does-not-leak.wast:103 cascade no instance to invoke
 wasmtime/async/cancel-sync-and-waitable.wast:18 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 wasmtime/async/cancel-sync-and-waitable.wast:68 cascade expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
@@ -529,14 +463,9 @@ wasmtime/async/cancel-sync-and-waitable.wast:124 deferred-feature component reje
 wasmtime/async/cancel-sync-and-waitable.wast:174 cascade expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
 wasmtime/async/cancel-sync-and-waitable.wast:177 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
 wasmtime/async/cancel-sync-and-waitable.wast:227 cascade expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
-wasmtime/async/cancel-sync-and-waitable.wast:230 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
+wasmtime/async/cancel-sync-and-waitable.wast:230 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
 wasmtime/async/cancel-sync-and-waitable.wast:301 cascade expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
-wasmtime/async/context-in-compositions.wast:268 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
-wasmtime/async/context-in-compositions.wast:434 cascade no instance to invoke
-wasmtime/async/context-in-compositions.wast:435 cascade no instance to invoke
-wasmtime/async/context-in-compositions.wast:436 cascade no instance to invoke
-wasmtime/async/context-in-compositions.wast:437 cascade no instance to invoke
-wasmtime/async/drop-waitable-set-stackful.wast:13 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
+wasmtime/async/drop-waitable-set-stackful.wast:13 deferred-feature component rejected: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
 wasmtime/async/drop-waitable-set-stackful.wast:105 cascade expected a trap `cannot drop waitable set with waiters`, got `no instance to invoke`
 wasmtime/async/error-context.wast:5 deferred-feature component rejected: unsupported component feature: the `error-context-new` trampoline
 wasmtime/async/error-context.wast:16 deferred-feature component rejected: unsupported component feature: the `error-context-debug-message` trampoline
@@ -545,20 +474,6 @@ wasmtime/async/error-context.wast:39 deferred-feature component rejected: unsupp
 wasmtime/async/error-context.wast:84 cascade no definition named `A`
 wasmtime/async/error-context.wast:85 cascade no instance to invoke
 wasmtime/async/error-context.wast:86 cascade expected a trap `invalid debug message pointer`, got `no instance to invoke`
-wasmtime/async/exceptions.wast:73 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
-wasmtime/async/exceptions.wast:143 cascade no definition named `A`
-wasmtime/async/exceptions.wast:144 cascade expected a trap `thrown Wasm exception`, got `no instance to invoke`
-wasmtime/async/exceptions.wast:145 cascade no definition named `A`
-wasmtime/async/exceptions.wast:146 cascade expected a trap `thrown Wasm exception`, got `no instance to invoke`
-wasmtime/async/exceptions.wast:149 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
-wasmtime/async/exceptions.wast:215 cascade no definition named `A`
-wasmtime/async/exceptions.wast:216 cascade expected a trap `thrown Wasm exception`, got `no instance to invoke`
-wasmtime/async/exceptions.wast:217 cascade no definition named `A`
-wasmtime/async/exceptions.wast:218 cascade expected a trap `thrown Wasm exception`, got `no instance to invoke`
-wasmtime/async/fused.wast:7 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
-wasmtime/async/fused.wast:56 cascade no instance to invoke
-wasmtime/async/fused.wast:59 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
-wasmtime/async/fused.wast:101 cascade no instance to invoke
 wasmtime/async/future-cancel-read-dropped.wast:4 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 wasmtime/async/future-cancel-read-dropped.wast:66 cascade no instance to invoke
 wasmtime/async/future-cancel-write-completed.wast:5 deferred-feature component rejected: unsupported component feature: the `future-read` trampoline
@@ -602,13 +517,10 @@ wasmtime/async/join-during-sync-read.wast:8 deferred-feature component rejected:
 wasmtime/async/join-during-sync-read.wast:66 cascade expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
 wasmtime/async/partial-stream-copies.wast:14 deferred-feature component rejected: unsupported component feature: `stream<T>` values
 wasmtime/async/partial-stream-copies.wast:243 cascade no instance to invoke
-wasmtime/async/reenter-during-yield.wast:5 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
-wasmtime/async/reenter-during-yield.wast:81 cascade no instance to invoke
-wasmtime/async/reentrance.wast:4 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
-wasmtime/async/reentrance.wast:92 cascade no instance to invoke
+wasmtime/async/reenter-during-yield.wast:81 deferred-feature the callee's core function yields for ever and only its caller can release it, which needs a stack switch: the call fails with `blocking here requires a stack switch, but the target has no suspend provider`
+wasmtime/async/reentrance.wast:92 defect the shim's `call_indirect` takes its element index from the call's argument, 42, and the shared table holds one entry, so the trap is Wasmtime's out-of-bounds table access rather than its `uninitialized element`: `wasm trap: undefined element: out of bounds table access`. The write the donut module's start function makes at index 0 of that shared table does carry — a core table one instance exports and another imports is one table here — so what is unexplained is why the polyfill reaches the shim's function at all, where Wasmtime answers the directive without this trap
 wasmtime/async/stackful.wast:7 deferred-feature component rejected: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
-wasmtime/async/stackful.wast:19 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
-wasmtime/async/stackful.wast:64 cascade no instance to invoke
+wasmtime/async/stackful.wast:64 deferred-feature the invoked export lowers a stackfully lifted callee: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
 wasmtime/async/stackful.wast:67 deferred-feature component rejected: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
 wasmtime/async/stackful.wast:107 cascade no instance to invoke
 wasmtime/async/stream-big-read-and-writes.wast:4 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
@@ -657,18 +569,11 @@ wasmtime/async/streams.wast:187 cascade no definition named `A`
 wasmtime/async/streams.wast:188 cascade expected a trap `cannot have concurrent operations active on a future/stream`, got `no instance to invoke`
 wasmtime/async/stream-zero-ops.wast:7 deferred-feature component rejected: unsupported component feature: the `stream-read` trampoline
 wasmtime/async/stream-zero-ops.wast:201 cascade no instance to invoke
-wasmtime/async/subtask-wait.wast:9 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
-wasmtime/async/subtask-wait.wast:82 cascade expected a trap `wasm `unreachable` instruction executed`, got `no instance to invoke`
 wasmtime/async/sync-and-async-waitable.wast:5 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 wasmtime/async/sync-and-async-waitable.wast:123 cascade expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
 wasmtime/async/sync-streams.wast:14 deferred-feature component rejected: unsupported component feature: `stream<T>` values
 wasmtime/async/sync-streams.wast:186 cascade no instance to invoke
 wasmtime/async/task-builtins.wast:74 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
-wasmtime/async/task-builtins.wast:205 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
-wasmtime/async/task-builtins.wast:390 cascade no instance to invoke
-wasmtime/async/task-builtins.wast:391 cascade no instance to invoke
-wasmtime/async/task-builtins.wast:392 cascade no instance to invoke
-wasmtime/async/task-builtins.wast:393 cascade no instance to invoke
 wasmtime/async/task-builtins.wast:470 deferred-feature component rejected: unsupported component feature: the `future-read` trampoline
 wasmtime/async/task-builtins.wast:723 cascade no instance to invoke
 wasmtime/async/task-deletion.wast:11 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
@@ -790,8 +695,6 @@ wasmtime/async/waitable-set-stale-entry.wast:130 cascade no definition named `A`
 wasmtime/async/waitable-set-stale-entry.wast:131 cascade no instance to invoke
 wasmtime/async/waitable-set-stale-entry.wast:132 cascade no definition named `A`
 wasmtime/async/waitable-set-stale-entry.wast:133 cascade no instance to invoke
-wasmtime/async/wait-forever2.wast:5 deferred-feature component rejected: unsupported component feature: the `component-async-start-call` trampoline
-wasmtime/async/wait-forever2.wast:75 cascade expected a trap `deadlock detected`, got `no instance to invoke`
 wasmtime/async/yield-when-cancelled.wast:6 deferred-feature component rejected: unsupported component feature: the `task-cancel` trampoline
 wasmtime/async/yield-when-cancelled.wast:97 cascade no instance to invoke
 wasmtime/error-context-trap-in-post-return.wast:3 deferred-feature component rejected: unsupported component feature: the `error-context-new` trampoline

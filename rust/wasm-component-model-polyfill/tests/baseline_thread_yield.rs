@@ -527,3 +527,86 @@ async fn it_fails_a_yield_a_post_return_calls_with_the_cannot_leave_cause() {
         "thread.yield from a post-return must fail with the cannot-leave cause: {message}"
     );
 }
+
+/// Two components, the second calling the first, where the callee's
+/// core function gives way `n` times and then returns 7.
+///
+/// The callee runs from inside the caller's frame: the caller's task
+/// is a scope below the callee's for the length of the call, which
+/// is the shape the polyfill's own yield bound is about. A callee
+/// with `n` inside the budget is being served and must see zero from
+/// every one of its yields; a callee that never stops asking must
+/// reach the stack-switch failure instead of running for ever,
+/// because the one thread that could release it is the caller whose
+/// frame the polyfill cannot leave without a stack switch.
+const CALLEE_GIVES_WAY: &[u8] = component!(
+    r#"
+    (component
+      (component $callee
+        (core func $yield (canon thread.yield))
+        (core module $m
+          (import "" "thread.yield" (func $yield (result i32)))
+          (func (export "spin") (param $n i32) (result i32)
+            (local $i i32)
+            (block $done
+              (loop $again
+                (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+                (drop (call $yield))
+                (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                (br $again)))
+            (i32.const 7)))
+        (core instance $i (instantiate $m (with "" (instance
+          (export "thread.yield" (func $yield))))))
+        (func (export "spin") (param "n" u32) (result u32)
+          (canon lift (core func $i "spin"))))
+
+      (component $caller
+        (import "spin" (func $spin (param "n" u32) (result u32)))
+        (core func $spin' (canon lower (func $spin)))
+        (core module $m
+          (import "" "spin" (func $spin (param i32) (result i32)))
+          (func (export "run") (param i32) (result i32)
+            (call $spin (local.get 0))))
+        (core instance $i (instantiate $m (with "" (instance
+          (export "spin" (func $spin'))))))
+        (func (export "run") (param "n" u32) (result u32)
+          (canon lift (core func $i "run"))))
+
+      (instance $callee (instantiate $callee))
+      (instance $caller (instantiate $caller (with "spin" (func $callee "spin"))))
+      (export "run" (func $caller "run")))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_returns_zero_from_every_yield_of_a_callee_that_gives_way_and_then_returns() {
+    let (mut store, instance) = instantiate_bare(CALLEE_GIVES_WAY).await;
+
+    // Eight times over, with the caller's frame below and the store
+    // holding nothing: each one gives way to nothing and returns
+    // zero, and the call finishes.
+    let answer = call_u32(&mut store, &instance, "run", &[Val::U32(8)]).await;
+
+    assert_eq!(
+        answer, 7,
+        "a callee that gives way and then returns is being served, not \
+         spin-waiting for its caller, so every one of its yields returns zero"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_fails_a_callee_that_gives_way_for_ever_with_the_stack_switch_cause() {
+    let (mut store, instance) = instantiate_bare(CALLEE_GIVES_WAY).await;
+
+    // More times than any budget: the call cannot finish, so what
+    // the test measures is that it stops rather than what it
+    // answers.
+    let message = call_expecting_a_trap(&mut store, &instance, "run", &[Val::U32(u32::MAX)]).await;
+
+    assert!(
+        message.contains("blocking here requires a stack switch"),
+        "a callee that never stops giving way against a store that holds \
+         nothing can only be released by the caller whose frame is below it, \
+         which needs a stack switch: {message}"
+    );
+}

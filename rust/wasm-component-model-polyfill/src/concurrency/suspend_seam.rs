@@ -6,6 +6,7 @@ use crate::store::StoreContext;
 
 use super::SuspendProvider;
 use super::outcome::Outcome;
+use super::scheduler::SPIN_BUDGET;
 
 /// The boxed provider of the suspend capability, with the `Send`
 /// bound the native target puts on everything a store holds. It is
@@ -35,10 +36,11 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 /// progress. A host task that stays pending inside a nested turn
 /// stays in the store for the outer turn, so no wake is lost.
 ///
-/// Four rules hold for the fallback. The first three say what a
+/// Five rules hold for the fallback. The first three say what a
 /// task that blocks waits for and what it is told when the wait
-/// cannot end. The fourth says what happens when the work the wait
-/// runs blocks in its turn.
+/// cannot end. The fourth bounds how long the wait goes on. The
+/// fifth says what happens when the work the wait runs blocks in
+/// its turn.
 ///
 /// - **A yielded item runs inside a nested turn once no other item
 ///   is ready.** A yield gives way to every other ready item, so
@@ -73,6 +75,28 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 ///   synchronous export, and of a synchronous call between two
 ///   components. A task that is allowed to block runs every ready
 ///   item and polls every host task.
+/// - **A run of turns that ran nothing but resumptions is
+///   bounded.** This is the polyfill's own rule, and the first rule
+///   above is what it departs from: that rule runs a yielded item
+///   whenever nothing else is ready, without limit, and the
+///   reference states no bound on it either. One shape makes an
+///   unbounded reading run for ever here. A callee that spin-waits
+///   in its event loop until its caller unblocks it gives way, is
+///   re-queued, runs again and gives way again; when this block is
+///   that caller, the callee is waiting on a frame below it on the
+///   stack, which only a stack switch could reach, so no number of
+///   further turns would change anything. The block therefore
+///   counts the turns in which nothing but resumptions after a
+///   yield ran — a turn that ran any other item, or that reported
+///   progress having run nothing, starts the count over — and gives
+///   up once that run passes [`SPIN_BUDGET`], failing with the
+///   cause the second rule above names. Two corpus directives
+///   depend on it, and without it both run for ever rather than
+///   failing. The bound is a budget and not a proof: a yielder that
+///   converges after more than [`SPIN_BUDGET`] turns of its own
+///   would be cut short by it, which is why the number is drawn
+///   generously. Whether it becomes a stated rule is the design's
+///   to decide.
 /// - **Nested turns nest.** An item a nested turn runs can block
 ///   and open a nested turn of its own, one real frame further down
 ///   the stack. Each level runs what the level above it has not
@@ -252,12 +276,31 @@ impl<T: 'static> SuspendSeam<T> {
         // the flag is set for the length of the call this thread is
         // inside.
         let only = store.must_not_block_instance();
+        // The run of turns in which nothing but resumptions after a
+        // yield ran, which is what the budget below bounds. A turn
+        // that ran anything else did work of the store's own, so it
+        // starts the run over, and so does one that ran nothing at
+        // all and still reported progress — a host task whose poll
+        // made something ready.
+        let mut spinning = 0;
+        let mut items_run = store.scheduler().items_run();
+        let mut resumptions = store.scheduler().resumptions();
         loop {
             if condition(store) {
                 return Ok(());
             }
-            match store.nested_turn(&waker, only)? {
-                Outcome::Progress => continue,
+            let outcome = store.nested_turn(&waker, only)?;
+            let only_resumptions = {
+                let scheduler = store.scheduler();
+                let ran = scheduler.items_run() - items_run;
+                let resumed = scheduler.resumptions() - resumptions;
+                items_run = scheduler.items_run();
+                resumptions = scheduler.resumptions();
+                ran > 0 && ran == resumed
+            };
+            spinning = if only_resumptions { spinning + 1 } else { 0 };
+            match outcome {
+                Outcome::Progress if spinning <= SPIN_BUDGET => continue,
                 // Nothing more can progress from inside the guest
                 // call. `Waiting` leaves its host tasks in the store
                 // for the outer turn to poll again. `Yield` is the
@@ -267,7 +310,19 @@ impl<T: 'static> SuspendSeam<T> {
                 // progress. Ending the loop is what it would mean
                 // here all the same, since a turn that ran nothing
                 // and deferred nothing has nothing left to offer.
-                Outcome::Yield | Outcome::Waiting | Outcome::Idle => break,
+                //
+                // Progress ends it too once the run of
+                // resumption-only turns has gone past the budget. A
+                // callee that spin-waits in its event loop until its
+                // caller unblocks it re-queues itself every time it
+                // runs, and this block is that caller, so no number
+                // of further turns would change anything; the block
+                // has to reach its failure rather than run for ever.
+                // The budget is what the polyfill spends before it
+                // decides that is what it is looking at, and
+                // [`SPIN_BUDGET`] says why it is a budget rather
+                // than a proof.
+                Outcome::Progress | Outcome::Yield | Outcome::Waiting | Outcome::Idle => break,
             }
         }
         if condition(store) {
@@ -1649,5 +1704,276 @@ mod tests {
             "the task exited with its status word, so nothing of it is left \
              for a later turn"
         );
+    }
+
+    /// An item that gives way `gives_way` times and then sets
+    /// `flag`, re-queueing itself as a resumption after a yield each
+    /// time it gives way. That is what a callback task which returns
+    /// the yield status word does: it runs, asks to be resumed, and
+    /// runs again. `instance` tags the item as that instance's work,
+    /// which is what a turn held to one instance looks for.
+    ///
+    /// `runs` counts the times it ran, so a test can say how far a
+    /// block let it get. `usize::MAX` gives way for ever, which is
+    /// the callee that spin-waits until a caller further down the
+    /// stack unblocks it.
+    fn yielder(
+        runs: &Arc<Mutex<usize>>,
+        gives_way: usize,
+        flag: &Arc<Mutex<bool>>,
+        instance: Option<InstanceId>,
+    ) -> Item<()> {
+        let counted = runs.clone();
+        let flag = flag.clone();
+        let item = Item::new(
+            ItemKind::Callback,
+            move |store: &mut StoreContext<'_, ()>| {
+                let ran = {
+                    let mut runs = counted.lock().expect("runs");
+                    *runs += 1;
+                    *runs
+                };
+                if ran > gives_way {
+                    *flag.lock().expect("flag") = true;
+                } else {
+                    let next = yielder(&counted, gives_way, &flag, instance);
+                    store.scheduler_mut().push_low_priority(next);
+                }
+                Ok(())
+            },
+        );
+        match instance {
+            Some(instance) => item.in_instance(instance),
+            None => item,
+        }
+    }
+
+    /// An item that gives way for ever and queues one piece of fresh
+    /// ready work each time it runs. The work counts `left` down and
+    /// sets `flag` when it reaches zero, so the block that serves
+    /// this pair makes real progress in every turn even though a
+    /// resumption also runs in every turn.
+    fn yielder_that_queues_work(
+        runs: &Arc<Mutex<usize>>,
+        left: &Arc<Mutex<usize>>,
+        flag: &Arc<Mutex<bool>>,
+    ) -> Item<()> {
+        let counted = runs.clone();
+        let left = left.clone();
+        let flag = flag.clone();
+        Item::new(
+            ItemKind::Callback,
+            move |store: &mut StoreContext<'_, ()>| {
+                *counted.lock().expect("runs") += 1;
+                let counting = left.clone();
+                let set = flag.clone();
+                store.scheduler_mut().push_high_priority(Item::new(
+                    ItemKind::TaskStart,
+                    move |_store: &mut StoreContext<'_, ()>| {
+                        let mut left = counting.lock().expect("left");
+                        *left = left.saturating_sub(1);
+                        if *left == 0 {
+                            *set.lock().expect("flag") = true;
+                        }
+                        Ok(())
+                    },
+                ));
+                let next = yielder_that_queues_work(&counted, &left, &flag);
+                store.scheduler_mut().push_low_priority(next);
+                Ok(())
+            },
+        )
+    }
+
+    #[wcmp_macros::test]
+    fn it_lets_a_yielder_that_gives_way_three_times_finish_inside_a_block() {
+        let mut owner = store();
+        let mut store = owner.context();
+        let released = Arc::new(Mutex::new(false));
+        let runs = Arc::new(Mutex::new(0usize));
+        store
+            .scheduler_mut()
+            .push_low_priority(yielder(&runs, 3, &released, None));
+
+        let watched = released.clone();
+        let outcome = store
+            .run_in_turn(Waker::noop(), move |store| {
+                SuspendSeam::suspend(store, move |_| *watched.lock().expect("flag"))
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            "the seam returned with the condition held",
+            "the block served the yielder until it converged: a yielder that \
+             gives way and then returns is not the shape the bound is for"
+        );
+        assert_eq!(
+            *runs.lock().expect("runs"),
+            4,
+            "it ran once for each of the three times it gave way and once more \
+             to return"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_lets_a_yielder_that_gives_way_the_whole_budget_finish_inside_a_block() {
+        let mut owner = store();
+        let mut store = owner.context();
+        let released = Arc::new(Mutex::new(false));
+        let runs = Arc::new(Mutex::new(0usize));
+        let gives_way = SPIN_BUDGET as usize;
+        store
+            .scheduler_mut()
+            .push_low_priority(yielder(&runs, gives_way, &released, None));
+
+        let watched = released.clone();
+        let outcome = store
+            .run_in_turn(Waker::noop(), move |store| {
+                SuspendSeam::suspend(store, move |_| *watched.lock().expect("flag"))
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            "the seam returned with the condition held",
+            "the budget is the run of turns the block spends before it gives \
+             up, and a yielder that converges inside it is served to the end"
+        );
+        assert_eq!(*runs.lock().expect("runs"), gives_way + 1);
+    }
+
+    #[wcmp_macros::test]
+    fn it_ends_a_block_whose_turns_ran_nothing_but_resumptions() {
+        let mut owner = store();
+        let mut store = owner.context();
+        let released = Arc::new(Mutex::new(false));
+        let runs = Arc::new(Mutex::new(0usize));
+        store
+            .scheduler_mut()
+            .push_low_priority(yielder(&runs, usize::MAX, &released, None));
+
+        let watched = released.clone();
+        let outcome = store
+            .run_in_turn(Waker::noop(), move |store| {
+                SuspendSeam::suspend(store, move |_| *watched.lock().expect("flag"))
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            Error::Scheduler(SchedulerCause::Deadlock).to_string(),
+            "the yielder re-queues itself every time it runs and this block \
+             is what would release it, so no number of further turns would \
+             change anything and the block reaches its failure"
+        );
+        assert_eq!(
+            *runs.lock().expect("runs"),
+            SPIN_BUDGET as usize + 1,
+            "the block spent the budget and stopped: one turn to open the run \
+             of resumption-only turns and the budget's worth after it"
+        );
+        assert!(
+            store.scheduler().has_deferred_item(),
+            "the resumption the yielder queued last is still in the store, \
+             which is what the block gave up on rather than ran"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_keeps_serving_a_block_whose_turns_run_work_of_their_own() {
+        let mut owner = store();
+        let mut store = owner.context();
+        let released = Arc::new(Mutex::new(false));
+        let runs = Arc::new(Mutex::new(0usize));
+        // Well past the budget, so a bound that counted every turn
+        // in which a resumption ran would give up long before the
+        // work is done.
+        let work = SPIN_BUDGET as usize * 3;
+        let left = Arc::new(Mutex::new(work));
+        store
+            .scheduler_mut()
+            .push_low_priority(yielder_that_queues_work(&runs, &left, &released));
+
+        let watched = released.clone();
+        let outcome = store
+            .run_in_turn(Waker::noop(), move |store| {
+                SuspendSeam::suspend(store, move |_| *watched.lock().expect("flag"))
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            "the seam returned with the condition held",
+            "every turn ran an item that was not a resumption, so the run of \
+             resumption-only turns never started and the block served the \
+             store until its condition held"
+        );
+        assert_eq!(
+            *left.lock().expect("left"),
+            0,
+            "the work the turns ran is what met the condition"
+        );
+        assert!(
+            *runs.lock().expect("runs") > SPIN_BUDGET as usize,
+            "the yielder gave way in more turns than the budget and the block \
+             went on serving it"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_lets_a_yielder_of_its_own_instance_finish_under_a_task_that_must_not_block() {
+        let mut owner = store();
+        let mut store = owner.context();
+        let mine = current_task(&store, true);
+        let released = Arc::new(Mutex::new(false));
+        let runs = Arc::new(Mutex::new(0usize));
+        store
+            .scheduler_mut()
+            .push_low_priority(yielder(&runs, 3, &released, Some(mine)));
+
+        let watched = released.clone();
+        let outcome = store
+            .run_in_turn(Waker::noop(), move |store| {
+                SuspendSeam::suspend(store, move |_| *watched.lock().expect("flag"))
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            "the seam returned with the condition held",
+            "a task that must not block gives way to the resumptions of its \
+             own instance, and the bound leaves a converging one alone there \
+             too"
+        );
+        assert_eq!(*runs.lock().expect("runs"), 4);
+    }
+
+    #[wcmp_macros::test]
+    fn it_ends_a_block_of_a_task_that_must_not_block_whose_turns_ran_nothing_but_resumptions() {
+        let mut owner = store();
+        let mut store = owner.context();
+        let mine = current_task(&store, true);
+        let released = Arc::new(Mutex::new(false));
+        let runs = Arc::new(Mutex::new(0usize));
+        store
+            .scheduler_mut()
+            .push_low_priority(yielder(&runs, usize::MAX, &released, Some(mine)));
+
+        let watched = released.clone();
+        let outcome = store
+            .run_in_turn(Waker::noop(), move |store| {
+                SuspendSeam::suspend(store, move |_| *watched.lock().expect("flag"))
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            Error::Scheduler(SchedulerCause::CannotBlock).to_string(),
+            "the run of resumption-only turns is counted whichever queue the \
+             resumptions came off, and the cause is the caller's rule because \
+             a call of the instance has not returned"
+        );
+        assert_eq!(*runs.lock().expect("runs"), SPIN_BUDGET as usize + 1);
     }
 }

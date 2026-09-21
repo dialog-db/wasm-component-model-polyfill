@@ -124,3 +124,15 @@ shim as a `wasm_bindgen(inline_js)` snippet instead. A newer `js-sys` than the
 one this workspace locks gates that constructor behind its `unsafe-eval`
 feature, which a bump would have to enable. The proposal for upstream is
 closures of arbitrary arity, which would remove the shim altogether.
+
+## 9. A thrown value with no message string (`src/lib.rs`)
+
+Upstream's `JsErrorMsg` conversion reads the `message` property of a thrown
+JS value and calls `expect` on it being a string. `Reflect::get` answers
+`Ok(undefined)` for a property an object does not have, so the `expect` fires
+for every thrown value that is neither a string nor an `Error` — a
+`WebAssembly.Exception` a guest threw, for one, which is what a component
+that uses the exception-handling proposal hands the host. A panic there
+aborts the page rather than failing the call. The patch falls through to the
+debug rendering when the property is not a string, which is the branch
+upstream already has for a value with no `message` at all.

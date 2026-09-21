@@ -457,8 +457,35 @@ fn misaligned_event_pointer() -> Error {
 /// The trap a structured error becomes on its way to the guest. The
 /// message is the error's own, which the conformance corpora match
 /// by substring.
+///
+/// Two things happen on the way. A scheduler cause takes the `wasm
+/// trap:` prefix a trap reaching guest code renders with, and drops
+/// the wrapper the [`Error::Scheduler`] variant would otherwise put
+/// in front of it, so that a corpus file can match the whole prefix
+/// and message. Two of the five causes are Wasmtime trap codes and
+/// carry its text exactly: the deadlock cause is `AsyncDeadlock` and
+/// the cannot-block cause is `CannotBlockSyncTask`, both in
+/// `wasmtime-environ`'s `src/trap_encoding.rs`. The other three —
+/// the stack-switch, recursive-driver and store-not-in-poll causes —
+/// are the polyfill's own, with no trap code of Wasmtime's behind
+/// them; they take the same prefix because they reach the guest as
+/// traps all the same. And the error's chain is flattened into the
+/// message, because a trap crosses back into guest code as a string:
+/// an error that carries the trap of the work a nested turn ran
+/// would otherwise reach the host as the wrapper alone, with the
+/// guest's own trap lost under it.
 fn trap(error: Error) -> anyhow::Error {
-    anyhow!("{error}")
+    if let Error::Scheduler(cause) = &error {
+        return anyhow!("wasm trap: {cause}");
+    }
+    let mut message = error.to_string();
+    let mut link = std::error::Error::source(&error);
+    while let Some(source) = link {
+        message.push_str(": ");
+        message.push_str(&source.to_string());
+        link = source.source();
+    }
+    anyhow!("{message}")
 }
 
 fn arg_u32(args: &[RuntimeVal], index: usize) -> anyhow::Result<u32> {

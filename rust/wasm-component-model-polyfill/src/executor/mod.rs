@@ -21,11 +21,14 @@
 //!
 //! [`wasm_runtime_layer`]: https://docs.rs/wasm_runtime_layer
 
+mod async_start_call;
 mod callback_task;
 mod compile_module;
 mod instantiate;
 mod prepare_call;
 mod resource_destructor;
+mod start_call;
+mod start_failure;
 mod start_task;
 mod sync_start_call;
 mod task_return;
@@ -37,6 +40,7 @@ pub mod ir;
 pub mod trampoline;
 pub mod waitable_builtins;
 
+pub use async_start_call::build_async_start_call;
 pub use callback_task::{CallbackTask, status_word};
 pub use compile_module::compile_module;
 pub use instantiate::instantiate;

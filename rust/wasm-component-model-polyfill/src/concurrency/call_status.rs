@@ -27,7 +27,19 @@ impl CallStatus {
     /// The status of a call that is still running, waited on through
     /// the handle-table entry at `handle_index`.
     pub fn started(handle_index: u32) -> Self {
-        Self(SubtaskState::Started.value() | (handle_index << Self::STATE_BITS))
+        Self::in_progress(SubtaskState::Started, handle_index)
+    }
+
+    /// The status of a call that has not resolved, in the state it
+    /// is in, waited on through the handle-table entry at
+    /// `handle_index`.
+    ///
+    /// A call into another component can still be at its callee's
+    /// entry gate when the lower returns, which is the starting
+    /// state; a call into a host function is past it either way, so
+    /// [`started`](Self::started) is the one shape that reaches.
+    pub fn in_progress(state: SubtaskState, handle_index: u32) -> Self {
+        Self(state.value() | (handle_index << Self::STATE_BITS))
     }
 
     /// The subtask state in the low four bits.
