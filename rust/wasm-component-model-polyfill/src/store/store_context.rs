@@ -2495,7 +2495,7 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    async fn it_blocks_a_synchronous_lower_through_a_nested_turn_with_no_provider() {
+    async fn it_blocks_a_synchronous_lower_on_the_seams_condition_with_no_provider() {
         let engine = Engine::new().expect("engine");
         let component = Component::new(&engine, CALLS_THE_HOST)
             .await
@@ -2503,8 +2503,9 @@ mod tests {
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
 
         // What the host function's call of `start_host_task` came
-        // out as, and how many host tasks the store held afterwards.
-        let started: Arc<Mutex<Option<(String, usize)>>> = Arc::new(Mutex::new(None));
+        // out as, how many host tasks the store held afterwards, and
+        // how many items the store ran while the call was blocked.
+        let started: Arc<Mutex<Option<(String, usize, u64)>>> = Arc::new(Mutex::new(None));
         let recorded = started.clone();
         let slot: Lowered = Arc::new(Mutex::new(None));
         let filled = slot.clone();
@@ -2516,6 +2517,7 @@ mod tests {
                 let store = call.store();
                 let subtask = store.lock_tables()?.tasks.push_subtask();
                 let lowering = filled.clone();
+                let before = store.scheduler().items_run();
                 let status = store
                     .start_host_task(
                         HostTask::from_future(
@@ -2536,8 +2538,11 @@ mod tests {
                         |error| error.to_string(),
                         |status| status.value().to_string(),
                     );
-                *recorded.lock().expect("record") =
-                    Some((status, store.scheduler().host_task_count()));
+                *recorded.lock().expect("record") = Some((
+                    status,
+                    store.scheduler().host_task_count(),
+                    store.scheduler().items_run() - before,
+                ));
                 Ok(x)
             },
         );
@@ -2554,10 +2559,12 @@ mod tests {
 
         assert_eq!(
             *started.lock().expect("record"),
-            Some((CallStatus::returned().value().to_string(), 0)),
-            "with no provider in the slot the block took the seam's nested \
-             turns, whose condition polled the body again and found it ready, \
-             so the call returned with no host task left in the store"
+            Some((CallStatus::returned().value().to_string(), 0, 0)),
+            "with no provider in the slot the block took the seam's fallback, \
+             which polled the body again at the first check of its condition \
+             and found it ready, so the call returned with no host task left \
+             in the store and no item run — the check comes before the first \
+             nested turn, and a body ready there never reaches one"
         );
         assert_eq!(
             lowered(&slot),
