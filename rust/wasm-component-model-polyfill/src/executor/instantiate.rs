@@ -631,6 +631,7 @@ fn registration_and_item<'l, T: 'static>(
     let unresolved = || {
         Error::from(LinkError::UnresolvedImport {
             import: import.name.clone(),
+            item: None,
         })
     };
     let mut registration = match resolution.bindings.get(import_index) {
@@ -660,6 +661,16 @@ fn registration_and_item<'l, T: 'static>(
     Ok((registration, item.clone()))
 }
 
+/// The item a post-resolution lookup names in a diagnostic: the
+/// names walked from the import down to the item, joined with dots.
+///
+/// An empty path means the import is the item — a function,
+/// resource, or module import satisfied by the root entry under the
+/// import's own name — and such a miss names no item.
+fn item_of(path: &[String]) -> Option<String> {
+    (!path.is_empty()).then(|| path.join("."))
+}
+
 /// Look up a host-resource registration that satisfies the given
 /// [`ResourceSpec`]. Mirrors [`lookup_host_func`] but returns the
 /// destructor and identity for the resource.
@@ -684,6 +695,7 @@ fn resolve_resource_runtime<T: 'static>(
     let host = registration.resource(&label).ok_or_else(|| {
         Error::from(LinkError::UnresolvedImport {
             import: component.imports[import_index].name.clone(),
+            item: item_of(path),
         })
     })?;
     Ok(ResourceRuntime::from_registration(host, &label))
@@ -745,6 +757,7 @@ fn lookup_module<T: 'static>(
             registration.module(&item).cloned().ok_or_else(|| {
                 Error::from(LinkError::UnresolvedImport {
                     import: component.imports[*import_index].name.clone(),
+                    item: item_of(path),
                 })
             })
         }
@@ -766,6 +779,7 @@ fn lookup_host_func<T: 'static>(
     let host = registration.func(&item_name).ok_or_else(|| {
         Error::from(LinkError::UnresolvedImport {
             import: component.imports[spec.import_index].name.clone(),
+            item: item_of(&spec.path),
         })
     })?;
     Ok(host.kind.clone())

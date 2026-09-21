@@ -218,11 +218,17 @@ impl From<AbiError> for Error {
 #[non_exhaustive]
 pub enum LinkError {
     /// No registered linker instance matched the import's
-    /// identifier or its WIT-spec compatibility range.
-    #[error("no registered linker instance satisfies import `{import}`")]
+    /// identifier or its WIT-spec compatibility range, or the
+    /// registration that did match holds nothing under the name one
+    /// of the import's items asks for.
+    #[error("{}", UnresolvedContext { import, item })]
     UnresolvedImport {
         /// The name of the import the linker could not satisfy.
         import: ExternalName,
+        /// The item inside an instance import that has no
+        /// registration, or `None` when the import itself is the
+        /// one nothing satisfies.
+        item: Option<String>,
     },
 
     /// More than one registered linker instance was equally good a
@@ -393,6 +399,37 @@ impl core::fmt::Display for ItemContext<'_> {
             Some(item) => write!(f, " instance export `{item}` has the wrong type:"),
             None => Ok(()),
         }
+    }
+}
+
+/// The message [`LinkError::UnresolvedImport`] renders.
+///
+/// The cause itself — that nothing registered satisfies the import —
+/// is one sentence whichever part of the import is unsatisfied, so
+/// an import that nothing at all matches reads exactly as it always
+/// has. When the linker did find a registration for the import and
+/// the miss is an item inside it, the import's name and the
+/// [`ItemContext`] clause are laid ahead of that sentence, in the
+/// order the sibling causes put them: the import, then which of its
+/// exports went wrong, then why.
+struct UnresolvedContext<'a> {
+    /// The name of the import nothing satisfies.
+    import: &'a ExternalName,
+    /// The item inside it that has no registration, if the miss is
+    /// an item rather than the import.
+    item: &'a Option<String>,
+}
+
+impl core::fmt::Display for UnresolvedContext<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let Self { import, item } = self;
+        if item.is_some() {
+            write!(f, "import `{import}`:{} ", ItemContext(item))?;
+        }
+        write!(
+            f,
+            "no registered linker instance satisfies import `{import}`"
+        )
     }
 }
 
@@ -997,25 +1034,78 @@ mod tests {
         );
 
         // The two registration-kind causes render the item the same
-        // way, ahead of their own (long) reason.
-        let sync = LinkError::SynchronousRegistrationForAsyncImport {
+        // way, ahead of their own (long) reason, and read without
+        // the clause when the import itself is the function.
+        let sync = |item: Option<&str>| LinkError::SynchronousRegistrationForAsyncImport {
             import: import.clone(),
-            item: Some("answer".to_owned()),
+            item: item.map(str::to_owned),
         };
-        assert!(
-            sync.to_string()
-                .starts_with("import `host`: instance export `answer` has the wrong type: type "),
-            "the synchronous-registration cause does not name its item: {sync}"
+        assert_eq!(
+            sync(Some("answer")).to_string(),
+            "import `host`: instance export `answer` has the wrong type: type mismatch with \
+             async: this import is declared `async func` in WIT, but was satisfied with a \
+             sync-style host function (`func_new`/`func_wrap`, or \
+             `func_new_async`/`func_wrap_async` — despite the name, these implement a \
+             *sync*-WIT-typed function via blocking host code, not an `async func` import); use \
+             `func_new_concurrent`/`func_wrap_concurrent` instead"
         );
-        let concurrent = LinkError::ConcurrentRegistrationForSyncImport {
-            import,
-            item: Some("answer".to_owned()),
+        assert_eq!(
+            sync(None).to_string(),
+            "import `host`: type mismatch with async: this import is declared `async func` in \
+             WIT, but was satisfied with a sync-style host function (`func_new`/`func_wrap`, or \
+             `func_new_async`/`func_wrap_async` — despite the name, these implement a \
+             *sync*-WIT-typed function via blocking host code, not an `async func` import); use \
+             `func_new_concurrent`/`func_wrap_concurrent` instead"
+        );
+
+        let concurrent = |item: Option<&str>| LinkError::ConcurrentRegistrationForSyncImport {
+            import: import.clone(),
+            item: item.map(str::to_owned),
         };
-        assert!(
-            concurrent
-                .to_string()
-                .starts_with("import `host`: instance export `answer` has the wrong type: type "),
-            "the concurrent-registration cause does not name its item: {concurrent}"
+        assert_eq!(
+            concurrent(Some("answer")).to_string(),
+            "import `host`: instance export `answer` has the wrong type: type mismatch with \
+             async: this import's WIT type is a plain (non-`async`) function, but was satisfied \
+             with `func_new_concurrent`/`func_wrap_concurrent`, which is only for `async \
+             func`-typed imports; use `func_new`/`func_wrap` (or \
+             `func_new_async`/`func_wrap_async` for blocking host code) instead"
+        );
+        assert_eq!(
+            concurrent(None).to_string(),
+            "import `host`: type mismatch with async: this import's WIT type is a plain \
+             (non-`async`) function, but was satisfied with \
+             `func_new_concurrent`/`func_wrap_concurrent`, which is only for `async func`-typed \
+             imports; use `func_new`/`func_wrap` (or `func_new_async`/`func_wrap_async` for \
+             blocking host code) instead"
+        );
+    }
+
+    /// An unresolved import that knows which item inside an instance
+    /// import went unsatisfied names it through the same clause the
+    /// sibling causes use, and one that does not reads exactly as it
+    /// always has.
+    #[wcmp_macros::test]
+    fn it_renders_the_item_of_an_unresolved_import_inside_an_instance_import() {
+        let import = ExternalName::Plain("host".to_owned());
+        let unresolved = |item: Option<&str>| LinkError::UnresolvedImport {
+            import: import.clone(),
+            item: item.map(str::to_owned),
+        };
+        assert_eq!(
+            unresolved(None).to_string(),
+            "no registered linker instance satisfies import `host`"
+        );
+        assert_eq!(
+            unresolved(Some("f")).to_string(),
+            "import `host`: instance export `f` has the wrong type: no registered linker \
+             instance satisfies import `host`"
+        );
+
+        // A nested item is named by the path walked to it.
+        assert_eq!(
+            unresolved(Some("inner.f")).to_string(),
+            "import `host`: instance export `inner.f` has the wrong type: no registered linker \
+             instance satisfies import `host`"
         );
     }
 

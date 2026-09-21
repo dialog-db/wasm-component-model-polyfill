@@ -1097,7 +1097,8 @@ async fn it_reports_an_unregistered_plain_named_import_as_unresolved() {
         Error::Link(link) => matches!(
             link.as_ref(),
             LinkError::UnresolvedImport {
-                import: ExternalName::Plain(name)
+                import: ExternalName::Plain(name),
+                item: None,
             } if name == "log"
         ),
         _ => false,
@@ -1105,6 +1106,12 @@ async fn it_reports_an_unregistered_plain_named_import_as_unresolved() {
     assert!(
         names_log,
         "expected an unresolved-import link error naming `log`, got {err:?}"
+    );
+
+    // A root-level miss names no item, and reads as it always has.
+    assert_eq!(
+        err.to_string(),
+        "link error: no registered linker instance satisfies import `log`"
     );
 }
 
@@ -1614,7 +1621,8 @@ async fn it_links_an_import_nested_two_levels() {
     assert_eq!(run.call(&mut store, ()).await.expect("call succeeds"), 7);
 
     // The function registered one level up does not satisfy it, and
-    // the error names the import.
+    // the error names the import and the item inside it that is
+    // missing.
     let mut wrong_level: Linker<()> = Linker::new(&engine);
     wrong_level
         .root()
@@ -1624,10 +1632,16 @@ async fn it_links_an_import_nested_two_levels() {
         Ok(_) => panic!("a function at the wrong level must not link"),
         Err(err) => err,
     };
+    assert_eq!(
+        err.to_string(),
+        "link error: import `a`: instance export `b` has the wrong type: no registered linker \
+         instance satisfies import `a`"
+    );
     match err {
         Error::Link(inner) => match *inner {
-            LinkError::UnresolvedImport { import } => {
+            LinkError::UnresolvedImport { import, item } => {
                 assert_eq!(import, ExternalName::Plain("a".to_owned()));
+                assert_eq!(item.as_deref(), Some("b"));
             }
             other => panic!("expected an unresolved import, got {other:?}"),
         },
@@ -1971,7 +1985,7 @@ async fn it_refuses_a_function_import_under_an_interface_name_with_no_root_regis
             Error::Link(inner)
                 if matches!(
                     &**inner,
-                    LinkError::UnresolvedImport { import }
+                    LinkError::UnresolvedImport { import, .. }
                         if *import == ExternalName::Interface(answers.clone())
                 )
         ),
@@ -2162,7 +2176,7 @@ async fn it_refuses_a_resource_import_under_an_interface_name_with_no_root_regis
             Error::Link(inner)
                 if matches!(
                     &**inner,
-                    LinkError::UnresolvedImport { import }
+                    LinkError::UnresolvedImport { import, .. }
                         if *import == ExternalName::Interface(thing.clone())
                 )
         ),
@@ -2269,7 +2283,7 @@ async fn it_refuses_a_module_import_under_an_interface_name_with_no_root_registr
             Error::Link(inner)
                 if matches!(
                     &**inner,
-                    LinkError::UnresolvedImport { import }
+                    LinkError::UnresolvedImport { import, .. }
                         if *import == ExternalName::Interface(machine.clone())
                 )
         ),

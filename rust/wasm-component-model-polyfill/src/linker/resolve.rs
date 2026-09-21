@@ -144,6 +144,7 @@ pub fn resolve_imports<T: 'static>(
                     let registration = linker.registration_for(chosen).ok_or_else(|| {
                         Error::from(LinkError::UnresolvedImport {
                             import: import.name.clone(),
+                            item: None,
                         })
                     })?;
                     check_instance_items(
@@ -356,6 +357,7 @@ fn resolve_root<T: 'static>(
     let unresolved = || {
         Error::from(LinkError::UnresolvedImport {
             import: import.name.clone(),
+            item: None,
         })
     };
     match &import.ty {
@@ -499,6 +501,7 @@ fn check_instance_items<T: 'static>(
                     if !instance_is_vacuous(inner) {
                         return Err(Error::from(LinkError::UnresolvedImport {
                             import: import_name.clone(),
+                            item: Some(item.name.clone()),
                         }));
                     }
                 }
@@ -525,6 +528,7 @@ fn check_resource_item<T: 'static>(
     check_kind(registration, item_name, "resource", import_name, item)?;
     Err(Error::from(LinkError::UnresolvedImport {
         import: import_name.clone(),
+        item: item.map(str::to_owned),
     }))
 }
 
@@ -564,6 +568,7 @@ fn check_module_item<T: 'static>(
         check_kind(registration, item_name, "module", import_name, item)?;
         return Err(Error::from(LinkError::UnresolvedImport {
             import: import_name.clone(),
+            item: item.map(str::to_owned),
         }));
     };
     module_satisfies(declared, module).map_err(|reason| {
@@ -583,15 +588,17 @@ fn check_function_item<T: 'static>(
 ) -> Result<()> {
     let Some(host) = registration.func(item_name) else {
         let import_name = position.import_name();
+        let item = position.item(item_name);
         check_kind(
             registration,
             item_name,
             "func",
             &import_name,
-            position.item(item_name).as_deref(),
+            item.as_deref(),
         )?;
         return Err(Error::from(LinkError::UnresolvedImport {
             import: import_name,
+            item,
         }));
     };
     check_registration_kind(position, item_name, declared, &host.kind)?;
@@ -676,6 +683,7 @@ fn unresolved_or_incompatible(
     if same_shape.is_empty() {
         LinkError::UnresolvedImport {
             import: import.name.clone(),
+            item: None,
         }
     } else {
         LinkError::IncompatibleVersion {

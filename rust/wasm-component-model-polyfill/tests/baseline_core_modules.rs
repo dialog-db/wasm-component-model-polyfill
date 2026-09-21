@@ -349,7 +349,7 @@ async fn it_reports_a_missing_module_import_as_a_link_error() {
     };
     match err {
         Error::Link(inner) => match *inner {
-            LinkError::UnresolvedImport { import } => {
+            LinkError::UnresolvedImport { import, .. } => {
                 assert_eq!(import, ExternalName::Plain("m".to_owned()));
             }
             other => panic!("expected an unresolved import, got {other:?}"),
