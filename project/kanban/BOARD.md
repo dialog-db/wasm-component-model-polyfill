@@ -30,6 +30,7 @@ kanban-plugin: basic
 - [ ] [[7f515d]]
 - [ ] [[c31c78]]
 - [ ] [[31e3f8]]
+- [ ] [[13935b]]
 
 ## In Progress
 
