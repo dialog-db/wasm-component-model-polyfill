@@ -12,29 +12,39 @@ commit, recorded below.
 | `wasmtime/`       | `bytecodealliance/wasmtime`, `tests/misc_testsuite/component-model/` (synchronous subset) | `cb091c33cece` | 2026-09-14 |
 | `wasmtime/async/` | `bytecodealliance/wasmtime`, `tests/misc_testsuite/component-model/async/`                | `cb091c33cece` | 2026-09-16 |
 
-The polyfill runs the callback form of an asynchronous export and the
-task built-ins that come with it, so part of `cm/async/` and
-`wasmtime/async/` passes: a host call into such an export, `task.return`,
-backpressure, the waitable set built-ins, `thread.yield`, the context
-slots, and a synchronous lower of such an export from a sibling
-component, and an asynchronous lower of one from a sibling too: the
-lower answers with the status word, the subtask enters the caller's
-handle table when the call does not resolve at once, and the callee's
-start and resolution reach the caller as subtask events. A guest that
-lowers a host `async` function asynchronously reaches it too: the call
-answers with the status word, a future that is still running becomes a
-subtask the guest waits on, the result crosses back when the future
-completes, and `subtask.drop` takes the subtask's entry away once the
-guest has taken delivery of it. A guest that lowers one synchronously
-reaches it as well: the call blocks the guest thread where it stands
-until the future resolves, and a future that never resolves traps. The
-directive that first meets what is missing is an expected failure of
-category `deferred-feature`, for one of six reasons: a call whose
+The polyfill runs the callback form of an asynchronous export, the task
+built-ins that come with it, and both lowers of a call out through an
+import, so part of `cm/async/` and `wasmtime/async/` passes: a host
+call into such an export, `task.return`, backpressure, the waitable set
+built-ins, `thread.yield`, and the context slots. A call between two
+components crosses in all four combinations of lift and lower. The
+asynchronous lower answers with the status word, the subtask enters the
+caller's handle table when the call does not resolve at once, and the
+callee's start and resolution reach the caller as subtask events; the
+synchronous lower returns at the callee's `task.return` and leaves the
+callee's late exit to the next turn. A guest that lowers a host `async`
+function asynchronously reaches it too: the call answers with the
+status word, a future that is still running becomes a subtask the guest
+waits on, the result crosses back when the future completes, and
+`subtask.drop` takes the subtask's entry away once the guest has taken
+delivery of it. A guest that lowers one synchronously reaches it as
+well: the call blocks the guest thread where it stands until the future
+resolves. No call traps for reentrance; the instance's entry gate is
+the only serialization, and a callee the gate holds starts when the
+gate opens. A call that blocks where nothing can make progress fails
+with the message the reference gives it: the deadlock message when the
+store is idle, the cannot-block message when a synchronous call is in
+progress, and the stack-switch message when only a real suspension
+could wait. An exception thrown in a callee reaches the host as the
+trap the synchronous baseline gives it.
+
+The directive that first meets what is missing is an expected failure
+of category `deferred-feature`, for one of seven reasons: a call whose
 callee can be released only by a caller that is on the stack, which
 needs a stack switch, a future or stream built-in, the stackful lift, a
-thread built-in other than `thread.yield`, cancellation, or an error
-context. One directive is a `validation` failure instead, the first
-component of
+thread built-in other than `thread.yield`, cancellation, an error
+context, or the rules that decide which trap poisons an instance. One
+directive is a `validation` failure instead, the first component of
 `wasmtime/async/cancel-host.wast`: it lowers asynchronously without the
 `memory` option, which the reference requires and Wasmtime does not
 enforce. Most of the rest is `cascade`: a component definition that
@@ -137,25 +147,39 @@ The browser's summary differs by the nine lines of
 substrate 21. Every other cell is the same.
 
 The `async` rows still hold the pass rate down, though the asynchronous
-lower of a call between two components moved 97 directives into the
-passing column. The polyfill runs a host call into a callback export,
-the task built-ins that export uses, both lowers of a call between two
-components, and either lower of a host `async` function, but the six
-reasons above cover most of what those directories still exercise. Each
-component those directories define that the polyfill rejects is a
-`deferred-feature` failure, and every later directive in the same file
-that names it is a `cascade` one, which is why the two async rows
-together hold 446 of the 536 cascade lines, while `cm` and `wasmtime`
-alone pass at 92.2% and 91.9%. `subtask.drop` moved three directives of
-`wasmtime/async`: the whole of `drop-host.wast`, and the component of
-`task-builtins.wast` that declares the built-in. The asynchronous start
-moved whole files: `cm/async/cross-abi-calls.wast`,
-`cm/async/deadlock.wast`, `cm/async/drop-subtask.wast`,
-`cm/async/drop-waitable-set.wast`,
+lower and the prepare-and-start protocol it brought moved 117
+directives into the passing column. The polyfill runs a host call into
+a callback export, the task built-ins that export uses, all four
+combinations of lift and lower between two components, either lower of
+a host `async` function, and the reentrance the reference allows, but
+the seven reasons above cover most of what those directories still
+exercise. Each component those directories define that the polyfill
+rejects is a `deferred-feature` failure, and every later directive in
+the same file that names it is a `cascade` one, which is why the two
+async rows together hold 446 of the 536 cascade lines, while `cm` and
+`wasmtime` alone pass at 92.2% and 91.9%. Seventeen files that held
+expected failures now pass whole: `cm/async/cross-abi-calls.wast`,
+`cm/async/deadlock.wast`, `cm/async/dont-block-start.wast`,
+`cm/async/drop-subtask.wast`, `cm/async/drop-waitable-set.wast`,
 `wasmtime/async/backpressure-deadlock.wast`,
+`wasmtime/async/callback-yield-then-exit.wast`,
 `wasmtime/async/context-in-compositions.wast`,
-`wasmtime/async/exceptions.wast`, `wasmtime/async/fused.wast`,
-`wasmtime/async/subtask-wait.wast`, and
-`wasmtime/async/wait-forever2.wast`. Neither lower of a host function
-moved a directive of the corpora, and every other file that would
-exercise one is held up by a built-in the polyfill does not serve yet.
+`wasmtime/async/drop-host.wast`, `wasmtime/async/exceptions.wast`,
+`wasmtime/async/fused.wast`, `wasmtime/async/lower.wast`,
+`wasmtime/async/many-params-with-retptr.wast`,
+`wasmtime/async/reentrance.wast`, `wasmtime/async/subtask-wait.wast`,
+`wasmtime/async/wait-forever.wast`, and
+`wasmtime/async/wait-forever2.wast`. Eight of the twelve cases of
+`cm/async/reentrance.wast` pass, and the four that remain need a thread
+built-in or cancellation. The `subtask.drop` component of
+`wasmtime/async/task-builtins.wast` and its four directives that
+permute the combinations pass as well. The start-call trampolines also
+moved a directive of four files that stay deferred for their own
+reason: `cm/values/variants.wast`, `cm/async/async-calls-sync.wast`,
+`wasmtime/async/reenter-during-yield.wast`, and
+`wasmtime/async/stackful.wast`, whose components now translate while
+their remaining directives fail on the stackful lift or on a stack
+switch. Of the three corpus files that exercise a host `async` item,
+`wasmtime/async/lower.wast` and `wasmtime/async/drop-host.wast` pass
+whole, and `wasmtime/async/cancel-host.wast` is held up by
+cancellation.

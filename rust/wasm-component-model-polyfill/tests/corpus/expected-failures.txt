@@ -69,7 +69,7 @@ cm/async/big-interleaving-test.wast:1640 cascade no instance to invoke
 cm/async/big-interleaving-test.wast:1651 cascade no instance to invoke
 cm/async/big-interleaving-test.wast:1664 cascade no instance to invoke
 cm/async/big-interleaving-test.wast:1675 cascade no instance to invoke
-cm/async/builtin-trap-poisons-instance.wast:10 deferred-feature expected a trap `cannot enter component instance`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x1e - M!<wasm function 0>: wasm trap: wasm `unreachable` instruction executed`
+cm/async/builtin-trap-poisons-instance.wast:10 deferred-feature expected a trap `cannot enter component instance`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x1e - M!<wasm function 0>: wasm trap: wasm `unreachable` instruction executed` (the rules that decide which trap poisons an instance are not implemented, so the instance the first directive trapped in is not refused on the second entry)
 cm/async/builtin-trap-poisons-instance.wast:12 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
 cm/async/builtin-trap-poisons-instance.wast:37 cascade no definition named `BuiltinTrap`
 cm/async/builtin-trap-poisons-instance.wast:38 cascade expected a trap `cannot drop busy stream`, got `no instance to invoke`
@@ -574,7 +574,7 @@ wasmtime/async/sync-streams.wast:186 cascade no instance to invoke
 wasmtime/async/task-builtins.wast:74 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
 wasmtime/async/task-builtins.wast:470 deferred-feature component rejected: unsupported component feature: the `future-read` trampoline
 wasmtime/async/task-builtins.wast:723 cascade no instance to invoke
-wasmtime/async/task-deletion.wast:11 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
+wasmtime/async/task-deletion.wast:11 deferred-feature component rejected: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
 wasmtime/async/task-deletion.wast:311 cascade no instance to invoke
 wasmtime/async/task-deletion.wast:312 cascade no instance to invoke
 wasmtime/async/task-deletion.wast:313 cascade no instance to invoke
