@@ -33,12 +33,8 @@ category `deferred-feature`, for one of six reasons: a call whose
 callee can be released only by a caller that is on the stack, which
 needs a stack switch, a future or stream built-in, the stackful lift, a
 thread built-in other than `thread.yield`, cancellation, or an error
-context. Two directives are `defect` failures, in the two
-`reentrance.wast` files: a cycle that should go idle and fail with the
-deadlock message instead answers the waiting task, and a call through a
-shim's table reads past the one entry that table holds, because the
-shim takes its element index from the call's argument. One directive is
-a `validation` failure instead, the first component of
+context. One directive is a `validation` failure instead, the first
+component of
 `wasmtime/async/cancel-host.wast`: it lowers asynchronously without the
 `memory` option, which the reference requires and Wasmtime does not
 enforce. Most of the rest is `cascade`: a component definition that
@@ -122,22 +118,22 @@ alike.
 
 ## Baseline
 
-The progress summary on the native target, as of 2026-09-20 (`tests
+The progress summary on the native target, as of 2026-09-21 (`tests
 conformance` prints the current one):
 
-| Corpus           | Directives | Passed | Pass % | Expected failures by category                                            |
-| ---------------- | ---------- | ------ | ------ | ------------------------------------------------------------------------ |
-| `cm`             | 1126       | 1038   | 92.2   | deferred-feature 2, substrate 4, validation 20, cascade 62               |
-| `cm/async`       | 393        | 82     | 20.9   | deferred-feature 44, defect 1, cascade 266                               |
-| `fixtures`       | 17         | 17     | 100.0  | none                                                                     |
-| `wasmtime`       | 469        | 431    | 91.9   | deferred-feature 2, substrate 8, cascade 28                              |
-| `wasmtime/async` | 387        | 124    | 32.0   | deferred-feature 81, validation 1, defect 1, cascade 180                 |
-| total            | 2392       | 1692   | 70.7   | deferred-feature 129, substrate 12, validation 21, defect 2, cascade 536 |
+| Corpus           | Directives | Passed | Pass % | Expected failures by category                                  |
+| ---------------- | ---------- | ------ | ------ | -------------------------------------------------------------- |
+| `cm`             | 1126       | 1038   | 92.2   | deferred-feature 2, substrate 4, validation 20, cascade 62     |
+| `cm/async`       | 393        | 83     | 21.1   | deferred-feature 44, cascade 266                               |
+| `fixtures`       | 17         | 17     | 100.0  | none                                                           |
+| `wasmtime`       | 469        | 431    | 91.9   | deferred-feature 2, substrate 8, cascade 28                    |
+| `wasmtime/async` | 387        | 125    | 32.3   | deferred-feature 81, validation 1, cascade 180                 |
+| total            | 2392       | 1694   | 70.8   | deferred-feature 129, substrate 12, validation 21, cascade 536 |
 
 The browser's summary differs by the nine lines of
 `expected-failures.web.txt`, which move nine passing directives into
-`substrate`: `cm/async` passes 81 (20.6%), `wasmtime` 425 (90.6%),
-`wasmtime/async` 122 (31.5%), and the total is 1683 (70.4%) with
+`substrate`: `cm/async` passes 82 (20.9%), `wasmtime` 425 (90.6%),
+`wasmtime/async` 123 (31.8%), and the total is 1685 (70.4%) with
 substrate 21. Every other cell is the same.
 
 The `async` rows still hold the pass rate down, though the asynchronous

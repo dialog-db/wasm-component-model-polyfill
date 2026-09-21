@@ -957,7 +957,7 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    fn it_opens_the_gate_in_the_same_turn_a_running_task_lowers_the_counter() {
+    fn it_opens_the_gate_for_the_next_turn_when_a_running_task_lowers_the_counter() {
         let engine = Engine::new().expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let tables = store.tables_handle();
@@ -990,17 +990,27 @@ mod tests {
             "the task of an `async` function type starts out at the gate"
         );
 
-        store.turn(Waker::noop()).expect("the one turn");
+        store.turn(Waker::noop()).expect("the turn that lowers it");
 
         assert_eq!(
             log.lock().expect("log").clone(),
-            vec!["lowers", "async"],
-            "the waiting task starts in the turn that lowered the counter"
+            vec!["lowers"],
+            "the counter came back down from inside the turn, and the task \
+             the gate let go of is that turn's fresh readiness"
         );
         assert_eq!(
             store.scheduler().waiting_at_gate(),
             0,
-            "and no task is left at the gate"
+            "the gate let it through as the turn ended"
+        );
+
+        store.turn(Waker::noop()).expect("the turn that starts it");
+
+        assert_eq!(
+            log.lock().expect("log").clone(),
+            vec!["lowers", "async"],
+            "the waiting task starts in the turn after the one that lowered \
+             the counter"
         );
     }
 

@@ -39,8 +39,12 @@
 //! A trap in the callee unwinds through the start item to this
 //! trampoline and fails the caller's call, as it does for the
 //! synchronous start. Once the trampoline has answered, a callee the
-//! gate held fails the driver's turn instead, which is Wasmtime's
-//! rule for a task that keeps running after its call returned.
+//! gate held is a task of its own: it starts in a later turn, and a
+//! trap it raises fails that turn's driver rather than the call that
+//! started it. That is Wasmtime's rule for a task that keeps running
+//! after its call returned, and it is why the turn that opens the
+//! gate ends there rather than running what it released: the call
+//! whose callee the gate was holding gets its answer first.
 
 use std::sync::{Arc, Mutex};
 

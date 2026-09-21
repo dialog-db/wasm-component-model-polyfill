@@ -326,6 +326,43 @@ impl<T: 'static> Scheduler<T> {
     /// `instance`, by queueing `item` as fresh readiness once the
     /// entry gate lets the task through. The gate rules are the ones
     /// [`past_entry_gate`](Self::past_entry_gate) states.
+    ///
+    /// This is the whole of the polyfill's reentrance rule, because
+    /// the gate is the only thing a call into an instance that is
+    /// already on the stack meets. No call traps for reentrance:
+    /// nothing here raises `CannotEnterComponent`, and the fused
+    /// adapters of Wasmtime 49 emit none either, for a call between
+    /// a parent and a child or into the caller's own instance. The
+    /// five rules the gate carries:
+    ///
+    /// - A sync-typed callee can be entered at any depth — from a
+    ///   child, a parent, a sibling, a destructor, or the host. Its
+    ///   task ignores the gate, and the synchronous baseline serves
+    ///   the call as a nested call on the real stack.
+    /// - An async-typed callee lifted synchronously or with a
+    ///   callback needs the exclusive thread of its instance, so a
+    ///   reentrant call into it waits at the gate while the holder
+    ///   runs core code.
+    /// - A callback holder releases the instance between events, so
+    ///   the call waiting at the gate proceeds when the holder waits
+    ///   or gives way. A synchronous holder releases only on return,
+    ///   so a cycle back through it never opens the gate: the store
+    ///   goes idle and the block fails with the deadlock cause.
+    /// - A task the gate holds is a subtask in its starting state,
+    ///   so an asynchronous lower answers `STARTING`, and a wait on
+    ///   that subtask with nothing else ready fails with the
+    ///   deadlock cause too. Backpressure holds a task the same way
+    ///   and reads the same.
+    /// - The host can always enter. From the host, reentrance while
+    ///   an instance is on the stack is reachable only through
+    ///   `call_concurrent`, and the gate treats it like any other
+    ///   call. Wasmtime refuses a host entry only into a store a
+    ///   trap poisoned, which is not a rule the gate carries.
+    ///
+    /// The may-leave flag is a separate thing and unchanged by any
+    /// of this: a lowered import called from a `realloc` or a
+    /// `post-return` fails with the cannot-leave cause wherever the
+    /// gate would have let it through.
     pub fn enter_implicit_thread(
         &mut self,
         tables: &mut TaskTables,
@@ -442,6 +479,24 @@ impl<T: 'static> Scheduler<T> {
     /// order. A task whose instance is still blocked stays, and so
     /// does every task of that instance behind it, so the tasks of
     /// one instance start in the order they arrived.
+    ///
+    /// This is the other half of the reentrance rule
+    /// [`enter_implicit_thread`](Self::enter_implicit_thread)
+    /// states: the gate is the only serialization, and this is
+    /// where it stops serializing. A callback holder reaches here
+    /// between two of its events and a synchronous holder on its
+    /// return, and each releases whichever reentrant call was
+    /// waiting on the instance it gave back. A cycle that no holder
+    /// ever releases leaves its task here for the life of the
+    /// store, which is what the deadlock cause reports when the
+    /// turns run out of anything else to do.
+    ///
+    /// A task released here is fresh readiness of the turn that
+    /// released it, and a turn hands it to the turn that follows
+    /// rather than running it: a call that already has its result
+    /// must be answered before the store runs what it left behind.
+    /// That rule lives in the store's turn, which is the only
+    /// caller of this.
     pub fn open_entry_gate(&mut self, tables: &mut TaskTables) {
         if self.entry_gate.is_empty() {
             return;
@@ -1452,7 +1507,26 @@ mod tests {
             .context()
             .run_switch_slot()
             .expect("the caller's trampoline runs the slot");
-        store.turn(Waker::noop()).expect("turn");
+        // A turn hands what the gate let through to the turn that
+        // follows, so the three tasks start in three turns: the
+        // holder, then the task that was waiting when it arrived,
+        // then the callee the switch slot brought. The log after
+        // each turn says so, and says it is one task per turn
+        // rather than three in the first.
+        store.turn(Waker::noop()).expect("the holder's turn");
+        assert_eq!(
+            entries(&log),
+            vec!["holder"],
+            "the holder ran alone, and the task its ended call released is \
+             the next turn's"
+        );
+        store.turn(Waker::noop()).expect("the early task's turn");
+        assert_eq!(
+            entries(&log),
+            vec!["holder", "early"],
+            "and the callee behind it is the turn after that one's"
+        );
+        store.turn(Waker::noop()).expect("the callee's turn");
 
         assert_eq!(
             entries(&log),
@@ -1515,7 +1589,23 @@ mod tests {
             marker(&log, "queued"),
         );
 
-        store.turn(Waker::noop()).expect("turn");
+        // The first turn runs the holder and opens the gate as it
+        // ends; the task the gate let through is the second turn's.
+        store.turn(Waker::noop()).expect("the holder's turn");
+
+        assert_eq!(
+            entries(&log),
+            vec!["exclusive"],
+            "the turn ended on the release, so the task it let through has \
+             not run in it"
+        );
+        assert_eq!(
+            store.scheduler().waiting_at_gate(),
+            0,
+            "though the gate had already let that task go"
+        );
+
+        store.turn(Waker::noop()).expect("the released task's turn");
 
         assert_eq!(
             entries(&log),
@@ -1553,7 +1643,21 @@ mod tests {
             marker(&log, "queued"),
         );
 
-        store.turn(Waker::noop()).expect("turn");
+        store.turn(Waker::noop()).expect("the holder's turn");
+
+        assert_eq!(
+            entries(&log),
+            vec!["abandoned"],
+            "the turn ended on the release here too, so the task it let \
+             through has not run in it"
+        );
+        assert_eq!(
+            store.scheduler().waiting_at_gate(),
+            0,
+            "though the gate had already let that task go"
+        );
+
+        store.turn(Waker::noop()).expect("the released task's turn");
 
         assert_eq!(
             entries(&log),

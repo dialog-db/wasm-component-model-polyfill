@@ -453,13 +453,28 @@ async fn it_leaves_a_queued_item_of_its_own_instance_unrun_from_a_callback_task(
     assert_eq!(answer, 7, "the callback task returned its own result");
     // The yielding task holds its own instance exclusively while its
     // core function runs, so the nested turn of the yield can only
-    // defer the queued callback of that same instance. It runs once
-    // the task has let the instance go.
+    // defer the queued callback of that same instance.
+    assert_eq!(
+        entries(&log),
+        vec![1, 3],
+        "the queued item of the yielding instance's own task did not run \
+         between the two entries the yielding task wrote"
+    );
+
+    // It runs once the task has let the instance go, which is as the
+    // task ends — and a turn hands what it released there to the
+    // turn that follows, by which time this call had its result. So
+    // the item is work the call left in the store, and the next
+    // driver runs it.
+    assert_eq!(
+        call_u32(&mut store, &instance, "word", &[]).await,
+        0,
+        "the yield returned zero"
+    );
     assert_eq!(
         entries(&log),
         vec![1, 3, 5],
-        "the queued item of the yielding instance's own task did not run \
-         between the two entries the yielding task wrote"
+        "the queued item ran in the turn of the driver that came next"
     );
 }
 

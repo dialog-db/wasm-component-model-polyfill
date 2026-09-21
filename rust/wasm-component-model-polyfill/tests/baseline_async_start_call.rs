@@ -29,6 +29,12 @@
 //! caller that had already parked keeps its task and the set it
 //! joined the subtask to, because the failure ends the driver's turn
 //! and not the task the driver was waiting on.
+//!
+//! The other half of the gate is here too: a callee the gate holds
+//! reads `STARTING`, and the call is served rather than refused
+//! once the gate opens. Nothing traps for reentrance — the gate is
+//! the only serialization — so the whole of a held call is the wait
+//! and the `RETURNED` that ends it.
 
 #![cfg(test)]
 
@@ -212,6 +218,108 @@ const SYNCHRONOUS_CALLEE: &[u8] = component!(
       (instance $b (instantiate $caller (with "answer" (func $a "answer"))))
       (export "run" (func $b "run"))
       (export "ran" (func $a "ran")))
+    "#
+);
+
+/// A synchronously lifted callee the entry gate holds, under an
+/// asynchronous lower.
+///
+/// The callee raises its own instance's backpressure through a
+/// synchronous export, so the start intrinsic finds the gate shut
+/// and the lower answers `STARTING` — the callee has not read its
+/// parameters, and the caller traps unless the word says so. The
+/// caller then joins the subtask to a set, lowers the backpressure
+/// again through a second synchronous export, which is sync-typed
+/// and so ignores the gate, and waits. The gate opens, the callee
+/// runs, and its result crosses into the caller's memory, so the
+/// caller's callback traps unless the event carries `RETURNED` and
+/// the memory at the return pointer is already written.
+const HELD_AT_THE_GATE: &[u8] = component!(
+    r#"
+    (component
+      (component $callee
+        (core func $inc (canon backpressure.inc))
+        (core func $dec (canon backpressure.dec))
+        (core module $m
+          (import "" "backpressure.inc" (func $inc))
+          (import "" "backpressure.dec" (func $dec))
+          (func (export "answer") (param i32) (result i32)
+            (i32.mul (local.get 0) (i32.const 2)))
+          (func (export "block") (call $inc))
+          (func (export "unblock") (call $dec)))
+        (core instance $i (instantiate $m
+          (with "" (instance
+            (export "backpressure.inc" (func $inc))
+            (export "backpressure.dec" (func $dec))))))
+        (func (export "answer") async (param "x" u32) (result u32)
+          (canon lift (core func $i "answer")))
+        (func (export "block") (canon lift (core func $i "block")))
+        (func (export "unblock") (canon lift (core func $i "unblock"))))
+      (component $caller
+        (import "answer" (func $answer async (param "x" u32) (result u32)))
+        (import "block" (func $block))
+        (import "unblock" (func $unblock))
+        (core module $libc (memory (export "mem") 1))
+        (core instance $libc (instantiate $libc))
+        (core func $lowered
+          (canon lower (func $answer) async (memory (core memory $libc "mem"))))
+        (core func $block' (canon lower (func $block)))
+        (core func $unblock' (canon lower (func $unblock)))
+        (core func $task-return (canon task.return (result u32)))
+        (core func $set-new (canon waitable-set.new))
+        (core func $set-drop (canon waitable-set.drop))
+        (core func $join (canon waitable.join))
+        (core func $subtask-drop (canon subtask.drop))
+        (core module $m
+          (import "" "mem" (memory 1))
+          (import "" "answer" (func $answer (param i32 i32) (result i32)))
+          (import "" "block" (func $block))
+          (import "" "unblock" (func $unblock))
+          (import "" "task.return" (func $task-return (param i32)))
+          (import "" "waitable-set.new" (func $set-new (result i32)))
+          (import "" "waitable-set.drop" (func $set-drop (param i32)))
+          (import "" "waitable.join" (func $join (param i32 i32)))
+          (import "" "subtask.drop" (func $subtask-drop (param i32)))
+          (global $set (mut i32) (i32.const 0))
+          (global $sub (mut i32) (i32.const 0))
+          (func (export "run") (param i32) (result i32)
+            (local $status i32)
+            (call $block)
+            (local.set $status (call $answer (local.get 0) (i32.const 8)))
+            (if (i32.ne (i32.and (local.get $status) (i32.const 0xf)) (i32.const 0))
+              (then unreachable))
+            (global.set $sub (i32.shr_u (local.get $status) (i32.const 4)))
+            (global.set $set (call $set-new))
+            (call $join (global.get $sub) (global.get $set))
+            (call $unblock)
+            (i32.or (i32.shl (global.get $set) (i32.const 4)) (i32.const 2)))
+          (func (export "cb") (param i32 i32 i32) (result i32)
+            (if (i32.ne (local.get 0) (i32.const 1)) (then unreachable))
+            (if (i32.ne (local.get 1) (global.get $sub)) (then unreachable))
+            (if (i32.ne (local.get 2) (i32.const 2)) (then unreachable))
+            (call $join (local.get 1) (i32.const 0))
+            (call $subtask-drop (local.get 1))
+            (call $set-drop (global.get $set))
+            (call $task-return (i32.add (i32.load (i32.const 8)) (i32.const 1)))
+            (i32.const 0)))
+        (core instance $i (instantiate $m (with "" (instance
+          (export "mem" (memory $libc "mem"))
+          (export "answer" (func $lowered))
+          (export "block" (func $block'))
+          (export "unblock" (func $unblock'))
+          (export "task.return" (func $task-return))
+          (export "waitable-set.new" (func $set-new))
+          (export "waitable-set.drop" (func $set-drop))
+          (export "waitable.join" (func $join))
+          (export "subtask.drop" (func $subtask-drop))))))
+        (func (export "run") async (param "x" u32) (result u32)
+          (canon lift (core func $i "run") async (callback (core func $i "cb")))))
+      (instance $a (instantiate $callee))
+      (instance $b (instantiate $caller
+        (with "answer" (func $a "answer"))
+        (with "block" (func $a "block"))
+        (with "unblock" (func $a "unblock"))))
+      (export "run" (func $b "run")))
     "#
 );
 
@@ -486,6 +594,32 @@ async fn it_crosses_the_results_of_a_synchronously_lifted_callee_and_runs_its_po
         "the `post-return` ran with the flat result the core function returned"
     );
     assert_eq!(subtask_count(&store), 0, "no subtask is left behind");
+    assert!(!any_instance_is_held(&store));
+}
+
+#[wcmp_macros::test]
+async fn it_runs_a_held_callee_when_the_gate_opens_and_delivers_returned() {
+    // The gate is the only serialization there is, and a reentrant
+    // or back-pressured call meets it rather than a trap. The caller
+    // reads `STARTING`, which says the callee has not run at all,
+    // opens the gate again through a sync-typed export that ignores
+    // it, and waits. The callee then runs and resolves, and 43 says
+    // the caller's callback found `RETURNED` with the result already
+    // in its memory.
+    let (mut store, instance) = instantiate(HELD_AT_THE_GATE).await;
+    let run = instance.get_func("run").expect("the caller's export");
+    let result = run
+        .call(&mut store, &[Val::U32(21)])
+        .await
+        .expect("the call returns");
+    assert_eq!(result.as_ref(), &[Val::U32(43)]);
+    assert_eq!(task_count(&store), 0, "both tasks left the store");
+    assert_eq!(subtask_count(&store), 0, "the subtask left the store");
+    assert_eq!(
+        store.scheduler().waiting_at_gate(),
+        0,
+        "nothing is left waiting at the gate"
+    );
     assert!(!any_instance_is_held(&store));
 }
 

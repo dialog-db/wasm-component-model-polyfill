@@ -592,9 +592,20 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// must not block must not wait on one, and the cause it fails
     /// with says so.
     ///
-    /// The entry gate is opened at the top of the turn, before each
-    /// item the turn takes, and once more after the host tasks have
-    /// been polled. The last of those is what makes work a host
+    /// The entry gate is opened at the top of the turn, once the
+    /// turn has run everything that was ready, and once more after
+    /// the host tasks have been polled. The middle one is the open
+    /// that ends a turn: a task it lets through belongs to the next
+    /// turn, not to this one, and the turn that released it ends
+    /// with `Progress` so that whichever loop is running turns
+    /// consults what it is waiting for first. That is how a call
+    /// that already has its result is answered before the store
+    /// runs the callee the gate was holding while the caller ran.
+    /// The open at the top is the other side of the same rule: it
+    /// collects what the turn before released, and what it lets
+    /// through is this turn's own work.
+    ///
+    /// The open after the host tasks is what makes work a host
     /// task's body released or queued past the gate ready before the
     /// turn reports `Waiting` or `Idle`: a body reaches the store
     /// through its accessor, so a poll of one can fill the wait a
@@ -628,7 +639,6 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         }
         let mut ran = false;
         loop {
-            self.open_entry_gate()?;
             let ready = match only {
                 Some(instance) => self.scheduler_mut().take_ready_in(instance),
                 None => self.scheduler_mut().take_ready(),
@@ -638,6 +648,35 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 self.scheduler_mut().note_item_run();
                 item.run(self)?;
                 continue;
+            }
+            // Work this turn released — a task the entry gate can
+            // now let through, a callback whose wait an event
+            // answered — is fresh readiness, and the turn hands it
+            // to the turn that follows rather than running it
+            // itself. The turn ends with progress, so nothing waits
+            // on it: whichever loop runs turns comes straight back
+            // for the next one.
+            //
+            // Ending the turn is the point of it. A driver consults
+            // its condition between two turns, so a call whose
+            // result is already in its slot is answered before the
+            // store runs what the call left behind: the task of a
+            // callee the gate held while the caller ran, and
+            // whatever that task goes on to fail with. Running the
+            // release here instead would let such a callee
+            // overwrite an answer its caller already has.
+            //
+            // What this guarantees is that a release ends the turn,
+            // and no more than that. Wasmtime polls the future it
+            // was given ahead of every work item; a turn here still
+            // runs everything that is ready in one unbroken run,
+            // with no condition consulted between two items of it.
+            // The two agree on the case that matters — work the
+            // gate released never runs in the turn that released
+            // it — and a driver that wants a look in between two
+            // items that were ready together does not get one.
+            if self.open_entry_gate()? {
+                return Ok(Outcome::Progress);
             }
             if !nested && self.scheduler_mut().defer_low_priority() {
                 return Ok(Outcome::Yield);
@@ -706,9 +745,16 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// The held callbacks go first, so that a task whose wait a
     /// previous turn satisfied resumes ahead of a task that has yet
     /// to enter its instance.
-    fn open_entry_gate(&mut self) -> Result<()> {
-        if self.scheduler().waiting_at_gate() == 0 && self.scheduler().held_callbacks() == 0 {
-            return Ok(());
+    ///
+    /// Answers whether anything was released, which is what tells a
+    /// turn that it produced fresh readiness. The count of what is
+    /// still held is the measure: everything this releases is queued
+    /// and leaves the two holdings, so the answer is true exactly
+    /// when something that was held no longer is.
+    fn open_entry_gate(&mut self) -> Result<bool> {
+        let held = self.held_work();
+        if held == 0 {
+            return Ok(false);
         }
         // The tables are reached through a handle of their own, so
         // that the guard on them and the borrow of the scheduler,
@@ -717,7 +763,14 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         let mut guard = Self::lock(&tables)?;
         self.scheduler_mut().release_held_callbacks(&mut guard)?;
         self.scheduler_mut().open_entry_gate(&mut guard.tasks);
-        Ok(())
+        drop(guard);
+        Ok(self.held_work() < held)
+    }
+
+    /// How many pieces of work the store is holding back: the tasks
+    /// at the entry gates and the held callback items.
+    fn held_work(&self) -> usize {
+        self.scheduler().waiting_at_gate() + self.scheduler().held_callbacks()
     }
 
     /// Poll every host task the store holds with the turn's waker.
@@ -2172,10 +2225,25 @@ mod tests {
 
         assert_eq!(
             entries(&log),
+            vec!["lowered", "early"],
+            "the lowering the poll queued ran first, and the start that was \
+             waiting at the gate before the turn followed it"
+        );
+
+        // The first of the two starts held the instance while it
+        // ran and gave it back as it ended, so the gate let the
+        // second through only as that turn ended, and it is the
+        // next turn that runs it.
+        store
+            .turn(Waker::noop())
+            .expect("the turn that runs the second");
+
+        assert_eq!(
+            entries(&log),
             vec!["lowered", "early", "queued"],
-            "the lowering the poll queued ran first, and the two starts \
-             followed it in the order they arrived at the gate: the one that \
-             was waiting there before the turn, then the one the body queued"
+            "the two starts ran in the order they arrived at the gate: the \
+             one that was waiting there before the turn, then the one the \
+             body queued"
         );
     }
 

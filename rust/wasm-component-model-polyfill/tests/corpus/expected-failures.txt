@@ -161,7 +161,6 @@ cm/async/partial-stream-copies.wast:238 cascade no instance to invoke
 cm/async/passing-resources.wast:7 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
 cm/async/passing-resources.wast:175 cascade no instance to invoke
 cm/async/passing-resources.wast:176 cascade expected a trap `unknown handle index 3`, got `no instance to invoke`
-cm/async/reentrance.wast:429 defect expected a trap `deadlock detected: event loop cannot make further progress`, got `wasm trap: wasm `unreachable` instruction executed` (the cycle's wait is answered instead of going idle, so the caller runs on to its own `unreachable`)
 cm/async/reentrance.wast:442 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
 cm/async/reentrance.wast:548 cascade no instance to invoke
 cm/async/reentrance.wast:557 deferred-feature component rejected: unsupported component feature: the `thread-index` trampoline
@@ -518,7 +517,6 @@ wasmtime/async/join-during-sync-read.wast:66 cascade expected a trap `waitable c
 wasmtime/async/partial-stream-copies.wast:14 deferred-feature component rejected: unsupported component feature: `stream<T>` values
 wasmtime/async/partial-stream-copies.wast:243 cascade no instance to invoke
 wasmtime/async/reenter-during-yield.wast:81 deferred-feature the callee's core function yields for ever and only its caller can release it, which needs a stack switch: the call fails with `blocking here requires a stack switch, but the target has no suspend provider`
-wasmtime/async/reentrance.wast:92 defect the shim's `call_indirect` takes its element index from the call's argument, 42, and the shared table holds one entry, so the trap is Wasmtime's out-of-bounds table access rather than its `uninitialized element`: `wasm trap: undefined element: out of bounds table access`. The write the donut module's start function makes at index 0 of that shared table does carry — a core table one instance exports and another imports is one table here — so what is unexplained is why the polyfill reaches the shim's function at all, where Wasmtime answers the directive without this trap
 wasmtime/async/stackful.wast:7 deferred-feature component rejected: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
 wasmtime/async/stackful.wast:64 deferred-feature the invoked export lowers a stackfully lifted callee: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
 wasmtime/async/stackful.wast:67 deferred-feature component rejected: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
