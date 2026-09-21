@@ -360,14 +360,24 @@ sees zeros and what it sets does not reach the thread that dropped the handle.
 `thread.yield` gives way and returns zero. The reference treats a yield as a
 point where any other ready thread can run, and Wasmtime switches to a ready
 thread of the instance when one exists. The built-in asks the suspend seam of
-[PDD018] to suspend the thread with a condition that already holds. On a target
-with no provider, the nested turn runs the ready work once and the built-in
-returns. A task that must not block gives way only to ready work of its own
-instance, and with none the yield is a no-op, as Wasmtime runs it. The built-in
-never fails on its own, whatever the nested turn finds. From inside a guest
-frame with no stack switch, the polyfill cannot hand control to the host
-executor, so a callback task that wants the executor to run returns the yield
-status word instead. The built-in traps when the may-leave flag is clear.
+[PDD018] for one chance to be given back control, which is what a yield waits
+for and no more. On a target with no provider, the nested turn runs the ready
+work once and the built-in returns. A task that must not block gives way only to
+ready work of its own instance, and with none the yield is a no-op, as Wasmtime
+runs it.
+
+The built-in has no rule of its own that fails, which is what the reference
+states: `canon_thread_yield` has the may-leave trap and otherwise always answers
+zero. This design keeps that. The built-in returns zero whenever it returns,
+whatever the nested turn found, and it traps when the may-leave flag is clear.
+Two things stop it returning, and neither is a rule of the yield's. A failure of
+the work the nested turn ran is that work's failure, and the built-in hands it
+on. A failure of the suspension itself is the seam's, and it ends the call the
+giving thread is inside rather than answering the yield.
+
+From inside a guest frame with no stack switch, the polyfill cannot hand control
+to the host executor, so a callback task that wants the executor to run returns
+the yield status word instead.
 
 ## The Destructor Task
 
@@ -585,7 +595,9 @@ returns that event without blocking.
 `thread.yield` gives way. A repository test proves that a yield in a callback
 task's core function runs a queued item of another task before it returns, and
 that a yield in a synchronous export with no ready work of its own instance
-returns zero at once.
+returns zero at once. The built-in never fails of a rule of its own. Repository
+tests prove that every yield of a guest that gives way and then returns answers
+zero, whether or not a caller's frame is below it.
 
 Waitable sets from one task behave as the reference states. `waitable-set.poll`
 on an empty set returns the none code. `waitable-set.drop` on a set that holds a

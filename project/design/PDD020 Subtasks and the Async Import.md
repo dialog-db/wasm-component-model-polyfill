@@ -45,8 +45,9 @@ and a sync-typed import can be lowered asynchronously.
 - The subtask event reaches the caller through the waitable sets of [PDD019].
   `waitable.join` finds its first waitable kind.
 - A task that is allowed to block waits for guest work through the nested turn
-  of [PDD018], with four revised rules. An idle store is a deadlock. A pending
-  host task needs a stack switch.
+  of [PDD018], with five revised rules. An idle store is a deadlock. A pending
+  host task needs a stack switch. A wait the store never serves runs out of the
+  seam's one budget and fails with the stack-switch cause.
 - A host registers a host `async` function through two entries named as Wasmtime
   names them. The future reaches the store only through the accessor, which is a
   token.
@@ -88,13 +89,16 @@ nothing can progress. This document revises its rules. The revision applies to
 every blocking built-in of [PDD019] and of this design, and to `thread.yield` as
 [PDD019] states it.
 
-Four rules hold:
+Five rules hold:
 
 - Yielded items run inside a nested turn. The driver turn keeps the yield rule
   of [PDD018] and returns control to the host executor before a yielded item
   runs. A nested turn has no executor to return to. It runs the yielded item
   once no other item is ready. The reference asks only that other ready threads
-  get their chance, and they do.
+  get their chance, and they do. A yielded item that runs and gives way again is
+  ready again, and the next nested turn runs it again. No rule holds an item
+  back once it has had a chance, and the rule below is what ends a wait on an
+  item that never converges.
 - An idle store is a deadlock, and a pending host task needs a stack switch. The
   store is idle when nothing is ready and no host task is pending, the blocked
   call's own future included. A stack switch does not help there, so the
@@ -110,6 +114,9 @@ Four rules hold:
   run. When the nested turn cannot progress and any instance in the store has a
   sync-typed call in progress, the cause is the cannot-block cause, as Wasmtime
   reports it on idle.
+- The seam keeps one budget, and past it the call fails with the stack-switch
+  cause. This is the one departure of this design from the reference, and the
+  section below states it.
 - Nested turns nest. An item that a nested turn runs can block and open another
   nested turn on the real stack. The guest's own call nesting bounds the depth.
 
@@ -118,21 +125,76 @@ fn block(store, condition) -> Result:
     // a nested turn runs ready items, then yielded items, then polls the
     // host tasks, and reports Progress, Idle, or Waiting
     filter = own_instance if current_task().must_not_block() else any_instance
+    past_budget = false
     loop:
         if condition(): return Ok
-        match store.nested_turn(active_waker, filter):
-            Progress: continue
-            Idle:     break
-            Waiting:  break
-    if condition(): return Ok
+        outcome = store.nested_turn(active_waker, filter)
+        past_budget = seam.note_turn(store)
+        match outcome:
+            Progress if not past_budget: continue
+            _:                           break
+    if condition():   return Ok
+    if past_budget:   return Err(StackSwitchNeeded)
     if any_sync_typed_call_in_progress(): return Err(CannotBlock)
     if host_tasks_pending():             return Err(StackSwitchNeeded)
     return Err(Deadlock)
+
+fn give_way(store) -> Result:                 // what thread.yield asks for
+    filter = own_instance if current_task().must_not_block() else any_instance
+    store.nested_turn(active_waker, filter)
+    if seam.note_turn(store): return Err(StackSwitchNeeded)
+    return Ok
 ```
 
 A nested turn runs only when the suspend seam has no provider. A provider
 suspends the thread and ends the turn instead, as [PDD018] states, and the
-driver's turn then serves the same work under the same rules.
+driver's turn then serves the same work under the same rules. A target with a
+provider never consults the budget.
+
+### The One Budget
+
+Two shapes make a nested turn run for ever, and they are one shape. A callee
+that spin-waits in its event loop until its caller unblocks it gives way, is
+queued again, runs again and gives way again. When the block that runs it is
+that caller, every turn runs it and no turn gets anywhere. A callee whose core
+function calls `thread.yield` in a loop against a store that holds nothing asks
+the seam over and over for what it was refused the time before. In both, the one
+thread that can release the waiting thread is a guest frame on the real stack
+below it. The reference reaches that frame by switching stacks. The polyfill
+cannot, so an unbounded wait here never ends.
+
+The seam therefore keeps one budget, and it is the polyfill's own: the reference
+bounds neither the yielded item nor the number of times a thread gives way. The
+seam counts the nested turns in a row in which the store did nothing of its own.
+A turn does nothing of its own when it runs no item, or nothing but a resumption
+after a yield, against a store that holds no host future that can still resolve.
+A turn that runs any other item, and a turn taken while such a future is
+pending, start the count over. The count is one count for the store, measured
+from the last turn the seam noted, so a thread that gives way in one call frame
+after another builds one run, and whatever the store runs in between ends it.
+
+Once the run passes the budget, the seam gives up and the call the waiting
+thread is inside fails with the stack-switch cause. The cause names the stack
+switch and not the deadlock or the cannot-block cause, because the store is not
+idle and no rule of the caller's is broken: the work that can release the thread
+exists and sits where only a stack switch reaches it. That is what a guest
+observes. A callee that spin-waits for its caller sees its call trap with the
+stack-switch message, and so does the call under which a thread gives way for
+ever.
+
+The budget is a budget and not a proof. Nothing short of running the guest to
+its end tells a loop that gives way this many times and then returns from one
+that never returns, so the number is drawn generously: a converging loop of any
+ordinary length finishes well inside it, and a spinning one reaches its failure
+in a bounded number of turns. Two consequences follow, and the design accepts
+both. A loop that converges after more times than the budget is cut short. A
+guest loop that gives way for ever with no caller below it, which no stack
+switch releases either, reaches the same failure as one that waits for a caller,
+because the seam reads the store and not the stack.
+
+`thread.yield` itself has no rule that fails. It gives way through the seam and
+returns zero whenever it returns, as [PDD019] states. What fails past the budget
+is the call the giving thread is inside.
 
 ## The Async-Typed Import and Its Lowered Signature
 
@@ -498,8 +560,9 @@ export sets it for the length of the call, and each clears it on exit.
   Wasmtime panics there. The polyfill returns the error, because `with` already
   returns a result.
 - The nested turn's failures are the existing causes under the revised rules:
-  deadlock on idle, stack switch needed on a pending host task, and cannot block
-  when a sync-typed call is in progress.
+  deadlock on idle, stack switch needed on a pending host task, cannot block
+  when a sync-typed call is in progress, and stack switch needed once the seam's
+  budget runs out.
 - `subtask.drop` on an undelivered resolution is the subtask-not-resolved cause
   [PDD018] already defines, with Wasmtime's message.
 
@@ -634,7 +697,8 @@ A contributor adds a stack switch to one target.
 
 > The contributor fills the suspend capability. Every block this design serves
 > with a nested turn suspends the thread instead, and the driver's turn runs the
-> same work under the same four rules.
+> same work under the same five rules, and the budget of the fifth is never
+> consulted.
 
 A reviewer reads the conformance summary after the feature lands.
 
@@ -683,7 +747,7 @@ Subtask events and drops behave as the reference states. `drop-subtask.wast`,
 of `task-builtins.wast` instantiates. A repository test proves that a `STARTED`
 never delivered reads as `RETURNED` at delivery.
 
-The nested turn follows its four rules. `drop-subtask.wast` and
+The nested turn follows its five rules. `drop-subtask.wast` and
 `subtask-wait.wast` prove that a yielded item runs. `deadlock.wast`,
 `wait-forever.wast`, `wait-forever2.wast`, `backpressure-deadlock.wast`, and the
 eighth case of the Component Model `reentrance.wast` prove the deadlock cause on
@@ -691,6 +755,14 @@ idle. The second directive of `dont-block-start.wast` proves the cannot-block
 cause. Repository tests prove the stack-switch cause with a host task pending,
 that a sync-typed task's block runs only items of its own instance, and that a
 nested turn can open another.
+
+The seam's budget ends a wait the store never serves. `async-calls-sync.wast`
+and `reenter-during-yield.wast` reach it from their two shapes, the spin-waiting
+callee and the yield loop, and both fail with the stack-switch message.
+Repository tests prove each boundary: a block whose turns run nothing but one
+resumption fails past the budget and one whose turns run work of their own is
+served to the end, a thread that gives way the budget's worth of times sees zero
+from every yield, and the yield past the budget ends the call it is inside.
 
 A synchronous lower returns at `task.return`. `callback-yield-then-exit.wast`
 passes, and the callee's late exit runs in the next driver.

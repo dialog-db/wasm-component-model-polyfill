@@ -548,12 +548,14 @@ async fn it_fails_a_yield_a_post_return_calls_with_the_cannot_leave_cause() {
 ///
 /// The callee runs from inside the caller's frame: the caller's task
 /// is a scope below the callee's for the length of the call, which
-/// is the shape the polyfill's own yield bound is about. A callee
-/// with `n` inside the budget is being served and must see zero from
-/// every one of its yields; a callee that never stops asking must
-/// reach the stack-switch failure instead of running for ever,
-/// because the one thread that could release it is the caller whose
-/// frame the polyfill cannot leave without a stack switch.
+/// is the shape the suspend seam's budget is about. A callee with
+/// `n` inside the budget is being served and must see zero from
+/// every one of its yields. A callee that never stops asking must
+/// see the call fail with the stack-switch cause instead of running
+/// for ever, because the one thread that could release it is the
+/// caller whose frame the polyfill cannot leave without a stack
+/// switch. The yield itself fails in neither case: what fails is
+/// the call the spinning thread is inside.
 const CALLEE_GIVES_WAY: &[u8] = component!(
     r#"
     (component
@@ -610,7 +612,7 @@ async fn it_returns_zero_from_every_yield_of_a_callee_that_gives_way_and_then_re
 }
 
 #[wcmp_macros::test]
-async fn it_fails_a_callee_that_gives_way_for_ever_with_the_stack_switch_cause() {
+async fn it_fails_the_call_of_a_callee_that_gives_way_for_ever_with_the_stack_switch_cause() {
     let (mut store, instance) = instantiate_bare(CALLEE_GIVES_WAY).await;
 
     // More times than any budget: the call cannot finish, so what
@@ -622,6 +624,63 @@ async fn it_fails_a_callee_that_gives_way_for_ever_with_the_stack_switch_cause()
         message.contains("blocking here requires a stack switch"),
         "a callee that never stops giving way against a store that holds \
          nothing can only be released by the caller whose frame is below it, \
-         which needs a stack switch: {message}"
+         so the seam gives up past its budget and the call fails: {message}"
+    );
+}
+
+/// One component whose export gives way `n` times and then returns
+/// 7, called from the host with no guest frame below it.
+///
+/// The seam's budget reads the store and not the stack, so a host
+/// call that never stops giving way reaches the same failure as a
+/// callee that spin-waits for its caller. Nothing short of running
+/// the guest to its end tells the two apart, which is what makes
+/// the bound a budget and not a proof.
+const HOST_CALL_GIVES_WAY: &[u8] = component!(
+    r#"
+    (component
+      (core func $yield (canon thread.yield))
+      (core module $m
+        (import "" "thread.yield" (func $yield (result i32)))
+        (func (export "spin") (param $n i32) (result i32)
+          (local $i i32)
+          (block $done
+            (loop $again
+              (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+              (drop (call $yield))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $again)))
+          (i32.const 7)))
+      (core instance $i (instantiate $m (with "" (instance
+        (export "thread.yield" (func $yield))))))
+      (func (export "spin") (param "n" u32) (result u32)
+        (canon lift (core func $i "spin"))))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_returns_zero_from_every_yield_of_a_host_call_that_gives_way_and_then_returns() {
+    let (mut store, instance) = instantiate_bare(HOST_CALL_GIVES_WAY).await;
+
+    let answer = call_u32(&mut store, &instance, "spin", &[Val::U32(8)]).await;
+
+    assert_eq!(
+        answer, 7,
+        "a guest loop that gives way inside the budget is served whether or \
+         not a guest frame is below it"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_fails_a_host_call_that_gives_way_for_ever_with_the_stack_switch_cause() {
+    let (mut store, instance) = instantiate_bare(HOST_CALL_GIVES_WAY).await;
+
+    let message = call_expecting_a_trap(&mut store, &instance, "spin", &[Val::U32(u32::MAX)]).await;
+
+    assert!(
+        message.contains("blocking here requires a stack switch"),
+        "the seam counts the turns the store did not serve and nothing else, \
+         so a guest that gives way for ever against a store that holds \
+         nothing reaches the budget's failure here too: {message}"
     );
 }

@@ -12,8 +12,8 @@
 #   defect            a wrong result from a feature the polyfill claims
 #   cascade           a consequence of an earlier failure in the same file
 
-cm/async/async-calls-sync.wast:250 deferred-feature the callee spin-waits in its event loop until the outer caller unblocks it, so only that caller can release it, which needs a stack switch: the call fails with `deadlock detected: event loop cannot make further progress`
-cm/async/async-calls-sync.wast:251 deferred-feature the callee spin-waits in its event loop until the outer caller unblocks it, so only that caller can release it, which needs a stack switch: the call fails with `deadlock detected: event loop cannot make further progress`
+cm/async/async-calls-sync.wast:250 deferred-feature the callee spin-waits in its event loop until the outer caller unblocks it, so only that caller can release it, which needs a stack switch: the call fails with `blocking here requires a stack switch, but the target has no suspend provider`
+cm/async/async-calls-sync.wast:251 deferred-feature the callee spin-waits in its event loop until the outer caller unblocks it, so only that caller can release it, which needs a stack switch: the call fails with `blocking here requires a stack switch, but the target has no suspend provider`
 cm/async/big-interleaving-test.wast:14 deferred-feature component rejected: unsupported component feature: the `task-cancel` trampoline
 cm/async/big-interleaving-test.wast:862 cascade no definition named `Tester`
 cm/async/big-interleaving-test.wast:864 cascade no instance to invoke

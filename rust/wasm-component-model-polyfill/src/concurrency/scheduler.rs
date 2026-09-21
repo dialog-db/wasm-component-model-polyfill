@@ -157,15 +157,15 @@ pub struct Scheduler<T: 'static> {
     suspend_seam: SuspendSeam<T>,
     resumptions: u64,
     items_run: u64,
-    idle_yields: Option<IdleYields>,
 }
 
-/// How many times over the polyfill lets a guest ask for what the
-/// store cannot give before it decides the ask can never be served.
+/// How many nested turns in a row the suspend seam runs against a
+/// store that does nothing of its own before it decides the
+/// suspension can never be served.
 ///
-/// Two shapes reach it: a thread that gives way again and again
-/// against a store that holds nothing, and a block whose nested
-/// turns run nothing but resumptions after a yield. Both are a
+/// Two shapes reach it, and they are one shape: a thread that gives
+/// way again and again against a store that holds nothing, and a
+/// block whose turns keep re-running one yielded item. Both are a
 /// callee only a caller further down the stack can release, which
 /// on a target with no stack switch is a caller the store cannot
 /// reach.
@@ -179,23 +179,6 @@ pub struct Scheduler<T: 'static> {
 /// ever. It is the polyfill's own number, and the reference states
 /// no such bound.
 pub const SPIN_BUDGET: u32 = 64;
-
-/// A run of yields one thread took against a store that held
-/// nothing, with nothing of the store's run between them.
-///
-/// The thread and the count of the items the store has run are what
-/// make it a run: a yield from another thread starts a fresh one,
-/// and so does one taken after the store ran anything at all.
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct IdleYields {
-    /// The thread that took them.
-    thread: ThreadId,
-    /// What the count of the items the store has run stood at, which
-    /// has not moved since the first of them.
-    items_run: u64,
-    /// How many it has taken.
-    count: u32,
-}
 
 impl<T: 'static> Scheduler<T> {
     /// Construct a scheduler with nothing queued.
@@ -211,7 +194,6 @@ impl<T: 'static> Scheduler<T> {
             suspend_seam: SuspendSeam::new(),
             resumptions: 0,
             items_run: 0,
-            idle_yields: None,
         }
     }
 
@@ -230,62 +212,18 @@ impl<T: 'static> Scheduler<T> {
         self.items_run
     }
 
-    /// Whether the store holds nothing at all: no item ready, no
-    /// resumption after a yield, no task at an entry gate, no
-    /// callback held for an event, and no host future that can
-    /// still resolve — the future of a call that blocked on one of
-    /// its own included.
+    /// Whether a host future that can still resolve is pending: one
+    /// of the store's host tasks, or the future of a call that
+    /// blocked on one of its own, which stays in the frame that
+    /// started it rather than joining the store's host tasks.
     ///
-    /// A yield that gave way to a store in this state gave way to
-    /// nothing, and nothing of the store's can change until a guest
-    /// frame returns. That is what makes a run of such yields worth
-    /// counting, and why a yield taken while the store still holds
-    /// a host future that wants another poll, or a callback it is
-    /// holding for an event, does not join one: the store can still
-    /// move on its own.
-    pub fn holds_nothing(&self) -> bool {
-        self.queued_items() == 0
-            && self.host_tasks.is_empty()
-            && !self.suspend_seam.blocked_on_a_call_future()
-    }
-
-    /// Record that `thread` gave way, and answer whether it has now
-    /// done so more than [`SPIN_BUDGET`] times over without the
-    /// store getting anywhere.
-    ///
-    /// A yield gives way to the work the store holds and returns
-    /// zero, whether or not there was any. A thread that gives way
-    /// over and over against a store that holds nothing, with
-    /// nothing of the store's having run in between, is asking each
-    /// time for what it was refused the time before: only a thread
-    /// the store cannot reach can release it, which on a target with
-    /// no stack switch is a guest frame below it. Two readings tell
-    /// that apart from a thread the store is serving. The count of
-    /// the items the store has run says whether the store got
-    /// anywhere, because it is the same at two yields exactly when
-    /// nothing ran between them. [`Scheduler::holds_nothing`] says
-    /// whether it could have, so a yield taken against a store that
-    /// still holds something starts the run over.
-    ///
-    /// What is left is the guest's own progress between two yields,
-    /// which nothing here can see, and that is what the budget is
-    /// for rather than a second yield alone.
-    pub fn note_yield(&mut self, thread: ThreadId) -> bool {
-        if !self.holds_nothing() {
-            self.idle_yields = None;
-            return false;
-        }
-        let items_run = self.items_run;
-        let count = match self.idle_yields {
-            Some(run) if run.thread == thread && run.items_run == items_run => run.count + 1,
-            _ => 1,
-        };
-        self.idle_yields = Some(IdleYields {
-            thread,
-            items_run,
-            count,
-        });
-        count > SPIN_BUDGET
+    /// A store holding one moves on its own when its executor polls
+    /// it again, so a nested turn that ran nothing against such a
+    /// store has not said that nothing can ever run. That is what
+    /// keeps a thread waiting on a host future out of the seam's
+    /// budget.
+    pub fn host_future_pending(&self) -> bool {
+        !self.host_tasks.is_empty() || self.suspend_seam.blocked_on_a_call_future()
     }
 
     /// The store's one suspend capability: the seam a blocking
@@ -988,8 +926,6 @@ mod tests {
     use super::super::task_id::TaskId;
     use super::super::thread_id::ThreadId;
     use super::super::waitable_set_id::WaitableSetId;
-
-    use super::SPIN_BUDGET;
 
     /// What the items of one test wrote as they ran, in order.
     type Log = Arc<Mutex<Vec<&'static str>>>;
@@ -2157,176 +2093,63 @@ mod tests {
         ));
     }
 
-    /// The identity of a thread that gives way in the tests below.
-    /// Nothing reads the record behind it — a run of idle yields is
-    /// kept by identity alone — so a minted one serves.
-    fn thread(index: u32) -> ThreadId {
-        ThreadId::new(index, 0)
-    }
-
-    /// Give way `count` times over from `thread` and report what the
-    /// last of them answered.
-    fn yields(store: &mut StoreContext<'_, ()>, thread: ThreadId, count: u32) -> bool {
-        let mut past_budget = false;
-        for _ in 0..count {
-            past_budget = store.scheduler_mut().note_yield(thread);
-        }
-        past_budget
-    }
-
     #[wcmp_macros::test]
-    fn it_answers_a_run_of_idle_yields_within_the_budget_with_no_failure() {
+    fn it_reports_a_host_future_pending_for_a_host_task_of_the_store() {
         let mut owner = store();
         let mut store = owner.context();
-        let thread = thread(1);
 
         assert!(
-            !yields(&mut store, thread, SPIN_BUDGET),
-            "a thread that has given way no more times than the budget is \
-             still being given its chances, so the built-in returns zero"
+            !store.scheduler().host_future_pending(),
+            "a fresh store holds no future that can still resolve"
         );
-    }
-
-    #[wcmp_macros::test]
-    fn it_answers_the_yield_past_the_budget_with_a_failure() {
-        let mut owner = store();
-        let mut store = owner.context();
-        let thread = thread(1);
-
-        assert!(
-            yields(&mut store, thread, SPIN_BUDGET + 1),
-            "the store held nothing at every one of them and ran nothing \
-             between them, so the yield past the budget is asking again for \
-             what it was refused every time before"
-        );
-    }
-
-    #[wcmp_macros::test]
-    fn it_starts_the_run_over_when_the_store_ran_an_item_between_two_yields() {
-        let mut owner = store();
-        let mut store = owner.context();
-        let thread = thread(1);
-
-        // Twice the budget's worth of yields, with an item of the
-        // store's having run between each pair of them.
-        let mut past_budget = false;
-        for _ in 0..(SPIN_BUDGET * 2 + 2) {
-            past_budget = store.scheduler_mut().note_yield(thread);
-            store.scheduler_mut().note_item_run();
-        }
-
-        assert!(
-            !past_budget,
-            "each yield gave way to work of the store's, so none of them is \
-             asking for what the one before was refused, however many there are"
-        );
-    }
-
-    #[wcmp_macros::test]
-    fn it_starts_the_run_over_when_the_store_still_holds_a_host_task() {
-        let mut owner = store();
-        let mut store = owner.context();
-        let thread = thread(1);
-        // A body that never completes, standing for one that wants
-        // three polls: the store holds a future that can still
-        // resolve, so nothing here can say the yield gave way to
-        // nothing.
-        pending_host_task(&mut store);
-
-        assert!(
-            !yields(&mut store, thread, SPIN_BUDGET * 2 + 2),
-            "a store holding a host future can still move on its own, so no \
-             run of yields taken against one is ever counted"
-        );
-    }
-
-    #[wcmp_macros::test]
-    fn it_starts_the_run_over_when_the_store_still_holds_an_item() {
-        let mut owner = store();
-        let mut store = owner.context();
-        let log = log();
-        let thread = thread(1);
-        store
-            .scheduler_mut()
-            .push_high_priority(marker(&log, "ready"));
-
-        assert!(
-            !yields(&mut store, thread, SPIN_BUDGET * 2 + 2),
-            "the store holds an item a turn can run, so the yields gave way \
-             to something whether or not this thread's turn reached it"
-        );
-        assert!(
-            entries(&log).is_empty(),
-            "noting a yield runs nothing itself"
-        );
-    }
-
-    #[wcmp_macros::test]
-    fn it_starts_the_run_over_when_another_thread_gives_way() {
-        let mut owner = store();
-        let mut store = owner.context();
-        let first = thread(1);
-        let second = thread(2);
-
-        // Each thread alone would pass the budget; interleaved,
-        // neither has a run of its own longer than one.
-        let mut past_budget = false;
-        for _ in 0..(SPIN_BUDGET + 1) {
-            past_budget = store.scheduler_mut().note_yield(first);
-            assert!(!past_budget, "the run this yield joined had just started");
-            past_budget = store.scheduler_mut().note_yield(second);
-        }
-
-        assert!(
-            !past_budget,
-            "a run belongs to one thread: another thread giving way in \
-             between says the store has more than one thread to serve"
-        );
-    }
-
-    #[wcmp_macros::test]
-    fn it_holds_nothing_only_when_the_store_holds_nothing_at_all() {
-        let mut owner = store();
-        let mut store = owner.context();
-        let log = log();
-
-        assert!(
-            store.scheduler().holds_nothing(),
-            "a fresh store holds nothing"
-        );
-
-        store
-            .scheduler_mut()
-            .push_low_priority(marker(&log, "deferred"));
-        assert!(
-            !store.scheduler().holds_nothing(),
-            "a resumption after a yield is something the store holds"
-        );
-        store
-            .scheduler_mut()
-            .take_deferred()
-            .expect("the resumption");
-        assert!(store.scheduler().holds_nothing());
 
         pending_host_task(&mut store);
         assert!(
-            !store.scheduler().holds_nothing(),
-            "a host future that can still resolve is something the store holds"
+            store.scheduler().host_future_pending(),
+            "a host task whose body wants another poll is a future that can \
+             still resolve"
         );
+
         store.scheduler_mut().take_host_tasks();
-        assert!(store.scheduler().holds_nothing());
+        assert!(
+            !store.scheduler().host_future_pending(),
+            "the store gave its host tasks away, so it holds no future"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_reports_a_host_future_pending_for_a_call_blocked_on_one_of_its_own() {
+        let mut owner = store();
+        let mut store = owner.context();
 
         SuspendSeam::while_blocked_on_a_call_future(&mut store, |store| {
             assert!(
-                !store.scheduler().holds_nothing(),
+                store.scheduler().host_future_pending(),
                 "the future of a call that blocked on one of its own is \
-                 pending in the frame that started it, which the store's \
-                 own tasks do not show"
+                 pending in the frame that started it, which the store's own \
+                 tasks do not show"
             );
         });
+
         assert!(
-            store.scheduler().holds_nothing(),
+            !store.scheduler().host_future_pending(),
             "the mark came back off when the blocked call's frame ended"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_reports_no_host_future_pending_for_an_item_the_store_holds() {
+        let mut owner = store();
+        let mut store = owner.context();
+        let log = log();
+        store
+            .scheduler_mut()
+            .push_low_priority(marker(&log, "deferred"));
+
+        assert!(
+            !store.scheduler().host_future_pending(),
+            "a resumption after a yield is guest work, and a turn that runs \
+             it is what moves the store, not an executor's poll"
         );
     }
 }

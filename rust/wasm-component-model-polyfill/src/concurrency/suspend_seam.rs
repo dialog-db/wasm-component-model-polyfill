@@ -1,7 +1,7 @@
 //! The scheduler's one suspend capability, and the nested turn it
 //! falls back to.
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, SchedulerCause};
 use crate::store::StoreContext;
 
 use super::SuspendProvider;
@@ -24,10 +24,12 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 /// The scheduler's one suspend capability.
 ///
 /// A blocking built-in asks the seam to suspend the current guest
-/// thread until a readiness condition holds. The seam is a slot a
-/// target fills with a [`SuspendProvider`], and the polyfill fills
-/// it on neither target today, so every suspension takes the
-/// fallback below.
+/// thread until a readiness condition holds, through
+/// [`suspend`](Self::suspend). `thread.yield` asks it for one
+/// chance to give way instead, through
+/// [`give_way`](Self::give_way). The seam is a slot a target fills
+/// with a [`SuspendProvider`], and the polyfill fills it on neither
+/// target today, so every suspension takes the fallback below.
 ///
 /// The fallback is a nested turn, run from inside the guest call
 /// that blocked. It runs the guest work of other tasks that is
@@ -38,9 +40,9 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 ///
 /// Five rules hold for the fallback. The first three say what a
 /// task that blocks waits for and what it is told when the wait
-/// cannot end. The fourth bounds how long the wait goes on. The
-/// fifth says what happens when the work the wait runs blocks in
-/// its turn.
+/// cannot end. The fourth bounds how long any suspension goes on,
+/// a yield included. The fifth says what happens when the work the
+/// wait runs blocks in its turn.
 ///
 /// - **A yielded item runs inside a nested turn once no other item
 ///   is ready.** A yield gives way to every other ready item, so
@@ -75,28 +77,36 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 ///   synchronous export, and of a synchronous call between two
 ///   components. A task that is allowed to block runs every ready
 ///   item and polls every host task.
-/// - **A run of turns that ran nothing but resumptions is
-///   bounded.** This is the polyfill's own rule, and the first rule
-///   above is what it departs from: that rule runs a yielded item
-///   whenever nothing else is ready, without limit, and the
-///   reference states no bound on it either. One shape makes an
-///   unbounded reading run for ever here. A callee that spin-waits
-///   in its event loop until its caller unblocks it gives way, is
-///   re-queued, runs again and gives way again; when this block is
-///   that caller, the callee is waiting on a frame below it on the
-///   stack, which only a stack switch could reach, so no number of
-///   further turns would change anything. The block therefore
-///   counts the turns in which nothing but resumptions after a
-///   yield ran — a turn that ran any other item, or that reported
-///   progress having run nothing, starts the count over — and gives
-///   up once that run passes [`SPIN_BUDGET`], failing with the
-///   cause the second rule above names. Two corpus directives
-///   depend on it, and without it both run for ever rather than
-///   failing. The bound is a budget and not a proof: a yielder that
+/// - **The seam keeps one budget, and past it the call fails with
+///   the stack-switch cause.** This is the polyfill's one departure
+///   from the reference, which bounds neither the yielded item the
+///   first rule runs nor the number of times a thread gives way.
+///   The seam counts the nested turns in a row in which the store
+///   did nothing of its own: a turn that ran nothing, or nothing
+///   but a resumption after a yield, against a store with no host
+///   future that can still resolve. A turn that ran any other item,
+///   or that ran against a store whose host future wants another
+///   poll, starts the count over. Once the run passes
+///   [`SPIN_BUDGET`] the seam gives up and the call the suspended
+///   thread is inside fails with
+///   [`SchedulerCause::StackSwitchNeeded`], because the one thread
+///   that could release it is a guest frame on the real stack that
+///   the store cannot reach and only a stack switch could resume.
+///   Two shapes reach the budget and they are one shape. A callee
+///   that spin-waits in its event loop until its caller unblocks it
+///   gives way, is re-queued, runs again and gives way again, and
+///   the caller's block runs it every turn. A callee whose core
+///   function calls `thread.yield` in a loop against a store that
+///   holds nothing asks the seam over and over for what it was
+///   refused the time before. Two corpus directives depend on the
+///   budget, and without it both run for ever rather than failing.
+///   The bound is a budget and not a proof: a yielder that
 ///   converges after more than [`SPIN_BUDGET`] turns of its own
 ///   would be cut short by it, which is why the number is drawn
-///   generously. Whether it becomes a stated rule is the design's
-///   to decide.
+///   generously. A target that fills the provider slot never
+///   consults it.
+///
+///   [`SchedulerCause::StackSwitchNeeded`]: crate::error::SchedulerCause::StackSwitchNeeded
 /// - **Nested turns nest.** An item a nested turn runs can block
 ///   and open a nested turn of its own, one real frame further down
 ///   the stack. Each level runs what the level above it has not
@@ -151,6 +161,8 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 pub struct SuspendSeam<T: 'static> {
     provider: Option<BoxedProvider<T>>,
     blocked_call_futures: usize,
+    unserved_turns: u32,
+    served_mark: (u64, u64),
 }
 
 impl<T: 'static> SuspendSeam<T> {
@@ -160,6 +172,8 @@ impl<T: 'static> SuspendSeam<T> {
         Self {
             provider: None,
             blocked_call_futures: 0,
+            unserved_turns: 0,
+            served_mark: (0, 0),
         }
     }
 
@@ -216,6 +230,41 @@ impl<T: 'static> SuspendSeam<T> {
             return Self::suspend_with_provider(store, &mut condition);
         }
         Self::run_nested_turns(store, &mut condition)
+    }
+
+    /// Give way once, which is the whole of what `thread.yield`
+    /// asks of the seam.
+    ///
+    /// A yield waits for one chance to be given back control and
+    /// for nothing else, so this is not a wait with a condition. A
+    /// target with a provider suspends the thread once and resumes
+    /// it. A target without one runs exactly one nested turn: the
+    /// ready work of the store, or of the calling task's own
+    /// instance alone when that task must not block. A task that
+    /// must not block with no ready work of its own instance gives
+    /// way to nothing, as Wasmtime runs it.
+    ///
+    /// The seam's budget is the one thing that can fail this. A
+    /// thread whose turns the store has not served past
+    /// [`SPIN_BUDGET`] times over is spin-waiting for a guest frame
+    /// on the real stack, and the failure is the stack-switch cause
+    /// that ends the call the thread is inside. Everything else
+    /// answers `Ok(())`, which is what makes the built-in return
+    /// zero whenever it returns at all.
+    pub fn give_way(store: &mut StoreContext<'_, T>) -> Result<()> {
+        if store.scheduler().suspend_seam().has_provider() {
+            let mut given_back = false;
+            return Self::suspend_with_provider(store, &mut |_| {
+                std::mem::replace(&mut given_back, true)
+            });
+        }
+        let waker = store.active_waker();
+        let only = store.must_not_block_instance();
+        store.nested_turn(&waker, only)?;
+        if Self::note_turn(store) {
+            return Err(Error::Scheduler(SchedulerCause::StackSwitchNeeded));
+        }
+        Ok(())
     }
 
     /// Hand the suspension to the target's provider. The provider
@@ -294,31 +343,20 @@ impl<T: 'static> SuspendSeam<T> {
         // the flag is set for the length of the call this thread is
         // inside.
         let only = store.must_not_block_instance();
-        // The run of turns in which nothing but resumptions after a
-        // yield ran, which is what the budget below bounds. A turn
-        // that ran anything else did work of the store's own, so it
-        // starts the run over, and so does one that ran nothing at
-        // all and still reported progress — a host task whose poll
-        // made something ready.
-        let mut spinning = 0;
-        let mut items_run = store.scheduler().items_run();
-        let mut resumptions = store.scheduler().resumptions();
+        // Whether the seam's budget is what ended the loop. The
+        // budget is the run of turns the store did not serve, and
+        // it is kept on the seam rather than here, so that a thread
+        // which asks again and again in separate frames — a yield
+        // loop — is one run and not a fresh one every time.
+        let past_budget;
         loop {
             if condition(store) {
                 return Ok(());
             }
             let outcome = store.nested_turn(&waker, only)?;
-            let only_resumptions = {
-                let scheduler = store.scheduler();
-                let ran = scheduler.items_run() - items_run;
-                let resumed = scheduler.resumptions() - resumptions;
-                items_run = scheduler.items_run();
-                resumptions = scheduler.resumptions();
-                ran > 0 && ran == resumed
-            };
-            spinning = if only_resumptions { spinning + 1 } else { 0 };
+            let noted = Self::note_turn(store);
             match outcome {
-                Outcome::Progress if spinning <= SPIN_BUDGET => continue,
+                Outcome::Progress if !noted => continue,
                 // Nothing more can progress from inside the guest
                 // call. `Waiting` leaves its host tasks in the store
                 // for the outer turn to poll again. `Yield` is the
@@ -329,8 +367,8 @@ impl<T: 'static> SuspendSeam<T> {
                 // here all the same, since a turn that ran nothing
                 // and deferred nothing has nothing left to offer.
                 //
-                // Progress ends it too once the run of
-                // resumption-only turns has gone past the budget. A
+                // Progress ends it too once the run of turns the
+                // store did not serve has gone past the budget. A
                 // callee that spin-waits in its event loop until its
                 // caller unblocks it re-queues itself every time it
                 // runs, and this block is that caller, so no number
@@ -340,13 +378,57 @@ impl<T: 'static> SuspendSeam<T> {
                 // decides that is what it is looking at, and
                 // [`SPIN_BUDGET`] says why it is a budget rather
                 // than a proof.
-                Outcome::Progress | Outcome::Yield | Outcome::Waiting | Outcome::Idle => break,
+                Outcome::Progress | Outcome::Yield | Outcome::Waiting | Outcome::Idle => {
+                    past_budget = noted;
+                    break;
+                }
             }
         }
+        // A last turn that met the condition is the wait ending,
+        // whatever the budget stands at: the block got what it was
+        // waiting for and the call goes on.
         if condition(store) {
             return Ok(());
         }
+        if past_budget {
+            return Err(Error::Scheduler(SchedulerCause::StackSwitchNeeded));
+        }
         Err(Error::Scheduler(store.suspend_cause()))
+    }
+
+    /// Record what the store did for the suspended thread over the
+    /// nested turn that just ran, and answer whether the run of
+    /// turns the store did not serve has passed [`SPIN_BUDGET`].
+    ///
+    /// The store served the thread when it ran an item that was not
+    /// a resumption after a yield, or when it still holds a host
+    /// future that can resolve on a later poll. Either says the
+    /// store can get somewhere on its own. A turn that ran nothing,
+    /// or nothing but a resumption the yield rule was holding back,
+    /// against a store that holds no such future did not: the
+    /// thread is asking again for what it was refused the time
+    /// before.
+    ///
+    /// What the store ran is measured from the last turn the seam
+    /// noted, not from the top of this suspension. The run is
+    /// therefore one run across every suspension of the store: a
+    /// thread that gives way in one frame after another builds a
+    /// single run, and whatever the store ran in between — a
+    /// driver's turn included — ends it.
+    fn note_turn(store: &mut StoreContext<'_, T>) -> bool {
+        let items_run = store.scheduler().items_run();
+        let resumptions = store.scheduler().resumptions();
+        let pending = store.scheduler().host_future_pending();
+        let seam = store.scheduler_mut().suspend_seam_mut();
+        let ran = items_run - seam.served_mark.0;
+        let resumed = resumptions - seam.served_mark.1;
+        seam.served_mark = (items_run, resumptions);
+        seam.unserved_turns = if ran > resumed || pending {
+            0
+        } else {
+            seam.unserved_turns.saturating_add(1)
+        };
+        seam.unserved_turns > SPIN_BUDGET
     }
 
     /// Run `body` and hand back what it did, an unwind included.
@@ -1880,16 +1962,17 @@ mod tests {
 
         assert_eq!(
             cause(outcome),
-            Error::Scheduler(SchedulerCause::Deadlock).to_string(),
+            Error::Scheduler(SchedulerCause::StackSwitchNeeded).to_string(),
             "the yielder re-queues itself every time it runs and this block \
-             is what would release it, so no number of further turns would \
-             change anything and the block reaches its failure"
+             is what would release it, so the one thread that could release \
+             it is the frame this block sits in and only a stack switch \
+             would reach it"
         );
         assert_eq!(
             *runs.lock().expect("runs"),
             SPIN_BUDGET as usize + 1,
             "the block spent the budget and stopped: one turn to open the run \
-             of resumption-only turns and the budget's worth after it"
+             of turns the store did not serve and the budget's worth after it"
         );
         assert!(
             store.scheduler().has_deferred_item(),
@@ -1987,11 +2070,121 @@ mod tests {
 
         assert_eq!(
             cause(outcome),
-            Error::Scheduler(SchedulerCause::CannotBlock).to_string(),
-            "the run of resumption-only turns is counted whichever queue the \
-             resumptions came off, and the cause is the caller's rule because \
-             a call of the instance has not returned"
+            Error::Scheduler(SchedulerCause::StackSwitchNeeded).to_string(),
+            "the run of turns the store did not serve is counted whichever \
+             queue the resumptions came off, and the budget names the stack \
+             switch whatever the store's other rules would have named on idle"
         );
         assert_eq!(*runs.lock().expect("runs"), SPIN_BUDGET as usize + 1);
+    }
+
+    /// Give way `count` times over, each from its own frame as a
+    /// guest loop calling `thread.yield` does, and report what the
+    /// last of them answered.
+    fn gives_way(store: &mut StoreContext<'_, ()>, count: u32) -> Result<()> {
+        let mut outcome = Ok(());
+        for _ in 0..count {
+            outcome = SuspendSeam::give_way(store);
+        }
+        outcome
+    }
+
+    #[wcmp_macros::test]
+    fn it_returns_from_every_give_way_of_a_run_inside_the_budget() {
+        let mut owner = store();
+        let mut store = owner.context();
+
+        assert_eq!(
+            cause(gives_way(&mut store, SPIN_BUDGET)),
+            "the seam returned with the condition held",
+            "a thread that has given way no more times than the budget is \
+             still being given its chances, so the built-in returns zero"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_ends_a_run_of_give_ways_past_the_budget_with_the_stack_switch_cause() {
+        let mut owner = store();
+        let mut store = owner.context();
+
+        assert_eq!(
+            cause(gives_way(&mut store, SPIN_BUDGET + 1)),
+            Error::Scheduler(SchedulerCause::StackSwitchNeeded).to_string(),
+            "the store held nothing at every one of them and ran nothing \
+             between them, so the thread is waiting on a guest frame on the \
+             real stack and only a stack switch would reach it"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_starts_the_run_of_give_ways_over_when_the_store_ran_an_item() {
+        let mut owner = store();
+        let mut store = owner.context();
+        let log = log();
+
+        // Twice the budget's worth of yields, with an item of the
+        // store's run between each pair of them.
+        let mut outcome = Ok(());
+        for _ in 0..(SPIN_BUDGET * 2 + 2) {
+            store
+                .scheduler_mut()
+                .push_high_priority(marker(&log, "ready"));
+            outcome = SuspendSeam::give_way(&mut store);
+        }
+
+        assert_eq!(
+            cause(outcome),
+            "the seam returned with the condition held",
+            "each yield gave way to work of the store's, so none of them is \
+             asking for what the one before was refused, however many there \
+             are"
+        );
+        assert_eq!(
+            entries(&log).len(),
+            (SPIN_BUDGET * 2 + 2) as usize,
+            "every one of those items ran in the turn its yield gave way to"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_starts_the_run_of_give_ways_over_while_a_host_future_is_pending() {
+        let mut owner = store();
+        let mut store = owner.context();
+        let outer = Waker::from(Arc::new(Outer::default()));
+        // A body that never completes: the store holds a future
+        // that can still resolve, so nothing here can say a yield
+        // gave way to nothing.
+        let (_slot, _polls) = host_task(&mut store, &outer, usize::MAX);
+
+        assert_eq!(
+            cause(gives_way(&mut store, SPIN_BUDGET * 2 + 2)),
+            "the seam returned with the condition held",
+            "a store holding a host future moves on its own when its \
+             executor polls it again, so no run of yields taken against one \
+             is ever counted"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_runs_the_ready_work_of_the_store_from_one_give_way() {
+        let mut owner = store();
+        let mut store = owner.context();
+        let log = log();
+        store
+            .scheduler_mut()
+            .push_high_priority(marker(&log, "ready"));
+        store
+            .scheduler_mut()
+            .push_low_priority(marker(&log, "deferred"));
+
+        SuspendSeam::give_way(&mut store).expect("the yield gives way");
+
+        assert_eq!(
+            entries(&log),
+            vec!["ready", "deferred"],
+            "one nested turn runs what is ready and then the resumption the \
+             yield rule was holding back, which is the whole of what a yield \
+             gives way to"
+        );
     }
 }

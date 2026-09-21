@@ -400,8 +400,7 @@ impl<T: 'static> StoreData<T> {
     /// of the store's host tasks, or the future of a call that
     /// blocked on it, which stays in the frame that started it.
     fn host_future_pending(&self) -> bool {
-        self.scheduler.host_task_count() > 0
-            || self.scheduler.suspend_seam().blocked_on_a_call_future()
+        self.scheduler.host_future_pending()
     }
 
     /// The instance whose ready work is the whole of what a nested

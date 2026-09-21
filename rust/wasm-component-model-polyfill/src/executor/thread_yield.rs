@@ -7,67 +7,33 @@
 //! instance's may-leave flag is clear, which is the case while a
 //! `realloc` or a `post-return` of that instance runs.
 //!
-//! Giving way is one call into the suspend seam: the built-in asks
-//! it to suspend the current thread until a condition that holds as
-//! soon as the thread has been given back control, which is what a
+//! Giving way is one call into the suspend seam. The built-in asks
+//! it for one chance to be given back control, which is what a
 //! yield waits for and no more. On a target with no provider the
-//! seam runs one nested turn under that condition — the ready work
-//! of the store, or of the calling task's own instance alone when
-//! that task must not block — and the built-in returns. A task that
-//! must not block with no ready work of its own instance therefore
-//! yields to nothing, as Wasmtime runs it.
+//! seam runs one nested turn — the ready work of the store, or of
+//! the calling task's own instance alone when that task must not
+//! block — and the built-in returns. A task that must not block
+//! with no ready work of its own instance therefore yields to
+//! nothing, as Wasmtime runs it.
 //!
-//! The seam's causes do not reach the built-in. The condition holds
-//! by the time the fallback's loop ends, however the loop ended, so
-//! the check that stands between the loop and the cannot-block,
-//! deadlock and stack-switch causes always succeeds. The built-in
-//! swallows them all the same, because any one of them would mean
-//! the same thing here: that the turn did not meet a condition a
-//! yield never asked it to meet.
+//! The built-in has no rule of its own that fails, which is what
+//! the reference states: `canon_thread_yield` has the may-leave
+//! trap and otherwise always answers `[0]`, and Wasmtime has no
+//! counterpart trap at all. The built-in returns zero whenever it
+//! returns.
 //!
-//! An error the nested turn raised while it ran an item is a
-//! different thing: it is the failure of that work, it would have
-//! failed the turn that ran it, and the built-in hands it on rather
-//! than losing it.
-//!
-//! ## One shape does fail, and it is the polyfill's own rule
-//!
-//! The reference's `canon_thread_yield` has one trap, may-leave, and
-//! otherwise always answers `[0]`; Wasmtime has no counterpart trap
-//! at all. This built-in departs from that in one case, and the
-//! departure is the polyfill's own — no design document states it,
-//! and whether it becomes a stated rule is the design's to decide.
-//!
-//! The case is a thread that gives way more times over than the
-//! budget the scheduler names `SPIN_BUDGET`, with all of:
-//!
-//! - nothing of the store's having run between any two of them, so
-//!   every one of those yields gave way to nothing;
-//! - the store holding nothing at all at each of them — no ready
-//!   item, no resumption, no task at a gate, no callback held for an
-//!   event, and no host future that can still resolve — so nothing
-//!   of the store's could have run either;
-//! - a guest frame of another task below this one on the stack.
-//!
-//! Such a thread is spin-waiting for that frame. The store has
-//! nothing to give it and cannot come by anything on its own, and
-//! the one thread that could release it is the caller whose frame
-//! the polyfill cannot leave without a stack switch. The yield past
-//! the budget therefore fails with the stack-switch cause rather
-//! than returning zero for ever. One corpus directive depends on it,
-//! and without it that directive runs for ever rather than failing.
-//!
-//! Each half of the rule is there to keep a thread that is being
-//! served out of it. A yield with a store item run between it and
-//! the one before gave way to something, so it starts the count
-//! over, and so does a yield taken while the store still holds a
-//! host future that wants another poll. What is left is the guest's
-//! own progress between two yields, which nothing here can see: a
-//! loop that gives way past the budget and then returns is cut short
-//! by this rule, and nothing short of running the guest to its end
-//! could tell it from one that never returns. That is what makes the
-//! bound a budget rather than a proof, and why the number is drawn
-//! generously.
+//! Two things can stop it returning, and neither is the yield's own
+//! rule. An error the nested turn raised while it ran an item is
+//! the failure of that work: it would have failed the turn that ran
+//! it, and the built-in hands it on rather than losing it. And the
+//! suspend seam keeps one budget over the nested turns the store
+//! does not serve, which the seam's own documentation states. A
+//! thread that gives way over and over against a store that holds
+//! nothing is spin-waiting for a guest frame on the real stack that
+//! only a stack switch could resume, so past the budget the seam
+//! gives up and the call the thread is inside fails with the
+//! stack-switch cause. One corpus directive depends on it, and
+//! without it that directive runs for ever rather than failing.
 //!
 //! An item the nested turn runs that calls the built-in again opens
 //! a nested turn one frame further down, because nested turns nest.
@@ -102,8 +68,8 @@ use wasm_runtime_layer::{
 
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::backend::Backend;
-use crate::concurrency::{InstanceId, Scope, SuspendSeam};
-use crate::error::{Error, SchedulerCause, TaskCause};
+use crate::concurrency::{InstanceId, SuspendSeam};
+use crate::error::{Error, TaskCause};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::CoreSignature;
 use crate::resource::HandleTables;
@@ -148,62 +114,15 @@ fn thread_yield<T: 'static>(
     let id = calling_instance(abi_state, instance)?;
     trap_if_cannot_leave(tables, id)?;
 
-    // The condition is false the first time the seam asks and true
-    // afterwards: the thread waits for one chance to be given back
-    // control and nothing else. The seam therefore runs exactly one
-    // nested turn on a target with no provider, and a provider that
-    // switches stacks suspends the thread exactly once.
-    let mut given_back = false;
+    // One chance to be given back control, which is the whole of
+    // what a yield waits for. The seam runs exactly one nested turn
+    // on a target with no provider, and a provider that switches
+    // stacks suspends the thread exactly once. What comes back is
+    // the failure of an item the turn ran, or the seam's budget
+    // ending the call this thread is inside; see the module
+    // documentation.
     let mut store = StoreContext::new(store_ctx.as_context_mut());
-    match SuspendSeam::suspend(&mut store, |_| std::mem::replace(&mut given_back, true)) {
-        Ok(()) => {}
-        // A cause the seam raised says the turn did not meet a
-        // condition a yield never asked it to meet, so it is not a
-        // failure of the yield; see the module documentation.
-        Err(Error::Scheduler(_)) => {}
-        Err(error) => return Err(trap(error)),
-    }
-    if spinning_for_its_caller(&mut store, tables)? {
-        return Err(trap(Error::Scheduler(SchedulerCause::StackSwitchNeeded)));
-    }
-    Ok(())
-}
-
-/// Whether this yield is one past the budget in a run of yields the
-/// same thread took against a store that held nothing, made from a
-/// task with a guest frame of another task below it on the stack.
-///
-/// Both halves are needed, and the scheduler keeps the first of
-/// them: [`Scheduler::note_yield`] counts the run and says when it
-/// has gone past the budget, which means every one of those yields
-/// gave way to nothing and nothing of the store's could have run
-/// between them. The frame below says who is left to release the
-/// thread: a task the polyfill reached from another task's frame can
-/// only go on once that frame does, and leaving it needs a stack
-/// switch. A task the host called has no such frame, and a guest
-/// loop of its own is the host's to bound.
-///
-/// [`Scheduler::note_yield`]: crate::concurrency::Scheduler::note_yield
-fn spinning_for_its_caller<T: 'static>(
-    store: &mut StoreContext<'_, T>,
-    tables: &Arc<Mutex<HandleTables>>,
-) -> anyhow::Result<bool> {
-    let (thread, caller_below) = {
-        let guard = tables
-            .lock()
-            .map_err(|_| anyhow!("resource handle tables lock poisoned"))?;
-        let current = guard.tasks.current_task();
-        let caller_below = guard.tasks.scopes().iter().any(|scope| match scope {
-            Scope::Task(task) => Some(*task) != current,
-            Scope::Subtask(_) => false,
-        });
-        (guard.tasks.current_thread(), caller_below)
-    };
-    let Some(thread) = thread else {
-        return Ok(false);
-    };
-    let past_budget = store.scheduler_mut().note_yield(thread);
-    Ok(past_budget && caller_below)
+    SuspendSeam::give_way(&mut store).map_err(trap)
 }
 
 /// The store-wide identity of the component instance the translator
@@ -250,9 +169,9 @@ fn trap_if_cannot_leave(
 /// message is the error's own, which the conformance corpora match
 /// by substring, with the `wasm trap:` prefix a trap reaching guest
 /// code renders with for a scheduler cause. The stack-switch cause
-/// this built-in raises is the polyfill's own and has no Wasmtime
-/// trap code behind it; it takes the prefix because it reaches the
-/// guest as a trap all the same.
+/// the seam's budget raises is the polyfill's own and has no
+/// Wasmtime trap code behind it; it takes the prefix because it
+/// reaches the guest as a trap all the same.
 fn trap(error: Error) -> anyhow::Error {
     match error {
         Error::Scheduler(cause) => anyhow!("wasm trap: {cause}"),
