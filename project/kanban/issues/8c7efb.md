@@ -17,3 +17,7 @@ Settle the reentrance rules on the prepare-and-start protocol. No call traps for
 - [ ] A repository test proves that a held sync export runs when the gate opens and delivers `RETURNED` to a caller that read `STARTING`.
 - [ ] `lint` passes and `tests all` is green on both targets, and any async directive that starts passing has its line removed from the expected-failure list.
 
+## Dispatch log
+- 2026-09-21T03:15:43Z dispatched implementor `card-8c7efb-d2ee433a` (implement session, PDD020 thread, budget 3, seed `48b2865` with 3e657c ready and tip-gated)
+
+## Review notes
