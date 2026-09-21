@@ -34,29 +34,36 @@
 //! word, which is the state of the call's subtask and, when the call
 //! has not finished, the index of the entry the guest waits on.
 //!
-//! A synchronous registration reached through such a lower runs its
-//! closure to completion as it always does, so the result crosses
-//! through the return area and the guest sees the returned state
-//! with no entry behind it. A concurrent registration answers with
-//! the future of one call instead: the trampoline builds a host task
-//! from that future, with a lowering that writes the result through
-//! the boundary context of the subtask, and hands it to the store.
-//! The store polls it once. A future that is ready lowers its result
-//! there and then, and the guest sees the returned state. A future
-//! that is not joins the store's host tasks, its subtask enters the
-//! caller's handle table, and the guest sees the started state with
-//! that index; a later turn lowers the result, resolves the subtask,
-//! and fills the subtask event that `waitable-set.wait` and
-//! `waitable-set.poll` deliver.
+//! Such a lower always reaches a concurrent registration. The
+//! `async` option may only be used with an async function type, so a
+//! component that lowers a sync-typed import with it is refused
+//! where the component is read, before any registration is
+//! consulted; and the link rule holds an async-typed import to a
+//! concurrent registration. The two rules meet at the same place: a
+//! synchronous registration is out of reach through an asynchronous
+//! lower, and the trampoline carries no path for that pairing.
 //!
-//! The remaining pairing — a concurrent registration reached through
-//! a *synchronous* lower — has to block the guest thread where it
-//! stands, which is a path of its own, and calling it fails with
-//! [`Error::Unsupported`] until that path lands. The link rule holds
-//! a concurrent registration to an async-typed import, which does
-//! not put the pairing out of reach: the two axes move separately,
-//! so a guest may lower an async-typed import without the `async`
-//! option and reach the host synchronously.
+//! The registration answers with the future of one call: the
+//! trampoline builds a host task from that future, with a lowering
+//! that writes the result through the boundary context of the
+//! subtask, and hands it to the store. The store polls it once. A
+//! future that is ready lowers its result there and then, and the
+//! guest sees the returned state. A future that is not joins the
+//! store's host tasks, its subtask enters the caller's handle table,
+//! and the guest sees the started state with that index; a later
+//! turn lowers the result, resolves the subtask, and fills the
+//! subtask event that `waitable-set.wait` and `waitable-set.poll`
+//! deliver.
+//!
+//! The opposite pairing — a concurrent registration reached through
+//! a *synchronous* lower — is reachable, because the two axes move
+//! separately: the link rule holds a concurrent registration to an
+//! async-typed import, and a guest may lower an async-typed import
+//! without the `async` option. The guest expects the result when the
+//! call returns, so the trampoline blocks the guest thread on the
+//! future where it stands, through the suspend seam, and writes the
+//! result exactly where a synchronous registration's crossing writes
+//! it.
 //!
 //! [`Func`]: wasm_runtime_layer::Func
 //! [`HostFunc<T>`]: crate::linker::HostFunc
@@ -622,7 +629,6 @@ fn invoke_trampoline<T: 'static>(
         HostOutcome::Values(host_results) => return_host_values(
             &mut store_ctx,
             signature,
-            kind,
             tables,
             options,
             instance,
@@ -666,7 +672,12 @@ fn invoke_trampoline<T: 'static>(
 }
 
 /// Finish a call whose host side ran to completion: the closure of a
-/// synchronous registration, reached through either lower.
+/// synchronous registration, which only a synchronous lower reaches.
+/// The `async` canonical option is valid only on an async function
+/// type, and the link rule holds an async-typed import to a
+/// concurrent registration, so no component can pair a synchronous
+/// registration with an asynchronous lower. There is therefore no
+/// status word to answer here, and no lower to distinguish.
 ///
 /// The subtask resolves before the results are written back: such a
 /// call delivers its resolution as it returns, which gives back every
@@ -674,15 +685,10 @@ fn invoke_trampoline<T: 'static>(
 /// belongs to the caller's task, which is why the subtask leaves the
 /// stack first, and why the crossing of the result counts against the
 /// scope the pop uncovers.
-///
-/// Through an asynchronous lower the guest is told the call returned
-/// and is given no entry to wait on, which is what a call that
-/// resolved before the lower returned reports.
 #[allow(clippy::too_many_arguments)]
 fn return_host_values<T: 'static>(
     store_ctx: &mut wasm_runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
     signature: &FunctionType,
-    kind: LowerKind,
     tables: &Arc<Mutex<HandleTables>>,
     options: BoundaryOptions,
     instance: BoundaryInstance,
@@ -699,7 +705,6 @@ fn return_host_values<T: 'static>(
     write_host_result(
         store_ctx,
         signature,
-        kind,
         options,
         instance,
         caller,
@@ -709,24 +714,26 @@ fn return_host_values<T: 'static>(
     )
 }
 
-/// Write what the host side of one call produced into the guest,
-/// through the lower the guest called through.
+/// Write what the host side of one call produced into the guest.
+///
+/// Both callers are synchronous lowers: a synchronous registration's
+/// closure, which an asynchronous lower cannot reach, and the block a
+/// synchronous lower makes on a concurrent registration's future. So
+/// the result goes where a synchronous lower expects it — through the
+/// return area the guest passed when the result is too wide for flat
+/// slots, and into the flat result slots otherwise — and there is no
+/// status word to write. An asynchronous lower's result is written by
+/// the host task's own lowering instead, in the turn that resolves
+/// the subtask.
 ///
 /// The subtask of the call has left the stack by the time this runs,
 /// so `caller` is the scope the pop uncovered and the crossing of the
 /// result counts against it: a borrow the host lowers back out
 /// belongs to the caller's task.
-///
-/// A synchronous lower writes the result itself — through the return
-/// area the guest passed when the result is too wide for flat slots,
-/// and into the flat result slots otherwise. An asynchronous lower
-/// writes the return area as well, and then the status word, which is
-/// the one thing its core signature returns.
 #[allow(clippy::too_many_arguments)]
 fn write_host_result<T: 'static>(
     store_ctx: &mut wasm_runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
     signature: &FunctionType,
-    kind: LowerKind,
     options: BoundaryOptions,
     instance: BoundaryInstance,
     caller: Option<Scope>,
@@ -734,20 +741,23 @@ fn write_host_result<T: 'static>(
     return_area_ptr: Option<usize>,
     results: &mut [RuntimeVal],
 ) -> Result<()> {
-    let status_word = matches!(kind, LowerKind::Async);
     let Some(result_ty) = &signature.result else {
-        return if status_word {
-            write_status(results, CallStatus::returned())
-        } else {
-            Ok(())
-        };
+        return Ok(());
     };
+    // Neither caller can arrive here with an empty vector. A
+    // synchronous registration writes into a slice this trampoline
+    // sized from the declared signature, so its length is one
+    // wherever there is a result at all. A concurrent registration's
+    // vector is checked a call earlier: the untyped entry,
+    // `LinkerInstance::func_new_concurrent`, wraps the future in the
+    // check that fails a vector the declared type does not describe,
+    // and the typed entry derives the vector from the closure's
+    // return, so its length holds by construction. That is the check
+    // a mistaken host reads. An empty vector here is therefore a
+    // broken invariant rather than a host's mistake, and it reads as
+    // one.
     let host_val = host_results.into_iter().next().ok_or_else(|| {
-        Error::from(AbiError {
-            position: AbiPosition::Result,
-            valtype: Some(result_ty.clone()),
-            cause: AbiCause::HostValueMismatch,
-        })
+        Error::internal("a host registration's result never reached the crossing")
     })?;
     let mut lower_ctx = BoundaryContext::new(store_ctx.as_context_mut(), options, instance, caller);
     match return_area_ptr {
@@ -784,9 +794,6 @@ fn write_host_result<T: 'static>(
                 *dst = src;
             }
         }
-    }
-    if status_word {
-        write_status(results, CallStatus::returned())?;
     }
     Ok(())
 }
@@ -919,7 +926,6 @@ fn block_on_host_call<T: 'static>(
     write_host_result(
         store_ctx,
         signature,
-        LowerKind::Sync,
         options,
         instance,
         caller,

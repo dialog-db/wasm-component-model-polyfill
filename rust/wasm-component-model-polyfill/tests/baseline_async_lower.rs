@@ -791,6 +791,15 @@ async fn it_lifts_the_spilled_parameters_of_an_asynchronous_lower_through_the_po
                 "sum",
                 sum_type(),
                 |_accessor: &Accessor<()>, args: Vec<Val>| {
+                    // A sum reads the same for any permutation, so
+                    // the tuple is checked position by position: the
+                    // five values have to arrive in the order the
+                    // guest laid them out.
+                    assert_eq!(
+                        args,
+                        (10..15).map(Val::U32).collect::<Vec<Val>>(),
+                        "`sum` was given {args:?}"
+                    );
                     let total = args
                         .iter()
                         .map(|arg| match arg {
@@ -798,7 +807,6 @@ async fn it_lifts_the_spilled_parameters_of_an_asynchronous_lower_through_the_po
                             other => panic!("`sum` was given {other:?}"),
                         })
                         .sum::<u32>();
-                    assert_eq!(args.len(), 5, "`sum` was given {args:?}");
                     PendingOnce::new(vec![Val::U32(total)])
                 },
             );
@@ -813,8 +821,9 @@ async fn it_lifts_the_spilled_parameters_of_an_asynchronous_lower_through_the_po
     assert_eq!(
         result.first(),
         Some(&Val::U32(60)),
-        "the five parameters reached the host in order — 10 through 14 — and \
-         their sum crossed back through the return area"
+        "the five parameters reached the host in order — 10 through 14, \
+         checked position by position in the registration — and their sum \
+         crossed back through the return area"
     );
     assert_eq!(
         recorded(&mut store, &instance).await,
