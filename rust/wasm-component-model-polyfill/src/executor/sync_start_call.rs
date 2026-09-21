@@ -70,7 +70,7 @@ use crate::executor::ir::CoreSignature;
 use crate::store::StoreContext;
 
 use super::prepare_call::u32_argument;
-use super::start_call::{Prepared, abandon, callee_callback, funcref_argument, lock};
+use super::start_call::{Prepared, callee_callback, funcref_argument, lock, release_subtask};
 use super::start_failure::StartFailure;
 
 /// Build the `sync-start-call` intrinsic of one fused adapter.
@@ -232,9 +232,6 @@ fn sync_start_call<T: 'static>(
 /// module documentation says which item each way of parking leaves,
 /// and the scheduler's says what dropping one gives back.
 fn release_wait<T: 'static>(store: &mut StoreContext<'_, T>, subtask: SubtaskId, task: TaskId) {
-    abandon(store, subtask);
-    if let Ok(mut guard) = store.tables_handle().lock() {
-        guard.tasks.remove_subtask(subtask);
-    }
+    release_subtask(store, subtask);
     let _ = store.end_export_task(task);
 }

@@ -136,3 +136,10 @@ that uses the exception-handling proposal hands the host. A panic there
 aborts the page rather than failing the call. The patch falls through to the
 debug rendering when the property is not a string, which is the branch
 upstream already has for a value with no `message` at all.
+
+The same branch names the one such value the polyfill can identify. An
+exception a guest threw and did not catch reaches the host as the
+`WebAssembly.Exception` object, and the debug rendering of it says nothing a
+caller can read. The native backend reports that failure as `thrown Wasm
+exception`, so the patch gives the JS backend the same wording for the same
+object, and a caller of either backend reads one message.

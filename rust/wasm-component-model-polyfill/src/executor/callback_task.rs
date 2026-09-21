@@ -53,6 +53,8 @@ use crate::error::{AbiCause, AbiError, AbiPosition, Error, InstantiationError, R
 use crate::resource::TableId;
 use crate::store::StoreContext;
 
+use super::start_call::release_subtask;
+
 /// How many low bits of a status word are the code.
 const CODE_BITS: u32 = 4;
 
@@ -208,10 +210,43 @@ impl CallbackTask {
                 self.handle_status_word(store, word)
             }
             Err(error) => {
-                store.abandon_export_task(self.task)?;
+                self.abandon(store)?;
                 Err(error)
             }
         }
+    }
+
+    /// Give back what a callee whose callback failed still holds.
+    ///
+    /// A trap the callback raised, or an exception it did not catch,
+    /// ends the callee's side of the call. The callee's task is
+    /// abandoned, which ends its implicit thread — so the instance
+    /// that thread held exclusively goes back — pops its scope with
+    /// no borrow check, and drops whatever the task still had
+    /// queued. The caller's record of the call, for a call that came
+    /// from another component, goes the way a trap in the callee's
+    /// first phase sends it: its resolution is a cancellation, which
+    /// gives back every handle the caller lent, and the record and
+    /// the caller's entry for it leave the store. A call that came
+    /// from the host has no such record, and the driver whose turn
+    /// ran the callback takes the failure instead.
+    ///
+    /// The caller's own task is not ended here. A caller that gave
+    /// way to park on the subtask is still parked when the failure
+    /// travels out, and its record, its implicit thread and the
+    /// waitable set it made stay in the store: what the failure ends
+    /// is the driver's turn, not the task the driver was waiting on.
+    fn abandon<T: 'static>(&self, store: &mut StoreContext<'_, T>) -> Result<()> {
+        let subtask = store
+            .lock_tables()?
+            .tasks
+            .task(self.task)
+            .and_then(|record| record.subtask);
+        store.abandon_export_task(self.task)?;
+        if let Some(subtask) = subtask {
+            release_subtask(store, subtask);
+        }
+        Ok(())
     }
 
     /// Call the export's callback with the event's three numbers and

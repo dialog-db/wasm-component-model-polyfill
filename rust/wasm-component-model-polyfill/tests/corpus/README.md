@@ -134,11 +134,11 @@ conformance` prints the current one):
 | `wasmtime/async` | 387        | 124    | 32.0   | deferred-feature 81, validation 1, defect 1, cascade 180                 |
 | total            | 2392       | 1692   | 70.7   | deferred-feature 129, substrate 12, validation 21, defect 2, cascade 536 |
 
-The browser's summary differs by the fifteen lines of
-`expected-failures.web.txt`, which move fifteen passing directives into
+The browser's summary differs by the nine lines of
+`expected-failures.web.txt`, which move nine passing directives into
 `substrate`: `cm/async` passes 81 (20.6%), `wasmtime` 425 (90.6%),
-`wasmtime/async` 116 (30.0%), and the total is 1677 (70.1%) with
-substrate 27. Every other cell is the same.
+`wasmtime/async` 122 (31.5%), and the total is 1683 (70.4%) with
+substrate 21. Every other cell is the same.
 
 The `async` rows still hold the pass rate down, though the asynchronous
 lower of a call between two components moved 97 directives into the

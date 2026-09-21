@@ -92,6 +92,16 @@ impl From<&JsValue> for JsErrorMsg {
             .and_then(|v| v.as_string())
         {
             Self { message }
+        } else if value.is_instance_of::<WebAssembly::Exception>() {
+            // PATCH (wcmp): an exception a guest threw and did not
+            // catch is handed to the host as the exception object
+            // itself, which carries no message. The native backend
+            // reports the same failure as `thrown Wasm exception`, so
+            // this one says it too and a caller reads one wording on
+            // either backend.
+            Self {
+                message: String::from("thrown Wasm exception"),
+            }
         } else {
             Self {
                 message: format!("{value:?}"),

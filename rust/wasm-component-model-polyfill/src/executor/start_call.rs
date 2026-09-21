@@ -432,6 +432,45 @@ pub fn abandon<T: 'static>(store: &mut StoreContext<'_, T>, subtask: SubtaskId) 
     let _ = guard.deliver_subtask_resolution(subtask);
 }
 
+/// Take the caller's record of a failed call out of the store: the
+/// resolution is a cancellation, which gives back every handle the
+/// caller lent, the entry the caller holds for the subtask leaves
+/// that caller's table, and the record itself is removed.
+///
+/// A prepared call's subtask is never a scope of its own — the
+/// caller's task holds the stack while the callee runs, and an
+/// asynchronous lower hands the record back to the caller to wait on
+/// — so the scope stack has nothing to unwind for it and
+/// `HandleTables::abandon_subtask` would find nothing to do. This is
+/// what abandoning one means instead.
+///
+/// The entry goes with the record because the two are the caller's
+/// one handle on the call: a record removed while an entry still
+/// named it would leave the caller an index that resolves to
+/// nothing. A call that failed before the lower returned was never
+/// given an entry, and then there is only the record to remove.
+///
+/// The cancellation is recorded even for a subtask that had already
+/// returned, where cancelling is not the state the resolution would
+/// otherwise reach. Nothing reads the difference: the record and the
+/// caller's entry for it leave the store in the same breath, so the
+/// state it was moved to has no one left to observe it.
+pub fn release_subtask<T: 'static>(store: &mut StoreContext<'_, T>, subtask: SubtaskId) {
+    abandon(store, subtask);
+    let tables = store.tables_handle();
+    let Ok(mut guard) = tables.lock() else {
+        return;
+    };
+    let entry = guard.tasks.subtask(subtask).and_then(|record| {
+        let table = record.bridge.as_ref()?.caller_table;
+        Some((table, record.handle?))
+    });
+    if let Some((table, index)) = entry {
+        guard.remove(table, index);
+    }
+    guard.tasks.remove_subtask(subtask);
+}
+
 /// One `funcref` argument, which an adapter never passes as null.
 pub fn funcref_argument(args: &[RuntimeVal], index: usize) -> Result<RuntimeFunc> {
     match args.get(index) {

@@ -15,6 +15,20 @@
 //! `task.return`, and nothing else fills the subtask's event slot
 //! afterwards, so this is the one observation that says the
 //! resolution is recorded where the caller is waiting.
+//!
+//! The failure paths are here for the same reason. A trap or an
+//! exception in the callee's first phase unwinds to the lower's
+//! trampoline and fails the caller's call; one in its callback
+//! reaches no trampoline, because the callee gave way and the caller
+//! parked, and fails the driver whose turn ran the callback instead.
+//! Either way the callee's side is wound back: its task ends, the
+//! instance its thread held exclusively goes back, and the caller's
+//! record of the call is cancelled, which gives back the handles it
+//! lent. What is left over differs. A caller the trampoline failed
+//! is unwound with the call, so the store is as the call found it; a
+//! caller that had already parked keeps its task and the set it
+//! joined the subtask to, because the failure ends the driver's turn
+//! and not the task the driver was waiting on.
 
 #![cfg(test)]
 
@@ -239,6 +253,100 @@ const TRAPS: &[u8] = component!(
     "#
 );
 
+/// A callee that gives way in its first phase and throws an
+/// exception it does not catch in its callback, under an
+/// asynchronous lower, with a caller that parks on the subtask and
+/// lends it a borrow.
+///
+/// Nothing of the call is on the stack by the time the callback
+/// runs: the callee gave way, so its callback item waits on the
+/// low-priority queue; the caller read `STARTED`, joined the subtask
+/// to a waitable set, and returned the wait word, so its own task
+/// parked too. The driver that runs the callback item next is
+/// therefore the host's call into the caller, and the exception the
+/// callback throws is that driver's failure.
+///
+/// The argument is a borrow, so the failure has a lend to give back.
+/// The caller mints an owning handle of the callee's resource type
+/// and keeps the index in a global; `drop-now` drops that handle
+/// where it stands, which traps while the borrow is still lent and
+/// succeeds once the lend is undone. Calling it after the failure is
+/// how the caller says whether the failed call gave the handle back.
+const THROWS_AFTER_YIELD: &[u8] = component!(
+    r#"
+    (component
+      (component $callee
+        (type $t' (resource (rep i32)))
+        (core func $new (canon resource.new $t'))
+        (core module $m
+          (import "" "new" (func $new (param i32) (result i32)))
+          (tag $e)
+          (func (export "cb") (param i32 i32 i32) (result i32)
+            (throw $e))
+          (func (export "answer") (param i32) (result i32)
+            (i32.const 1))
+          (func (export "make") (param i32) (result i32)
+            (call $new (local.get 0))))
+        (core instance $i (instantiate $m (with "" (instance
+          (export "new" (func $new))))))
+        (export $t "thing" (type $t'))
+        (func (export "make") (param "rep" u32) (result (own $t))
+          (canon lift (core func $i "make")))
+        (func (export "answer") async (param "x" (borrow $t)) (result u32)
+          (canon lift (core func $i "answer") async (callback (core func $i "cb")))))
+      (component $caller
+        (import "thing" (type $t (sub resource)))
+        (import "make" (func $make (param "rep" u32) (result (own $t))))
+        (import "answer" (func $answer async (param "x" (borrow $t)) (result u32)))
+        (core module $libc (memory (export "mem") 1))
+        (core instance $libc (instantiate $libc))
+        (core func $make (canon lower (func $make)))
+        (core func $lowered
+          (canon lower (func $answer) async (memory (core memory $libc "mem"))))
+        (core func $drop-thing (canon resource.drop $t))
+        (core func $set-new (canon waitable-set.new))
+        (core func $join (canon waitable.join))
+        (core module $m
+          (import "" "mem" (memory 1))
+          (import "" "make" (func $make (param i32) (result i32)))
+          (import "" "answer" (func $answer (param i32 i32) (result i32)))
+          (import "" "drop-thing" (func $drop-thing (param i32)))
+          (import "" "waitable-set.new" (func $set-new (result i32)))
+          (import "" "waitable.join" (func $join (param i32 i32)))
+          (global $handle (mut i32) (i32.const 0))
+          (global $set (mut i32) (i32.const 0))
+          (func (export "run") (param i32) (result i32)
+            (local $status i32)
+            (global.set $handle (call $make (local.get 0)))
+            (local.set $status (call $answer (global.get $handle) (i32.const 8)))
+            (if (i32.ne (i32.and (local.get $status) (i32.const 0xf)) (i32.const 1))
+              (then unreachable))
+            (global.set $set (call $set-new))
+            (call $join (i32.shr_u (local.get $status) (i32.const 4)) (global.get $set))
+            (i32.or (i32.shl (global.get $set) (i32.const 4)) (i32.const 2)))
+          (func (export "drop-now") (call $drop-thing (global.get $handle)))
+          (func (export "cb") (param i32 i32 i32) (result i32) unreachable))
+        (core instance $i (instantiate $m (with "" (instance
+          (export "mem" (memory $libc "mem"))
+          (export "make" (func $make))
+          (export "answer" (func $lowered))
+          (export "drop-thing" (func $drop-thing))
+          (export "waitable-set.new" (func $set-new))
+          (export "waitable.join" (func $join))))))
+        (func (export "run") async (param "x" u32) (result u32)
+          (canon lift (core func $i "run") async (callback (core func $i "cb"))))
+        (func (export "drop-now") (canon lift (core func $i "drop-now"))))
+      (instance $a (instantiate $callee))
+      (alias export $a "thing" (type $t))
+      (instance $b (instantiate $caller
+        (with "thing" (type $t))
+        (with "make" (func $a "make"))
+        (with "answer" (func $a "answer"))))
+      (export "run" (func $b "run"))
+      (export "drop-now" (func $b "drop-now")))
+    "#
+);
+
 async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, bytes)
@@ -299,6 +407,20 @@ fn any_instance_is_held(store: &Store<()>) -> bool {
         .instances()
         .iter()
         .any(|record| record.exclusive_thread.is_some())
+}
+
+/// Take one turn of the store's scheduler and name what it achieved.
+///
+/// The turn is the whole of a driver's poll, without a call to give
+/// it a condition, which is what makes it the way to pin what a
+/// driver would find. Its answer is named rather than returned,
+/// because the enumeration the store answers with is not part of the
+/// crate's public surface.
+fn turn(store: &mut Store<()>) -> String {
+    let outcome = store
+        .turn(core::task::Waker::noop())
+        .expect("the turn itself does not fail");
+    format!("{outcome:?}")
 }
 
 #[wcmp_macros::test]
@@ -391,4 +513,85 @@ async fn it_fails_the_callers_call_when_the_callee_traps() {
         !any_instance_is_held(&store),
         "the callee's exclusive thread is released by the failure"
     );
+}
+
+#[wcmp_macros::test]
+async fn it_fails_the_driver_that_ran_the_callback_when_the_callee_throws_after_it_gave_way() {
+    // The callee gave way, so its callback runs in a later turn of
+    // the driver rather than under the lower's trampoline. The
+    // exception the callback throws is not caught in the callee, so
+    // the runtime layer hands it to the polyfill as the failure of
+    // the call into the callback, and the item carries it out
+    // unchanged: it ends the turn, and the driver of the host's call
+    // fails with the message the synchronous baseline gives the same
+    // throw. The callee's task and the caller's record of the call
+    // go with it, so the instance the callback held exclusively is
+    // back and the handles the caller lent are given back.
+    let (mut store, instance) = instantiate(THROWS_AFTER_YIELD).await;
+    let run = instance.get_func("run").expect("the caller's export");
+    let err = run
+        .call(&mut store, &[Val::U32(1)])
+        .await
+        .expect_err("the callee's exception fails the driver's turn");
+    let message = chain(&err);
+    assert!(
+        message.contains("thrown Wasm exception"),
+        "expected the baseline's message for an uncaught exception, got {message}"
+    );
+    // One record is left, and it is the caller's. The sibling above
+    // ends at zero because the trampoline unwinds the caller's call
+    // with the failure; here the caller had already parked, so the
+    // failure is the driver's rather than the caller's task's. The
+    // driver carries the error out of the turn and cleans up nothing
+    // of the task it was waiting on, and the asynchronous call it
+    // was driving adds no cleanup of its own — the parked task, its
+    // implicit thread and the waitable set it joined the subtask to
+    // stay where they are. Only the callee's task record leaves.
+    assert_eq!(
+        task_count(&store),
+        1,
+        "the caller's parked task is the one record the failure leaves"
+    );
+    assert_eq!(
+        subtask_count(&store),
+        0,
+        "the subtask of the failed call left the store"
+    );
+    assert!(
+        !any_instance_is_held(&store),
+        "the exclusive thread the callback took is released by the failure"
+    );
+    // Nothing of the callee's is left for a driver to run. The one
+    // item the store still holds is the other half of the parked
+    // task the count above names: the caller's own callback, held
+    // for an event on the set it joined the subtask to. A held item
+    // is not a ready one, and the callee's callback item — the one
+    // the failure came out of — went with the record it named.
+    assert_eq!(
+        store.scheduler().held_callbacks(),
+        1,
+        "the caller's callback waits for an event on its own set"
+    );
+    assert_eq!(
+        store.scheduler().queued_items(),
+        1,
+        "and that held item is the whole of what the store still holds"
+    );
+
+    // The turn the next driver takes. The callee's items are swept,
+    // and the caller's is held for an event nothing will deliver, so
+    // the turn finds nothing ready and goes idle rather than running
+    // an item against a record the failure removed.
+    assert_eq!(turn(&mut store), "Idle");
+
+    // And the borrow the caller lent for the call is back. The
+    // handle it lent from is still in the caller's table, so the
+    // drop that traps while a lend is outstanding is the caller's
+    // own answer to whether the cancellation gave the lend back.
+    instance
+        .get_func("drop-now")
+        .expect("the caller's drop export")
+        .call(&mut store, &[])
+        .await
+        .expect("the owning handle drops, so the borrow is no longer lent");
 }
