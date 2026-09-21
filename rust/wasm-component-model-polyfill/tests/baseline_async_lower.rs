@@ -33,6 +33,18 @@
 //! after its future has completed*, until the guest takes delivery of
 //! the subtask event; a guest that drops the owning handle before
 //! then traps as PDD014 states.
+//!
+//! Three more components take the same reading at the lower's other
+//! edges. One lowers a *sync-typed* import with the `async` option,
+//! which is the pairing that would reach a synchronous registration
+//! through this lower: no component can ask for it, because the
+//! `async` option may only be used with an `async` function type,
+//! and the component is refused where it is read. One carries five
+//! `u32` parameters, one flat slot past the four such a lower passes
+//! directly, so the whole tuple travels through one pointer into
+//! linear memory. One takes delivery through `waitable-set.poll`
+//! rather than `waitable-set.wait`, and imports no wait at all, so
+//! the triple it reads back can only have come through the poll.
 
 #![cfg(test)]
 
@@ -196,6 +208,237 @@ const LENDS_A_BORROW_TO_A_HOST_ASYNC_FUNCTION: &[u8] = component!(
     "#
 );
 
+/// A component that lowers a *sync-typed* import with the `async`
+/// option, which is not a component anything accepts.
+///
+/// A sync-typed import is the one an import takes a synchronous
+/// registration for, so this is the shape a guest would have to
+/// bring to reach a synchronous registration through an asynchronous
+/// lower. It is refused where the component is read: the `async`
+/// canonical option may only be used with an `async` function type.
+///
+/// The body is [`CALLS_A_HOST_ASYNC_FUNCTION`]'s, with the `async`
+/// effect taken off the import and nothing else changed, so what the
+/// refusal answers is that one difference.
+const CALLS_A_HOST_SYNC_FUNCTION: &[u8] = component!(
+    r#"
+    (component
+      (import "answer" (func $answer (param "x" u32) (result u32)))
+      (core module $libc (memory (export "memory") 1))
+      (core instance $libc (instantiate $libc))
+      (core func $lowered
+        (canon lower (func $answer) async (memory (core memory $libc "memory"))))
+      (core func $task-return (canon task.return (result u32)))
+      (core func $set-new (canon waitable-set.new))
+      (core func $join (canon waitable.join))
+      (core module $m
+        (import "libc" "memory" (memory 1))
+        (import "" "answer" (func $answer (param i32 i32) (result i32)))
+        (import "" "task.return" (func $task-return (param i32)))
+        (import "" "waitable-set.new" (func $set-new (result i32)))
+        (import "" "waitable.join" (func $join (param i32 i32)))
+        (global $status (mut i32) (i32.const -1))
+        (global $set (mut i32) (i32.const -1))
+        (global $code (mut i32) (i32.const -1))
+        (global $first (mut i32) (i32.const -1))
+        (global $second (mut i32) (i32.const -1))
+        (global $runs (mut i32) (i32.const 0))
+        (func (export "run") (param i32) (result i32)
+          (local $status i32)
+          (local.set $status (call $answer (local.get 0) (i32.const 0)))
+          (global.set $status (local.get $status))
+          (global.set $set (call $set-new))
+          (if (i32.eq (i32.and (local.get $status) (i32.const 0xf)) (i32.const 2))
+            (then
+              (call $task-return (i32.load (i32.const 0)))
+              (return (i32.const 0))))
+          (call $join
+            (i32.shr_u (local.get $status) (i32.const 4))
+            (global.get $set))
+          (i32.or (i32.shl (global.get $set) (i32.const 4)) (i32.const 2)))
+        (func (export "run-callback") (param i32 i32 i32) (result i32)
+          (global.set $runs (i32.add (global.get $runs) (i32.const 1)))
+          (global.set $code (local.get 0))
+          (global.set $first (local.get 1))
+          (global.set $second (local.get 2))
+          (call $task-return (i32.load (i32.const 0)))
+          (i32.const 0))
+        (func (export "status") (result i32) (global.get $status))
+        (func (export "set") (result i32) (global.get $set))
+        (func (export "code") (result i32) (global.get $code))
+        (func (export "first") (result i32) (global.get $first))
+        (func (export "second") (result i32) (global.get $second))
+        (func (export "runs") (result i32) (global.get $runs)))
+      (core instance $m (instantiate $m
+        (with "libc" (instance $libc))
+        (with "" (instance
+          (export "answer" (func $lowered))
+          (export "task.return" (func $task-return))
+          (export "waitable-set.new" (func $set-new))
+          (export "waitable.join" (func $join))))))
+      (func (export "run") async (param "x" u32) (result u32)
+        (canon lift (core func $m "run") async
+          (callback (core func $m "run-callback"))))
+      (func (export "status") (result u32) (canon lift (core func $m "status")))
+      (func (export "set") (result u32) (canon lift (core func $m "set")))
+      (func (export "code") (result u32) (canon lift (core func $m "code")))
+      (func (export "first") (result u32) (canon lift (core func $m "first")))
+      (func (export "second") (result u32) (canon lift (core func $m "second")))
+      (func (export "runs") (result u32) (canon lift (core func $m "runs"))))
+    "#
+);
+
+/// A component whose asynchronous lower carries five `u32`
+/// parameters: one flat slot more than such a lower passes directly.
+///
+/// The whole tuple therefore travels through one pointer into linear
+/// memory, laid out as the canonical ABI lays a record of the five
+/// types out — five `u32`s four bytes apart. The guest writes them
+/// at address 16 and passes that address, and the return area the
+/// second argument names stays at address 0.
+///
+/// The rest is [`CALLS_A_HOST_ASYNC_FUNCTION`]'s shape: the export
+/// is lifted `async` with a callback, so the guest can wait on the
+/// subtask a pending future leaves it.
+const SPILLS_THE_PARAMETERS_OF_AN_ASYNCHRONOUS_LOWER: &[u8] = component!(
+    r#"
+    (component
+      (import "sum" (func $sum async
+        (param "a" u32) (param "b" u32) (param "c" u32)
+        (param "d" u32) (param "e" u32)
+        (result u32)))
+      (core module $libc (memory (export "memory") 1))
+      (core instance $libc (instantiate $libc))
+      (core func $lowered
+        (canon lower (func $sum) async (memory (core memory $libc "memory"))))
+      (core func $task-return (canon task.return (result u32)))
+      (core func $set-new (canon waitable-set.new))
+      (core func $join (canon waitable.join))
+      (core module $m
+        (import "libc" "memory" (memory 1))
+        (import "" "sum" (func $sum (param i32 i32) (result i32)))
+        (import "" "task.return" (func $task-return (param i32)))
+        (import "" "waitable-set.new" (func $set-new (result i32)))
+        (import "" "waitable.join" (func $join (param i32 i32)))
+        (global $status (mut i32) (i32.const -1))
+        (global $set (mut i32) (i32.const -1))
+        (global $code (mut i32) (i32.const -1))
+        (global $first (mut i32) (i32.const -1))
+        (global $second (mut i32) (i32.const -1))
+        (func (export "run") (param i32) (result i32)
+          (local $status i32)
+          (i32.store (i32.const 16) (local.get 0))
+          (i32.store (i32.const 20) (i32.add (local.get 0) (i32.const 1)))
+          (i32.store (i32.const 24) (i32.add (local.get 0) (i32.const 2)))
+          (i32.store (i32.const 28) (i32.add (local.get 0) (i32.const 3)))
+          (i32.store (i32.const 32) (i32.add (local.get 0) (i32.const 4)))
+          (local.set $status (call $sum (i32.const 16) (i32.const 0)))
+          (global.set $status (local.get $status))
+          (global.set $set (call $set-new))
+          (if (i32.eq (i32.and (local.get $status) (i32.const 0xf)) (i32.const 2))
+            (then
+              (call $task-return (i32.load (i32.const 0)))
+              (return (i32.const 0))))
+          (call $join
+            (i32.shr_u (local.get $status) (i32.const 4))
+            (global.get $set))
+          (i32.or (i32.shl (global.get $set) (i32.const 4)) (i32.const 2)))
+        (func (export "run-callback") (param i32 i32 i32) (result i32)
+          (global.set $code (local.get 0))
+          (global.set $first (local.get 1))
+          (global.set $second (local.get 2))
+          (call $task-return (i32.load (i32.const 0)))
+          (i32.const 0))
+        (func (export "status") (result i32) (global.get $status))
+        (func (export "set") (result i32) (global.get $set))
+        (func (export "code") (result i32) (global.get $code))
+        (func (export "first") (result i32) (global.get $first))
+        (func (export "second") (result i32) (global.get $second)))
+      (core instance $m (instantiate $m
+        (with "libc" (instance $libc))
+        (with "" (instance
+          (export "sum" (func $lowered))
+          (export "task.return" (func $task-return))
+          (export "waitable-set.new" (func $set-new))
+          (export "waitable.join" (func $join))))))
+      (func (export "run") async (param "x" u32) (result u32)
+        (canon lift (core func $m "run") async
+          (callback (core func $m "run-callback"))))
+      (func (export "status") (result u32) (canon lift (core func $m "status")))
+      (func (export "set") (result u32) (canon lift (core func $m "set")))
+      (func (export "code") (result u32) (canon lift (core func $m "code")))
+      (func (export "first") (result u32) (canon lift (core func $m "first")))
+      (func (export "second") (result u32) (canon lift (core func $m "second"))))
+    "#
+);
+
+/// A component that takes delivery of a host subtask's event through
+/// `waitable-set.poll` rather than `waitable-set.wait`.
+///
+/// Nothing here waits. `start` calls the import through an
+/// asynchronous lower, creates a set, joins the subtask it was given
+/// to it, and polls the set once before it returns — where the call
+/// cannot yet have resolved, so that poll answers the none code and
+/// writes nothing. `poll` polls the same set again, and the guest
+/// reads the two payload words out of memory at address 8. The
+/// component imports no `waitable-set.wait` at all, so an event it
+/// reads back can only have come through the poll.
+///
+/// Both exports are synchronous, which a poll allows: it never
+/// blocks.
+const POLLS_A_HOST_SUBTASK: &[u8] = component!(
+    r#"
+    (component
+      (import "answer" (func $answer async (param "x" u32) (result u32)))
+      (core module $libc (memory (export "memory") 1))
+      (core instance $libc (instantiate $libc))
+      (core func $lowered
+        (canon lower (func $answer) async (memory (core memory $libc "memory"))))
+      (core func $set-new (canon waitable-set.new))
+      (core func $join (canon waitable.join))
+      (core func $poll (canon waitable-set.poll (memory (core memory $libc "memory"))))
+      (core module $m
+        (import "libc" "memory" (memory 1))
+        (import "" "answer" (func $answer (param i32 i32) (result i32)))
+        (import "" "waitable-set.new" (func $set-new (result i32)))
+        (import "" "waitable.join" (func $join (param i32 i32)))
+        (import "" "waitable-set.poll" (func $poll (param i32 i32) (result i32)))
+        (global $set (mut i32) (i32.const 0))
+        (global $early (mut i32) (i32.const -1))
+        (func (export "start") (param i32) (result i32)
+          (local $status i32)
+          (local.set $status (call $answer (local.get 0) (i32.const 0)))
+          (global.set $set (call $set-new))
+          (call $join
+            (i32.shr_u (local.get $status) (i32.const 4))
+            (global.get $set))
+          (global.set $early (call $poll (global.get $set) (i32.const 8)))
+          (local.get $status))
+        (func (export "poll") (result i32)
+          (call $poll (global.get $set) (i32.const 8)))
+        (func (export "set") (result i32) (global.get $set))
+        (func (export "early") (result i32) (global.get $early))
+        (func (export "first") (result i32) (i32.load (i32.const 8)))
+        (func (export "second") (result i32) (i32.load (i32.const 12)))
+        (func (export "answer") (result i32) (i32.load (i32.const 0))))
+      (core instance $m (instantiate $m
+        (with "libc" (instance $libc))
+        (with "" (instance
+          (export "answer" (func $lowered))
+          (export "waitable-set.new" (func $set-new))
+          (export "waitable.join" (func $join))
+          (export "waitable-set.poll" (func $poll))))))
+      (func (export "start") (param "x" u32) (result u32)
+        (canon lift (core func $m "start")))
+      (func (export "poll") (result u32) (canon lift (core func $m "poll")))
+      (func (export "set") (result u32) (canon lift (core func $m "set")))
+      (func (export "early") (result u32) (canon lift (core func $m "early")))
+      (func (export "first") (result u32) (canon lift (core func $m "first")))
+      (func (export "second") (result u32) (canon lift (core func $m "second")))
+      (func (export "answer") (result u32) (canon lift (core func $m "answer"))))
+    "#
+);
+
 /// A future that is pending the first time it is polled and ready
 /// afterwards, answering with `value`. It wakes the waker it was
 /// polled with before it parks, which is what a future waiting on a
@@ -246,14 +489,40 @@ fn answer_type() -> FunctionType {
     }
 }
 
+/// The declared type of the `sum` import: five `u32`s in, one out.
+/// Five flat slots are one past the four an asynchronous lower
+/// passes directly, so the tuple spills.
+fn sum_type() -> FunctionType {
+    FunctionType {
+        parameters: ["a", "b", "c", "d", "e"]
+            .into_iter()
+            .map(|name| FunctionParameter {
+                name: name.to_owned(),
+                ty: ValueType::Primitive(PrimitiveType::U32),
+            })
+            .collect(),
+        result: Some(ValueType::Primitive(PrimitiveType::U32)),
+        async_: true,
+    }
+}
+
 /// Instantiate [`CALLS_A_HOST_ASYNC_FUNCTION`] with `register`
 /// registering the `answer` import.
 async fn caller<F>(register: F) -> (Store<()>, Instance)
 where
     F: FnOnce(&mut Linker<()>),
 {
+    instantiate(CALLS_A_HOST_ASYNC_FUNCTION, register).await
+}
+
+/// Instantiate `binary` in a fresh store, with `register` making
+/// every host registration its imports name.
+async fn instantiate<F>(binary: &[u8], register: F) -> (Store<()>, Instance)
+where
+    F: FnOnce(&mut Linker<()>),
+{
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, CALLS_A_HOST_ASYNC_FUNCTION)
+    let component = Component::new(&engine, binary)
         .await
         .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
@@ -337,6 +606,10 @@ const SUBTASK_RETURNED_AT_ONE: (u32, u32, u32) = (1, 1, 2);
 /// holds from instantiation.
 const NO_EVENT: (u32, u32, u32) = (u32::MAX, u32::MAX, u32::MAX);
 
+/// The code a `waitable-set.poll` of a set that holds no event
+/// answers with: the none event, which carries no payloads.
+const NONE_EVENT_CODE: u32 = 0;
+
 #[wcmp_macros::test]
 async fn it_returns_at_once_from_a_typed_registration_whose_future_is_ready() {
     // The future resolves on its first poll, so the trampoline lowers
@@ -395,6 +668,33 @@ async fn it_returns_at_once_from_an_untyped_registration_whose_future_is_ready()
         (RETURNED, 1, NO_EVENT),
         "the untyped entry's ready future reads back exactly as the typed \
          entry's does"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_an_asynchronous_lower_of_a_sync_typed_import() {
+    // A synchronous registration reached through an asynchronous
+    // lower is the pairing that would answer the status word without
+    // ever building a host task. No component can ask for it: the
+    // `async` canonical option may only be used with an `async`
+    // function type, and a sync-typed import lowered with it is
+    // refused where the component is read, before any registration
+    // is consulted. The rule is the Explainer's, and the conformance
+    // corpus carries the same three cases as `assert_invalid`.
+    //
+    // So the guest reaches a synchronous registration through a
+    // synchronous lower and nothing else, and the trampoline's
+    // returned-at-once path is a concurrent registration's ready
+    // future — the two tests above it.
+    let engine = Engine::new().expect("engine");
+    let error = Component::new(&engine, CALLS_A_HOST_SYNC_FUNCTION)
+        .await
+        .expect_err("a sync-typed import cannot be lowered with the `async` option");
+
+    assert!(
+        chain(&error).contains("the `async` canonical option requires an async function type"),
+        "expected the validator's refusal of the `async` option on a sync-typed \
+         function, got {error:?}"
     );
 }
 
@@ -472,6 +772,126 @@ async fn it_starts_a_subtask_for_an_untyped_registration_whose_future_is_pending
         (STARTED_AT_ONE, 2, SUBTASK_RETURNED_AT_ONE),
         "the untyped entry's pending future reads back exactly as the typed \
          entry's does"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_lifts_the_spilled_parameters_of_an_asynchronous_lower_through_the_pointer() {
+    // Five `u32` parameters are five flat slots, one past the four
+    // an asynchronous lower passes directly, so the whole tuple
+    // travels through one pointer: the guest laid the five out at
+    // address 16, four bytes apart, and passed that address with the
+    // return area as the lower's only two arguments. The future is
+    // pending once, so the call is a subtask and the result crosses
+    // in a later turn — through the return area the lower read past
+    // the tuple's pointer.
+    let (mut store, instance) =
+        instantiate(SPILLS_THE_PARAMETERS_OF_AN_ASYNCHRONOUS_LOWER, |linker| {
+            linker.root().func_new_concurrent(
+                "sum",
+                sum_type(),
+                |_accessor: &Accessor<()>, args: Vec<Val>| {
+                    let total = args
+                        .iter()
+                        .map(|arg| match arg {
+                            Val::U32(value) => *value,
+                            other => panic!("`sum` was given {other:?}"),
+                        })
+                        .sum::<u32>();
+                    assert_eq!(args.len(), 5, "`sum` was given {args:?}");
+                    PendingOnce::new(vec![Val::U32(total)])
+                },
+            );
+        })
+        .await;
+
+    let result = func(&instance, "run")
+        .call(&mut store, &[Val::U32(10)])
+        .await
+        .expect("call run");
+
+    assert_eq!(
+        result.first(),
+        Some(&Val::U32(60)),
+        "the five parameters reached the host in order — 10 through 14 — and \
+         their sum crossed back through the return area"
+    );
+    assert_eq!(
+        recorded(&mut store, &instance).await,
+        (STARTED_AT_ONE, 2, SUBTASK_RETURNED_AT_ONE),
+        "a spilled parameter tuple leaves the rest of the lower unchanged: \
+         the started status with the subtask's index, the set after it, and \
+         the subtask event the later turn filled"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_delivers_a_host_subtask_event_through_a_poll_of_the_waitable_set() {
+    // The guest never waits. It calls the import through an
+    // asynchronous lower, joins the subtask it is given to a set of
+    // its own, and reads the set with `waitable-set.poll`, which
+    // never blocks: the poll it makes before returning finds nothing
+    // — the call cannot have resolved with the guest still on the
+    // stack — and a later poll takes delivery of the event. The
+    // triple it reads back is the one `waitable-set.wait` delivers
+    // to the tests above: the subtask code, the subtask's index in
+    // the caller's handle table, and the returned state.
+    let (mut store, instance) = instantiate(POLLS_A_HOST_SUBTASK, |linker| {
+        linker
+            .root()
+            .func_wrap_concurrent("answer", |_accessor: &Accessor<()>, (x,): (u32,)| {
+                PendingOnce::new(x * 2)
+            });
+    })
+    .await;
+
+    let started = func(&instance, "start")
+        .call(&mut store, &[Val::U32(21)])
+        .await
+        .expect("call start");
+
+    assert_eq!(
+        started.first(),
+        Some(&Val::U32(STARTED_AT_ONE)),
+        "the call started, at the index the subtask took"
+    );
+    assert_eq!(
+        read(&mut store, &instance, "early").await,
+        NONE_EVENT_CODE,
+        "the poll the guest made before it returned found no event, which is \
+         what a poll that does not block answers with"
+    );
+
+    // The event is filled by the turn that lowers the result, which
+    // is a later turn than the one the call started in. Polling
+    // until it lands is what a guest that will not block does.
+    let mut code = NONE_EVENT_CODE;
+    for _ in 0..8 {
+        code = read(&mut store, &instance, "poll").await;
+        if code != NONE_EVENT_CODE {
+            break;
+        }
+    }
+    let first = read(&mut store, &instance, "first").await;
+    let second = read(&mut store, &instance, "second").await;
+
+    assert_eq!(
+        (code, first, second),
+        SUBTASK_RETURNED_AT_ONE,
+        "the poll delivered the subtask code with the subtask's index and the \
+         returned state, which is the triple a wait delivers"
+    );
+    assert_eq!(
+        read(&mut store, &instance, "answer").await,
+        42,
+        "the later turn lowered the host's result into the return area the \
+         lower passed"
+    );
+    assert_eq!(
+        read(&mut store, &instance, "poll").await,
+        NONE_EVENT_CODE,
+        "the event was taken by the poll that delivered it, so the set holds \
+         none afterwards"
     );
 }
 

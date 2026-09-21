@@ -826,12 +826,19 @@ fn start_host_call<T: 'static>(
         let ptr = return_area_ptr.ok_or_else(|| {
             Error::internal("an asynchronous lower with a result kept no return area")
         })?;
+        // The arity of a concurrent registration's value vector is
+        // that registration's own contract, and it is checked once,
+        // where the registration is made: the untyped entry wraps
+        // the future in the check that fails a vector the declared
+        // type does not describe, and the typed entry derives the
+        // vector from the closure's return, so its length holds by
+        // construction. That is the check that fires, and a mistaken
+        // host reads it. A future therefore cannot reach this
+        // lowering with a vector of the wrong length, so an empty
+        // one here is a broken invariant rather than a host's
+        // mistake, and it reads as one.
         let host_val = values.into_iter().next().ok_or_else(|| {
-            Error::from(AbiError {
-                position: AbiPosition::Result,
-                valtype: Some(result_ty.clone()),
-                cause: AbiCause::HostValueMismatch,
-            })
+            Error::internal("a concurrent registration's future produced no value to lower")
         })?;
         let mut lower_ctx = BoundaryContext::new(
             store.runtime_mut().as_context_mut(),
