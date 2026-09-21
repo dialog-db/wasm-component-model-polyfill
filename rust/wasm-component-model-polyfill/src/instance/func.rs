@@ -17,7 +17,7 @@ use crate::abi::{lift, lower};
 use crate::backend::substrate_failure;
 use crate::component::FunctionType;
 use crate::concurrency::{
-    Accessor, Driver, InstanceId, Item, ItemKind, ResultChannel, Scope, TaskId,
+    Accessor, Driver, InstanceId, Item, ItemKind, ResultChannel, Scope, TaskId, WakeSlot,
 };
 use crate::error::{
     AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result, SchedulerCause,
@@ -37,15 +37,20 @@ use crate::value::Val;
 /// future when the future is dropped.
 type CallOutcome = Arc<Mutex<Option<Result<Box<[Val]>>>>>;
 
-/// Where the start of an asynchronous call leaves the failure that
+/// Where the item of one concurrent call leaves the failure that
 /// belongs to the caller.
 ///
-/// A call into an export lifted `async` resolves through the task's
-/// own channel, which carries a result and not a failure. The item
-/// that starts the task leaves what failed here instead: the lowering
-/// of the arguments, a trap in the export's core function, or the
-/// status word that function returned.
-type CallFailure = Arc<Mutex<Option<Error>>>;
+/// A call whose task resolves through a channel resolves with a
+/// result and not with a failure. The item that runs the call leaves
+/// what failed here instead: the lowering of the arguments, a trap in
+/// the export's core function, the status word that function
+/// returned, or the borrows the guest still owed when a synchronous
+/// task that had already resolved ended.
+///
+/// The slot carries the caller's waker beside the failure, as the
+/// result channel does, because a caller whose future a host
+/// combinator owns is polled again only after that waker fires.
+type CallFailure = WakeSlot<Error>;
 
 /// A handle to one exported function of a component [`Instance`].
 ///
@@ -266,6 +271,13 @@ impl Func {
     /// from that closure at all, because it takes the store by
     /// `&mut` and the closure holds only the accessor.
     ///
+    /// The future registers the waker it is polled with, and the
+    /// turn that resolves or fails the task wakes it. Several of
+    /// these futures can therefore be awaited together through a
+    /// combinator that polls a child again only after that child's
+    /// waker fires, which is what the host combinators of the
+    /// `FuturesUnordered` shape do.
+    ///
     /// A store that goes idle with the task unresolved leaves the
     /// `run_concurrent` entry pending rather than failing, and this
     /// future never resolves. It does not fail on idle, because the
@@ -285,20 +297,26 @@ impl Func {
         // outlives this future.
         let (channel, failure) = accessor.with(|store| self.start_concurrent(store, args))??;
 
-        core::future::poll_fn(move |_context| {
+        core::future::poll_fn(move |context| {
+            let waker = context.waker();
             // The failure is read first. A synchronous task can
             // resolve and then fail on the borrows the guest still
             // owes, and that failure is the call's, as it is for
             // `Func::call`.
-            if let Some(error) = failure.lock().ok().and_then(|mut slot| slot.take()) {
+            if let Some(error) = failure.take_or_wait(waker) {
                 return Poll::Ready(Err(error));
             }
-            match channel.lock().ok().and_then(|mut slot| slot.take()) {
+            match channel.take_or_wait(waker) {
                 Some(result) => Poll::Ready(Ok(result.into_iter().collect())),
-                // No waker is registered here. The driver around
-                // this future polls it again after every turn it
-                // runs, and a turn is the only thing that carries
-                // the task forward.
+                // The waker is left in both slots, and whatever
+                // fills either of them wakes it. A turn is the only
+                // thing that carries the task forward, and the
+                // driver that runs turns polls this future again
+                // after each one only when it owns it directly. A
+                // host combinator that owns it instead — anything of
+                // the `FuturesUnordered` shape — polls it again only
+                // after the wake, so the wake is what the call
+                // resolves by.
                 None => Poll::Pending,
             }
         })
@@ -347,7 +365,7 @@ impl Func {
         let task =
             store.create_export_task(self.signature.clone(), self.options.clone(), instance_id)?;
         let channel = store.attach_result_channel(task)?;
-        let failure: CallFailure = Arc::new(Mutex::new(None));
+        let failure: CallFailure = CallFailure::new();
 
         // The item is `'static`: it outlives this future, because
         // dropping the future cancels nothing. It therefore carries
@@ -369,10 +387,8 @@ impl Func {
                 move |store: &mut StoreContext<'_, T>| {
                     let started = replica
                         .start_async_task(task, &loop_, &instance, store, &arguments, &options);
-                    if let Err(error) = started
-                        && let Ok(mut slot) = queued.lock()
-                    {
-                        *slot = Some(error);
+                    if let Err(error) = started {
+                        queued.fill(error);
                     }
                     // What the start produced is in the task's
                     // channel and what it failed with is in the slot
@@ -395,10 +411,8 @@ impl Func {
             ItemKind::TaskStart,
             move |store: &mut StoreContext<'_, T>| {
                 let outcome = replica.run_task(task, &instance, store, &arguments, &options);
-                if let Err(error) = outcome
-                    && let Ok(mut slot) = queued.lock()
-                {
-                    *slot = Some(error);
+                if let Err(error) = outcome {
+                    queued.fill(error);
                 }
                 // What the task returned went through the channel as
                 // it resolved, so the item has nothing left to carry
@@ -457,7 +471,7 @@ impl Func {
         let loop_ = CallbackTask::new(task, instance_id, table, callback);
         let channel: ResultChannel = store.attach_result_channel(task)?;
 
-        let failure: CallFailure = Arc::new(Mutex::new(None));
+        let failure: CallFailure = CallFailure::new();
         let queued = failure.clone();
         let replica = self.replica();
         let arguments = args.to_vec();
@@ -466,10 +480,8 @@ impl Func {
             move |store: &mut StoreContext<'_, T>| {
                 let started =
                     replica.start_async_task(task, &loop_, &instance, store, &arguments, &options);
-                if let Err(error) = started
-                    && let Ok(mut slot) = queued.lock()
-                {
-                    *slot = Some(error);
+                if let Err(error) = started {
+                    queued.fill(error);
                 }
                 // What the start produced is in the task's channel
                 // and what it failed with is in the slot beside it,
@@ -485,11 +497,11 @@ impl Func {
         // exclusive task of the same instance.
         store.start_export_thread(task, instance_id, true, true, item)?;
 
-        Driver::new(store, Some(task), move |_store, _waker| {
-            if let Some(error) = failure.lock().ok().and_then(|mut slot| slot.take()) {
+        Driver::new(store, Some(task), move |_store, waker| {
+            if let Some(error) = failure.take_or_wait(waker) {
                 return Some(Err(error));
             }
-            let result = channel.lock().ok().and_then(|mut slot| slot.take())?;
+            let result = channel.take_or_wait(waker)?;
             Some(Ok(result.into_iter().collect()))
         })
         .await

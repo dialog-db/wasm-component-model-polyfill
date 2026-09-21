@@ -32,16 +32,25 @@
 //! call's future simply never resolves — the closure around it can
 //! still unblock the task with another call, and a host bounds the
 //! whole entry from outside.
+//!
+//! The future leaves its waker behind, and the turn that resolves or
+//! fails the task wakes it. That is what lets a host hand several of
+//! these futures to a combinator which re-polls a child only after
+//! that child's waker fires, the shape of `FuturesUnordered` and its
+//! kin, rather than polling each of them by hand after every turn.
 
 #![cfg(test)]
 
 use core::future::{Future, poll_fn};
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::Wake;
 
 use wasm_component_model_polyfill::{
-    Accessor, Component, Engine, Func, HostCall, Instance, Linker, Result, Store, Val,
+    AbiCause, Accessor, Component, Engine, Error, Func, HostCall, HostResource, Instance,
+    InterfaceIdentifier, Linker, ResourceTypeId, Result, Store, Val,
 };
 use wcmp_macros::component;
 
@@ -190,6 +199,25 @@ const SYNC_YIELDS: &[u8] = component!(
     "#
 );
 
+/// One synchronous export over a borrow of an imported resource,
+/// which it keeps: the guest owes the borrow back at the end of the
+/// call and never drops it. The task resolves — a function with no
+/// result resolves with none — and the call fails afterwards, on the
+/// borrows the guest still owed as its thread ended.
+const BORROW_HOLDER: &[u8] = component!(
+    r#"
+    (component
+      (import "pdd020-tests:host/things@0.1.0" (instance $i
+        (export "thing" (type $thing (sub resource)))))
+      (alias export $i "thing" (type $thing))
+      (core module $m
+        (func (export "hold") (param i32)))
+      (core instance $c (instantiate $m))
+      (func (export "hold") (param "h" (borrow $thing))
+        (canon lift (core func $c "hold"))))
+    "#
+);
+
 /// How many times a test polls an entry that is expected never to
 /// resolve. A host bounds such an entry with a timeout; a test bounds
 /// it with a fixed number of polls, which is the same bound in the
@@ -238,6 +266,152 @@ async fn instantiate(binary: &[u8]) -> (Store<()>, Instance, Log) {
         .await
         .expect("instantiate");
     (store, instance, log)
+}
+
+/// Instantiate [`BORROW_HOLDER`] in a fresh store, with the `thing`
+/// resource registered under the label the component imports it by,
+/// and hand back the identity a host handle is minted against.
+async fn instantiate_borrow_holder() -> (Store<()>, Instance, ResourceTypeId) {
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, BORROW_HOLDER)
+        .await
+        .expect("component parses");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let interface: InterfaceIdentifier = "pdd020-tests:host/things@0.1.0"
+        .parse()
+        .expect("identifier");
+    let type_id = linker.instance(&interface).resource_with(
+        "thing",
+        HostResource::new(|_: &mut (), _: u32| -> Result<()> { Ok(()) }),
+    );
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    (store, instance, type_id)
+}
+
+/// One child of the combinator below: the call's future, the gate
+/// that says whether the call has been woken since it was last
+/// polled, and what the call resolved to.
+struct Gated<F: Future> {
+    future: Pin<Box<F>>,
+    gate: Arc<Gate>,
+    done: Option<F::Output>,
+}
+
+/// The waker one child of the combinator is polled with. It records
+/// that the child was woken and passes the wake on to whoever is
+/// polling the combinator, which is what every combinator of the
+/// `FuturesUnordered` shape does with a child's waker.
+#[derive(Default)]
+struct Gate {
+    woken: AtomicBool,
+    parent: Mutex<Option<Waker>>,
+}
+
+impl Gate {
+    /// A gate for a child that has yet to be polled once, which
+    /// counts as woken: a combinator polls each child it is given
+    /// before it waits on any of them.
+    fn unpolled() -> Arc<Self> {
+        Arc::new(Self {
+            woken: AtomicBool::new(true),
+            parent: Mutex::new(None),
+        })
+    }
+
+    /// Remember the waker of whoever is polling the combinator, so
+    /// that a wake the child receives between two of those polls
+    /// reaches them.
+    fn watch(&self, parent: &Waker) {
+        *self.parent.lock().expect("parent waker") = Some(parent.clone());
+    }
+
+    /// Whether the child was woken since it was last polled. Taking
+    /// the wake clears it: a child that is polled and returns pending
+    /// again waits for the next one.
+    fn take_wake(&self) -> bool {
+        self.woken.swap(false, Ordering::SeqCst)
+    }
+}
+
+impl Wake for Gate {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.woken.store(true, Ordering::SeqCst);
+        let parent = self.parent.lock().expect("parent waker").clone();
+        if let Some(parent) = parent {
+            parent.wake();
+        }
+    }
+}
+
+/// Poll `calls` together through a combinator that re-polls a child
+/// only after that child's waker has fired, and hand back what each
+/// of them resolved to.
+///
+/// This is the shape of every host combinator that joins futures —
+/// `FuturesUnordered`, `select_all`, a `JoinSet`. A call that
+/// returned pending without leaving its waker behind is never polled
+/// again here, however many turns the driver around the combinator
+/// runs, so this is what a call that does not wake its caller looks
+/// like from a host.
+///
+/// The combinator gives up when a call is still pending and the store
+/// can no longer carry anything forward: nothing queued, nothing
+/// ready, and no host task. That is the shape a lost wake leaves
+/// behind — the results are in their slots, the store is empty, and
+/// nobody reads them — and giving up there is what turns it into a
+/// failed assertion rather than a test that never returns.
+async fn join_gated<F: Future>(accessor: &Accessor<()>, calls: Vec<F>) -> Vec<Option<F::Output>> {
+    let mut children: Vec<Gated<F>> = calls
+        .into_iter()
+        .map(|call| Gated {
+            future: Box::pin(call),
+            gate: Gate::unpolled(),
+            done: None,
+        })
+        .collect();
+
+    poll_fn(|context| {
+        let mut pending = false;
+        for child in &mut children {
+            if child.done.is_some() {
+                continue;
+            }
+            child.gate.watch(context.waker());
+            if !child.gate.take_wake() {
+                pending = true;
+                continue;
+            }
+            let waker = Waker::from(child.gate.clone());
+            let mut gated = Context::from_waker(&waker);
+            match child.future.as_mut().poll(&mut gated) {
+                Poll::Ready(value) => child.done = Some(value),
+                Poll::Pending => pending = true,
+            }
+        }
+        if pending && !store_is_spent(accessor) {
+            return Poll::Pending;
+        }
+        Poll::Ready(())
+    })
+    .await;
+
+    children.into_iter().map(|child| child.done).collect()
+}
+
+/// Whether the store holds nothing that could carry a pending call
+/// forward.
+fn store_is_spent(accessor: &Accessor<()>) -> bool {
+    accessor
+        .with(|store| !store.has_pending_work() && store.scheduler().queued_items() == 0)
+        .expect("reach the store")
 }
 
 /// One export of the instance, by name.
@@ -532,7 +706,7 @@ fn assert_reentrant_call(second: Result<Box<[Val]>>, log: Vec<u32>) {
 /// natively.
 #[cfg(target_arch = "wasm32")]
 fn assert_reentrant_call(second: Result<Box<[Val]>>, log: Vec<u32>) {
-    use wasm_component_model_polyfill::{Error, SchedulerCause};
+    use wasm_component_model_polyfill::SchedulerCause;
 
     let failure = second.expect_err("the second call fails");
     assert!(
@@ -664,5 +838,84 @@ async fn it_returns_the_typed_result_through_the_typed_entry() {
         entries(&log),
         vec![3, 4, 3, 4],
         "both calls ran the export's body"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_resolves_every_call_a_waker_gated_combinator_holds() {
+    let (mut store, instance, log) = instantiate(CALLBACK_STEPS).await;
+    let step = func(&instance, "step");
+    let first_args = [Val::U32(10)];
+    let second_args = [Val::U32(20)];
+    let third_args = [Val::U32(30)];
+
+    let resolved = store
+        .run_concurrent(async |accessor| {
+            join_gated(
+                accessor,
+                vec![
+                    step.call_concurrent(accessor, &first_args),
+                    step.call_concurrent(accessor, &second_args),
+                    step.call_concurrent(accessor, &third_args),
+                ],
+            )
+            .await
+        })
+        .await
+        .expect("run the closure");
+
+    let results: Vec<Option<Box<[Val]>>> = resolved
+        .into_iter()
+        .map(|call| call.map(|value| value.expect("the call resolves")))
+        .collect();
+    assert_eq!(
+        results,
+        vec![
+            Some(vec![Val::U32(100)].into_boxed_slice()),
+            Some(vec![Val::U32(200)].into_boxed_slice()),
+            Some(vec![Val::U32(300)].into_boxed_slice()),
+        ],
+        "every call was polled again after the turn that resolved its task, \
+         because resolving the task woke the caller; a call that left no \
+         waker behind would still be pending here, with its result in a slot \
+         nobody reads"
+    );
+    assert_eq!(
+        entries(&log),
+        vec![10, 20, 30, 11, 21, 31],
+        "the three tasks passed the gate in order and interleaved by events, \
+         as two of them do when the host polls them by hand"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_wakes_a_concurrent_call_that_failed_on_the_borrows_the_guest_owes() {
+    let (mut store, instance, type_id) = instantiate_borrow_holder().await;
+    let handle = store.resource_new(type_id, 5).expect("mint an own handle");
+    let hold = func(&instance, "hold");
+    let args = [Val::Borrow(handle)];
+
+    let mut resolved = store
+        .run_concurrent(async |accessor| {
+            join_gated(accessor, vec![hold.call_concurrent(accessor, &args)]).await
+        })
+        .await
+        .expect("run the closure");
+
+    let call = resolved
+        .pop()
+        .expect("the combinator holds the one call")
+        .expect(
+            "the call was polled again after the turn that ran its task: the \
+             task resolved and then failed, and both wake the caller",
+        );
+    let failure = call.expect_err("the guest kept the borrow, so the call must fail");
+    assert!(
+        matches!(&failure, Error::Abi(abi) if matches!(
+            abi.cause,
+            AbiCause::OutstandingBorrows { count: 1 }
+        )),
+        "the call fails with the borrow the guest still owed, which the task \
+         raised after it had already resolved: {failure}"
     );
 }

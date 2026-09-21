@@ -106,14 +106,16 @@ impl Task {
     /// Resolve the task with `result`: send it through the caller's
     /// channel when the task was given one, and otherwise hold it in
     /// the record for the caller on the stack.
+    ///
+    /// Sending through the channel wakes the caller. The caller is
+    /// not on the stack — that is what the channel is for — and its
+    /// future can be one a host combinator polls again only after its
+    /// waker fires, so a send that did not wake would leave the call
+    /// pending against the result it is waiting for.
     pub fn resolve(&mut self, result: Option<Val>) {
         self.state = TaskState::Resolved;
         match &self.result {
-            TaskResult::Channel(slot) => {
-                if let Ok(mut slot) = slot.lock() {
-                    *slot = Some(result);
-                }
-            }
+            TaskResult::Channel(slot) => slot.fill(result),
             _ => self.result = TaskResult::Returned(result),
         }
     }

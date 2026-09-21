@@ -116,6 +116,7 @@ mod waitable_id;
 mod waitable_set;
 mod waitable_set_id;
 mod waitable_state;
+mod wake_slot;
 mod yield_wake;
 
 // The records themselves are reached through the accessors on
@@ -157,4 +158,5 @@ pub use thread_id::ThreadId;
 pub use turn_guard::TurnGuard;
 pub use waitable_id::WaitableId;
 pub use waitable_set_id::WaitableSetId;
+pub use wake_slot::WakeSlot;
 pub use yield_wake::YieldWake;

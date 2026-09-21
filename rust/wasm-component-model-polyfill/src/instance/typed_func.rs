@@ -106,6 +106,9 @@ where
     /// dropping it cancels nothing, the task progresses only while a
     /// driver runs turns, and a store that goes idle with the task
     /// unresolved leaves the future pending rather than failing it.
+    /// It registers the waker it is polled with and is woken when
+    /// the task resolves or fails, so several such calls can be
+    /// awaited together through a waker-gated combinator.
     ///
     /// `T` is the host-data type of the [`Store`] the export's
     /// owning [`Instance`] was created in.

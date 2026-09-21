@@ -1,17 +1,18 @@
 //! Where a task's result goes when the task resolves.
 
-use std::sync::{Arc, Mutex};
-
 use crate::value::Val;
+
+use super::wake_slot::WakeSlot;
 
 /// The channel a caller that is not on the stack watches for a
 /// task's result.
 ///
-/// The outer `Option` is empty until the task resolves. The inner one
-/// is the result itself, absent for a function that declares none.
-/// Both sides hold the channel: the task fills it as it resolves, and
-/// the caller's driver takes the value out.
-pub type ResultChannel = Arc<Mutex<Option<Option<Val>>>>;
+/// The slot is empty until the task resolves. What it holds then is
+/// the result itself, absent for a function that declares none. Both
+/// sides hold the channel: the task fills it as it resolves, which
+/// wakes whoever waits on it, and the caller's future takes the value
+/// out.
+pub type ResultChannel = WakeSlot<Option<Val>>;
 
 /// Where a task's result goes when the task resolves.
 ///
