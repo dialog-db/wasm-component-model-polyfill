@@ -45,8 +45,9 @@ use wasm_runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
 use crate::abi::boundary_call::BoundaryCall;
 use crate::abi::instance::BoundaryInstance;
 use crate::abi::runtime_state::AbiRuntimeState;
+use crate::backend::substrate_failure;
 use crate::concurrency::{InstanceId, Item, ItemKind, SubtaskId, TaskId};
-use crate::error::{AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result};
+use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::{CallbackTask, status_word};
 use crate::resource::{HandleTables, TableId};
 use crate::store::StoreContext;
@@ -323,7 +324,7 @@ fn start_call<T: 'static>(
     let called = callee
         .function
         .call(store.runtime_mut(), &core_arguments, &mut core_results)
-        .map_err(|err| Error::from(InstantiationError::SubstrateFailure(err)));
+        .map_err(substrate_failure);
     let Ok(()) = called else {
         store.abandon_export_task(task)?;
         return called;
@@ -374,7 +375,7 @@ fn resolve_sync_lift<T: 'static>(
         let mut empty: [RuntimeVal; 0] = [];
         post_return
             .call(store.runtime_mut(), core_results, &mut empty)
-            .map_err(|err| Error::from(InstantiationError::SubstrateFailure(err)))?;
+            .map_err(substrate_failure)?;
     }
     match store.exit_export_task(task)? {
         Ok(()) => Ok(()),
@@ -416,7 +417,7 @@ fn call_start_function<T: 'static>(
     let mut results = vec![RuntimeVal::F64(0.0); param_count];
     start
         .call(store.runtime_mut(), &arguments, &mut results)
-        .map_err(|err| Error::from(InstantiationError::SubstrateFailure(err)))?;
+        .map_err(substrate_failure)?;
     Ok(results)
 }
 

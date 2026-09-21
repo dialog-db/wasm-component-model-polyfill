@@ -56,12 +56,9 @@ use crate::abi::instance::BoundaryInstance;
 use crate::abi::layout::{FlatType, MAX_FLAT_PARAMS, flat_count};
 use crate::abi::lift;
 use crate::abi::runtime_state::AbiRuntimeState;
-use crate::backend::Backend;
+use crate::backend::{Backend, substrate_failure};
 use crate::concurrency::{InstanceId, Scope, SubtaskId, TaskId, TaskState};
-use crate::error::{
-    AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result, ReturnMismatchKind,
-    TaskCause,
-};
+use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, ReturnMismatchKind, TaskCause};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CanonOptions, CoreSignature};
 use crate::resource::HandleTables;
@@ -319,7 +316,7 @@ pub fn cross_result_into_caller<T: 'static>(
     };
     let crossed = return_
         .call(store_ctx.as_context_mut(), &arguments, &mut results)
-        .map_err(|err| Error::from(InstantiationError::SubstrateFailure(err)));
+        .map_err(substrate_failure);
     {
         // The callee's scope goes back whichever way the crossing
         // went: its core function or its callback is still on the

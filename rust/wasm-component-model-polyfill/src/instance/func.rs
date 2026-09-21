@@ -14,6 +14,7 @@ use crate::abi::layout::{flat_types, params_spill, result_spills, spill_layout};
 use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::{lift, lower};
+use crate::backend::substrate_failure;
 use crate::component::FunctionType;
 use crate::concurrency::{
     Accessor, Driver, InstanceId, Item, ItemKind, ResultChannel, Scope, TaskId,
@@ -540,7 +541,7 @@ impl Func {
         store.start_export_task(task)?;
         self.inner
             .call(store.runtime_mut(), &core_args, &mut core_results)
-            .map_err(|err| Error::from(InstantiationError::SubstrateFailure(err)))?;
+            .map_err(substrate_failure)?;
         status_word(&core_results)
     }
 
@@ -651,7 +652,7 @@ impl Func {
         store.start_export_task(task)?;
         self.inner
             .call(store.runtime_mut(), &core_args, &mut core_results)
-            .map_err(|err| Error::from(InstantiationError::SubstrateFailure(err)))?;
+            .map_err(substrate_failure)?;
 
         // The result crosses back out, and the export's post-return
         // runs after the caller has logically observed it: the

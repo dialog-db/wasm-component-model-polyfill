@@ -48,8 +48,9 @@
 
 use wasm_runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
 
+use crate::backend::substrate_failure;
 use crate::concurrency::{Event, EventSlot, InstanceId, Item, ItemKind, TaskId};
-use crate::error::{AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result, TaskCause};
+use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, TaskCause};
 use crate::resource::TableId;
 use crate::store::StoreContext;
 
@@ -265,7 +266,7 @@ impl CallbackTask {
         let mut results = [RuntimeVal::I32(0)];
         self.callback
             .call(store.runtime_mut(), &arguments, &mut results)
-            .map_err(|err| Error::from(InstantiationError::SubstrateFailure(err)))?;
+            .map_err(substrate_failure)?;
         status_word(&results)
     }
 

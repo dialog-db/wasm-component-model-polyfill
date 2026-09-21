@@ -105,6 +105,22 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 ///   store, so the work the store holds is what the depth is drawn
 ///   from.
 ///
+/// One thing the fallback does not run the same way on both
+/// targets. A nested turn runs from inside the lowered import the
+/// guest blocked in, so that import's host function is on the stack
+/// for as long as the block lasts. An item the turn runs which
+/// calls that same import is therefore a second call of the same
+/// host function. A native engine serves it. The browser refuses
+/// it: a host function there is one JavaScript function object over
+/// one Rust closure, and the arguments and results of a call belong
+/// to that call alone. The browser backend detects the second call
+/// and fails it with [`SchedulerCause::ReentrantHostCall`], so the
+/// item traps with a message naming the limitation rather than
+/// taking the page down; the component itself is sound, and the
+/// same one runs natively. A call to any other import, or to the
+/// same import of another component instance, runs the same way on
+/// both targets: each of those is a host function of its own.
+///
 /// A provider in the slot serves the whole of that instead. It
 /// suspends the thread and ends the turn, and no nested turn runs.
 ///
@@ -130,6 +146,8 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 /// separate, and they compose: a body's closure that reaches a
 /// blocking built-in gets a nested turn, and an item that nested
 /// turn runs which reaches the seam again gets one of its own.
+///
+/// [`SchedulerCause::ReentrantHostCall`]: crate::error::SchedulerCause::ReentrantHostCall
 pub struct SuspendSeam<T: 'static> {
     provider: Option<BoxedProvider<T>>,
     blocked_call_futures: usize,

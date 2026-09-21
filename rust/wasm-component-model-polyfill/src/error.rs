@@ -123,7 +123,7 @@ pub enum Error {
     Abi(#[source] Box<AbiError>),
 
     /// The concurrency scheduler could not carry a driver through a
-    /// turn. The carried [`SchedulerCause`] names which of the five
+    /// turn. The carried [`SchedulerCause`] names which of the six
     /// ways this can happen occurred.
     #[error("scheduler error: {0}")]
     Scheduler(#[source] SchedulerCause),
@@ -844,6 +844,28 @@ pub enum SchedulerCause {
     /// [`SchedulerCause::RecursiveDriver`] instead.
     #[error("an accessor reached its store outside a poll of that store")]
     StoreNotInPoll,
+
+    /// A nested turn ran work that called a host function a call of
+    /// which was still on the stack, on a target whose host
+    /// functions cannot be entered twice.
+    ///
+    /// A blocking built-in that finds no suspend provider runs a
+    /// nested turn from inside the lowered import the guest called,
+    /// so that import's host function is still on the stack while
+    /// the turn runs. An item of that turn which calls the same
+    /// import is therefore a second call of the same host function.
+    /// The native backend serves it, because a native engine enters
+    /// a host function at any depth. The browser backend refuses it:
+    /// the browser has one JavaScript function object per host
+    /// function, and the arguments and results of a call belong to
+    /// that call alone. The refusal reaches the guest as a trap and
+    /// the guest's caller as this cause, so a host reading it knows
+    /// the component is sound and the target is what could not run
+    /// it.
+    #[error(
+        "this target cannot call a host function while a call of the same host function is still on the stack, and a nested turn ran work that did"
+    )]
+    ReentrantHostCall,
 }
 
 /// The structured reason a waitable operation failed.

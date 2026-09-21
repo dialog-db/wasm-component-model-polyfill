@@ -143,3 +143,36 @@ exception a guest threw and did not catch reaches the host as the
 caller can read. The native backend reports that failure as `thrown Wasm
 exception`, so the patch gives the JS backend the same wording for the same
 object, and a caller of either backend reads one message.
+
+## 10. A re-entrant host call is refused, not thrown at (`src/func.rs`, `src/lib.rs`)
+
+Upstream wraps every host function in one `Closure<dyn FnMut(..)>`. The JS glue
+`wasm_bindgen` generates for a mutable closure clears the closure's pointer for
+the length of a call and restores it afterwards, so a call made while another
+call of the same closure is still on the stack reaches the shim with a null
+pointer and `throw_str("closure invoked recursively or after being dropped")`
+(`wasm-bindgen`'s `src/convert/closures.rs`). That message names a
+`wasm_bindgen` mechanism rather than anything the caller did, it reaches the
+outer call as a bare JS exception, and it leaves nothing on the store, so the
+host error slot of patch 4 has nothing to report and a guest `catch_all` can
+replace it outright. Upstream also reuses one results buffer per host function
+(the `res` vector in `WasmFunc::new`), which a second call in flight would
+overwrite.
+
+The patch makes the wrapper refuse the second call itself. The body of the call
+moves behind a `RefCell`, and the JS-facing shim becomes a `Closure<dyn Fn(..)>`
+— a shared closure, which `wasm_bindgen` lets JavaScript enter at any depth —
+that borrows the body for the length of one call. A call that finds the borrow
+already out is a re-entrant call: it records `ReentrantHostCall` on the store as
+the call's first host error and throws a JS `Error` carrying that type's
+message, so the guest traps where it made the call and the outer `Func::call`
+reports the recorded error. `ReentrantHostCall` is public, so a caller that
+wants to tell this failure from any other downcasts the `anyhow::Error` to it;
+the polyfill does, and answers its own re-entrant-host-call scheduler cause.
+
+The refusal is the whole of the change: nothing here makes a host function
+re-entrant. Doing that would need a results buffer per call and a JS shim per
+call, and the aliasing of `StoreInner` that the whole backend rests on would
+have to be examined first. The proposal for upstream is the shared closure and
+the structured refusal, which is what a native engine's caller already gets:
+there a host function is entered at any depth and this failure does not exist.
