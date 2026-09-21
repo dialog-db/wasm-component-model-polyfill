@@ -33,6 +33,7 @@ use crate::concurrency::{
 };
 use crate::error::Error;
 
+use super::TaskEnd;
 use super::handle_kind::HandleKind;
 use super::handle_lookup_error::HandleLookupError;
 use super::identity::ResourceTypeId;
@@ -82,17 +83,19 @@ impl HandleTables {
     /// A scope a failed call left above `task` is discarded first, so
     /// a failure between a push and its pop cannot strand a scope or
     /// the lends recorded against it. Does nothing when `task` is not
-    /// on the stack.
+    /// on the stack, and [`TaskEnd::Untouched`] is what says so: a
+    /// caller with a second half to run — the scheduler's sweep of
+    /// what the task still has queued — must run it only for a task
+    /// that ended.
     ///
     /// The steps run through [`TaskExit`], which finishes whichever
     /// of them a panic interrupted, for the reason that type's
     /// documentation gives.
-    pub fn exit_task(&mut self, task: TaskId) -> Result<(), u32> {
+    pub fn exit_task(&mut self, task: TaskId) -> TaskEnd {
         if !self.tasks.scopes().contains(&Scope::Task(task)) {
-            return Ok(());
+            return TaskEnd::Untouched;
         }
-        let borrows = TaskExit::begin(self, task).finish();
-        if borrows > 0 { Err(borrows) } else { Ok(()) }
+        TaskEnd::Ended(TaskExit::begin(self, task).finish())
     }
 
     /// End `task` whether or not its scope is still on the stack, on
@@ -104,10 +107,10 @@ impl HandleTables {
     /// is pushed when core code runs and popped when it returns, and
     /// the status word it returned is what says whether the task is
     /// over. The exit therefore comes after the pop, with no scope
-    /// left to unwind.
-    pub fn end_task(&mut self, task: TaskId) -> Result<(), u32> {
-        let borrows = TaskExit::begin(self, task).finish();
-        if borrows > 0 { Err(borrows) } else { Ok(()) }
+    /// left to unwind. There is no stack to consult, so the end is
+    /// always [`TaskEnd::Ended`].
+    pub fn end_task(&mut self, task: TaskId) -> TaskEnd {
+        TaskEnd::Ended(TaskExit::begin(self, task).finish())
     }
 
     /// Pop `task`'s scope without ending the task: the record stays
@@ -125,11 +128,13 @@ impl HandleTables {
     /// the one caller that cannot name the task it pushed: an
     /// adapter's enter and exit intrinsics are two separate calls
     /// that pass no identity between them. Behaves as
-    /// [`exit_task`](Self::exit_task) in every other respect.
-    pub fn exit_current_task(&mut self) -> Result<(), u32> {
+    /// [`exit_task`](Self::exit_task) in every other respect. An
+    /// empty stack has no task to end, which is
+    /// [`TaskEnd::Untouched`] too.
+    pub fn exit_current_task(&mut self) -> TaskEnd {
         match self.tasks.current_task() {
             Some(task) => self.exit_task(task),
-            None => Ok(()),
+            None => TaskEnd::Untouched,
         }
     }
 
@@ -137,8 +142,15 @@ impl HandleTables {
     /// and its lends undone, and no borrow check is made, because
     /// the call already failed. Every scope the failure left above
     /// `task` is discarded with it.
-    pub fn abandon_task(&mut self, task: TaskId) {
-        let _ = self.exit_task(task);
+    ///
+    /// Whether the task ended comes back, under the rule
+    /// [`exit_task`](Self::exit_task) states: a failure that names a
+    /// task whose scope is not on the stack ends nothing, and its
+    /// caller must leave what that task has queued where it is. The
+    /// count the exit read is dropped rather than reported, because
+    /// there is no borrow check on this path.
+    pub fn abandon_task(&mut self, task: TaskId) -> bool {
+        self.exit_task(task).ended()
     }
 
     /// Deliver the subtask `subtask`'s resolution and pop it: the
@@ -1040,7 +1052,7 @@ mod tests {
             tables.remove_own(table, index, ty, false),
             Err(HandleLookupError::Lent)
         );
-        assert_eq!(tables.exit_task(task), Ok(()));
+        assert_eq!(tables.exit_task(task).borrows(), Ok(()));
         assert_eq!(tables.remove_own(table, index, ty, false), Ok(3));
         assert_eq!(
             tables.remove_own(table, index, ty, false),
@@ -1076,7 +1088,7 @@ mod tests {
             "the guest drops one of the two borrows"
         );
         assert_eq!(
-            tables.exit_task(task),
+            tables.exit_task(task).borrows(),
             Err(1),
             "the drop took one back and the guest still holds the other"
         );
@@ -1093,7 +1105,7 @@ mod tests {
             .expect("a task is in flight");
         assert!(tables.return_borrow(task), "the guest drops the borrow");
         assert_eq!(
-            tables.exit_task(task),
+            tables.exit_task(task).borrows(),
             Ok(()),
             "nothing is owed when the count is back to zero"
         );
@@ -1152,12 +1164,13 @@ mod tests {
         let instance = tables.tasks.insert_instance();
         let outer = tables.tasks.push_task(None, None, instance);
         let inner = tables.tasks.push_task(None, None, instance);
-        assert_eq!(tables.exit_task(inner), Ok(()));
+        assert_eq!(tables.exit_task(inner), TaskEnd::Ended(0));
 
         assert_eq!(
             tables.exit_task(inner),
-            Ok(()),
-            "the second exit is a no-op"
+            TaskEnd::Untouched,
+            "the second exit is a no-op, and says so, because its caller \
+             has a second half to run only for a task it really ended"
         );
 
         assert_eq!(
@@ -1204,7 +1217,7 @@ mod tests {
             "the failed call's identity names no record"
         );
         assert_eq!(
-            tables.exit_task(later),
+            tables.exit_task(later).borrows(),
             Err(1),
             "the later call still owes the one borrow it was lowered"
         );
@@ -1283,7 +1296,7 @@ mod tests {
         let index = tables.insert_own(table, ty, false, 6);
         let instance = tables.tasks.insert_instance();
         let task = tables.tasks.push_task(None, None, instance);
-        assert_eq!(tables.exit_task(task), Ok(()));
+        assert_eq!(tables.exit_task(task).borrows(), Ok(()));
 
         assert_eq!(
             tables.lend_to(Some(Scope::Task(task)), table, index),
@@ -1331,7 +1344,7 @@ mod tests {
             "the borrow is owed to the task that made the call, not to the task on the stack"
         );
         assert_eq!(
-            tables.exit_task(nested),
+            tables.exit_task(nested).borrows(),
             Ok(()),
             "the task on top of the stack was handed neither the lend nor the borrow"
         );
@@ -1348,7 +1361,7 @@ mod tests {
             "resolving the call gave the lend back"
         );
         assert_eq!(
-            tables.exit_task(caller),
+            tables.exit_task(caller).borrows(),
             Err(1),
             "and the borrow is still owed to the task that made the call"
         );
@@ -1400,7 +1413,7 @@ mod tests {
         // ran that step a second time, during the unwind.
         panic_in("task exit's undo-lends");
         let unwound = unwind(|| {
-            let _ = tables.exit_task(task);
+            let _ = tables.exit_task(task).borrows();
         });
         assert!(
             unwound.is_err(),
@@ -1445,7 +1458,7 @@ mod tests {
         // stands, and every step after it runs during the unwind.
         panic_in("task exit's restore-may-not-suspend");
         let unwound = unwind(|| {
-            let _ = tables.exit_task(task);
+            let _ = tables.exit_task(task).borrows();
         });
         assert!(unwound.is_err(), "the panic unwound past the exit");
 
@@ -1521,7 +1534,7 @@ mod tests {
 
         panic_in("subtask discard's undo-lends");
         let unwound = unwind(|| {
-            let _ = tables.exit_task(task);
+            let _ = tables.exit_task(task).borrows();
         });
         assert!(
             unwound.is_err(),

@@ -253,7 +253,7 @@ fn enter_sync_call(
 /// between them, so the innermost task on the stack is the one to
 /// pop, and anything a failed call left above it goes with it.
 fn exit_sync_call(tables: &Arc<Mutex<HandleTables>>) -> anyhow::Result<()> {
-    match lock_tables(tables)?.exit_current_task() {
+    match lock_tables(tables)?.exit_current_task().borrows() {
         Ok(()) => Ok(()),
         Err(_) => Err(anyhow!(
             "wasm trap: borrow handles still remain at the end of the call"
@@ -758,7 +758,7 @@ mod tests {
         );
         context_set(&tables, 0, 9).expect("the callee writes its own first slot");
 
-        assert_eq!(tables.lock().unwrap().exit_task(callee), Ok(()));
+        assert_eq!(tables.lock().unwrap().exit_task(callee).borrows(), Ok(()));
         assert_eq!(
             (
                 context_get(&tables, 0).unwrap(),

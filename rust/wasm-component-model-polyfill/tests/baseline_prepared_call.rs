@@ -168,13 +168,54 @@ const YIELDS_FIRST: &[u8] = component!(
     "#
 );
 
+/// The same shape as the callee that yields first, with a callback
+/// that returns the exit word rather than trapping and records in a
+/// global that it ran.
+///
+/// The exit word is the one word a callback run for a task the store
+/// no longer holds would fail on the polyfill's own invariant: the
+/// exit reads the task's record to ask whether the task resolved,
+/// and a record that is gone is the internal error. Running the
+/// callback at all is the failure the global catches, and the error
+/// the call reports is what says the invariant was never reached.
+const EXITS_FROM_ITS_CALLBACK_AFTER_A_YIELD: &[u8] = component!(
+    r#"
+    (component
+      (component $callee
+        (core module $m
+          (global $ran (mut i32) (i32.const 0))
+          (func (export "cb") (param i32 i32 i32) (result i32)
+            (global.set $ran (i32.const 1))
+            (i32.const 0))
+          (func (export "answer") (param i32) (result i32) (i32.const 1))
+          (func (export "ran") (result i32) (global.get $ran)))
+        (core instance $i (instantiate $m))
+        (func (export "answer") async (param "x" u32) (result u32)
+          (canon lift (core func $i "answer") async (callback (core func $i "cb"))))
+        (func (export "ran") (result u32) (canon lift (core func $i "ran"))))
+      (component $caller
+        (import "answer" (func $answer async (param "x" u32) (result u32)))
+        (core func $lowered (canon lower (func $answer)))
+        (core module $m
+          (import "" "answer" (func $answer (param i32) (result i32)))
+          (func (export "run") (param i32) (result i32)
+            (i32.add (call $answer (local.get 0)) (i32.const 1))))
+        (core instance $i (instantiate $m
+          (with "" (instance (export "answer" (func $lowered))))))
+        (func (export "run") (param "x" u32) (result u32)
+          (canon lift (core func $i "run"))))
+      (instance $a (instantiate $callee))
+      (instance $b (instantiate $caller (with "answer" (func $a "answer"))))
+      (export "run" (func $b "run"))
+      (export "ran" (func $a "ran")))
+    "#
+);
+
 /// The same shape again, with a callee that raises and lowers its
 /// own instance's backpressure through two synchronous exports. A
 /// call of `run` made while the counter is up leaves the callee's
 /// start item at the entry gate: the callee never runs at all, and
 /// the caller's wait fails with nothing of the callee on the stack.
-/// The callee's core function traps, so a turn that ran the item
-/// would say so.
 const BLOCKED_AT_THE_GATE: &[u8] = component!(
     r#"
     (component
@@ -516,6 +557,52 @@ async fn it_drops_the_callees_queued_callback_when_the_wait_fails_after_a_yield(
 }
 
 #[wcmp_macros::test]
+async fn it_runs_no_callback_of_a_dead_callee_whose_word_would_be_the_exit_word() {
+    // The same yield, with a callback that would return the exit
+    // word and records that it ran. The exit word is the word that
+    // reads the task's record — a callback run for a task the store
+    // no longer holds would fail with the polyfill's own invariant
+    // cause there, and would have run guest code for a dead task
+    // first. The item goes with the record, so neither happens.
+    let (mut store, instance) = instantiate(EXITS_FROM_ITS_CALLBACK_AFTER_A_YIELD).await;
+    let run = instance.get_func("run").expect("the caller's export");
+    let err = run
+        .call(&mut store, &[Val::U32(1)])
+        .await
+        .expect_err("a sync-typed caller cannot wait for its callee");
+    let message = chain(&err);
+    assert!(
+        message.contains("cannot block a synchronous task before returning"),
+        "expected the cannot-block cause, got {message}"
+    );
+    assert!(
+        !message.contains("an export's task is not in the store"),
+        "the call failed on the invariant rather than the block: {message}"
+    );
+    assert_eq!(task_count(&store), 0, "neither task is left in the store");
+    assert_eq!(
+        store.scheduler().queued_items(),
+        0,
+        "the callback item the yield left went with the task's record"
+    );
+
+    assert_eq!(turn(&mut store), "Idle");
+
+    let ran = instance
+        .get_func("ran")
+        .expect("the callee's witness export");
+    let witness = ran
+        .call(&mut store, &[])
+        .await
+        .expect("the witness export returns");
+    assert_eq!(
+        witness.as_ref(),
+        &[Val::U32(0)],
+        "the callee's callback never ran for the task the failure ended"
+    );
+}
+
+#[wcmp_macros::test]
 async fn it_drops_the_callees_held_callback_when_the_wait_fails_during_a_wait() {
     // The callee's first status word waits on a set nothing ever
     // fills, so the scheduler holds its callback item and the
@@ -588,9 +675,14 @@ async fn it_drops_the_callees_start_item_when_the_wait_fails_at_the_entry_gate()
         "and nothing else of the callee's is queued"
     );
 
-    // The gate opens again with nothing behind it. The callee's core
-    // function traps, so a turn that let the orphaned start item
-    // through would fail with that trap.
+    // The gate opens again with nothing behind it. An orphaned start
+    // item would never reach the callee's core function: the failure
+    // took the subtask record out of the store, and `start_call`
+    // fails on the missing record while it lowers the arguments. A
+    // synchronous lower's start item reports such a failure into a
+    // slot nobody is left to read rather than failing the turn, so
+    // what proves the item went is the turn finding nothing to run
+    // at all.
     instance
         .get_func("unblock")
         .expect("the callee's backpressure export")

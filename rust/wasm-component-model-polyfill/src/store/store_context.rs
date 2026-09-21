@@ -1059,14 +1059,26 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// the same reason and in the same breath: an item that named
     /// the task is work the task will never do, and the scheduler's
     /// own documentation states what dropping it gives back.
+    ///
+    /// The sweep is the second half of the exit, so it runs only
+    /// when the first half ended the task: an exit that names a task
+    /// whose scope is not on the stack ends nothing, and the items
+    /// of a task that is still to run are its pending work, not a
+    /// dead task's leavings. The release of the implicit thread
+    /// above needs no such guard, because it is keyed on the thread
+    /// — it gives back only what this task's own thread holds, and a
+    /// task that is still parked holds nothing.
     pub fn exit_export_task(&mut self, task: TaskId) -> Result<core::result::Result<(), u32>> {
         let tables = self.tables_handle();
         let mut guard = Self::lock(&tables)?;
         self.scheduler_mut()
             .exit_implicit_thread(&mut guard.tasks, task);
-        self.scheduler_mut()
-            .discard_task_items(&mut guard.tasks, task);
-        Ok(guard.exit_task(task))
+        let end = guard.exit_task(task);
+        if end.ended() {
+            self.scheduler_mut()
+                .discard_task_items(&mut guard.tasks, task);
+        }
+        Ok(end.borrows())
     }
 
     /// Pop the scope of an export's task without ending the task, as
@@ -1088,16 +1100,21 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// [`exit_export_task`](Self::exit_export_task) states. This is
     /// the end a callback task parked between events reaches when
     /// the call that started it fails, so it is the end that really
-    /// has items to give up. The inner `Err` carries the count of
-    /// borrows the guest did not drop. Workspace-internal.
+    /// has items to give up. This end has no scope to consult, so it
+    /// always ends the task and the sweep always runs. The inner
+    /// `Err` carries the count of borrows the guest did not drop.
+    /// Workspace-internal.
     pub fn end_export_task(&mut self, task: TaskId) -> Result<core::result::Result<(), u32>> {
         let tables = self.tables_handle();
         let mut guard = Self::lock(&tables)?;
         self.scheduler()
             .exit_implicit_thread(&mut guard.tasks, task);
-        self.scheduler_mut()
-            .discard_task_items(&mut guard.tasks, task);
-        Ok(guard.end_task(task))
+        let end = guard.end_task(task);
+        if end.ended() {
+            self.scheduler_mut()
+                .discard_task_items(&mut guard.tasks, task);
+        }
+        Ok(end.borrows())
     }
 
     /// Pop the export's task on its failure path, with no borrow
@@ -1108,15 +1125,20 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// [`exit_export_task`](Self::exit_export_task) gives: a call
     /// that failed gives the instance back exactly as one that
     /// returned does, and gives up what the task still has queued
-    /// with it. Workspace-internal.
+    /// with it — but only when the task ended, under the rule that
+    /// exit states. A failure that names a task whose scope is not
+    /// on the stack ends nothing: the record stays, so the task is
+    /// still to run and the items that name it are still its own.
+    /// Workspace-internal.
     pub fn abandon_export_task(&mut self, task: TaskId) -> Result<()> {
         let tables = self.tables_handle();
         let mut guard = Self::lock(&tables)?;
         self.scheduler_mut()
             .exit_implicit_thread(&mut guard.tasks, task);
-        self.scheduler_mut()
-            .discard_task_items(&mut guard.tasks, task);
-        guard.abandon_task(task);
+        if guard.abandon_task(task) {
+            self.scheduler_mut()
+                .discard_task_items(&mut guard.tasks, task);
+        }
         Ok(())
     }
 

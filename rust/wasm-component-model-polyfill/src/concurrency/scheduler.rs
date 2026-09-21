@@ -106,12 +106,38 @@ enum HeldFor {
 /// the export's callback before anything it does could notice the
 /// record is gone.
 ///
-/// A task ends this way on every path. The ordinary one is the exit
-/// status word, where the task has nothing queued and the sweep
-/// finds nothing. The path that makes the rule necessary is a call
-/// that fails while its callee is parked: the failure ends the
-/// callee's task, and the item the callee left behind would
-/// otherwise outlive it.
+/// Three ends sweep, and they are the three the store's context
+/// offers for the task of an export's call: the success exit, the
+/// end of a callback task parked between events, and the failure
+/// abandon. Each sweeps only when the store's records really ended
+/// the task it named. A task whose scope is not on the stack is not
+/// ended by an end that names it, and what such a task has queued is
+/// its own pending work still, so sweeping it would drop the work of
+/// a task that is still to run. The ordinary end is the exit status
+/// word, where the task has nothing queued and the sweep finds
+/// nothing. The end that makes the rule necessary is a call that
+/// fails while its callee is parked: the failure ends the callee's
+/// task, and the item the callee left behind would otherwise outlive
+/// it.
+///
+/// Three other ends take a task's record out of the store and sweep
+/// nothing, and need not: the exit intrinsic of a synchronous call
+/// between two components, through `exit_current_task`; the drop of
+/// the guard a call the polyfill itself makes into a guest is held
+/// by, which for the two of those calls that run as a task is a
+/// `cabi_realloc` or a destructor; and the drop of the guard a core
+/// module's `start` function runs under. No item ever names one of
+/// those tasks. An item names a task only when it is the start or
+/// the callback of an export's call, which is the one shape the
+/// store queues by task; each of these three is pushed and popped
+/// inside a single call on the caller's own stack, reaching the
+/// scheduler for nothing, so there is never an item of theirs to
+/// drop.
+///
+/// One last removal is not an end at all: the record a caller's
+/// subtask entry keeps alive leaves when `subtask.drop` takes that
+/// entry, and the task it names ended — and was swept — back when
+/// its implicit thread exited.
 ///
 /// The suspend capability is named here too. It is the seam a
 /// blocking built-in asks to suspend the current guest thread, and
@@ -814,6 +840,13 @@ impl<T: 'static> Scheduler<T> {
     ///   waiter that can never be answered. A set the store no
     ///   longer holds fails that step, and the item is dropped all
     ///   the same: it is the record the wait was for that has gone.
+    ///
+    /// The sweep runs after the task ended, so the thread the wait
+    /// was parked on has exited with the task and only the set's
+    /// tally of waiters falls. That tally is the half that matters:
+    /// `waitable-set.drop` traps on a set a thread still waits on,
+    /// so a tally left standing would make the set undroppable for
+    /// the life of the instance.
     pub fn discard_task_items(&mut self, tables: &mut TaskTables, task: TaskId) {
         let names_task = |item: &Item<T>| item.task() == Some(task);
         if self.switch_slot.as_ref().is_some_and(&names_task) {
@@ -1825,6 +1858,94 @@ mod tests {
             item.run(&mut store.context()).expect("the item runs");
         }
         assert_eq!(entries(&log), vec!["live high", "live low"]);
+    }
+
+    #[wcmp_macros::test]
+    fn it_sweeps_the_items_of_an_abandoned_task_only_once_the_task_has_ended() {
+        // A task parked between events is not on the stack of
+        // scopes, so a failure that abandons it by name ends
+        // nothing: its record stays in the store and the items that
+        // name it are work it is still to do. Sweeping them would be
+        // the mirror of the bug the sweep fixed — a live task's
+        // pending work dropped under it.
+        let mut store = store();
+        let log = log();
+        let instance = instance(&store);
+        let (parked, set, thread) = task_waiting_on_a_set(&store, instance);
+
+        store.scheduler_mut().hold_for_event(
+            instance,
+            thread,
+            set,
+            EventSlot::new(),
+            marker(&log, "parked held").for_task(parked),
+        );
+        store
+            .scheduler_mut()
+            .push_high_priority(marker(&log, "parked ready").for_task(parked));
+        assert_eq!(store.scheduler().queued_items(), 2);
+
+        store
+            .context()
+            .abandon_export_task(parked)
+            .expect("abandon the parked task");
+
+        assert!(
+            task_is_in_the_store(&store, parked),
+            "the abandon ended nothing, because the task's scope is not \
+             on the stack"
+        );
+        assert_eq!(
+            store.scheduler().queued_items(),
+            2,
+            "so what the task has queued is still its own pending work"
+        );
+        assert_eq!(
+            waiters_on(&store, set),
+            1,
+            "and the wait its held callback was held for is still on"
+        );
+
+        // The same abandon with the task's scope on the stack does
+        // end it, and the sweep is the second half of that end.
+        store
+            .context()
+            .enter_export_task(parked)
+            .expect("the task becomes the current scope");
+        store
+            .context()
+            .abandon_export_task(parked)
+            .expect("abandon the entered task");
+
+        assert!(
+            !task_is_in_the_store(&store, parked),
+            "the abandon ended the task this time"
+        );
+        assert_eq!(
+            store.scheduler().queued_items(),
+            0,
+            "so both of its items went with it"
+        );
+        assert_eq!(
+            waiters_on(&store, set),
+            0,
+            "and the wait the held callback was held for ended with it"
+        );
+        assert!(
+            entries(&log).is_empty(),
+            "neither item ever ran: the sweep drops them where they wait"
+        );
+    }
+
+    /// Whether the store still holds a record for `task`.
+    fn task_is_in_the_store(store: &Store<()>, task: TaskId) -> bool {
+        store
+            .tables()
+            .lock()
+            .expect("tables")
+            .tasks
+            .task(task)
+            .is_some()
     }
 
     /// Give `set` a waitable that holds an event: a subtask that

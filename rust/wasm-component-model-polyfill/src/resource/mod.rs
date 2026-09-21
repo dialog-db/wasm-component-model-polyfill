@@ -9,6 +9,9 @@
 //! - [`HandleTable`] is one slab the canonical ABI's
 //!   index-allocation and reuse rules govern, and [`HandleTables`]
 //!   is the store's collection of them.
+//! - [`TaskEnd`] is what one attempt to end a task achieved, which
+//!   is what [`HandleTables`] answers the callers of its task exits
+//!   with.
 //! - [`ResourceHandle`] is the polyfill's opaque addressing surface
 //!   for handles that pass through [`Val::Own`] and [`Val::Borrow`].
 //!
@@ -29,6 +32,7 @@ mod table;
 mod table_id;
 mod table_runtime;
 mod tables;
+mod task_end;
 
 pub use handle::ResourceHandle;
 pub use handle_kind::HandleKind;
@@ -37,3 +41,4 @@ pub use identity::ResourceTypeId;
 pub use table_id::TableId;
 pub use table_runtime::ResourceTableRuntime;
 pub use tables::HandleTables;
+pub use task_end::TaskEnd;
