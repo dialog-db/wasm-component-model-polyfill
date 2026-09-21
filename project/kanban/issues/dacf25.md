@@ -17,5 +17,7 @@ created: 2026-09-20T15:40:21Z
 
 ## Dispatch log
 - 2026-09-20T23:48:26Z dispatched implementor `card-dacf25-2bde1c97` (implement session, PDD020 thread, budget 3, seed `e8d0d34` with 639a90, 4587d2, 5345f4, 7adde9 landed pending gate)
+- 2026-09-21T01:18:31Z implementor reported done at `aefa90b` (change `484ce26` plus a reflow on seed `945c55b`; `UnresolvedImport` gains `item: Option<String>` rendered through a new `UnresolvedContext` helper — item-less byte-identical; filled at four `resolve.rs` sites and three `instantiate.rs` lookups via `item_of(path)`; unit test pins none / `f` / `inner.f`, end-to-end tests pin the nested and root strings; the registration causes' `starts_with` assertions replaced with full-string equality; `lint` all checks, `tests all` native 685 / web 675, conformance unchanged). Note: `KindMismatch`'s item is path-qualified for function items but bare for resource/module/nested-instance items, and `UnresolvedImport` inherits that split (pre-existing). No overlap with other landings. Fetched, moved to needs-review, paused the implementor.
+- 2026-09-21T01:18:31Z launched reviewer `review-dacf25-7089fc72`; delivered `sandbox-guest/card-dacf25-2bde1c97` (tip aefa90b) as `delivered/card-dacf25-2bde1c97`.
 
 ## Review notes
