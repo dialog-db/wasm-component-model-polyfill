@@ -24,7 +24,7 @@ use super::context::BoundaryContext;
 use super::layout::{
     FlatType, alignment_of, flags_chunk_count, flat_types, join_flat_slots, size_of,
 };
-use super::{lift, lower, strings};
+use super::{lift_list, lower, strings};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::{Val, ValField};
@@ -213,21 +213,22 @@ pub fn lift_from_flat_slots<T: 'static>(
 ) -> Result<Val> {
     match ty {
         ValueType::Primitive(PrimitiveType::String) => {
-            let ptr = take_i32(args, cursor, ty, position)? as usize;
-            let len = take_i32(args, cursor, ty, position)? as usize;
+            // A slot is an `i32`, and the pointer and the length it
+            // carries are unsigned: the widening keeps the top bit a
+            // value bit rather than a sign bit.
+            let ptr = take_i32(args, cursor, ty, position)? as u32 as usize;
+            let len = take_i32(args, cursor, ty, position)? as u32 as usize;
             lift_string_from_memory(ctx, ptr, len, ty, position)
         }
         ValueType::Primitive(prim) => primitive_from_flat(*prim, args, cursor, ty, position),
         ValueType::List(list) => {
-            let ptr = take_i32(args, cursor, ty, position)? as usize;
-            let len = take_i32(args, cursor, ty, position)? as usize;
-            let element_ty = list.element().clone();
-            let element_size = size_of(&element_ty);
-            let mut out: Vec<Val> = Vec::with_capacity(len);
-            for i in 0..len {
-                out.push(lift(ctx, ptr + i * element_size, &element_ty, position)?);
-            }
-            Ok(Val::List(out.into_boxed_slice()))
+            let ptr = take_i32(args, cursor, ty, position)? as u32 as usize;
+            let len = take_i32(args, cursor, ty, position)? as u32 as usize;
+            // The same gate the memory path runs: a list that
+            // arrives in flat slots is no more trustworthy than one
+            // read out of a pair of fields, and the gate runs before
+            // the elements are reserved.
+            lift_list(ctx, ptr, len, list.element(), ty, position)
         }
         ValueType::FixedLengthList(fixed) => {
             let mut out = Vec::with_capacity(fixed.length() as usize);

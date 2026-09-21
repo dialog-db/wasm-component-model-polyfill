@@ -31,23 +31,7 @@ pub fn lift<T: 'static>(
             let len_bytes = ctx.read_bytes(offset + 4, 4, position, ty)?;
             let ptr = read_u32(&ptr_bytes) as usize;
             let len = read_u32(&len_bytes) as usize;
-            let element_size = size_of(&element_ty);
-            let byte_len = len
-                .checked_mul(element_size)
-                .ok_or_else(|| invalid_encoding(ty, position, "list length overflow"))?;
-            if !ctx.in_bounds(ptr, byte_len) {
-                return Err(invalid_encoding(
-                    ty,
-                    position,
-                    "list pointer/length out of bounds of memory",
-                ));
-            }
-            let mut out = Vec::with_capacity(len);
-            for i in 0..len {
-                let elem = lift(ctx, ptr + i * element_size, &element_ty, position)?;
-                out.push(elem);
-            }
-            Ok(Val::List(out.into_boxed_slice()))
+            lift_list(ctx, ptr, len, &element_ty, ty, position)
         }
         ValueType::FixedLengthList(fixed) => {
             // Elements sit inline, one element size apart.
@@ -201,6 +185,79 @@ pub fn lift<T: 'static>(
             lift_handle(ctx, index, ty, position, matches!(ty, ValueType::Own(_)))
         }
     }
+}
+
+/// Lift the `len` elements of a list that starts at `ptr`, after
+/// gating the range the guest presented. The gate is the same
+/// wherever the pointer and the length come from — a pair of fields
+/// in memory or a pair of flat slots — and all of it runs before a
+/// single element is read and before a single byte of capacity is
+/// reserved. A guest that presents a length of `0xFFFF_FFFF` would
+/// otherwise have the host reserve the whole of it, which asks the
+/// allocator for about 160 GiB natively and overflows the capacity
+/// computation where a pointer is 32 bits wide.
+///
+/// The bounds trap measures two things against the memory, because
+/// a list costs the host two: the byte range the guest presented,
+/// and the element count behind it, which the host reserves one
+/// [`Val`] apiece for. The byte range bounds the count only while
+/// an element spans a byte. An element of zero size — a `flags`
+/// with no labels, an empty record, a fixed-length list of length
+/// zero — spans none, so its byte range is empty at every length,
+/// and the count is measured against the memory itself: a list
+/// holds no more elements than the memory the length was measured
+/// against holds bytes.
+///
+/// The traps are ordered as the canonical ABI's
+/// `load_list_from_range` orders them: the byte length, then the
+/// alignment of the pointer, then the bounds.
+pub fn lift_list<T: 'static>(
+    ctx: &mut BoundaryContext<'_, T>,
+    ptr: usize,
+    len: usize,
+    element_ty: &ValueType,
+    ty: &ValueType,
+    position: AbiPosition,
+) -> Result<Val> {
+    let element_size = size_of(element_ty);
+    let byte_len = len
+        .checked_mul(element_size)
+        .ok_or_else(|| invalid_encoding(ty, position, "list length overflow"))?;
+    let alignment = alignment_of(element_ty);
+    if !ptr.is_multiple_of(alignment) {
+        return Err(invalid_encoding(
+            ty,
+            position,
+            "list pointer is not aligned",
+        ));
+    }
+    let within_memory = match ctx.memory_size() {
+        Some(size) => ptr.checked_add(byte_len).is_some_and(|end| end <= size) && len <= size,
+        None => ptr.checked_add(byte_len).is_some(),
+    };
+    if !within_memory {
+        return Err(invalid_encoding(
+            ty,
+            position,
+            "list pointer/length out of bounds of memory",
+        ));
+    }
+    // The capacity is reserved once the range has passed the gate,
+    // and only when the crossing addresses a store of a bounded
+    // size, because that size is what the length was measured
+    // against. The gated byte range caps it, so an element of zero
+    // size reserves nothing at any length and the vector grows as
+    // the elements arrive. A crossing that addresses no bounded
+    // store reserves nothing either.
+    let capacity = match ctx.memory_size() {
+        Some(_) => len.min(byte_len),
+        None => 0,
+    };
+    let mut out = Vec::with_capacity(capacity);
+    for i in 0..len {
+        out.push(lift(ctx, ptr + i * element_size, element_ty, position)?);
+    }
+    Ok(Val::List(out.into_boxed_slice()))
 }
 
 fn lift_primitive<T: 'static>(
@@ -448,5 +505,139 @@ pub fn declared_resource_index(ty: &ValueType) -> Option<usize> {
     match ty {
         ValueType::Own(resource) | ValueType::Borrow(resource) => resource.index(),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use wasm_runtime_layer::{AsContextMut, Memory, MemoryType, Val as RuntimeVal};
+
+    use super::*;
+    use crate::abi::context::BoundaryContext;
+    use crate::abi::flatten::lift_from_flat_slots;
+    use crate::abi::instance::BoundaryInstance;
+    use crate::abi::options::BoundaryOptions;
+    use crate::abi::runtime_state::AbiRuntimeState;
+    use crate::concurrency::InstanceId;
+    use crate::engine::Engine;
+    use crate::executor::ir::{CanonOptions, DataModel, StringEncoding};
+    use crate::resource::TableId;
+    use crate::store::Store;
+    use crate::types::{FlagsType, ListType};
+
+    /// The size of the guest memory every crossing below reads
+    /// through, in pages. One page is 65 536 bytes, and that count
+    /// is what a list's length is measured against.
+    const PAGES: u32 = 1;
+
+    /// The `list` whose element occupies no bytes at all: a `flags`
+    /// with no labels is one byte-length-zero element type the
+    /// canonical ABI admits, and the whole of a `list` of it is
+    /// empty however long the guest says it is.
+    fn list_of_zero_size_elements() -> ValueType {
+        ValueType::List(ListType::new(ValueType::Flags(FlagsType::new(
+            Vec::<String>::new(),
+        ))))
+    }
+
+    /// Give `store` one page of guest memory and return the options
+    /// and instance of a crossing that reads through it. The context
+    /// itself is built at the call site, because it borrows the
+    /// store for as long as it lives.
+    fn one_page(store: &mut Store<()>) -> (BoundaryOptions, BoundaryInstance) {
+        let memory = Memory::new(
+            store.inner_mut().as_context_mut(),
+            MemoryType::new(PAGES, None),
+        )
+        .expect("one page of guest memory");
+        let instance = InstanceId::from_index(0);
+        let state = Arc::new(Mutex::new(AbiRuntimeState::with_slabs(
+            1,
+            0,
+            0,
+            0,
+            Vec::new(),
+            vec![instance],
+            vec![TableId::fresh()],
+        )));
+        state.lock().expect("runtime state").memories[0] = Some(memory);
+        let declared = CanonOptions {
+            instance: 0,
+            memory: Some(0),
+            realloc: None,
+            post_return: None,
+            async_: false,
+            callback: None,
+            string_encoding: StringEncoding::Utf8,
+            data_model: DataModel::LinearMemory,
+        };
+        let tables = store.tables_handle();
+        BoundaryInstance::resolve(&declared, &state, &tables).expect("resolve")
+    }
+
+    #[wcmp_macros::test]
+    fn it_refuses_a_flat_list_whose_elements_outnumber_the_memory() {
+        // The pointer and the length arrive in flat slots, and the
+        // element spans no bytes: every byte-range trap passes at
+        // any length, because the range is empty at any length. The
+        // host would still reserve one `Val` per element, which at
+        // `0xFFFF_FFFF` elements is about 137 GiB, so the count is
+        // measured against the page the length came with.
+        let engine = Engine::new().expect("engine");
+        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+        let (options, instance) = one_page(&mut store);
+        let mut ctx =
+            BoundaryContext::new(store.inner_mut().as_context_mut(), options, instance, None);
+
+        let ty = list_of_zero_size_elements();
+        let args = [RuntimeVal::I32(0), RuntimeVal::I32(-1)];
+        let mut cursor = 0;
+        let outcome =
+            lift_from_flat_slots(&mut ctx, &args, &mut cursor, &ty, AbiPosition::Argument(0));
+
+        let Err(Error::Abi(error)) = outcome else {
+            panic!("a list of `0xFFFF_FFFF` elements is longer than the page holds bytes");
+        };
+        assert!(
+            matches!(
+                &error.cause,
+                AbiCause::InvalidEncoding { message }
+                    if message == "list pointer/length out of bounds of memory"
+            ),
+            "expected Wasmtime's out-of-bounds wording, got {:?}",
+            error.cause
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_lifts_a_flat_list_of_zero_size_elements_the_memory_accounts_for() {
+        // The same list at a length the page accounts for lifts, so
+        // the refusal above is the count and nothing else about an
+        // element that occupies no bytes.
+        let engine = Engine::new().expect("engine");
+        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+        let (options, instance) = one_page(&mut store);
+        let mut ctx =
+            BoundaryContext::new(store.inner_mut().as_context_mut(), options, instance, None);
+
+        let ty = list_of_zero_size_elements();
+        let args = [RuntimeVal::I32(0), RuntimeVal::I32(3)];
+        let mut cursor = 0;
+        let lifted =
+            lift_from_flat_slots(&mut ctx, &args, &mut cursor, &ty, AbiPosition::Argument(0))
+                .expect("three elements of no bytes each sit inside any page");
+
+        let Val::List(elements) = lifted else {
+            panic!("a `list` lifts to a list");
+        };
+        assert_eq!(elements.len(), 3);
+        assert!(
+            elements
+                .iter()
+                .all(|element| matches!(element, Val::Flags(names) if names.is_empty())),
+            "a `flags` with no labels has no flag set"
+        );
     }
 }

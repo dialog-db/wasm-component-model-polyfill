@@ -98,7 +98,7 @@ use crate::concurrency::{
 };
 use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime, ResourceTypeId, TableId};
 use crate::store::{StoreContext, StoreData};
-use crate::types::{PrimitiveType, ResourceType, ValueType};
+use crate::types::{PrimitiveType, ResourceType, TupleType, ValueType};
 use crate::value::Val;
 
 /// Per-resource runtime data captured by every resource trampoline.
@@ -998,6 +998,13 @@ fn result_travels_through_memory(signature: &FunctionType, kind: LowerKind) -> b
 /// linear memory. The single flat argument is the tuple's address;
 /// each parameter sits at the offset the canonical ABI's record
 /// layout gives it.
+///
+/// The address is the guest's, so the whole tuple is gated before
+/// the first parameter is read: aligned to the tuple's alignment,
+/// and addressing a region of the tuple's size that the memory
+/// owns. Gating parameter by parameter would let a tuple whose
+/// first parameter is in bounds and whose last is not be lifted
+/// half-way.
 fn lift_spilled_arguments<T: 'static>(
     ctx: &mut BoundaryContext<'_, T>,
     signature: &FunctionType,
@@ -1011,6 +1018,27 @@ fn lift_spilled_arguments<T: 'static>(
         .cloned()
         .unwrap_or(ValueType::Primitive(PrimitiveType::U32));
     let base = pointer_argument(args, cursor, &first, AbiPosition::Argument(0))?;
+    // The tuple type labels a refusal and nothing else, so it is
+    // built where the refusal is raised rather than on every call
+    // that passes the gate.
+    let fail = |message: &str| {
+        Error::from(AbiError {
+            position: AbiPosition::Argument(0),
+            valtype: Some(ValueType::Tuple(TupleType::new(types.clone()))),
+            cause: AbiCause::InvalidEncoding {
+                message: message.to_owned(),
+            },
+        })
+    };
+    if !base.is_multiple_of(layout.alignment) {
+        return Err(fail("pointer not aligned"));
+    }
+    if base.checked_add(layout.size).is_none() {
+        return Err(fail("pointer size overflow"));
+    }
+    if !ctx.in_bounds(base, layout.size) {
+        return Err(fail("pointer out of bounds"));
+    }
     let mut lifted = Vec::with_capacity(types.len());
     for (i, (ty, offset)) in types.iter().zip(layout.offsets.iter()).enumerate() {
         lifted.push(lift(ctx, base + offset, ty, AbiPosition::Argument(i))?);

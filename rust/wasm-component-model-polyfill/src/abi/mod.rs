@@ -50,7 +50,7 @@ pub mod strategy;
 pub mod strings;
 pub mod transcode;
 
-pub use lift::{lift, lift_handle};
+pub use lift::{lift, lift_handle, lift_list};
 pub use lower::lower;
 
 /// The list-of-entries type a map is laid out as.

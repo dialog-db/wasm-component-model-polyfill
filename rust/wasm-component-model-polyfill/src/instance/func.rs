@@ -10,7 +10,9 @@ use wasm_runtime_layer::{AsContextMut, Val as RuntimeVal};
 use crate::abi::context::BoundaryContext;
 use crate::abi::flatten::{lift_from_flat_slots, lower_into_flat_slots};
 use crate::abi::instance::BoundaryInstance;
-use crate::abi::layout::{flat_types, params_spill, result_spills, spill_layout};
+use crate::abi::layout::{
+    alignment_of, flat_types, params_spill, result_spills, size_of, spill_layout,
+};
 use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::{lift, lower};
@@ -797,6 +799,25 @@ impl Func {
                     }));
                 }
             };
+            // The pointer is the guest's, so it is gated before the
+            // result is read: aligned as the result type's layout
+            // demands, and addressing a region of the result's size
+            // that the memory owns.
+            let fail = |message: &str| {
+                Error::from(AbiError {
+                    position,
+                    valtype: Some(result_ty.clone()),
+                    cause: AbiCause::InvalidEncoding {
+                        message: message.to_owned(),
+                    },
+                })
+            };
+            if !ptr.is_multiple_of(alignment_of(result_ty)) {
+                return Err(fail("return pointer not aligned"));
+            }
+            if !lift_ctx.in_bounds(ptr, size_of(result_ty)) {
+                return Err(fail("pointer out of bounds of memory"));
+            }
             lift(&mut lift_ctx, ptr, result_ty, position)?
         } else {
             let mut cursor = 0usize;

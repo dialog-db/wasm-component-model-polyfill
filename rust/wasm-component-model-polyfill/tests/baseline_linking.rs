@@ -1176,6 +1176,15 @@ async fn it_navigates_instance_typed_exports() {
             (func $cabi-realloc (export "cabi_realloc")
                   (param i32 i32 i32 i32) (result i32)
               (local $ptr i32)
+              ;; Round the bump pointer up to the alignment asked for,
+              ;; as a real allocator does: the canonical ABI reads the
+              ;; result back at that alignment and refuses a pointer
+              ;; that does not have it.
+              (global.set $bump
+                (i32.and
+                  (i32.add (global.get $bump)
+                           (i32.sub (local.get 2) (i32.const 1)))
+                  (i32.sub (i32.const 0) (local.get 2))))
               global.get $bump
               local.set $ptr
               global.get $bump
@@ -1279,6 +1288,15 @@ async fn it_supports_a_typed_export_call_surface() {
             (func $cabi-realloc (export "cabi_realloc")
                   (param i32 i32 i32 i32) (result i32)
               (local $ptr i32)
+              ;; Round the bump pointer up to the alignment asked for,
+              ;; as a real allocator does: the canonical ABI reads the
+              ;; result back at that alignment and refuses a pointer
+              ;; that does not have it.
+              (global.set $bump
+                (i32.and
+                  (i32.add (global.get $bump)
+                           (i32.sub (local.get 2) (i32.const 1)))
+                  (i32.sub (i32.const 0) (local.get 2))))
               global.get $bump
               local.set $ptr
               global.get $bump
