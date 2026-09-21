@@ -39,8 +39,8 @@ kanban-plugin: basic
 - [ ] [[dacf25]]
 - [ ] [[13935b]]
 - [ ] [[17776b]]
-- [ ] [[8c7efb]]
 - [ ] [[98606b]]
+- [ ] [[8c7efb]]
 
 ## Ready
 
