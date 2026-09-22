@@ -14,3 +14,7 @@ created: 2026-09-21T17:05:56Z
 - [ ] After an instantiation that traps in a start function, and after one that fails to link a resource runtime, the store's instance records, destructor registrations, and resource names equal those before the attempt, proved by tests.
 - [ ] `lint` passes and `tests all` is green on both targets with the conformance summary unchanged.
 
+
+
+## Dispatch log
+- 2026-09-22T17:45:08Z dispatched implementor `card-abc01a-c64e5715` from tip `6886b73`. The host drive was lost with its shell before the directive reached the VM, which came up idle; redelivered with `sandbox prompt --redeliver`.
