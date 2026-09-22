@@ -139,10 +139,11 @@ impl TaskTables {
     /// task's own exit puts the saved value back, which is where
     /// Wasmtime saves and restores it too.
     ///
-    /// Three callers hold the flag this way: an adapter's enter
+    /// Four callers hold the flag this way: an adapter's enter
     /// intrinsic for a synchronous call between two components, a
-    /// host call into a synchronous export, and the task a core
-    /// module's start function runs in. Each is a call that must
+    /// host call into a synchronous export, the task a core
+    /// module's start function runs in, and the task a resource
+    /// destructor runs as. Each is a call that must
     /// return before its instance may block. Answers `None` when the
     /// store holds no such task or no such instance, or when the task
     /// belongs to no instance, and holds nothing in that case.

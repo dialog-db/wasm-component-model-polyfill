@@ -23,15 +23,27 @@
 //! instance traps while the flag is clear, so a destructor that
 //! reaches the host at all is a destructor whose instance may be
 //! left.
+//!
+//! A destructor may not block, as a synchronous call may not. The
+//! reference says so of every destructor, and Wasmtime runs one as a
+//! synchronous call whose block traps with `CannotBlockSyncTask`. A
+//! block inside a destructor therefore fails with the cannot-block
+//! cause, whether or not a suspend provider fills the seam, and an
+//! import lowered with the `async` option, which does not block,
+//! leaves its host task to a later turn.
 
 #![cfg(test)]
 
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll, Waker};
 use std::sync::{Arc, Mutex};
 
+use crate::concurrency::SuspendProvider;
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
-    Accessor, Component, Engine, Error, HostCall, Instance, Linker, ResourceHandle, Result, Store,
-    Val,
+    Accessor, Component, Engine, Error, HostCall, Instance, Linker, ResourceHandle, Result,
+    SchedulerCause, Store, StoreContext, Val,
 };
 use wcmp_macros::component;
 
@@ -523,37 +535,57 @@ fn chain(error: &Error) -> String {
     out
 }
 
-/// Instantiate [`HOST_RELEASE_CALLS_A_HOST_ASYNC_IMPORT`] with
-/// `register` registering its `answer` import, and take an owned
-/// handle out of its `make` export.
+/// What the destructor's `probe` call recorded, and the release it
+/// was run for.
+struct Released {
+    store: Store<()>,
+    instance: Instance,
+    handle: ResourceHandle,
+    /// Whether a turn of the store was running while the destructor
+    /// ran.
+    in_turn: Arc<Mutex<Option<bool>>>,
+    /// How a driver the destructor's host call entered came out.
+    driver: Arc<Mutex<Option<String>>>,
+}
+
+/// Instantiate `bytes`, whose destructor calls a synchronous `probe`
+/// import, with `register` registering the rest of its imports, and
+/// take an owned handle out of its `make` export.
 ///
-/// Answers the store, the instance, that handle, and what the
-/// destructor's `probe` call records: whether a turn of the store
-/// was running while the destructor ran.
-async fn host_release_caller<F>(
-    register: F,
-) -> (
-    Store<()>,
-    Instance,
-    ResourceHandle,
-    Arc<Mutex<Option<bool>>>,
-)
+/// The `probe` records whether a turn of the store was running while
+/// the destructor ran, and enters a driver of the same store and
+/// records how it came out. The driver is refused before it creates
+/// or queues anything, so the destructor goes on as it would have.
+async fn host_release_caller<F>(bytes: &[u8], register: F) -> Released
 where
     F: FnOnce(&mut Linker<()>),
 {
     let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, HOST_RELEASE_CALLS_A_HOST_ASYNC_IMPORT)
+    let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let in_turn: Arc<Mutex<Option<bool>>> = Arc::new(Mutex::new(None));
-    let recorded = in_turn.clone();
+    let driver: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let turn_recorded = in_turn.clone();
+    let driver_recorded = driver.clone();
     linker
         .root()
         .func_wrap(
             "probe",
             move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
-                *recorded.lock().expect("record") = Some(call.store().internal().turn_in_flight());
+                let store = call.store();
+                *turn_recorded.lock().expect("record") = Some(store.internal().turn_in_flight());
+                let mut reborrowed = store.internal().reborrow();
+                let mut nested = Box::pin(reborrowed.internal().run_concurrent(async |_| ()));
+                let outcome = nested
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()));
+                *driver_recorded.lock().expect("record") = Some(match outcome {
+                    Poll::Ready(Err(error)) => error.to_string(),
+                    Poll::Ready(Ok(())) => "the driver succeeded".to_owned(),
+                    Poll::Pending => "the driver returned pending".to_owned(),
+                });
                 Ok(x)
             },
         )
@@ -570,7 +602,110 @@ where
     let Some(Val::Own(handle)) = made.first().cloned() else {
         panic!("make returns an owned handle, got {made:?}");
     };
-    (store, instance, handle, in_turn)
+    Released {
+        store,
+        instance,
+        handle,
+        in_turn,
+        driver,
+    }
+}
+
+/// Register `answer` with a typed concurrent entry whose future never
+/// resolves.
+fn never_answers(linker: &mut Linker<()>) {
+    linker
+        .root()
+        .func_wrap_concurrent("answer", |_accessor: &Accessor<()>, (_x,): (u32,)| {
+            core::future::pending::<Result<u32>>()
+        })
+        .expect("the registration");
+}
+
+/// A future that is pending the first time it is polled and ready
+/// with `value` afterwards. It wakes the waker it was polled with
+/// before it parks, as a future waiting on a timer has its host do.
+struct PendingOnce<V> {
+    polled: bool,
+    value: Option<V>,
+}
+
+impl<V> PendingOnce<V> {
+    fn new(value: V) -> Self {
+        Self {
+            polled: false,
+            value: Some(value),
+        }
+    }
+}
+
+impl<V: Unpin> Future for PendingOnce<V> {
+    type Output = V;
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<V> {
+        let this = self.get_mut();
+        if this.polled {
+            return Poll::Ready(this.value.take().expect("the future is polled once ready"));
+        }
+        this.polled = true;
+        context.waker().wake_by_ref();
+        Poll::Pending
+    }
+}
+
+/// A suspend provider that counts the suspensions it was handed and
+/// returns from each at once, as one that suspended and resumed
+/// would.
+struct Counted(Arc<Mutex<usize>>);
+
+impl SuspendProvider<()> for Counted {
+    fn suspend(
+        &mut self,
+        _store: &mut StoreContext<'_, ()>,
+        _condition: &mut dyn FnMut(&mut StoreContext<'_, ()>) -> bool,
+    ) -> Result<()> {
+        *self.0.lock().expect("provider calls") += 1;
+        Ok(())
+    }
+}
+
+/// Check what a release whose destructor blocked left behind: the
+/// cannot-block cause with Wasmtime's wording, a destructor that ran
+/// inside a turn that has ended, and nothing of the destructor, its
+/// import's call, or a host task in the store.
+fn assert_blocked_release(released: &mut Released, err: &Error) {
+    assert!(
+        chain(err).contains(&Error::Scheduler(SchedulerCause::CannotBlock).to_string()),
+        "expected the cannot-block cause, got {err:?}"
+    );
+    assert!(
+        chain(err).contains("cannot block a synchronous task before returning"),
+        "the cause carries the words of Wasmtime's `CannotBlockSyncTask`, got {err:?}"
+    );
+    assert_eq!(
+        *released.in_turn.lock().expect("record"),
+        Some(true),
+        "the destructor ran inside a turn all the same"
+    );
+    let store = &mut released.store;
+    assert!(
+        !store.internal().turn_in_flight(),
+        "and the turn ended with the failed release"
+    );
+    assert_eq!(
+        store.internal().scheduler().host_task_count(),
+        0,
+        "the blocked call kept its host task in its own frame, and the \
+         failure dropped it rather than leaving it to a later turn"
+    );
+
+    let mut after = seen!(store.internal().tables());
+    after.context = [0; 2];
+    assert_eq!(
+        after,
+        Seen::default(),
+        "nothing of the failed destructor is left in the store"
+    );
 }
 
 #[wcmp_macros::test]
@@ -582,7 +717,7 @@ async fn it_runs_a_host_release_destructor_inside_a_turn() {
     // is a host `async` import lowered synchronously whose future is
     // ready on its first poll, so the result crosses as the lower
     // returns and the release stands.
-    let (mut store, instance, handle, in_turn) = host_release_caller(|linker| {
+    let mut released = host_release_caller(HOST_RELEASE_CALLS_A_HOST_ASYNC_IMPORT, |linker| {
         linker
             .root()
             .func_wrap_concurrent("answer", |_accessor: &Accessor<()>, (x,): (u32,)| {
@@ -591,13 +726,14 @@ async fn it_runs_a_host_release_destructor_inside_a_turn() {
             .expect("the registration");
     })
     .await;
+    let store = &mut released.store;
 
     store
-        .resource_drop(handle)
+        .resource_drop(released.handle)
         .expect("the destructor's import resolved on its first poll");
 
     assert_eq!(
-        *in_turn.lock().expect("record"),
+        *released.in_turn.lock().expect("record"),
         Some(true),
         "a turn of the store was in flight while the destructor ran"
     );
@@ -614,8 +750,11 @@ async fn it_runs_a_host_release_destructor_inside_a_turn() {
         "the destructor's task and its thread ended with the release"
     );
 
-    let answered = instance.get_func("answered").expect("answered export");
-    let answered = answered.call(&mut store, &[]).await.expect("call");
+    let answered = released
+        .instance
+        .get_func("answered")
+        .expect("answered export");
+    let answered = answered.call(store, &[]).await.expect("call");
     assert_eq!(
         answered.first().cloned(),
         Some(Val::S32(42)),
@@ -628,45 +767,318 @@ async fn it_runs_a_host_release_destructor_inside_a_turn() {
 async fn it_fails_a_host_release_whose_destructor_blocks_on_a_pending_host_task() {
     // The same destructor against an import whose future never
     // resolves. The synchronous lower blocks the destructor's thread
-    // through the suspend seam, whose nested turns nest in the
-    // release's turn, and the store holds nothing that could release
-    // it. No instance carries may-not-suspend, so the cause is the
-    // one every block a target cannot serve gets: only a driver
-    // polls a pending host task to the end, and a host that releases
-    // a handle is not one.
-    let (mut store, _instance, handle, in_turn) = host_release_caller(|linker| {
+    // through the suspend seam. A destructor may not block — the
+    // reference runs it as a synchronous call, and Wasmtime traps a
+    // block inside it with `CannotBlockSyncTask` — so the
+    // destructor's task holds its instance's may-not-suspend flag
+    // and the block fails with the cannot-block cause.
+    let mut released =
+        host_release_caller(HOST_RELEASE_CALLS_A_HOST_ASYNC_IMPORT, never_answers).await;
+
+    let err = released
+        .store
+        .resource_drop(released.handle)
+        .expect_err("a destructor may not block");
+
+    assert_blocked_release(&mut released, &err);
+}
+
+#[wcmp_macros::test]
+async fn it_fails_a_blocking_destructor_with_the_cannot_block_cause_under_a_suspend_provider() {
+    // A provider would let a task that is allowed to block suspend
+    // and the store run on. A destructor is not such a task, so the
+    // seam never hands its block to the provider: the block fails
+    // with the cannot-block cause exactly as it does with the slot
+    // empty.
+    let mut released =
+        host_release_caller(HOST_RELEASE_CALLS_A_HOST_ASYNC_IMPORT, never_answers).await;
+    let calls = Arc::new(Mutex::new(0usize));
+    released
+        .store
+        .internal()
+        .scheduler_mut()
+        .suspend_seam_mut()
+        .set_provider(Counted(calls.clone()));
+
+    let err = released
+        .store
+        .resource_drop(released.handle)
+        .expect_err("a destructor may not block, whatever fills the seam");
+
+    assert_blocked_release(&mut released, &err);
+    assert_eq!(
+        *calls.lock().expect("provider calls"),
+        0,
+        "the seam did not hand the destructor's block to the provider"
+    );
+    assert!(
+        released
+            .store
+            .internal()
+            .scheduler()
+            .suspend_seam()
+            .has_provider(),
+        "the provider is still in its slot"
+    );
+}
+
+/// A component whose locally-defined resource has a destructor that
+/// calls an `async`-typed `answer` import lowered without the
+/// `async` option, so the call blocks until the host's future
+/// resolves. Its export is `async`-typed and lifted with a callback:
+/// it drops an owned handle with `resource.drop`, hands zero to
+/// `task.return`, and exits. The export's own task may block, so a
+/// block that fails with the cannot-block cause is the destructor's.
+const GUEST_DROP_BLOCKS: &[u8] = component!(
+    r#"
+    (component
+      (import "answer" (func $answer async (param "x" u32) (result u32)))
+      (core func $answer' (canon lower (func $answer)))
+      (core module $Dtor
+        (import "" "answer" (func $answer (param i32) (result i32)))
+        (func (export "dtor") (param i32)
+          (drop (call $answer (i32.const 21)))))
+      (core instance $dtor (instantiate $Dtor (with "" (instance
+        (export "answer" (func $answer'))))))
+      (type $r (resource (rep i32) (dtor (core func $dtor "dtor"))))
+      (core func $new (canon resource.new $r))
+      (core func $drop (canon resource.drop $r))
+      (core func $task-return (canon task.return (result u32)))
+      (core module $M
+        (import "" "new" (func $new (param i32) (result i32)))
+        (import "" "drop" (func $drop (param i32)))
+        (import "" "task.return" (func $task-return (param i32)))
+        (func (export "run") (result i32)
+          (call $drop (call $new (i32.const 100)))
+          (call $task-return (i32.const 0))
+          (i32.const 0))
+        (func (export "run-callback") (param i32 i32 i32) (result i32) unreachable))
+      (core instance $m (instantiate $M (with "" (instance
+        (export "new" (func $new))
+        (export "drop" (func $drop))
+        (export "task.return" (func $task-return))))))
+      (func (export "run") async (result u32)
+        (canon lift (core func $m "run") async
+          (callback (core func $m "run-callback")))))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_fails_a_guest_drop_whose_destructor_blocks_with_the_cannot_block_cause() {
+    // A guest's `resource.drop` runs the destructor the way the
+    // host's release does, so the destructor's task holds its
+    // instance's may-not-suspend flag here too. The export that drops
+    // the handle is `async`-typed and may block, so without that flag
+    // the seam would hand the block to the provider installed below,
+    // and with the slot empty would fail it with the stack-switch
+    // cause instead.
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, GUEST_DROP_BLOCKS)
+        .await
+        .expect("component parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    never_answers(&mut linker);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    let calls = Arc::new(Mutex::new(0usize));
+    store
+        .internal()
+        .scheduler_mut()
+        .suspend_seam_mut()
+        .set_provider(Counted(calls.clone()));
+
+    let run = instance.get_func("run").expect("run export");
+    let err = run
+        .call(&mut store, &[])
+        .await
+        .expect_err("a destructor may not block, whoever dropped the handle");
+
+    assert!(
+        chain(&err).contains(&Error::Scheduler(SchedulerCause::CannotBlock).to_string()),
+        "expected the cannot-block cause, got {err:?}"
+    );
+    assert!(
+        chain(&err).contains("cannot block a synchronous task before returning"),
+        "the cause carries the words of Wasmtime's `CannotBlockSyncTask`, got {err:?}"
+    );
+    assert_eq!(
+        *calls.lock().expect("provider calls"),
+        0,
+        "the seam did not hand the destructor's block to the provider"
+    );
+    assert_eq!(
+        store.internal().scheduler().host_task_count(),
+        0,
+        "the blocked call kept its host task in its own frame, and the \
+         failure dropped it rather than leaving it to a later turn"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_driver_entered_from_inside_a_destructor() {
+    // The release runs the destructor inside a turn, so a driver of
+    // the same store that the destructor's host call enters is
+    // refused with the recursive-driver cause. The refusal leaves the
+    // store untouched and the destructor returns, so the release
+    // stands.
+    let mut released = host_release_caller(HOST_RELEASE_CALLS_A_HOST_ASYNC_IMPORT, |linker| {
         linker
             .root()
-            .func_wrap_concurrent("answer", |_accessor: &Accessor<()>, (_x,): (u32,)| {
-                core::future::pending::<Result<u32>>()
+            .func_wrap_concurrent("answer", |_accessor: &Accessor<()>, (x,): (u32,)| {
+                core::future::ready(Ok(x * 2))
             })
             .expect("the registration");
     })
     .await;
 
-    let err = store
-        .resource_drop(handle)
-        .expect_err("a future that never resolves cannot be blocked on to the end");
+    released
+        .store
+        .resource_drop(released.handle)
+        .expect("the destructor returned");
 
-    assert!(
-        chain(&err).contains("blocking here requires a stack switch"),
-        "expected the stack-switch cause, got {err:?}"
-    );
     assert_eq!(
-        *in_turn.lock().expect("record"),
-        Some(true),
-        "the destructor ran inside a turn all the same"
+        released.driver.lock().expect("record").clone(),
+        Some(Error::Scheduler(SchedulerCause::RecursiveDriver).to_string()),
+        "the driver entered from inside the destructor was refused"
     );
-    assert!(
-        !store.internal().turn_in_flight(),
-        "and the turn ended with the failed release"
-    );
-
-    let mut after = seen!(store.internal().tables());
+    let mut after = seen!(released.store.internal().tables());
     after.context = [0; 2];
     assert_eq!(
         after,
         Seen::default(),
-        "nothing of the failed destructor is left in the store"
+        "the refused driver left nothing behind, and the destructor's task \
+         ended with the release"
+    );
+}
+
+/// A component whose locally-defined resource has a destructor that
+/// calls a synchronous `probe` and then an `async`-typed `answer`
+/// lowered with the `async` option. The lower does not block: it
+/// answers a status word at once, which the destructor keeps, and
+/// the result lands in memory at offset 8 whenever the call
+/// resolves. The host reads both back through exports.
+const HOST_RELEASE_STARTS_A_HOST_ASYNC_IMPORT: &[u8] = component!(
+    r#"
+    (component
+      (import "probe" (func $probe (param "x" u32) (result u32)))
+      (import "answer" (func $answer async (param "x" u32) (result u32)))
+      (core module $libc (memory (export "mem") 1))
+      (core instance $libc (instantiate $libc))
+      (core func $probe' (canon lower (func $probe)))
+      (core func $answer'
+        (canon lower (func $answer) async (memory (core memory $libc "mem"))))
+      (core module $Dtor
+        (import "" "mem" (memory 1))
+        (import "" "probe" (func $probe (param i32) (result i32)))
+        (import "" "answer" (func $answer (param i32 i32) (result i32)))
+        (global $status (mut i32) (i32.const -1))
+        (func (export "dtor") (param i32)
+          (drop (call $probe (i32.const 1)))
+          (global.set $status (call $answer (i32.const 21) (i32.const 8))))
+        (func (export "status") (result i32) (global.get $status))
+        (func (export "answered") (result i32) (i32.load (i32.const 8))))
+      (core instance $dtor (instantiate $Dtor (with "" (instance
+        (export "mem" (memory $libc "mem"))
+        (export "probe" (func $probe'))
+        (export "answer" (func $answer'))))))
+      (type $r (resource (rep i32) (dtor (core func $dtor "dtor"))))
+      (core func $new (canon resource.new $r))
+      (core module $M
+        (import "" "new" (func $new (param i32) (result i32)))
+        (func (export "make") (result i32)
+          (call $new (i32.const 100))))
+      (core instance $m (instantiate $M (with "" (instance
+        (export "new" (func $new))))))
+      (export $t "t" (type $r))
+      (func (export "make") (result (own $t))
+        (canon lift (core func $m "make")))
+      (func (export "status") (result s32)
+        (canon lift (core func $dtor "status")))
+      (func (export "answered") (result s32)
+        (canon lift (core func $dtor "answered"))))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_leaves_the_host_task_of_an_asynchronously_lowered_import_to_a_later_turn() {
+    // An asynchronous lower never blocks, so a destructor may make
+    // one. The import's future is pending on the lower's own poll, so
+    // the call starts, its host task joins the store, and the release
+    // stands. A later turn of a driver polls the task again and
+    // lowers its result into the destructor's instance.
+    let mut released = host_release_caller(HOST_RELEASE_STARTS_A_HOST_ASYNC_IMPORT, |linker| {
+        linker
+            .root()
+            .func_wrap_concurrent("answer", |_accessor: &Accessor<()>, (x,): (u32,)| {
+                PendingOnce::new(Ok(x * 2))
+            })
+            .expect("the registration");
+    })
+    .await;
+    let store = &mut released.store;
+
+    store
+        .resource_drop(released.handle)
+        .expect("an asynchronous lower does not block the destructor");
+
+    assert_eq!(
+        *released.in_turn.lock().expect("record"),
+        Some(true),
+        "the destructor ran inside a turn"
+    );
+    assert!(
+        !store.internal().turn_in_flight(),
+        "and the turn ended with the release"
+    );
+    assert_eq!(
+        store.internal().scheduler().host_task_count(),
+        1,
+        "the started call's host task stayed in the store for a later turn"
+    );
+    {
+        let guard = store.internal().tables().lock().expect("handle tables");
+        assert_eq!(
+            (
+                guard.tasks.scopes().len(),
+                guard.tasks.task_count(),
+                guard.tasks.thread_count()
+            ),
+            (0, 0, 0),
+            "the destructor's task and its thread ended with the release"
+        );
+    }
+
+    let instance = &released.instance;
+    let status = instance.get_func("status").expect("status export");
+    let status = status.call(store, &[]).await.expect("call");
+    let Some(Val::S32(status)) = status.first().cloned() else {
+        panic!("status answers an s32, got {status:?}");
+    };
+    assert_eq!(
+        status & 0xf,
+        1,
+        "the lower answered STARTED, with the subtask's index above it"
+    );
+    assert_ne!(status >> 4, 0, "the started call has a subtask index");
+
+    store
+        .run_concurrent(async |_| PendingOnce::new(()).await)
+        .await
+        .expect("a driver runs the store's turns");
+
+    assert_eq!(
+        store.internal().scheduler().host_task_count(),
+        0,
+        "the driver's turn polled the host task to its end"
+    );
+    let answered = instance.get_func("answered").expect("answered export");
+    let answered = answered.call(store, &[]).await.expect("call");
+    assert_eq!(
+        answered.first().cloned(),
+        Some(Val::S32(42)),
+        "the result was lowered into the destructor's instance"
     );
 }

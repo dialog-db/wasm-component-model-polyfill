@@ -84,6 +84,16 @@ impl BoundaryCall {
     /// when the host does. The instance may still be left, because
     /// the reference clears the flag around a realloc and a
     /// post-return and not around a destructor.
+    ///
+    /// The instance may not suspend until the call ends. The
+    /// reference says a destructor may not block, and Wasmtime runs
+    /// one as a synchronous call whose block traps with
+    /// `Trap::CannotBlockSyncTask`. The may-not-suspend flag is what
+    /// the suspend seam reads for that rule, so a block anywhere
+    /// inside the destructor fails with the cannot-block cause,
+    /// whether or not a target fills the seam's provider slot. A
+    /// host destructor has no instance to mark and needs none: it is
+    /// a synchronous closure, which cannot reach the seam.
     pub fn destructor(
         tables: &Arc<Mutex<HandleTables>>,
         instance: Option<InstanceId>,
@@ -101,9 +111,17 @@ impl BoundaryCall {
             None => guard.tasks.push_task_without_instance(),
         };
         guard.tasks.start_task(task);
+        let held = instance.is_none() || guard.tasks.hold_may_not_suspend(task).is_some();
         drop(guard);
+        // The guard owns the task from here on, so a refusal still
+        // takes the task off the stack when the guard drops.
         call.task = Some(task);
         call.tables = Some(tables.clone());
+        if !held {
+            return Err(Error::internal(
+                "a resource destructor named an instance the store does not hold",
+            ));
+        }
         Ok(call)
     }
 

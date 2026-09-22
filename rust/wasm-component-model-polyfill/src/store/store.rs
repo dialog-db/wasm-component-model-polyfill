@@ -232,6 +232,16 @@ impl<T: 'static> Store<T> {
     /// two context slots of zero, and what it writes into them ends
     /// with it.
     ///
+    /// A destructor may not block. The Canonical ABI says so under
+    /// `canon resource.drop`: the destructor call works like a
+    /// synchronous cross-component call, and `canon lift` traps a
+    /// call that is not `async`-typed and blocks before it returns.
+    /// Wasmtime enters a destructor as a synchronous call and traps
+    /// a block inside it with `Trap::CannotBlockSyncTask`. A
+    /// destructor that blocks therefore fails the release with the
+    /// cannot-block cause, on every target and whether or not a
+    /// suspend provider is installed.
+    ///
     /// A locally-defined resource's destructor is guest code, and
     /// guest code runs inside a turn of the store's scheduler, so
     /// the release runs one for it. Three rules come with the turn.
@@ -239,12 +249,10 @@ impl<T: 'static> Store<T> {
     /// ready when the import polls it gets the result and returns,
     /// and the release stands. A destructor that lowers such an
     /// import synchronously and whose future stays pending blocks,
-    /// and the block fails the release with the stack-switch cause,
-    /// which is the cause every block a driver cannot serve gets:
-    /// only a driver polls a pending host task to the end, and a
-    /// host that releases a handle is not one. A destructor that
-    /// lowers the import asynchronously leaves its host task in the
-    /// store, where the next turn of any driver polls it.
+    /// which fails the release with the cannot-block cause. A
+    /// destructor that lowers the import asynchronously does not
+    /// block: it leaves its host task in the store, where the next
+    /// turn of any driver polls it.
     ///
     /// A host resource's destructor is the host's own closure and
     /// not guest code, so it runs outside a turn, as the call that

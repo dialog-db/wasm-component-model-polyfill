@@ -283,9 +283,18 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// as the destructor runs. A destructor that blocks on a host
     /// task through a synchronous lower blocks through the suspend
     /// seam, whose nested turns nest in this one, and a task that
-    /// never resolves fails the release with the cause the seam
-    /// selects — the stack-switch cause while no target fills the
-    /// seam's provider slot.
+    /// never resolves fails the release with the cannot-block cause.
+    ///
+    /// That cause holds on every target and whether or not the
+    /// seam's provider slot is filled, because a destructor may not
+    /// block. The Canonical ABI says so under `canon resource.drop`,
+    /// where the destructor call works like a synchronous
+    /// cross-component call, and `canon lift` traps a call that is
+    /// not `async`-typed and blocks before it returns. Wasmtime
+    /// enters a destructor as a synchronous call and traps a block
+    /// inside it with `Trap::CannotBlockSyncTask`. The destructor's
+    /// task holds its instance's may-not-suspend flag for as long as
+    /// it runs, which is what the seam reads for that rule.
     ///
     /// A host resource's destructor is the host's own closure rather
     /// than guest code. It reaches the store's host data and nothing
@@ -2813,6 +2822,35 @@ mod tests {
         "#
     );
 
+    /// The same shape lifted `canon lift async` with a callback. The
+    /// export calls the host function, adds one to what it returns,
+    /// hands that to `task.return`, and exits. A call into such an
+    /// export is a task the reference allows to block, so a block in
+    /// the host function's trampoline is one a provider may serve.
+    const CALLBACK_CALLS_THE_HOST: &[u8] = component!(
+        r#"
+        (component
+          (import "probe" (func $probe (param "x" u32) (result u32)))
+          (core func $probe' (canon lower (func $probe)))
+          (core func $task-return (canon task.return (result u32)))
+          (core module $m
+            (import "" "probe" (func $probe (param i32) (result i32)))
+            (import "" "task.return" (func $task-return (param i32)))
+            (func (export "run") (param i32) (result i32)
+              (call $task-return
+                (i32.add (call $probe (local.get 0)) (i32.const 1)))
+              (i32.const 0))
+            (func (export "run-callback") (param i32 i32 i32) (result i32) unreachable))
+          (core instance $i (instantiate $m
+            (with "" (instance
+              (export "probe" (func $probe'))
+              (export "task.return" (func $task-return))))))
+          (func (export "run") async (param "x" u32) (result u32)
+            (canon lift (core func $i "run") async
+              (callback (core func $i "run-callback")))))
+        "#
+    );
+
     /// A host task's body that is still running on its first poll
     /// and completes on its second, as a call that waits on
     /// something outside the store is.
@@ -2840,8 +2878,13 @@ mod tests {
     /// between checks would, and gives up rather than spinning for
     /// ever. What it does not do is run a turn: the point of a
     /// provider is that the thread suspends and the scheduler runs
-    /// somewhere else.
-    struct Resumes(usize);
+    /// somewhere else. It counts the suspensions it was handed, so a
+    /// test can tell a block it served from one the seam's fallback
+    /// served.
+    struct Resumes {
+        checks: usize,
+        calls: Arc<Mutex<usize>>,
+    }
 
     impl SuspendProvider<()> for Resumes {
         fn suspend(
@@ -2849,7 +2892,8 @@ mod tests {
             store: &mut StoreContext<'_, ()>,
             condition: &mut dyn FnMut(&mut StoreContext<'_, ()>) -> bool,
         ) -> Result<()> {
-            for _ in 0..self.0 {
+            *self.calls.lock().expect("provider calls") += 1;
+            for _ in 0..self.checks {
                 if condition(store) {
                     return Ok(());
                 }
@@ -2950,19 +2994,25 @@ mod tests {
     #[wcmp_macros::test]
     async fn it_blocks_a_synchronous_lower_through_the_seam_when_the_slot_is_filled() {
         let engine = Engine::new().expect("engine");
-        let component = Component::new(&engine, CALLS_THE_HOST)
+        let component = Component::new(&engine, CALLBACK_CALLS_THE_HOST)
             .await
             .expect("component parses");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
 
         // The target fills the capability. The trampoline finds it
         // through the core store's context the runtime layer hands
-        // it, which reaches the same scheduler this fills.
+        // it, which reaches the same scheduler this fills. The export
+        // is `async`-typed, so its task may block, and the seam hands
+        // the block to the provider rather than to its fallback.
+        let calls = Arc::new(Mutex::new(0usize));
         store
             .internal()
             .scheduler_mut()
             .suspend_seam_mut()
-            .set_provider(Resumes(4));
+            .set_provider(Resumes {
+                checks: 4,
+                calls: calls.clone(),
+            });
 
         // The status word the call reported, and what the lowering
         // was handed.
@@ -3012,10 +3062,16 @@ mod tests {
             .expect("call run");
 
         assert_eq!(
+            *calls.lock().expect("provider calls"),
+            1,
+            "the call into an `async`-typed export may block, so the seam \
+             handed the block to the provider in its slot, once"
+        );
+        assert_eq!(
             *reported.lock().expect("record"),
             Some(CallStatus::returned().value()),
-            "the seam's filled slot served the block, so the call returned its \
-             result to the guest with no subtask behind it"
+            "the provider served the block until the body was ready, so the \
+             call returned its result to the guest with no subtask behind it"
         );
         assert_eq!(
             lowered(&slot),
@@ -3026,7 +3082,8 @@ mod tests {
         assert_eq!(
             result.first(),
             Some(&Val::U32(21)),
-            "the guest's call returned"
+            "the guest's `task.return` carried what the host function \
+             returned plus one"
         );
         assert_eq!(
             store.internal().scheduler().host_task_count(),

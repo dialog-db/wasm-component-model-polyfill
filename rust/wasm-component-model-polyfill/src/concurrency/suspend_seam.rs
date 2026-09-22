@@ -75,9 +75,12 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 ///   instance, and no host task — and the built-in then fails with
 ///   the cannot-block cause when the condition still does not hold.
 ///   That is the case of a start function, of a host call into a
-///   synchronous export, and of a synchronous call between two
-///   components. A task that is allowed to block runs every ready
-///   item and polls every host task.
+///   synchronous export, of a synchronous call between two
+///   components, and of a resource destructor. The rule holds
+///   whether or not the provider slot is filled: a provider would
+///   let the store run on while the task is suspended, which is the
+///   block the reference forbids it. A task that is allowed to block
+///   runs every ready item and polls every host task.
 /// - **The seam keeps one budget, and past it the call fails with
 ///   the stack-switch cause.** This is the polyfill's one departure
 ///   from the reference, which bounds neither the yielded item the
@@ -143,8 +146,9 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 /// component instance, runs the same way on both targets: each of
 /// those is a host function of its own.
 ///
-/// A provider in the slot serves the whole of that instead. It
-/// suspends the thread and ends the turn, and no nested turn runs.
+/// A provider in the slot serves the whole of that instead, for a
+/// task that is allowed to block. It suspends the thread and ends
+/// the turn, and no nested turn runs.
 ///
 /// A nested executor that blocks the native thread is not an option
 /// here. It deadlocks under a current-thread executor, tokio forbids
@@ -236,9 +240,16 @@ impl<T: 'static> SuspendSeam<T> {
         // the capability the thread suspends there, and no guest
         // code is entered from the trampoline this runs in — which
         // is what a provider that switches stacks needs. The nested
-        // turn runs only when the slot is empty, so the two never
-        // meet.
-        if store.internal().scheduler().suspend_seam().has_provider() {
+        // turn runs only when the slot is empty or the task must not
+        // block, so the two never meet.
+        //
+        // A task that must not block never reaches the provider. A
+        // provider suspends the thread and lets the store run on,
+        // which is the block the reference forbids such a task; the
+        // nested turn gives way to the task's own instance alone and
+        // then fails with the cannot-block cause, which is the whole
+        // of what the reference allows it.
+        if Self::provider_serves(store) {
             return Self::suspend_with_provider(store, &mut condition);
         }
         Self::run_nested_turns(store, &mut condition)
@@ -250,11 +261,11 @@ impl<T: 'static> SuspendSeam<T> {
     /// A yield waits for one chance to be given back control and
     /// for nothing else, so this is not a wait with a condition. A
     /// target with a provider suspends the thread once and resumes
-    /// it. A target without one runs exactly one nested turn: the
-    /// ready work of the store, or of the calling task's own
-    /// instance alone when that task must not block. A task that
-    /// must not block with no ready work of its own instance gives
-    /// way to nothing, as Wasmtime runs it.
+    /// it, unless the task must not block. Otherwise the seam runs
+    /// exactly one nested turn: the ready work of the store, or of
+    /// the calling task's own instance alone when that task must not
+    /// block. A task that must not block with no ready work of its
+    /// own instance gives way to nothing, as Wasmtime runs it.
     ///
     /// The seam's budget is the one thing that can fail this. A
     /// thread whose turns the store has not served past
@@ -264,7 +275,7 @@ impl<T: 'static> SuspendSeam<T> {
     /// answers `Ok(())`, which is what makes the built-in return
     /// zero whenever it returns at all.
     pub fn give_way(store: &mut StoreContext<'_, T>) -> Result<()> {
-        if store.internal().scheduler().suspend_seam().has_provider() {
+        if Self::provider_serves(store) {
             let mut given_back = false;
             return Self::suspend_with_provider(store, &mut |_| {
                 std::mem::replace(&mut given_back, true)
@@ -277,6 +288,16 @@ impl<T: 'static> SuspendSeam<T> {
             return Err(Error::Scheduler(SchedulerCause::StackSwitchNeeded));
         }
         Ok(())
+    }
+
+    /// Whether the target's provider serves a suspension of the
+    /// current task: the slot is filled and the task is allowed to
+    /// block. A task whose instance may not suspend — a synchronous
+    /// call that has not returned, a start function, or a resource
+    /// destructor — takes the nested turn whatever the slot holds.
+    fn provider_serves(store: &mut StoreContext<'_, T>) -> bool {
+        store.internal().scheduler().suspend_seam().has_provider()
+            && store.internal().must_not_block_instance().is_none()
     }
 
     /// Hand the suspension to the target's provider. The provider
@@ -1179,6 +1200,51 @@ mod tests {
         assert!(
             store.internal().scheduler().suspend_seam().has_provider(),
             "the provider went back into its slot"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_keeps_a_task_that_must_not_block_away_from_the_provider() {
+        let mut owner = store();
+        let mut store = owner.internal().context();
+        let calls = Arc::new(Mutex::new(0usize));
+        store
+            .internal()
+            .scheduler_mut()
+            .suspend_seam_mut()
+            .set_provider(Recorded(calls.clone()));
+        current_task(&store, true);
+
+        let outcome = store
+            .internal()
+            .run_in_turn(Waker::noop(), |store| {
+                SuspendSeam::suspend(store, |_| false)
+            })
+            .expect("the outer turn runs");
+        let yielded = store
+            .internal()
+            .run_in_turn(Waker::noop(), SuspendSeam::give_way)
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            Error::Scheduler(SchedulerCause::CannotBlock).to_string(),
+            "a provider would have let the task block, which the reference \
+             forbids it, so the block took the nested turn and failed there"
+        );
+        assert!(
+            yielded.is_ok(),
+            "the yield gave way to nothing and returned"
+        );
+        assert_eq!(
+            *calls.lock().expect("provider calls"),
+            0,
+            "the seam consulted the provider for neither the block nor the \
+             yield"
+        );
+        assert!(
+            store.internal().scheduler().suspend_seam().has_provider(),
+            "the provider is still in its slot"
         );
     }
 
