@@ -584,13 +584,18 @@ impl core::fmt::Display for TypeMismatchPosition {
     }
 }
 
-/// A polyfill-typed rendering of a [`ValueType`] or a
-/// [`FunctionType`] for inclusion in a [`TypeMismatch`].
+/// A polyfill-typed rendering of a [`ValueType`], a
+/// [`FunctionType`], or a count of values, for inclusion in a
+/// [`TypeMismatch`].
 ///
-/// Two renderings exist so a function-vs-function mismatch can be
-/// reported with the full signature on each side, while a value-vs-
-/// value mismatch can be reported with the offending value type
-/// only. Both shapes are owned, polyfill-typed data.
+/// Three renderings exist so a function-vs-function mismatch can be
+/// reported with the full signature on each side, a value-vs-value
+/// mismatch can be reported with the offending value type only, and
+/// a disagreement over how many values crossed can be reported as
+/// the two counts. The last one names no type on purpose: a value
+/// list of the wrong length disagrees before any one slot's type is
+/// consulted, so a type there would be invented rather than
+/// observed. All three shapes are owned, polyfill-typed data.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum TypeRendering {
@@ -598,6 +603,10 @@ pub enum TypeRendering {
     Value(ValueType),
     /// A function type, used when an entire signature disagrees.
     Function(FunctionType),
+    /// A number of values, used when the two sides disagree over
+    /// how many values a position carries rather than over the type
+    /// of any one of them.
+    Arity(usize),
 }
 
 impl core::fmt::Display for TypeRendering {
@@ -605,6 +614,8 @@ impl core::fmt::Display for TypeRendering {
         match self {
             Self::Value(ty) => write!(f, "{ty:?}"),
             Self::Function(ty) => write!(f, "{ty:?}"),
+            Self::Arity(1) => write!(f, "1 value"),
+            Self::Arity(count) => write!(f, "{count} values"),
         }
     }
 }

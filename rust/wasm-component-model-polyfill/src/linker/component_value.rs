@@ -48,6 +48,12 @@ pub trait ComponentParameters: Sized + Send + Sync + 'static {
     /// does not preserve them.
     fn parameter_types() -> Vec<FunctionParameter>;
     /// Decode a slice of [`Val`]s into this tuple.
+    ///
+    /// A slice of the wrong length fails as a
+    /// [`TypeMismatch`](crate::TypeMismatch) rendering the two
+    /// counts. A value the tuple's corresponding element does not
+    /// accept fails as an [`AbiError`](crate::AbiError) positioned
+    /// at the argument that value occupies, not at the first one.
     fn from_vals(vals: &[Val]) -> Result<Self>;
     /// Encode this tuple into the slice of [`Val`]s the canonical
     /// ABI lower path consumes. The order matches
@@ -66,6 +72,10 @@ pub trait ComponentResult: Sized + Send + Sync + 'static {
     /// Decode the optional result [`Val`] the canonical-ABI lift
     /// produced into this Rust value. `None` means the export
     /// declared no result; `Some(val)` carries the lifted value.
+    ///
+    /// A value this Rust type does not accept fails as an
+    /// [`AbiError`](crate::AbiError) positioned at the result, as
+    /// does a missing or unexpected one.
     fn from_val(val: Option<&Val>) -> Result<Self>;
 }
 
@@ -212,7 +222,13 @@ macro_rules! impl_component_parameters {
                 if vals.len() != $count {
                     return Err(arity_mismatch($count, vals.len()));
                 }
-                Ok(( $( $name::from_val(&vals[$index])?, )+ ))
+                Ok(( $(
+                    $name::from_val(&vals[$index])
+                        .map_err(|error| at_position(
+                            error,
+                            AbiPosition::Argument($index),
+                        ))?,
+                )+ ))
             }
             fn into_vals(self) -> Vec<Val> {
                 vec![ $( self.$index.to_val(), )+ ]
@@ -252,7 +268,8 @@ impl<T: ComponentValue> ComponentResult for T {
     }
     fn from_val(val: Option<&Val>) -> Result<Self> {
         match val {
-            Some(v) => <T as ComponentValue>::from_val(v),
+            Some(v) => <T as ComponentValue>::from_val(v)
+                .map_err(|error| at_position(error, AbiPosition::Result)),
             None => Err(missing_result()),
         }
     }
@@ -271,35 +288,60 @@ pub fn function_type_for<P: ComponentParameters, R: ComponentResult>() -> Functi
     }
 }
 
+/// The slot a [`ComponentValue`] decode raises its mismatch at
+/// before a caller anchors it.
+///
+/// `ComponentValue::from_val` is handed a value and nothing else, so
+/// it cannot know which argument or result the value came from. It
+/// raises at this placeholder, and the [`ComponentParameters`] and
+/// [`ComponentResult`] decoders — which do know the slot — move the
+/// failure to the real one with [`at_position`].
+const UNANCHORED_SLOT: AbiPosition = AbiPosition::Argument(0);
+
 fn value_mismatch(_val: &Val) -> Error {
     Error::from(AbiError {
-        position: AbiPosition::Argument(0),
+        position: UNANCHORED_SLOT,
         valtype: None,
         cause: AbiCause::HostValueMismatch,
     })
 }
 
+/// Move a decode failure to the slot the decode was reading for.
+///
+/// Only a canonical-ABI failure carries a slot, so any other error
+/// passes through untouched. A failure from inside a compound value
+/// — an element of a list, the payload of an option — is moved to
+/// the slot the whole value occupies, because that is the slot the
+/// caller supplied it at.
+fn at_position(error: Error, position: AbiPosition) -> Error {
+    match error {
+        Error::Abi(abi) => {
+            let AbiError { valtype, cause, .. } = *abi;
+            Error::from(AbiError {
+                position,
+                valtype,
+                cause,
+            })
+        }
+        other => other,
+    }
+}
+
+/// The failure a decode reports when the value list it was handed is
+/// not the length the Rust tuple accepts.
+///
+/// The two sides disagree over how many values crossed, which is
+/// settled before any one slot's type is looked at, so the rendering
+/// carries the two counts rather than a signature: there is no type
+/// to name, and naming one would describe a function neither side
+/// declared.
 fn arity_mismatch(expected: usize, found: usize) -> Error {
     Error::from(TypeMismatch {
         position: TypeMismatchPosition::TypedExportCall {
             export: "<typed-call>".to_owned(),
         },
-        expected: TypeRendering::Function(FunctionType {
-            parameters: vec![FunctionParameter {
-                name: format!("expected={expected}"),
-                ty: ValueType::Primitive(PrimitiveType::Bool),
-            }],
-            result: None,
-            async_: false,
-        }),
-        actual: TypeRendering::Function(FunctionType {
-            parameters: vec![FunctionParameter {
-                name: format!("found={found}"),
-                ty: ValueType::Primitive(PrimitiveType::Bool),
-            }],
-            result: None,
-            async_: false,
-        }),
+        expected: TypeRendering::Arity(expected),
+        actual: TypeRendering::Arity(found),
     })
 }
 
@@ -317,4 +359,99 @@ fn unexpected_result_present() -> Error {
         valtype: None,
         cause: AbiCause::HostValueMismatch,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The slot a decode failure names, for a decode a test expects
+    /// to fail at the canonical-ABI boundary.
+    fn slot_of(error: Error) -> AbiPosition {
+        match error {
+            Error::Abi(abi) => abi.position,
+            other => panic!("expected a canonical ABI error, got {other:?}"),
+        }
+    }
+
+    /// A tuple decode blames the argument the wrong value actually
+    /// arrived at, whichever one that is.
+    #[wcmp_macros::test]
+    fn it_names_the_argument_the_wrong_value_arrived_at() {
+        let first = <(u32, u32) as ComponentParameters>::from_vals(&[Val::Bool(true), Val::U32(7)])
+            .unwrap_err();
+        assert_eq!(slot_of(first), AbiPosition::Argument(0));
+
+        let second =
+            <(u32, u32) as ComponentParameters>::from_vals(&[Val::U32(7), Val::Bool(true)])
+                .unwrap_err();
+        assert_eq!(slot_of(second), AbiPosition::Argument(1));
+
+        let last = <(u32, u32, u32, u32) as ComponentParameters>::from_vals(&[
+            Val::U32(1),
+            Val::U32(2),
+            Val::U32(3),
+            Val::Bool(true),
+        ])
+        .unwrap_err();
+        assert_eq!(slot_of(last), AbiPosition::Argument(3));
+    }
+
+    /// A mismatch found inside a compound value is reported at the
+    /// argument the whole value occupies: that is the slot the
+    /// caller supplied it at.
+    #[wcmp_macros::test]
+    fn it_names_the_argument_a_compound_value_was_supplied_at() {
+        let error = <(u32, Vec<u32>) as ComponentParameters>::from_vals(&[
+            Val::U32(7),
+            Val::List(vec![Val::Bool(true)].into()),
+        ])
+        .unwrap_err();
+        assert_eq!(slot_of(error), AbiPosition::Argument(1));
+    }
+
+    /// A result the Rust return type does not accept is reported at
+    /// the result, not at an argument — as a missing result and an
+    /// unexpected one already were.
+    #[wcmp_macros::test]
+    fn it_names_the_result_position_for_a_wrong_result() {
+        let wrong = <u32 as ComponentResult>::from_val(Some(&Val::Bool(true))).unwrap_err();
+        assert_eq!(slot_of(wrong), AbiPosition::Result);
+
+        let nested =
+            <Vec<u32> as ComponentResult>::from_val(Some(&Val::List(vec![Val::Bool(true)].into())))
+                .unwrap_err();
+        assert_eq!(slot_of(nested), AbiPosition::Result);
+
+        let missing = <u32 as ComponentResult>::from_val(None).unwrap_err();
+        assert_eq!(slot_of(missing), AbiPosition::Result);
+
+        let unexpected = <() as ComponentResult>::from_val(Some(&Val::U32(7))).unwrap_err();
+        assert_eq!(slot_of(unexpected), AbiPosition::Result);
+    }
+
+    /// An arity mismatch renders as the two counts. It settles
+    /// before any slot's type is looked at, so there is no signature
+    /// to render and none is invented.
+    #[wcmp_macros::test]
+    fn it_renders_an_arity_mismatch_as_the_two_counts() {
+        let error = <(u32, u32) as ComponentParameters>::from_vals(&[Val::U32(7)]).unwrap_err();
+        let Error::TypeMismatch(mismatch) = &error else {
+            panic!("expected a type mismatch, got {error:?}");
+        };
+        assert_eq!(mismatch.expected, TypeRendering::Arity(2));
+        assert_eq!(mismatch.actual, TypeRendering::Arity(1));
+        assert_eq!(
+            error.to_string(),
+            "type mismatch: at typed export call for `<typed-call>`: expected 2 values, \
+             found 1 value"
+        );
+
+        let empty = <() as ComponentParameters>::from_vals(&[Val::U32(7)]).unwrap_err();
+        assert_eq!(
+            empty.to_string(),
+            "type mismatch: at typed export call for `<typed-call>`: expected 0 values, \
+             found 1 value"
+        );
+    }
 }

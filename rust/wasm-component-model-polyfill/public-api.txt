@@ -199,6 +199,7 @@ pub wasm_component_model_polyfill::TypeMismatchPosition::TypedExportSlot::slot: 
 impl core::fmt::Display for wasm_component_model_polyfill::TypeMismatchPosition
 pub fn wasm_component_model_polyfill::TypeMismatchPosition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum wasm_component_model_polyfill::TypeRendering
+pub wasm_component_model_polyfill::TypeRendering::Arity(usize)
 pub wasm_component_model_polyfill::TypeRendering::Function(wasm_component_model_polyfill::FunctionType)
 pub wasm_component_model_polyfill::TypeRendering::Value(wasm_component_model_polyfill::ValueType)
 impl core::fmt::Display for wasm_component_model_polyfill::TypeRendering
