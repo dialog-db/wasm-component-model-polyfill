@@ -36,6 +36,16 @@
       url = "git+ssh://git@github.com/cdata/nixos-config.git?shallow=1";
       flake = false;
     };
+
+    # The browser test runner, pinned by commit. wbg-pool is a member of the
+    # dialog-db workspace and inherits that workspace's dependency table, so
+    # the whole tree is fetched and one crate is built from it (see
+    # `wbg-pool` below). Its codegen library must match the `wasm-bindgen`
+    # version Cargo.toml pins; the two move together.
+    wbg-pool-src = {
+      url = "github:dialog-db/dialog-db/7b84dcac9520f368b6c0714c6e2785e5740f28c7";
+      flake = false;
+    };
   };
 
   outputs =
@@ -48,6 +58,7 @@
       component-model-src,
       wasmtime-src,
       nixos-config,
+      wbg-pool-src,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -205,6 +216,31 @@
           meta.mainProgram = "wac";
         });
 
+        # The wasm32 test runner (see `.cargo/config.toml`). nextest runs
+        # each browser test in its own runner process, and the stock
+        # `wasm-bindgen-test-runner` boots a ChromeDriver and a headless
+        # Chrome and regenerates the wasm-bindgen glue for the whole test
+        # binary on every one of those: about five seconds and two
+        # gigabytes per test here, before the test body runs. wbg-pool keeps
+        # one headless Chrome alive in a daemon, opens a fresh tab on a
+        # fresh origin per test, and generates the glue once per binary.
+        # Built from the pinned dialog-db tree; `cargoHash` covers that
+        # workspace's lockfile.
+        wbg-pool = pkgs.rustPlatform.buildRustPackage {
+          pname = "wbg-pool";
+          version = "0.1.0";
+          src = wbg-pool-src;
+          cargoHash = "sha256-W7rALlEbY3ZobZtNzI9xljEC0pkeMm0OLYbl2uvV9xU=";
+          cargoBuildFlags = [
+            "--package"
+            "wbg-pool"
+          ];
+          # The crate's tests open sockets and spawn processes, which the
+          # build sandbox forbids.
+          doCheck = false;
+          meta.mainProgram = "wbg-pool";
+        };
+
         # Chrome differs by platform: Darwin uses google-chrome (unfree)
         # because chromium is unmaintained there; everything else uses
         # chromium.
@@ -214,7 +250,10 @@
         # Headless Chrome refuses to start under the Nix build sandbox on
         # Linux and under the default sandbox/GPU configuration on Darwin.
         # wasm-bindgen-test-runner reads this JSON and passes the flags
-        # through ChromeDriver on every platform.
+        # through ChromeDriver on every platform. The browser lanes run
+        # through wbg-pool instead (see `.cargo/config.toml`), which
+        # launches Chrome itself; the stock runner remains its fallback for
+        # a test binary not configured for a browser.
         webdriverConfig = (pkgs.formats.json { }).generate "webdriver.json" {
           "goog:chromeOptions" = {
             binary = chromePath;
@@ -373,6 +412,9 @@
           ])
           ++ [
             markdown.prettier
+            # The wasm32 test runner nextest invokes once per browser test
+            # against one shared headless Chrome.
+            wbg-pool
             # Diagnostic: compares a Nix-built deps bundle's alignment
             # manifest against the live shell (`katsuobushi-check-artifact-
             # alignment <bundle>`), so a silent full rebuild has a named cause.
@@ -387,6 +429,10 @@
           "CHROME" = chromePath;
           "CHROMEDRIVER" = "${pkgs.chromedriver}/bin/chromedriver";
           "WASM_BINDGEN_TEST_WEBDRIVER_JSON" = webdriverConfig;
+          # The pooled browser gets the same `--no-sandbox` the WebDriver
+          # configuration passes to the stock runner: Chrome's sandbox does
+          # not initialize inside a sandbox VM, and test code is trusted.
+          "WBG_POOL_NO_SANDBOX" = "1";
         };
 
         # Wraps a Nix-built test archive (`buildTestArchive`) into a menu
@@ -433,23 +479,35 @@
           export TMPDIR="$workspace/tmp"
         '';
 
-        # A web lane runs one headless browser and one test runner (about
-        # 2 GB) per test in flight, so its parallelism follows available
-        # memory, one test per 4 GB and at most 8, unless the operator
-        # sets `NEXTEST_TEST_THREADS` or passes `-j`. Native lanes keep
-        # nextest's default, one test per core.
+        # A web lane runs every test in a tab of one shared headless Chrome,
+        # so a test in flight costs one renderer holding an instantiated
+        # debug test module, well under a gigabyte. Its parallelism follows
+        # available memory, one test per gigabyte, capped at the core
+        # count, unless the operator sets `NEXTEST_TEST_THREADS` or passes
+        # `-j`. Native lanes keep nextest's default, one test per core.
         browserTestThreads = ''
           if [ -z "''${NEXTEST_TEST_THREADS:-}" ]; then
             threads=4
             if [ -r /proc/meminfo ]; then
               available_kb=$(awk '/MemAvailable/ { print $2 }' /proc/meminfo)
-              threads=$(( available_kb / 1024 / 1024 / 4 ))
+              threads=$(( available_kb / 1024 / 1024 ))
             fi
+            cores=$(nproc 2>/dev/null || echo "$threads")
+            [ "$threads" -gt "$cores" ] && threads=$cores
             [ "$threads" -lt 1 ] && threads=1
-            [ "$threads" -gt 8 ] && threads=8
             export NEXTEST_TEST_THREADS="$threads"
             echo "browser tests: $threads at a time (set NEXTEST_TEST_THREADS or pass -j to change)"
           fi
+        '';
+
+        # The pooled browser's daemon is detached from the shim that spawns
+        # it and would idle for five minutes on its own, so a browser lane
+        # pins its rendezvous directory under the lane workspace and stops
+        # it on exit, before the workspace (and the browser's files under
+        # it) goes away.
+        browserPool = ''
+          export WBG_POOL_DIR="$workspace/wbg-pool"
+          trap 'wbg-pool daemon --stop >/dev/null 2>&1; rm -rf "$workspace"' EXIT
         '';
 
         menuTestCommand =
@@ -467,7 +525,7 @@
               archive=$(nix build --no-link --print-out-paths .#${package})
             ''
             + testWorkspace package
-            + pkgs.lib.optionalString browser browserTestThreads
+            + pkgs.lib.optionalString browser (browserPool + browserTestThreads)
             + ''
               cargo nextest run \
                 --workspace-remap ./ \
@@ -793,6 +851,9 @@
           # the pinned versions are one `nix build` away.
           wasm-tools = pkgs.wasm-tools;
           wac = wac-cli;
+          # The browser test runner, exposed so its build is one `nix build`
+          # away when its pin or the `wasm-bindgen` version moves.
+          inherit wbg-pool;
 
           smoke-native = smokeNative;
           smoke-web = smokeWeb;

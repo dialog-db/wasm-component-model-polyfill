@@ -1,2 +1,7 @@
 [target.wasm32-unknown-unknown]
-runner = "wasm-bindgen-test-runner"
+# wbg-pool stands in for wasm-bindgen-test-runner: one headless Chrome shared
+# by every test process nextest spawns, each test in a fresh tab on a fresh
+# origin, and wasm-bindgen codegen once per binary instead of once per test.
+# The dev shell puts it on PATH (see flake.nix). A test binary that is not
+# configured for a browser goes back to wasm-bindgen-test-runner.
+runner = "wbg-pool"

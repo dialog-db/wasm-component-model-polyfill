@@ -17,8 +17,8 @@ for the board.
   `nix develop -c tests native debug`.
 - Nix sees only tracked files. Commit (or at least snapshot with `jj`) before
   `lint` or a `tests` command, or the run measures a stale tree.
-- On Linux the flake supplies the WebDriver configuration for the browser tests.
-  No manual Chrome setup is needed.
+- The flake supplies Chrome, ChromeDriver, and `wbg-pool`, the pooled runner the
+  browser lanes go through. No manual Chrome setup is needed.
 - `sandbox` (Linux only) launches and drives agent VMs. `sandbox status` is the
   host preflight; it needs `HARNESS_OAUTH_TOKEN` exported on the host.
 

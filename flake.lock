@@ -390,7 +390,8 @@
         "llm-agents": "llm-agents_2",
         "nixos-config": "nixos-config",
         "nixpkgs": "nixpkgs_3",
-        "wasmtime-src": "wasmtime-src"
+        "wasmtime-src": "wasmtime-src",
+        "wbg-pool-src": "wbg-pool-src"
       }
     },
     "rust-overlay": {
@@ -546,6 +547,23 @@
       "original": {
         "owner": "bytecodealliance",
         "repo": "wasmtime",
+        "type": "github"
+      }
+    },
+    "wbg-pool-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1790037028,
+        "narHash": "sha256-XFqTPw0xuhNmoR9BEL0GN7HfBSLt2zClRKvK3M+nizY=",
+        "owner": "dialog-db",
+        "repo": "dialog-db",
+        "rev": "7b84dcac9520f368b6c0714c6e2785e5740f28c7",
+        "type": "github"
+      },
+      "original": {
+        "owner": "dialog-db",
+        "repo": "dialog-db",
+        "rev": "7b84dcac9520f368b6c0714c6e2785e5740f28c7",
         "type": "github"
       }
     }
