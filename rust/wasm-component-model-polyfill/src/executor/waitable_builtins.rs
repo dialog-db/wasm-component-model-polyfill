@@ -20,7 +20,9 @@
 //! pointer and at the pointer plus four, through the memory the
 //! built-in's own canon options name, and return the event's code.
 //! A `u32` is stored at an aligned address, so a pointer that is not
-//! a multiple of four traps and writes nothing.
+//! a multiple of four traps and writes nothing. A poll of a set that
+//! holds no event delivers the none event, whose payloads are zero,
+//! so it writes and checks the pointer like any other delivery.
 //!
 //! `waitable-set.wait` is the one built-in here that can block. A
 //! set that already holds an event delivers it and the thread does
@@ -99,7 +101,8 @@ pub fn build_waitable_set_wait<T: 'static>(
 
 /// Build the `waitable-set.poll` built-in. It takes what
 /// [`build_waitable_set_wait`] takes and never blocks: a set that
-/// holds no event answers with the none code and nothing is written.
+/// holds no event answers with the none code, whose two payloads are
+/// zero and are written at the pointer like any other event's.
 pub fn build_waitable_set_poll<T: 'static>(
     store: &mut StoreContext<'_, T>,
     options: &CanonOptions,
@@ -294,13 +297,14 @@ fn waitable_set_poll<T: 'static>(
     };
 
     // A poll of a set that holds no event answers with the none
-    // code and writes nothing: the guest has no payload to read, so
-    // the built-in leaves the two words where the pointer names as
-    // the guest left them.
-    let Some(event) = delivered else {
-        results[0] = RuntimeVal::I32(Event::none().code().value() as i32);
-        return Ok(());
-    };
+    // event, whose two payloads are zero. That event is written at
+    // the pointer the way a delivered one is: the reference stores
+    // both words on every path, so the none path checks the pointer
+    // the delivering path checks, and a pointer that is misaligned
+    // or leaves the memory traps whether or not the set held an
+    // event. A guest that reads the pair after the none code reads
+    // two zero words rather than what it last left there.
+    let event = delivered.unwrap_or_else(Event::none);
     let (code, payloads) = (event.code().value(), event.payloads());
     write_payloads(
         &mut store_ctx,

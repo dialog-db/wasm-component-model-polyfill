@@ -357,7 +357,7 @@ async fn it_fails_a_wait_reached_through_a_synchronous_call_with_the_cannot_bloc
 }
 
 #[wcmp_macros::test]
-async fn it_answers_a_poll_of_an_empty_set_with_the_none_code_and_writes_nothing() {
+async fn it_answers_a_poll_of_an_empty_set_with_the_none_code_and_two_zero_words() {
     let (mut store, instance) = instantiate(SET_BUILTINS).await;
     let set_index = call_u32(&mut store, &instance, "new-set", &[]).await;
     for (offset, value) in [(0u32, 0x1111_2222u32), (4, 0x3333_4444)] {
@@ -376,13 +376,14 @@ async fn it_answers_a_poll_of_an_empty_set_with_the_none_code_and_writes_nothing
     assert_eq!(code, 0, "an empty set answers a poll with the none code");
     assert_eq!(
         call_u32(&mut store, &instance, "peek", &[Val::U32(0)]).await,
-        0x1111_2222,
-        "the poll wrote nothing at the pointer"
+        0,
+        "the none event's first payload is zero, and the poll writes it \
+         at the pointer over what the guest left there"
     );
     assert_eq!(
         call_u32(&mut store, &instance, "peek", &[Val::U32(4)]).await,
-        0x3333_4444,
-        "nor at the pointer plus four"
+        0,
+        "and its second payload at the pointer plus four"
     );
 }
 
@@ -737,8 +738,6 @@ async fn it_traps_a_wait_whose_event_pointer_is_not_aligned() {
 async fn it_traps_a_poll_whose_event_pointer_is_not_aligned() {
     let (mut store, instance) = instantiate(SET_BUILTINS).await;
     let set_index = call_u32(&mut store, &instance, "new-set", &[]).await;
-    // A poll of an empty set writes nothing and so never reaches the
-    // pointer; the set has to hold an event for the check to matter.
     ready_subtask_in_set(&mut store, &instance, set_index);
 
     let message = call_trap(
@@ -754,4 +753,60 @@ async fn it_traps_a_poll_whose_event_pointer_is_not_aligned() {
         "the poll writes the pair the wait writes, so it checks the same \
          alignment: {message}"
     );
+}
+
+/// The memory the built-ins of [`SET_BUILTINS`] write through is one
+/// page, so a pointer at its end leaves too little room for the pair
+/// of `u32` values an event is written as.
+const MEMORY_BYTES: u32 = 65_536;
+
+#[wcmp_macros::test]
+async fn it_traps_a_poll_of_an_empty_set_on_every_pointer_a_wait_traps_on() {
+    // Three pointers and the cause each one raises: one that is not
+    // a multiple of four, one two bytes from the end of the memory,
+    // which is not a multiple of four either and so fails the same
+    // way, and one four bytes from the end, which is aligned and
+    // fails when the pair leaves the memory halfway through.
+    //
+    // The whole message cannot be compared, because the substrate
+    // puts the core function the trap came from in front of the
+    // cause and the poll and the wait are two different functions.
+    for (pointer, cause) in [
+        (1, "event pointer not aligned to 4"),
+        (MEMORY_BYTES - 2, "event pointer not aligned to 4"),
+        (MEMORY_BYTES - 4, "guest memory access failed"),
+    ] {
+        let (mut store, instance) = instantiate(SET_BUILTINS).await;
+        let set_index = call_u32(&mut store, &instance, "new-set", &[]).await;
+        let polled = call_trap(
+            &mut store,
+            &instance,
+            "poll-at",
+            &[Val::U32(set_index), Val::U32(pointer)],
+        )
+        .await;
+
+        let (mut store, instance) = instantiate(SET_BUILTINS).await;
+        let set_index = call_u32(&mut store, &instance, "new-set", &[]).await;
+        ready_subtask_in_set(&mut store, &instance, set_index);
+        let waited = call_trap(
+            &mut store,
+            &instance,
+            "wait-at",
+            &[Val::U32(set_index), Val::U32(pointer)],
+        )
+        .await;
+
+        assert!(
+            waited.contains(cause),
+            "a wait that has an event to deliver fails at pointer {pointer} \
+             with the cause the pointer earns: {waited}"
+        );
+        assert!(
+            polled.contains(cause),
+            "a poll of an empty set writes the none event's two zero words \
+             through the pointer, so pointer {pointer} fails it for the \
+             reason it fails the wait: {polled}"
+        );
+    }
 }
