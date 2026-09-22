@@ -30,8 +30,10 @@ syn = { version = "2", features = ["full"] }
 thiserror = "2"
 tokio = "1"
 # Pinned so that the crate version everything links against matches the
-# `wasm-bindgen-cli` the flake provides for `wasm-bindgen-test-runner`.
-wasm-bindgen = "=0.2.108"
+# `wasm-bindgen-cli` the flake provides and the codegen library inside
+# `wbg-pool`, the browser test runner the flake pins by commit. The two move
+# together: the runner refuses a test binary built by another version.
+wasm-bindgen = "=0.2.126"
 wasm-bindgen-futures = "0.4"
 wasm-bindgen-test = "0.3"
 wasm_runtime_layer = "0.7"

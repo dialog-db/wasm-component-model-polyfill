@@ -261,14 +261,12 @@
           nativeBuildInputs = commonBuildInputs;
           # wasm-bindgen-cli must match the `wasm-bindgen` crate version that
           # Cargo.lock resolves. The helper reads the version from the lock
-          # file; these are the fixed-output hashes for it. When the workspace
-          # bumps `wasm-bindgen`, add the new version here (bootstrap both
-          # fields with `pkgs.lib.fakeHash` and let the failing build report
-          # the real values).
-          wasmBindgenHashes."0.2.108" = {
-            hash = "sha256-UsuxILm1G6PkmVw0I/JF12CRltAfCJQFOaT4hFwvR8E=";
-            cargoHash = "sha256-iqQiWbsKlLBiJFeqIYiXo3cqxGLSjNM8SOWXGM9u43E=";
-          };
+          # file and knows the fixed-output hashes for the version it was
+          # validated against, which is the one Cargo.toml pins. When the
+          # workspace bumps `wasm-bindgen` past that, add a
+          # `wasmBindgenHashes."<version>"` entry here (bootstrap its `hash`
+          # and `cargoHash` with `pkgs.lib.fakeHash` and let the failing
+          # build report the real values).
         };
 
         inherit (rustHelpers)
