@@ -1,0 +1,13 @@
+# Trunk builds the browser half of the smoke test (`tests smoke web`):
+# `web/index.html` names the crate, the stylesheet, and the page script,
+# and `trunk build` produces the page the flake serves and checks.
+[build]
+target = "web/index.html"
+# The page script imports the wasm-bindgen output by its plain name, so
+# the output names carry no hash.
+filehash = false
+# Trunk's own loader is an inline `<script>`, which the page's
+# content-security policy (`script-src 'self'`) forbids. In its place
+# the page loads `web/boot.js`, which instantiates the module itself;
+# Trunk still adds the preload links with their integrity digests.
+pattern_script = '<script type="module" src="{base}boot.js"></script>'

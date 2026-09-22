@@ -311,6 +311,7 @@
         inherit (rustHelpers)
           buildCrate
           buildTestArchive
+          buildTrunkCrate
           buildWasmCrate
           cargoChecks
           checkArtifactAlignment
@@ -625,6 +626,37 @@
                 description = "Conformance progress per corpus on both targets (debug)";
                 command = conformanceSummaryCommand + conformanceSummaryFor "tests-web-debug";
               };
+              # The end-to-end smoke test (`rust/wcmp-smoke`): one host
+              # program that tells what a developer does with the polyfill,
+              # story by story, natively or in a browser.
+              smoke = {
+                description = "The end-to-end smoke test, natively or in a browser";
+                subcommands = {
+                  native = {
+                    description = "Build the smoke test host as a derivation and run it";
+                    command = ''
+                      "$(nix build --no-link --print-out-paths .#smoke-native)"/bin/wcmp-smoke
+                    '';
+                  };
+                  web = {
+                    description = "Build the smoke test page and serve it (`nix run .#smoke-web`; a port after the leaf, 8765 by default)";
+                    command = ''
+                      nix run .#smoke-web -- "$@"
+                    '';
+                  };
+                  check = {
+                    description = "Drive the smoke test page headlessly as the flake check does, and print its report";
+                    command = ''
+                      if report=$(nix build --no-link --print-out-paths .#checks.${system}.smoke-web); then
+                        cat "$report/report.txt"
+                      else
+                        echo "smoke check: FAILED (see the build log above)"
+                        exit 1
+                      fi
+                    '';
+                  };
+                };
+              };
               all = {
                 description = "Every archive, each reported (grab a coffee)";
                 command = ''
@@ -647,38 +679,6 @@
           "lint" = {
             description = "Every check the flake declares (nix flake check)";
             command = "nix flake check";
-          };
-
-          "smoke" = {
-            description = "Run the end-to-end smoke test natively or in the browser";
-            subcommands = {
-              native = {
-                description = "Build the smoke test host as a derivation and run it";
-                command = ''
-                  "$(nix build --no-link --print-out-paths .#smoke-native)"/bin/wcmp-smoke
-                '';
-              };
-              web = {
-                description = "Build the smoke test page as a derivation and serve it (uncached, so a rebuilt page shows at once)";
-                command = ''
-                  site=$(nix build --no-link --print-out-paths .#smoke-web)
-                  port="''${1:-8765}"
-                  echo "smoke test page: http://127.0.0.1:$port/  (Ctrl-C stops the server)"
-                  ${pkgs.python3}/bin/python3 ${./rust/wcmp-smoke/web/serve.py} "$site" "$port"
-                '';
-              };
-              check = {
-                description = "Drive the smoke test page headlessly as the flake check does, and print its report";
-                command = ''
-                  if report=$(nix build --no-link --print-out-paths .#checks.${system}.smoke-web); then
-                    cat "$report/report.txt"
-                  else
-                    echo "smoke check: FAILED (see the build log above)"
-                    exit 1
-                  fi
-                '';
-              };
-            };
           };
 
           # The crate's public surface, as `cargo public-api` reads it out
@@ -727,53 +727,89 @@
         # accepts the index shown in `sandbox status`.
         // pkgs.lib.optionalAttrs isLinux sandbox.menuCommands;
 
-        # The smoke test host (`rust/wcmp-smoke`): one program that walks
-        # the polyfill end to end. Natively it is a binary; for the browser
-        # the same binary crate goes through `wasm-bindgen --target web` and
-        # ships with its page.
+        # The smoke test host (`rust/wcmp-smoke`): one program that tells
+        # what a developer does with the polyfill, story by story. Natively
+        # it is a binary; for the browser, Trunk builds the same binary
+        # crate into a page from the `Trunk.toml` beside the crate and the
+        # `web/index.html` it names, with the page's stylesheet and script.
         smokeNative = buildCrate {
           pname = "wcmp-smoke";
           version = "0.1.0";
           cargoExtraArgs = "--package wcmp-smoke";
         };
-        smokeWeb = buildWasmCrate {
+        smokeWeb = buildTrunkCrate {
           pname = "wcmp-smoke-web";
           version = "0.1.0";
-          cargoExtraArgs = "--package wcmp-smoke --bin wcmp-smoke";
-          doInstallCargoArtifacts = false;
-          doNotPostBuildInstallCargoBinaries = true;
+          trunkConfig = "rust/wcmp-smoke/Trunk.toml";
+          trunkIndexPath = "web/index.html";
+          # Trunk writes `dist` beside `Trunk.toml`, not beside the page.
           installPhaseCommand = ''
-            mkdir -p $out
-            $WASM_BINDGEN_BIN --target web --no-typescript \
-              --out-dir $out target/wasm32-unknown-unknown/release/wcmp-smoke.wasm
-            cp ${./rust/wcmp-smoke/web/index.html} $out/index.html
-            # The page's script is a file, not an inline element: the
-            # page declares `script-src 'self' 'wasm-unsafe-eval'`, so
-            # the polyfill runs under the policy a hardened site sets.
-            cp ${./rust/wcmp-smoke/web/boot.js} $out/boot.js
+            cp -r dist $out
+          '';
+        };
+
+        # The page served for a person to open: `nix run .#smoke-web`, which
+        # `tests smoke web` runs. static-web-server serves the built page on
+        # a loopback port, and every response says `no-store`: the page's
+        # files come out of the Nix store with a 1970 modification time,
+        # and a browser given that as `Last-Modified` would keep the script
+        # and the wasm across runs, so a rebuilt page would show the
+        # previous build until a hard reload.
+        smokeWebServerConfig = (pkgs.formats.toml { }).generate "static-web-server.toml" {
+          advanced.headers = [
+            {
+              source = "**/*";
+              headers."Cache-Control" = "no-store";
+            }
+          ];
+        };
+        smokeWebServer = pkgs.writeShellApplication {
+          name = "wcmp-smoke-web";
+          runtimeInputs = [ pkgs.static-web-server ];
+          text = ''
+            port="''${1:-8765}"
+            echo "smoke test page: http://127.0.0.1:$port/  (Ctrl-C stops the server)"
+            exec static-web-server \
+              --config-file ${smokeWebServerConfig} \
+              --root ${smokeWeb} \
+              --host 127.0.0.1 \
+              --port "$port" \
+              --cache-control-headers=false \
+              --log-level warn
           '';
         };
 
         # The web smoke page driven headlessly, as a check: the page
-        # `smoke web` serves, loaded in the flake's Chromium through
-        # chromedriver inside the build sandbox by `web/check.py`, with
-        # its report compared against the native smoke binary's.
+        # `tests smoke web` serves, loaded in the flake's Chromium through
+        # chromedriver inside the build sandbox by `web/check.sh`, with its
+        # report compared against the native smoke binary's. The script
+        # speaks WebDriver over HTTP with `curl` and `jq`, and serves the
+        # page with the same static-web-server a person is served by.
+        smokeWebCheckDriver = pkgs.writeShellApplication {
+          name = "wcmp-smoke-web-check";
+          runtimeInputs = [
+            pkgs.coreutils
+            pkgs.curl
+            pkgs.jq
+            pkgs.chromedriver
+            pkgs.static-web-server
+          ];
+          text = builtins.readFile ./rust/wcmp-smoke/web/check.sh;
+        };
         smokeWebCheck =
           pkgs.runCommand "wcmp-smoke-web-check"
             {
               nativeBuildInputs = [
                 chrome
-                pkgs.chromedriver
-                pkgs.python3
+                smokeWebCheckDriver
               ];
-              CHROMEDRIVER = "${pkgs.chromedriver}/bin/chromedriver";
               WASM_BINDGEN_TEST_WEBDRIVER_JSON = webdriverConfig;
             }
             ''
               export HOME=$TMPDIR
               native=$(${smokeNative}/bin/wcmp-smoke | tail -n 1)
               mkdir -p $out
-              python3 ${./rust/wcmp-smoke/web/check.py} ${smokeWeb} "$native" $out/report.txt
+              wcmp-smoke-web-check ${smokeWeb} "$native" $out/report.txt
             '';
 
         # The benchmark suite (`rust/wcmp-bench`): one binary that
@@ -840,9 +876,19 @@
         };
       in
       {
+        apps = {
+          # The smoke test page on a loopback port: `nix run .#smoke-web`
+          # (`tests smoke web` inside the shell), with an optional port
+          # after `--`.
+          smoke-web = {
+            type = "app";
+            program = "${smokeWebServer}/bin/wcmp-smoke-web";
+            meta.description = "Serve the smoke test page on a loopback port";
+          };
+        }
         # `nix run .#sandbox -- --agent --name <name>` is `sandbox start`
         # from outside the dev shell.
-        apps = pkgs.lib.optionalAttrs isLinux {
+        // pkgs.lib.optionalAttrs isLinux {
           sandbox = sandbox.apps.sandbox;
         };
 
@@ -905,7 +951,8 @@
           // markdown.checks
           // project.checks
           // {
-            # The web smoke page must still run: see `smokeWebCheck`.
+            # The web smoke page must still run, and report what the native
+            # binary reports: see `smokeWebCheck`.
             smoke-web = smokeWebCheck;
             # The suite must build for both targets on every check; running
             # it stays a menu command, so a number is never a cached one.

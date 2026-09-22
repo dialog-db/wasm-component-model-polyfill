@@ -11,8 +11,8 @@ for the board.
   again.
 - Every build and test goes through a menu command, never through bare `cargo`:
   `build <profile>`, `tests native|web <profile>`, `tests all`,
-  `tests conformance`, `lint`, `smoke native|web|check`. Each one builds a Nix
-  derivation.
+  `tests conformance`, `tests smoke native|web|check`, `lint`. Each one builds a
+  Nix derivation.
 - Outside the shell, prefix a command with `nix develop -c`, for example
   `nix develop -c tests native debug`.
 - Nix sees only tracked files. Commit (or at least snapshot with `jj`) before

@@ -1,0 +1,313 @@
+/* The smoke test page. One column, a masthead with the run's facts,
+   then the report a chapter at a time, then the plain transcript. */
+
+:root {
+  color-scheme: light dark;
+  --ink: #1c1d21;
+  --ink-soft: #5b5f6b;
+  --ink-faint: #8a8f9c;
+  --paper: #f7f6f2;
+  --card: #ffffff;
+  --rule: #e1dfd8;
+  --accent: #3b5bdb;
+  --ok: #2b8a3e;
+  --ok-wash: #e6f4ea;
+  --fail: #c92a2a;
+  --fail-wash: #fbe9e9;
+  --skip: #b7791f;
+  --skip-wash: #fcf3e2;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans:
+    system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e8e7e2;
+    --ink-soft: #b0b3bb;
+    --ink-faint: #7d818b;
+    --paper: #141519;
+    --card: #1d1f25;
+    --rule: #2c2f37;
+    --accent: #7c93ff;
+    --ok: #63c27a;
+    --ok-wash: #16281b;
+    --fail: #f07070;
+    --fail-wash: #2e1717;
+    --skip: #e3a94a;
+    --skip-wash: #2d2312;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--paper);
+  color: var(--ink);
+  font: 16px/1.55 var(--sans);
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 4rem;
+  max-width: 58rem;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+}
+
+/* Masthead */
+
+.masthead {
+  margin-bottom: 2rem;
+}
+
+.eyebrow {
+  margin: 0 0 0.25rem;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0 0 0.5rem;
+  font-size: 2.25rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.lede {
+  margin: 0 0 1.5rem;
+  max-width: 40rem;
+  color: var(--ink-soft);
+  font-size: 1.05rem;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.75rem 1.5rem;
+  margin: 0 0 1rem;
+}
+
+.facts div {
+  min-width: 0;
+}
+
+.facts dt {
+  color: var(--ink-faint);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.facts dd {
+  margin: 0.1rem 0 0;
+  overflow-wrap: anywhere;
+  font-size: 0.95rem;
+}
+
+.facts dd[data-state="ok"] {
+  color: var(--ok);
+}
+
+.facts dd[data-state="fail"] {
+  color: var(--fail);
+  font-weight: 600;
+}
+
+.facts dd[data-state="warn"] {
+  color: var(--skip);
+  font-weight: 600;
+}
+
+#browser {
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+}
+
+.progress {
+  height: 0.35rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--rule);
+}
+
+#bar {
+  width: 0;
+  height: 100%;
+  background: var(--accent);
+  transition: width 200ms ease-out;
+}
+
+html[data-state="failed"] #bar {
+  background: var(--fail);
+}
+
+html[data-state="passed"] #bar {
+  background: var(--ok);
+}
+
+/* Chapters and stories */
+
+.chapter {
+  margin: 2rem 0;
+}
+
+.chapter h2 {
+  margin: 0 0 0.75rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--rule);
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.story {
+  display: grid;
+  grid-template-columns: 3.5rem 1fr auto;
+  gap: 0.25rem 1rem;
+  margin: 0 0 0.75rem;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--rule);
+  border-radius: 0.6rem;
+  background: var(--card);
+  animation: arrive 240ms ease-out;
+}
+
+@keyframes arrive {
+  from {
+    opacity: 0;
+    transform: translateY(0.3rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .story {
+    animation: none;
+  }
+  #bar {
+    transition: none;
+  }
+}
+
+.story .mark {
+  align-self: start;
+  justify-self: start;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.story[data-outcome="ok"] .mark {
+  background: var(--ok-wash);
+  color: var(--ok);
+}
+
+.story[data-outcome="fail"] .mark {
+  background: var(--fail-wash);
+  color: var(--fail);
+}
+
+.story[data-outcome="skip"] .mark {
+  background: var(--skip-wash);
+  color: var(--skip);
+}
+
+.story[data-outcome="fail"] {
+  border-color: var(--fail);
+}
+
+.story .body {
+  min-width: 0;
+}
+
+.story h3 {
+  margin: 0 0 0.25rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.story .goal {
+  margin: 0 0 0.6rem;
+  color: var(--ink-soft);
+}
+
+.story .evidence {
+  margin: 0;
+  padding: 0.6rem 0.8rem;
+  border-left: 3px solid var(--rule);
+  border-radius: 0 0.3rem 0.3rem 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.story[data-outcome="fail"] .evidence {
+  border-left-color: var(--fail);
+}
+
+.story .elapsed {
+  align-self: start;
+  color: var(--ink-faint);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+@media (max-width: 40rem) {
+  .story {
+    grid-template-columns: auto 1fr;
+  }
+  .story .elapsed {
+    grid-column: 2;
+  }
+}
+
+/* Transcript */
+
+.transcript {
+  margin-top: 3rem;
+  color: var(--ink-soft);
+}
+
+.transcript summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.transcript pre {
+  margin: 0.75rem 0 0;
+  padding: 1rem;
+  border: 1px solid var(--rule);
+  border-radius: 0.6rem;
+  background: var(--card);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

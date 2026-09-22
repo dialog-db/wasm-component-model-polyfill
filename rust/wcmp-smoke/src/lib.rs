@@ -1,28 +1,35 @@
-//! The smoke test: one host program that walks the polyfill from the
-//! foundations through a `wac` composition, real-toolchain maps and
-//! fixed-length lists, a rich world three real-toolchain components
-//! share, a WASI 0.3 HTTP handler, core modules at the boundary,
-//! export navigation by name, a 64-bit memory, engine configuration,
-//! and a `run_concurrent` entry that waits outside the store, and
-//! reports each step. It runs as a native binary (`smoke native`) and
-//! as a page in the browser (`smoke web`) from the same source, so a
-//! reader can check the polyfill by reading this file and by running
-//! it on both targets.
+//! The smoke test: one host program that tells, chapter by chapter,
+//! what a developer does with the polyfill in a project of their own,
+//! and reports how each story went. It sets up an engine and a store,
+//! loads a component a real toolchain built and calls it, runs a
+//! `wac` composition, lends the guest host functions, host resources,
+//! and a core module, moves maps, fixed-length lists, and a
+//! wit-bindgen world of records, variants, and resources across the
+//! boundary, crosses into a 64-bit memory, walks exports by name,
+//! opts into a gated feature, awaits outside the store, and meets a
+//! clear refusal for a WASI 0.3 HTTP handler. It runs as a native
+//! binary (`tests smoke native`) and as a page in the browser
+//! (`tests smoke web`) from the same source, so a reader can check the
+//! polyfill by reading this file and by running it on both targets.
 //!
-//! Each step is self-contained: it builds its own store, runs a
+//! Each story is self-contained: it builds its own store, runs a
 //! component, and returns the evidence it observed. A failure in one
-//! step does not stop the others.
+//! story does not stop the others, and the report reaches a
+//! [`Reporter`] a story at a time, so the page shows each as it
+//! completes.
 
+mod clock;
 mod host_state;
 mod outcome;
 mod outside;
+mod reporter;
 mod step;
+mod story;
 
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -35,7 +42,9 @@ use wcmp_macros::component;
 pub use crate::host_state::HostState;
 pub use crate::outcome::Outcome;
 pub use crate::outside::Outside;
+pub use crate::reporter::Reporter;
 pub use crate::step::Step;
+pub use crate::story::Story;
 
 /// The `guest` fixture: a component `wasm-tools component new` built
 /// from a core module and its WIT. It exports `double`.
@@ -319,75 +328,201 @@ const DROPPER: &[u8] = component!(
     "#
 );
 
-/// Run every step and return the report. Compiling, instantiating,
-/// and calling are awaited, so the browser can compile through its
-/// asynchronous API; natively the futures complete at once.
-pub async fn run() -> Vec<Step> {
-    let engine = match Engine::new() {
-        Ok(engine) => engine,
-        Err(err) => {
-            return vec![Step {
-                name: "foundations",
-                outcome: Outcome::Failed(format!("Engine::new failed: {err}")),
-            }];
-        }
-    };
+/// A story's body: what it does against the engine, and the evidence
+/// it returns or the reason it failed.
+type Body<'a> = Pin<Box<dyn Future<Output = Result<String, String>> + 'a>>;
+
+pub static ENGINE_AND_STORE: Story = Story {
+    chapter: "Getting started",
+    title: "Create an engine and a store",
+    goal: "You embed the polyfill in a program of your own. An engine compiles components, \
+           and a store carries your host state next to every instance it holds, readable and \
+           writable from your side.",
+};
+
+pub static LOAD_AND_CALL: Story = Story {
+    chapter: "Getting started",
+    title: "Load a component and call a typed export",
+    goal: "You have a component that `wasm-tools component new` built from a core module and \
+           its WIT. You load it, instantiate it, and call its `double` export with Rust types \
+           on both sides.",
+};
+
+pub static COMPOSITION_STORY: Story = Story {
+    chapter: "Getting started",
+    title: "Run a `wac` composition",
+    goal: "You joined two components with `wac plug`. The result is one component, and the \
+           polyfill supplies the adapter that carries a call from the socket into the plug \
+           and back.",
+};
+
+pub static HOST_FUNCTION: Story = Story {
+    chapter: "Host integration",
+    title: "Provide a host function and pass strings and lists",
+    goal: "Your guest needs something only the host can do. You register a typed host \
+           function in the linker, and strings and a list cross the canonical ABI into guest \
+           memory and back out.",
+};
+
+pub static HOST_RESOURCE: Story = Story {
+    chapter: "Host integration",
+    title: "Hand the guest a host resource",
+    goal: "You define a resource whose representation lives on your side. When the guest \
+           drops a handle, your destructor runs, once per handle and in drop order.",
+};
+
+pub static DISPOSAL: Story = Story {
+    chapter: "Host integration",
+    title: "Release handles and tear everything down",
+    goal: "You release a handle you never gave the guest, a second release is refused, and \
+           the instance and the store go away without running a destructor for a handle you \
+           still held.",
+};
+
+pub static CORE_MODULES: Story = Story {
+    chapter: "Host integration",
+    title: "Lend a core module between components",
+    goal: "A component exports a plain core module. You read its shape, instantiate it \
+           yourself, and register it in a linker so a second component can instantiate it \
+           too.",
+};
+
+pub static MAPS_AND_FIXED_LISTS: Story = Story {
+    chapter: "Real toolchains, real types",
+    title: "Pass maps and fixed-length lists",
+    goal: "Your WIT uses `map<string, u32>`, `list<u32, 4>`, and `list<u8, 16>`. Each \
+           crosses into a component `wasm-tools` built and back, as a Rust `HashMap` or \
+           array and as an untyped `Val`.",
+};
+
+pub static RICH_WORLD: Story = Story {
+    chapter: "Real toolchains, real types",
+    title: "Drive a wit-bindgen world with records, variants, and resources",
+    goal: "Three components that `cargo` and wit-bindgen built share one world of records, \
+           variants, enums, flags, options, results, nested lists, strings, and resources. \
+           Every call crosses all three and comes back.",
+};
+
+pub static MEMORY64: Story = Story {
+    chapter: "Real toolchains, real types",
+    title: "Cross into a 64-bit memory",
+    goal: "One of your components uses a 64-bit memory. A string goes from the host into a \
+           32-bit component, through an adapter into an `i64`-addressed memory, and back \
+           unchanged.",
+};
+
+pub static NAVIGATION: Story = Story {
+    chapter: "Introspection and configuration",
+    title: "Find exports by name and read their signatures",
+    goal: "Your component nests functions under instance exports. You walk to `a.b.g` by \
+           name and read its parameter and result types before you call it.",
+};
+
+pub static ENGINE_CONFIGURATION: Story = Story {
+    chapter: "Introspection and configuration",
+    title: "Opt into a gated feature",
+    goal: "A component uses the `implements` annotation, which sits behind a feature gate. \
+           The default engine refuses it and names the gate; an engine you configure \
+           accepts it.",
+};
+
+pub static RUN_CONCURRENT: Story = Story {
+    chapter: "Asynchronous hosts",
+    title: "Await outside the store without blocking it",
+    goal: "Inside a `run_concurrent` entry your closure reads host state, awaits a timer the \
+           store knows nothing about, and writes host state when it resumes. The store sits \
+           idle in between rather than reporting a deadlock.",
+};
+
+pub static WASI_HTTP_STORY: Story = Story {
+    chapter: "Known limits",
+    title: "Get a clear refusal for a WASI 0.3 HTTP handler",
+    goal: "You try a `wasi:http` 0.3 handler whose request and response carry streams and \
+           futures. The polyfill cannot run it yet, and says which feature it lacks instead \
+           of failing somewhere inside.",
+};
+
+/// Every story in the order the report tells them, each with its
+/// body. A body is a future and does nothing until `run` awaits it.
+fn stories(engine: &Engine) -> Vec<(&'static Story, Body<'_>)> {
     vec![
-        Step::run("foundations", foundations(&engine)).await,
-        Step::run("real guest from wasm-tools", real_guest(&engine)).await,
-        Step::run("host function and canonical ABI values", greeter(&engine)).await,
-        Step::run("host resource with a destructor", dropper(&engine)).await,
-        Step::run("disposal from the host", disposal(&engine)).await,
-        composition(&engine).await,
-        Step::run(
-            "maps and fixed-length lists from wasm-tools",
-            real_values(&engine),
-        )
-        .await,
-        Step::run("core modules at the boundary", core_modules(&engine)).await,
-        Step::run("export navigation by name", navigation(&engine)).await,
-        Step::run("string through a 64-bit memory", memory64(&engine)).await,
-        Step::run("rich world from cargo and wit-bindgen", rich_world(&engine)).await,
-        Step::run(
-            "WASI 0.3 HTTP handler from wit-bindgen (held target)",
-            wasi_http(&engine),
-        )
-        .await,
-        Step::run("engine configuration", engine_configuration()).await,
-        Step::run(
-            "run_concurrent waits outside the store",
-            run_concurrent_outside(&engine),
-        )
-        .await,
+        (&ENGINE_AND_STORE, Box::pin(engine_and_store(engine))),
+        (&LOAD_AND_CALL, Box::pin(load_and_call(engine))),
+        (&COMPOSITION_STORY, Box::pin(composition(engine))),
+        (&HOST_FUNCTION, Box::pin(host_function(engine))),
+        (&HOST_RESOURCE, Box::pin(host_resource(engine))),
+        (&DISPOSAL, Box::pin(disposal(engine))),
+        (&CORE_MODULES, Box::pin(core_modules(engine))),
+        (
+            &MAPS_AND_FIXED_LISTS,
+            Box::pin(maps_and_fixed_lists(engine)),
+        ),
+        (&RICH_WORLD, Box::pin(rich_world(engine))),
+        (&MEMORY64, Box::pin(memory64(engine))),
+        (&NAVIGATION, Box::pin(navigation(engine))),
+        (&ENGINE_CONFIGURATION, Box::pin(engine_configuration())),
+        (&RUN_CONCURRENT, Box::pin(run_concurrent_outside(engine))),
+        (&WASI_HTTP_STORY, Box::pin(wasi_http(engine))),
     ]
 }
 
-/// The report as text: one line per step and a summary line.
-pub fn render(steps: &[Step]) -> String {
-    let mut out = String::new();
-    for step in steps {
-        let _ = writeln!(
-            out,
-            "{:<4} {}: {}",
-            step.outcome.label(),
-            step.name,
-            step.outcome.detail()
-        );
-    }
-    let count = |wanted: &str| {
-        steps
-            .iter()
-            .filter(|step| step.outcome.label() == wanted)
-            .count()
+/// Run every story in order and return the report, telling `reporter`
+/// about each chapter and story as it completes. Compiling,
+/// instantiating, and calling are awaited, so the browser can compile
+/// through its asynchronous API and paint between stories; natively
+/// the futures complete at once.
+pub async fn run(reporter: &mut impl Reporter) -> Vec<Step> {
+    let engine = match Engine::new() {
+        Ok(engine) => engine,
+        Err(err) => {
+            let step = Step {
+                story: &ENGINE_AND_STORE,
+                outcome: Outcome::Failed(format!("Engine::new failed: {err}")),
+                millis: 0.0,
+            };
+            reporter.begin(1);
+            reporter.chapter(step.story.chapter);
+            reporter.step(&step);
+            return vec![step];
+        }
     };
-    let _ = writeln!(
-        out,
-        "smoke: {} passed, {} failed, {} skipped",
-        count("ok"),
-        count("FAIL"),
-        count("skip")
-    );
-    out
+    let stories = stories(&engine);
+    reporter.begin(stories.len());
+    let mut steps = Vec::with_capacity(stories.len());
+    let mut chapter = "";
+    for (story, body) in stories {
+        if story.chapter != chapter {
+            chapter = story.chapter;
+            reporter.chapter(chapter);
+        }
+        let step = Step::run(story, body).await;
+        reporter.step(&step);
+        steps.push(step);
+    }
+    steps
+}
+
+/// A chapter's line of the transcript.
+pub fn chapter_line(chapter: &str) -> String {
+    format!("== {chapter}")
+}
+
+/// How many stories passed, failed, and were skipped, in that order.
+pub fn counts(steps: &[Step]) -> (usize, usize, usize) {
+    let count =
+        |wanted: fn(&Outcome) -> bool| steps.iter().filter(|step| wanted(&step.outcome)).count();
+    (
+        count(|outcome| matches!(outcome, Outcome::Passed(_))),
+        count(|outcome| matches!(outcome, Outcome::Failed(_))),
+        count(|outcome| matches!(outcome, Outcome::Skipped(_))),
+    )
+}
+
+/// The report's last line. `tests smoke check` compares it between
+/// the native run and the page.
+pub fn summary(steps: &[Step]) -> String {
+    let (passed, failed, skipped) = counts(steps);
+    format!("smoke: {passed} passed, {failed} failed, {skipped} skipped")
 }
 
 pub fn all_passed(steps: &[Step]) -> bool {
@@ -410,7 +545,7 @@ fn expect<T: PartialEq + std::fmt::Debug>(what: &str, got: T, wanted: T) -> Resu
 
 /// An engine and a store construct through the public API and the
 /// store hands its data back.
-async fn foundations(engine: &Engine) -> Result<String, String> {
+async fn engine_and_store(engine: &Engine) -> Result<String, String> {
     let mut store: Store<HostState> = Store::new(engine, HostState::default()).map_err(fail)?;
     store.data_mut().tallies.push(7);
     expect("store data", store.data().tallies.as_slice(), &[7])?;
@@ -419,7 +554,7 @@ async fn foundations(engine: &Engine) -> Result<String, String> {
 
 /// A component built by a real toolchain loads, instantiates, and
 /// answers a typed call.
-async fn real_guest(engine: &Engine) -> Result<String, String> {
+async fn load_and_call(engine: &Engine) -> Result<String, String> {
     let component = Component::new(engine, GUEST).await.map_err(fail)?;
     let linker: Linker<HostState> = Linker::new(engine);
     let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
@@ -442,7 +577,7 @@ async fn real_guest(engine: &Engine) -> Result<String, String> {
 
 /// Strings and a list lower into guest memory, a string lifts back
 /// out, and a typed host function receives what the guest sends.
-async fn greeter(engine: &Engine) -> Result<String, String> {
+async fn host_function(engine: &Engine) -> Result<String, String> {
     let component = Component::new(engine, GREETER).await.map_err(fail)?;
     let mut linker: Linker<HostState> = Linker::new(engine);
     let host: InterfaceIdentifier = "wcmp:smoke/host@0.1.0".parse().map_err(fail)?;
@@ -510,7 +645,7 @@ async fn greeter(engine: &Engine) -> Result<String, String> {
 
 /// A host resource's destructor runs exactly once per handle the guest
 /// drops, in drop order.
-async fn dropper(engine: &Engine) -> Result<String, String> {
+async fn host_resource(engine: &Engine) -> Result<String, String> {
     let component = Component::new(engine, DROPPER).await.map_err(fail)?;
     let mut linker: Linker<HostState> = Linker::new(engine);
     let resources: InterfaceIdentifier = "wcmp:smoke/resources@0.1.0".parse().map_err(fail)?;
@@ -592,35 +727,32 @@ async fn disposal(engine: &Engine) -> Result<String, String> {
 
 /// A `wac` composition of two real guests runs through the adapter
 /// the translator emits between them.
-async fn composition(engine: &Engine) -> Step {
-    Step::run("wac composition through an adapter", async {
-        let component = Component::new(engine, COMPOSITION).await.map_err(fail)?;
-        let linker: Linker<HostState> = Linker::new(engine);
-        let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .await
-            .map_err(fail)?;
-        let run = instance
-            .get_func("run")
-            .ok_or("no `run` export")?
-            .typed::<(u32,), u32>()
-            .map_err(fail)?;
-        let result = run.call(&mut store, (20,)).await.map_err(fail)?;
-        expect("run(20) = double(20) + 1", result, 41)?;
-        Ok(format!(
-            "{} bytes of wac output; socket.run(20) -> plug.double -> {result}",
-            COMPOSITION.len()
-        ))
-    })
-    .await
+async fn composition(engine: &Engine) -> Result<String, String> {
+    let component = Component::new(engine, COMPOSITION).await.map_err(fail)?;
+    let linker: Linker<HostState> = Linker::new(engine);
+    let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .map_err(fail)?;
+    let run = instance
+        .get_func("run")
+        .ok_or("no `run` export")?
+        .typed::<(u32,), u32>()
+        .map_err(fail)?;
+    let result = run.call(&mut store, (20,)).await.map_err(fail)?;
+    expect("run(20) = double(20) + 1", result, 41)?;
+    Ok(format!(
+        "{} bytes of wac output; socket.run(20) -> plug.double -> {result}",
+        COMPOSITION.len()
+    ))
 }
 
 /// Two components built by a real toolchain move a `map<string, u32>`
 /// and fixed-length lists in both directions, typed and untyped. The
 /// map's keys are sent as `Val::Map` where their order matters, so
 /// the evidence is the same on every target.
-async fn real_values(engine: &Engine) -> Result<String, String> {
+async fn maps_and_fixed_lists(engine: &Engine) -> Result<String, String> {
     let linker: Linker<HostState> = Linker::new(engine);
     let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
 
@@ -971,10 +1103,10 @@ async fn run_concurrent_outside(engine: &Engine) -> Result<String, String> {
     )?;
 
     Ok(format!(
-        "the entry was pending — not the deadlock cause — while the closure waited \
-         {WAIT_MILLIS} ms outside the store; {watched}, and the wait woke the entry's waker \
-         {woken} time(s) with nothing polling it; the entry then returned {value:?} and the host \
-         data the closure wrote through the accessor stayed in the store as {:?}",
+        "a hand poll found the entry pending, not deadlocked, while the closure waited \
+         {WAIT_MILLIS} ms outside the store; {watched}; the timer woke the entry {woken} \
+         time(s) with nothing polling it; the entry returned {value:?}, and the host data the \
+         closure wrote stayed in the store as {:?}",
         store.data().tallies
     ))
 }

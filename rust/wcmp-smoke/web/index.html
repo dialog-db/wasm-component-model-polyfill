@@ -1,24 +1,62 @@
 <!doctype html>
-<meta charset="utf-8" />
-<!--
-  The page holds itself to the content-security policy a hardened site
-  would set: script only from this origin, and `'wasm-unsafe-eval'` for
-  the module, with no `'unsafe-eval'`. The polyfill and the browser
-  backend it vendors must instantiate a composition under exactly this
-  much, so the page's own script lives in `boot.js` rather than inline,
-  and `boot.js` records whether the browser is enforcing the policy for
-  `check.py` to read.
--->
-<meta
-  http-equiv="Content-Security-Policy"
-  content="script-src 'self' 'wasm-unsafe-eval'"
-/>
-<title>wcmp smoke</title>
-<style>
-  body { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 2rem; }
-  pre { white-space: pre-wrap; }
-</style>
-<h1>Wasm Component Model Polyfill smoke test</h1>
-<p>The same host program as <code>smoke native</code>, compiled to <code>wasm32-unknown-unknown</code> and running in this page.</p>
-<pre id="out">loading…</pre>
-<script type="module" src="./boot.js"></script>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!--
+      The page holds itself to the content-security policy a hardened site
+      would set: script only from this origin, and `'wasm-unsafe-eval'` for
+      the module, with no `'unsafe-eval'`. The polyfill and the browser
+      backend it vendors must instantiate a composition under exactly this
+      much, so the page's own script lives in `boot.js` rather than inline
+      (`Trunk.toml` puts a `<script src>` for it where Trunk would put its
+      inline loader), and `boot.js` records whether the browser is
+      enforcing the policy for `check.sh` to read.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="script-src 'self' 'wasm-unsafe-eval'"
+    />
+    <title>Smoke test · Wasm Component Model Polyfill</title>
+    <link data-trunk rel="css" href="style.css" />
+    <link
+      data-trunk
+      rel="rust"
+      href="../Cargo.toml"
+      data-bin="wcmp-smoke"
+      data-wasm-opt="0"
+    />
+    <link data-trunk rel="copy-file" href="boot.js" />
+  </head>
+  <body>
+    <header class="masthead">
+      <p class="eyebrow">Wasm Component Model Polyfill</p>
+      <h1>Smoke test</h1>
+      <p class="lede">
+        What a developer does with the polyfill in a project of their own,
+        run in this browser from the same Rust program as
+        <code>tests smoke native</code>.
+      </p>
+      <dl class="facts">
+        <div>
+          <dt>Run</dt>
+          <dd id="status">starting…</dd>
+        </div>
+        <div>
+          <dt>Content-Security-Policy</dt>
+          <dd id="csp">…</dd>
+        </div>
+        <div>
+          <dt>Browser</dt>
+          <dd id="browser">…</dd>
+        </div>
+      </dl>
+      <div class="progress" aria-hidden="true"><div id="bar"></div></div>
+    </header>
+    <main id="chapters"></main>
+    <details class="transcript">
+      <summary>Transcript, as <code>tests smoke native</code> prints it</summary>
+      <pre id="report"></pre>
+    </details>
+  </body>
+</html>

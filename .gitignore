@@ -9,3 +9,6 @@ do_not_track
 # Project-local Claude Code configuration; carried into the sandbox guest by
 # the flake's workspaceContext, never committed.
 .claude/
+
+# What `trunk build` writes when it runs outside Nix.
+rust/wcmp-smoke/dist
