@@ -6,7 +6,7 @@ use core::marker::PhantomData;
 
 use crate::component::FunctionType;
 use crate::concurrency::{Accessor, HostFuture};
-use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
+use crate::error::{AbiCause, AbiError, AbiPosition, Error, LinkError, Result};
 use crate::module::Module;
 use crate::resource::ResourceTypeId;
 use crate::types::ValueType;
@@ -55,13 +55,28 @@ use crate::internal::LinkerInstanceInternal;
 /// resource's label. A fourth, [`Self::module`], registers a core
 /// [`Module`] for a module-typed import.
 ///
+/// Every mode refuses a name the view's entry already holds an item
+/// under, whatever kind of item that is, and answers with
+/// [`Error::Link`]. [`Linker::allow_shadowing`] turns the refusal
+/// off for the views a linker hands out, and the view carries what
+/// the linker was told. [`Self::instance`] is the exception, because
+/// it addresses rather than registers: it answers with the entry
+/// already there.
+///
 /// [`Linker`]: super::Linker
 /// [`Linker::instance`]: super::Linker::instance
+/// [`Linker::allow_shadowing`]: super::Linker::allow_shadowing
+/// [`Error::Link`]: crate::Error::Link
 pub struct LinkerInstance<'a, T: 'static> {
     /// The owned registration this view borrows. Held mutably so
     /// later registration methods can populate it without further
     /// linker access.
     registration: &'a mut InstanceRegistration<T>,
+    /// Whether a registration may take a name the entry already
+    /// holds an item under. Copied from the linker when the view is
+    /// made, and carried down to the views [`Self::instance`]
+    /// returns.
+    allow_shadowing: bool,
     /// `T` participates only as the host-data type the registration
     /// carries; capture invariance explicitly so the parameter does
     /// not appear unused.
@@ -69,9 +84,10 @@ pub struct LinkerInstance<'a, T: 'static> {
 }
 
 impl<'a, T: 'static> LinkerInstanceInternal<'a, T> for LinkerInstance<'a, T> {
-    fn new(registration: &'a mut InstanceRegistration<T>) -> Self {
+    fn new(registration: &'a mut InstanceRegistration<T>, allow_shadowing: bool) -> Self {
         LinkerInstance {
             registration,
+            allow_shadowing,
             _phantom: PhantomData,
         }
     }
@@ -87,10 +103,33 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
     /// `root().instance("a").instance("b").func_wrap("f", …)`, as it
     /// does in Wasmtime.
     ///
+    /// This addresses an entry rather than registering an item, so
+    /// calling it twice under one name answers with the same nested
+    /// entry both times rather than refusing the second call. The
+    /// name is taken all the same: a function, resource, or module
+    /// registered under it afterwards is the duplicate that fails.
+    ///
     /// [`Linker::root`]: super::Linker::root
     pub fn instance(&mut self, name: impl Into<String>) -> LinkerInstance<'_, T> {
+        let allow_shadowing = self.allow_shadowing;
         let entry = self.registration.instances.entry(name.into()).or_default();
-        LinkerInstance::new(entry)
+        LinkerInstance::new(entry, allow_shadowing)
+    }
+
+    /// Refuse `name` when the entry this view borrows already holds
+    /// an item under it and the linker was not told to allow
+    /// shadowing.
+    ///
+    /// Called by every registration mode before it inserts, so the
+    /// name a registration takes is the name it keeps.
+    fn claim(&self, name: &str) -> Result<()> {
+        if self.allow_shadowing || self.registration.kind_of(name).is_none() {
+            return Ok(());
+        }
+        Err(LinkError::DuplicateRegistration {
+            name: name.to_owned(),
+        }
+        .into())
     }
 
     /// Register an *untyped* host function. The caller supplies the
@@ -104,14 +143,23 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
     /// the underlying [`InstanceRegistration`]; the linker's
     /// resolver checks the declared signature against the
     /// component's import at link time.
+    ///
+    /// Fails with [`Error::Link`] when the entry this view addresses
+    /// already holds an item under `name` and the linker was not
+    /// told to allow shadowing.
+    ///
+    /// [`Error::Link`]: crate::Error::Link
     pub fn func_new(
         &mut self,
         name: impl Into<String>,
         ty: FunctionType,
         func: impl for<'c> Fn(HostCall<'c, T>, &[Val], &mut [Val]) -> Result<()> + Send + Sync + 'static,
-    ) {
+    ) -> Result<()> {
+        let name = name.into();
+        self.claim(&name)?;
         let host = HostFunc::new(ty, func);
-        self.registration.funcs.insert(name.into(), host);
+        self.registration.funcs.insert(name, host);
+        Ok(())
     }
 
     /// Register a host-owned resource type with a synchronous
@@ -123,14 +171,18 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
     /// handle. The returned identity threads the registration into
     /// any handle the host subsequently mints.
     ///
-    /// Today the polyfill registers exactly one resource per label
-    /// per interface; calling `resource` twice with the same label
-    /// overwrites the prior registration.
+    /// The polyfill registers exactly one item per label per
+    /// interface, so calling `resource` twice with the same label
+    /// fails with [`Error::Link`] unless the linker was told to
+    /// allow shadowing. Registering the *same* resource type under
+    /// two labels or two interfaces is [`Self::resource_with`].
+    ///
+    /// [`Error::Link`]: crate::Error::Link
     pub fn resource(
         &mut self,
         label: impl Into<String>,
         destructor: impl Fn(&mut T, u32) -> Result<()> + Send + Sync + 'static,
-    ) -> ResourceTypeId {
+    ) -> Result<ResourceTypeId> {
         self.resource_with(label, HostResource::new(destructor))
     }
 
@@ -141,15 +193,23 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
     /// resolver accepts a component that declares the two as equal.
     /// Returns the identity for [`Store::resource_new`].
     ///
+    /// Each of those registrations is under a label of its own in an
+    /// entry of its own. Two of them in one entry under one label
+    /// fail with [`Error::Link`], as any other duplicate does,
+    /// unless the linker was told to allow shadowing.
+    ///
     /// [`Store::resource_new`]: crate::Store::resource_new
+    /// [`Error::Link`]: crate::Error::Link
     pub fn resource_with(
         &mut self,
         label: impl Into<String>,
         resource: HostResource<T>,
-    ) -> ResourceTypeId {
+    ) -> Result<ResourceTypeId> {
+        let label = label.into();
+        self.claim(&label)?;
         let type_id = resource.type_id();
-        self.registration.resources.insert(label.into(), resource);
-        type_id
+        self.registration.resources.insert(label, resource);
+        Ok(type_id)
     }
 
     /// Register a core module for a module-typed import,
@@ -161,12 +221,16 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
     /// module provides every export the import's module type
     /// declares and asks for no import the type does not list.
     ///
-    /// Calling `module` twice with the same name replaces the prior
-    /// registration.
-    pub fn module(&mut self, name: impl Into<String>, module: &Module) {
-        self.registration
-            .modules
-            .insert(name.into(), module.clone());
+    /// Calling `module` twice with the same name fails with
+    /// [`Error::Link`], as any other duplicate registration does,
+    /// unless the linker was told to allow shadowing.
+    ///
+    /// [`Error::Link`]: crate::Error::Link
+    pub fn module(&mut self, name: impl Into<String>, module: &Module) -> Result<()> {
+        let name = name.into();
+        self.claim(&name)?;
+        self.registration.modules.insert(name, module.clone());
+        Ok(())
     }
 
     /// Register a *typed* host function. The closure's argument
@@ -174,12 +238,20 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
     /// via [`ComponentParameters`] and [`ComponentResult`]; the
     /// linker's resolver checks the derived signature against the
     /// component's import at link time.
-    pub fn func_wrap<Params, Ret, F>(&mut self, name: impl Into<String>, func: F)
+    ///
+    /// Fails with [`Error::Link`] when the entry this view addresses
+    /// already holds an item under `name` and the linker was not
+    /// told to allow shadowing.
+    ///
+    /// [`Error::Link`]: crate::Error::Link
+    pub fn func_wrap<Params, Ret, F>(&mut self, name: impl Into<String>, func: F) -> Result<()>
     where
         Params: ComponentParameters,
         Ret: ComponentResult,
         F: for<'c> Fn(HostCall<'c, T>, Params) -> Result<Ret> + Send + Sync + 'static,
     {
+        let name = name.into();
+        self.claim(&name)?;
         let signature = function_type_for::<Params, Ret>();
         let host = HostFunc::new(signature, move |call, args, results| {
             let params = Params::from_vals(args)?;
@@ -196,7 +268,8 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
             }
             Ok(())
         });
-        self.registration.funcs.insert(name.into(), host);
+        self.registration.funcs.insert(name, host);
+        Ok(())
     }
 
     /// Register an *untyped* host `async` function: one whose call
@@ -237,15 +310,24 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
     /// vector must hold one value if `ty` declares a result and none
     /// otherwise: a result vector of the wrong length fails the call,
     /// as an untyped synchronous registration's mismatched value does.
+    ///
+    /// Fails with [`Error::Link`] when the entry this view addresses
+    /// already holds an item under `name` and the linker was not
+    /// told to allow shadowing.
+    ///
+    /// [`Error::Link`]: crate::Error::Link
     pub fn func_new_concurrent<F, Fut>(
         &mut self,
         name: impl Into<String>,
         ty: FunctionType,
         func: F,
-    ) where
+    ) -> Result<()>
+    where
         F: Fn(&Accessor<T>, Vec<Val>) -> Fut + Send + Sync + 'static,
         Fut: HostFuture,
     {
+        let name = name.into();
+        self.claim(&name)?;
         let declared = ty.result.clone();
         let host = HostFunc::concurrent(ty, move |accessor, args| {
             let future = func(accessor, args);
@@ -259,7 +341,8 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
                 Ok(values)
             })
         });
-        self.registration.funcs.insert(name.into(), host);
+        self.registration.funcs.insert(name, host);
+        Ok(())
     }
 
     /// Register a *typed* host `async` function: one whose call
@@ -300,13 +383,25 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
     /// when `Ret` is a value type and none when it is `()`. A result
     /// vector of the wrong length fails the call, which only the
     /// untyped entry can produce.
-    pub fn func_wrap_concurrent<Params, Ret, F, Fut>(&mut self, name: impl Into<String>, func: F)
+    ///
+    /// Fails with [`Error::Link`] when the entry this view addresses
+    /// already holds an item under `name` and the linker was not
+    /// told to allow shadowing.
+    ///
+    /// [`Error::Link`]: crate::Error::Link
+    pub fn func_wrap_concurrent<Params, Ret, F, Fut>(
+        &mut self,
+        name: impl Into<String>,
+        func: F,
+    ) -> Result<()>
     where
         Params: ComponentParameters,
         Ret: ComponentResult,
         F: Fn(&Accessor<T>, Params) -> Fut + Send + Sync + 'static,
         Fut: HostFuture<Result<Ret>>,
     {
+        let name = name.into();
+        self.claim(&name)?;
         let signature = function_type_for::<Params, Ret>();
         let host = HostFunc::concurrent(signature, move |accessor, args| {
             // The arguments are decoded before the closure runs, so
@@ -321,7 +416,8 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
             let future = func(accessor, params);
             Box::pin(async move { Ok(future.await?.into_val().into_iter().collect()) })
         });
-        self.registration.funcs.insert(name.into(), host);
+        self.registration.funcs.insert(name, host);
+        Ok(())
     }
 }
 
@@ -412,16 +508,15 @@ mod tests {
     fn it_records_a_concurrent_kind_and_the_derived_type_for_the_typed_entry() {
         let mut registration = InstanceRegistration::<String>::new();
 
-        LinkerInstance::new(&mut registration).func_wrap_concurrent(
-            "greet",
-            |accessor: &Accessor<String>, (extra,): (u32,)| {
+        LinkerInstance::new(&mut registration, false)
+            .func_wrap_concurrent("greet", |accessor: &Accessor<String>, (extra,): (u32,)| {
                 let accessor = accessor.clone();
                 async move {
                     let reached = accessor.with(|store| store.data().len())?;
                     Ok(u32::try_from(reached).expect("the host data's length") + extra)
                 }
-            },
-        );
+            })
+            .expect("the registration");
 
         let host = registration.func("greet").expect("the registration");
         assert_eq!(
@@ -439,11 +534,13 @@ mod tests {
     fn it_records_a_concurrent_kind_and_the_declared_type_for_the_untyped_entry() {
         let mut registration = InstanceRegistration::<String>::new();
 
-        LinkerInstance::new(&mut registration).func_new_concurrent(
-            "greet",
-            async_typed(),
-            |_accessor: &Accessor<String>, args: Vec<Val>| async move { Ok(args) },
-        );
+        LinkerInstance::new(&mut registration, false)
+            .func_new_concurrent(
+                "greet",
+                async_typed(),
+                |_accessor: &Accessor<String>, args: Vec<Val>| async move { Ok(args) },
+            )
+            .expect("the registration");
 
         let host = registration.func("greet").expect("the registration");
         assert_eq!(
@@ -460,12 +557,16 @@ mod tests {
     #[wcmp_macros::test]
     fn it_records_a_synchronous_kind_for_the_two_synchronous_entries() {
         let mut registration = InstanceRegistration::<String>::new();
-        let mut instance = LinkerInstance::new(&mut registration);
+        let mut instance = LinkerInstance::new(&mut registration, false);
 
-        instance.func_new("untyped", async_typed(), |_call, _args, _results| Ok(()));
-        instance.func_wrap("typed", |_call: HostCall<'_, String>, (arg,): (u32,)| {
-            Ok(arg)
-        });
+        instance
+            .func_new("untyped", async_typed(), |_call, _args, _results| Ok(()))
+            .expect("the registration");
+        instance
+            .func_wrap("typed", |_call: HostCall<'_, String>, (arg,): (u32,)| {
+                Ok(arg)
+            })
+            .expect("the registration");
 
         for name in ["untyped", "typed"] {
             let host = registration.func(name).expect("the registration");
@@ -482,9 +583,8 @@ mod tests {
         let mut store = Store::new(&engine, "host data".to_owned()).expect("store");
         let mut registration = InstanceRegistration::<String>::new();
 
-        LinkerInstance::new(&mut registration).func_wrap_concurrent(
-            "greet",
-            |accessor: &Accessor<String>, (extra,): (u32,)| {
+        LinkerInstance::new(&mut registration, false)
+            .func_wrap_concurrent("greet", |accessor: &Accessor<String>, (extra,): (u32,)| {
                 // The accessor is a token, so the block owns a clone of
                 // it and holds that clone across the await. What it
                 // reaches, it reaches in a later poll of the future.
@@ -497,8 +597,8 @@ mod tests {
                     })?;
                     Ok(u32::try_from(reached).expect("the host data's length") + extra)
                 }
-            },
-        );
+            })
+            .expect("the registration");
 
         let host = registration
             .func("greet")
@@ -533,11 +633,13 @@ mod tests {
 
         // The declared type names one result, and the future completes
         // with none.
-        LinkerInstance::new(&mut registration).func_new_concurrent(
-            "greet",
-            async_typed(),
-            |_accessor: &Accessor<()>, _args: Vec<Val>| async move { Ok(Vec::new()) },
-        );
+        LinkerInstance::new(&mut registration, false)
+            .func_new_concurrent(
+                "greet",
+                async_typed(),
+                |_accessor: &Accessor<()>, _args: Vec<Val>| async move { Ok(Vec::new()) },
+            )
+            .expect("the registration");
 
         let host = registration
             .func("greet")
@@ -574,9 +676,8 @@ mod tests {
         let mut store = Store::new(&engine, "host data".to_owned()).expect("store");
         let mut registration = InstanceRegistration::<String>::new();
 
-        LinkerInstance::new(&mut registration).func_wrap_concurrent(
-            "greet",
-            |accessor: &Accessor<String>, (extra,): (u32,)| {
+        LinkerInstance::new(&mut registration, false)
+            .func_wrap_concurrent("greet", |accessor: &Accessor<String>, (extra,): (u32,)| {
                 let accessor = accessor.clone();
                 async move {
                     let promise = js_sys::Promise::resolve(&wasm_bindgen::JsValue::from_f64(3.0));
@@ -589,8 +690,8 @@ mod tests {
                         + from_promise
                         + extra)
                 }
-            },
-        );
+            })
+            .expect("the registration");
 
         let host = registration
             .func("greet")

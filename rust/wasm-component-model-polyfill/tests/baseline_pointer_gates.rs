@@ -141,20 +141,23 @@ async fn lists() -> (Store<()>, Instance) {
         .expect("a component that hands lists to the host parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     for (name, element) in [("bytes", PrimitiveType::U8), ("words", PrimitiveType::U32)] {
-        linker.root().func_new(
-            name,
-            FunctionType {
-                parameters: vec![FunctionParameter {
-                    name: "xs".to_owned(),
-                    ty: ValueType::List(ListType::new(ValueType::Primitive(element))),
-                }],
-                result: None,
-                async_: false,
-            },
-            |_: HostCall<'_, ()>, _args, _results| {
-                panic!("the host is never reached: the list fails the gate first")
-            },
-        );
+        linker
+            .root()
+            .func_new(
+                name,
+                FunctionType {
+                    parameters: vec![FunctionParameter {
+                        name: "xs".to_owned(),
+                        ty: ValueType::List(ListType::new(ValueType::Primitive(element))),
+                    }],
+                    result: None,
+                    async_: false,
+                },
+                |_: HostCall<'_, ()>, _args, _results| {
+                    panic!("the host is never reached: the list fails the gate first")
+                },
+            )
+            .expect("the registration");
     }
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
@@ -414,24 +417,27 @@ async fn spilled_arguments(reached: std::sync::Arc<AtomicUsize>) -> (Store<()>, 
         .await
         .expect("a component with a spilled parameter tuple parses");
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().func_new(
-        "wide",
-        FunctionType {
-            parameters: (0..17)
-                .map(|i| FunctionParameter {
-                    name: format!("p{i}"),
-                    ty: ValueType::Primitive(PrimitiveType::U32),
-                })
-                .collect(),
-            result: None,
-            async_: false,
-        },
-        move |_: HostCall<'_, ()>, args, _results| {
-            assert_eq!(args.len(), 17, "every parameter of the tuple is lifted");
-            reached.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        },
-    );
+    linker
+        .root()
+        .func_new(
+            "wide",
+            FunctionType {
+                parameters: (0..17)
+                    .map(|i| FunctionParameter {
+                        name: format!("p{i}"),
+                        ty: ValueType::Primitive(PrimitiveType::U32),
+                    })
+                    .collect(),
+                result: None,
+                async_: false,
+            },
+            move |_: HostCall<'_, ()>, args, _results| {
+                assert_eq!(args.len(), 17, "every parameter of the tuple is lifted");
+                reached.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            },
+        )
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)

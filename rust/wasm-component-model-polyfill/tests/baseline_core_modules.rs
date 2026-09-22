@@ -321,7 +321,10 @@ async fn it_instantiates_a_core_module_the_host_registered() {
     assert_eq!(module_type.exports[0].name, "f");
 
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().module("m", &module);
+    linker
+        .root()
+        .module("m", &module)
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let instance = linker
         .instantiate(&mut store, &component)
@@ -369,7 +372,7 @@ async fn it_rejects_a_registered_module_that_does_not_satisfy_the_declared_type(
     /// the resolver rejected it.
     async fn reason(engine: &Engine, component: &Component, module: &Module) -> String {
         let mut linker: Linker<()> = Linker::new(engine);
-        linker.root().module("m", module);
+        linker.root().module("m", module).expect("the registration");
         let mut store: Store<()> = Store::new(engine, ()).expect("store");
         match linker.instantiate(&mut store, component).await {
             Err(Error::Link(inner)) => match *inner {
@@ -482,7 +485,8 @@ async fn it_instantiates_a_module_registered_inside_an_instance_import() {
     linker
         .root()
         .instance("host")
-        .module("simple-module", &simple);
+        .module("simple-module", &simple)
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let instance = linker
         .instantiate(&mut store, &component)
@@ -516,7 +520,10 @@ async fn it_re_exports_an_imported_module() {
         .expect("component parses");
     let module = Module::new(&engine, PROVIDES_F).await.expect("compiles");
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().module("m", &module);
+    linker
+        .root()
+        .module("m", &module)
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let instance = linker
         .instantiate(&mut store, &component)

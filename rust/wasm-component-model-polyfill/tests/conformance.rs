@@ -394,7 +394,9 @@ impl Runner {
                 continue;
             };
             if let Some(module) = instance.get_module(export_name) {
-                registration.module(export_name, &module);
+                registration
+                    .module(export_name, &module)
+                    .expect("the registration");
             }
         }
     }
@@ -537,11 +539,15 @@ impl<V: Unpin> Future for YieldOnce<V> {
 async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
     linker
         .root()
-        .func_wrap("host-return-two", |_, (): ()| Ok(2u32));
-    linker.root().func_wrap_concurrent(
-        "host-echo-u32",
-        |_: &Accessor<()>, (v,): (u32,)| async move { Ok(v) },
-    );
+        .func_wrap("host-return-two", |_, (): ()| Ok(2u32))
+        .expect("the registration");
+    linker
+        .root()
+        .func_wrap_concurrent(
+            "host-echo-u32",
+            |_: &Accessor<()>, (v,): (u32,)| async move { Ok(v) },
+        )
+        .expect("the registration");
 
     let simple_module = Module::new(engine, SIMPLE_MODULE)
         .await
@@ -558,16 +564,23 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
 
     let mut root = linker.root();
     let mut host = root.instance("host");
-    host.func_wrap("return-three", |_, (): ()| Ok(3u32));
+    host.func_wrap("return-three", |_, (): ()| Ok(3u32))
+        .expect("the registration");
     host.instance("nested")
-        .func_wrap("return-four", |_, (): ()| Ok(4u32));
-    host.module("simple-module", &simple_module);
+        .func_wrap("return-four", |_, (): ()| Ok(4u32))
+        .expect("the registration");
+    host.module("simple-module", &simple_module)
+        .expect("the registration");
 
-    let resource1_id = host.resource_with("resource1", resource1.clone());
-    host.resource("resource2", |_, _| Ok(()));
+    let resource1_id = host
+        .resource_with("resource1", resource1.clone())
+        .expect("the registration");
+    host.resource("resource2", |_, _| Ok(()))
+        .expect("the registration");
     // The same resource type under a second name, as the runner
     // registers it.
-    host.resource_with("resource1-again", resource1);
+    host.resource_with("resource1-again", resource1)
+        .expect("the registration");
 
     let own = || ValueType::Own(ResourceType::new("resource1"));
     let borrow = || ValueType::Borrow(ResourceType::new("resource1"));
@@ -594,7 +607,8 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
             results[0] = Val::Own(call.resource_new(resource1_id, *rep)?);
             Ok(())
         },
-    );
+    )
+    .expect("the registration");
     host.func_new(
         "[static]resource1.assert",
         signature(&[("r", own()), ("rep", u32_ty())], None),
@@ -605,15 +619,18 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
             assert_eq!(handle.rep(), *rep, "[static]resource1.assert: rep mismatch");
             Ok(())
         },
-    );
+    )
+    .expect("the registration");
     host.func_wrap("[static]resource1.last-drop", {
         let state = state.clone();
         move |_, (): ()| Ok(state.last_drop.load(Ordering::SeqCst))
-    });
+    })
+    .expect("the registration");
     host.func_wrap("[static]resource1.drops", {
         let state = state.clone();
         move |_, (): ()| Ok(state.drops.load(Ordering::SeqCst))
-    });
+    })
+    .expect("the registration");
     host.func_new(
         "[method]resource1.simple",
         signature(&[("self", borrow()), ("rep", u32_ty())], None),
@@ -625,7 +642,8 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
             assert_eq!(handle.rep(), *rep, "[method]resource1.simple: rep mismatch");
             Ok(())
         },
-    );
+    )
+    .expect("the registration");
     host.func_new(
         "[method]resource1.take-borrow",
         signature(&[("self", borrow()), ("b", borrow())], None),
@@ -636,7 +654,8 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
             );
             Ok(())
         },
-    );
+    )
+    .expect("the registration");
     host.func_new(
         "[method]resource1.take-own",
         signature(&[("self", borrow()), ("b", own())], None),
@@ -647,16 +666,20 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
             );
             Ok(())
         },
-    );
+    )
+    .expect("the registration");
     host.func_wrap_concurrent("never-return", |_: &Accessor<()>, (): ()| {
         core::future::pending::<Result<(), Error>>()
-    });
+    })
+    .expect("the registration");
     host.func_wrap_concurrent("return-two-slowly", |_: &Accessor<()>, (): ()| {
         YieldOnce::new(2i32)
-    });
+    })
+    .expect("the registration");
     host.func_wrap_concurrent("echo-slowly", |_: &Accessor<()>, (a,): (u32,)| {
         YieldOnce::new(a)
-    });
+    })
+    .expect("the registration");
     host.func_new_concurrent(
         "[method]resource1.never-return",
         FunctionType {
@@ -664,8 +687,10 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
             ..signature(&[("self", borrow())], None)
         },
         |_: &Accessor<()>, _args: Vec<Val>| core::future::pending::<Result<Vec<Val>, Error>>(),
-    );
-    host.func_wrap("return-hi", |_, (): ()| Ok("hi".to_owned()));
+    )
+    .expect("the registration");
+    host.func_wrap("return-hi", |_, (): ()| Ok("hi".to_owned()))
+        .expect("the registration");
 
     // The `wasmtime` instance the runner registers beside the
     // spectest for its own misc tests. Its `gc` collects the
@@ -676,7 +701,8 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
     linker
         .root()
         .instance("wasmtime")
-        .func_wrap("gc", |_, (): ()| Ok(()));
+        .func_wrap("gc", |_, (): ()| Ok(()))
+        .expect("the registration");
 }
 
 /// Every message in an error's source chain, joined so a trap

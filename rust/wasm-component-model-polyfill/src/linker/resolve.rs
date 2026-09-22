@@ -1012,10 +1012,13 @@ mod tests {
         let engine = crate::Engine::new().expect("engine construction succeeds");
         let mut linker: Linker<()> = Linker::new(&engine);
         let register = |linker: &mut Linker<()>, name: &str| {
-            linker.root().func_wrap(
-                name,
-                |_call: crate::linker::HostCall<'_, ()>, (): ()| Ok(()),
-            );
+            linker
+                .root()
+                .func_wrap(
+                    name,
+                    |_call: crate::linker::HostCall<'_, ()>, (): ()| Ok(()),
+                )
+                .expect("the registration");
         };
 
         register(&mut linker, "pdd-tests:host/answers@0.1.0");

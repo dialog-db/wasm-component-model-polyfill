@@ -226,13 +226,16 @@ async fn instantiate(binary: &[u8]) -> (Store<()>, Instance, Log) {
     let log: Log = Arc::new(Mutex::new(Vec::new()));
     let recorded = log.clone();
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().func_wrap(
-        "log",
-        move |_: HostCall<'_, ()>, (entry,): (u32,)| -> Result<()> {
-            recorded.lock().expect("log").push(entry);
-            Ok(())
-        },
-    );
+    linker
+        .root()
+        .func_wrap(
+            "log",
+            move |_: HostCall<'_, ()>, (entry,): (u32,)| -> Result<()> {
+                recorded.lock().expect("log").push(entry);
+                Ok(())
+            },
+        )
+        .expect("the registration");
     let instance = linker
         .instantiate(&mut store, &component)
         .await
@@ -768,18 +771,21 @@ async fn instantiate_with_a_refusal(binary: &[u8]) -> (Store<()>, Instance, Log)
     let log: Log = Arc::new(Mutex::new(Vec::new()));
     let recorded = log.clone();
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().func_wrap(
-        "log",
-        move |mut call: HostCall<'_, ()>, (entry,): (u32,)| -> Result<()> {
-            recorded.lock().expect("log").push(entry);
-            if entry != REFUSED_AT {
-                return Ok(());
-            }
-            let accessor: Accessor<()> = Accessor::new(call.store().internal().id());
-            accessor.with(|store| *store.data())?;
-            Ok(())
-        },
-    );
+    linker
+        .root()
+        .func_wrap(
+            "log",
+            move |mut call: HostCall<'_, ()>, (entry,): (u32,)| -> Result<()> {
+                recorded.lock().expect("log").push(entry);
+                if entry != REFUSED_AT {
+                    return Ok(());
+                }
+                let accessor: Accessor<()> = Accessor::new(call.store().internal().id());
+                accessor.with(|store| *store.data())?;
+                Ok(())
+            },
+        )
+        .expect("the registration");
     let instance = linker
         .instantiate(&mut store, &component)
         .await

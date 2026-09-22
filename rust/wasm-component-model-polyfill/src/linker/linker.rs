@@ -48,6 +48,24 @@ use super::resolve::{Resolution, resolve_imports};
 /// A component whose imports have no matching registration fails
 /// cleanly with [`Error::Link`].
 ///
+/// A name, once registered, is taken. A second registration under
+/// one name inside one [`LinkerInstance`] — a second function,
+/// resource, or module, whichever kind took the name first — fails
+/// at the registration call with [`Error::Link`] rather than
+/// replacing what is there, so a host that registers the same item
+/// twice by accident hears about it where the mistake is rather
+/// than losing one of the two silently. Addressing an instance,
+/// with [`Linker::root`], [`Linker::instance`], or
+/// [`LinkerInstance::instance`], is not a registration: it answers
+/// with the entry already there.
+///
+/// [`Linker::allow_shadowing`] is the escape hatch. A linker told
+/// to allow shadowing lets every later registration replace what
+/// stands under its name, which is what a host that layers its own
+/// items over a set it did not assemble — a WASI set, say — wants.
+/// The setting reaches the views the linker hands out after it is
+/// set, and the default is off, as it is in Wasmtime.
+///
 /// [`Component`]: crate::Component
 /// [`PackageName`]: crate::PackageName
 /// [`Error::Link`]: crate::Error::Link
@@ -61,6 +79,9 @@ pub struct Linker<T: 'static> {
     /// The root namespace: host items a component imports under a
     /// plain name rather than an interface identifier.
     root: InstanceRegistration<T>,
+    /// Whether a registration may take a name that is already taken.
+    /// Off by default; every view the linker hands out carries it.
+    allow_shadowing: bool,
     _phantom: PhantomData<fn(T) -> T>,
 }
 
@@ -71,8 +92,27 @@ impl<T: 'static> Linker<T> {
             engine: engine.clone(),
             instances: HashMap::new(),
             root: InstanceRegistration::new(),
+            allow_shadowing: false,
             _phantom: PhantomData,
         }
+    }
+
+    /// Configure whether a registration may take a name that is
+    /// already taken.
+    ///
+    /// Off by default: a second registration under one name inside
+    /// one [`LinkerInstance`] fails with [`Error::Link`]. Turned on,
+    /// a registration replaces whatever stands under its name, and
+    /// the last one made is the one the resolver sees.
+    ///
+    /// The setting is read when the linker hands out a view, so it
+    /// governs the registrations made after it is set, on the views
+    /// taken after it is set.
+    ///
+    /// [`Error::Link`]: crate::Error::Link
+    pub fn allow_shadowing(&mut self, allow: bool) -> &mut Self {
+        self.allow_shadowing = allow;
+        self
     }
 
     /// Address the root namespace: the host items a component
@@ -92,7 +132,8 @@ impl<T: 'static> Linker<T> {
     ///
     /// Calling `root` twice returns a view onto the same entry.
     pub fn root(&mut self) -> LinkerInstance<'_, T> {
-        LinkerInstance::new(&mut self.root)
+        let allow_shadowing = self.allow_shadowing;
+        LinkerInstance::new(&mut self.root, allow_shadowing)
     }
 
     /// Address (creating if absent) the [`LinkerInstance`] keyed by
@@ -104,8 +145,9 @@ impl<T: 'static> Linker<T> {
     /// resolver's version rules; see the polyfill's identifier
     /// resolution module for the matching semantics.
     pub fn instance(&mut self, id: &InterfaceIdentifier) -> LinkerInstance<'_, T> {
+        let allow_shadowing = self.allow_shadowing;
         let entry = self.instances.entry(id.clone()).or_default();
-        LinkerInstance::new(entry)
+        LinkerInstance::new(entry, allow_shadowing)
     }
 
     /// Instantiate a [`Component`] into the given [`Store`].

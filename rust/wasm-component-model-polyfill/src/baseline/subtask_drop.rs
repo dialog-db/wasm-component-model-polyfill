@@ -230,7 +230,8 @@ async fn host_caller() -> (Store<()>, Instance) {
                 polled: false,
                 value: x * 2,
             }
-        });
+        })
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)

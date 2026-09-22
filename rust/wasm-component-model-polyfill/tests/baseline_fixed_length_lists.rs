@@ -94,9 +94,12 @@ async fn instantiate() -> (Store<()>, wasm_component_model_polyfill::Instance) {
     );
 
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().func_wrap("check", |_, (list,): ([u32; 4],)| {
-        Ok(list.iter().sum::<u32>())
-    });
+    linker
+        .root()
+        .func_wrap("check", |_, (list,): ([u32; 4],)| {
+            Ok(list.iter().sum::<u32>())
+        })
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)

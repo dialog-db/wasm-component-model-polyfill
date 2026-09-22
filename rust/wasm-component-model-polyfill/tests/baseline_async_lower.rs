@@ -651,10 +651,13 @@ async fn it_returns_at_once_from_a_typed_registration_whose_future_is_ready() {
     // next comes back as index 1, which is the first index a table
     // hands out, so the call made no entry of its own.
     let (mut store, instance) = caller(|linker| {
-        linker.root().func_wrap_concurrent(
-            "answer",
-            |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
-        );
+        linker
+            .root()
+            .func_wrap_concurrent(
+                "answer",
+                |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
+            )
+            .expect("the registration");
     })
     .await;
 
@@ -677,16 +680,19 @@ async fn it_returns_at_once_from_an_untyped_registration_whose_future_is_ready()
     // The same call through the untyped entry, whose future answers
     // with the value vector itself.
     let (mut store, instance) = caller(|linker| {
-        linker.root().func_new_concurrent(
-            "answer",
-            answer_type(),
-            |_accessor: &Accessor<()>, args: Vec<Val>| async move {
-                let Some(Val::U32(x)) = args.first() else {
-                    panic!("`answer` was given {args:?}");
-                };
-                Ok(vec![Val::U32(x * 2)])
-            },
-        );
+        linker
+            .root()
+            .func_new_concurrent(
+                "answer",
+                answer_type(),
+                |_accessor: &Accessor<()>, args: Vec<Val>| async move {
+                    let Some(Val::U32(x)) = args.first() else {
+                        panic!("`answer` was given {args:?}");
+                    };
+                    Ok(vec![Val::U32(x * 2)])
+                },
+            )
+            .expect("the registration");
     })
     .await;
 
@@ -745,7 +751,8 @@ async fn it_starts_a_subtask_for_a_typed_registration_whose_future_is_pending() 
             .root()
             .func_wrap_concurrent("answer", |_accessor: &Accessor<()>, (x,): (u32,)| {
                 PendingOnce::new(x * 2)
-            });
+            })
+            .expect("the registration");
     })
     .await;
 
@@ -777,16 +784,19 @@ async fn it_starts_a_subtask_for_a_typed_registration_whose_future_is_pending() 
 async fn it_starts_a_subtask_for_an_untyped_registration_whose_future_is_pending() {
     // The same call through the untyped entry.
     let (mut store, instance) = caller(|linker| {
-        linker.root().func_new_concurrent(
-            "answer",
-            answer_type(),
-            |_accessor: &Accessor<()>, args: Vec<Val>| {
-                let Some(Val::U32(x)) = args.first() else {
-                    panic!("`answer` was given {args:?}");
-                };
-                PendingOnce::new(vec![Val::U32(x * 2)])
-            },
-        );
+        linker
+            .root()
+            .func_new_concurrent(
+                "answer",
+                answer_type(),
+                |_accessor: &Accessor<()>, args: Vec<Val>| {
+                    let Some(Val::U32(x)) = args.first() else {
+                        panic!("`answer` was given {args:?}");
+                    };
+                    PendingOnce::new(vec![Val::U32(x * 2)])
+                },
+            )
+            .expect("the registration");
     })
     .await;
 
@@ -823,7 +833,8 @@ async fn it_reaches_the_host_data_from_a_typed_registrations_closure() {
             .func_wrap_concurrent("answer", |accessor: &Accessor<u32>, (x,): (u32,)| {
                 let base = accessor.with(|store| *store.data());
                 async move { Ok(x + base?) }
-            });
+            })
+            .expect("the registration");
     })
     .await;
 
@@ -845,18 +856,21 @@ async fn it_reaches_the_host_data_from_an_untyped_registrations_closure() {
     // The same reach through the untyped entry, whose closure is
     // handed the lifted values and answers with the value vector.
     let (mut store, instance) = caller_holding(20u32, |linker| {
-        linker.root().func_new_concurrent(
-            "answer",
-            answer_type(),
-            |accessor: &Accessor<u32>, args: Vec<Val>| {
-                let Some(Val::U32(x)) = args.first() else {
-                    panic!("`answer` was given {args:?}");
-                };
-                let x = *x;
-                let base = accessor.with(|store| *store.data());
-                async move { Ok(vec![Val::U32(x + base?)]) }
-            },
-        );
+        linker
+            .root()
+            .func_new_concurrent(
+                "answer",
+                answer_type(),
+                |accessor: &Accessor<u32>, args: Vec<Val>| {
+                    let Some(Val::U32(x)) = args.first() else {
+                        panic!("`answer` was given {args:?}");
+                    };
+                    let x = *x;
+                    let base = accessor.with(|store| *store.data());
+                    async move { Ok(vec![Val::U32(x + base?)]) }
+                },
+            )
+            .expect("the registration");
     })
     .await;
 
@@ -883,9 +897,9 @@ async fn it_refuses_a_reach_nested_inside_the_closures_own_reach() {
     // host task's poll. The cause is written into the host data by
     // the outer reach, which is the one thing that outlives the call.
     let (mut store, instance) = caller_holding(String::new(), |linker| {
-        linker.root().func_wrap_concurrent(
-            "answer",
-            |accessor: &Accessor<String>, (x,): (u32,)| {
+        linker
+            .root()
+            .func_wrap_concurrent("answer", |accessor: &Accessor<String>, (x,): (u32,)| {
                 let doubled = accessor.with(|store| {
                     let nested = accessor
                         .with(|_store| ())
@@ -895,8 +909,8 @@ async fn it_refuses_a_reach_nested_inside_the_closures_own_reach() {
                     x * 2
                 });
                 async move { doubled }
-            },
-        );
+            })
+            .expect("the registration");
     })
     .await;
 
@@ -930,29 +944,32 @@ async fn it_lifts_the_spilled_parameters_of_an_asynchronous_lower_through_the_po
     // the tuple's pointer.
     let (mut store, instance) =
         instantiate(SPILLS_THE_PARAMETERS_OF_AN_ASYNCHRONOUS_LOWER, |linker| {
-            linker.root().func_new_concurrent(
-                "sum",
-                sum_type(),
-                |_accessor: &Accessor<()>, args: Vec<Val>| {
-                    // A sum reads the same for any permutation, so
-                    // the tuple is checked position by position: the
-                    // five values have to arrive in the order the
-                    // guest laid them out.
-                    assert_eq!(
-                        args,
-                        (10..15).map(Val::U32).collect::<Vec<Val>>(),
-                        "`sum` was given {args:?}"
-                    );
-                    let total = args
-                        .iter()
-                        .map(|arg| match arg {
-                            Val::U32(value) => *value,
-                            other => panic!("`sum` was given {other:?}"),
-                        })
-                        .sum::<u32>();
-                    PendingOnce::new(vec![Val::U32(total)])
-                },
-            );
+            linker
+                .root()
+                .func_new_concurrent(
+                    "sum",
+                    sum_type(),
+                    |_accessor: &Accessor<()>, args: Vec<Val>| {
+                        // A sum reads the same for any permutation, so
+                        // the tuple is checked position by position: the
+                        // five values have to arrive in the order the
+                        // guest laid them out.
+                        assert_eq!(
+                            args,
+                            (10..15).map(Val::U32).collect::<Vec<Val>>(),
+                            "`sum` was given {args:?}"
+                        );
+                        let total = args
+                            .iter()
+                            .map(|arg| match arg {
+                                Val::U32(value) => *value,
+                                other => panic!("`sum` was given {other:?}"),
+                            })
+                            .sum::<u32>();
+                        PendingOnce::new(vec![Val::U32(total)])
+                    },
+                )
+                .expect("the registration");
         })
         .await;
 
@@ -993,7 +1010,8 @@ async fn it_delivers_a_host_subtask_event_through_a_poll_of_the_waitable_set() {
             .root()
             .func_wrap_concurrent("answer", |_accessor: &Accessor<()>, (x,): (u32,)| {
                 PendingOnce::new(x * 2)
-            });
+            })
+            .expect("the registration");
     })
     .await;
 
@@ -1054,11 +1072,14 @@ async fn it_fails_the_call_when_an_untyped_future_answers_with_the_wrong_arity()
     // mistake the untyped synchronous path reports as a host value
     // that does not match the declared type, seen a call later.
     let (mut store, instance) = caller(|linker| {
-        linker.root().func_new_concurrent(
-            "answer",
-            answer_type(),
-            |_accessor: &Accessor<()>, _args: Vec<Val>| async move { Ok(Vec::new()) },
-        );
+        linker
+            .root()
+            .func_new_concurrent(
+                "answer",
+                answer_type(),
+                |_accessor: &Accessor<()>, _args: Vec<Val>| async move { Ok(Vec::new()) },
+            )
+            .expect("the registration");
     })
     .await;
 
@@ -1103,7 +1124,8 @@ async fn it_fails_an_untyped_synchronous_call_with_the_same_mismatch() {
         .func_new("answer", declared, |_call, _args, results| {
             results[0] = Val::Bool(false);
             Ok(())
-        });
+        })
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
@@ -1133,7 +1155,9 @@ async fn lender() -> (Store<()>, Instance) {
     {
         let mut root = linker.root();
         let mut host = root.instance("host");
-        let thing = host.resource_with("thing", HostResource::new(|_, _| Ok(())));
+        let thing = host
+            .resource_with("thing", HostResource::new(|_, _| Ok(())))
+            .expect("the registration");
         host.func_new(
             "[constructor]thing",
             FunctionType {
@@ -1151,7 +1175,8 @@ async fn lender() -> (Store<()>, Instance) {
                 results[0] = Val::Own(call.resource_new(thing, *rep)?);
                 Ok(())
             },
-        );
+        )
+        .expect("the registration");
         host.func_new_concurrent(
             "hold",
             FunctionType {
@@ -1163,7 +1188,8 @@ async fn lender() -> (Store<()>, Instance) {
                 async_: true,
             },
             |_accessor: &Accessor<()>, _args: Vec<Val>| PendingOnce::new(Vec::<Val>::new()),
-        );
+        )
+        .expect("the registration");
     }
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
@@ -1244,7 +1270,8 @@ async fn it_awaits_a_javascript_promise_and_gives_the_guest_its_value() {
                         .expect("the promise resolves");
                     Ok(resolved.as_f64().expect("the promise's value") as u32)
                 }
-            });
+            })
+            .expect("the registration");
     })
     .await;
 
@@ -1310,7 +1337,8 @@ async fn caller_whose_host_call_fails() -> (Store<()>, Instance) {
             .root()
             .func_wrap_concurrent("answer", |_accessor: &Accessor<()>, (_x,): (u32,)| {
                 FailsAfterAPendingPoll::new()
-            });
+            })
+            .expect("the registration");
     })
     .await
 }

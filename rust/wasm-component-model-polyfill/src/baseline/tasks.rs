@@ -110,34 +110,37 @@ async fn run_with_probe(bytes: &[u8], argument: u32) -> (Val, Seen, Seen) {
     let recorded = during.clone();
 
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().func_wrap(
-        "probe",
-        move |_: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
-            let guard = tables.lock().expect("handle tables");
-            *recorded.lock().expect("record") = Seen {
-                scopes: guard.tasks.scopes().len(),
-                tasks: guard.tasks.task_count(),
-                subtasks: guard.tasks.subtask_count(),
-                threads: guard.tasks.thread_count(),
-                current_is_subtask: guard.tasks.current_subtask().is_some(),
-                may_not_suspend: guard
-                    .tasks
-                    .instances()
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, record)| record.may_not_suspend)
-                    .map(|(index, _)| index)
-                    .collect(),
-                current_task_instance: guard
-                    .tasks
-                    .current_task()
-                    .and_then(|task| guard.tasks.task(task))
-                    .and_then(|record| record.instance)
-                    .map(|instance| instance.index() as usize),
-            };
-            Ok(x)
-        },
-    );
+    linker
+        .root()
+        .func_wrap(
+            "probe",
+            move |_: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
+                let guard = tables.lock().expect("handle tables");
+                *recorded.lock().expect("record") = Seen {
+                    scopes: guard.tasks.scopes().len(),
+                    tasks: guard.tasks.task_count(),
+                    subtasks: guard.tasks.subtask_count(),
+                    threads: guard.tasks.thread_count(),
+                    current_is_subtask: guard.tasks.current_subtask().is_some(),
+                    may_not_suspend: guard
+                        .tasks
+                        .instances()
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, record)| record.may_not_suspend)
+                        .map(|(index, _)| index)
+                        .collect(),
+                    current_task_instance: guard
+                        .tasks
+                        .current_task()
+                        .and_then(|task| guard.tasks.task(task))
+                        .and_then(|record| record.instance)
+                        .map(|instance| instance.index() as usize),
+                };
+                Ok(x)
+            },
+        )
+        .expect("the registration");
 
     let instance = linker
         .instantiate(&mut store, &component)
@@ -289,27 +292,31 @@ async fn it_gives_back_a_borrow_lent_to_a_host_call_whose_parameter_lift_failed(
         .resource("thing", move |_: &mut (), rep: u32| {
             recorded.lock().expect("record").push(rep);
             Ok(())
-        });
-    linker.instance(&iface).func_new(
-        "take",
-        FunctionType {
-            parameters: vec![
-                FunctionParameter {
-                    name: "h".to_owned(),
-                    ty: ValueType::Borrow(ResourceType::new("thing")),
-                },
-                FunctionParameter {
-                    name: "c".to_owned(),
-                    ty: ValueType::Primitive(PrimitiveType::Char),
-                },
-            ],
-            result: None,
-            async_: false,
-        },
-        |_: HostCall<'_, ()>, _args, _results| {
-            panic!("the second parameter never lifts, so the host body never runs")
-        },
-    );
+        })
+        .expect("the registration");
+    linker
+        .instance(&iface)
+        .func_new(
+            "take",
+            FunctionType {
+                parameters: vec![
+                    FunctionParameter {
+                        name: "h".to_owned(),
+                        ty: ValueType::Borrow(ResourceType::new("thing")),
+                    },
+                    FunctionParameter {
+                        name: "c".to_owned(),
+                        ty: ValueType::Primitive(PrimitiveType::Char),
+                    },
+                ],
+                result: None,
+                async_: false,
+            },
+            |_: HostCall<'_, ()>, _args, _results| {
+                panic!("the second parameter never lifts, so the host body never runs")
+            },
+        )
+        .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker

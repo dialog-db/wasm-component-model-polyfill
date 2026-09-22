@@ -164,7 +164,8 @@ async fn it_keeps_a_slot_a_realloc_set_away_from_the_task_that_called_the_host()
         .root()
         .func_wrap("make", |_: HostCall<'_, ()>, (): ()| -> Result<String> {
             Ok("hi".to_owned())
-        });
+        })
+        .expect("the registration");
     let instance = linker
         .instantiate(&mut store, &component)
         .await
@@ -294,7 +295,8 @@ async fn run_and_read_records(
         .root()
         .func_wrap("ping", |_: HostCall<'_, ()>, (): ()| -> Result<u32> {
             Ok(PING)
-        });
+        })
+        .expect("the registration");
     let instance = linker
         .instantiate(&mut store, &component)
         .await

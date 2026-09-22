@@ -179,8 +179,10 @@ pub trait HostResourceInternal<T> {
 /// The crate-internal face of
 /// [`LinkerInstance`](crate::LinkerInstance).
 pub trait LinkerInstanceInternal<'a, T: 'static> {
-    /// A borrowed view onto the given registration.
-    fn new(registration: &'a mut InstanceRegistration<T>) -> Self;
+    /// A borrowed view onto the given registration, which refuses a
+    /// registration under a name the entry already holds an item
+    /// under unless `allow_shadowing`.
+    fn new(registration: &'a mut InstanceRegistration<T>, allow_shadowing: bool) -> Self;
 }
 
 /// The crate-internal face of [`Linker`](crate::Linker).

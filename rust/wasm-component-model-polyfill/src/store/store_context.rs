@@ -2842,41 +2842,45 @@ mod tests {
         let filled = slot.clone();
 
         let mut linker: Linker<()> = Linker::new(&engine);
-        linker.root().func_wrap(
-            "probe",
-            move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
-                let store = call.store();
-                let subtask = store.lock_tables()?.tasks.push_subtask();
-                let lowering = filled.clone();
-                let before = store.scheduler().items_run();
-                let status = store
-                    .start_host_task(
-                        HostTask::from_future(
-                            subtask,
-                            move |_store: &mut StoreContext<'_, ()>, outcome: Result<Vec<Val>>| {
-                                *lowering.lock().expect("the lowering's slot") = Some(outcome);
-                                Ok(())
-                            },
-                            ReadyOnSecondPoll {
-                                polls: 0,
-                                value: x * 2,
-                            },
-                        ),
-                        TableId::fresh(),
-                        LowerKind::Sync,
-                    )
-                    .map_or_else(
-                        |error| error.to_string(),
-                        |status| status.value().to_string(),
-                    );
-                *recorded.lock().expect("record") = Some((
-                    status,
-                    store.scheduler().host_task_count(),
-                    store.scheduler().items_run() - before,
-                ));
-                Ok(x)
-            },
-        );
+        linker
+            .root()
+            .func_wrap(
+                "probe",
+                move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
+                    let store = call.store();
+                    let subtask = store.lock_tables()?.tasks.push_subtask();
+                    let lowering = filled.clone();
+                    let before = store.scheduler().items_run();
+                    let status = store
+                        .start_host_task(
+                            HostTask::from_future(
+                                subtask,
+                                move |_store: &mut StoreContext<'_, ()>,
+                                      outcome: Result<Vec<Val>>| {
+                                    *lowering.lock().expect("the lowering's slot") = Some(outcome);
+                                    Ok(())
+                                },
+                                ReadyOnSecondPoll {
+                                    polls: 0,
+                                    value: x * 2,
+                                },
+                            ),
+                            TableId::fresh(),
+                            LowerKind::Sync,
+                        )
+                        .map_or_else(
+                            |error| error.to_string(),
+                            |status| status.value().to_string(),
+                        );
+                    *recorded.lock().expect("record") = Some((
+                        status,
+                        store.scheduler().host_task_count(),
+                        store.scheduler().items_run() - before,
+                    ));
+                    Ok(x)
+                },
+            )
+            .expect("the registration");
 
         let instance = linker
             .instantiate(&mut store, &component)
@@ -2935,31 +2939,34 @@ mod tests {
         let filled = slot.clone();
 
         let mut linker: Linker<()> = Linker::new(&engine);
-        linker.root().func_wrap(
-            "probe",
-            move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
-                let store = call.store();
-                let subtask = store.lock_tables()?.tasks.push_subtask();
-                let lowering = filled.clone();
-                let status = store.start_host_task(
-                    HostTask::from_future(
-                        subtask,
-                        move |_store: &mut StoreContext<'_, ()>, outcome: Result<Vec<Val>>| {
-                            *lowering.lock().expect("the lowering's slot") = Some(outcome);
-                            Ok(())
-                        },
-                        ReadyOnSecondPoll {
-                            polls: 0,
-                            value: x * 2,
-                        },
-                    ),
-                    TableId::fresh(),
-                    LowerKind::Sync,
-                )?;
-                *recorded.lock().expect("record") = Some(status.value());
-                Ok(x)
-            },
-        );
+        linker
+            .root()
+            .func_wrap(
+                "probe",
+                move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
+                    let store = call.store();
+                    let subtask = store.lock_tables()?.tasks.push_subtask();
+                    let lowering = filled.clone();
+                    let status = store.start_host_task(
+                        HostTask::from_future(
+                            subtask,
+                            move |_store: &mut StoreContext<'_, ()>, outcome: Result<Vec<Val>>| {
+                                *lowering.lock().expect("the lowering's slot") = Some(outcome);
+                                Ok(())
+                            },
+                            ReadyOnSecondPoll {
+                                polls: 0,
+                                value: x * 2,
+                            },
+                        ),
+                        TableId::fresh(),
+                        LowerKind::Sync,
+                    )?;
+                    *recorded.lock().expect("record") = Some(status.value());
+                    Ok(x)
+                },
+            )
+            .expect("the registration");
 
         let instance = linker
             .instantiate(&mut store, &component)

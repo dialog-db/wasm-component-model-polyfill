@@ -57,13 +57,16 @@ async fn it_runs_destructors_in_drop_order_for_multiple_handles() {
     let iface: InterfaceIdentifier = "pdd009-tests:host/resources@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker.instance(&iface).resource(
-        "thing",
-        |data: &mut Arc<Mutex<Vec<u32>>>, rep: u32| -> crate::Result<()> {
-            data.lock().expect("dropped lock").push(rep);
-            Ok(())
-        },
-    );
+    let type_id = linker
+        .instance(&iface)
+        .resource(
+            "thing",
+            |data: &mut Arc<Mutex<Vec<u32>>>, rep: u32| -> crate::Result<()> {
+                data.lock().expect("dropped lock").push(rep);
+                Ok(())
+            },
+        )
+        .expect("the registration");
 
     let mut store: Store<Arc<Mutex<Vec<u32>>>> = Store::new(&engine, log).expect("store");
     let inst = linker
@@ -135,7 +138,8 @@ async fn it_rejects_a_handle_whose_type_id_is_not_registered_in_the_store() {
         .instance(&iface)
         .resource("thing", |_data: &mut (), _rep: u32| -> crate::Result<()> {
             Ok(())
-        });
+        })
+        .expect("the registration");
 
     let mut consumer: Store<()> = Store::new(&engine, ()).expect("consumer store");
     let producer: Store<()> = Store::new(&engine, ()).expect("producer store");
@@ -187,7 +191,8 @@ async fn it_rejects_a_completely_fabricated_handle_index() {
         .instance(&iface)
         .resource("thing", |_data: &mut (), _rep: u32| -> crate::Result<()> {
             Ok(())
-        });
+        })
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
@@ -247,15 +252,18 @@ async fn it_supports_two_distinct_resource_types_in_one_interface() {
     let mut linker: Linker<Counters> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd009-tests:host/multi@0.1.0".parse().expect("identifier");
     let mut iface_view = linker.instance(&iface);
-    let alpha_id =
-        iface_view.resource("alpha", |c: &mut Counters, rep: u32| -> crate::Result<()> {
+    let alpha_id = iface_view
+        .resource("alpha", |c: &mut Counters, rep: u32| -> crate::Result<()> {
             c.alphas.push(rep);
             Ok(())
-        });
-    let beta_id = iface_view.resource("beta", |c: &mut Counters, rep: u32| -> crate::Result<()> {
-        c.betas.push(rep);
-        Ok(())
-    });
+        })
+        .expect("the registration");
+    let beta_id = iface_view
+        .resource("beta", |c: &mut Counters, rep: u32| -> crate::Result<()> {
+            c.betas.push(rep);
+            Ok(())
+        })
+        .expect("the registration");
     let mut store: Store<Counters> = Store::new(&engine, Counters::default()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
@@ -311,7 +319,8 @@ async fn it_reuses_freed_handle_indices_after_drop() {
         .instance(&iface)
         .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
             Ok(())
-        });
+        })
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
@@ -642,40 +651,52 @@ async fn it_shares_a_single_resource_type_across_two_imported_interfaces() {
             dropped.push(rep);
             Ok(())
         });
-    let type_id = linker.instance(&a).resource_with("thing", thing.clone());
-    linker.instance(&b).resource_with("thing", thing);
-    linker.instance(&a).func_new(
-        "make",
-        FunctionType {
-            parameters: Vec::new(),
-            result: Some(ValueType::Own(ResourceType::new("thing"))),
-            async_: false,
-        },
-        move |call: HostCall<'_, Vec<u32>>, _args, results| {
-            results[0] = Val::Own(call.resource_new(type_id, 9)?);
-            Ok(())
-        },
-    );
-    linker.instance(&b).func_new(
-        "consume",
-        FunctionType {
-            parameters: vec![FunctionParameter {
-                name: "h".to_owned(),
-                ty: ValueType::Own(ResourceType::new("thing")),
-            }],
-            result: None,
-            async_: false,
-        },
-        |mut call: HostCall<'_, Vec<u32>>, args, _results| {
-            let Val::Own(handle) = &args[0] else {
-                panic!("expected an owned handle, got {args:?}");
-            };
-            // The handle minted under `a` arrives through `b` with the
-            // same identity; record the rep the host gave it.
-            call.data_mut().push(handle.rep());
-            Ok(())
-        },
-    );
+    let type_id = linker
+        .instance(&a)
+        .resource_with("thing", thing.clone())
+        .expect("the registration");
+    linker
+        .instance(&b)
+        .resource_with("thing", thing)
+        .expect("the registration");
+    linker
+        .instance(&a)
+        .func_new(
+            "make",
+            FunctionType {
+                parameters: Vec::new(),
+                result: Some(ValueType::Own(ResourceType::new("thing"))),
+                async_: false,
+            },
+            move |call: HostCall<'_, Vec<u32>>, _args, results| {
+                results[0] = Val::Own(call.resource_new(type_id, 9)?);
+                Ok(())
+            },
+        )
+        .expect("the registration");
+    linker
+        .instance(&b)
+        .func_new(
+            "consume",
+            FunctionType {
+                parameters: vec![FunctionParameter {
+                    name: "h".to_owned(),
+                    ty: ValueType::Own(ResourceType::new("thing")),
+                }],
+                result: None,
+                async_: false,
+            },
+            |mut call: HostCall<'_, Vec<u32>>, args, _results| {
+                let Val::Own(handle) = &args[0] else {
+                    panic!("expected an owned handle, got {args:?}");
+                };
+                // The handle minted under `a` arrives through `b` with the
+                // same identity; record the rep the host gave it.
+                call.data_mut().push(handle.rep());
+                Ok(())
+            },
+        )
+        .expect("the registration");
     let mut store: Store<Vec<u32>> = Store::new(&engine, Vec::new()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
@@ -699,36 +720,44 @@ async fn it_rejects_two_identities_for_one_declared_resource_type() {
         .instance(&a)
         .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
             Ok(())
-        });
+        })
+        .expect("the registration");
     linker
         .instance(&b)
         .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
             Ok(())
-        });
-    linker.instance(&a).func_new(
-        "make",
-        FunctionType {
-            parameters: Vec::new(),
-            result: Some(ValueType::Own(ResourceType::new("thing"))),
-            async_: false,
-        },
-        move |call: HostCall<'_, ()>, _args, results| {
-            results[0] = Val::Own(call.resource_new(type_id, 1)?);
-            Ok(())
-        },
-    );
-    linker.instance(&b).func_new(
-        "consume",
-        FunctionType {
-            parameters: vec![FunctionParameter {
-                name: "h".to_owned(),
-                ty: ValueType::Own(ResourceType::new("thing")),
-            }],
-            result: None,
-            async_: false,
-        },
-        |_: HostCall<'_, ()>, _args, _results| Ok(()),
-    );
+        })
+        .expect("the registration");
+    linker
+        .instance(&a)
+        .func_new(
+            "make",
+            FunctionType {
+                parameters: Vec::new(),
+                result: Some(ValueType::Own(ResourceType::new("thing"))),
+                async_: false,
+            },
+            move |call: HostCall<'_, ()>, _args, results| {
+                results[0] = Val::Own(call.resource_new(type_id, 1)?);
+                Ok(())
+            },
+        )
+        .expect("the registration");
+    linker
+        .instance(&b)
+        .func_new(
+            "consume",
+            FunctionType {
+                parameters: vec![FunctionParameter {
+                    name: "h".to_owned(),
+                    ty: ValueType::Own(ResourceType::new("thing")),
+                }],
+                result: None,
+                async_: false,
+            },
+            |_: HostCall<'_, ()>, _args, _results| Ok(()),
+        )
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let err = match linker.instantiate(&mut store, &component).await {
         Ok(_) => panic!("two identities for one declared resource type must not link"),
@@ -775,19 +804,23 @@ async fn it_lets_a_host_function_mint_a_resource_handle_during_a_guest_call() {
         .instance(&iface)
         .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
             Ok(())
-        });
-    linker.instance(&iface).func_new(
-        "make",
-        FunctionType {
-            parameters: Vec::new(),
-            result: Some(ValueType::Own(ResourceType::new("thing"))),
-            async_: false,
-        },
-        move |call: HostCall<'_, ()>, _args, results| {
-            results[0] = Val::Own(call.resource_new(type_id, 42)?);
-            Ok(())
-        },
-    );
+        })
+        .expect("the registration");
+    linker
+        .instance(&iface)
+        .func_new(
+            "make",
+            FunctionType {
+                parameters: Vec::new(),
+                result: Some(ValueType::Own(ResourceType::new("thing"))),
+                async_: false,
+            },
+            move |call: HostCall<'_, ()>, _args, results| {
+                results[0] = Val::Own(call.resource_new(type_id, 42)?);
+                Ok(())
+            },
+        )
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
@@ -824,20 +857,24 @@ async fn it_rejects_a_host_mint_against_an_unknown_resource_type() {
         .instance(&iface)
         .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
             Ok(())
-        });
+        })
+        .expect("the registration");
     let stranger = ResourceTypeId::fresh();
-    linker.instance(&iface).func_new(
-        "make",
-        FunctionType {
-            parameters: Vec::new(),
-            result: Some(ValueType::Own(ResourceType::new("thing"))),
-            async_: false,
-        },
-        move |call: HostCall<'_, ()>, _args, results| {
-            results[0] = Val::Own(call.resource_new(stranger, 1)?);
-            Ok(())
-        },
-    );
+    linker
+        .instance(&iface)
+        .func_new(
+            "make",
+            FunctionType {
+                parameters: Vec::new(),
+                result: Some(ValueType::Own(ResourceType::new("thing"))),
+                async_: false,
+            },
+            move |call: HostCall<'_, ()>, _args, results| {
+                results[0] = Val::Own(call.resource_new(stranger, 1)?);
+                Ok(())
+            },
+        )
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
@@ -1016,25 +1053,31 @@ fn borrower_linker(engine: &Engine, resource: HostResource<()>) -> (Linker<()>, 
     let iface: InterfaceIdentifier = "pdd014-tests:host/things@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker.instance(&iface).resource_with("thing", resource);
-    linker.instance(&iface).func_new(
-        "rep",
-        FunctionType {
-            parameters: vec![FunctionParameter {
-                name: "h".to_owned(),
-                ty: ValueType::Borrow(ResourceType::new("thing")),
-            }],
-            result: Some(ValueType::Primitive(crate::PrimitiveType::U32)),
-            async_: false,
-        },
-        |_: HostCall<'_, ()>, args, results| {
-            let Val::Borrow(handle) = &args[0] else {
-                panic!("expected a borrowed handle, got {args:?}");
-            };
-            results[0] = Val::U32(handle.rep());
-            Ok(())
-        },
-    );
+    let type_id = linker
+        .instance(&iface)
+        .resource_with("thing", resource)
+        .expect("the registration");
+    linker
+        .instance(&iface)
+        .func_new(
+            "rep",
+            FunctionType {
+                parameters: vec![FunctionParameter {
+                    name: "h".to_owned(),
+                    ty: ValueType::Borrow(ResourceType::new("thing")),
+                }],
+                result: Some(ValueType::Primitive(crate::PrimitiveType::U32)),
+                async_: false,
+            },
+            |_: HostCall<'_, ()>, args, results| {
+                let Val::Borrow(handle) = &args[0] else {
+                    panic!("expected a borrowed handle, got {args:?}");
+                };
+                results[0] = Val::U32(handle.rep());
+                Ok(())
+            },
+        )
+        .expect("the registration");
     (linker, type_id)
 }
 
@@ -1164,40 +1207,44 @@ async fn drop_attempt_instance(
         .instance(&iface)
         .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
             Ok(())
-        });
-    linker.instance(&iface).func_new(
-        "rep",
-        FunctionType {
-            parameters: vec![FunctionParameter {
-                name: "h".to_owned(),
-                ty: ValueType::Borrow(ResourceType::new("thing")),
-            }],
-            result: Some(ValueType::Primitive(crate::PrimitiveType::U32)),
-            async_: false,
-        },
-        move |mut call: HostCall<'_, ()>, args, results| {
-            let Val::Borrow(borrowed) = &args[0] else {
-                panic!("expected a borrowed handle, got {args:?}");
-            };
-            results[0] = Val::U32(borrowed.rep());
-            let owned = lent
-                .lock()
-                .expect("the lent handle")
-                .expect("the host minted a handle before the call");
-            *attempt.lock().expect("the attempt") =
-                Some(match call.store().internal().resource_drop(owned) {
-                    Ok(()) => (false, "the release succeeded".to_owned()),
-                    Err(err) => (
-                        matches!(&err, Error::Abi(abi) if matches!(
-                            abi.cause,
-                            AbiCause::InvalidHandle { .. }
-                        )),
-                        err.to_string(),
-                    ),
-                });
-            Ok(())
-        },
-    );
+        })
+        .expect("the registration");
+    linker
+        .instance(&iface)
+        .func_new(
+            "rep",
+            FunctionType {
+                parameters: vec![FunctionParameter {
+                    name: "h".to_owned(),
+                    ty: ValueType::Borrow(ResourceType::new("thing")),
+                }],
+                result: Some(ValueType::Primitive(crate::PrimitiveType::U32)),
+                async_: false,
+            },
+            move |mut call: HostCall<'_, ()>, args, results| {
+                let Val::Borrow(borrowed) = &args[0] else {
+                    panic!("expected a borrowed handle, got {args:?}");
+                };
+                results[0] = Val::U32(borrowed.rep());
+                let owned = lent
+                    .lock()
+                    .expect("the lent handle")
+                    .expect("the host minted a handle before the call");
+                *attempt.lock().expect("the attempt") =
+                    Some(match call.store().internal().resource_drop(owned) {
+                        Ok(()) => (false, "the release succeeded".to_owned()),
+                        Err(err) => (
+                            matches!(&err, Error::Abi(abi) if matches!(
+                                abi.cause,
+                                AbiCause::InvalidHandle { .. }
+                            )),
+                            err.to_string(),
+                        ),
+                    });
+                Ok(())
+            },
+        )
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
@@ -1287,26 +1334,30 @@ async fn recording_borrower_instance(
         .instance(&iface)
         .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
             Ok(())
-        });
-    linker.instance(&iface).func_new(
-        "rep",
-        FunctionType {
-            parameters: vec![FunctionParameter {
-                name: "h".to_owned(),
-                ty: ValueType::Borrow(ResourceType::new("thing")),
-            }],
-            result: Some(ValueType::Primitive(crate::PrimitiveType::U32)),
-            async_: false,
-        },
-        move |_: HostCall<'_, ()>, args, results| {
-            let Val::Borrow(handle) = &args[0] else {
-                panic!("expected a borrowed handle, got {args:?}");
-            };
-            results[0] = Val::U32(handle.rep());
-            *seen.lock().expect("the borrowed handle") = Some(*handle);
-            Ok(())
-        },
-    );
+        })
+        .expect("the registration");
+    linker
+        .instance(&iface)
+        .func_new(
+            "rep",
+            FunctionType {
+                parameters: vec![FunctionParameter {
+                    name: "h".to_owned(),
+                    ty: ValueType::Borrow(ResourceType::new("thing")),
+                }],
+                result: Some(ValueType::Primitive(crate::PrimitiveType::U32)),
+                async_: false,
+            },
+            move |_: HostCall<'_, ()>, args, results| {
+                let Val::Borrow(handle) = &args[0] else {
+                    panic!("expected a borrowed handle, got {args:?}");
+                };
+                results[0] = Val::U32(handle.rep());
+                *seen.lock().expect("the borrowed handle") = Some(*handle);
+                Ok(())
+            },
+        )
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
@@ -1430,25 +1481,29 @@ async fn it_refuses_to_lower_a_lent_handle_again_as_an_own() {
         .instance(&iface)
         .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
             Ok(())
-        });
+        })
+        .expect("the registration");
     let lent: Arc<Mutex<Option<ResourceHandle>>> = Arc::new(Mutex::new(None));
     let given = lent.clone();
-    linker.instance(&iface).func_new(
-        "take",
-        FunctionType {
-            parameters: Vec::new(),
-            result: Some(ValueType::Own(ResourceType::new("thing"))),
-            async_: false,
-        },
-        move |_: HostCall<'_, ()>, _args, results| {
-            let owned = given
-                .lock()
-                .expect("the lent handle")
-                .expect("the host minted a handle before the call");
-            results[0] = Val::Own(owned);
-            Ok(())
-        },
-    );
+    linker
+        .instance(&iface)
+        .func_new(
+            "take",
+            FunctionType {
+                parameters: Vec::new(),
+                result: Some(ValueType::Own(ResourceType::new("thing"))),
+                async_: false,
+            },
+            move |_: HostCall<'_, ()>, _args, results| {
+                let owned = given
+                    .lock()
+                    .expect("the lent handle")
+                    .expect("the host minted a handle before the call");
+                results[0] = Val::Own(owned);
+                Ok(())
+            },
+        )
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
@@ -1765,31 +1820,37 @@ async fn disposal_store() -> (Store<Vec<u32>>, ResourceTypeId, crate::Instance) 
     let iface: InterfaceIdentifier = "pdd014-tests:host/things@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker.instance(&iface).resource(
-        "thing",
-        |dropped: &mut Vec<u32>, rep: u32| -> crate::Result<()> {
-            dropped.push(rep);
-            Ok(())
-        },
-    );
-    linker.instance(&iface).func_new(
-        "rep",
-        FunctionType {
-            parameters: vec![FunctionParameter {
-                name: "h".to_owned(),
-                ty: ValueType::Borrow(ResourceType::new("thing")),
-            }],
-            result: Some(ValueType::Primitive(crate::PrimitiveType::U32)),
-            async_: false,
-        },
-        |_: HostCall<'_, Vec<u32>>, args, results| {
-            let Val::Borrow(handle) = &args[0] else {
-                panic!("expected a borrowed handle, got {args:?}");
-            };
-            results[0] = Val::U32(handle.rep());
-            Ok(())
-        },
-    );
+    let type_id = linker
+        .instance(&iface)
+        .resource(
+            "thing",
+            |dropped: &mut Vec<u32>, rep: u32| -> crate::Result<()> {
+                dropped.push(rep);
+                Ok(())
+            },
+        )
+        .expect("the registration");
+    linker
+        .instance(&iface)
+        .func_new(
+            "rep",
+            FunctionType {
+                parameters: vec![FunctionParameter {
+                    name: "h".to_owned(),
+                    ty: ValueType::Borrow(ResourceType::new("thing")),
+                }],
+                result: Some(ValueType::Primitive(crate::PrimitiveType::U32)),
+                async_: false,
+            },
+            |_: HostCall<'_, Vec<u32>>, args, results| {
+                let Val::Borrow(handle) = &args[0] else {
+                    panic!("expected a borrowed handle, got {args:?}");
+                };
+                results[0] = Val::U32(handle.rep());
+                Ok(())
+            },
+        )
+        .expect("the registration");
     let mut store: Store<Vec<u32>> = Store::new(&engine, Vec::new()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
@@ -1938,7 +1999,10 @@ async fn it_names_a_shared_resource_by_the_label_the_component_imported_it_under
     let thing: HostResource<()> =
         HostResource::new(|_: &mut (), _: u32| -> crate::Result<()> { Ok(()) });
     let (mut linker, type_id) = borrower_linker(&engine, thing.clone());
-    linker.root().resource_with("alias", thing);
+    linker
+        .root()
+        .resource_with("alias", thing)
+        .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let _instance = linker
@@ -1977,7 +2041,8 @@ async fn it_names_a_host_resource_no_component_imported() {
         .root()
         .resource("gadget", |_: &mut (), _: u32| -> crate::Result<()> {
             Ok(())
-        });
+        })
+        .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let _instance = linker
@@ -2020,7 +2085,10 @@ async fn it_names_a_shared_resource_by_the_importer_after_an_earlier_instantiati
     let thing: HostResource<()> =
         HostResource::new(|_: &mut (), _: u32| -> crate::Result<()> { Ok(()) });
     let (mut linker, type_id) = borrower_linker(&engine, thing.clone());
-    linker.root().resource_with("alias", thing);
+    linker
+        .root()
+        .resource_with("alias", thing)
+        .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let _quiet_instance = linker
@@ -2065,11 +2133,17 @@ async fn it_names_an_unimported_resource_by_the_first_of_its_labels_in_order() {
     );
     let spare: HostResource<()> =
         HostResource::new(|_: &mut (), _: u32| -> crate::Result<()> { Ok(()) });
-    let widget = linker.root().resource_with("widget", spare.clone());
+    let widget = linker
+        .root()
+        .resource_with("widget", spare.clone())
+        .expect("the registration");
     let other: InterfaceIdentifier = "pdd014-tests:host/gizmos@0.1.0"
         .parse()
         .expect("identifier");
-    let gizmo = linker.instance(&other).resource_with("gizmo", spare);
+    let gizmo = linker
+        .instance(&other)
+        .resource_with("gizmo", spare)
+        .expect("the registration");
     assert_eq!(widget, gizmo, "one host resource value is one identity");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
@@ -2131,26 +2205,31 @@ async fn it_names_the_resource_type_a_refused_host_mint_asked_for() {
         .instance(&iface)
         .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
             Ok(())
-        });
+        })
+        .expect("the registration");
     let gadget = linker
         .root()
         .resource("gadget", |_: &mut (), _: u32| -> crate::Result<()> {
             Ok(())
-        });
-    linker.instance(&iface).func_new(
-        "make",
-        FunctionType {
-            parameters: Vec::new(),
-            result: Some(ValueType::Own(ResourceType::new("thing"))),
-            async_: false,
-        },
-        move |call: HostCall<'_, ()>, _args, results| {
-            // `gadget` is registered against the linker but is not a
-            // resource type of the instance being served.
-            results[0] = Val::Own(call.resource_new(gadget, 1)?);
-            Ok(())
-        },
-    );
+        })
+        .expect("the registration");
+    linker
+        .instance(&iface)
+        .func_new(
+            "make",
+            FunctionType {
+                parameters: Vec::new(),
+                result: Some(ValueType::Own(ResourceType::new("thing"))),
+                async_: false,
+            },
+            move |call: HostCall<'_, ()>, _args, results| {
+                // `gadget` is registered against the linker but is not a
+                // resource type of the instance being served.
+                results[0] = Val::Own(call.resource_new(gadget, 1)?);
+                Ok(())
+            },
+        )
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)

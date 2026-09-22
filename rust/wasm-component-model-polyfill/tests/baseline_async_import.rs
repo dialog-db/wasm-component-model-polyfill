@@ -260,10 +260,13 @@ async fn it_instantiates_a_component_whose_import_is_lowered_asynchronously() {
     // The import's type is `async func`, so the link rule wants a
     // concurrent registration for it.
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().func_wrap_concurrent(
-        "answer",
-        |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
-    );
+    linker
+        .root()
+        .func_wrap_concurrent(
+            "answer",
+            |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
+        )
+        .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
@@ -312,10 +315,13 @@ async fn it_calls_through_an_asynchronous_lower_without_memory() {
         .expect("component parses");
 
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().func_wrap_concurrent(
-        "answer",
-        |_accessor: &Accessor<()>, (_x,): (u32,)| async move { Ok(()) },
-    );
+    linker
+        .root()
+        .func_wrap_concurrent(
+            "answer",
+            |_accessor: &Accessor<()>, (_x,): (u32,)| async move { Ok(()) },
+        )
+        .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
@@ -451,10 +457,12 @@ async fn it_refuses_an_async_typed_import_satisfied_by_a_synchronous_registratio
     let mut linker: Linker<()> = Linker::new(&engine);
     linker
         .root()
-        .func_wrap("answer", |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2));
+        .func_wrap("answer", |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2))
+        .expect("the registration");
     linker
         .root()
-        .func_wrap("double", |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2));
+        .func_wrap("double", |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2))
+        .expect("the registration");
 
     let err = link_failure(&engine, &linker, (), ASYNC_IMPORT).await;
     let cause = link_error(err);
@@ -479,14 +487,20 @@ async fn it_refuses_a_sync_typed_import_satisfied_by_a_concurrent_registration()
     // `func_wrap_concurrent` is only for an `async func` import.
     let engine = Engine::new().expect("engine");
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().func_wrap_concurrent(
-        "answer",
-        |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
-    );
-    linker.root().func_wrap_concurrent(
-        "double",
-        |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
-    );
+    linker
+        .root()
+        .func_wrap_concurrent(
+            "answer",
+            |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
+        )
+        .expect("the registration");
+    linker
+        .root()
+        .func_wrap_concurrent(
+            "double",
+            |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
+        )
+        .expect("the registration");
 
     let err = link_failure(&engine, &linker, (), ASYNC_IMPORT).await;
     let cause = link_error(err);
@@ -515,7 +529,8 @@ async fn it_names_the_item_of_an_interface_import_the_rule_refuses() {
     let mut linker: Linker<()> = Linker::new(&engine);
     linker
         .instance(&"pdd-tests:host/answers@0.1.0".parse().expect("identifier"))
-        .func_wrap("answer", |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2));
+        .func_wrap("answer", |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2))
+        .expect("the registration");
 
     let err = link_failure(&engine, &linker, (), ASYNC_IMPORT_IN_AN_INTERFACE).await;
     let cause = link_error(err);
@@ -548,13 +563,17 @@ async fn it_links_both_concurrent_entries_for_an_async_typed_import() {
         .expect("component parses");
 
     let mut typed: Linker<()> = Linker::new(&engine);
-    typed.root().func_wrap_concurrent(
-        "answer",
-        |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
-    );
     typed
         .root()
-        .func_wrap("double", |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2));
+        .func_wrap_concurrent(
+            "answer",
+            |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
+        )
+        .expect("the registration");
+    typed
+        .root()
+        .func_wrap("double", |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2))
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     typed
         .instantiate(&mut store, &component)
@@ -562,14 +581,18 @@ async fn it_links_both_concurrent_entries_for_an_async_typed_import() {
         .expect("`func_wrap_concurrent` links for an async-typed import");
 
     let mut untyped: Linker<()> = Linker::new(&engine);
-    untyped.root().func_new_concurrent(
-        "answer",
-        declared(true),
-        |_accessor: &Accessor<()>, args: Vec<Val>| async move { Ok(args) },
-    );
     untyped
         .root()
-        .func_new("double", declared(false), |_call, _args, _results| Ok(()));
+        .func_new_concurrent(
+            "answer",
+            declared(true),
+            |_accessor: &Accessor<()>, args: Vec<Val>| async move { Ok(args) },
+        )
+        .expect("the registration");
+    untyped
+        .root()
+        .func_new("double", declared(false), |_call, _args, _results| Ok(()))
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     untyped
         .instantiate(&mut store, &component)
@@ -590,10 +613,12 @@ async fn it_reads_the_registration_form_rather_than_its_declared_async_flag() {
     let mut claims_async: Linker<()> = Linker::new(&engine);
     claims_async
         .root()
-        .func_new("answer", declared(true), |_call, _args, _results| Ok(()));
+        .func_new("answer", declared(true), |_call, _args, _results| Ok(()))
+        .expect("the registration");
     claims_async
         .root()
-        .func_new("double", declared(false), |_call, _args, _results| Ok(()));
+        .func_new("double", declared(false), |_call, _args, _results| Ok(()))
+        .expect("the registration");
     let cause = link_error(link_failure(&engine, &claims_async, (), ASYNC_IMPORT).await);
     assert!(
         matches!(
@@ -605,16 +630,22 @@ async fn it_reads_the_registration_form_rather_than_its_declared_async_flag() {
     );
 
     let mut claims_sync: Linker<()> = Linker::new(&engine);
-    claims_sync.root().func_new_concurrent(
-        "answer",
-        declared(true),
-        |_accessor: &Accessor<()>, args: Vec<Val>| async move { Ok(args) },
-    );
-    claims_sync.root().func_new_concurrent(
-        "double",
-        declared(false),
-        |_accessor: &Accessor<()>, args: Vec<Val>| async move { Ok(args) },
-    );
+    claims_sync
+        .root()
+        .func_new_concurrent(
+            "answer",
+            declared(true),
+            |_accessor: &Accessor<()>, args: Vec<Val>| async move { Ok(args) },
+        )
+        .expect("the registration");
+    claims_sync
+        .root()
+        .func_new_concurrent(
+            "double",
+            declared(false),
+            |_accessor: &Accessor<()>, args: Vec<Val>| async move { Ok(args) },
+        )
+        .expect("the registration");
     let cause = link_error(link_failure(&engine, &claims_sync, (), ASYNC_IMPORT).await);
     assert!(
         matches!(
@@ -641,10 +672,13 @@ async fn it_calls_a_concurrent_registration_through_a_synchronous_lower() {
         .expect("component parses");
 
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().func_wrap_concurrent(
-        "answer",
-        |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
-    );
+    linker
+        .root()
+        .func_wrap_concurrent(
+            "answer",
+            |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
+        )
+        .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
@@ -690,14 +724,20 @@ async fn it_holds_the_registration_form_of_an_import_under_an_interface_name() {
     let engine = Engine::new().expect("engine");
 
     let mut synchronous: Linker<()> = Linker::new(&engine);
-    synchronous.root().func_wrap(
-        "pdd-tests:host/answers@0.1.0",
-        |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2),
-    );
-    synchronous.root().func_wrap(
-        "pdd-tests:host/doubles@0.1.0",
-        |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2),
-    );
+    synchronous
+        .root()
+        .func_wrap(
+            "pdd-tests:host/answers@0.1.0",
+            |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2),
+        )
+        .expect("the registration");
+    synchronous
+        .root()
+        .func_wrap(
+            "pdd-tests:host/doubles@0.1.0",
+            |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2),
+        )
+        .expect("the registration");
     let cause = link_error(
         link_failure(
             &engine,
@@ -721,16 +761,22 @@ async fn it_holds_the_registration_form_of_an_import_under_an_interface_name() {
 
     // The other half of the rule, on the sync-typed import beside it.
     let mut concurrent: Linker<()> = Linker::new(&engine);
-    concurrent.root().func_new_concurrent(
-        "pdd-tests:host/answers@0.1.0",
-        declared(true),
-        |_accessor: &Accessor<()>, args: Vec<Val>| async move { Ok(args) },
-    );
-    concurrent.root().func_new_concurrent(
-        "pdd-tests:host/doubles@0.1.0",
-        declared(false),
-        |_accessor: &Accessor<()>, args: Vec<Val>| async move { Ok(args) },
-    );
+    concurrent
+        .root()
+        .func_new_concurrent(
+            "pdd-tests:host/answers@0.1.0",
+            declared(true),
+            |_accessor: &Accessor<()>, args: Vec<Val>| async move { Ok(args) },
+        )
+        .expect("the registration");
+    concurrent
+        .root()
+        .func_new_concurrent(
+            "pdd-tests:host/doubles@0.1.0",
+            declared(false),
+            |_accessor: &Accessor<()>, args: Vec<Val>| async move { Ok(args) },
+        )
+        .expect("the registration");
     let cause = link_error(
         link_failure(
             &engine,
@@ -761,14 +807,20 @@ async fn it_links_a_concurrent_registration_for_an_async_import_under_an_interfa
         .expect("component parses");
 
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().func_wrap_concurrent(
-        "pdd-tests:host/answers@0.1.0",
-        |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
-    );
-    linker.root().func_wrap(
-        "pdd-tests:host/doubles@0.1.0",
-        |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2),
-    );
+    linker
+        .root()
+        .func_wrap_concurrent(
+            "pdd-tests:host/answers@0.1.0",
+            |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
+        )
+        .expect("the registration");
+    linker
+        .root()
+        .func_wrap(
+            "pdd-tests:host/doubles@0.1.0",
+            |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2),
+        )
+        .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     linker

@@ -172,10 +172,13 @@ async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
         .expect("component parses");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().func_wrap(
-        "probe",
-        |_: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> { Ok(x) },
-    );
+    linker
+        .root()
+        .func_wrap(
+            "probe",
+            |_: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> { Ok(x) },
+        )
+        .expect("the registration");
     let instance = linker
         .instantiate(&mut store, &component)
         .await

@@ -128,7 +128,8 @@ async fn instantiate() -> (Store<()>, wasm_component_model_polyfill::Instance) {
         .root()
         .func_wrap("count", |_, (map,): (HashMap<String, u32>,)| {
             Ok(map.len() as u32)
-        });
+        })
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)

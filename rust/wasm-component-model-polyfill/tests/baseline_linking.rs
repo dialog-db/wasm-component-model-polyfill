@@ -8,9 +8,9 @@
 
 use std::sync::{Arc, Mutex};
 use wasm_component_model_polyfill::{
-    Component, Engine, Error, ExternType, ExternalName, FunctionParameter, FunctionType, HostCall,
-    InterfaceIdentifier, LinkError, Linker, Module, PrimitiveType, ResourceType, Store, Val,
-    ValueType,
+    Accessor, Component, Engine, Error, ExternType, ExternalName, FunctionParameter, FunctionType,
+    HostCall, HostResource, InterfaceIdentifier, LinkError, Linker, Module, PrimitiveType,
+    ResourceType, Store, Val, ValueType,
 };
 use wcmp_macros::{component, wasm};
 
@@ -287,24 +287,26 @@ async fn it_defines_an_untyped_host_function() {
         .parse()
         .expect("identifier parses");
     let mut instance = linker.instance(&iface);
-    instance.func_new(
-        "double",
-        FunctionType {
-            parameters: vec![FunctionParameter {
-                name: "n".to_owned(),
-                ty: ValueType::Primitive(PrimitiveType::S32),
-            }],
-            result: Some(ValueType::Primitive(PrimitiveType::S32)),
-            async_: false,
-        },
-        |_data, args, results| {
-            let Val::S32(n) = args[0] else {
-                panic!("expected s32 arg");
-            };
-            results[0] = Val::S32(n * 2);
-            Ok(())
-        },
-    );
+    instance
+        .func_new(
+            "double",
+            FunctionType {
+                parameters: vec![FunctionParameter {
+                    name: "n".to_owned(),
+                    ty: ValueType::Primitive(PrimitiveType::S32),
+                }],
+                result: Some(ValueType::Primitive(PrimitiveType::S32)),
+                async_: false,
+            },
+            |_data, args, results| {
+                let Val::S32(n) = args[0] else {
+                    panic!("expected s32 arg");
+                };
+                results[0] = Val::S32(n * 2);
+                Ok(())
+            },
+        )
+        .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let inst = linker
@@ -359,12 +361,14 @@ async fn it_defines_a_typed_host_function() {
         .parse()
         .expect("identifier parses");
     let mut instance = linker.instance(&iface);
-    instance.func_wrap(
-        "double",
-        |_data: HostCall<'_, ()>, (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> {
-            Ok(n * 2)
-        },
-    );
+    instance
+        .func_wrap(
+            "double",
+            |_data: HostCall<'_, ()>, (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> {
+                Ok(n * 2)
+            },
+        )
+        .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let inst = linker
@@ -385,12 +389,14 @@ async fn it_defines_a_typed_host_function() {
     // link time.
     let mut bad_linker: Linker<()> = Linker::new(&engine);
     let mut bad_instance = bad_linker.instance(&iface);
-    bad_instance.func_wrap(
-        "double",
-        |_data: HostCall<'_, ()>, (n,): (i32,)| -> wasm_component_model_polyfill::Result<i64> {
-            Ok(i64::from(n * 2))
-        },
-    );
+    bad_instance
+        .func_wrap(
+            "double",
+            |_data: HostCall<'_, ()>, (n,): (i32,)| -> wasm_component_model_polyfill::Result<i64> {
+                Ok(i64::from(n * 2))
+            },
+        )
+        .expect("the registration");
 
     let mut bad_store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let err = match bad_linker.instantiate(&mut bad_store, &component).await {
@@ -450,10 +456,12 @@ async fn it_defines_a_host_resource_with_a_sync_destructor() {
         .parse()
         .expect("identifier parses");
     let mut linker_iface = linker.instance(&iface);
-    let type_id = linker_iface.resource("thing", |data: &mut HostData, rep: u32| {
-        data.dropped.lock().expect("dropped lock").push(rep);
-        Ok(())
-    });
+    let type_id = linker_iface
+        .resource("thing", |data: &mut HostData, rep: u32| {
+            data.dropped.lock().expect("dropped lock").push(rep);
+            Ok(())
+        })
+        .expect("the registration");
 
     let mut store: Store<HostData> = Store::new(&engine, host_data).expect("store construction");
     let instance = linker
@@ -574,18 +582,22 @@ async fn it_dispatches_to_multiple_host_functions_in_one_interface() {
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd008-tests:host/maths@0.1.0".parse().expect("identifier");
     let mut iface_view = linker.instance(&iface);
-    iface_view.func_wrap(
-        "incr",
-        |_: HostCall<'_, ()>, (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> {
-            Ok(n + 1)
-        },
-    );
-    iface_view.func_wrap(
-        "decr",
-        |_: HostCall<'_, ()>, (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> {
-            Ok(n - 1)
-        },
-    );
+    iface_view
+        .func_wrap(
+            "incr",
+            |_: HostCall<'_, ()>, (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> {
+                Ok(n + 1)
+            },
+        )
+        .expect("the registration");
+    iface_view
+        .func_wrap(
+            "decr",
+            |_: HostCall<'_, ()>, (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> {
+                Ok(n - 1)
+            },
+        )
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
@@ -646,24 +658,27 @@ async fn it_passes_a_string_argument_to_a_host_function() {
         .expect("component parses");
     let mut linker: Linker<Arc<Mutex<Option<String>>>> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd-tests:host/io@0.1.0".parse().expect("identifier");
-    linker.instance(&iface).func_new(
-        "echo",
-        FunctionType {
-            parameters: vec![FunctionParameter {
-                name: "s".to_owned(),
-                ty: ValueType::Primitive(PrimitiveType::String),
-            }],
-            result: None,
-            async_: false,
-        },
-        |mut observed: HostCall<'_, Arc<Mutex<Option<String>>>>, args, _| {
-            let Val::String(s) = &args[0] else {
-                panic!("expected string");
-            };
-            *observed.data_mut().lock().expect("lock") = Some(s.clone());
-            Ok(())
-        },
-    );
+    linker
+        .instance(&iface)
+        .func_new(
+            "echo",
+            FunctionType {
+                parameters: vec![FunctionParameter {
+                    name: "s".to_owned(),
+                    ty: ValueType::Primitive(PrimitiveType::String),
+                }],
+                result: None,
+                async_: false,
+            },
+            |mut observed: HostCall<'_, Arc<Mutex<Option<String>>>>, args, _| {
+                let Val::String(s) = &args[0] else {
+                    panic!("expected string");
+                };
+                *observed.data_mut().lock().expect("lock") = Some(s.clone());
+                Ok(())
+            },
+        )
+        .expect("the registration");
 
     let observed = Arc::new(Mutex::new(None));
     let mut store: Store<Arc<Mutex<Option<String>>>> =
@@ -708,19 +723,22 @@ async fn it_propagates_a_host_function_error_through_the_call() {
         .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd008-tests:host/io@0.1.0".parse().expect("identifier");
-    linker.instance(&iface).func_new(
-        "fail",
-        FunctionType {
-            parameters: Vec::new(),
-            result: None,
-            async_: false,
-        },
-        |_: HostCall<'_, ()>, _args, _results| {
-            Err(Error::Internal {
-                message: "host refused".to_owned(),
-            })
-        },
-    );
+    linker
+        .instance(&iface)
+        .func_new(
+            "fail",
+            FunctionType {
+                parameters: Vec::new(),
+                result: None,
+                async_: false,
+            },
+            |_: HostCall<'_, ()>, _args, _results| {
+                Err(Error::Internal {
+                    message: "host refused".to_owned(),
+                })
+            },
+        )
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
@@ -768,13 +786,16 @@ async fn it_supports_typed_host_function_with_unit_result() {
         .expect("component parses");
     let mut linker: Linker<u32> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd008-tests:host/io@0.1.0".parse().expect("identifier");
-    linker.instance(&iface).func_wrap(
-        "ping",
-        |mut data: HostCall<'_, u32>, (): ()| -> wasm_component_model_polyfill::Result<()> {
-            *data.data_mut() += 1;
-            Ok(())
-        },
-    );
+    linker
+        .instance(&iface)
+        .func_wrap(
+            "ping",
+            |mut data: HostCall<'_, u32>, (): ()| -> wasm_component_model_polyfill::Result<()> {
+                *data.data_mut() += 1;
+                Ok(())
+            },
+        )
+        .expect("the registration");
     let mut store: Store<u32> = Store::new(&engine, 0).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
@@ -815,12 +836,15 @@ async fn it_rejects_a_component_whose_import_signature_disagrees_with_the_regist
         .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd008:host/maths@0.1.0".parse().expect("identifier");
-    linker.instance(&iface).func_wrap(
-        "double",
-        |_: HostCall<'_, ()>, (n,): (i32,)| -> wasm_component_model_polyfill::Result<i64> {
-            Ok(i64::from(n) * 2)
-        },
-    );
+    linker
+        .instance(&iface)
+        .func_wrap(
+            "double",
+            |_: HostCall<'_, ()>, (n,): (i32,)| -> wasm_component_model_polyfill::Result<i64> {
+                Ok(i64::from(n) * 2)
+            },
+        )
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let Err(err) = linker.instantiate(&mut store, &component).await else {
         panic!("link should fail");
@@ -981,12 +1005,15 @@ async fn it_rejects_an_import_with_a_required_item_when_the_registration_version
         .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let too_old: InterfaceIdentifier = "pdd008-tests:host/maths@0.1.0".parse().expect("identifier");
-    linker.instance(&too_old).func_wrap(
-        "double",
-        |_: HostCall<'_, ()>, (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> {
-            Ok(n * 2)
-        },
-    );
+    linker
+        .instance(&too_old)
+        .func_wrap(
+            "double",
+            |_: HostCall<'_, ()>, (n,): (i32,)| -> wasm_component_model_polyfill::Result<i32> {
+                Ok(n * 2)
+            },
+        )
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let Err(err) = linker.instantiate(&mut store, &component).await else {
         panic!("link should fail");
@@ -1062,15 +1089,18 @@ async fn it_supports_a_plain_named_top_level_import() {
         .await
         .expect("component parses");
     let mut linker: Linker<Vec<String>> = Linker::new(&engine);
-    linker.root().func_wrap(
-        "log",
-        |mut messages: HostCall<'_, Vec<String>>,
-         (message,): (String,)|
-         -> wasm_component_model_polyfill::Result<()> {
-            messages.data_mut().push(message);
-            Ok(())
-        },
-    );
+    linker
+        .root()
+        .func_wrap(
+            "log",
+            |mut messages: HostCall<'_, Vec<String>>,
+             (message,): (String,)|
+             -> wasm_component_model_polyfill::Result<()> {
+                messages.data_mut().push(message);
+                Ok(())
+            },
+        )
+        .expect("the registration");
     let mut store: Store<Vec<String>> = Store::new(&engine, Vec::new()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
@@ -1141,12 +1171,16 @@ async fn it_supports_a_plain_named_instance_import() {
         .await
         .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().instance("host").func_wrap(
-        "double",
-        |_: HostCall<'_, ()>, (x,): (u32,)| -> wasm_component_model_polyfill::Result<u32> {
-            Ok(x * 2)
-        },
-    );
+    linker
+        .root()
+        .instance("host")
+        .func_wrap(
+            "double",
+            |_: HostCall<'_, ()>, (x,): (u32,)| -> wasm_component_model_polyfill::Result<u32> {
+                Ok(x * 2)
+            },
+        )
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
@@ -1625,7 +1659,8 @@ async fn it_links_an_import_nested_two_levels() {
         .root()
         .instance("a")
         .instance("b")
-        .func_wrap("f", |_, (): ()| Ok(7u32));
+        .func_wrap("f", |_, (): ()| Ok(7u32))
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let instance = linker
         .instantiate(&mut store, &component)
@@ -1645,7 +1680,8 @@ async fn it_links_an_import_nested_two_levels() {
     wrong_level
         .root()
         .instance("a")
-        .func_wrap("f", |_, (): ()| Ok(7u32));
+        .func_wrap("f", |_, (): ()| Ok(7u32))
+        .expect("the registration");
     let err = match wrong_level.instantiate(&mut store, &component).await {
         Ok(_) => panic!("a function at the wrong level must not link"),
         Err(err) => err,
@@ -1702,10 +1738,12 @@ async fn it_links_a_resource_nested_two_levels() {
     let mut root = linker.root();
     let mut a = root.instance("a");
     let mut b = a.instance("b");
-    let r = b.resource("r", |drops, _rep| {
-        *drops += 1;
-        Ok(())
-    });
+    let r = b
+        .resource("r", |drops, _rep| {
+            *drops += 1;
+            Ok(())
+        })
+        .expect("the registration");
     b.func_new(
         "make",
         FunctionType {
@@ -1717,7 +1755,8 @@ async fn it_links_a_resource_nested_two_levels() {
             results[0] = Val::Own(call.resource_new(r, 42)?);
             Ok(())
         },
-    );
+    )
+    .expect("the registration");
     let mut store: Store<u32> = Store::new(&engine, 0).expect("store construction succeeds");
     let instance = linker
         .instantiate(&mut store, &component)
@@ -1759,7 +1798,8 @@ async fn it_links_an_interface_named_import_with_a_nested_instance() {
     linker
         .instance(&host)
         .instance("nested")
-        .func_wrap("f", |_, (): ()| Ok(4u32));
+        .func_wrap("f", |_, (): ()| Ok(4u32))
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let instance = linker
         .instantiate(&mut store, &component)
@@ -1830,8 +1870,13 @@ async fn it_rejects_a_registration_of_the_wrong_kind() {
     let mut linker: Linker<()> = Linker::new(&engine);
     linker
         .root()
-        .func_wrap("host-return-two", |_, (): ()| Ok(2u32));
-    linker.root().instance("host").resource("f", |_, _| Ok(()));
+        .func_wrap("host-return-two", |_, (): ()| Ok(2u32))
+        .expect("the registration");
+    linker
+        .root()
+        .instance("host")
+        .resource("f", |_, _| Ok(()))
+        .expect("the registration");
 
     let kind_mismatch = |err: Error| match err {
         Error::Link(inner) => match *inner {
@@ -1963,7 +2008,8 @@ async fn it_links_a_function_import_under_an_interface_name_through_the_root_nam
     let mut linker: Linker<()> = Linker::new(&engine);
     linker
         .root()
-        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2));
+        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2))
+        .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let instance = linker
@@ -2013,7 +2059,8 @@ async fn it_refuses_a_function_import_under_an_interface_name_with_no_root_regis
     let mut by_interface: Linker<()> = Linker::new(&engine);
     by_interface
         .instance(&answers)
-        .func_wrap("answer", |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2));
+        .func_wrap("answer", |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2))
+        .expect("the registration");
     let err = match by_interface.instantiate(&mut store, &component).await {
         Ok(_) => panic!("a linker instance must not satisfy a function import"),
         Err(err) => err,
@@ -2043,7 +2090,8 @@ async fn it_refuses_a_registration_of_another_kind_under_an_interface_name() {
     linker
         .root()
         .instance(ANSWERS)
-        .func_wrap("answer", |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2));
+        .func_wrap("answer", |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2))
+        .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let err = match linker.instantiate(&mut store, &component).await {
@@ -2104,7 +2152,8 @@ async fn it_links_a_function_import_under_an_interface_name_to_a_compatible_root
     let mut linker: Linker<()> = Linker::new(&engine);
     linker
         .root()
-        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2));
+        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2))
+        .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let instance = linker
@@ -2133,11 +2182,15 @@ async fn it_prefers_an_exact_root_registration_over_a_compatible_one() {
     let mut linker: Linker<()> = Linker::new(&engine);
     linker
         .root()
-        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2));
-    linker.root().func_wrap(
-        ANSWERS_LATER_PATCH,
-        |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 3),
-    );
+        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2))
+        .expect("the registration");
+    linker
+        .root()
+        .func_wrap(
+            ANSWERS_LATER_PATCH,
+            |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 3),
+        )
+        .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let instance = linker
@@ -2164,10 +2217,13 @@ async fn it_refuses_a_root_registration_on_another_compatibility_track() {
     let wanted: InterfaceIdentifier = ANSWERS_LATER_PATCH.parse().expect("identifier parses");
 
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().func_wrap(
-        "pdd-tests:host/answers@0.2.0",
-        |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2),
-    );
+    linker
+        .root()
+        .func_wrap(
+            "pdd-tests:host/answers@0.2.0",
+            |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2),
+        )
+        .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let err = match linker.instantiate(&mut store, &component).await {
@@ -2222,10 +2278,12 @@ async fn it_prefers_an_exact_linker_instance_over_a_compatible_one() {
     let newer: InterfaceIdentifier = "pdd-tests:host/maths@0.2.7".parse().expect("identifier");
     linker
         .instance(&exact)
-        .func_wrap("double", |_call: HostCall<'_, ()>, (n,): (i32,)| Ok(n * 2));
+        .func_wrap("double", |_call: HostCall<'_, ()>, (n,): (i32,)| Ok(n * 2))
+        .expect("the registration");
     linker
         .instance(&newer)
-        .func_wrap("double", |_call: HostCall<'_, ()>, (n,): (i32,)| Ok(n * 3));
+        .func_wrap("double", |_call: HostCall<'_, ()>, (n,): (i32,)| Ok(n * 3))
+        .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let instance = linker
@@ -2252,7 +2310,8 @@ async fn it_refuses_a_mismatched_signature_under_an_interface_name() {
     let mut linker: Linker<()> = Linker::new(&engine);
     linker
         .root()
-        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u64,)| Ok(x * 2));
+        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u64,)| Ok(x * 2))
+        .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let err = match linker.instantiate(&mut store, &component).await {
@@ -2319,7 +2378,8 @@ async fn it_links_a_resource_import_under_an_interface_name_through_the_root_nam
         .resource(THING, |data: &mut Arc<Mutex<Vec<u32>>>, rep: u32| {
             data.lock().expect("dropped lock").push(rep);
             Ok(())
-        });
+        })
+        .expect("the registration");
 
     let dropped = Arc::new(Mutex::new(Vec::<u32>::new()));
     let mut store: Store<Arc<Mutex<Vec<u32>>>> =
@@ -2375,7 +2435,8 @@ async fn it_refuses_a_resource_import_under_an_interface_name_with_no_root_regis
     let mut by_interface: Linker<()> = Linker::new(&engine);
     by_interface
         .instance(&thing)
-        .resource("thing", |_data: &mut (), _rep: u32| Ok(()));
+        .resource("thing", |_data: &mut (), _rep: u32| Ok(()))
+        .expect("the registration");
     let err = match by_interface.instantiate(&mut store, &component).await {
         Ok(_) => panic!("a linker instance must not satisfy a resource import"),
         Err(err) => err,
@@ -2430,7 +2491,10 @@ async fn it_links_a_module_import_under_an_interface_name_through_the_root_names
         .expect("the module compiles");
 
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().module(MACHINE, &module);
+    linker
+        .root()
+        .module(MACHINE, &module)
+        .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let instance = linker
@@ -2480,7 +2544,10 @@ async fn it_refuses_a_module_import_under_an_interface_name_with_no_root_registr
     );
 
     let mut by_interface: Linker<()> = Linker::new(&engine);
-    by_interface.instance(&machine).module("m", &module);
+    by_interface
+        .instance(&machine)
+        .module("m", &module)
+        .expect("the registration");
     let err = match by_interface.instantiate(&mut store, &component).await {
         Ok(_) => panic!("a linker instance must not satisfy a module import"),
         Err(err) => err,
@@ -2531,4 +2598,342 @@ async fn it_drops_a_type_import_under_an_interface_name_before_resolution() {
         .instantiate(&mut store, &component)
         .await
         .expect("a component whose only type import was dropped needs no registration");
+}
+
+/// The declared type of a function that takes nothing and answers
+/// with one `u32`, carrying the `async` effect when asked for.
+///
+/// The untyped registration entries take a declared type, and the
+/// duplicate-registration tests below need one to hand them. What
+/// the type says does not enter into whether a registration is a
+/// duplicate, so every one of them registers this shape.
+fn nullary_u32(async_: bool) -> FunctionType {
+    FunctionType {
+        parameters: vec![],
+        result: Some(ValueType::Primitive(PrimitiveType::U32)),
+        async_,
+    }
+}
+
+/// Assert that `error` is the failure a second registration under
+/// `name` produces, carrying Wasmtime's wording.
+fn assert_defined_twice(error: &Error, name: &str) {
+    let Error::Link(inner) = error else {
+        panic!("expected a link error, got {error:?}");
+    };
+    assert!(
+        matches!(
+            &**inner,
+            LinkError::DuplicateRegistration { name: reported } if reported == name
+        ),
+        "expected a duplicate registration naming `{name}`, got {inner:?}",
+    );
+    assert_eq!(
+        inner.to_string(),
+        format!("map entry `{name}` defined twice"),
+        "the message is the one Wasmtime's name map writes",
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_second_function_registration_under_one_name() {
+    // Each of the four function entries takes a name, and a name is
+    // taken once. The first registration of each pair stands and the
+    // second is refused, whichever of the four made either of them:
+    // the rule is the name map's, not the entry's.
+    let engine = Engine::new().expect("engine construction succeeds");
+    let iface: InterfaceIdentifier = ANSWERS.parse().expect("identifier parses");
+
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let mut view = linker.instance(&iface);
+
+    view.func_new("untyped", nullary_u32(false), |_call, _args, results| {
+        results[0] = Val::U32(1);
+        Ok(())
+    })
+    .expect("the first untyped registration");
+    let error = view
+        .func_new("untyped", nullary_u32(false), |_call, _args, results| {
+            results[0] = Val::U32(2);
+            Ok(())
+        })
+        .expect_err("the second untyped registration is refused");
+    assert_defined_twice(&error, "untyped");
+
+    view.func_wrap("typed", |_call: HostCall<'_, ()>, (): ()| Ok(1u32))
+        .expect("the first typed registration");
+    let error = view
+        .func_wrap("typed", |_call: HostCall<'_, ()>, (): ()| Ok(2u32))
+        .expect_err("the second typed registration is refused");
+    assert_defined_twice(&error, "typed");
+
+    view.func_new_concurrent(
+        "untyped-async",
+        nullary_u32(true),
+        |_accessor: &Accessor<()>, _args: Vec<Val>| async move { Ok(vec![Val::U32(1)]) },
+    )
+    .expect("the first untyped concurrent registration");
+    let error = view
+        .func_new_concurrent(
+            "untyped-async",
+            nullary_u32(true),
+            |_accessor: &Accessor<()>, _args: Vec<Val>| async move { Ok(vec![Val::U32(2)]) },
+        )
+        .expect_err("the second untyped concurrent registration is refused");
+    assert_defined_twice(&error, "untyped-async");
+
+    view.func_wrap_concurrent(
+        "typed-async",
+        |_accessor: &Accessor<()>, (): ()| async move { Ok(1u32) },
+    )
+    .expect("the first typed concurrent registration");
+    let error = view
+        .func_wrap_concurrent(
+            "typed-async",
+            |_accessor: &Accessor<()>, (): ()| async move { Ok(2u32) },
+        )
+        .expect_err("the second typed concurrent registration is refused");
+    assert_defined_twice(&error, "typed-async");
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_second_resource_or_module_registration_under_one_name() {
+    // The two resource entries and the module entry take a name the
+    // same way the function entries do, and give it out once.
+    let engine = Engine::new().expect("engine construction succeeds");
+    let module = Module::new(&engine, PROVIDES_F)
+        .await
+        .expect("the module compiles");
+    let iface: InterfaceIdentifier = ANSWERS.parse().expect("identifier parses");
+
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let mut view = linker.instance(&iface);
+
+    view.resource("thing", |_data: &mut (), _rep: u32| Ok(()))
+        .expect("the first resource registration");
+    let error = view
+        .resource("thing", |_data: &mut (), _rep: u32| Ok(()))
+        .expect_err("the second resource registration is refused");
+    assert_defined_twice(&error, "thing");
+
+    // A resource registered by value is refused under a taken name
+    // too. Registering one `HostResource` under two *names* is the
+    // point of the by-value entry and stays allowed; what is refused
+    // is the second item under one name.
+    let shared = HostResource::new(|_data: &mut (), _rep: u32| Ok(()));
+    view.resource_with("widget", shared.clone())
+        .expect("the first by-value resource registration");
+    view.resource_with("gadget", shared.clone())
+        .expect("the same resource type under a second name");
+    let error = view
+        .resource_with("widget", shared)
+        .expect_err("the second by-value registration under one name is refused");
+    assert_defined_twice(&error, "widget");
+
+    view.module("m", &module)
+        .expect("the first module registration");
+    let error = view
+        .module("m", &module)
+        .expect_err("the second module registration is refused");
+    assert_defined_twice(&error, "m");
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_registration_under_a_name_another_kind_took() {
+    // One entry holds one map of names, as Wasmtime's does, so the
+    // kind that took a name does not matter to the kind refused
+    // under it. Addressing a nested instance takes the name as
+    // surely as registering an item does, though addressing the
+    // same nested instance twice is not a registration at all and
+    // answers with the entry already there.
+    let engine = Engine::new().expect("engine construction succeeds");
+    let module = Module::new(&engine, PROVIDES_F)
+        .await
+        .expect("the module compiles");
+
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let mut root = linker.root();
+
+    root.func_wrap("taken", |_call: HostCall<'_, ()>, (): ()| Ok(1u32))
+        .expect("the function registration");
+    let error = root
+        .module("taken", &module)
+        .expect_err("a module under a function's name is refused");
+    assert_defined_twice(&error, "taken");
+    let error = root
+        .resource("taken", |_data: &mut (), _rep: u32| Ok(()))
+        .expect_err("a resource under a function's name is refused");
+    assert_defined_twice(&error, "taken");
+
+    // Addressing the same nested instance twice is not a second
+    // registration, and the second call answers with the entry the
+    // first made.
+    root.instance("nested")
+        .func_wrap("inner", |_call: HostCall<'_, ()>, (): ()| Ok(1u32))
+        .expect("the nested registration");
+    let error = root
+        .instance("nested")
+        .func_wrap("inner", |_call: HostCall<'_, ()>, (): ()| Ok(2u32))
+        .expect_err("the second call addressed the entry the first made");
+    assert_defined_twice(&error, "inner");
+    let error = root
+        .func_wrap("nested", |_call: HostCall<'_, ()>, (): ()| Ok(1u32))
+        .expect_err("a function under a nested instance's name is refused");
+    assert_defined_twice(&error, "nested");
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_duplicate_on_a_nested_view_as_it_does_on_the_root() {
+    // Every view refuses, and each one's names are its own: the
+    // name a nested instance gives out is not the name its parent
+    // gives out, so the same name registered on both is two
+    // registrations, not a duplicate.
+    let engine = Engine::new().expect("engine construction succeeds");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let mut root = linker.root();
+
+    root.func_wrap("f", |_call: HostCall<'_, ()>, (): ()| Ok(1u32))
+        .expect("the root registration");
+
+    let mut nested = root.instance("host");
+    nested
+        .func_wrap("f", |_call: HostCall<'_, ()>, (): ()| Ok(2u32))
+        .expect("the same name inside a nested instance is a name of its own");
+    let error = nested
+        .func_wrap("f", |_call: HostCall<'_, ()>, (): ()| Ok(3u32))
+        .expect_err("the second registration on the nested view is refused");
+    assert_defined_twice(&error, "f");
+}
+
+#[wcmp_macros::test]
+async fn it_keeps_the_first_registration_when_it_refuses_the_second() {
+    // The refusal is not a half-registration: what stood under the
+    // name before the refused call is what the component links
+    // against afterwards.
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, INTERFACE_NAMED_FUNCTION)
+        .await
+        .expect("component parses");
+
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker
+        .root()
+        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2))
+        .expect("the first registration");
+    let error = linker
+        .root()
+        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 3))
+        .expect_err("the second registration is refused");
+    assert_defined_twice(&error, ANSWERS);
+
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the first registration still satisfies the import");
+    let run = instance
+        .get_func("run")
+        .expect("`run` is exported")
+        .typed::<(), u32>()
+        .expect("typed");
+    assert_eq!(
+        run.call(&mut store, ()).await.expect("call succeeds"),
+        40,
+        "the refused registration did not displace the first",
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_lets_a_later_registration_win_when_shadowing_is_allowed() {
+    // The escape hatch. A linker told to allow shadowing takes every
+    // kind's second registration, and the last one made is the one
+    // the resolver sees.
+    let engine = Engine::new().expect("engine construction succeeds");
+    let module = Module::new(&engine, PROVIDES_F)
+        .await
+        .expect("the module compiles");
+    let component = Component::new(&engine, INTERFACE_NAMED_FUNCTION)
+        .await
+        .expect("component parses");
+
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker.allow_shadowing(true);
+
+    let mut view = linker.root();
+    view.func_new("untyped", nullary_u32(false), |_call, _args, results| {
+        results[0] = Val::U32(1);
+        Ok(())
+    })
+    .expect("the first untyped registration");
+    view.func_new("untyped", nullary_u32(false), |_call, _args, results| {
+        results[0] = Val::U32(2);
+        Ok(())
+    })
+    .expect("the second untyped registration replaces the first");
+    view.func_wrap("typed", |_call: HostCall<'_, ()>, (): ()| Ok(1u32))
+        .expect("the first typed registration");
+    view.func_wrap("typed", |_call: HostCall<'_, ()>, (): ()| Ok(2u32))
+        .expect("the second typed registration replaces the first");
+    view.func_new_concurrent(
+        "untyped-async",
+        nullary_u32(true),
+        |_accessor: &Accessor<()>, _args: Vec<Val>| async move { Ok(vec![Val::U32(1)]) },
+    )
+    .expect("the first untyped concurrent registration");
+    view.func_new_concurrent(
+        "untyped-async",
+        nullary_u32(true),
+        |_accessor: &Accessor<()>, _args: Vec<Val>| async move { Ok(vec![Val::U32(2)]) },
+    )
+    .expect("the second untyped concurrent registration replaces the first");
+    view.func_wrap_concurrent(
+        "typed-async",
+        |_accessor: &Accessor<()>, (): ()| async move { Ok(1u32) },
+    )
+    .expect("the first typed concurrent registration");
+    view.func_wrap_concurrent(
+        "typed-async",
+        |_accessor: &Accessor<()>, (): ()| async move { Ok(2u32) },
+    )
+    .expect("the second typed concurrent registration replaces the first");
+    view.resource("thing", |_data: &mut (), _rep: u32| Ok(()))
+        .expect("the first resource registration");
+    view.resource("thing", |_data: &mut (), _rep: u32| Ok(()))
+        .expect("the second resource registration replaces the first");
+    view.resource_with(
+        "widget",
+        HostResource::new(|_data: &mut (), _rep: u32| Ok(())),
+    )
+    .expect("the first by-value resource registration");
+    view.resource_with(
+        "widget",
+        HostResource::new(|_data: &mut (), _rep: u32| Ok(())),
+    )
+    .expect("the second by-value resource registration replaces the first");
+    view.module("m", &module)
+        .expect("the first module registration");
+    view.module("m", &module)
+        .expect("the second module registration replaces the first");
+
+    // Which of the two a component links against is the second.
+    view.func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2))
+        .expect("the first registration under the import's name");
+    view.func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 3))
+        .expect("the second registration under the import's name");
+
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the shadowed registration satisfies the import");
+    let run = instance
+        .get_func("run")
+        .expect("`run` is exported")
+        .typed::<(), u32>()
+        .expect("typed");
+    assert_eq!(
+        run.call(&mut store, ()).await.expect("call succeeds"),
+        60,
+        "the last registration made is the one the resolver saw",
+    );
 }

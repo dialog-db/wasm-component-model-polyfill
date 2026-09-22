@@ -304,7 +304,8 @@ fn pending_once_answer(linker: &mut Linker<()>) {
         .root()
         .func_wrap_concurrent("answer", |_accessor: &Accessor<()>, (x,): (u32,)| {
             PendingOnce::new(x * 2)
-        });
+        })
+        .expect("the registration");
 }
 
 /// Register `answer` with a typed concurrent entry whose future never
@@ -314,7 +315,8 @@ fn never_answers(linker: &mut Linker<()>) {
         .root()
         .func_wrap_concurrent("answer", |_accessor: &Accessor<()>, (_x,): (u32,)| {
             core::future::pending::<Result<u32, Error>>()
-        });
+        })
+        .expect("the registration");
 }
 
 #[wcmp_macros::test]
@@ -373,16 +375,19 @@ async fn it_returns_the_result_of_an_untyped_registration_that_is_pending_once()
     // The same call through the untyped concurrent entry, whose
     // future answers with the value vector itself.
     let (mut store, instance) = caller(A_SYNC_TYPED_TASK_CALLS_A_HOST_ASYNC_FUNCTION, |linker| {
-        linker.root().func_new_concurrent(
-            "answer",
-            answer_type(),
-            |_accessor: &Accessor<()>, args: Vec<Val>| {
-                let Some(Val::U32(x)) = args.first() else {
-                    panic!("`answer` was given {args:?}");
-                };
-                PendingOnce::new(vec![Val::U32(x * 2)])
-            },
-        );
+        linker
+            .root()
+            .func_new_concurrent(
+                "answer",
+                answer_type(),
+                |_accessor: &Accessor<()>, args: Vec<Val>| {
+                    let Some(Val::U32(x)) = args.first() else {
+                        panic!("`answer` was given {args:?}");
+                    };
+                    PendingOnce::new(vec![Val::U32(x * 2)])
+                },
+            )
+            .expect("the registration");
     })
     .await;
 
@@ -427,25 +432,28 @@ async fn it_returns_a_blocked_synchronous_lower_once_a_nested_turn_ran_a_sibling
     {
         let recorded = log.clone();
         let flag = released.clone();
-        linker.root().func_wrap(
-            "notify",
-            move |_: HostCall<'_, ()>, (step,): (u32,)| -> Result<(), Error> {
-                recorded.lock().expect("log").push(step);
-                // The second entry is the callback's, which is the
-                // event the blocked call's future waits for.
-                if step == 2 {
-                    *flag.lock().expect("flag") = true;
-                }
-                Ok(())
-            },
-        );
+        linker
+            .root()
+            .func_wrap(
+                "notify",
+                move |_: HostCall<'_, ()>, (step,): (u32,)| -> Result<(), Error> {
+                    recorded.lock().expect("log").push(step);
+                    // The second entry is the callback's, which is the
+                    // event the blocked call's future waits for.
+                    if step == 2 {
+                        *flag.lock().expect("flag") = true;
+                    }
+                    Ok(())
+                },
+            )
+            .expect("the registration");
     }
     {
         let flag = released.clone();
         let counted = items_run.clone();
-        linker.root().func_wrap_concurrent(
-            "answer",
-            move |accessor: &Accessor<()>, (x,): (u32,)| {
+        linker
+            .root()
+            .func_wrap_concurrent("answer", move |accessor: &Accessor<()>, (x,): (u32,)| {
                 let accessor = accessor.clone();
                 let flag = flag.clone();
                 let counted = counted.clone();
@@ -463,8 +471,8 @@ async fn it_returns_a_blocked_synchronous_lower_once_a_nested_turn_ran_a_sibling
                     *counted.lock().expect("items run") = Some(after - before);
                     Ok::<u32, Error>(x * 2)
                 }
-            },
-        );
+            })
+            .expect("the registration");
     }
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
@@ -602,7 +610,9 @@ async fn lender() -> (Store<()>, Instance) {
     {
         let mut root = linker.root();
         let mut host = root.instance("host");
-        let thing = host.resource_with("thing", HostResource::new(|_, _| Ok(())));
+        let thing = host
+            .resource_with("thing", HostResource::new(|_, _| Ok(())))
+            .expect("the registration");
         host.func_new(
             "[constructor]thing",
             FunctionType {
@@ -620,7 +630,8 @@ async fn lender() -> (Store<()>, Instance) {
                 results[0] = Val::Own(call.resource_new(thing, *rep)?);
                 Ok(())
             },
-        );
+        )
+        .expect("the registration");
         host.func_new_concurrent(
             "hold",
             FunctionType {
@@ -632,7 +643,8 @@ async fn lender() -> (Store<()>, Instance) {
                 async_: true,
             },
             |_accessor: &Accessor<()>, _args: Vec<Val>| PendingOnce::new(Vec::<Val>::new()),
-        );
+        )
+        .expect("the registration");
     }
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");

@@ -1701,43 +1701,46 @@ mod tests {
         let recorded = suspension.clone();
 
         let mut linker: Linker<()> = Linker::new(&engine);
-        linker.root().func_wrap(
-            "probe",
-            move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
-                // Everything below runs against the store as the
-                // trampoline reaches it: the core store's context
-                // the runtime layer handed it, and nothing besides.
-                // No driver, no `&mut Store`.
-                let store = call.store();
+        linker
+            .root()
+            .func_wrap(
+                "probe",
+                move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
+                    // Everything below runs against the store as the
+                    // trampoline reaches it: the core store's context
+                    // the runtime layer handed it, and nothing besides.
+                    // No driver, no `&mut Store`.
+                    let store = call.store();
 
-                // A host task of this call, whose lowering would
-                // meet the condition below — in a turn this task is
-                // not allowed to take, because the export the guest
-                // is inside is synchronous.
-                let slot: Slot = Arc::new(Mutex::new(None));
-                let filled = slot.clone();
-                let subtask = store.internal().lock_tables()?.tasks.insert_subtask();
-                store.internal().push_host_task(HostTask::from_future(
-                    subtask,
-                    move |_store: &mut StoreContext<'_, ()>, outcome: Result<Vec<Val>>| {
-                        *filled.lock().expect("slot") = Some(outcome);
-                        Ok(())
-                    },
-                    core::future::ready(Ok(vec![Val::U32(x * 2)])),
-                ));
+                    // A host task of this call, whose lowering would
+                    // meet the condition below — in a turn this task is
+                    // not allowed to take, because the export the guest
+                    // is inside is synchronous.
+                    let slot: Slot = Arc::new(Mutex::new(None));
+                    let filled = slot.clone();
+                    let subtask = store.internal().lock_tables()?.tasks.insert_subtask();
+                    store.internal().push_host_task(HostTask::from_future(
+                        subtask,
+                        move |_store: &mut StoreContext<'_, ()>, outcome: Result<Vec<Val>>| {
+                            *filled.lock().expect("slot") = Some(outcome);
+                            Ok(())
+                        },
+                        core::future::ready(Ok(vec![Val::U32(x * 2)])),
+                    ));
 
-                let watched = slot.clone();
-                let outcome = SuspendSeam::suspend(store, move |_store| {
-                    watched.lock().expect("slot").is_some()
-                });
-                *recorded.lock().expect("record") = Some((
-                    cause(outcome),
-                    store.internal().turn_in_flight(),
-                    store.internal().scheduler().host_task_count(),
-                ));
-                Ok(x)
-            },
-        );
+                    let watched = slot.clone();
+                    let outcome = SuspendSeam::suspend(store, move |_store| {
+                        watched.lock().expect("slot").is_some()
+                    });
+                    *recorded.lock().expect("record") = Some((
+                        cause(outcome),
+                        store.internal().turn_in_flight(),
+                        store.internal().scheduler().host_task_count(),
+                    ));
+                    Ok(x)
+                },
+            )
+            .expect("the registration");
 
         let instance = linker
             .instantiate(&mut store, &component)
@@ -1791,56 +1794,59 @@ mod tests {
         let recorded = suspension.clone();
 
         let mut linker: Linker<()> = Linker::new(&engine);
-        linker.root().func_wrap(
-            "probe",
-            move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
-                // Everything below runs against the store as the
-                // trampoline reaches it: the core store's context the
-                // runtime layer handed it, and nothing besides. No
-                // driver, no `&mut Store`.
-                let store = call.store();
+        linker
+            .root()
+            .func_wrap(
+                "probe",
+                move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
+                    // Everything below runs against the store as the
+                    // trampoline reaches it: the core store's context the
+                    // runtime layer handed it, and nothing besides. No
+                    // driver, no `&mut Store`.
+                    let store = call.store();
 
-                // A host task of this call. Its body is ready at
-                // once, and its lowering fills the slot below — but a
-                // lowering runs as a queued item in a later turn than
-                // the poll that saw the body complete, so the slot is
-                // what the suspension has to wait for.
-                let slot: Slot = Arc::new(Mutex::new(None));
-                let filled = slot.clone();
-                let subtask = store.internal().lock_tables()?.tasks.insert_subtask();
-                store.internal().push_host_task(HostTask::from_future(
-                    subtask,
-                    move |_store: &mut StoreContext<'_, ()>, outcome: Result<Vec<Val>>| {
-                        *filled.lock().expect("slot") = Some(outcome);
-                        Ok(())
-                    },
-                    core::future::ready(Ok(vec![Val::U32(x * 2)])),
-                ));
-
-                let watched = slot.clone();
-                let outcome = SuspendSeam::suspend(store, move |_store| {
-                    watched.lock().expect("slot").is_some()
-                });
-                *recorded.lock().expect("record") = Some((
-                    cause(outcome),
-                    store.internal().turn_in_flight(),
-                    store.internal().scheduler().host_task_count(),
-                ));
-
-                // What the host task produced, which only the turns
-                // the suspension ran could have put there.
-                let produced = slot.lock().expect("slot").take();
-                let Some(produced) = produced else {
-                    return Err(Error::internal(
-                        "the suspension returned with the host task unlowered",
+                    // A host task of this call. Its body is ready at
+                    // once, and its lowering fills the slot below — but a
+                    // lowering runs as a queued item in a later turn than
+                    // the poll that saw the body complete, so the slot is
+                    // what the suspension has to wait for.
+                    let slot: Slot = Arc::new(Mutex::new(None));
+                    let filled = slot.clone();
+                    let subtask = store.internal().lock_tables()?.tasks.insert_subtask();
+                    store.internal().push_host_task(HostTask::from_future(
+                        subtask,
+                        move |_store: &mut StoreContext<'_, ()>, outcome: Result<Vec<Val>>| {
+                            *filled.lock().expect("slot") = Some(outcome);
+                            Ok(())
+                        },
+                        core::future::ready(Ok(vec![Val::U32(x * 2)])),
                     ));
-                };
-                match produced?.first() {
-                    Some(Val::U32(value)) => Ok(*value),
-                    _ => Err(Error::internal("the host task produced no u32")),
-                }
-            },
-        );
+
+                    let watched = slot.clone();
+                    let outcome = SuspendSeam::suspend(store, move |_store| {
+                        watched.lock().expect("slot").is_some()
+                    });
+                    *recorded.lock().expect("record") = Some((
+                        cause(outcome),
+                        store.internal().turn_in_flight(),
+                        store.internal().scheduler().host_task_count(),
+                    ));
+
+                    // What the host task produced, which only the turns
+                    // the suspension ran could have put there.
+                    let produced = slot.lock().expect("slot").take();
+                    let Some(produced) = produced else {
+                        return Err(Error::internal(
+                            "the suspension returned with the host task unlowered",
+                        ));
+                    };
+                    match produced?.first() {
+                        Some(Val::U32(value)) => Ok(*value),
+                        _ => Err(Error::internal("the host task produced no u32")),
+                    }
+                },
+            )
+            .expect("the registration");
 
         let instance = linker
             .instantiate(&mut store, &component)

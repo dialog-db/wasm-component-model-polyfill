@@ -87,6 +87,11 @@ pub enum Error {
     /// a host item the polyfill does not yet support
     /// (every host-function and host-resource registration mode).
     ///
+    /// One shape is raised earlier than the rest, at the
+    /// registration call rather than at resolution: a second
+    /// registration under a name a linker instance has already
+    /// given out. See [`LinkError::DuplicateRegistration`].
+    ///
     /// The cause is carried behind a `Box` so `Error` itself stays
     /// small at the boundary; matching against the variant is
     /// unaffected and the inner [`LinkError`] is reachable through
@@ -369,6 +374,29 @@ pub enum LinkError {
         /// Which capability the polyfill would need to satisfy this
         /// import (e.g. `"host function"`, `"host resource"`).
         reason: &'static str,
+    },
+
+    /// The host registered a second item under a name the
+    /// registration entry it was addressing already holds something
+    /// under, and the linker was not told to allow shadowing.
+    ///
+    /// This is the one link failure raised at registration rather
+    /// than at resolution. The name is taken the moment the second
+    /// call is made, so the linker refuses the call there rather
+    /// than drop one of the two registrations on the floor and let
+    /// the host find out at link time, or not at all. The name is
+    /// the one the second call passed, unqualified, as Wasmtime's
+    /// is: which entry it collided in is the entry the host was
+    /// addressing when it made the call.
+    ///
+    /// A name is taken whatever kind of item took it, again as in
+    /// Wasmtime, where one map holds an entry's items whatever their
+    /// kind: a function and a module cannot share a name inside one
+    /// registration entry any more than two functions can.
+    #[error("map entry `{name}` defined twice")]
+    DuplicateRegistration {
+        /// The name the host registered a second item under.
+        name: String,
     },
 }
 

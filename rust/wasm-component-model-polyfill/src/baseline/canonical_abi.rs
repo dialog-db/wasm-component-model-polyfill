@@ -158,30 +158,33 @@ async fn it_passes_a_record_argument_to_a_host_function() {
         RecordField::new("a", ValueType::Primitive(PrimitiveType::S32)),
         RecordField::new("b", ValueType::Primitive(PrimitiveType::S32)),
     ]));
-    linker.instance(&iface).func_new(
-        "sum",
-        FunctionType {
-            parameters: vec![FunctionParameter {
-                name: "r".to_owned(),
-                ty: record_ty,
-            }],
-            result: Some(ValueType::Primitive(PrimitiveType::S32)),
-            async_: false,
-        },
-        |_: HostCall<'_, ()>, args, results| {
-            let Val::Record(fields) = &args[0] else {
-                panic!("expected record");
-            };
-            let mut sum = 0i32;
-            for ValField { value, .. } in fields.iter() {
-                if let Val::S32(v) = value {
-                    sum += v;
+    linker
+        .instance(&iface)
+        .func_new(
+            "sum",
+            FunctionType {
+                parameters: vec![FunctionParameter {
+                    name: "r".to_owned(),
+                    ty: record_ty,
+                }],
+                result: Some(ValueType::Primitive(PrimitiveType::S32)),
+                async_: false,
+            },
+            |_: HostCall<'_, ()>, args, results| {
+                let Val::Record(fields) = &args[0] else {
+                    panic!("expected record");
+                };
+                let mut sum = 0i32;
+                for ValField { value, .. } in fields.iter() {
+                    if let Val::S32(v) = value {
+                        sum += v;
+                    }
                 }
-            }
-            results[0] = Val::S32(sum);
-            Ok(())
-        },
-    );
+                results[0] = Val::S32(sum);
+                Ok(())
+            },
+        )
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
@@ -376,37 +379,40 @@ async fn it_passes_a_variant_argument_to_a_host_function() {
         VariantCase::new("none", None),
         VariantCase::new("value", Some(ValueType::Primitive(PrimitiveType::S32))),
     ]));
-    linker.instance(&iface).func_new(
-        "decode",
-        FunctionType {
-            parameters: vec![FunctionParameter {
-                name: "v".to_owned(),
-                ty: variant_ty,
-            }],
-            result: Some(ValueType::Primitive(PrimitiveType::S32)),
-            async_: false,
-        },
-        |_: HostCall<'_, ()>, args, results| {
-            let Val::Variant {
-                discriminant,
-                payload,
-            } = &args[0]
-            else {
-                panic!("expected variant");
-            };
-            let value = if discriminant == "value" {
-                if let Some(boxed) = payload {
-                    if let Val::S32(v) = **boxed { v } else { 0 }
+    linker
+        .instance(&iface)
+        .func_new(
+            "decode",
+            FunctionType {
+                parameters: vec![FunctionParameter {
+                    name: "v".to_owned(),
+                    ty: variant_ty,
+                }],
+                result: Some(ValueType::Primitive(PrimitiveType::S32)),
+                async_: false,
+            },
+            |_: HostCall<'_, ()>, args, results| {
+                let Val::Variant {
+                    discriminant,
+                    payload,
+                } = &args[0]
+                else {
+                    panic!("expected variant");
+                };
+                let value = if discriminant == "value" {
+                    if let Some(boxed) = payload {
+                        if let Val::S32(v) = **boxed { v } else { 0 }
+                    } else {
+                        0
+                    }
                 } else {
                     0
-                }
-            } else {
-                0
-            };
-            results[0] = Val::S32(value);
-            Ok(())
-        },
-    );
+                };
+                results[0] = Val::S32(value);
+                Ok(())
+            },
+        )
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
@@ -543,30 +549,37 @@ async fn it_passes_an_enum_argument_to_a_host_function() {
         .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd-tests:host/probe@0.1.0".parse().expect("identifier");
-    linker.instance(&iface).func_new(
-        "decode",
-        FunctionType {
-            parameters: vec![FunctionParameter {
-                name: "c".to_owned(),
-                ty: ValueType::Enum(EnumType::new(["red".into(), "green".into(), "blue".into()])),
-            }],
-            result: Some(ValueType::Primitive(PrimitiveType::S32)),
-            async_: false,
-        },
-        |_: HostCall<'_, ()>, args, results| {
-            let Val::Enum(case) = &args[0] else {
-                panic!("expected enum");
-            };
-            let v = match case.as_str() {
-                "red" => 100,
-                "green" => 101,
-                "blue" => 102,
-                _ => panic!("unknown enum case"),
-            };
-            results[0] = Val::S32(v);
-            Ok(())
-        },
-    );
+    linker
+        .instance(&iface)
+        .func_new(
+            "decode",
+            FunctionType {
+                parameters: vec![FunctionParameter {
+                    name: "c".to_owned(),
+                    ty: ValueType::Enum(EnumType::new([
+                        "red".into(),
+                        "green".into(),
+                        "blue".into(),
+                    ])),
+                }],
+                result: Some(ValueType::Primitive(PrimitiveType::S32)),
+                async_: false,
+            },
+            |_: HostCall<'_, ()>, args, results| {
+                let Val::Enum(case) = &args[0] else {
+                    panic!("expected enum");
+                };
+                let v = match case.as_str() {
+                    "red" => 100,
+                    "green" => 101,
+                    "blue" => 102,
+                    _ => panic!("unknown enum case"),
+                };
+                results[0] = Val::S32(v);
+                Ok(())
+            },
+        )
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
@@ -623,28 +636,31 @@ async fn it_passes_a_flags_argument_to_a_host_function() {
         .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd-tests:host/probe@0.1.0".parse().expect("identifier");
-    linker.instance(&iface).func_new(
-        "popcount",
-        FunctionType {
-            parameters: vec![FunctionParameter {
-                name: "p".to_owned(),
-                ty: ValueType::Flags(FlagsType::new([
-                    "read".into(),
-                    "write".into(),
-                    "execute".into(),
-                ])),
-            }],
-            result: Some(ValueType::Primitive(PrimitiveType::U32)),
-            async_: false,
-        },
-        |_: HostCall<'_, ()>, args, results| {
-            let Val::Flags(active) = &args[0] else {
-                panic!("expected flags");
-            };
-            results[0] = Val::U32(active.len() as u32);
-            Ok(())
-        },
-    );
+    linker
+        .instance(&iface)
+        .func_new(
+            "popcount",
+            FunctionType {
+                parameters: vec![FunctionParameter {
+                    name: "p".to_owned(),
+                    ty: ValueType::Flags(FlagsType::new([
+                        "read".into(),
+                        "write".into(),
+                        "execute".into(),
+                    ])),
+                }],
+                result: Some(ValueType::Primitive(PrimitiveType::U32)),
+                async_: false,
+            },
+            |_: HostCall<'_, ()>, args, results| {
+                let Val::Flags(active) = &args[0] else {
+                    panic!("expected flags");
+                };
+                results[0] = Val::U32(active.len() as u32);
+                Ok(())
+            },
+        )
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
@@ -1170,24 +1186,27 @@ async fn it_observes_cabi_realloc_alignment_for_record_allocations() {
     let probe: InterfaceIdentifier = "pdd-tests:host/probe@0.1.0".parse().expect("identifier");
     let shapes: InterfaceIdentifier = "test:host/shapes@0.1.0".parse().expect("identifier");
     let _ = linker.instance(&shapes);
-    linker.instance(&probe).func_new(
-        "record-align",
-        FunctionType {
-            parameters: vec![FunctionParameter {
-                name: "alignment".to_owned(),
-                ty: ValueType::Primitive(PrimitiveType::U32),
-            }],
-            result: None,
-            async_: false,
-        },
-        |mut observed: HostCall<'_, Arc<Mutex<Vec<u32>>>>, args, _| {
-            let Val::U32(alignment) = args[0] else {
-                panic!("expected u32 alignment");
-            };
-            observed.data_mut().lock().expect("lock").push(alignment);
-            Ok(())
-        },
-    );
+    linker
+        .instance(&probe)
+        .func_new(
+            "record-align",
+            FunctionType {
+                parameters: vec![FunctionParameter {
+                    name: "alignment".to_owned(),
+                    ty: ValueType::Primitive(PrimitiveType::U32),
+                }],
+                result: None,
+                async_: false,
+            },
+            |mut observed: HostCall<'_, Arc<Mutex<Vec<u32>>>>, args, _| {
+                let Val::U32(alignment) = args[0] else {
+                    panic!("expected u32 alignment");
+                };
+                observed.data_mut().lock().expect("lock").push(alignment);
+                Ok(())
+            },
+        )
+        .expect("the registration");
     let observed = Arc::new(Mutex::new(Vec::<u32>::new()));
     let mut store: Store<Arc<Mutex<Vec<u32>>>> =
         Store::new(&engine, observed.clone()).expect("store");
@@ -1342,31 +1361,34 @@ async fn it_spills_a_wide_parameter_tuple_when_calling_a_host_function() {
         .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd-tests:host/wide@0.1.0".parse().expect("identifier");
-    linker.instance(&iface).func_new(
-        "sum17",
-        FunctionType {
-            parameters: (0..17)
-                .map(|i| FunctionParameter {
-                    name: format!("a{i}"),
-                    ty: ValueType::Primitive(PrimitiveType::U32),
-                })
-                .collect(),
-            result: Some(ValueType::Primitive(PrimitiveType::U32)),
-            async_: false,
-        },
-        |_: HostCall<'_, ()>, args, results| {
-            assert_eq!(args.len(), 17);
-            let mut sum = 0u32;
-            for arg in args {
-                let Val::U32(v) = arg else {
-                    panic!("expected u32, got {arg:?}");
-                };
-                sum += v;
-            }
-            results[0] = Val::U32(sum);
-            Ok(())
-        },
-    );
+    linker
+        .instance(&iface)
+        .func_new(
+            "sum17",
+            FunctionType {
+                parameters: (0..17)
+                    .map(|i| FunctionParameter {
+                        name: format!("a{i}"),
+                        ty: ValueType::Primitive(PrimitiveType::U32),
+                    })
+                    .collect(),
+                result: Some(ValueType::Primitive(PrimitiveType::U32)),
+                async_: false,
+            },
+            |_: HostCall<'_, ()>, args, results| {
+                assert_eq!(args.len(), 17);
+                let mut sum = 0u32;
+                for arg in args {
+                    let Val::U32(v) = arg else {
+                        panic!("expected u32, got {arg:?}");
+                    };
+                    sum += v;
+                }
+                results[0] = Val::U32(sum);
+                Ok(())
+            },
+        )
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)

@@ -581,15 +581,18 @@ async fn host_function(engine: &Engine) -> Result<String, String> {
     let component = Component::new(engine, GREETER).await.map_err(fail)?;
     let mut linker: Linker<HostState> = Linker::new(engine);
     let host: InterfaceIdentifier = "wcmp:smoke/host@0.1.0".parse().map_err(fail)?;
-    linker.instance(&host).func_wrap(
-        "tally",
-        |mut state: HostCall<'_, HostState>,
-         (n,): (u32,)|
-         -> wasm_component_model_polyfill::Result<()> {
-            state.data_mut().tallies.push(n);
-            Ok(())
-        },
-    );
+    linker
+        .instance(&host)
+        .func_wrap(
+            "tally",
+            |mut state: HostCall<'_, HostState>,
+             (n,): (u32,)|
+             -> wasm_component_model_polyfill::Result<()> {
+                state.data_mut().tallies.push(n);
+                Ok(())
+            },
+        )
+        .map_err(fail)?;
     let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
     let instance = linker
         .instantiate(&mut store, &component)
@@ -649,13 +652,16 @@ async fn host_resource(engine: &Engine) -> Result<String, String> {
     let component = Component::new(engine, DROPPER).await.map_err(fail)?;
     let mut linker: Linker<HostState> = Linker::new(engine);
     let resources: InterfaceIdentifier = "wcmp:smoke/resources@0.1.0".parse().map_err(fail)?;
-    let thing = linker.instance(&resources).resource(
-        "thing",
-        |state: &mut HostState, rep: u32| -> wasm_component_model_polyfill::Result<()> {
-            state.dropped.push(rep);
-            Ok(())
-        },
-    );
+    let thing = linker
+        .instance(&resources)
+        .resource(
+            "thing",
+            |state: &mut HostState, rep: u32| -> wasm_component_model_polyfill::Result<()> {
+                state.dropped.push(rep);
+                Ok(())
+            },
+        )
+        .map_err(fail)?;
     let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
     let instance = linker
         .instantiate(&mut store, &component)
@@ -685,13 +691,16 @@ async fn disposal(engine: &Engine) -> Result<String, String> {
     let component = Component::new(engine, DROPPER).await.map_err(fail)?;
     let mut linker: Linker<HostState> = Linker::new(engine);
     let resources: InterfaceIdentifier = "wcmp:smoke/resources@0.1.0".parse().map_err(fail)?;
-    let thing = linker.instance(&resources).resource(
-        "thing",
-        |state: &mut HostState, rep: u32| -> wasm_component_model_polyfill::Result<()> {
-            state.dropped.push(rep);
-            Ok(())
-        },
-    );
+    let thing = linker
+        .instance(&resources)
+        .resource(
+            "thing",
+            |state: &mut HostState, rep: u32| -> wasm_component_model_polyfill::Result<()> {
+                state.dropped.push(rep);
+                Ok(())
+            },
+        )
+        .map_err(fail)?;
     let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
     let instance = linker
         .instantiate(&mut store, &component)
@@ -884,7 +893,7 @@ async fn core_modules(engine: &Engine) -> Result<String, String> {
         .await
         .map_err(fail)?;
     let mut linker: Linker<HostState> = Linker::new(engine);
-    linker.root().module("m", &module);
+    linker.root().module("m", &module).map_err(fail)?;
     let instance = linker
         .instantiate(&mut store, &consumer)
         .await

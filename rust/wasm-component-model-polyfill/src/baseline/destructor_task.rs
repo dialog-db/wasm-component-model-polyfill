@@ -298,13 +298,16 @@ async fn run_with_probe(bytes: &[u8]) -> (Result<Box<[Val]>>, Seen, Seen) {
     let recorded = during.clone();
 
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().func_wrap(
-        "probe",
-        move |_: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
-            *recorded.lock().expect("record") = seen!(&tables);
-            Ok(x)
-        },
-    );
+    linker
+        .root()
+        .func_wrap(
+            "probe",
+            move |_: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
+                *recorded.lock().expect("record") = seen!(&tables);
+                Ok(x)
+            },
+        )
+        .expect("the registration");
 
     let instance = linker
         .instantiate(&mut store, &component)

@@ -288,13 +288,16 @@ async fn instantiate(binary: &[u8]) -> (Store<()>, Instance, Log) {
     let log: Log = Arc::new(Mutex::new(Vec::new()));
     let recorded = log.clone();
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().func_wrap(
-        "log",
-        move |_: HostCall<'_, ()>, (entry,): (u32,)| -> Result<()> {
-            recorded.lock().expect("log").push(entry);
-            Ok(())
-        },
-    );
+    linker
+        .root()
+        .func_wrap(
+            "log",
+            move |_: HostCall<'_, ()>, (entry,): (u32,)| -> Result<()> {
+                recorded.lock().expect("log").push(entry);
+                Ok(())
+            },
+        )
+        .expect("the registration");
     let instance = linker
         .instantiate(&mut store, &component)
         .await
@@ -315,10 +318,13 @@ async fn instantiate_borrow_holder() -> (Store<()>, Instance, ResourceTypeId) {
     let interface: InterfaceIdentifier = "pdd020-tests:host/things@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker.instance(&interface).resource_with(
-        "thing",
-        HostResource::new(|_: &mut (), _: u32| -> Result<()> { Ok(()) }),
-    );
+    let type_id = linker
+        .instance(&interface)
+        .resource_with(
+            "thing",
+            HostResource::new(|_: &mut (), _: u32| -> Result<()> { Ok(()) }),
+        )
+        .expect("the registration");
     let instance = linker
         .instantiate(&mut store, &component)
         .await
@@ -1005,7 +1011,8 @@ async fn it_gives_a_host_lend_back_when_the_awaited_future_resolves() {
             );
             *recorded.lock().expect("the lend") = Some((table, index));
             Ok(())
-        });
+        })
+        .expect("the registration");
     let instance = linker
         .instantiate(&mut store, &component)
         .await

@@ -192,13 +192,16 @@ async fn it_crosses_a_host_trampoline_through_one_boundary_context() {
     let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let recorded = seen.clone();
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().func_wrap(
-        "shout",
-        move |_: HostCall<'_, ()>, (s,): (String,)| -> Result<String> {
-            *recorded.lock().expect("record") = Some(s.clone());
-            Ok(s.to_uppercase())
-        },
-    );
+    linker
+        .root()
+        .func_wrap(
+            "shout",
+            move |_: HostCall<'_, ()>, (s,): (String,)| -> Result<String> {
+                *recorded.lock().expect("record") = Some(s.clone());
+                Ok(s.to_uppercase())
+            },
+        )
+        .expect("the registration");
     let instance = linker
         .instantiate(&mut store, &component)
         .await

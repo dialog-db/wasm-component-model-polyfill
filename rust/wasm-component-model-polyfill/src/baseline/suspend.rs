@@ -65,17 +65,20 @@ async fn it_reads_the_schedulers_state_from_a_host_function_called_by_the_guest(
     let recorded = during.clone();
 
     let mut linker: Linker<()> = Linker::new(&engine);
-    linker.root().func_wrap(
-        "probe",
-        move |_: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
-            let guard = tables.lock().expect("handle tables");
-            *recorded.lock().expect("record") = Seen {
-                in_turn: guard.scheduler.in_turn(),
-                has_waker: guard.scheduler.active_waker().is_some(),
-            };
-            Ok(x)
-        },
-    );
+    linker
+        .root()
+        .func_wrap(
+            "probe",
+            move |_: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
+                let guard = tables.lock().expect("handle tables");
+                *recorded.lock().expect("record") = Seen {
+                    in_turn: guard.scheduler.in_turn(),
+                    has_waker: guard.scheduler.active_waker().is_some(),
+                };
+                Ok(x)
+            },
+        )
+        .expect("the registration");
 
     let instance = linker
         .instantiate(&mut store, &component)
