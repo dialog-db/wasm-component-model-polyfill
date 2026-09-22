@@ -11,6 +11,7 @@
 //! [`InstanceExports::instance`]: super::InstanceExports::instance
 
 use crate::component::ExternalName;
+use crate::internal::{ExportInstanceInternal, InstanceInternal};
 use crate::module::Module;
 
 use super::export_lookup::ExportLookup;
@@ -35,16 +36,13 @@ pub struct ExportInstance<'a> {
     path: Box<[ExternalName]>,
 }
 
-impl<'a> ExportInstance<'a> {
-    /// Construct a view onto the instance-typed export at `path`. The
-    /// caller has checked that the export exists, so `path` holds at
-    /// least the instance's own name.
-    ///
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn new(instance: &'a Instance, path: Box<[ExternalName]>) -> Self {
-        Self { instance, path }
+impl<'a> ExportInstanceInternal<'a> for ExportInstance<'a> {
+    fn new(instance: &'a Instance, path: Box<[ExternalName]>) -> Self {
+        ExportInstance { instance, path }
     }
+}
 
+impl<'a> ExportInstance<'a> {
     /// The name this instance-typed export is declared under: a WIT
     /// interface identifier or a plain name, as the component
     /// published it.

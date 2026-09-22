@@ -30,13 +30,10 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use wasm_component_model_polyfill::{
-    Accessor, Component, Engine, Error, Func, Instance, Linker, Store, Val,
-};
+use crate::internal::FuncInternal;
+use crate::store::StoreInternalExt;
+use crate::{Accessor, Component, Engine, Error, Func, Instance, Linker, Store, Val};
 use wcmp_macros::component;
-
-#[cfg(target_arch = "wasm32")]
-wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 /// A component that calls a host `async` function through an
 /// asynchronous lower and drops the subtask the call left behind.
@@ -298,6 +295,7 @@ async fn call_trap(store: &mut Store<()>, instance: &Instance, name: &str, args:
 /// How many subtask records the store holds.
 fn subtask_count(store: &Store<()>) -> usize {
     store
+        .internal_ref()
         .tables()
         .lock()
         .expect("handle tables")
@@ -315,8 +313,8 @@ fn subtask_count(store: &Store<()>) -> usize {
 macro_rules! handle_table {
     ($instance:expr, $export:literal) => {{
         let export = func($instance, $export);
-        let state = export.abi_state.lock().expect("the instance's ABI state");
-        state.handle_tables[export.options.instance]
+        let state = export.abi_state().lock().expect("the instance's ABI state");
+        state.handle_tables[export.options().instance]
     }};
 }
 
@@ -326,7 +324,7 @@ macro_rules! handle_table {
 /// moves it on from there.
 fn subtask_in_set(store: &mut Store<()>, instance: &Instance, set_index: u32) -> u32 {
     let table = handle_table!(instance, "wait");
-    let mut guard = store.tables().lock().expect("handle tables");
+    let mut guard = store.internal().tables().lock().expect("handle tables");
     let set = guard
         .waitable_set_from_handle(table, set_index)
         .expect("the guest's index names the set it created");
@@ -344,7 +342,7 @@ fn subtask_in_set(store: &mut Store<()>, instance: &Instance, set_index: u32) ->
 /// touching its pending event slot.
 fn subtask_returns(store: &mut Store<()>, instance: &Instance, subtask_index: u32) {
     let table = handle_table!(instance, "wait");
-    let mut guard = store.tables().lock().expect("handle tables");
+    let mut guard = store.internal().tables().lock().expect("handle tables");
     let subtask = guard
         .subtask_from_handle(table, subtask_index)
         .expect("the index names the subtask the test inserted");
@@ -359,7 +357,7 @@ fn subtask_returns(store: &mut Store<()>, instance: &Instance, subtask_index: u3
 /// entry.
 fn subtask_starts(store: &mut Store<()>, instance: &Instance, subtask_index: u32) {
     let table = handle_table!(instance, "wait");
-    let mut guard = store.tables().lock().expect("handle tables");
+    let mut guard = store.internal().tables().lock().expect("handle tables");
     let subtask = guard
         .subtask_from_handle(table, subtask_index)
         .expect("the index names the subtask the test inserted");

@@ -41,14 +41,12 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 use std::sync::{Arc, Mutex};
 
-use wasm_component_model_polyfill::{
+use crate::store::{StoreContextInternalExt, StoreInternalExt};
+use crate::{
     Accessor, Component, Engine, Error, Func, FunctionParameter, FunctionType, HostCall,
     HostResource, Instance, Linker, PrimitiveType, ResourceType, Store, Val, ValueType,
 };
 use wcmp_macros::component;
-
-#[cfg(target_arch = "wasm32")]
-wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 /// A component whose sync-typed export calls an async-typed import
 /// through a synchronous lower and hands the result straight back.
@@ -452,7 +450,7 @@ async fn it_returns_a_blocked_synchronous_lower_once_a_nested_turn_ran_a_sibling
                 let flag = flag.clone();
                 let counted = counted.clone();
                 async move {
-                    let before = accessor.with(|store| store.scheduler().items_run())?;
+                    let before = accessor.with(|store| store.internal().scheduler().items_run())?;
                     core::future::poll_fn(|_context| {
                         if *flag.lock().expect("flag") {
                             Poll::Ready(())
@@ -461,7 +459,7 @@ async fn it_returns_a_blocked_synchronous_lower_once_a_nested_turn_ran_a_sibling
                         }
                     })
                     .await;
-                    let after = accessor.with(|store| store.scheduler().items_run())?;
+                    let after = accessor.with(|store| store.internal().scheduler().items_run())?;
                     *counted.lock().expect("items run") = Some(after - before);
                     Ok::<u32, Error>(x * 2)
                 }
@@ -648,6 +646,7 @@ async fn lender() -> (Store<()>, Instance) {
 /// How many subtask records the store holds.
 fn subtask_count(store: &Store<()>) -> usize {
     store
+        .internal_ref()
         .tables()
         .lock()
         .expect("handle tables")

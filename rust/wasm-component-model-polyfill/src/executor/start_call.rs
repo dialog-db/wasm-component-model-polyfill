@@ -54,8 +54,10 @@ use crate::backend::substrate_failure;
 use crate::concurrency::{InstanceId, Item, ItemKind, SubtaskId, TaskId};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::{CallbackTask, status_word};
+use crate::internal::ErrorInternal;
 use crate::resource::{HandleTables, TableId};
 use crate::store::StoreContext;
+use crate::store::StoreContextInternalExt;
 
 use super::prepare_call::take_prepared_call;
 use super::start_failure::StartFailure;
@@ -301,19 +303,19 @@ fn start_call<T: 'static>(
     // The callee's task is the current scope for the whole of the
     // start: the arguments the start function lowers are the
     // callee's, and a borrow the adapter transfers in is owed to it.
-    store.enter_export_task(task)?;
+    store.internal().enter_export_task(task)?;
     let core_arguments = match call_start_function(store, subtask, callee.param_count) {
         Ok(arguments) => arguments,
         Err(error) => {
-            store.abandon_export_task(task)?;
+            store.internal().abandon_export_task(task)?;
             return Err(error);
         }
     };
     {
-        let tables = store.tables_handle();
+        let tables = store.internal().tables_handle();
         lock(&tables)?.tasks.start_subtask(subtask);
     }
-    store.start_export_task(task)?;
+    store.internal().start_export_task(task)?;
 
     // The callee's flat result types are the adapter's own, and the
     // adapter names only how many there are. A status word is an
@@ -328,21 +330,25 @@ fn start_call<T: 'static>(
     let mut core_results = vec![placeholder; callee.result_count];
     let called = callee
         .function
-        .call(store.runtime_mut(), &core_arguments, &mut core_results)
+        .call(
+            store.internal().runtime_mut(),
+            &core_arguments,
+            &mut core_results,
+        )
         .map_err(substrate_failure);
     let Ok(()) = called else {
-        store.abandon_export_task(task)?;
+        store.internal().abandon_export_task(task)?;
         return called;
     };
     match &callee.loop_ {
         Some(loop_) => {
-            store.leave_export_task(task)?;
+            store.internal().leave_export_task(task)?;
             loop_.handle_status_word(store, status_word(&core_results)?)
         }
         None => match resolve_sync_lift(store, subtask, task, callee, &core_results) {
             Ok(()) => Ok(()),
             Err(error) => {
-                store.abandon_export_task(task)?;
+                store.internal().abandon_export_task(task)?;
                 Err(error)
             }
         },
@@ -366,9 +372,9 @@ fn resolve_sync_lift<T: 'static>(
     callee: &Callee,
     core_results: &[RuntimeVal],
 ) -> Result<()> {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     cross_result_into_caller(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         &tables,
         task,
         subtask,
@@ -376,15 +382,15 @@ fn resolve_sync_lift<T: 'static>(
         core_results,
     )?;
     if let Some((post_return, boundary)) = &callee.post_return {
-        let call = BoundaryCall::post_return(boundary, store.runtime_mut())?;
+        let call = BoundaryCall::post_return(boundary, store.internal().runtime_mut())?;
         let mut empty: [RuntimeVal; 0] = [];
         let ran = post_return
-            .call(store.runtime_mut(), core_results, &mut empty)
+            .call(store.internal().runtime_mut(), core_results, &mut empty)
             .map_err(substrate_failure);
-        call.end(store.runtime_mut())?;
+        call.end(store.internal().runtime_mut())?;
         ran?;
     }
-    match store.exit_export_task(task)? {
+    match store.internal().exit_export_task(task)? {
         Ok(()) => Ok(()),
         Err(count) => Err(outstanding_borrows(count)),
     }
@@ -397,7 +403,7 @@ fn call_start_function<T: 'static>(
     subtask: SubtaskId,
     param_count: usize,
 ) -> Result<Vec<RuntimeVal>> {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     let (start, arguments) = {
         let guard = lock(&tables)?;
         let bridge = guard
@@ -423,7 +429,7 @@ fn call_start_function<T: 'static>(
     // returned.
     let mut results = vec![RuntimeVal::F64(0.0); param_count];
     start
-        .call(store.runtime_mut(), &arguments, &mut results)
+        .call(store.internal().runtime_mut(), &arguments, &mut results)
         .map_err(substrate_failure)?;
     Ok(results)
 }
@@ -435,7 +441,7 @@ fn call_start_function<T: 'static>(
 /// rule [`HandleTables::lend_to`] states. A callee that `task.return`s
 /// and keeps running holds none of them past that delivery.
 pub fn abandon<T: 'static>(store: &mut StoreContext<'_, T>, subtask: SubtaskId) {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     let Ok(mut guard) = tables.lock() else {
         return;
     };
@@ -470,7 +476,7 @@ pub fn abandon<T: 'static>(store: &mut StoreContext<'_, T>, subtask: SubtaskId) 
 /// state it was moved to has no one left to observe it.
 pub fn release_subtask<T: 'static>(store: &mut StoreContext<'_, T>, subtask: SubtaskId) {
     abandon(store, subtask);
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     let Ok(mut guard) = tables.lock() else {
         return;
     };

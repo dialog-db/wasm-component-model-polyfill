@@ -31,6 +31,7 @@ use super::function_type::{FunctionParameter, FunctionType};
 use super::instance_type::{InstanceItem, InstanceType};
 use super::module_type::ModuleType;
 use crate::error::{Error, Result};
+use crate::internal::{CoreValueTypeInternal, ErrorInternal};
 use crate::module::{CoreExternType, CoreValueType, ModuleExport, ModuleImport};
 use crate::types::{
     EnumType, FixedLengthListType, FlagsType, ListType, MapType, OptionType, PrimitiveType,
@@ -391,6 +392,7 @@ mod tests {
 
     use super::*;
     use crate::engine_config::EngineConfig;
+    use crate::internal::EngineConfigInternal;
 
     /// A component whose one export takes two parameters and returns
     /// nothing. Its parameters are the two-wide tuple the test needs.

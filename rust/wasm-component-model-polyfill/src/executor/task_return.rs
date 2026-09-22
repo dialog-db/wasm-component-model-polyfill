@@ -61,7 +61,9 @@ use crate::concurrency::{InstanceId, Scope, SubtaskId, TaskId, TaskState};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, ReturnMismatchKind, TaskCause};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CanonOptions, CoreSignature};
+use crate::internal::ErrorInternal;
 use crate::resource::HandleTables;
+use crate::store::StoreContextInternalExt;
 use crate::store::{StoreContext, StoreData};
 use crate::types::ValueType;
 use crate::value::Val;
@@ -78,10 +80,10 @@ pub fn build_task_return<T: 'static>(
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     let declared = options.clone();
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         core_func_type(signature),
         move |store_ctx, args, _results| {
             Ok(task_return(
@@ -491,6 +493,7 @@ mod tests {
     use crate::executor::ir::{CoreParameter, DataModel, StringEncoding};
     use crate::resource::TableId;
     use crate::store::Store;
+    use crate::store::StoreInternalExt;
     use crate::types::{PrimitiveType, TupleType};
 
     /// One store as a built-in reaches it: the store itself, its
@@ -510,11 +513,11 @@ mod tests {
         fn new(memories: usize) -> Self {
             let engine = Engine::new().expect("engine");
             let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-            let tables = store.tables_handle();
+            let tables = store.internal().tables_handle();
             let instance = tables.lock().expect("records").tasks.insert_instance();
             // The built-in reads the instance's may-leave flag, which
             // an instantiation mints as a core global of the store.
-            let flags = InstanceFlags::new(store.inner_mut().as_context_mut());
+            let flags = InstanceFlags::new(store.internal().inner_mut().as_context_mut());
             let abi_state = Arc::new(Mutex::new(
                 AbiRuntimeState::with_slabs(
                     memories,
@@ -528,7 +531,7 @@ mod tests {
                 .with_instance_flags(vec![flags]),
             ));
             for slot in 0..memories {
-                let memory = Memory::new(store.inner_mut(), MemoryType::new(1, None))
+                let memory = Memory::new(store.internal().inner_mut(), MemoryType::new(1, None))
                     .expect("a fresh memory");
                 abi_state.lock().expect("runtime state").memories[slot] = Some(memory);
             }
@@ -579,14 +582,14 @@ mod tests {
             };
             let abi_state = self.abi_state.clone();
             let func = build_task_return(
-                &mut self.store.context(),
+                &mut self.store.internal().context(),
                 result,
                 0,
                 options,
                 &signature,
                 abi_state,
             );
-            func.call(self.store.inner_mut(), args, &mut [])
+            func.call(self.store.internal().inner_mut(), args, &mut [])
         }
 
         /// What the task resolved with, or `None` while it is
@@ -687,7 +690,7 @@ mod tests {
             let state = records.abi_state.lock().expect("runtime state");
             let memory = state.memories[0].as_ref().expect("memory slot 0");
             memory
-                .write(records.store.inner_mut(), 8, b"hi")
+                .write(records.store.internal().inner_mut(), 8, b"hi")
                 .expect("write the string into the guest's memory");
         }
 
@@ -720,7 +723,7 @@ mod tests {
             for field in 0..17u32 {
                 memory
                     .write(
-                        records.store.inner_mut(),
+                        records.store.internal().inner_mut(),
                         16 + field as usize * 4,
                         &field.to_le_bytes(),
                     )

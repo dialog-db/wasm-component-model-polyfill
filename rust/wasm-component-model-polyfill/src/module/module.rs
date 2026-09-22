@@ -8,7 +8,9 @@ use wasm_runtime_layer::{
 
 use crate::engine::Engine;
 use crate::error::{Error, InstantiationError, Result};
+use crate::internal::{CoreExternInternal, CoreInstanceParts, ModuleInternal};
 use crate::store::Store;
+use crate::store::StoreInternalExt;
 
 use super::core_extern::CoreExtern;
 use super::core_instance::CoreInstance;
@@ -31,9 +33,8 @@ use super::read;
 /// [`Instance::get_module`]: crate::Instance::get_module
 #[derive(Clone)]
 pub struct Module {
-    /// The runtime-layer module. Workspace-internal; never
-    /// re-exported through `lib.rs`.
-    pub inner: RuntimeModule,
+    /// The runtime-layer module.
+    inner: RuntimeModule,
     imports: Arc<[ModuleImport]>,
     exports: Arc<[ModuleExport]>,
 }
@@ -95,19 +96,30 @@ impl Module {
                 found: imports.len(),
             }));
         }
-        if imports.iter().any(|import| import.store_id != store.id()) {
+        if imports
+            .iter()
+            .any(|import| import.store_id() != store.internal().id())
+        {
             return Err(Error::from(InstantiationError::WrongStore));
         }
         let mut runtime_imports = RuntimeImports::default();
         for (declared, supplied) in self.imports.iter().zip(imports) {
-            runtime_imports.define(&declared.module, &declared.name, supplied.inner.clone());
+            runtime_imports.define(&declared.module, &declared.name, supplied.inner().clone());
         }
-        let inner = RuntimeInstance::new(store.inner_mut(), &self.inner, &runtime_imports)
-            .map_err(InstantiationError::SubstrateFailure)?;
-        Ok(CoreInstance {
+        let inner =
+            RuntimeInstance::new(store.internal().inner_mut(), &self.inner, &runtime_imports)
+                .map_err(InstantiationError::SubstrateFailure)?;
+        Ok(CoreInstanceParts {
             inner,
-            store_id: store.id(),
-        })
+            store_id: store.internal().id(),
+        }
+        .into())
+    }
+}
+
+impl ModuleInternal for Module {
+    fn inner(&self) -> &RuntimeModule {
+        &self.inner
     }
 }
 

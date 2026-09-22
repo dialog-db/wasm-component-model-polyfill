@@ -3,6 +3,7 @@
 use wasm_runtime_layer::{RefType, ValType as RuntimeValType};
 
 use crate::error::{Error, Result};
+use crate::internal::{CoreValueTypeInternal, ErrorInternal};
 
 /// The type of a core WebAssembly value: a number, a vector, or a
 /// reference. These are the value types a core module's function
@@ -28,11 +29,8 @@ pub enum CoreValueType {
     ExternRef,
 }
 
-impl CoreValueType {
-    /// Project a runtime-layer value type.
-    ///
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn from_runtime(ty: RuntimeValType) -> Self {
+impl CoreValueTypeInternal for CoreValueType {
+    fn from_runtime(ty: RuntimeValType) -> CoreValueType {
         match ty {
             RuntimeValType::I32 => Self::I32,
             RuntimeValType::I64 => Self::I64,
@@ -44,23 +42,14 @@ impl CoreValueType {
         }
     }
 
-    /// Project a runtime-layer reference type, the element type of a
-    /// table.
-    ///
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn from_runtime_ref(ty: RefType) -> Self {
+    fn from_runtime_ref(ty: RefType) -> CoreValueType {
         match ty {
             RefType::FuncRef => Self::FuncRef,
             RefType::ExternRef => Self::ExternRef,
         }
     }
 
-    /// Project a translator value type. The polyfill's core surface
-    /// names the reference types the runtime layer carries; a typed
-    /// or non-nullable reference is reported as unsupported.
-    ///
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn from_translator(ty: &wasmtime_environ::WasmValType) -> Result<Self> {
+    fn from_translator(ty: &wasmtime_environ::WasmValType) -> Result<CoreValueType> {
         use wasmtime_environ::{WasmHeapType, WasmValType};
         Ok(match ty {
             WasmValType::I32 => Self::I32,

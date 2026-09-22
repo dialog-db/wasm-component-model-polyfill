@@ -3,6 +3,7 @@
 
 use crate::error::{Error, Result, SchedulerCause};
 use crate::store::StoreContext;
+use crate::store::StoreContextInternalExt;
 
 use super::SuspendProvider;
 use super::outcome::Outcome;
@@ -237,7 +238,7 @@ impl<T: 'static> SuspendSeam<T> {
         // is what a provider that switches stacks needs. The nested
         // turn runs only when the slot is empty, so the two never
         // meet.
-        if store.scheduler().suspend_seam().has_provider() {
+        if store.internal().scheduler().suspend_seam().has_provider() {
             return Self::suspend_with_provider(store, &mut condition);
         }
         Self::run_nested_turns(store, &mut condition)
@@ -263,15 +264,15 @@ impl<T: 'static> SuspendSeam<T> {
     /// answers `Ok(())`, which is what makes the built-in return
     /// zero whenever it returns at all.
     pub fn give_way(store: &mut StoreContext<'_, T>) -> Result<()> {
-        if store.scheduler().suspend_seam().has_provider() {
+        if store.internal().scheduler().suspend_seam().has_provider() {
             let mut given_back = false;
             return Self::suspend_with_provider(store, &mut |_| {
                 std::mem::replace(&mut given_back, true)
             });
         }
-        let waker = store.active_waker();
-        let only = store.must_not_block_instance();
-        store.nested_turn(&waker, only)?;
+        let waker = store.internal().active_waker();
+        let only = store.internal().must_not_block_instance();
+        store.internal().nested_turn(&waker, only)?;
         if Self::note_turn(store) {
             return Err(Error::Scheduler(SchedulerCause::StackSwitchNeeded));
         }
@@ -289,14 +290,20 @@ impl<T: 'static> SuspendSeam<T> {
         store: &mut StoreContext<'_, T>,
         condition: &mut dyn FnMut(&mut StoreContext<'_, T>) -> bool,
     ) -> Result<()> {
-        let Some(mut provider) = store.scheduler_mut().suspend_seam_mut().provider.take() else {
+        let Some(mut provider) = store
+            .internal()
+            .scheduler_mut()
+            .suspend_seam_mut()
+            .provider
+            .take()
+        else {
             return Self::run_nested_turns(store, condition);
         };
         // `provider` stays in this frame. The closure only borrows
         // it, so an unwind through the call leaves it here to put
         // back rather than dropping it inside the closure.
         let outcome = Self::caught(|| provider.suspend(&mut *store, condition));
-        store.scheduler_mut().suspend_seam_mut().provider = Some(provider);
+        store.internal().scheduler_mut().suspend_seam_mut().provider = Some(provider);
         Self::resume(outcome)
     }
 
@@ -320,11 +327,12 @@ impl<T: 'static> SuspendSeam<T> {
         body: impl FnOnce(&mut StoreContext<'_, T>) -> R,
     ) -> R {
         store
+            .internal()
             .scheduler_mut()
             .suspend_seam_mut()
             .blocked_call_futures += 1;
         let outcome = Self::caught(|| body(&mut *store));
-        let seam = store.scheduler_mut().suspend_seam_mut();
+        let seam = store.internal().scheduler_mut().suspend_seam_mut();
         seam.blocked_call_futures = seam.blocked_call_futures.saturating_sub(1);
         Self::resume(outcome)
     }
@@ -347,13 +355,13 @@ impl<T: 'static> SuspendSeam<T> {
         // any poll of a driver — and a waker that does nothing
         // serves instead, as it does for a trampoline that starts a
         // host task outside a turn.
-        let waker = store.active_waker();
+        let waker = store.internal().active_waker();
         // A task that must not block gives way only to the ready
         // work of its own instance. The instance is read once: what
         // the turn is allowed to run cannot change under it, because
         // the flag is set for the length of the call this thread is
         // inside.
-        let only = store.must_not_block_instance();
+        let only = store.internal().must_not_block_instance();
         // Whether the seam's budget is what ended the loop. The
         // budget is the run of turns the store did not serve, and
         // it is kept on the seam rather than here, so that a thread
@@ -364,7 +372,7 @@ impl<T: 'static> SuspendSeam<T> {
             if condition(store) {
                 return Ok(());
             }
-            let outcome = store.nested_turn(&waker, only)?;
+            let outcome = store.internal().nested_turn(&waker, only)?;
             let noted = Self::note_turn(store);
             match outcome {
                 Outcome::Progress if !noted => continue,
@@ -404,7 +412,7 @@ impl<T: 'static> SuspendSeam<T> {
         if past_budget {
             return Err(Error::Scheduler(SchedulerCause::StackSwitchNeeded));
         }
-        Err(Error::Scheduler(store.suspend_cause()))
+        Err(Error::Scheduler(store.internal().suspend_cause()))
     }
 
     /// Record what the store did for the suspended thread over the
@@ -427,10 +435,10 @@ impl<T: 'static> SuspendSeam<T> {
     /// single run, and whatever the store ran in between — a
     /// driver's turn included — ends it.
     fn note_turn(store: &mut StoreContext<'_, T>) -> bool {
-        let items_run = store.scheduler().items_run();
-        let resumptions = store.scheduler().resumptions();
-        let pending = store.scheduler().host_future_pending();
-        let seam = store.scheduler_mut().suspend_seam_mut();
+        let items_run = store.internal().scheduler().items_run();
+        let resumptions = store.internal().scheduler().resumptions();
+        let pending = store.internal().scheduler().host_future_pending();
+        let seam = store.internal().scheduler_mut().suspend_seam_mut();
         let ran = items_run - seam.served_mark.0;
         let resumed = resumptions - seam.served_mark.1;
         seam.served_mark = (items_run, resumptions);
@@ -505,6 +513,8 @@ mod tests {
     use super::super::item_kind::ItemKind;
 
     use super::*;
+    use crate::internal::ErrorInternal;
+    use crate::store::StoreInternalExt;
 
     /// What the items of one test wrote as they ran, in order.
     type Log = Arc<Mutex<Vec<&'static str>>>;
@@ -702,6 +712,7 @@ mod tests {
         ready_on: usize,
     ) -> (Slot, Polls) {
         let subtask = store
+            .internal()
             .tables()
             .lock()
             .expect("tables")
@@ -710,7 +721,7 @@ mod tests {
         let slot: Slot = Arc::new(Mutex::new(None));
         let polls: Polls = Arc::new(Mutex::new(Vec::new()));
         let filled = slot.clone();
-        store.push_host_task(HostTask::from_future(
+        store.internal().push_host_task(HostTask::from_future(
             subtask,
             move |_store: &mut StoreContext<'_, ()>, outcome: Result<Vec<Val>>| {
                 *filled.lock().expect("slot") = Some(outcome);
@@ -730,7 +741,7 @@ mod tests {
     /// `may_not_suspend` is the instance flag an adapter's enter
     /// intrinsic sets for the duration of a synchronous call.
     fn current_task(store: &StoreContext<'_, ()>, may_not_suspend: bool) -> InstanceId {
-        let mut guard = store.tables().lock().expect("tables");
+        let mut guard = store.internal_ref().tables().lock().expect("tables");
         let instance = guard.tasks.insert_instance();
         guard
             .tasks
@@ -747,12 +758,14 @@ mod tests {
     /// where an item learns which instance's work it is.
     fn queue(store: &mut StoreContext<'_, ()>, instance: InstanceId, item: Item<()>) {
         let task = store
+            .internal()
             .tables()
             .lock()
             .expect("tables")
             .tasks
             .create_task(None, None, instance);
         store
+            .internal()
             .start_export_thread(task, instance, false, true, item)
             .expect("queue the item");
     }
@@ -763,7 +776,7 @@ mod tests {
     /// never settle fails the test rather than hanging it.
     fn drain(store: &mut StoreContext<'_, ()>) {
         for _ in 0..8 {
-            if store.turn(Waker::noop()).expect("turn") == Outcome::Idle {
+            if store.internal().turn(Waker::noop()).expect("turn") == Outcome::Idle {
                 return;
             }
         }
@@ -786,10 +799,10 @@ mod tests {
     #[wcmp_macros::test]
     fn it_has_an_empty_provider_slot_on_both_targets() {
         let mut owner = store();
-        let store = owner.context();
+        let mut store = owner.internal().context();
 
         assert!(
-            !store.scheduler().suspend_seam().has_provider(),
+            !store.internal().scheduler().suspend_seam().has_provider(),
             "the capability is filled on neither target, so every suspension \
              takes the nested turn"
         );
@@ -798,12 +811,13 @@ mod tests {
     #[wcmp_macros::test]
     fn it_polls_a_host_task_with_the_outer_waker_and_returns_when_the_condition_holds() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let outer = Waker::from(Arc::new(Outer::default()));
         let (slot, polls) = host_task(&mut store, &outer, 1);
 
         let watched = slot.clone();
         let outcome = store
+            .internal()
             .run_in_turn(&outer, move |store| {
                 SuspendSeam::suspend(store, move |_| watched.lock().expect("slot").is_some())
             })
@@ -824,7 +838,7 @@ mod tests {
             "the completed future's value reached the slot the condition watches"
         );
         assert_eq!(
-            store.scheduler().host_task_count(),
+            store.internal().scheduler().host_task_count(),
             0,
             "the host task that completed left the store"
         );
@@ -833,7 +847,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_runs_ready_work_of_another_task_while_the_condition_is_unmet() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let outer = Waker::from(Arc::new(Outer::default()));
         let (slot, _polls) = host_task(&mut store, &outer, 1);
 
@@ -845,17 +859,22 @@ mod tests {
         let recorded = seen.clone();
         let written = log.clone();
         let watched = slot.clone();
-        store.scheduler_mut().push_high_priority(Item::new(
-            ItemKind::TaskStart,
-            move |_store: &mut StoreContext<'_, ()>| {
-                *recorded.lock().expect("record") = Some(watched.lock().expect("slot").is_some());
-                written.lock().expect("log").push("other task");
-                Ok(())
-            },
-        ));
+        store
+            .internal()
+            .scheduler_mut()
+            .push_high_priority(Item::new(
+                ItemKind::TaskStart,
+                move |_store: &mut StoreContext<'_, ()>| {
+                    *recorded.lock().expect("record") =
+                        Some(watched.lock().expect("slot").is_some());
+                    written.lock().expect("log").push("other task");
+                    Ok(())
+                },
+            ));
 
         let watched = slot.clone();
         let outcome = store
+            .internal()
             .run_in_turn(&outer, move |store| {
                 SuspendSeam::suspend(store, move |_| watched.lock().expect("slot").is_some())
             })
@@ -877,7 +896,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_leaves_a_host_task_it_left_pending_in_the_store_for_the_outer_driver() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let outer = Waker::from(Arc::new(Outer::default()));
         // The future is ready on its second poll, so the one poll
         // the nested turn makes leaves it pending.
@@ -888,16 +907,20 @@ mod tests {
         // returns with the host task still pending.
         let released = Arc::new(Mutex::new(false));
         let flag = released.clone();
-        store.scheduler_mut().push_high_priority(Item::new(
-            ItemKind::TaskStart,
-            move |_store: &mut StoreContext<'_, ()>| {
-                *flag.lock().expect("flag") = true;
-                Ok(())
-            },
-        ));
+        store
+            .internal()
+            .scheduler_mut()
+            .push_high_priority(Item::new(
+                ItemKind::TaskStart,
+                move |_store: &mut StoreContext<'_, ()>| {
+                    *flag.lock().expect("flag") = true;
+                    Ok(())
+                },
+            ));
 
         let watched = released.clone();
         let outcome = store
+            .internal()
             .run_in_turn(&outer, move |store| {
                 SuspendSeam::suspend(store, move |_| *watched.lock().expect("flag"))
             })
@@ -910,7 +933,7 @@ mod tests {
             "the nested turn polled the host task once, with the outer waker"
         );
         assert_eq!(
-            store.scheduler().host_task_count(),
+            store.internal().scheduler().host_task_count(),
             1,
             "the host task that stayed pending stayed in the store"
         );
@@ -922,7 +945,7 @@ mod tests {
         // A later turn of a driver of the same store polls it again.
         let watched = slot.clone();
         let mut driver = Box::pin(Driver::new(
-            store.reborrow(),
+            store.internal().reborrow(),
             None,
             move |_store, _waker| watched.lock().expect("slot").is_some().then(|| Ok(())),
         ));
@@ -942,10 +965,11 @@ mod tests {
     #[wcmp_macros::test]
     fn it_traps_with_the_cannot_block_cause_when_the_task_must_not_block() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         current_task(&store, true);
 
         let outcome = store
+            .internal()
             .run_in_turn(Waker::noop(), |store| {
                 SuspendSeam::suspend(store, |_| false)
             })
@@ -962,11 +986,12 @@ mod tests {
     #[wcmp_macros::test]
     fn it_runs_only_the_ready_work_of_its_own_instance_before_it_cannot_block() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let log = log();
 
         let mine = current_task(&store, true);
         let other = store
+            .internal()
             .tables()
             .lock()
             .expect("tables")
@@ -976,6 +1001,7 @@ mod tests {
         queue(&mut store, other, marker(&log, "other"));
 
         let outcome = store
+            .internal()
             .run_in_turn(Waker::noop(), |store| {
                 SuspendSeam::suspend(store, |_| false)
             })
@@ -994,7 +1020,7 @@ mod tests {
              instance, and to nothing else"
         );
         assert_eq!(
-            store.scheduler().queued_items(),
+            store.internal().scheduler().queued_items(),
             1,
             "the other instance's item is still queued for a turn of the \
              scheduler"
@@ -1004,10 +1030,11 @@ mod tests {
     #[wcmp_macros::test]
     fn it_traps_with_the_deadlock_cause_when_the_store_goes_idle() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         current_task(&store, false);
 
         let outcome = store
+            .internal()
             .run_in_turn(Waker::noop(), |store| {
                 SuspendSeam::suspend(store, |_| false)
             })
@@ -1024,7 +1051,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_traps_with_the_stack_switch_cause_while_a_host_task_is_still_pending() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let outer = Waker::from(Arc::new(Outer::default()));
         current_task(&store, false);
         // A body that never completes, so the nested turn polls it,
@@ -1033,6 +1060,7 @@ mod tests {
         let (_slot, polls) = host_task(&mut store, &outer, usize::MAX);
 
         let outcome = store
+            .internal()
             .run_in_turn(&outer, |store| SuspendSeam::suspend(store, |_| false))
             .expect("the outer turn runs");
 
@@ -1048,7 +1076,7 @@ mod tests {
             "the nested turn polled the pending body once, with the outer waker"
         );
         assert_eq!(
-            store.scheduler().host_task_count(),
+            store.internal().scheduler().host_task_count(),
             1,
             "the host task that stayed pending stayed in the store"
         );
@@ -1057,26 +1085,30 @@ mod tests {
     #[wcmp_macros::test]
     fn it_does_not_raise_the_recursive_driver_cause_from_inside_a_drivers_turn() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let outer = Waker::from(Arc::new(Outer::default()));
         let (slot, polls) = host_task(&mut store, &outer, 1);
 
         let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let recorded = seen.clone();
         let watched = slot.clone();
-        store.scheduler_mut().push_high_priority(Item::new(
-            ItemKind::TaskStart,
-            move |store: &mut StoreContext<'_, ()>| {
-                let outcome =
-                    SuspendSeam::suspend(store, move |_| watched.lock().expect("slot").is_some());
-                *recorded.lock().expect("record") = Some(cause(outcome));
-                Ok(())
-            },
-        ));
+        store
+            .internal()
+            .scheduler_mut()
+            .push_high_priority(Item::new(
+                ItemKind::TaskStart,
+                move |store: &mut StoreContext<'_, ()>| {
+                    let outcome = SuspendSeam::suspend(store, move |_| {
+                        watched.lock().expect("slot").is_some()
+                    });
+                    *recorded.lock().expect("record") = Some(cause(outcome));
+                    Ok(())
+                },
+            ));
 
         let watched = seen.clone();
         let mut driver = Box::pin(Driver::new(
-            store.reborrow(),
+            store.internal().reborrow(),
             None,
             move |_store, _waker| watched.lock().expect("record").is_some().then(|| Ok(())),
         ));
@@ -1102,9 +1134,10 @@ mod tests {
     #[wcmp_macros::test]
     fn it_consults_the_provider_slot_before_it_falls_back_to_a_nested_turn() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let calls = Arc::new(Mutex::new(0usize));
         store
+            .internal()
             .scheduler_mut()
             .suspend_seam_mut()
             .set_provider(Recorded(calls.clone()));
@@ -1112,10 +1145,12 @@ mod tests {
         // Ready guest work a nested turn would have run.
         let log = log();
         store
+            .internal()
             .scheduler_mut()
             .push_high_priority(marker(&log, "the nested turn"));
 
         let outcome = store
+            .internal()
             .run_in_turn(Waker::noop(), |store| {
                 SuspendSeam::suspend(store, |_| false)
             })
@@ -1137,12 +1172,12 @@ mod tests {
              that blocked"
         );
         assert_eq!(
-            store.scheduler().queued_items(),
+            store.internal().scheduler().queued_items(),
             1,
             "the ready item is still queued for a turn of the scheduler"
         );
         assert!(
-            store.scheduler().suspend_seam().has_provider(),
+            store.internal().scheduler().suspend_seam().has_provider(),
             "the provider went back into its slot"
         );
     }
@@ -1150,24 +1185,33 @@ mod tests {
     #[wcmp_macros::test]
     fn it_runs_every_deferred_item_exactly_once_inside_a_nested_turn() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let log = log();
-        store.scheduler_mut().push_low_priority(marker(&log, "A"));
-        store.scheduler_mut().push_low_priority(marker(&log, "B"));
+        store
+            .internal()
+            .scheduler_mut()
+            .push_low_priority(marker(&log, "A"));
+        store
+            .internal()
+            .scheduler_mut()
+            .push_low_priority(marker(&log, "B"));
 
         // The one item that is ready reaches the seam with a
         // condition nothing will meet, so its nested turn finds
         // nothing but the low-priority queue.
         let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let recorded = seen.clone();
-        store.scheduler_mut().push_high_priority(Item::new(
-            ItemKind::TaskStart,
-            move |store: &mut StoreContext<'_, ()>| {
-                let outcome = SuspendSeam::suspend(store, |_| false);
-                *recorded.lock().expect("record") = Some(cause(outcome));
-                Ok(())
-            },
-        ));
+        store
+            .internal()
+            .scheduler_mut()
+            .push_high_priority(Item::new(
+                ItemKind::TaskStart,
+                move |store: &mut StoreContext<'_, ()>| {
+                    let outcome = SuspendSeam::suspend(store, |_| false);
+                    *recorded.lock().expect("record") = Some(cause(outcome));
+                    Ok(())
+                },
+            ));
 
         drain(&mut store);
 
@@ -1185,7 +1229,7 @@ mod tests {
              nothing for the outer turn to run twice"
         );
         assert_eq!(
-            store.scheduler().queued_items(),
+            store.internal().scheduler().queued_items(),
             0,
             "nothing was left queued"
         );
@@ -1194,21 +1238,26 @@ mod tests {
     #[wcmp_macros::test]
     fn it_runs_a_yielded_item_inside_a_nested_turn_once_nothing_else_is_ready() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let log = log();
         store
+            .internal()
             .scheduler_mut()
             .push_low_priority(marker(&log, "yielded"));
 
         // Both ready items block. The second one reaches the seam
         // from inside the first one's nested turn, and the
         // resumption after the yield is what is left once it has.
-        store
-            .scheduler_mut()
-            .push_high_priority(blocker(&log, "outer enter", "outer leave"));
-        store
-            .scheduler_mut()
-            .push_high_priority(blocker(&log, "inner enter", "inner leave"));
+        store.internal().scheduler_mut().push_high_priority(blocker(
+            &log,
+            "outer enter",
+            "outer leave",
+        ));
+        store.internal().scheduler_mut().push_high_priority(blocker(
+            &log,
+            "inner enter",
+            "inner leave",
+        ));
 
         drain(&mut store);
 
@@ -1230,14 +1279,15 @@ mod tests {
     #[wcmp_macros::test]
     fn it_leaves_a_yielded_item_to_the_executor_in_a_drivers_turn() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let log = log();
         store
+            .internal()
             .scheduler_mut()
             .push_low_priority(marker(&log, "yielded"));
 
         let mut driver = Box::pin(Driver::new(
-            store.reborrow(),
+            store.internal().reborrow(),
             None,
             |_store: &mut StoreContext<'_, ()>, _waker: &Waker| -> Option<Result<()>> { None },
         ));
@@ -1259,7 +1309,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_opens_another_nested_turn_for_an_item_a_nested_turn_ran() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let log = log();
         let outer_flag = Arc::new(Mutex::new(false));
         let inner_flag = Arc::new(Mutex::new(false));
@@ -1268,14 +1318,14 @@ mod tests {
 
         // The item that blocks first. Its nested turn runs the item
         // behind it, which blocks in its turn.
-        store.scheduler_mut().push_high_priority(waiter(
+        store.internal().scheduler_mut().push_high_priority(waiter(
             &log,
             "outer enter",
             "outer leave",
             &outer_flag,
             &outer_seen,
         ));
-        store.scheduler_mut().push_high_priority(waiter(
+        store.internal().scheduler_mut().push_high_priority(waiter(
             &log,
             "inner enter",
             "inner leave",
@@ -1287,9 +1337,11 @@ mod tests {
         // level reaches the first of these, and the first level
         // reaches the second once the level under it has returned.
         store
+            .internal()
             .scheduler_mut()
             .push_high_priority(releases(&log, "frees the inner", &inner_flag));
         store
+            .internal()
             .scheduler_mut()
             .push_high_priority(releases(&log, "frees the outer", &outer_flag));
 
@@ -1328,7 +1380,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_fails_a_suspension_inside_a_nested_turn_of_a_sync_task_with_the_cannot_block_cause() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let mine = current_task(&store, true);
 
         // Two items of the instance whose call must return. The
@@ -1370,12 +1422,12 @@ mod tests {
     #[wcmp_macros::test]
     fn it_traps_with_the_cannot_block_cause_while_another_instance_is_inside_a_synchronous_call() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         // The task that blocks is one the reference allows to
         // block, and the store is idle. Another instance is inside
         // a synchronous call all the same.
         current_task(&store, false);
-        let mut guard = store.tables().lock().expect("tables");
+        let mut guard = store.internal().tables().lock().expect("tables");
         let other = guard.tasks.insert_instance();
         guard
             .tasks
@@ -1385,6 +1437,7 @@ mod tests {
         drop(guard);
 
         let outcome = store
+            .internal()
             .run_in_turn(Waker::noop(), |store| {
                 SuspendSeam::suspend(store, |_| false)
             })
@@ -1402,11 +1455,12 @@ mod tests {
     #[wcmp_macros::test]
     fn it_runs_the_ready_work_of_every_instance_when_the_task_may_block() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let log = log();
 
         let mine = current_task(&store, false);
         let other = store
+            .internal()
             .tables()
             .lock()
             .expect("tables")
@@ -1416,6 +1470,7 @@ mod tests {
         queue(&mut store, other, marker(&log, "other"));
 
         let outcome = store
+            .internal()
             .run_in_turn(Waker::noop(), |store| {
                 SuspendSeam::suspend(store, |_| false)
             })
@@ -1434,7 +1489,7 @@ mod tests {
              item, whichever instance queued it"
         );
         assert_eq!(
-            store.scheduler().queued_items(),
+            store.internal().scheduler().queued_items(),
             0,
             "nothing was left queued"
         );
@@ -1443,7 +1498,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_traps_with_the_stack_switch_cause_while_a_call_blocks_on_a_future_of_its_own() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         current_task(&store, false);
 
         // The store holds no host task: the future of a call that
@@ -1451,6 +1506,7 @@ mod tests {
         // it, and the mark is what says so.
         let outcome = SuspendSeam::while_blocked_on_a_call_future(&mut store, |store| {
             store
+                .internal()
                 .run_in_turn(Waker::noop(), |store| {
                     SuspendSeam::suspend(store, |_| false)
                 })
@@ -1465,7 +1521,11 @@ mod tests {
              it"
         );
         assert!(
-            !store.scheduler().suspend_seam().blocked_on_a_call_future(),
+            !store
+                .internal()
+                .scheduler()
+                .suspend_seam()
+                .blocked_on_a_call_future(),
             "the mark came back off when the blocked call's frame ended"
         );
     }
@@ -1473,10 +1533,11 @@ mod tests {
     #[wcmp_macros::test]
     fn it_runs_a_nested_turn_again_once_an_earlier_one_has_returned() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let outer = Waker::from(Arc::new(Outer::default()));
 
         let first = store
+            .internal()
             .run_in_turn(&outer, |store| SuspendSeam::suspend(store, |_| false))
             .expect("the outer turn runs");
 
@@ -1492,6 +1553,7 @@ mod tests {
         let (slot, polls) = host_task(&mut store, &outer, 1);
         let watched = slot.clone();
         let second = store
+            .internal()
             .run_in_turn(&outer, move |store| {
                 SuspendSeam::suspend(store, move |_| watched.lock().expect("slot").is_some())
             })
@@ -1513,8 +1575,9 @@ mod tests {
     #[test]
     fn it_puts_the_provider_back_when_the_suspension_panicked() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         store
+            .internal()
             .scheduler_mut()
             .suspend_seam_mut()
             .set_provider(Panics);
@@ -1526,7 +1589,7 @@ mod tests {
             "the provider's panic unwound the suspension"
         );
         assert!(
-            store.scheduler().suspend_seam().has_provider(),
+            store.internal().scheduler().suspend_seam().has_provider(),
             "the provider went back into its slot, so the target still has the \
              capability it filled"
         );
@@ -1536,7 +1599,7 @@ mod tests {
     #[test]
     fn it_clears_the_blocked_call_marker_when_a_blocked_call_panicked() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
 
         let unwound = unwind(|| {
             SuspendSeam::while_blocked_on_a_call_future(
@@ -1547,12 +1610,17 @@ mod tests {
 
         assert!(unwound.is_err(), "the blocked call's panic unwound");
         assert!(
-            !store.scheduler().suspend_seam().blocked_on_a_call_future(),
+            !store
+                .internal()
+                .scheduler()
+                .suspend_seam()
+                .blocked_on_a_call_future(),
             "the seam no longer holds the mark of a call blocked on a future \
              of its own"
         );
 
         let again = store
+            .internal()
             .run_in_turn(Waker::noop(), |store| {
                 SuspendSeam::suspend(store, |_| false)
             })
@@ -1648,8 +1716,8 @@ mod tests {
                 // is inside is synchronous.
                 let slot: Slot = Arc::new(Mutex::new(None));
                 let filled = slot.clone();
-                let subtask = store.lock_tables()?.tasks.insert_subtask();
-                store.push_host_task(HostTask::from_future(
+                let subtask = store.internal().lock_tables()?.tasks.insert_subtask();
+                store.internal().push_host_task(HostTask::from_future(
                     subtask,
                     move |_store: &mut StoreContext<'_, ()>, outcome: Result<Vec<Val>>| {
                         *filled.lock().expect("slot") = Some(outcome);
@@ -1664,8 +1732,8 @@ mod tests {
                 });
                 *recorded.lock().expect("record") = Some((
                     cause(outcome),
-                    store.turn_in_flight(),
-                    store.scheduler().host_task_count(),
+                    store.internal().turn_in_flight(),
+                    store.internal().scheduler().host_task_count(),
                 ));
                 Ok(x)
             },
@@ -1700,7 +1768,7 @@ mod tests {
             "the host function returned its argument and the guest added one"
         );
         assert_eq!(
-            store.scheduler().host_task_count(),
+            store.internal().scheduler().host_task_count(),
             0,
             "the turns the call's own driver ran after the call returned did \
              resolve it"
@@ -1739,8 +1807,8 @@ mod tests {
                 // what the suspension has to wait for.
                 let slot: Slot = Arc::new(Mutex::new(None));
                 let filled = slot.clone();
-                let subtask = store.lock_tables()?.tasks.insert_subtask();
-                store.push_host_task(HostTask::from_future(
+                let subtask = store.internal().lock_tables()?.tasks.insert_subtask();
+                store.internal().push_host_task(HostTask::from_future(
                     subtask,
                     move |_store: &mut StoreContext<'_, ()>, outcome: Result<Vec<Val>>| {
                         *filled.lock().expect("slot") = Some(outcome);
@@ -1755,8 +1823,8 @@ mod tests {
                 });
                 *recorded.lock().expect("record") = Some((
                     cause(outcome),
-                    store.turn_in_flight(),
-                    store.scheduler().host_task_count(),
+                    store.internal().turn_in_flight(),
+                    store.internal().scheduler().host_task_count(),
                 ));
 
                 // What the host task produced, which only the turns
@@ -1805,12 +1873,12 @@ mod tests {
              and ran the lowering it queued from inside the trampoline"
         );
         assert_eq!(
-            store.scheduler().host_task_count(),
+            store.internal().scheduler().host_task_count(),
             0,
             "the host task the call started is resolved and gone"
         );
         assert_eq!(
-            store.scheduler().queued_items(),
+            store.internal().scheduler().queued_items(),
             0,
             "the task exited with its status word, so nothing of it is left \
              for a later turn"
@@ -1848,7 +1916,7 @@ mod tests {
                     *flag.lock().expect("flag") = true;
                 } else {
                     let next = yielder(&counted, gives_way, &flag, instance);
-                    store.scheduler_mut().push_low_priority(next);
+                    store.internal().scheduler_mut().push_low_priority(next);
                 }
                 Ok(())
             },
@@ -1878,19 +1946,22 @@ mod tests {
                 *counted.lock().expect("runs") += 1;
                 let counting = left.clone();
                 let set = flag.clone();
-                store.scheduler_mut().push_high_priority(Item::new(
-                    ItemKind::TaskStart,
-                    move |_store: &mut StoreContext<'_, ()>| {
-                        let mut left = counting.lock().expect("left");
-                        *left = left.saturating_sub(1);
-                        if *left == 0 {
-                            *set.lock().expect("flag") = true;
-                        }
-                        Ok(())
-                    },
-                ));
+                store
+                    .internal()
+                    .scheduler_mut()
+                    .push_high_priority(Item::new(
+                        ItemKind::TaskStart,
+                        move |_store: &mut StoreContext<'_, ()>| {
+                            let mut left = counting.lock().expect("left");
+                            *left = left.saturating_sub(1);
+                            if *left == 0 {
+                                *set.lock().expect("flag") = true;
+                            }
+                            Ok(())
+                        },
+                    ));
                 let next = yielder_that_queues_work(&counted, &left, &flag);
-                store.scheduler_mut().push_low_priority(next);
+                store.internal().scheduler_mut().push_low_priority(next);
                 Ok(())
             },
         )
@@ -1899,15 +1970,17 @@ mod tests {
     #[wcmp_macros::test]
     fn it_lets_a_yielder_that_gives_way_three_times_finish_inside_a_block() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let released = Arc::new(Mutex::new(false));
         let runs = Arc::new(Mutex::new(0usize));
         store
+            .internal()
             .scheduler_mut()
             .push_low_priority(yielder(&runs, 3, &released, None));
 
         let watched = released.clone();
         let outcome = store
+            .internal()
             .run_in_turn(Waker::noop(), move |store| {
                 SuspendSeam::suspend(store, move |_| *watched.lock().expect("flag"))
             })
@@ -1930,16 +2003,18 @@ mod tests {
     #[wcmp_macros::test]
     fn it_lets_a_yielder_that_gives_way_the_whole_budget_finish_inside_a_block() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let released = Arc::new(Mutex::new(false));
         let runs = Arc::new(Mutex::new(0usize));
         let gives_way = SPIN_BUDGET as usize;
         store
+            .internal()
             .scheduler_mut()
             .push_low_priority(yielder(&runs, gives_way, &released, None));
 
         let watched = released.clone();
         let outcome = store
+            .internal()
             .run_in_turn(Waker::noop(), move |store| {
                 SuspendSeam::suspend(store, move |_| *watched.lock().expect("flag"))
             })
@@ -1957,15 +2032,19 @@ mod tests {
     #[wcmp_macros::test]
     fn it_ends_a_block_whose_turns_ran_nothing_but_resumptions() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let released = Arc::new(Mutex::new(false));
         let runs = Arc::new(Mutex::new(0usize));
-        store
-            .scheduler_mut()
-            .push_low_priority(yielder(&runs, usize::MAX, &released, None));
+        store.internal().scheduler_mut().push_low_priority(yielder(
+            &runs,
+            usize::MAX,
+            &released,
+            None,
+        ));
 
         let watched = released.clone();
         let outcome = store
+            .internal()
             .run_in_turn(Waker::noop(), move |store| {
                 SuspendSeam::suspend(store, move |_| *watched.lock().expect("flag"))
             })
@@ -1986,7 +2065,7 @@ mod tests {
              of turns the store did not serve and the budget's worth after it"
         );
         assert!(
-            store.scheduler().has_deferred_item(),
+            store.internal().scheduler().has_deferred_item(),
             "the resumption the yielder queued last is still in the store, \
              which is what the block gave up on rather than ran"
         );
@@ -1995,7 +2074,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_keeps_serving_a_block_whose_turns_run_work_of_their_own() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let released = Arc::new(Mutex::new(false));
         let runs = Arc::new(Mutex::new(0usize));
         // Well past the budget, so a bound that counted every turn
@@ -2004,11 +2083,13 @@ mod tests {
         let work = SPIN_BUDGET as usize * 3;
         let left = Arc::new(Mutex::new(work));
         store
+            .internal()
             .scheduler_mut()
             .push_low_priority(yielder_that_queues_work(&runs, &left, &released));
 
         let watched = released.clone();
         let outcome = store
+            .internal()
             .run_in_turn(Waker::noop(), move |store| {
                 SuspendSeam::suspend(store, move |_| *watched.lock().expect("flag"))
             })
@@ -2036,16 +2117,20 @@ mod tests {
     #[wcmp_macros::test]
     fn it_lets_a_yielder_of_its_own_instance_finish_under_a_task_that_must_not_block() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let mine = current_task(&store, true);
         let released = Arc::new(Mutex::new(false));
         let runs = Arc::new(Mutex::new(0usize));
-        store
-            .scheduler_mut()
-            .push_low_priority(yielder(&runs, 3, &released, Some(mine)));
+        store.internal().scheduler_mut().push_low_priority(yielder(
+            &runs,
+            3,
+            &released,
+            Some(mine),
+        ));
 
         let watched = released.clone();
         let outcome = store
+            .internal()
             .run_in_turn(Waker::noop(), move |store| {
                 SuspendSeam::suspend(store, move |_| *watched.lock().expect("flag"))
             })
@@ -2064,16 +2149,20 @@ mod tests {
     #[wcmp_macros::test]
     fn it_ends_a_block_of_a_task_that_must_not_block_whose_turns_ran_nothing_but_resumptions() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let mine = current_task(&store, true);
         let released = Arc::new(Mutex::new(false));
         let runs = Arc::new(Mutex::new(0usize));
-        store
-            .scheduler_mut()
-            .push_low_priority(yielder(&runs, usize::MAX, &released, Some(mine)));
+        store.internal().scheduler_mut().push_low_priority(yielder(
+            &runs,
+            usize::MAX,
+            &released,
+            Some(mine),
+        ));
 
         let watched = released.clone();
         let outcome = store
+            .internal()
             .run_in_turn(Waker::noop(), move |store| {
                 SuspendSeam::suspend(store, move |_| *watched.lock().expect("flag"))
             })
@@ -2103,7 +2192,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_returns_from_every_give_way_of_a_run_inside_the_budget() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
 
         assert_eq!(
             cause(gives_way(&mut store, SPIN_BUDGET)),
@@ -2116,7 +2205,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_ends_a_run_of_give_ways_past_the_budget_with_the_stack_switch_cause() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
 
         assert_eq!(
             cause(gives_way(&mut store, SPIN_BUDGET + 1)),
@@ -2130,7 +2219,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_starts_the_run_of_give_ways_over_when_the_store_ran_an_item() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let log = log();
 
         // Twice the budget's worth of yields, with an item of the
@@ -2138,6 +2227,7 @@ mod tests {
         let mut outcome = Ok(());
         for _ in 0..(SPIN_BUDGET * 2 + 2) {
             store
+                .internal()
                 .scheduler_mut()
                 .push_high_priority(marker(&log, "ready"));
             outcome = SuspendSeam::give_way(&mut store);
@@ -2160,7 +2250,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_starts_the_run_of_give_ways_over_while_a_host_future_is_pending() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let outer = Waker::from(Arc::new(Outer::default()));
         // A body that never completes: the store holds a future
         // that can still resolve, so nothing here can say a yield
@@ -2179,12 +2269,14 @@ mod tests {
     #[wcmp_macros::test]
     fn it_runs_the_ready_work_of_the_store_from_one_give_way() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let log = log();
         store
+            .internal()
             .scheduler_mut()
             .push_high_priority(marker(&log, "ready"));
         store
+            .internal()
             .scheduler_mut()
             .push_low_priority(marker(&log, "deferred"));
 

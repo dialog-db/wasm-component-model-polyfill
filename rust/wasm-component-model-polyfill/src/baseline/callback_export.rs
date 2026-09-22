@@ -28,14 +28,13 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
-use wasm_component_model_polyfill::{
+use crate::internal::FuncInternal;
+use crate::store::StoreInternalExt;
+use crate::{
     Component, Engine, EngineConfig, Error, ExternType, ExternalName, Func, FunctionType, Instance,
     Linker, Store, Val,
 };
 use wcmp_macros::component;
-
-#[cfg(target_arch = "wasm32")]
-wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 /// One core instance behind two exports: `answer` is lifted `async`
 /// with a callback, `double` is lifted synchronously. `answer`
@@ -317,6 +316,7 @@ async fn call_u32(store: &mut Store<()>, instance: &Instance, name: &str) -> u32
 /// How many task records the store holds.
 fn task_count(store: &Store<()>) -> usize {
     store
+        .internal_ref()
         .tables()
         .lock()
         .expect("handle tables")
@@ -329,6 +329,7 @@ fn task_count(store: &Store<()>) -> usize {
 /// first record is that instance's.
 fn instance_is_held(store: &Store<()>) -> bool {
     store
+        .internal_ref()
         .tables()
         .lock()
         .expect("handle tables")
@@ -350,8 +351,8 @@ fn instance_is_held(store: &Store<()>) -> bool {
 macro_rules! handle_table {
     ($instance:expr, $export:literal) => {{
         let export = func($instance, $export);
-        let state = export.abi_state.lock().expect("the instance's ABI state");
-        state.handle_tables[export.options.instance]
+        let state = export.abi_state().lock().expect("the instance's ABI state");
+        state.handle_tables[export.options().instance]
     }};
 }
 
@@ -365,7 +366,7 @@ macro_rules! handle_table {
 /// adds the first waitable kind will produce it.
 fn ready_subtask_in_set(store: &mut Store<()>, instance: &Instance, set_index: u32) -> u32 {
     let table = handle_table!(instance, "awaited");
-    let mut guard = store.tables().lock().expect("handle tables");
+    let mut guard = store.internal().tables().lock().expect("handle tables");
     let set = guard
         .waitable_set_from_handle(table, set_index)
         .expect("the guest's index names the set it created");
@@ -393,7 +394,7 @@ fn ready_subtask_in_set(store: &mut Store<()>, instance: &Instance, set_index: u
 /// word can name and that is not a waitable set.
 fn subtask_not_in_a_set(store: &mut Store<()>, instance: &Instance) -> u32 {
     let table = handle_table!(instance, "elsewhere");
-    let mut guard = store.tables().lock().expect("handle tables");
+    let mut guard = store.internal().tables().lock().expect("handle tables");
     let subtask = guard.tasks.insert_subtask();
     guard.insert_subtask(table, subtask)
 }
@@ -479,7 +480,7 @@ async fn it_resolves_a_call_whose_export_returns_and_exits_at_once() {
         "the instance the callback task held exclusively went back"
     );
     assert_eq!(
-        store.scheduler().queued_items(),
+        store.internal().scheduler().queued_items(),
         0,
         "the task left nothing behind"
     );
@@ -525,7 +526,7 @@ async fn it_resumes_the_callback_in_a_later_turn_after_a_yield() {
         "the yield gave way, so the task outlived the call with its callback unrun"
     );
     assert_eq!(
-        store.scheduler().queued_items(),
+        store.internal().scheduler().queued_items(),
         1,
         "one callback item waits for a driver to return control to the executor"
     );

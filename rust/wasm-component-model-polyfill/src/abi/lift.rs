@@ -9,7 +9,8 @@ use crate::abi::context::BoundaryContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
 use crate::abi::strings;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
-use crate::resource::{HandleKind, ResourceHandle};
+use crate::internal::ErrorInternal;
+use crate::resource::{HandleKind, ResourceHandleParts};
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::{Val, ValField};
 
@@ -456,11 +457,14 @@ pub fn lift_handle<T: 'static>(
             .map_err(|e| invalid(e.to_string()))?;
         let host_index = guard.host_table(table.type_id);
         let host_index = guard.insert_own(host_index, table.type_id, table.guest_defined, rep);
-        Ok(Val::Own(ResourceHandle {
-            type_id: table.type_id,
-            index: host_index,
-            rep,
-        }))
+        Ok(Val::Own(
+            ResourceHandleParts {
+                type_id: table.type_id,
+                index: host_index,
+                rep,
+            }
+            .into(),
+        ))
     } else {
         // Every instance addresses its own handles by table index, the
         // instance that defines the resource included: a lift of a
@@ -479,13 +483,16 @@ pub fn lift_handle<T: 'static>(
                 .lend_to(scope, table.table, index)
                 .map_err(|e| invalid(e.to_string()))?;
         }
-        Ok(Val::Borrow(ResourceHandle {
-            type_id: table.type_id,
-            index,
-            rep: entry
-                .rep()
-                .expect("lookup only ever returns a resource entry"),
-        }))
+        Ok(Val::Borrow(
+            ResourceHandleParts {
+                type_id: table.type_id,
+                index,
+                rep: entry
+                    .rep()
+                    .expect("lookup only ever returns a resource entry"),
+            }
+            .into(),
+        ))
     }
 }
 fn invalid_encoding(ty: &ValueType, position: AbiPosition, message: &str) -> Error {
@@ -523,6 +530,7 @@ mod tests {
     use crate::executor::ir::{CanonOptions, DataModel, StringEncoding};
     use crate::resource::TableId;
     use crate::store::Store;
+    use crate::store::StoreInternalExt;
     use crate::types::{FlagsType, ListType};
 
     /// The size of the guest memory every crossing below reads
@@ -546,7 +554,7 @@ mod tests {
     /// store for as long as it lives.
     fn one_page(store: &mut Store<()>) -> (BoundaryOptions, BoundaryInstance) {
         let memory = Memory::new(
-            store.inner_mut().as_context_mut(),
+            store.internal().inner_mut().as_context_mut(),
             MemoryType::new(PAGES, None),
         )
         .expect("one page of guest memory");
@@ -571,7 +579,7 @@ mod tests {
             string_encoding: StringEncoding::Utf8,
             data_model: DataModel::LinearMemory,
         };
-        let tables = store.tables_handle();
+        let tables = store.internal().tables_handle();
         BoundaryInstance::resolve(&declared, &state, &tables).expect("resolve")
     }
 
@@ -586,8 +594,12 @@ mod tests {
         let engine = Engine::new().expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let (options, instance) = one_page(&mut store);
-        let mut ctx =
-            BoundaryContext::new(store.inner_mut().as_context_mut(), options, instance, None);
+        let mut ctx = BoundaryContext::new(
+            store.internal().inner_mut().as_context_mut(),
+            options,
+            instance,
+            None,
+        );
 
         let ty = list_of_zero_size_elements();
         let args = [RuntimeVal::I32(0), RuntimeVal::I32(-1)];
@@ -617,8 +629,12 @@ mod tests {
         let engine = Engine::new().expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let (options, instance) = one_page(&mut store);
-        let mut ctx =
-            BoundaryContext::new(store.inner_mut().as_context_mut(), options, instance, None);
+        let mut ctx = BoundaryContext::new(
+            store.internal().inner_mut().as_context_mut(),
+            options,
+            instance,
+            None,
+        );
 
         let ty = list_of_zero_size_elements();
         let args = [RuntimeVal::I32(0), RuntimeVal::I32(3)];

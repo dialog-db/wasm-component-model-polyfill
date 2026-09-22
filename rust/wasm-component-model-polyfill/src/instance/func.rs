@@ -26,8 +26,10 @@ use crate::error::{
 };
 use crate::executor::ir::CanonOptions;
 use crate::executor::{CallbackTask, status_word};
+use crate::internal::{ErrorInternal, FuncInternal, FuncParts};
 use crate::resource::TableId;
 use crate::store::{Store, StoreContext, StoreId};
+use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
 
@@ -74,32 +76,57 @@ pub struct Func {
     /// The leaf name this export was declared under. Carried so
     /// the typed-conversion entry point can name the export in
     /// type-mismatch diagnostics; `Func::call` does not consult it.
-    /// Workspace-internal; never re-exported through `lib.rs`.
-    pub name: String,
+    name: String,
     /// The runtime-layer core-Wasm function handle this export
-    /// resolves to. Workspace-internal; never re-exported through
-    /// `lib.rs`.
-    pub inner: wasm_runtime_layer::Func,
+    /// resolves to.
+    inner: wasm_runtime_layer::Func,
     /// The component-level signature the polyfill uses to lower
     /// arguments and lift results across the canonical-ABI
-    /// boundary. Workspace-internal; never re-exported through
-    /// `lib.rs`.
-    pub signature: FunctionType,
+    /// boundary.
+    signature: FunctionType,
     /// The canonical-ABI options the export's lift declared. Held
     /// here so [`Self::call`] can resolve memory/realloc/post-
     /// return at call time.
-    /// Workspace-internal; never re-exported through `lib.rs`.
-    pub options: CanonOptions,
+    options: CanonOptions,
     /// The instance's canonical-ABI runtime state. Shared with
     /// every host trampoline the same instance carries; the lock
     /// is taken briefly at the boundaries.
-    /// Workspace-internal; never re-exported through `lib.rs`.
-    pub abi_state: Arc<Mutex<AbiRuntimeState>>,
+    abi_state: Arc<Mutex<AbiRuntimeState>>,
     /// The identity of the [`Store`] the owning instance was
     /// created in. A call made through any other store is rejected
     /// before it reaches the runtime layer.
-    /// Workspace-internal; never re-exported through `lib.rs`.
-    pub store_id: StoreId,
+    store_id: StoreId,
+}
+
+impl From<FuncParts> for Func {
+    fn from(parts: FuncParts) -> Self {
+        Self {
+            name: parts.name,
+            inner: parts.inner,
+            signature: parts.signature,
+            options: parts.options,
+            abi_state: parts.abi_state,
+            store_id: parts.store_id,
+        }
+    }
+}
+
+impl FuncInternal for Func {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn signature(&self) -> &FunctionType {
+        &self.signature
+    }
+
+    fn options(&self) -> &CanonOptions {
+        &self.options
+    }
+
+    fn abi_state(&self) -> &Arc<Mutex<AbiRuntimeState>> {
+        &self.abi_state
+    }
 }
 
 impl Func {
@@ -170,8 +197,8 @@ impl Func {
     ///
     /// [`Store::run_concurrent`]: crate::Store::run_concurrent
     pub async fn call<T: 'static>(&self, store: &mut Store<T>, args: &[Val]) -> Result<Box<[Val]>> {
-        let mut store = store.context();
-        if store.id() != self.store_id {
+        let mut store = store.internal().context();
+        if store.internal().id() != self.store_id {
             return Err(Error::from(InstantiationError::WrongStore));
         }
         if args.len() != self.signature.parameters.len() {
@@ -191,7 +218,7 @@ impl Func {
         // A driver entered while another driver of the same store is
         // inside a turn fails before it has created a task or queued
         // anything, so a refused call leaves the store untouched.
-        if store.turn_in_flight() {
+        if store.internal().turn_in_flight() {
             return Err(Error::Scheduler(SchedulerCause::RecursiveDriver));
         }
 
@@ -200,8 +227,11 @@ impl Func {
         // for the whole call. Each crossing of the call builds its
         // boundary context from the two, and the instance is where
         // the handle tables of the crossing come from.
-        let (options, instance) =
-            BoundaryInstance::resolve(&self.options, &self.abi_state, &store.tables_handle())?;
+        let (options, instance) = BoundaryInstance::resolve(
+            &self.options,
+            &self.abi_state,
+            &store.internal().tables_handle(),
+        )?;
         let instance_id = instance.id().ok_or_else(|| {
             Error::internal("an export's lift names a component instance the plan does not hold")
         })?;
@@ -216,8 +246,11 @@ impl Func {
         // resolves, which is when this call yields its result. A
         // callback export that resolves and keeps running therefore
         // holds no host handle past its `task.return`.
-        let task =
-            store.create_export_task(self.signature.clone(), self.options.clone(), instance_id)?;
+        let task = store.internal().create_export_task(
+            self.signature.clone(),
+            self.options.clone(),
+            instance_id,
+        )?;
 
         // A call into an export lifted `async` is a task that returns
         // a status word and produces its result through
@@ -259,7 +292,13 @@ impl Func {
         // lift can carry. The exclusive flag is the reference's
         // `not opts.async or opts.callback`, which is true here; the
         // gate reads it only for a task that does wait at it.
-        store.start_export_thread(task, instance_id, self.signature.async_, true, item)?;
+        store.internal().start_export_thread(
+            task,
+            instance_id,
+            self.signature.async_,
+            true,
+            item,
+        )?;
 
         Driver::new(store, Some(task), move |_store, _waker| {
             outcome.lock().ok().and_then(|mut slot| slot.take())
@@ -370,7 +409,7 @@ impl Func {
         store: &mut StoreContext<'_, T>,
         args: &[Val],
     ) -> Result<(ResultChannel, CallFailure)> {
-        if store.id() != self.store_id {
+        if store.internal().id() != self.store_id {
             return Err(Error::from(InstantiationError::WrongStore));
         }
         if args.len() != self.signature.parameters.len() {
@@ -387,8 +426,11 @@ impl Func {
             }));
         }
 
-        let (options, instance) =
-            BoundaryInstance::resolve(&self.options, &self.abi_state, &store.tables_handle())?;
+        let (options, instance) = BoundaryInstance::resolve(
+            &self.options,
+            &self.abi_state,
+            &store.internal().tables_handle(),
+        )?;
         let instance_id = instance.id().ok_or_else(|| {
             Error::internal("an export's lift names a component instance the plan does not hold")
         })?;
@@ -397,10 +439,13 @@ impl Func {
         // the task is given a channel to resolve through and the
         // call watches that rather than the record, which a
         // synchronous task's own exit takes out of the store.
-        let task =
-            store.create_export_task(self.signature.clone(), self.options.clone(), instance_id)?;
-        let channel = store.attach_result_channel(task)?;
-        let failure: CallFailure = store.attach_failure_channel(task)?;
+        let task = store.internal().create_export_task(
+            self.signature.clone(),
+            self.options.clone(),
+            instance_id,
+        )?;
+        let channel = store.internal().attach_result_channel(task)?;
+        let failure: CallFailure = store.internal().attach_failure_channel(task)?;
 
         // The item is `'static`: it outlives this future, because
         // dropping the future cancels nothing. It therefore carries
@@ -438,7 +483,9 @@ impl Func {
             // and a callback task needs the instance exclusively,
             // because the core code it runs between events must not
             // overlap another exclusive task of the same instance.
-            store.start_export_thread(task, instance_id, true, true, item)?;
+            store
+                .internal()
+                .start_export_thread(task, instance_id, true, true, item)?;
             return Ok((channel, failure));
         }
 
@@ -463,7 +510,9 @@ impl Func {
         // reference's `not opts.async or opts.callback`, which is
         // true here; the gate reads it only for a task that does
         // wait at it.
-        store.start_export_thread(task, instance_id, false, true, item)?;
+        store
+            .internal()
+            .start_export_thread(task, instance_id, false, true, item)?;
         Ok((channel, failure))
     }
 
@@ -504,9 +553,9 @@ impl Func {
             .ok_or_else(|| Error::internal("an `async` export's lift named no callback"))?;
         let table = self.handle_table()?;
         let loop_ = CallbackTask::new(task, instance_id, table, callback);
-        let channel: ResultChannel = store.attach_result_channel(task)?;
+        let channel: ResultChannel = store.internal().attach_result_channel(task)?;
 
-        let failure: CallFailure = store.attach_failure_channel(task)?;
+        let failure: CallFailure = store.internal().attach_failure_channel(task)?;
         let queued = failure.clone();
         let replica = self.replica();
         let arguments = args.to_vec();
@@ -530,7 +579,9 @@ impl Func {
         // callback task needs the instance exclusively, because the
         // core code it runs between events must not overlap another
         // exclusive task of the same instance.
-        store.start_export_thread(task, instance_id, true, true, item)?;
+        store
+            .internal()
+            .start_export_thread(task, instance_id, true, true, item)?;
 
         Driver::new(store, Some(task), move |_store, waker| {
             if let Some(error) = failure.take_or_wait(waker) {
@@ -556,14 +607,14 @@ impl Func {
         args: &[Val],
         options: &BoundaryOptions,
     ) -> Result<()> {
-        store.enter_export_task(task)?;
+        store.internal().enter_export_task(task)?;
         match self.call_async_core(task, instance, store, args, options) {
             Ok(word) => {
-                store.leave_export_task(task)?;
+                store.internal().leave_export_task(task)?;
                 loop_.handle_status_word(store, word)
             }
             Err(error) => {
-                store.abandon_export_task(task)?;
+                store.internal().abandon_export_task(task)?;
                 Err(error)
             }
         }
@@ -585,9 +636,13 @@ impl Func {
         let mut core_results = vec![RuntimeVal::I32(0); 1];
 
         // The arguments are lowered, so the task's thread runs now.
-        store.start_export_task(task)?;
+        store.internal().start_export_task(task)?;
         self.inner
-            .call(store.runtime_mut(), &core_args, &mut core_results)
+            .call(
+                store.internal().runtime_mut(),
+                &core_args,
+                &mut core_results,
+            )
             .map_err(substrate_failure)?;
         status_word(&core_results)
     }
@@ -638,7 +693,7 @@ impl Func {
         args: &[Val],
         options: &BoundaryOptions,
     ) -> Result<Box<[Val]>> {
-        store.enter_export_task(task)?;
+        store.internal().enter_export_task(task)?;
         // A host call into a sync-typed export must return before its
         // instance may block, so the flag is held for the length of
         // the call, as the enter intrinsic holds it for a synchronous
@@ -650,7 +705,7 @@ impl Func {
         let held = if self.signature.async_ {
             Ok(())
         } else {
-            store.hold_may_not_suspend(task)
+            store.internal().hold_may_not_suspend(task)
         };
         let outcome = match held {
             Ok(()) => self.call_in_task(task, instance, store, args, options),
@@ -658,8 +713,10 @@ impl Func {
         };
         match outcome {
             Ok(result) => {
-                store.resolve_export_task(task, result.first().cloned())?;
-                match store.exit_export_task(task)? {
+                store
+                    .internal()
+                    .resolve_export_task(task, result.first().cloned())?;
+                match store.internal().exit_export_task(task)? {
                     Ok(()) => Ok(result),
                     // The borrow the export still owes is owed at
                     // the end of the call, not at a value the call
@@ -676,7 +733,7 @@ impl Func {
                 }
             }
             Err(err) => {
-                store.abandon_export_task(task)?;
+                store.internal().abandon_export_task(task)?;
                 Err(err)
             }
         }
@@ -696,9 +753,13 @@ impl Func {
         let mut core_results = vec![RuntimeVal::I32(0); result_arity];
 
         // The arguments are lowered, so the task's thread runs now.
-        store.start_export_task(task)?;
+        store.internal().start_export_task(task)?;
         self.inner
-            .call(store.runtime_mut(), &core_args, &mut core_results)
+            .call(
+                store.internal().runtime_mut(),
+                &core_args,
+                &mut core_results,
+            )
             .map_err(substrate_failure)?;
 
         // The result crosses back out, and the export's post-return
@@ -731,7 +792,7 @@ impl Func {
         task: TaskId,
         options: &BoundaryOptions,
     ) -> Result<Vec<RuntimeVal>> {
-        let store_ctx = store.runtime_mut().as_context_mut();
+        let store_ctx = store.internal().runtime_mut().as_context_mut();
         let mut lower_ctx = BoundaryContext::new(
             store_ctx,
             options.clone(),
@@ -806,7 +867,7 @@ impl Func {
         options: BoundaryOptions,
     ) -> Result<Option<Val>> {
         let position = AbiPosition::Result;
-        let store_ctx = store.runtime_mut().as_context_mut();
+        let store_ctx = store.internal().runtime_mut().as_context_mut();
         let mut lift_ctx = BoundaryContext::new(
             store_ctx,
             options,

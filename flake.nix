@@ -282,6 +282,88 @@
           wasm-bindgen-cli
           ;
 
+        # The public-API snapshot check.
+        #
+        # `cargo public-api` lists a crate's public surface by reading
+        # rustdoc's JSON output, which no stable rustdoc emits: the switch
+        # that turns it on is a `-Z` flag. The usual way around that —
+        # setting `RUSTC_BOOTSTRAP` — turns every nightly feature on for the
+        # whole build, so this flake takes the other route and pins an actual
+        # nightly rustc, scoped to this one derivation. It comes from the
+        # same rust-overlay the stable toolchain comes from, at a date fixed
+        # here; `rust-toolchain.toml` stays on stable and nothing else in the
+        # flake sees the nightly.
+        publicApiToolchain =
+          (pkgs.extend (import katsuobushi.inputs.rust-overlay)).rust-bin.nightly."2026-06-22".minimal;
+
+        publicApiCrane =
+          (katsuobushi.inputs.crane.mkLib pkgs).overrideToolchain
+            (_: publicApiToolchain);
+
+        # The snapshot's own source filter. `Cargo.lock` pins what the
+        # rustdoc run compiles, and `rust/` carries both the crates and the
+        # checked-in snapshot the build phase diffs against.
+        publicApiSource = katsuobushi.inputs.nix-filter.lib {
+          root = ./.;
+          include = [
+            "Cargo.lock"
+            "Cargo.toml"
+            "rust"
+          ];
+        };
+
+        publicApiArguments = {
+          src = publicApiSource;
+          pname = "wasm-component-model-polyfill-public-api";
+          version = "0.1.0";
+          strictDeps = true;
+          nativeBuildInputs = commonBuildInputs;
+          doCheck = false;
+        };
+
+        # The public API of the polyfill crate, as the nightly rustdoc sees
+        # it. `--simplified` three times drops the blanket, auto-trait, and
+        # derived impls, which are noise every type carries and not a
+        # decision anyone makes; what is left is the surface this workspace
+        # chose to publish.
+        publicApiListing = publicApiCrane.mkCargoDerivation (
+          publicApiArguments
+          // {
+            cargoArtifacts = publicApiCrane.buildDepsOnly publicApiArguments;
+            nativeBuildInputs = commonBuildInputs ++ [ pkgs.cargo-public-api ];
+            buildPhaseCargoCommand = ''
+              cargo public-api --package wasm-component-model-polyfill -sss \
+                --color never > public-api.txt
+            '';
+            installPhaseCommand = ''
+              mkdir -p "$out"
+              cp public-api.txt "$out/public-api.txt"
+            '';
+            doNotPostBuildInstallCargoBinaries = true;
+          }
+        );
+
+        # The listing against the one checked in beside the crate. A `pub`
+        # that reaches a workspace-internal type — a field, a constructor, a
+        # method whose type no caller outside can name — is a line in the
+        # listing, so it arrives as a diff in review rather than as a piece
+        # of surface nobody noticed was nameable.
+        publicApiCheck =
+          pkgs.runCommand "wasm-component-model-polyfill-public-api-check" { }
+            ''
+              if ! diff -u ${./rust/wasm-component-model-polyfill/public-api.txt} \
+                ${publicApiListing}/public-api.txt; then
+                echo >&2
+                echo "The public API changed. If every line above is intended," >&2
+                echo "record the new surface with:" >&2
+                echo >&2
+                echo "  api update" >&2
+                echo >&2
+                exit 1
+              fi
+              touch "$out"
+            '';
+
         developmentBuildInputs =
           commonBuildInputs
           ++ (with pkgs; [
@@ -543,6 +625,30 @@
             };
           };
 
+          # The crate's public surface, as `cargo public-api` reads it out
+          # of nightly rustdoc's JSON. `list` prints it; `update` records it
+          # as the snapshot the `public-api` flake check diffs against.
+          "api" = {
+            description = "Print or record the polyfill crate's public surface";
+            subcommands = {
+              list = {
+                description = "Print the public surface the crate exposes today";
+                command = ''
+                  cat "$(nix build --no-link --print-out-paths .#public-api)"/public-api.txt
+                '';
+              };
+              update = {
+                description = "Record today's public surface as the checked-in snapshot";
+                command = ''
+                  listing=$(nix build --no-link --print-out-paths .#public-api)
+                  snapshot="$(git rev-parse --show-toplevel)"/rust/wasm-component-model-polyfill/public-api.txt
+                  install -m 644 "$listing"/public-api.txt "$snapshot"
+                  echo "recorded $(wc -l < "$snapshot") public items in $snapshot"
+                '';
+              };
+            };
+          };
+
           # The real-guest fixtures under the conformance corpus, rebuilt
           # from their WIT, WAT, and Rust sources with the flake's pinned
           # `wasm-tools`, `wac`, and Rust toolchain, so a rerun on the same
@@ -691,6 +797,7 @@
 
           bench-native = benchNative;
           bench-web = benchWeb;
+          public-api = publicApiListing;
 
           polyfill-native-debug = polyfillCrate { profile = "dev"; };
           polyfill-native-release = polyfillCrate { profile = "release"; };
@@ -741,6 +848,9 @@
             # it stays a menu command, so a number is never a cached one.
             bench-native = benchNative;
             bench-web = benchWeb;
+            # The crate's public surface must still be the checked-in one:
+            # see `publicApiCheck`.
+            public-api = publicApiCheck;
             # The doctests are not in a nextest archive (nextest does not run
             # them), so they get a derivation of their own: the workspace's
             # `cargo test --doc` against the `dev` dependency bundle.

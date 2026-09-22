@@ -20,11 +20,10 @@
 
 #![cfg(test)]
 
-use wasm_component_model_polyfill::{Component, Engine, Error, Func, Instance, Linker, Store, Val};
+use crate::internal::FuncInternal;
+use crate::store::StoreInternalExt;
+use crate::{Component, Engine, Error, Func, Instance, Linker, Store, Val};
 use wcmp_macros::component;
-
-#[cfg(target_arch = "wasm32")]
-wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 /// A component whose synchronous exports are the five waitable set
 /// built-ins, with two more that read and write the memory the wait
@@ -217,8 +216,8 @@ async fn call_trap(store: &mut Store<()>, instance: &Instance, name: &str, args:
 macro_rules! handle_table {
     ($instance:expr) => {{
         let export = func($instance, "wait");
-        let state = export.abi_state.lock().expect("the instance's ABI state");
-        state.handle_tables[export.options.instance]
+        let state = export.abi_state().lock().expect("the instance's ABI state");
+        state.handle_tables[export.options().instance]
     }};
 }
 
@@ -227,7 +226,7 @@ macro_rules! handle_table {
 /// it is the index a built-in that names a set traps on.
 fn subtask_in_table(store: &mut Store<()>, instance: &Instance) -> u32 {
     let table = handle_table!(instance);
-    let mut guard = store.tables().lock().expect("handle tables");
+    let mut guard = store.internal().tables().lock().expect("handle tables");
     let subtask = guard.tasks.insert_subtask();
     guard.insert_subtask(table, subtask)
 }
@@ -241,7 +240,7 @@ fn subtask_in_table(store: &mut Store<()>, instance: &Instance) -> u32 {
 /// starts a subtask, so the test inserts one through the records.
 fn ready_subtask_in_set(store: &mut Store<()>, instance: &Instance, set_index: u32) -> u32 {
     let table = handle_table!(instance);
-    let mut guard = store.tables().lock().expect("handle tables");
+    let mut guard = store.internal().tables().lock().expect("handle tables");
     let set = guard
         .waitable_set_from_handle(table, set_index)
         .expect("the guest's index names the set it created");
@@ -393,7 +392,7 @@ async fn it_refuses_to_drop_a_set_that_still_holds_a_waitable() {
     let set_index = call_u32(&mut store, &instance, "new-set", &[]).await;
     {
         let table = handle_table!(&instance);
-        let mut guard = store.tables().lock().expect("handle tables");
+        let mut guard = store.internal().tables().lock().expect("handle tables");
         let set = guard
             .waitable_set_from_handle(table, set_index)
             .expect("the set the guest created");
@@ -419,7 +418,7 @@ async fn it_refuses_to_drop_a_set_a_thread_waits_on() {
     let set_index = call_u32(&mut store, &instance, "new-set", &[]).await;
     {
         let table = handle_table!(&instance);
-        let mut guard = store.tables().lock().expect("handle tables");
+        let mut guard = store.internal().tables().lock().expect("handle tables");
         let set = guard
             .waitable_set_from_handle(table, set_index)
             .expect("the set the guest created");
@@ -456,7 +455,7 @@ async fn it_removes_the_set_entry_when_the_set_is_dropped() {
         .expect("an empty set no thread waits on drops");
 
     let table = handle_table!(&instance);
-    let guard = store.tables().lock().expect("handle tables");
+    let guard = store.internal().tables().lock().expect("handle tables");
     assert!(
         guard.entry(table, set_index).is_none(),
         "the entry left the instance's handle table"
@@ -474,7 +473,7 @@ async fn it_removes_a_waitable_from_its_set_when_the_set_index_is_zero() {
     let set_index = call_u32(&mut store, &instance, "new-set", &[]).await;
     let subtask_index = {
         let table = handle_table!(&instance);
-        let mut guard = store.tables().lock().expect("handle tables");
+        let mut guard = store.internal().tables().lock().expect("handle tables");
         let subtask = guard.tasks.insert_subtask();
         guard.insert_subtask(table, subtask)
     };
@@ -489,7 +488,7 @@ async fn it_removes_a_waitable_from_its_set_when_the_set_index_is_zero() {
     .expect("the waitable joins the set");
     {
         let table = handle_table!(&instance);
-        let guard = store.tables().lock().expect("handle tables");
+        let guard = store.internal().tables().lock().expect("handle tables");
         let waitable = guard
             .waitable_from_handle(table, subtask_index)
             .expect("the subtask the guest joined");
@@ -513,7 +512,7 @@ async fn it_removes_a_waitable_from_its_set_when_the_set_index_is_zero() {
     .expect("a set index of zero takes the waitable out of its set");
 
     let table = handle_table!(&instance);
-    let guard = store.tables().lock().expect("handle tables");
+    let guard = store.internal().tables().lock().expect("handle tables");
     let waitable = guard
         .waitable_from_handle(table, subtask_index)
         .expect("the subtask is still in the table");
@@ -573,6 +572,7 @@ async fn it_traps_a_drop_whose_index_is_not_a_set() {
     let table = handle_table!(&instance);
     assert!(
         store
+            .internal()
             .tables()
             .lock()
             .expect("handle tables")
@@ -628,7 +628,7 @@ async fn it_traps_a_join_of_a_waitable_that_has_a_synchronous_waiter() {
     let set_index = call_u32(&mut store, &instance, "new-set", &[]).await;
     let subtask_index = {
         let table = handle_table!(&instance);
-        let mut guard = store.tables().lock().expect("handle tables");
+        let mut guard = store.internal().tables().lock().expect("handle tables");
         let subtask = guard.tasks.insert_subtask();
         let waitable = guard.tasks.subtask_waitable(subtask);
         let index = guard.insert_subtask(table, subtask);

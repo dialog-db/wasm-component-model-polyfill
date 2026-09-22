@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::concurrency::{InstanceId, TaskId};
 use crate::error::{Error, Result};
+use crate::internal::ErrorInternal;
 use crate::resource::HandleTables;
 
 /// The task one core module's instantiation runs in, in flight.

@@ -4,6 +4,7 @@
 use crate::component::FunctionType;
 use crate::error::{Error, Result, WaitableCause};
 use crate::executor::ir::CanonOptions;
+use crate::internal::ErrorInternal;
 use crate::resource::TableId;
 
 use super::event::Event;

@@ -15,6 +15,7 @@ use wasmtime_environ::wasmparser::{
 };
 
 use crate::error::{Error, Result};
+use crate::internal::ErrorInternal;
 
 use super::core_extern_type::CoreExternType;
 use super::core_value_type::CoreValueType;

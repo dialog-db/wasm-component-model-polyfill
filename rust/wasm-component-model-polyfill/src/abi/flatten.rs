@@ -26,6 +26,7 @@ use super::layout::{
 };
 use super::{lift_list, lower, strings};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
+use crate::internal::ErrorInternal;
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::{Val, ValField};
 

@@ -18,6 +18,7 @@
 //! [`Instance::exports`]: super::Instance::exports
 //! [`InterfaceIdentifier`]: crate::InterfaceIdentifier
 
+use crate::internal::{ExportInstanceInternal, InstanceExportsInternal, InstanceInternal};
 use crate::module::Module;
 
 use super::export_instance::ExportInstance;
@@ -48,16 +49,13 @@ pub struct InstanceExports<'a> {
     instance: &'a Instance,
 }
 
-impl<'a> InstanceExports<'a> {
-    /// Construct the navigator for an [`Instance`].
-    ///
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    ///
-    /// [`Instance`]: super::Instance
-    pub fn new(instance: &'a Instance) -> Self {
-        Self { instance }
+impl<'a> InstanceExportsInternal<'a> for InstanceExports<'a> {
+    fn new(instance: &'a Instance) -> Self {
+        InstanceExports { instance }
     }
+}
 
+impl<'a> InstanceExports<'a> {
     /// Look up a root-level exported function by its declared name.
     /// Returns `None` if no root-level function export carries the
     /// given name; nested function exports inside an instance-typed

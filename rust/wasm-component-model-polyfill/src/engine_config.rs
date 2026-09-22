@@ -2,6 +2,7 @@
 //!
 //! [`Engine`]: crate::Engine
 
+use crate::internal::EngineConfigInternal;
 use wasmtime_environ::wasmparser::WasmFeatures;
 
 /// The configuration an [`Engine`] is built from: which Component
@@ -94,11 +95,10 @@ impl EngineConfig {
     pub fn wasm_component_model_more_async_builtins(&mut self, enable: bool) -> &mut Self {
         self.set(WasmFeatures::CM_MORE_ASYNC_BUILTINS, enable)
     }
+}
 
-    /// The validator features this configuration selects.
-    ///
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn wasm_features(&self) -> WasmFeatures {
+impl EngineConfigInternal for EngineConfig {
+    fn wasm_features(&self) -> WasmFeatures {
         self.features
     }
 }

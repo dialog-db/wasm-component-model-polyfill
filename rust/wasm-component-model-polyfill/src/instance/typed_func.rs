@@ -21,6 +21,7 @@ use core::marker::PhantomData;
 use crate::component::FunctionType;
 use crate::concurrency::Accessor;
 use crate::error::{Error, Result, TypeMismatch, TypeMismatchPosition, TypeRendering};
+use crate::internal::{FuncInternal, TypedFuncInternal};
 use crate::linker::{ComponentParameters, ComponentResult};
 use crate::store::Store;
 use crate::value::Val;
@@ -48,9 +49,18 @@ pub struct TypedFunc<P, R> {
 impl<P, R> core::fmt::Debug for TypedFunc<P, R> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TypedFunc")
-            .field("name", &self.inner.name)
-            .field("signature", &self.inner.signature)
+            .field("name", &self.inner.name())
+            .field("signature", &self.inner.signature())
             .finish()
+    }
+}
+
+impl<P, R> TypedFuncInternal<P, R> for TypedFunc<P, R> {
+    fn from_checked(inner: Func) -> TypedFunc<P, R> {
+        TypedFunc {
+            inner,
+            _phantom: PhantomData,
+        }
     }
 }
 
@@ -59,18 +69,6 @@ where
     P: ComponentParameters,
     R: ComponentResult,
 {
-    /// Construct a typed handle from an untyped [`Func`] after the
-    /// signature check has succeeded. Workspace-internal — public
-    /// callers reach this through [`Func::typed`].
-    ///
-    /// [`Func::typed`]: super::Func::typed
-    pub fn from_checked(inner: Func) -> Self {
-        Self {
-            inner,
-            _phantom: PhantomData,
-        }
-    }
-
     /// Invoke the export with native Rust values.
     ///
     /// `args` is the parameter tuple `P`; the return is the
@@ -163,12 +161,12 @@ impl Func {
             result: R::result_type(),
             async_: false,
         };
-        if !signatures_compatible(&self.signature, &requested) {
+        if !signatures_compatible(self.signature(), &requested) {
             return Err(Error::from(TypeMismatch {
                 position: TypeMismatchPosition::TypedConversion {
-                    export: self.name.clone(),
+                    export: self.name().to_owned(),
                 },
-                expected: TypeRendering::Function(self.signature.clone()),
+                expected: TypeRendering::Function(self.signature().clone()),
                 actual: TypeRendering::Function(requested),
             }));
         }

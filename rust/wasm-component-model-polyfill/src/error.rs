@@ -17,6 +17,7 @@ use thiserror::Error;
 
 use crate::component::{ExternalName, FunctionType};
 use crate::identifier::InterfaceIdentifier;
+use crate::internal::ErrorInternal;
 use crate::types::ValueType;
 
 /// Every error the polyfill can return.
@@ -164,20 +165,14 @@ pub enum Error {
     },
 }
 
-impl Error {
-    /// Build an [`Error::Unsupported`] naming `feature`.
-    ///
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn unsupported(feature: impl Into<String>) -> Self {
+impl ErrorInternal for Error {
+    fn unsupported(feature: impl Into<String>) -> Error {
         Error::Unsupported {
             feature: feature.into(),
         }
     }
 
-    /// Build an [`Error::Internal`] carrying `message`.
-    ///
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn internal(message: impl Into<String>) -> Self {
+    fn internal(message: impl Into<String>) -> Error {
         Error::Internal {
             message: message.into(),
         }

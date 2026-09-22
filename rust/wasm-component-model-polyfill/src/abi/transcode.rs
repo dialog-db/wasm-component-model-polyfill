@@ -19,6 +19,7 @@ use crate::abi::context::BoundaryContext;
 use crate::abi::layout::FlatType;
 use crate::error::{Error, Result};
 use crate::executor::ir::TranscodeOp;
+use crate::internal::ErrorInternal;
 
 /// The tag a "compact UTF-16" length carries when the string was
 /// left as UTF-16 rather than deflated to Latin-1.

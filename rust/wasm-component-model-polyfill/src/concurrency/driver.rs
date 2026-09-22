@@ -7,6 +7,7 @@ use core::task::{Context, Poll, Waker};
 
 use crate::error::{Error, Result, SchedulerCause};
 use crate::store::StoreContext;
+use crate::store::StoreContextInternalExt;
 
 use super::outcome::Outcome;
 use super::task_id::TaskId;
@@ -87,7 +88,7 @@ where
 
         if !this.entered {
             this.entered = true;
-            if this.store.turn_in_flight() {
+            if this.store.internal().turn_in_flight() {
                 return Poll::Ready(Err(Error::Scheduler(SchedulerCause::RecursiveDriver)));
             }
         }
@@ -107,7 +108,7 @@ where
             if let Some(done) = (this.condition)(&mut this.store, waker) {
                 return Poll::Ready(done);
             }
-            let outcome = match this.store.turn(waker) {
+            let outcome = match this.store.internal().turn(waker) {
                 Ok(outcome) => outcome,
                 Err(error) => return Poll::Ready(Err(error)),
             };
@@ -135,7 +136,9 @@ where
                     if let Some(done) = (this.condition)(&mut this.store, waker) {
                         return Poll::Ready(done);
                     }
-                    return Poll::Ready(Err(Error::Scheduler(this.store.idle_cause(this.task))));
+                    return Poll::Ready(Err(Error::Scheduler(
+                        this.store.internal().idle_cause(this.task),
+                    )));
                 }
             }
         }
@@ -144,6 +147,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::store::{StoreContextInternalExt, StoreInternalExt};
     #[cfg(not(target_arch = "wasm32"))]
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -235,12 +239,13 @@ mod tests {
     /// must not wait for once what it waits on has resolved.
     fn never_returning_host_task(store: &mut StoreContext<'_, ()>) {
         let subtask = store
+            .internal()
             .tables()
             .lock()
             .expect("tables")
             .tasks
             .insert_subtask();
-        store.push_host_task(HostTask::from_future(
+        store.internal().push_host_task(HostTask::from_future(
             subtask,
             |_store: &mut StoreContext<'_, ()>, _outcome: Result<Vec<Val>>| Ok(()),
             core::future::pending::<Result<Vec<Val>>>(),
@@ -251,15 +256,18 @@ mod tests {
     fn it_returns_when_the_turn_that_met_its_condition_left_a_host_task_pending() {
         let mut store = store();
         let log = log();
-        never_returning_host_task(&mut store.context());
+        never_returning_host_task(&mut store.internal().context());
         store
+            .internal()
             .scheduler_mut()
             .push_high_priority(marker(&log, "resolved"));
 
         let watched = log.clone();
-        let mut driver = Box::pin(Driver::new(store.context(), None, move |_store, _waker| {
-            (!watched.lock().expect("log").is_empty()).then(|| Ok(()))
-        }));
+        let mut driver = Box::pin(Driver::new(
+            store.internal().context(),
+            None,
+            move |_store, _waker| (!watched.lock().expect("log").is_empty()).then(|| Ok(())),
+        ));
 
         let outcome = poll_once(&mut driver, Waker::noop());
 
@@ -277,17 +285,21 @@ mod tests {
         let mut store = store();
         let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let recorded = seen.clone();
-        store.scheduler_mut().push_high_priority(Item::new(
-            ItemKind::TaskStart,
-            move |store: &mut StoreContext<'_, ()>| {
-                let mut nested = Box::pin(Driver::new(store.reborrow(), None, never));
-                let outcome = poll_once(&mut nested, Waker::noop());
-                *recorded.lock().expect("record") = Some(cause(outcome));
-                Ok(())
-            },
-        ));
+        store
+            .internal()
+            .scheduler_mut()
+            .push_high_priority(Item::new(
+                ItemKind::TaskStart,
+                move |store: &mut StoreContext<'_, ()>| {
+                    let mut nested =
+                        Box::pin(Driver::new(store.internal().reborrow(), None, never));
+                    let outcome = poll_once(&mut nested, Waker::noop());
+                    *recorded.lock().expect("record") = Some(cause(outcome));
+                    Ok(())
+                },
+            ));
 
-        store.turn(Waker::noop()).expect("turn");
+        store.internal().turn(Waker::noop()).expect("turn");
 
         assert_eq!(
             seen.lock().expect("record").clone(),
@@ -299,7 +311,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_fails_a_driver_that_goes_idle_with_the_deadlock_cause() {
         let mut store = store();
-        let mut driver = Box::pin(Driver::new(store.context(), None, never));
+        let mut driver = Box::pin(Driver::new(store.internal().context(), None, never));
 
         let outcome = poll_once(&mut driver, Waker::noop());
 
@@ -314,7 +326,7 @@ mod tests {
     fn it_fails_a_driver_whose_task_must_not_block_with_the_cannot_block_cause() {
         let mut store = store();
         let task = {
-            let mut guard = store.tables().lock().expect("tables");
+            let mut guard = store.internal().tables().lock().expect("tables");
             let instance = guard.tasks.insert_instance();
             guard
                 .tasks
@@ -323,7 +335,7 @@ mod tests {
                 .may_not_suspend = true;
             guard.tasks.create_task(None, None, instance)
         };
-        let mut driver = Box::pin(Driver::new(store.context(), Some(task), never));
+        let mut driver = Box::pin(Driver::new(store.internal().context(), Some(task), never));
 
         let outcome = poll_once(&mut driver, Waker::noop());
 
@@ -339,11 +351,12 @@ mod tests {
         let mut store = store();
         let log = log();
         store
+            .internal()
             .scheduler_mut()
             .push_low_priority(marker(&log, "deferred"));
 
         {
-            let mut abandoned = Box::pin(Driver::new(store.context(), None, never));
+            let mut abandoned = Box::pin(Driver::new(store.internal().context(), None, never));
             assert!(
                 poll_once(&mut abandoned, Waker::noop()).is_pending(),
                 "the turn yielded, so the driver returns pending"
@@ -355,13 +368,17 @@ mod tests {
         }
 
         let watched = log.clone();
-        let mut other = Box::pin(Driver::new(store.context(), None, move |_store, _waker| {
-            if watched.lock().expect("log").is_empty() {
-                None
-            } else {
-                Some(Ok(()))
-            }
-        }));
+        let mut other = Box::pin(Driver::new(
+            store.internal().context(),
+            None,
+            move |_store, _waker| {
+                if watched.lock().expect("log").is_empty() {
+                    None
+                } else {
+                    Some(Ok(()))
+                }
+            },
+        ));
         let outcome = poll_once(&mut other, Waker::noop());
 
         assert!(
@@ -386,11 +403,12 @@ mod tests {
         let mut store = store();
         let log = log();
         store
+            .internal()
             .scheduler_mut()
             .push_low_priority(marker(&log, "deferred"));
         let wakes = Arc::new(Wakes::default());
         let waker = Waker::from(wakes.clone());
-        let mut driver = Box::pin(Driver::new(store.context(), None, never));
+        let mut driver = Box::pin(Driver::new(store.internal().context(), None, never));
 
         let outcome = poll_once(&mut driver, &waker);
 
@@ -433,11 +451,12 @@ mod tests {
 
         let mut store = store();
         store
+            .internal()
             .scheduler_mut()
             .push_low_priority(marker(&log, "resumed"));
 
         let watched = log.clone();
-        Driver::new(store.context(), None, move |_store, _waker| {
+        Driver::new(store.internal().context(), None, move |_store, _waker| {
             if watched.lock().expect("log").contains(&"resumed") {
                 Some(Ok(()))
             } else {

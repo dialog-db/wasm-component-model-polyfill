@@ -32,6 +32,8 @@ mod store_data;
 mod store_id;
 
 pub use store::Store;
+pub use store::internal::StoreInternalExt;
 pub use store_context::StoreContext;
+pub use store_context::internal::StoreContextInternalExt;
 pub use store_data::StoreData;
 pub use store_id::StoreId;

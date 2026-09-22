@@ -28,11 +28,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use wasm_component_model_polyfill::{Component, Engine, HostCall, Linker, Result, Store, Val};
+use crate::store::StoreInternalExt;
+use crate::{Component, Engine, HostCall, Linker, Result, Store, Val};
 use wcmp_macros::component;
-
-#[cfg(target_arch = "wasm32")]
-wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 /// What a host function saw of the store's records while it ran.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -295,7 +293,7 @@ async fn run_with_probe(bytes: &[u8]) -> (Result<Box<[Val]>>, Seen, Seen) {
         .await
         .expect("component parses");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     let during: Arc<Mutex<Seen>> = Arc::new(Mutex::new(Seen::default()));
     let recorded = during.clone();
 
@@ -315,7 +313,7 @@ async fn run_with_probe(bytes: &[u8]) -> (Result<Box<[Val]>>, Seen, Seen) {
     let run = instance.get_func("run").expect("run export");
     let result = run.call(&mut store, &[]).await;
 
-    let mut after = seen!(store.tables());
+    let mut after = seen!(store.internal().tables());
     after.context = [0; 2];
     let during = during.lock().expect("record").clone();
     (result, during, after)
@@ -427,7 +425,7 @@ async fn it_runs_a_host_release_destructor_on_a_task_of_its_own() {
 
     store.resource_drop(handle).expect("the host releases it");
 
-    let mut after = seen!(store.tables());
+    let mut after = seen!(store.internal().tables());
     after.context = [0; 2];
     assert_eq!(
         after,

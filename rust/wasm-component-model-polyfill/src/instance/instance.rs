@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::component::{ExternalName, FunctionType};
 use crate::executor::ir::CanonOptions;
+use crate::internal::{FuncParts, InstanceExportsInternal, InstanceInternal, InstanceParts};
 use crate::module::Module;
 use crate::store::StoreId;
 
@@ -73,22 +74,21 @@ pub struct ExportedModule {
 /// fields are workspace-internal and never reach the public API.
 pub struct Instance {
     /// The runtime-layer core-Wasm instances that back this
-    /// component instance, indexed in component-section order.
-    /// Workspace-internal; never re-exported through `lib.rs`.
-    pub core_instances: Box<[wasm_runtime_layer::Instance]>,
+    /// component instance, indexed in component-section order. Held
+    /// for as long as the component instance lives, which is what
+    /// keeps the guest's core state alive; nothing reads it.
+    #[allow(dead_code)]
+    core_instances: Box<[wasm_runtime_layer::Instance]>,
     /// The component-level function exports the executor produced
-    /// when wiring the component. Workspace-internal; never
-    /// re-exported through `lib.rs`.
-    pub function_exports: Box<[ExportedFunction]>,
+    /// when wiring the component.
+    function_exports: Box<[ExportedFunction]>,
     /// The path of every instance-typed export, at any depth, in
     /// declaration order. An instance export is listed whether or
     /// not it holds a function, so the navigator can reach an empty
-    /// instance. Workspace-internal; never re-exported through
-    /// `lib.rs`.
-    pub instance_exports: Box<[Box<[ExternalName]>]>,
+    /// instance.
+    instance_exports: Box<[Box<[ExternalName]>]>,
     /// The module-typed exports, at any depth, in declaration order.
-    /// Workspace-internal; never re-exported through `lib.rs`.
-    pub module_exports: Box<[ExportedModule]>,
+    module_exports: Box<[ExportedModule]>,
     /// The canonical-ABI runtime state populated during
     /// instantiation: the per-component slabs of memories,
     /// reallocs, and post-returns. Held inside an `Arc<Mutex<…>>`
@@ -96,16 +96,61 @@ pub struct Instance {
     /// share access to the same slabs at call time, and the
     /// runtime layer's `Func::new` requires `Send + Sync`
     /// closures.
-    /// Workspace-internal; never re-exported through `lib.rs`.
-    pub abi_state: Arc<Mutex<AbiRuntimeState>>,
+    abi_state: Arc<Mutex<AbiRuntimeState>>,
     /// The identity of the [`Store`] this instance was created in.
     /// Every [`Func`] handed out by this instance carries it, so a
     /// call through another store is rejected before it reaches
-    /// the runtime layer. Workspace-internal; never re-exported
-    /// through `lib.rs`.
+    /// the runtime layer.
     ///
     /// [`Store`]: crate::Store
-    pub store_id: StoreId,
+    store_id: StoreId,
+}
+
+impl From<InstanceParts> for Instance {
+    fn from(parts: InstanceParts) -> Self {
+        Self {
+            core_instances: parts.core_instances,
+            function_exports: parts.function_exports,
+            instance_exports: parts.instance_exports,
+            module_exports: parts.module_exports,
+            abi_state: parts.abi_state,
+            store_id: parts.store_id,
+        }
+    }
+}
+
+impl InstanceInternal for Instance {
+    fn function_export(&self, path: &[ExternalName], name: &str) -> Option<Func> {
+        self.function_exports
+            .iter()
+            .find(|export| export.path.as_ref() == path && export.name == name)
+            .map(|export| self.func_for(export))
+    }
+
+    fn module_export(&self, path: &[ExternalName], name: &str) -> Option<Module> {
+        self.module_exports
+            .iter()
+            .find(|export| export.path.as_ref() == path && export.name == name)
+            .map(|export| export.module.clone())
+    }
+
+    fn has_instance_export(&self, path: &[ExternalName]) -> bool {
+        self.instance_exports
+            .iter()
+            .any(|export| export.as_ref() == path)
+    }
+
+    fn func_for(&self, export: &ExportedFunction) -> Func {
+        FuncParts {
+            name: export.name.clone(),
+            inner: export.func.clone(),
+            signature: export.signature.clone(),
+            options: export.options.clone(),
+            abi_state: self.abi_state.clone(),
+            store_id: self.store_id,
+        }
+        .into()
+    }
 }
 
 impl Instance {
@@ -117,59 +162,12 @@ impl Instance {
         self.function_export(&[], name)
     }
 
-    /// The function export named `name` inside the instance-typed
-    /// export at `path`, or at the root when `path` is empty.
-    ///
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn function_export(&self, path: &[ExternalName], name: &str) -> Option<Func> {
-        self.function_exports
-            .iter()
-            .find(|export| export.path.as_ref() == path && export.name == name)
-            .map(|export| self.func_for(export))
-    }
-
     /// Look up a root-level exported core module by its declared
     /// name. Returns `None` if the export is absent, not a module, or
     /// nested inside an instance-typed export. Use [`Self::exports`]
     /// to traverse instance-typed exports.
     pub fn get_module(&self, name: &str) -> Option<Module> {
         self.module_export(&[], name)
-    }
-
-    /// The module export named `name` inside the instance-typed
-    /// export at `path`, or at the root when `path` is empty.
-    ///
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn module_export(&self, path: &[ExternalName], name: &str) -> Option<Module> {
-        self.module_exports
-            .iter()
-            .find(|export| export.path.as_ref() == path && export.name == name)
-            .map(|export| export.module.clone())
-    }
-
-    /// Whether the component publishes an instance-typed export at
-    /// `path`.
-    ///
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn has_instance_export(&self, path: &[ExternalName]) -> bool {
-        self.instance_exports
-            .iter()
-            .any(|export| export.as_ref() == path)
-    }
-
-    /// Build the caller-facing [`Func`] handle for one of this
-    /// instance's exported functions.
-    ///
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn func_for(&self, export: &ExportedFunction) -> Func {
-        Func {
-            name: export.name.clone(),
-            inner: export.func.clone(),
-            signature: export.signature.clone(),
-            options: export.options.clone(),
-            abi_state: self.abi_state.clone(),
-            store_id: self.store_id,
-        }
     }
 
     /// The export navigator for this instance.

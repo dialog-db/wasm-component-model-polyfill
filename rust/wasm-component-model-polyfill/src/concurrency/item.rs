@@ -29,6 +29,9 @@ type BoxedAction<T> = Box<dyn FnOnce(&mut StoreContext<'_, T>) -> Result<()> + '
 /// Dropping a driver's future cancels nothing, and dropping the
 /// store drops every item unrun.
 pub struct Item<T: 'static> {
+    // Carried for a reader of a queue rather than for the
+    // scheduler, which never branches on it.
+    #[allow(dead_code)]
     kind: ItemKind,
     instance: Option<InstanceId>,
     task: Option<TaskId>,
@@ -86,7 +89,9 @@ impl<T: 'static> Item<T> {
         self
     }
 
-    /// What this item does when it runs.
+    /// What this item does when it runs. Carried for a reader of a
+    /// queue; no caller has needed it yet.
+    #[allow(dead_code)]
     pub fn kind(&self) -> ItemKind {
         self.kind
     }

@@ -105,7 +105,11 @@ use crate::backend::Backend;
 use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, TaskCause};
 use crate::executor::ir::{CanonOptions, LoweringSpec};
+use crate::internal::{
+    AccessorInternal, ErrorInternal, HostCallInternal, HostResourceInternal, ResourceTypeIdInternal,
+};
 use crate::linker::{HostCall, HostFuncFuture, HostFuncKind, HostResource};
+use crate::store::StoreContextInternalExt;
 
 use super::ResourceDestructor;
 use crate::concurrency::{
@@ -153,9 +157,9 @@ impl<T> ResourceRuntime<T> {
     /// and the label the registration was found under.
     pub fn from_registration(host: &HostResource<T>, label: &str) -> Self {
         Self {
-            type_id: host.type_id,
+            type_id: host.type_id(),
             name: Some(ResourceType::new(label)),
-            destructor: ResourceDestructor::Host(host.destructor.clone()),
+            destructor: ResourceDestructor::Host(host.destructor().clone()),
         }
     }
 
@@ -228,10 +232,10 @@ pub fn build_resource_drop_trampoline<T: 'static>(
     runtime: ResourceRuntime<T>,
     flags: InstanceFlags,
 ) -> RuntimeFunc {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     let func_type = FuncType::new([CoreType::I32], []);
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         func_type,
         move |mut store_ctx, args, _results| {
             refuse_unless_may_leave(&flags, &mut store_ctx)?;
@@ -289,10 +293,10 @@ pub fn build_resource_new_trampoline<T: 'static>(
     table: ResourceTableRuntime,
     flags: InstanceFlags,
 ) -> RuntimeFunc {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     let func_type = FuncType::new([CoreType::I32], [CoreType::I32]);
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         func_type,
         move |mut store_ctx, args, results| {
             refuse_unless_may_leave(&flags, &mut store_ctx)?;
@@ -312,10 +316,10 @@ pub fn build_resource_rep_trampoline<T: 'static>(
     store: &mut StoreContext<'_, T>,
     table: ResourceTableRuntime,
 ) -> RuntimeFunc {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     let func_type = FuncType::new([CoreType::I32], [CoreType::I32]);
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         func_type,
         move |_store_ctx, args, results| {
             let index = take_i32(args, 0).map_err(|err| anyhow!("resource.rep: {err}"))?;
@@ -455,10 +459,10 @@ pub fn build_trampoline<T: 'static>(
     let signature = spec.signature.clone();
     let options = spec.options.clone();
     let kind = spec.kind;
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
 
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         func_type,
         move |store_ctx, args, results| {
             invoke_trampoline(
@@ -959,7 +963,7 @@ fn start_host_call<T: 'static>(
             Error::internal("a concurrent registration's future produced no value to lower")
         })?;
         let mut lower_ctx = BoundaryContext::new(
-            store.runtime_mut().as_context_mut(),
+            store.internal().runtime_mut().as_context_mut(),
             options,
             instance,
             Some(Scope::Subtask(subtask)),
@@ -975,7 +979,9 @@ fn start_host_call<T: 'static>(
 
     let task = HostTask::from_future(subtask, lowering, future);
     let mut store = StoreContext::new(store_ctx.as_context_mut());
-    let status = store.start_host_task(task, caller_table, LowerKind::Async)?;
+    let status = store
+        .internal()
+        .start_host_task(task, caller_table, LowerKind::Async)?;
     write_status(results, status)
 }
 
@@ -1027,7 +1033,9 @@ fn block_on_host_call<T: 'static>(
         // The status a synchronous lower comes back with is always
         // the returned state, since the call is over: what the guest
         // is told is the result itself, written below.
-        store.start_host_task(task, caller_table, LowerKind::Sync)?;
+        store
+            .internal()
+            .start_host_task(task, caller_table, LowerKind::Sync)?;
     }
 
     let caller = lock_tables(tables)?.tasks.current_scope();

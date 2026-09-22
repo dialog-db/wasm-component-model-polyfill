@@ -9,6 +9,7 @@ use crate::engine::Engine;
 use crate::error::{Error, Result};
 use crate::executor::ir::ExecutorIr;
 use crate::executor::translate;
+use crate::internal::ComponentInternal;
 
 /// The 8-byte preamble of a Wasm core module: `\0asm` followed by
 /// the core-module version word.
@@ -30,6 +31,49 @@ const CORE_MODULE_PREAMBLE: [u8; 8] = [b'\0', b'a', b's', b'm', 0x01, 0x00, 0x00
 /// [`Error::InvalidComponentBinary`], [`Error::Unsupported`], or, for
 /// core-module bytes, [`Error::NotAComponent`].
 ///
+/// The declared imports and exports are the introspectable part and
+/// stay public. The plan is not: it is the compiled, ordered
+/// sequence instantiation executes, every part of it reached by the
+/// executor alone, and a component whose declared interface belongs
+/// to one binary and whose plan belongs to another is a component
+/// that instantiates to something its own interface does not
+/// describe. The plan is therefore fixed at parse time by
+/// [`Component::new`], which is the only thing that sets it, so a
+/// struct literal pairing the two halves is not expressible:
+///
+/// ```compile_fail
+/// # use wasm_component_model_polyfill::{Component, ComponentExport, ComponentImport};
+/// # fn forge(
+/// #     imports: Box<[ComponentImport]>,
+/// #     exports: Box<[ComponentExport]>,
+/// #     donor: &Component,
+/// # ) -> Component {
+/// Component {
+///     imports,
+///     exports,
+///     ir: donor.ir.clone(),
+/// }
+/// # }
+/// ```
+///
+/// Reading the plan off a component parsed the ordinary way is the
+/// same refusal:
+///
+/// ```compile_fail
+/// # fn plan(component: &wasm_component_model_polyfill::Component) {
+/// let _ = &component.ir;
+/// # }
+/// ```
+///
+/// The declared interface is what a caller outside has:
+///
+/// ```rust
+/// # fn interface(component: &wasm_component_model_polyfill::Component) {
+/// let _ = &component.imports;
+/// let _ = &component.exports;
+/// # }
+/// ```
+///
 /// [`Error::InvalidComponentBinary`]: crate::Error::InvalidComponentBinary
 /// [`Error::Unsupported`]: crate::Error::Unsupported
 /// [`Error::NotAComponent`]: crate::Error::NotAComponent
@@ -43,8 +87,13 @@ pub struct Component {
     pub exports: Box<[ComponentExport]>,
     /// The executor's plan for this component. Shared between
     /// clones because the compiled modules inside it are immutable.
-    /// Workspace-internal; not part of the public contract.
-    pub ir: Arc<ExecutorIr>,
+    ir: Arc<ExecutorIr>,
+}
+
+impl ComponentInternal for Component {
+    fn ir(&self) -> &ExecutorIr {
+        &self.ir
+    }
 }
 
 impl Component {

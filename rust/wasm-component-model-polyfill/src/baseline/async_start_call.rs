@@ -44,11 +44,9 @@
 
 #![cfg(test)]
 
-use wasm_component_model_polyfill::{Component, Engine, Instance, Linker, Store, Val};
+use crate::store::StoreInternalExt;
+use crate::{Component, Engine, Instance, Linker, Store, Val};
 use wcmp_macros::component;
-
-#[cfg(target_arch = "wasm32")]
-wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 /// A caller that reads `STARTED`, joins the subtask to a waitable
 /// set, and parks; and a callee that parks before it returns, so the
@@ -605,7 +603,7 @@ async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
 
 /// The whole message of an error and everything under it, on one
 /// line.
-fn chain(error: &wasm_component_model_polyfill::Error) -> String {
+fn chain(error: &crate::Error) -> String {
     let mut out = String::new();
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
     while let Some(link) = current {
@@ -621,6 +619,7 @@ fn chain(error: &wasm_component_model_polyfill::Error) -> String {
 /// How many task records the store holds.
 fn task_count(store: &Store<()>) -> usize {
     store
+        .internal_ref()
         .tables()
         .lock()
         .expect("handle tables")
@@ -631,6 +630,7 @@ fn task_count(store: &Store<()>) -> usize {
 /// How many subtask records the store holds.
 fn subtask_count(store: &Store<()>) -> usize {
     store
+        .internal_ref()
         .tables()
         .lock()
         .expect("handle tables")
@@ -642,6 +642,7 @@ fn subtask_count(store: &Store<()>) -> usize {
 /// by a thread.
 fn any_instance_is_held(store: &Store<()>) -> bool {
     store
+        .internal_ref()
         .tables()
         .lock()
         .expect("handle tables")
@@ -660,6 +661,7 @@ fn any_instance_is_held(store: &Store<()>) -> bool {
 /// crate's public surface.
 fn turn(store: &mut Store<()>) -> String {
     let outcome = store
+        .internal()
         .turn(core::task::Waker::noop())
         .expect("the turn itself does not fail");
     format!("{outcome:?}")
@@ -750,7 +752,7 @@ async fn it_runs_a_held_callee_when_the_gate_opens_and_delivers_returned() {
     assert_eq!(task_count(&store), 0, "both tasks left the store");
     assert_eq!(subtask_count(&store), 0, "the subtask left the store");
     assert_eq!(
-        store.scheduler().waiting_at_gate(),
+        store.internal().scheduler().waiting_at_gate(),
         0,
         "nothing is left waiting at the gate"
     );
@@ -838,12 +840,12 @@ async fn it_fails_the_driver_that_ran_the_callback_when_the_callee_throws_after_
     // is not a ready one, and the callee's callback item — the one
     // the failure came out of — went with the record it named.
     assert_eq!(
-        store.scheduler().held_callbacks(),
+        store.internal().scheduler().held_callbacks(),
         1,
         "the caller's callback waits for an event on its own set"
     );
     assert_eq!(
-        store.scheduler().queued_items(),
+        store.internal().scheduler().queued_items(),
         1,
         "and that held item is the whole of what the store still holds"
     );

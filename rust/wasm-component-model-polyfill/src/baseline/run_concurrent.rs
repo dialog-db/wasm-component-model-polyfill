@@ -28,13 +28,10 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
-use wasm_component_model_polyfill::{
-    Accessor, Component, Engine, Error, Linker, Result, SchedulerCause, Store, Val,
-};
+use crate::internal::AccessorInternal;
+use crate::store::{StoreContextInternalExt, StoreInternalExt};
+use crate::{Accessor, Component, Engine, Error, Linker, Result, SchedulerCause, Store, Val};
 use wcmp_macros::component;
-
-#[cfg(target_arch = "wasm32")]
-wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 /// A component with one synchronous export, so that a call into it
 /// is a driver.
@@ -106,7 +103,8 @@ async fn it_refuses_a_driver_entered_from_inside_the_closure() {
         .run_concurrent(async |accessor| {
             accessor
                 .with(|store| {
-                    let mut nested = Box::pin(store.reborrow().run_concurrent(async |_| ()));
+                    let mut reborrowed = store.internal().reborrow();
+                    let mut nested = Box::pin(reborrowed.internal().run_concurrent(async |_| ()));
                     cause(poll_once(&mut nested, Waker::noop()))
                 })
                 .expect("reach the store")
@@ -198,7 +196,7 @@ async fn it_refuses_a_reach_with_an_accessor_typed_by_other_host_data() {
     // out here. The store's host data is a `Vec<String>` and this
     // accessor asks for a `u32`, so a reach that lent it the store
     // would read one as the other.
-    let mistyped: Accessor<u32> = Accessor::new(store.id());
+    let mistyped: Accessor<u32> = Accessor::new(store.internal().id());
 
     // A poll of this very store is running, so the identity in the
     // accessor matches what the slot names. The host data type does

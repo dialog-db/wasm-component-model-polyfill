@@ -3,6 +3,8 @@
 use core::marker::PhantomData;
 
 use crate::error::Result;
+use crate::internal::AccessorInternal;
+use crate::store::StoreContextInternalExt;
 use crate::store::{StoreContext, StoreId};
 
 use super::poll_scope::PollScope;
@@ -61,23 +63,6 @@ pub struct Accessor<T: 'static> {
 }
 
 impl<T: 'static> Accessor<T> {
-    /// A token for the store `store` names. Workspace-internal; the
-    /// store hands one to its `run_concurrent` closure and to every
-    /// poll of a host task's body.
-    ///
-    /// Nothing here ties `T` to the host data of the store `store`
-    /// names, and nothing needs to: a token whose `T` is not that
-    /// store's host data type reaches nothing. Every reach matches
-    /// the type against the one the running poll recorded, and a
-    /// token that fails that match is refused with the
-    /// store-not-in-poll cause.
-    pub fn new(store: StoreId) -> Self {
-        Self {
-            store,
-            data: PhantomData,
-        }
-    }
-
     /// Run `body` against the store this token names.
     ///
     /// The store is reachable only for the length of the call.
@@ -92,7 +77,18 @@ impl<T: 'static> Accessor<T> {
     /// no poll of this store is running fails with the
     /// store-not-in-poll cause.
     pub fn with<R>(&self, body: impl FnOnce(&mut StoreContext<'_, T>) -> R) -> Result<R> {
-        PollScope::reach(self.store, |store, waker| store.run_in_turn(waker, body))?
+        PollScope::reach(self.store, |store, waker| {
+            store.internal().run_in_turn(waker, body)
+        })?
+    }
+}
+
+impl<T: 'static> AccessorInternal<T> for Accessor<T> {
+    fn new(store: StoreId) -> Self {
+        Accessor {
+            store,
+            data: PhantomData,
+        }
     }
 }
 
@@ -113,6 +109,7 @@ mod tests {
     use crate::store::Store;
 
     use super::*;
+    use crate::store::{StoreContextInternalExt, StoreInternalExt};
 
     /// Poll `future` once, as an executor would.
     fn poll_once<F: Future>(future: &mut Pin<Box<F>>, waker: &Waker) -> Poll<F::Output> {
@@ -257,7 +254,7 @@ mod tests {
         // holds. This one names a store whose host data is a
         // `String` and asks for a `u32`; lending it the store would
         // read the `String` as a `u32`.
-        let mistyped: Accessor<u32> = Accessor::new(store.id());
+        let mistyped: Accessor<u32> = Accessor::new(store.internal().id());
 
         let seen = store
             .run_concurrent(async move |_accessor| {
@@ -308,12 +305,14 @@ mod tests {
         }
 
         assert!(
-            !store.turn_in_flight(),
+            !store.internal().turn_in_flight(),
             "the turn the closure ran inside is over"
         );
-        let mut driver = Box::pin(Driver::new(store.context(), None, |_store, _waker| {
-            Some(Ok(()))
-        }));
+        let mut driver = Box::pin(Driver::new(
+            store.internal().context(),
+            None,
+            |_store, _waker| Some(Ok(())),
+        ));
         assert!(
             matches!(poll_once(&mut driver, Waker::noop()), Poll::Ready(Ok(()))),
             "a driver entered after the panic is not refused"
@@ -363,7 +362,9 @@ mod tests {
             .run_concurrent(async |accessor| {
                 accessor
                     .with(|store: &mut StoreContext<'_, ()>| {
-                        let mut nested = Box::pin(store.reborrow().run_concurrent(async |_| ()));
+                        let mut reborrowed = store.internal().reborrow();
+                        let mut nested =
+                            Box::pin(reborrowed.internal().run_concurrent(async |_| ()));
                         cause(poll_once(&mut nested, Waker::noop()))
                     })
                     .expect("reach the store")

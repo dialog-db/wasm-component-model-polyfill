@@ -17,6 +17,7 @@ use super::host_call::HostCall;
 use super::host_func::HostFunc;
 use super::host_resource::HostResource;
 use super::registration::InstanceRegistration;
+use crate::internal::LinkerInstanceInternal;
 
 /// A borrowed view onto one interface's worth of host items inside a
 /// [`Linker`].
@@ -59,27 +60,24 @@ use super::registration::InstanceRegistration;
 pub struct LinkerInstance<'a, T: 'static> {
     /// The owned registration this view borrows. Held mutably so
     /// later registration methods can populate it without further
-    /// linker access. Workspace-internal: this field is not
-    /// re-exported by `lib.rs` and never reaches downstream
-    /// consumers.
-    pub registration: &'a mut InstanceRegistration<T>,
+    /// linker access.
+    registration: &'a mut InstanceRegistration<T>,
     /// `T` participates only as the host-data type the registration
     /// carries; capture invariance explicitly so the parameter does
     /// not appear unused.
     _phantom: PhantomData<fn(T) -> T>,
 }
 
-impl<'a, T: 'static> LinkerInstance<'a, T> {
-    /// Construct a borrowed view onto the given registration.
-    ///
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn new(registration: &'a mut InstanceRegistration<T>) -> Self {
-        Self {
+impl<'a, T: 'static> LinkerInstanceInternal<'a, T> for LinkerInstance<'a, T> {
+    fn new(registration: &'a mut InstanceRegistration<T>) -> Self {
+        LinkerInstance {
             registration,
             _phantom: PhantomData,
         }
     }
+}
 
+impl<'a, T: 'static> LinkerInstance<'a, T> {
     /// Address (creating if absent) the nested registration for an
     /// instance item under `name`: a plain-named instance import,
     /// `(import "name" (instance …))`, on the root view a
@@ -149,7 +147,7 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
         label: impl Into<String>,
         resource: HostResource<T>,
     ) -> ResourceTypeId {
-        let type_id = resource.type_id;
+        let type_id = resource.type_id();
         self.registration.resources.insert(label.into(), resource);
         type_id
     }

@@ -51,6 +51,7 @@ use crate::error::{AbiCause, AbiError, AbiPosition, Error, TaskCause};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CanonOptions, CoreSignature};
 use crate::resource::{HandleTables, TableId};
+use crate::store::StoreContextInternalExt;
 use crate::store::{StoreContext, StoreData};
 use crate::types::{PrimitiveType, ValueType};
 
@@ -63,9 +64,9 @@ pub fn build_waitable_set_new<T: 'static>(
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         core_func_type(signature),
         move |mut store_ctx, _args, results| {
             let (id, table) = calling_instance(&abi_state, instance)?;
@@ -88,10 +89,10 @@ pub fn build_waitable_set_wait<T: 'static>(
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     let options = options.clone();
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         core_func_type(signature),
         move |store_ctx, args, results| {
             waitable_set_wait(store_ctx, &options, &abi_state, &tables, args, results)
@@ -109,10 +110,10 @@ pub fn build_waitable_set_poll<T: 'static>(
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     let options = options.clone();
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         core_func_type(signature),
         move |store_ctx, args, results| {
             waitable_set_poll(store_ctx, &options, &abi_state, &tables, args, results)
@@ -129,9 +130,9 @@ pub fn build_waitable_set_drop<T: 'static>(
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         core_func_type(signature),
         move |mut store_ctx, args, _results| {
             let set_index = arg_u32(args, 0)?;
@@ -158,9 +159,9 @@ pub fn build_waitable_join<T: 'static>(
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         core_func_type(signature),
         move |mut store_ctx, args, _results| {
             let waitable_index = arg_u32(args, 0)?;
@@ -207,9 +208,9 @@ pub fn build_subtask_drop<T: 'static>(
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         core_func_type(signature),
         move |mut store_ctx, args, _results| {
             let subtask_index = arg_u32(args, 0)?;
@@ -335,6 +336,7 @@ fn block_until_ready<T: 'static>(
         let mut store = StoreContext::new(store_ctx.as_context_mut());
         SuspendSeam::suspend(&mut store, |store| {
             store
+                .internal()
                 .lock_tables()
                 .ok()
                 .and_then(|guard| guard.tasks.set_has_pending_event(set).ok())

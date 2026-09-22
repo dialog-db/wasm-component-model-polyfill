@@ -12,15 +12,15 @@
 
 use std::sync::{Arc, Mutex};
 
-use wasm_component_model_polyfill::{
+use crate::internal::ResourceTypeIdInternal;
+use crate::resource::ResourceHandleParts;
+use crate::store::{StoreContextInternalExt, StoreInternalExt};
+use crate::{
     AbiCause, AbiPosition, Component, Engine, Error, FunctionParameter, FunctionType, HostCall,
     HostResource, InterfaceIdentifier, Linker, ResourceHandle, ResourceType, ResourceTypeId, Store,
     Val, ValueType,
 };
 use wcmp_macros::component;
-
-#[cfg(target_arch = "wasm32")]
-wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 #[wcmp_macros::test]
 async fn it_runs_destructors_in_drop_order_for_multiple_handles() {
@@ -59,7 +59,7 @@ async fn it_runs_destructors_in_drop_order_for_multiple_handles() {
         .expect("identifier");
     let type_id = linker.instance(&iface).resource(
         "thing",
-        |data: &mut Arc<Mutex<Vec<u32>>>, rep: u32| -> wasm_component_model_polyfill::Result<()> {
+        |data: &mut Arc<Mutex<Vec<u32>>>, rep: u32| -> crate::Result<()> {
             data.lock().expect("dropped lock").push(rep);
             Ok(())
         },
@@ -95,9 +95,9 @@ async fn it_isolates_handle_tables_across_stores_with_the_same_engine() {
     let b0 = store_b.resource_new(type_id, 100).expect("b0");
     // Both stores allocate from index 0; the tables are
     // store-local.
-    assert_eq!(a0.index, 1, "index 0 is reserved");
-    assert_eq!(a1.index, 2);
-    assert_eq!(b0.index, 1);
+    assert_eq!(a0.index(), 1, "index 0 is reserved");
+    assert_eq!(a1.index(), 2);
+    assert_eq!(b0.index(), 1);
 }
 
 #[wcmp_macros::test]
@@ -131,10 +131,11 @@ async fn it_rejects_a_handle_whose_type_id_is_not_registered_in_the_store() {
     let iface: InterfaceIdentifier = "pdd009-tests:host/resources@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker.instance(&iface).resource(
-        "thing",
-        |_data: &mut (), _rep: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
-    );
+    let type_id = linker
+        .instance(&iface)
+        .resource("thing", |_data: &mut (), _rep: u32| -> crate::Result<()> {
+            Ok(())
+        });
 
     let mut consumer: Store<()> = Store::new(&engine, ()).expect("consumer store");
     let producer: Store<()> = Store::new(&engine, ()).expect("producer store");
@@ -182,21 +183,23 @@ async fn it_rejects_a_completely_fabricated_handle_index() {
     let iface: InterfaceIdentifier = "pdd009-tests:host/resources@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker.instance(&iface).resource(
-        "thing",
-        |_data: &mut (), _rep: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
-    );
+    let type_id = linker
+        .instance(&iface)
+        .resource("thing", |_data: &mut (), _rep: u32| -> crate::Result<()> {
+            Ok(())
+        });
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
         .await
         .expect("instantiate");
     let consume = inst.get_func("consume").expect("consume export");
-    let bogus = ResourceHandle {
+    let bogus: ResourceHandle = ResourceHandleParts {
         type_id,
         index: 999,
         rep: 0,
-    };
+    }
+    .into();
     let outcome = consume.call(&mut store, &[Val::Own(bogus)]).await;
     assert!(matches!(outcome, Err(Error::Abi(_))));
 }
@@ -244,20 +247,15 @@ async fn it_supports_two_distinct_resource_types_in_one_interface() {
     let mut linker: Linker<Counters> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd009-tests:host/multi@0.1.0".parse().expect("identifier");
     let mut iface_view = linker.instance(&iface);
-    let alpha_id = iface_view.resource(
-        "alpha",
-        |c: &mut Counters, rep: u32| -> wasm_component_model_polyfill::Result<()> {
+    let alpha_id =
+        iface_view.resource("alpha", |c: &mut Counters, rep: u32| -> crate::Result<()> {
             c.alphas.push(rep);
             Ok(())
-        },
-    );
-    let beta_id = iface_view.resource(
-        "beta",
-        |c: &mut Counters, rep: u32| -> wasm_component_model_polyfill::Result<()> {
-            c.betas.push(rep);
-            Ok(())
-        },
-    );
+        });
+    let beta_id = iface_view.resource("beta", |c: &mut Counters, rep: u32| -> crate::Result<()> {
+        c.betas.push(rep);
+        Ok(())
+    });
     let mut store: Store<Counters> = Store::new(&engine, Counters::default()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
@@ -309,10 +307,11 @@ async fn it_reuses_freed_handle_indices_after_drop() {
     let iface: InterfaceIdentifier = "pdd009-tests:host/resources@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker.instance(&iface).resource(
-        "thing",
-        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
-    );
+    let type_id = linker
+        .instance(&iface)
+        .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
+            Ok(())
+        });
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
         .instantiate(&mut store, &component)
@@ -323,17 +322,17 @@ async fn it_reuses_freed_handle_indices_after_drop() {
     let h0 = store.resource_new(type_id, 1).expect("h0");
     let h1 = store.resource_new(type_id, 2).expect("h1");
     let h2 = store.resource_new(type_id, 3).expect("h2");
-    let h1_index = h1.index;
+    let h1_index = h1.index();
     consume
         .call(&mut store, &[Val::Own(h1)])
         .await
         .expect("drop middle");
     // The middle slot is free; minting again reuses it.
     let h3 = store.resource_new(type_id, 4).expect("h3");
-    assert_eq!(h3.index, h1_index);
+    assert_eq!(h3.index(), h1_index);
     // The two siblings are still live and distinct.
-    assert_ne!(h0.index, h2.index);
-    assert_ne!(h0.index, h3.index);
+    assert_ne!(h0.index(), h2.index());
+    assert_ne!(h0.index(), h3.index());
 }
 
 #[wcmp_macros::test]
@@ -413,7 +412,7 @@ const LOCAL_RESOURCE: &[u8] = component!(
     "#
 );
 
-async fn local_resource_instance() -> (Store<()>, wasm_component_model_polyfill::Instance) {
+async fn local_resource_instance() -> (Store<()>, crate::Instance) {
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, LOCAL_RESOURCE)
         .await
@@ -429,7 +428,7 @@ async fn local_resource_instance() -> (Store<()>, wasm_component_model_polyfill:
 
 async fn make_handle(
     store: &mut Store<()>,
-    instance: &wasm_component_model_polyfill::Instance,
+    instance: &crate::Instance,
     rep: u32,
 ) -> ResourceHandle {
     let make = instance.get_func("make").expect("make export");
@@ -445,7 +444,8 @@ async fn it_translates_and_instantiates_a_locally_defined_resource() {
     let (mut store, instance) = local_resource_instance().await;
     let handle = make_handle(&mut store, &instance, 7).await;
     assert_eq!(
-        handle.index, 1,
+        handle.index(),
+        1,
         "the first handle takes the first table slot"
     );
 }
@@ -469,7 +469,8 @@ async fn it_mints_a_distinct_resource_type_identity_per_instantiation() {
     let a = make_handle(&mut store, &first, 1).await;
     let b = make_handle(&mut store, &second, 2).await;
     assert_ne!(
-        a.type_id, b.type_id,
+        a.type_id(),
+        b.type_id(),
         "each instantiation carries its own resource type identity"
     );
 }
@@ -636,12 +637,11 @@ async fn it_shares_a_single_resource_type_across_two_imported_interfaces() {
     let mut linker: Linker<Vec<u32>> = Linker::new(&engine);
     let a: InterfaceIdentifier = "pdd013-tests:host/a@0.1.0".parse().expect("identifier");
     let b: InterfaceIdentifier = "pdd013-tests:host/b@0.1.0".parse().expect("identifier");
-    let thing: HostResource<Vec<u32>> = HostResource::new(
-        |dropped: &mut Vec<u32>, rep: u32| -> wasm_component_model_polyfill::Result<()> {
+    let thing: HostResource<Vec<u32>> =
+        HostResource::new(|dropped: &mut Vec<u32>, rep: u32| -> crate::Result<()> {
             dropped.push(rep);
             Ok(())
-        },
-    );
+        });
     let type_id = linker.instance(&a).resource_with("thing", thing.clone());
     linker.instance(&b).resource_with("thing", thing);
     linker.instance(&a).func_new(
@@ -672,7 +672,7 @@ async fn it_shares_a_single_resource_type_across_two_imported_interfaces() {
             };
             // The handle minted under `a` arrives through `b` with the
             // same identity; record the rep the host gave it.
-            call.data_mut().push(handle.rep);
+            call.data_mut().push(handle.rep());
             Ok(())
         },
     );
@@ -695,14 +695,16 @@ async fn it_rejects_two_identities_for_one_declared_resource_type() {
     let mut linker: Linker<()> = Linker::new(&engine);
     let a: InterfaceIdentifier = "pdd013-tests:host/a@0.1.0".parse().expect("identifier");
     let b: InterfaceIdentifier = "pdd013-tests:host/b@0.1.0".parse().expect("identifier");
-    let type_id = linker.instance(&a).resource(
-        "thing",
-        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
-    );
-    linker.instance(&b).resource(
-        "thing",
-        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
-    );
+    let type_id = linker
+        .instance(&a)
+        .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
+            Ok(())
+        });
+    linker
+        .instance(&b)
+        .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
+            Ok(())
+        });
     linker.instance(&a).func_new(
         "make",
         FunctionType {
@@ -734,7 +736,7 @@ async fn it_rejects_two_identities_for_one_declared_resource_type() {
     };
     assert!(
         matches!(&err, Error::TypeMismatch(mismatch)
-            if matches!(mismatch.position, wasm_component_model_polyfill::TypeMismatchPosition::HostFunctionRegistration { ref item, .. } if item == "thing")),
+            if matches!(mismatch.position, crate::TypeMismatchPosition::HostFunctionRegistration { ref item, .. } if item == "thing")),
         "expected a type mismatch naming the `thing` registration, got {err:?}"
     );
 }
@@ -769,10 +771,11 @@ async fn it_lets_a_host_function_mint_a_resource_handle_during_a_guest_call() {
     let iface: InterfaceIdentifier = "pdd011-tests:host/things@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker.instance(&iface).resource(
-        "thing",
-        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
-    );
+    let type_id = linker
+        .instance(&iface)
+        .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
+            Ok(())
+        });
     linker.instance(&iface).func_new(
         "make",
         FunctionType {
@@ -796,10 +799,15 @@ async fn it_lets_a_host_function_mint_a_resource_handle_during_a_guest_call() {
         panic!("expected an owned handle, got {results:?}");
     };
     assert_eq!(
-        handle.type_id, type_id,
+        handle.type_id(),
+        type_id,
         "the handle carries the registered identity"
     );
-    assert_eq!(handle.rep, 42, "the handle carries the rep the host minted");
+    assert_eq!(
+        handle.rep(),
+        42,
+        "the handle carries the rep the host minted"
+    );
 }
 
 #[wcmp_macros::test]
@@ -812,10 +820,11 @@ async fn it_rejects_a_host_mint_against_an_unknown_resource_type() {
     let iface: InterfaceIdentifier = "pdd011-tests:host/things@0.1.0"
         .parse()
         .expect("identifier");
-    linker.instance(&iface).resource(
-        "thing",
-        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
-    );
+    linker
+        .instance(&iface)
+        .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
+            Ok(())
+        });
     let stranger = ResourceTypeId::fresh();
     linker.instance(&iface).func_new(
         "make",
@@ -863,7 +872,7 @@ async fn it_supports_resource_constructor_and_method_shaped_exports() {
     // bindgen-time concern, not a runtime one. The polyfill mirrors
     // that convention: the navigator addresses each shape by its
     // literal wire-name.
-    use wasm_component_model_polyfill::{ExternType, PrimitiveType, ValueType};
+    use crate::{ExternType, PrimitiveType, ValueType};
     const COMPONENT: &[u8] = component!(
         r#"
         (component
@@ -1015,36 +1024,28 @@ fn borrower_linker(engine: &Engine, resource: HostResource<()>) -> (Linker<()>, 
                 name: "h".to_owned(),
                 ty: ValueType::Borrow(ResourceType::new("thing")),
             }],
-            result: Some(ValueType::Primitive(
-                wasm_component_model_polyfill::PrimitiveType::U32,
-            )),
+            result: Some(ValueType::Primitive(crate::PrimitiveType::U32)),
             async_: false,
         },
         |_: HostCall<'_, ()>, args, results| {
             let Val::Borrow(handle) = &args[0] else {
                 panic!("expected a borrowed handle, got {args:?}");
             };
-            results[0] = Val::U32(handle.rep);
+            results[0] = Val::U32(handle.rep());
             Ok(())
         },
     );
     (linker, type_id)
 }
 
-async fn borrower_instance() -> (
-    Store<()>,
-    wasm_component_model_polyfill::Instance,
-    ResourceTypeId,
-) {
+async fn borrower_instance() -> (Store<()>, crate::Instance, ResourceTypeId) {
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, BORROWER)
         .await
         .expect("component parses");
     let (linker, type_id) = borrower_linker(
         &engine,
-        HostResource::new(
-            |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
-        ),
+        HostResource::new(|_: &mut (), _: u32| -> crate::Result<()> { Ok(()) }),
     );
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
@@ -1083,12 +1084,12 @@ async fn it_leaves_the_owning_handle_live_after_a_borrow_is_dropped_in_the_call(
         &[Val::U32(7)],
         "the host read the rep through the borrow"
     );
-    let mut tables = store.tables().lock().expect("tables");
+    let mut tables = store.internal().tables().lock().expect("tables");
     let host_table = tables.host_table(type_id);
     assert_eq!(
         tables
             .for_table(host_table)
-            .and_then(|t| t.get(handle.index)),
+            .and_then(|t| t.get(handle.index())),
         Some(7),
         "the owning entry is live after the call"
     );
@@ -1121,11 +1122,12 @@ async fn it_refuses_to_lower_a_borrow_the_host_never_minted() {
     // thin air: an index the host's table for the type never handed
     // out names no entry, whatever rep the record carries beside it.
     let (mut store, instance, type_id) = borrower_instance().await;
-    let forged = ResourceHandle {
+    let forged: ResourceHandle = ResourceHandleParts {
         type_id,
         index: 999,
         rep: 4,
-    };
+    }
+    .into();
     let peek = instance.get_func("peek").expect("peek export");
     let err = peek
         .call(&mut store, &[Val::Borrow(forged)])
@@ -1149,11 +1151,7 @@ type ReleaseAttempt = Option<(bool, String)>;
 async fn drop_attempt_instance(
     lent: Arc<Mutex<Option<ResourceHandle>>>,
     attempt: Arc<Mutex<ReleaseAttempt>>,
-) -> (
-    Store<()>,
-    wasm_component_model_polyfill::Instance,
-    ResourceTypeId,
-) {
+) -> (Store<()>, crate::Instance, ResourceTypeId) {
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, BORROWER)
         .await
@@ -1162,10 +1160,11 @@ async fn drop_attempt_instance(
     let iface: InterfaceIdentifier = "pdd014-tests:host/things@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker.instance(&iface).resource(
-        "thing",
-        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
-    );
+    let type_id = linker
+        .instance(&iface)
+        .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
+            Ok(())
+        });
     linker.instance(&iface).func_new(
         "rep",
         FunctionType {
@@ -1173,30 +1172,29 @@ async fn drop_attempt_instance(
                 name: "h".to_owned(),
                 ty: ValueType::Borrow(ResourceType::new("thing")),
             }],
-            result: Some(ValueType::Primitive(
-                wasm_component_model_polyfill::PrimitiveType::U32,
-            )),
+            result: Some(ValueType::Primitive(crate::PrimitiveType::U32)),
             async_: false,
         },
         move |mut call: HostCall<'_, ()>, args, results| {
             let Val::Borrow(borrowed) = &args[0] else {
                 panic!("expected a borrowed handle, got {args:?}");
             };
-            results[0] = Val::U32(borrowed.rep);
+            results[0] = Val::U32(borrowed.rep());
             let owned = lent
                 .lock()
                 .expect("the lent handle")
                 .expect("the host minted a handle before the call");
-            *attempt.lock().expect("the attempt") = Some(match call.store().resource_drop(owned) {
-                Ok(()) => (false, "the release succeeded".to_owned()),
-                Err(err) => (
-                    matches!(&err, Error::Abi(abi) if matches!(
-                        abi.cause,
-                        AbiCause::InvalidHandle { .. }
-                    )),
-                    err.to_string(),
-                ),
-            });
+            *attempt.lock().expect("the attempt") =
+                Some(match call.store().internal().resource_drop(owned) {
+                    Ok(()) => (false, "the release succeeded".to_owned()),
+                    Err(err) => (
+                        matches!(&err, Error::Abi(abi) if matches!(
+                            abi.cause,
+                            AbiCause::InvalidHandle { .. }
+                        )),
+                        err.to_string(),
+                    ),
+                });
             Ok(())
         },
     );
@@ -1276,11 +1274,7 @@ fn chain(error: &Error) -> String {
 /// and try to lower it back into a guest.
 async fn recording_borrower_instance(
     seen: Arc<Mutex<Option<ResourceHandle>>>,
-) -> (
-    Store<()>,
-    wasm_component_model_polyfill::Instance,
-    ResourceTypeId,
-) {
+) -> (Store<()>, crate::Instance, ResourceTypeId) {
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, BORROWER)
         .await
@@ -1289,10 +1283,11 @@ async fn recording_borrower_instance(
     let iface: InterfaceIdentifier = "pdd014-tests:host/things@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker.instance(&iface).resource(
-        "thing",
-        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
-    );
+    let type_id = linker
+        .instance(&iface)
+        .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
+            Ok(())
+        });
     linker.instance(&iface).func_new(
         "rep",
         FunctionType {
@@ -1300,16 +1295,14 @@ async fn recording_borrower_instance(
                 name: "h".to_owned(),
                 ty: ValueType::Borrow(ResourceType::new("thing")),
             }],
-            result: Some(ValueType::Primitive(
-                wasm_component_model_polyfill::PrimitiveType::U32,
-            )),
+            result: Some(ValueType::Primitive(crate::PrimitiveType::U32)),
             async_: false,
         },
         move |_: HostCall<'_, ()>, args, results| {
             let Val::Borrow(handle) = &args[0] else {
                 panic!("expected a borrowed handle, got {args:?}");
             };
-            results[0] = Val::U32(handle.rep);
+            results[0] = Val::U32(handle.rep());
             *seen.lock().expect("the borrowed handle") = Some(*handle);
             Ok(())
         },
@@ -1342,7 +1335,7 @@ async fn it_refuses_to_lower_a_borrow_the_host_received_out_of_a_guest() {
     let first = store.resource_new(type_id, 100).expect("mint");
     let second = store.resource_new(type_id, 200).expect("mint");
     assert_eq!(
-        (first.index, second.index),
+        (first.index(), second.index()),
         (1, 2),
         "the host's table hands out index one first"
     );
@@ -1363,7 +1356,7 @@ async fn it_refuses_to_lower_a_borrow_the_host_received_out_of_a_guest() {
         .expect("the borrowed handle")
         .expect("the guest called the host's `rep`");
     assert_eq!(
-        (lifted.index, lifted.rep),
+        (lifted.index(), lifted.rep()),
         (1, 200),
         "the handle the guest lent names the guest's own first slot, \
          which in the host's table is the other resource"
@@ -1433,10 +1426,11 @@ async fn it_refuses_to_lower_a_lent_handle_again_as_an_own() {
     let iface: InterfaceIdentifier = "pdd014-tests:host/things@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker.instance(&iface).resource(
-        "thing",
-        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
-    );
+    let type_id = linker
+        .instance(&iface)
+        .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
+            Ok(())
+        });
     let lent: Arc<Mutex<Option<ResourceHandle>>> = Arc::new(Mutex::new(None));
     let given = lent.clone();
     linker.instance(&iface).func_new(
@@ -1588,7 +1582,7 @@ async fn it_allocates_from_index_one_in_each_nested_instance() {
         .await
         .expect("instantiate");
     async fn call(
-        instance: &wasm_component_model_polyfill::Instance,
+        instance: &crate::Instance,
         store: &mut Store<()>,
         name: &str,
         args: &[Val],
@@ -1762,11 +1756,7 @@ async fn it_lends_the_owning_handle_a_borrow_leaves_the_defining_instance_on() {
 
 /// A store whose host resource `thing` records every destructor run
 /// in the host data, plus the identity to mint with.
-async fn disposal_store() -> (
-    Store<Vec<u32>>,
-    ResourceTypeId,
-    wasm_component_model_polyfill::Instance,
-) {
+async fn disposal_store() -> (Store<Vec<u32>>, ResourceTypeId, crate::Instance) {
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, BORROWER)
         .await
@@ -1777,7 +1767,7 @@ async fn disposal_store() -> (
         .expect("identifier");
     let type_id = linker.instance(&iface).resource(
         "thing",
-        |dropped: &mut Vec<u32>, rep: u32| -> wasm_component_model_polyfill::Result<()> {
+        |dropped: &mut Vec<u32>, rep: u32| -> crate::Result<()> {
             dropped.push(rep);
             Ok(())
         },
@@ -1789,16 +1779,14 @@ async fn disposal_store() -> (
                 name: "h".to_owned(),
                 ty: ValueType::Borrow(ResourceType::new("thing")),
             }],
-            result: Some(ValueType::Primitive(
-                wasm_component_model_polyfill::PrimitiveType::U32,
-            )),
+            result: Some(ValueType::Primitive(crate::PrimitiveType::U32)),
             async_: false,
         },
         |_: HostCall<'_, Vec<u32>>, args, results| {
             let Val::Borrow(handle) = &args[0] else {
                 panic!("expected a borrowed handle, got {args:?}");
             };
-            results[0] = Val::U32(handle.rep);
+            results[0] = Val::U32(handle.rep());
             Ok(())
         },
     );
@@ -1821,7 +1809,7 @@ async fn it_releases_a_host_held_handle_and_runs_its_destructor_once() {
         "the destructor ran once with the rep"
     );
     let next = store.resource_new(type_id, 32).expect("mint again");
-    assert_eq!(next.index, handle.index, "the freed slot is reused");
+    assert_eq!(next.index(), handle.index(), "the freed slot is reused");
 }
 
 #[wcmp_macros::test]
@@ -1947,9 +1935,8 @@ async fn it_names_a_shared_resource_by_the_label_the_component_imported_it_under
     let component = Component::new(&engine, BORROWER)
         .await
         .expect("component parses");
-    let thing: HostResource<()> = HostResource::new(
-        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
-    );
+    let thing: HostResource<()> =
+        HostResource::new(|_: &mut (), _: u32| -> crate::Result<()> { Ok(()) });
     let (mut linker, type_id) = borrower_linker(&engine, thing.clone());
     linker.root().resource_with("alias", thing);
 
@@ -1984,14 +1971,13 @@ async fn it_names_a_host_resource_no_component_imported() {
         .expect("component parses");
     let (mut linker, _thing) = borrower_linker(
         &engine,
-        HostResource::new(
-            |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
-        ),
+        HostResource::new(|_: &mut (), _: u32| -> crate::Result<()> { Ok(()) }),
     );
-    let gadget = linker.root().resource(
-        "gadget",
-        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
-    );
+    let gadget = linker
+        .root()
+        .resource("gadget", |_: &mut (), _: u32| -> crate::Result<()> {
+            Ok(())
+        });
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let _instance = linker
@@ -2031,9 +2017,8 @@ async fn it_names_a_shared_resource_by_the_importer_after_an_earlier_instantiati
     let borrower = Component::new(&engine, BORROWER)
         .await
         .expect("component parses");
-    let thing: HostResource<()> = HostResource::new(
-        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
-    );
+    let thing: HostResource<()> =
+        HostResource::new(|_: &mut (), _: u32| -> crate::Result<()> { Ok(()) });
     let (mut linker, type_id) = borrower_linker(&engine, thing.clone());
     linker.root().resource_with("alias", thing);
 
@@ -2076,13 +2061,10 @@ async fn it_names_an_unimported_resource_by_the_first_of_its_labels_in_order() {
         .expect("component parses");
     let (mut linker, _thing) = borrower_linker(
         &engine,
-        HostResource::new(
-            |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
-        ),
+        HostResource::new(|_: &mut (), _: u32| -> crate::Result<()> { Ok(()) }),
     );
-    let spare: HostResource<()> = HostResource::new(
-        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
-    );
+    let spare: HostResource<()> =
+        HostResource::new(|_: &mut (), _: u32| -> crate::Result<()> { Ok(()) });
     let widget = linker.root().resource_with("widget", spare.clone());
     let other: InterfaceIdentifier = "pdd014-tests:host/gizmos@0.1.0"
         .parse()
@@ -2145,14 +2127,16 @@ async fn it_names_the_resource_type_a_refused_host_mint_asked_for() {
     let iface: InterfaceIdentifier = "pdd011-tests:host/things@0.1.0"
         .parse()
         .expect("identifier");
-    linker.instance(&iface).resource(
-        "thing",
-        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
-    );
-    let gadget = linker.root().resource(
-        "gadget",
-        |_: &mut (), _: u32| -> wasm_component_model_polyfill::Result<()> { Ok(()) },
-    );
+    linker
+        .instance(&iface)
+        .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
+            Ok(())
+        });
+    let gadget = linker
+        .root()
+        .resource("gadget", |_: &mut (), _: u32| -> crate::Result<()> {
+            Ok(())
+        });
     linker.instance(&iface).func_new(
         "make",
         FunctionType {

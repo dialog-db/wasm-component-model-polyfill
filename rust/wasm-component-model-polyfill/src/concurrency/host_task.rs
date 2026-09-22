@@ -4,8 +4,10 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
 use crate::error::{Error, Result};
+use crate::internal::{AccessorInternal, ErrorInternal};
 use crate::resource::TableId;
 use crate::store::StoreContext;
+use crate::store::StoreContextInternalExt;
 use crate::value::Val;
 
 use super::accessor::Accessor;
@@ -109,7 +111,7 @@ impl<T: 'static> HostTask<T> {
         store: &mut StoreContext<'_, T>,
         waker: &Waker,
     ) -> Poll<Result<Vec<Val>>> {
-        let accessor = Accessor::new(store.id());
+        let accessor = Accessor::new(store.internal().id());
         let mut context = Context::from_waker(waker);
         let _poll = PollScope::enter(store, waker);
         self.body.poll(&accessor, &mut context)
@@ -167,6 +169,7 @@ impl<T: 'static> HostTask<T> {
                 };
                 let Err(error) = crossing else {
                     let mut guard = store
+                        .internal()
                         .tables()
                         .lock()
                         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
@@ -181,7 +184,7 @@ impl<T: 'static> HostTask<T> {
                     return Ok(());
                 };
                 discard_subtask(store, subtask, caller_table, handle_index);
-                store.fail_export_task(caller_task, error)
+                store.internal().fail_export_task(caller_task, error)
             },
         )
     }
@@ -209,7 +212,7 @@ fn discard_subtask<T: 'static>(
     table: Option<TableId>,
     index: u32,
 ) {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     let Ok(mut guard) = tables.lock() else {
         return;
     };
@@ -248,6 +251,7 @@ mod tests {
     use crate::store::Store;
 
     use super::*;
+    use crate::store::{StoreContextInternalExt, StoreInternalExt};
 
     /// A body that reads the store's host data through the accessor
     /// the poll hands it, one poll after it started: the poll that
@@ -285,13 +289,21 @@ mod tests {
         let engine = Engine::new().expect("engine");
         let mut store = Store::new(&engine, "host data".to_owned()).expect("store");
         let table = TableId::fresh();
-        let subtask = store.tables().lock().expect("tables").tasks.push_subtask();
+        let subtask = store
+            .internal()
+            .tables()
+            .lock()
+            .expect("tables")
+            .tasks
+            .push_subtask();
         let seen = Arc::new(Mutex::new(None));
         let lowered = Arc::new(Mutex::new(None));
         let slot = lowered.clone();
 
         let status = store
+            .internal()
             .context()
+            .internal()
             .start_host_task(
                 HostTask::new(
                     subtask,
@@ -322,8 +334,8 @@ mod tests {
 
         // The turn that polls the body a second time, and the one
         // that runs the lowering it queued.
-        store.turn(Waker::noop()).expect("a turn");
-        store.turn(Waker::noop()).expect("a turn");
+        store.internal().turn(Waker::noop()).expect("a turn");
+        store.internal().turn(Waker::noop()).expect("a turn");
 
         assert_eq!(
             seen.lock().expect("what the body read").as_deref(),
@@ -336,7 +348,7 @@ mod tests {
             "the body's value crossed through the lowering"
         );
         assert!(
-            !store.turn_in_flight(),
+            !store.internal().turn_in_flight(),
             "the turn the body ran a closure inside left the outer turn as it found it"
         );
     }
@@ -408,13 +420,21 @@ mod tests {
         let engine = Engine::new().expect("engine");
         let mut store = Store::new(&engine, "host data".to_owned()).expect("store");
         let table = TableId::fresh();
-        let subtask = store.tables().lock().expect("tables").tasks.push_subtask();
+        let subtask = store
+            .internal()
+            .tables()
+            .lock()
+            .expect("tables")
+            .tasks
+            .push_subtask();
         let seen = Arc::new(Mutex::new(None));
         let lowered = Arc::new(Mutex::new(None));
         let slot = lowered.clone();
 
         let status = store
+            .internal()
             .context()
+            .internal()
             .start_host_task(
                 HostTask::new(
                     subtask,
@@ -445,8 +465,8 @@ mod tests {
 
         // The turn that polls the body past its await, and the one
         // that runs the lowering it queued.
-        store.turn(Waker::noop()).expect("a turn");
-        store.turn(Waker::noop()).expect("a turn");
+        store.internal().turn(Waker::noop()).expect("a turn");
+        store.internal().turn(Waker::noop()).expect("a turn");
 
         assert_eq!(
             seen.lock().expect("what the body read").as_deref(),

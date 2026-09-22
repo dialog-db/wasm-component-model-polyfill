@@ -18,11 +18,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use wasm_component_model_polyfill::{Component, Engine, HostCall, Linker, Store, Val};
+use crate::internal::ResourceTypeIdInternal;
+use crate::store::StoreInternalExt;
+use crate::{Component, Engine, HostCall, Linker, Store, Val};
 use wcmp_macros::component;
-
-#[cfg(target_arch = "wasm32")]
-wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 #[wcmp_macros::test]
 async fn it_round_trips_every_primitive_through_an_export() {
@@ -145,7 +144,7 @@ async fn it_passes_a_record_argument_to_a_host_function() {
             (canon lift (core func $i "go"))))
         "#
     );
-    use wasm_component_model_polyfill::{
+    use crate::{
         FunctionParameter, FunctionType, InterfaceIdentifier, PrimitiveType, RecordField,
         RecordType, ValField, ValueType,
     };
@@ -234,7 +233,7 @@ async fn it_returns_a_record_from_an_export() {
         "#
     );
 
-    use wasm_component_model_polyfill::{InterfaceIdentifier, ValField};
+    use crate::{InterfaceIdentifier, ValField};
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
@@ -363,7 +362,7 @@ async fn it_passes_a_variant_argument_to_a_host_function() {
             (canon lift (core func $i "go"))))
         "#
     );
-    use wasm_component_model_polyfill::{
+    use crate::{
         FunctionParameter, FunctionType, InterfaceIdentifier, PrimitiveType, ValueType,
         VariantCase, VariantType,
     };
@@ -535,7 +534,7 @@ async fn it_passes_an_enum_argument_to_a_host_function() {
             (canon lift (core func $i "go"))))
         "#
     );
-    use wasm_component_model_polyfill::{
+    use crate::{
         EnumType, FunctionParameter, FunctionType, InterfaceIdentifier, PrimitiveType, ValueType,
     };
     let engine = Engine::new().expect("engine");
@@ -615,7 +614,7 @@ async fn it_passes_a_flags_argument_to_a_host_function() {
             (canon lift (core func $i "go"))))
         "#
     );
-    use wasm_component_model_polyfill::{
+    use crate::{
         FlagsType, FunctionParameter, FunctionType, InterfaceIdentifier, PrimitiveType, ValueType,
     };
     let engine = Engine::new().expect("engine");
@@ -885,7 +884,7 @@ async fn it_tracks_resource_handles_in_a_handle_table() {
     // handles, drop the middle, mint a fourth, and assert the
     // canonical-ABI's index-allocation rules hold — the freed slot
     // is reused, never aliased while live.
-    use wasm_component_model_polyfill::ResourceTypeId;
+    use crate::ResourceTypeId;
     let engine = Engine::new().expect("engine");
     let store: Store<()> = Store::new(&engine, ()).expect("store");
 
@@ -897,25 +896,29 @@ async fn it_tracks_resource_handles_in_a_handle_table() {
     let h0 = store.resource_new(type_a, 100).expect("mint a0");
     let h1 = store.resource_new(type_a, 101).expect("mint a1");
     let h2 = store.resource_new(type_a, 102).expect("mint a2");
-    assert_ne!(h0.index, h1.index, "indices are non-aliasing while live");
-    assert_ne!(h1.index, h2.index);
-    assert_ne!(h0.index, h2.index);
+    assert_ne!(
+        h0.index(),
+        h1.index(),
+        "indices are non-aliasing while live"
+    );
+    assert_ne!(h1.index(), h2.index());
+    assert_ne!(h0.index(), h2.index());
 
     // A different resource type's table is independent.
     let b0 = store.resource_new(type_b, 200).expect("mint b0");
-    assert_eq!(b0.index, h0.index, "tables are keyed by resource type");
+    assert_eq!(b0.index(), h0.index(), "tables are keyed by resource type");
 
     // Free the middle slot through the public surface: drop the
     // entry by removing it via the per-type table guard. We do
     // this by lowering through the lift/lower paths in production;
     // here, a structural assertion via the registered type id is
     // enough.
-    let mut tables = store.tables().lock().expect("tables");
+    let mut tables = store.internal_ref().tables().lock().expect("tables");
     let host_table = tables.host_table(type_a);
     assert_eq!(
         tables
             .for_table_mut(host_table)
-            .remove(h1.index)
+            .remove(h1.index())
             .and_then(|e| e.rep()),
         Some(101)
     );
@@ -923,7 +926,8 @@ async fn it_tracks_resource_handles_in_a_handle_table() {
 
     let h3 = store.resource_new(type_a, 103).expect("mint a3 reuses h1");
     assert_eq!(
-        h3.index, h1.index,
+        h3.index(),
+        h1.index(),
         "freed indices are reused deterministically (LIFO free list)"
     );
 }
@@ -1055,7 +1059,7 @@ async fn it_supports_typed_export_calls() {
     // the typed-conversion entry point rejects a mistyped call at
     // *acquisition* — before any guest code runs — with a
     // structured `Error::TypeMismatch`.
-    use wasm_component_model_polyfill::Error;
+    use crate::Error;
     const COMPONENT: &[u8] = component!(
         r#"
         (component
@@ -1116,9 +1120,7 @@ async fn it_observes_cabi_realloc_alignment_for_record_allocations() {
     // alignment slot out through a host import the realloc
     // immediately calls, then assert the host observed the
     // alignment the polyfill computed.
-    use wasm_component_model_polyfill::{
-        FunctionParameter, FunctionType, InterfaceIdentifier, PrimitiveType, ValueType,
-    };
+    use crate::{FunctionParameter, FunctionType, InterfaceIdentifier, PrimitiveType, ValueType};
     const COMPONENT: &[u8] = component!(
         r#"
         (component
@@ -1207,7 +1209,7 @@ async fn it_observes_cabi_realloc_alignment_for_record_allocations() {
 // Helpers
 // --------------------------------------------------------------
 
-async fn instantiate(component: &[u8]) -> (Store<()>, wasm_component_model_polyfill::Instance) {
+async fn instantiate(component: &[u8]) -> (Store<()>, crate::Instance) {
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, component)
         .await
@@ -1222,7 +1224,7 @@ async fn instantiate(component: &[u8]) -> (Store<()>, wasm_component_model_polyf
 }
 
 async fn call(
-    instance: &wasm_component_model_polyfill::Instance,
+    instance: &crate::Instance,
     store: &mut Store<()>,
     name: &str,
     args: &[Val],
@@ -1333,9 +1335,7 @@ async fn it_spills_a_wide_parameter_tuple_when_calling_a_host_function() {
             (canon lift (core func $i "go"))))
         "#
     );
-    use wasm_component_model_polyfill::{
-        FunctionParameter, FunctionType, InterfaceIdentifier, PrimitiveType, ValueType,
-    };
+    use crate::{FunctionParameter, FunctionType, InterfaceIdentifier, PrimitiveType, ValueType};
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await

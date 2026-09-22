@@ -2,6 +2,8 @@
 
 use wasm_runtime_layer::Instance as RuntimeInstance;
 
+use crate::internal::{CoreExternParts, CoreInstanceParts};
+use crate::store::StoreInternalExt;
 use crate::store::{Store, StoreId};
 
 use super::core_extern::CoreExtern;
@@ -18,12 +20,19 @@ use super::core_extern::CoreExtern;
 /// [`Module::instantiate`]: super::Module::instantiate
 /// [`Instance`]: crate::Instance
 pub struct CoreInstance {
-    /// The runtime-layer instance. Workspace-internal; never
-    /// re-exported through `lib.rs`.
-    pub inner: RuntimeInstance,
+    /// The runtime-layer instance.
+    inner: RuntimeInstance,
     /// The identity of the store the instance lives in.
-    /// Workspace-internal; never re-exported through `lib.rs`.
-    pub store_id: StoreId,
+    store_id: StoreId,
+}
+
+impl From<CoreInstanceParts> for CoreInstance {
+    fn from(parts: CoreInstanceParts) -> Self {
+        Self {
+            inner: parts.inner,
+            store_id: parts.store_id,
+        }
+    }
 }
 
 impl CoreInstance {
@@ -31,10 +40,13 @@ impl CoreInstance {
     /// Returns `None` when the module exports nothing by that name.
     pub fn get_export<T: 'static>(&self, store: &Store<T>, name: &str) -> Option<CoreExtern> {
         self.inner
-            .get_export(store.inner(), name)
-            .map(|inner| CoreExtern {
-                inner,
-                store_id: self.store_id,
+            .get_export(store.internal_ref().inner(), name)
+            .map(|inner| {
+                CoreExternParts {
+                    inner,
+                    store_id: self.store_id,
+                }
+                .into()
             })
     }
 }

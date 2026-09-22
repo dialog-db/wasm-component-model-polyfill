@@ -19,12 +19,15 @@ use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCaus
 use crate::executor::ResourceDestructor;
 use crate::executor::ir::CanonOptions;
 use crate::executor::release_subtask;
+use crate::internal::{AccessorInternal, ErrorInternal};
 use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId, TableId};
 use crate::types::ResourceType;
 use crate::value::Val;
 
 use super::store_data::StoreData;
 use super::store_id::StoreId;
+
+pub mod internal;
 
 /// The store as one turn, one item, or one trampoline reaches it.
 ///
@@ -53,7 +56,33 @@ use super::store_id::StoreId;
 /// is passed by mutable reference and reborrowed — like the runtime
 /// layer's own store context, which is what it wraps.
 ///
+/// # What the context does not lend
+///
+/// What a host function holding one of these reaches is the store's
+/// host data, and the bookkeeping behind it is reached through
+/// [`StoreContextInternalExt`], which `lib.rs` does not re-export.
+/// The trait's entries are therefore entries only the crate can name.
+/// The public face of the type imports and resolves:
+///
+/// ```rust
+/// use wasm_component_model_polyfill::StoreContext;
+/// fn host_data<'a, T: 'static>(context: &'a StoreContext<'_, T>) -> &'a T {
+///     context.data()
+/// }
+/// ```
+///
+/// The seam does not, so the call behind it never gets as far as
+/// being looked up:
+///
+/// ```compile_fail
+/// use wasm_component_model_polyfill::{StoreContext, StoreContextInternalExt};
+/// fn scheduler<T: 'static>(context: &mut StoreContext<'_, T>) {
+///     let _ = context.internal();
+/// }
+/// ```
+///
 /// [`Store`]: super::Store
+/// [`StoreContextInternalExt`]: internal::StoreContextInternalExt
 pub struct StoreContext<'a, T: 'static> {
     runtime: RuntimeContextMut<'a, StoreData<T>, Backend>,
 }
@@ -64,13 +93,13 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// A trampoline calls this with the context the runtime layer
     /// handed it, and reaches the whole store through it.
     /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn new(runtime: RuntimeContextMut<'a, StoreData<T>, Backend>) -> Self {
+    fn from_runtime(runtime: RuntimeContextMut<'a, StoreData<T>, Backend>) -> Self {
         Self { runtime }
     }
 
     /// Borrow this context again, for the length of the borrow of
     /// `self`. Workspace-internal.
-    pub fn reborrow(&mut self) -> StoreContext<'_, T> {
+    fn reborrow(&mut self) -> StoreContext<'_, T> {
         StoreContext {
             runtime: self.runtime.as_context_mut(),
         }
@@ -79,23 +108,23 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Borrow the core store's context, which is what every crossing
     /// of the canonical ABI and every call into the guest runs
     /// against. Workspace-internal.
-    pub fn runtime(&self) -> &RuntimeContextMut<'a, StoreData<T>, Backend> {
+    fn runtime(&self) -> &RuntimeContextMut<'a, StoreData<T>, Backend> {
         &self.runtime
     }
 
     /// Mutably borrow the core store's context. Workspace-internal.
-    pub fn runtime_mut(&mut self) -> &mut RuntimeContextMut<'a, StoreData<T>, Backend> {
+    fn runtime_mut(&mut self) -> &mut RuntimeContextMut<'a, StoreData<T>, Backend> {
         &mut self.runtime
     }
 
     /// Everything the store carries: the host's data and the
     /// polyfill's own state. Workspace-internal.
-    pub fn store_data(&self) -> &StoreData<T> {
+    fn store_data(&self) -> &StoreData<T> {
         self.runtime.data()
     }
 
     /// Everything the store carries, mutably. Workspace-internal.
-    pub fn store_data_mut(&mut self) -> &mut StoreData<T> {
+    fn store_data_mut(&mut self) -> &mut StoreData<T> {
         self.runtime.data_mut()
     }
 
@@ -110,24 +139,24 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     }
 
     /// The store's process-unique identity. Workspace-internal.
-    pub fn id(&self) -> StoreId {
+    fn id(&self) -> StoreId {
         self.store_data().id()
     }
 
     /// The store's handle tables. Workspace-internal.
-    pub fn tables(&self) -> &Arc<Mutex<HandleTables>> {
+    fn tables(&self) -> &Arc<Mutex<HandleTables>> {
         self.store_data().tables()
     }
 
     /// Clone the handle for the per-store handle-tables ledger.
     /// Workspace-internal.
-    pub fn tables_handle(&self) -> Arc<Mutex<HandleTables>> {
+    fn tables_handle(&self) -> Arc<Mutex<HandleTables>> {
         self.store_data().tables_handle()
     }
 
     /// Lock the store's handle tables and record state.
     /// Workspace-internal.
-    pub fn lock_tables(&self) -> Result<MutexGuard<'_, HandleTables>> {
+    fn lock_tables(&self) -> Result<MutexGuard<'_, HandleTables>> {
         self.store_data().lock_tables()
     }
 
@@ -142,13 +171,13 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     }
 
     /// The store's cooperative scheduler. Workspace-internal.
-    pub fn scheduler(&self) -> &Scheduler<T> {
+    fn scheduler(&self) -> &Scheduler<T> {
         self.store_data().scheduler()
     }
 
     /// The store's cooperative scheduler, mutably.
     /// Workspace-internal.
-    pub fn scheduler_mut(&mut self) -> &mut Scheduler<T> {
+    fn scheduler_mut(&mut self) -> &mut Scheduler<T> {
         self.store_data_mut().scheduler_mut()
     }
 
@@ -161,7 +190,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// store's own state is reached through the context rather than
     /// through [`StoreData`] directly, so that every write to it
     /// passes one entry. Workspace-internal.
-    pub fn register_resource(
+    fn register_resource(
         &mut self,
         type_id: ResourceTypeId,
         name: Option<ResourceType>,
@@ -176,7 +205,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// error about one of its handles renders. It outranks any
     /// fallback the store already holds; among labels components
     /// taught, the first wins. Workspace-internal.
-    pub fn name_resource(&mut self, type_id: ResourceTypeId, name: ResourceType) {
+    fn name_resource(&mut self, type_id: ResourceTypeId, name: ResourceType) {
         self.store_data_mut().name_resource(type_id, name);
     }
 
@@ -186,21 +215,15 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// in. It never displaces a label a component taught, and a
     /// component that names the identity later displaces it.
     /// Workspace-internal.
-    pub fn fallback_resource_name(&mut self, type_id: ResourceTypeId, name: ResourceType) {
+    fn fallback_resource_name(&mut self, type_id: ResourceTypeId, name: ResourceType) {
         self.store_data_mut().fallback_resource_name(type_id, name);
     }
 
     /// The name the store renders for the resource type `type_id`,
     /// when it learned one. An error about a handle of the type
     /// names it this way. Workspace-internal.
-    pub fn resource_type(&self, type_id: ResourceTypeId) -> Option<ResourceType> {
+    fn resource_type(&self, type_id: ResourceTypeId) -> Option<ResourceType> {
         self.store_data().resource_type(type_id)
-    }
-
-    /// Mint a fresh `own<T>` handle in this store's resource table
-    /// for the given registered resource type. Workspace-internal.
-    pub fn resource_new(&self, type_id: ResourceTypeId, rep: u32) -> Result<ResourceHandle> {
-        self.store_data().resource_new(type_id, rep)
     }
 
     /// Release a handle the host holds. The handle's entry leaves
@@ -215,9 +238,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// lifts the destructor as a synchronous function of one `u32`
     /// parameter and lowers a call to it, whoever released the
     /// handle. The thread's slots start at zero and end with it.
-    pub fn resource_drop(&mut self, handle: ResourceHandle) -> Result<()> {
+    fn resource_drop(&mut self, handle: ResourceHandle) -> Result<()> {
         let rep = self.store_data().remove_host_handle(handle)?;
-        let Some(destructor) = self.store_data().destructor(handle.type_id) else {
+        let Some(destructor) = self.store_data().destructor(handle.type_id()) else {
             return Ok(());
         };
         let tables = self.tables_handle();
@@ -281,25 +304,25 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// [`Yield`]: Outcome::Yield
     ///
     /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn turn(&mut self, waker: &Waker) -> Result<Outcome> {
+    fn turn(&mut self, waker: &Waker) -> Result<Outcome> {
         let _turn = TurnGuard::enter(self.tables(), waker);
         self.run_turn(waker, false, None)
     }
 
     /// Whether a turn of this store is running. Workspace-internal.
-    pub fn turn_in_flight(&self) -> bool {
+    fn turn_in_flight(&self) -> bool {
         self.store_data().turn_in_flight()
     }
 
     /// Whether the store holds work only a turn can carry forward.
     /// Workspace-internal.
-    pub fn has_pending_work(&self) -> bool {
+    fn has_pending_work(&self) -> bool {
         self.store_data().has_pending_work()
     }
 
     /// Whether the store holds an item a turn would run.
     /// Workspace-internal.
-    pub fn has_ready_item(&self) -> bool {
+    fn has_ready_item(&self) -> bool {
         self.store_data().has_ready_item()
     }
 
@@ -312,11 +335,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// uses it for the closure it runs, which is guest work for the
     /// same reason and which a driver must not be entered from.
     /// Workspace-internal.
-    pub fn run_in_turn<R>(
-        &mut self,
-        waker: &Waker,
-        body: impl FnOnce(&mut Self) -> R,
-    ) -> Result<R> {
+    fn run_in_turn<R>(&mut self, waker: &Waker, body: impl FnOnce(&mut Self) -> R) -> Result<R> {
         let _turn = TurnGuard::enter(self.tables(), waker);
         Ok(body(self))
     }
@@ -364,31 +383,31 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// suspension that cannot progress fails with, and that an item
     /// a nested turn runs may block and open a nested turn of its
     /// own. Workspace-internal.
-    pub fn nested_turn(&mut self, waker: &Waker, only: Option<InstanceId>) -> Result<Outcome> {
+    fn nested_turn(&mut self, waker: &Waker, only: Option<InstanceId>) -> Result<Outcome> {
         self.run_turn(waker, true, only)
     }
 
     /// The instance a nested turn run for the current task may run
     /// the work of, or `None` when that task is allowed to block.
     /// Workspace-internal.
-    pub fn must_not_block_instance(&self) -> Option<InstanceId> {
+    fn must_not_block_instance(&self) -> Option<InstanceId> {
         self.store_data().must_not_block_instance()
     }
 
     /// The waker of the turn that is running, or a waker that does
     /// nothing when no turn is running. Workspace-internal.
-    pub fn active_waker(&self) -> Waker {
+    fn active_waker(&self) -> Waker {
         self.store_data().active_waker()
     }
 
     /// Why a driver that went idle failed. Workspace-internal.
-    pub fn idle_cause(&self, task: Option<TaskId>) -> SchedulerCause {
+    fn idle_cause(&self, task: Option<TaskId>) -> SchedulerCause {
         self.store_data().idle_cause(task)
     }
 
     /// Why a nested turn that went idle with its condition unmet
     /// failed. Workspace-internal.
-    pub fn suspend_cause(&self) -> SchedulerCause {
+    fn suspend_cause(&self) -> SchedulerCause {
         self.store_data().suspend_cause()
     }
 
@@ -427,7 +446,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// the call fails with the cause the seam selects.
     ///
     /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn start_host_task(
+    fn start_host_task(
         &mut self,
         mut task: HostTask<T>,
         caller: TableId,
@@ -592,7 +611,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
 
     /// Give a host task to the store. The next turn polls it with
     /// the driver's waker, so no wake is lost. Workspace-internal.
-    pub fn push_host_task(&mut self, task: HostTask<T>) {
+    fn push_host_task(&mut self, task: HostTask<T>) {
         self.scheduler_mut().push_host_task(task);
     }
 
@@ -825,7 +844,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Create the task of one call into an export, without making it
     /// the current scope: the task's thread runs when a turn runs the
     /// item that starts it. Workspace-internal.
-    pub fn create_export_task(
+    fn create_export_task(
         &self,
         function: FunctionType,
         options: CanonOptions,
@@ -839,7 +858,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
 
     /// Queue `item` as the start of `task`'s implicit thread, past
     /// the entry gate of `instance`. Workspace-internal.
-    pub fn start_export_thread(
+    fn start_export_thread(
         &mut self,
         task: TaskId,
         instance: InstanceId,
@@ -864,7 +883,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// of `task`'s implicit thread, past the entry gate of
     /// `instance`. A task the gate holds clears the slot and waits
     /// at the gate in arrival order. Workspace-internal.
-    pub fn start_switched_export_thread(
+    fn start_switched_export_thread(
         &mut self,
         task: TaskId,
         instance: InstanceId,
@@ -889,7 +908,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// trampoline of a call between two components runs from inside
     /// the caller's frame. Does nothing when the slot is empty.
     /// Workspace-internal.
-    pub fn run_switch_slot(&mut self) -> Result<()> {
+    fn run_switch_slot(&mut self) -> Result<()> {
         let Some(item) = self.scheduler_mut().take_switch_slot() else {
             return Ok(());
         };
@@ -905,7 +924,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// the channel and the call's driver takes it out, rather than
     /// the call reading the record of a task that may be gone by
     /// then. Workspace-internal.
-    pub fn attach_result_channel(&self, task: TaskId) -> Result<ResultChannel> {
+    fn attach_result_channel(&self, task: TaskId) -> Result<ResultChannel> {
         self.lock_tables()?
             .tasks
             .attach_result_channel(task)
@@ -921,7 +940,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// task with a failure of its own — a host call the task made
     /// that never returned. The call reads the channel ahead of the
     /// result. Workspace-internal.
-    pub fn attach_failure_channel(&self, task: TaskId) -> Result<FailureChannel> {
+    fn attach_failure_channel(&self, task: TaskId) -> Result<FailureChannel> {
         self.lock_tables()?
             .tasks
             .attach_failure_channel(task)
@@ -955,7 +974,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     ///   driver was polling reports it.
     ///
     /// Workspace-internal.
-    pub fn fail_export_task(&mut self, task: Option<TaskId>, error: Error) -> Result<()> {
+    fn fail_export_task(&mut self, task: Option<TaskId>, error: Error) -> Result<()> {
         let Some(task) = task else {
             return Err(error);
         };
@@ -993,7 +1012,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// `state == RESOLVED`. The exit of a callback task's implicit
     /// thread reads it, because a thread that exits without a result
     /// is the no-result trap. Workspace-internal.
-    pub fn export_task_resolved(&self, task: TaskId) -> Result<bool> {
+    fn export_task_resolved(&self, task: TaskId) -> Result<bool> {
         Ok(self
             .lock_tables()?
             .tasks
@@ -1007,7 +1026,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// asks before it runs: the instance is one task's at a time, so
     /// an item that finds it taken waits for the holder to release it.
     /// Workspace-internal.
-    pub fn instance_is_held(&self, instance: InstanceId) -> Result<bool> {
+    fn instance_is_held(&self, instance: InstanceId) -> Result<bool> {
         Ok(self
             .lock_tables()?
             .tasks
@@ -1019,7 +1038,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// holds exclusively. A callback task releases it between events,
     /// so a synchronous export of the same instance can run while the
     /// task waits. Workspace-internal.
-    pub fn release_exclusive_thread(&mut self, task: TaskId) -> Result<()> {
+    fn release_exclusive_thread(&mut self, task: TaskId) -> Result<()> {
         let tables = self.tables_handle();
         let mut guard = Self::lock(&tables)?;
         self.scheduler()
@@ -1030,7 +1049,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Give `instance` to an export task's implicit thread, which a
     /// callback item does before it runs core code.
     /// Workspace-internal.
-    pub fn take_exclusive_thread(&mut self, task: TaskId, instance: InstanceId) -> Result<()> {
+    fn take_exclusive_thread(&mut self, task: TaskId, instance: InstanceId) -> Result<()> {
         let tables = self.tables_handle();
         let mut guard = Self::lock(&tables)?;
         self.scheduler()
@@ -1047,7 +1066,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// `slot`. A set that holds none parks the task's implicit thread
     /// on it and the item waits with it, until a later turn finds the
     /// set filled. Workspace-internal.
-    pub fn wait_callback_on_set(
+    fn wait_callback_on_set(
         &mut self,
         task: TaskId,
         instance: InstanceId,
@@ -1096,7 +1115,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
 
     /// Make an export's task the current scope, as its thread starts
     /// to run. Workspace-internal.
-    pub fn enter_export_task(&self, task: TaskId) -> Result<()> {
+    fn enter_export_task(&self, task: TaskId) -> Result<()> {
         self.lock_tables()?.tasks.push_task_scope(task);
         Ok(())
     }
@@ -1112,7 +1131,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// instance may block, and a built-in that has to block gives
     /// way only to the ready work of the instance and then fails
     /// with the cannot-block cause. Workspace-internal.
-    pub fn hold_may_not_suspend(&self, task: TaskId) -> Result<()> {
+    fn hold_may_not_suspend(&self, task: TaskId) -> Result<()> {
         self.lock_tables()?
             .tasks
             .hold_may_not_suspend(task)
@@ -1121,7 +1140,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
 
     /// Mark an export's task started: its thread is about to run.
     /// Workspace-internal.
-    pub fn start_export_task(&self, task: TaskId) -> Result<()> {
+    fn start_export_task(&self, task: TaskId) -> Result<()> {
         self.lock_tables()?.tasks.start_task(task);
         Ok(())
     }
@@ -1130,7 +1149,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// the caller on the stack takes as the call returns. Every
     /// handle lent for the call comes back with the resolution.
     /// Workspace-internal.
-    pub fn resolve_export_task(&self, task: TaskId, result: Option<Val>) -> Result<()> {
+    fn resolve_export_task(&self, task: TaskId, result: Option<Val>) -> Result<()> {
         self.lock_tables()?.resolve_task(task, result);
         Ok(())
     }
@@ -1163,7 +1182,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// above needs no such guard, because it is keyed on the thread
     /// — it gives back only what this task's own thread holds, and a
     /// task that is still parked holds nothing.
-    pub fn exit_export_task(&mut self, task: TaskId) -> Result<core::result::Result<(), u32>> {
+    fn exit_export_task(&mut self, task: TaskId) -> Result<core::result::Result<(), u32>> {
         let tables = self.tables_handle();
         let mut guard = Self::lock(&tables)?;
         self.scheduler_mut()
@@ -1181,7 +1200,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// code returns: the record stays in the store, because the
     /// status word decides what the task does next.
     /// Workspace-internal.
-    pub fn leave_export_task(&self, task: TaskId) -> Result<()> {
+    fn leave_export_task(&self, task: TaskId) -> Result<()> {
         self.lock_tables()?.leave_task_scope(task);
         Ok(())
     }
@@ -1199,7 +1218,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// always ends the task and the sweep always runs. The inner
     /// `Err` carries the count of borrows the guest did not drop.
     /// Workspace-internal.
-    pub fn end_export_task(&mut self, task: TaskId) -> Result<core::result::Result<(), u32>> {
+    fn end_export_task(&mut self, task: TaskId) -> Result<core::result::Result<(), u32>> {
         let tables = self.tables_handle();
         let mut guard = Self::lock(&tables)?;
         self.scheduler()
@@ -1225,7 +1244,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// on the stack ends nothing: the record stays, so the task is
     /// still to run and the items that name it are still its own.
     /// Workspace-internal.
-    pub fn abandon_export_task(&mut self, task: TaskId) -> Result<()> {
+    fn abandon_export_task(&mut self, task: TaskId) -> Result<()> {
         let tables = self.tables_handle();
         let mut guard = Self::lock(&tables)?;
         self.scheduler_mut()
@@ -1273,7 +1292,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     ///
     /// [`Store::run_concurrent`]: super::Store::run_concurrent
     /// Workspace-internal.
-    pub async fn run_concurrent<R, F>(self, body: F) -> Result<R>
+    async fn run_concurrent<R, F>(self, body: F) -> Result<R>
     where
         F: AsyncFnOnce(&Accessor<T>) -> R,
     {
@@ -1400,12 +1419,14 @@ mod tests {
     };
     use crate::engine::Engine;
     use crate::error::SchedulerCause;
+    use crate::internal::ResourceTypeIdInternal;
     use crate::linker::{HostCall, Linker};
     use crate::resource::HandleKind;
     use crate::store::Store;
     use crate::types::ValueType;
 
     use super::*;
+    use crate::store::StoreInternalExt;
 
     /// A future that resolves when the host resolves it: something
     /// outside the store for a `run_concurrent` closure to wait on.
@@ -1595,21 +1616,32 @@ mod tests {
         // polls the host tasks, so the closure is done by the time the
         // turn reports that a host task is still pending — and the
         // entry must not park on a host task it does not wait for.
-        let subtask = store.lock_tables().expect("tables").tasks.insert_subtask();
-        store.scheduler_mut().push_host_task(HostTask::from_future(
-            subtask,
-            |_store: &mut StoreContext<'_, ()>, _outcome: Result<Vec<Val>>| Ok(()),
-            core::future::pending::<Result<Vec<Val>>>(),
-        ));
+        let subtask = store
+            .internal()
+            .lock_tables()
+            .expect("tables")
+            .tasks
+            .insert_subtask();
+        store
+            .internal()
+            .scheduler_mut()
+            .push_host_task(HostTask::from_future(
+                subtask,
+                |_store: &mut StoreContext<'_, ()>, _outcome: Result<Vec<Val>>| Ok(()),
+                core::future::pending::<Result<Vec<Val>>>(),
+            ));
         let ran = Arc::new(AtomicUsize::new(0));
         let counted = ran.clone();
-        store.scheduler_mut().push_high_priority(Item::new(
-            ItemKind::TaskStart,
-            move |_store: &mut StoreContext<'_, ()>| {
-                counted.fetch_add(1, AtomicOrdering::Relaxed);
-                Ok(())
-            },
-        ));
+        store
+            .internal()
+            .scheduler_mut()
+            .push_high_priority(Item::new(
+                ItemKind::TaskStart,
+                move |_store: &mut StoreContext<'_, ()>| {
+                    counted.fetch_add(1, AtomicOrdering::Relaxed);
+                    Ok(())
+                },
+            ));
 
         let watched = ran.clone();
         let mut entry = Box::pin(store.run_concurrent(async move |_accessor| {
@@ -1645,12 +1677,20 @@ mod tests {
         // entry. The item the closure queues is the only thing that
         // resolves it, and only a turn runs an item — so an entry
         // that parked here would wait for ever on work it holds.
-        let subtask = store.lock_tables().expect("tables").tasks.insert_subtask();
-        store.scheduler_mut().push_host_task(HostTask::from_future(
-            subtask,
-            |_store: &mut StoreContext<'_, ()>, _outcome: Result<Vec<Val>>| Ok(()),
-            core::future::pending::<Result<Vec<Val>>>(),
-        ));
+        let subtask = store
+            .internal()
+            .lock_tables()
+            .expect("tables")
+            .tasks
+            .insert_subtask();
+        store
+            .internal()
+            .scheduler_mut()
+            .push_host_task(HostTask::from_future(
+                subtask,
+                |_store: &mut StoreContext<'_, ()>, _outcome: Result<Vec<Val>>| Ok(()),
+                core::future::pending::<Result<Vec<Val>>>(),
+            ));
 
         // The closure queues the item on the poll the entry makes
         // after the turn reported the host task pending.
@@ -1711,21 +1751,26 @@ mod tests {
     fn it_ends_the_turn_an_item_panicked_out_of() {
         let engine = Engine::new().expect("engine");
         let mut store = Store::new(&engine, ()).expect("store");
-        store.scheduler_mut().push_high_priority(Item::new(
-            ItemKind::TaskStart,
-            |_store: &mut StoreContext<'_, ()>| -> Result<()> { panic!("the item panicked") },
-        ));
+        store
+            .internal()
+            .scheduler_mut()
+            .push_high_priority(Item::new(
+                ItemKind::TaskStart,
+                |_store: &mut StoreContext<'_, ()>| -> Result<()> { panic!("the item panicked") },
+            ));
 
-        let unwound = unwind(|| store.turn(Waker::noop()));
+        let unwound = unwind(|| store.internal().turn(Waker::noop()));
 
         assert!(unwound.is_err(), "the item's panic unwound the turn");
         assert!(
-            !store.turn_in_flight(),
+            !store.internal().turn_in_flight(),
             "the turn the panic unwound out of is over"
         );
-        let mut driver = Box::pin(Driver::new(store.context(), None, |_store, _waker| {
-            Some(Ok(()))
-        }));
+        let mut driver = Box::pin(Driver::new(
+            store.internal().context(),
+            None,
+            |_store, _waker| Some(Ok(())),
+        ));
         assert!(
             matches!(poll_once(&mut driver, Waker::noop()), Poll::Ready(Ok(()))),
             "a driver entered after the panic is not refused"
@@ -1739,25 +1784,30 @@ mod tests {
     fn it_takes_the_tables_back_from_a_panic_that_held_their_lock() {
         let engine = Engine::new().expect("engine");
         let mut store = Store::new(&engine, ()).expect("store");
-        store.scheduler_mut().push_high_priority(Item::new(
-            ItemKind::TaskStart,
-            |store: &mut StoreContext<'_, ()>| -> Result<()> {
-                let _tables = store.lock_tables().expect("tables");
-                panic!("the item panicked with the tables locked")
-            },
-        ));
+        store
+            .internal()
+            .scheduler_mut()
+            .push_high_priority(Item::new(
+                ItemKind::TaskStart,
+                |store: &mut StoreContext<'_, ()>| -> Result<()> {
+                    let _tables = store.lock_tables().expect("tables");
+                    panic!("the item panicked with the tables locked")
+                },
+            ));
 
-        let unwound = unwind(|| store.turn(Waker::noop()));
+        let unwound = unwind(|| store.internal().turn(Waker::noop()));
 
         assert!(unwound.is_err(), "the item's panic unwound the turn");
         assert!(
-            store.lock_tables().is_ok(),
+            store.internal().lock_tables().is_ok(),
             "the turn's guard took the tables back from the poison the panic \
              left, so the store is not refusing every later reader"
         );
-        let mut driver = Box::pin(Driver::new(store.context(), None, |_store, _waker| {
-            Some(Ok(()))
-        }));
+        let mut driver = Box::pin(Driver::new(
+            store.internal().context(),
+            None,
+            |_store, _waker| Some(Ok(())),
+        ));
         assert!(
             matches!(poll_once(&mut driver, Waker::noop()), Poll::Ready(Ok(()))),
             "a driver entered after the panic is not refused"
@@ -1769,13 +1819,16 @@ mod tests {
     /// give it back.
     #[cfg(not(target_arch = "wasm32"))]
     fn poison_the_tables<T: 'static>(store: &Store<T>) {
-        let tables = store.tables_handle();
+        let tables = store.internal_ref().tables_handle();
         let poisoned = unwind(move || {
             let _tables = tables.lock().expect("tables");
             panic!("the host panicked with the tables locked")
         });
         assert!(poisoned.is_err(), "the panic unwound");
-        assert!(store.tables().is_poisoned(), "and poisoned the lock");
+        assert!(
+            store.internal_ref().tables().is_poisoned(),
+            "and poisoned the lock"
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1789,14 +1842,14 @@ mod tests {
         // than on its way out.
         poison_the_tables(&store);
 
-        let outcome = store.turn(Waker::noop());
+        let outcome = store.internal().turn(Waker::noop());
 
         assert!(
             outcome.is_ok(),
             "the turn's guard took the tables back from the poison on its way in"
         );
         assert!(
-            !store.tables().is_poisoned(),
+            !store.internal().tables().is_poisoned(),
             "and cleared it, so every later reader of the store reaches them too"
         );
     }
@@ -1814,9 +1867,11 @@ mod tests {
         // here before anything that could clear it.
         poison_the_tables(&store);
 
-        let mut driver = Box::pin(Driver::new(store.context(), None, |_store, _waker| {
-            Some(Ok(()))
-        }));
+        let mut driver = Box::pin(Driver::new(
+            store.internal().context(),
+            None,
+            |_store, _waker| Some(Ok(())),
+        ));
         assert!(
             matches!(poll_once(&mut driver, Waker::noop()), Poll::Ready(Ok(()))),
             "the driver read the store's turn state past the poison, so a \
@@ -1824,17 +1879,20 @@ mod tests {
         );
         drop(driver);
         assert!(
-            store.tables().is_poisoned(),
+            store.internal().tables().is_poisoned(),
             "and the read left the poison where it found it: this driver's \
              condition was met before it ever entered a turn, and entering a \
              turn is where the recovery happens"
         );
 
         assert!(
-            store.turn(Waker::noop()).is_ok(),
+            store.internal().turn(Waker::noop()).is_ok(),
             "the turn this driver never needed takes the tables back"
         );
-        assert!(!store.tables().is_poisoned(), "and clears the poison");
+        assert!(
+            !store.internal().tables().is_poisoned(),
+            "and clears the poison"
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1867,19 +1925,22 @@ mod tests {
         let signal = outside.clone();
         let item_runs = Arc::new(AtomicUsize::new(0));
         let counted = item_runs.clone();
-        store.scheduler_mut().push_low_priority(Item::new(
-            ItemKind::TaskStart,
-            move |_store: &mut StoreContext<'_, ()>| {
-                counted.fetch_add(1, AtomicOrdering::Relaxed);
-                signal.resolve();
-                Ok(())
-            },
-        ));
+        store
+            .internal()
+            .scheduler_mut()
+            .push_low_priority(Item::new(
+                ItemKind::TaskStart,
+                move |_store: &mut StoreContext<'_, ()>| {
+                    counted.fetch_add(1, AtomicOrdering::Relaxed);
+                    signal.resolve();
+                    Ok(())
+                },
+            ));
 
         {
             // A driver the item gave way to, dropped before the item
             // ran. Dropping it cancels nothing.
-            let mut abandoned = Box::pin(Driver::new(store.context(), None, never));
+            let mut abandoned = Box::pin(Driver::new(store.internal().context(), None, never));
             assert!(
                 poll_once(&mut abandoned, Waker::noop()).is_pending(),
                 "the turn gave way, so the driver returns pending"
@@ -1938,7 +1999,12 @@ mod tests {
     /// trampoline has built by the time it starts a host task.
     fn host_call(engine: &Engine) -> (Store<()>, TableId, SubtaskId) {
         let store = Store::new(engine, ()).expect("store");
-        let subtask = store.lock_tables().expect("tables").tasks.push_subtask();
+        let subtask = store
+            .internal_ref()
+            .lock_tables()
+            .expect("tables")
+            .tasks
+            .push_subtask();
         (store, TableId::fresh(), subtask)
     }
 
@@ -1949,6 +2015,7 @@ mod tests {
         let slot: Lowered = Arc::new(Mutex::new(None));
 
         let status = store
+            .internal()
             .context()
             .start_host_task(
                 HostTask::from_future(
@@ -1977,11 +2044,11 @@ mod tests {
             "the result crossed into the guest before the call returned"
         );
         assert_eq!(
-            store.scheduler().host_task_count(),
+            store.internal().scheduler().host_task_count(),
             0,
             "nothing joined the store's host tasks"
         );
-        let guard = store.lock_tables().expect("tables");
+        let guard = store.internal().lock_tables().expect("tables");
         assert!(
             guard.tasks.subtask(subtask).is_none(),
             "the subtask resolved and left the store"
@@ -2001,6 +2068,7 @@ mod tests {
         let awaited = outside.clone();
 
         let status = store
+            .internal()
             .context()
             .start_host_task(
                 HostTask::from_future(subtask, recording(&slot), async move {
@@ -2021,7 +2089,7 @@ mod tests {
             .subtask_index()
             .expect("a started call carries the index of its subtask");
         {
-            let guard = store.lock_tables().expect("tables");
+            let guard = store.internal().lock_tables().expect("tables");
             assert_eq!(
                 guard.tasks.subtask(subtask).map(|record| record.state),
                 Some(SubtaskState::Started),
@@ -2034,7 +2102,7 @@ mod tests {
             );
         }
         assert_eq!(
-            store.scheduler().host_task_count(),
+            store.internal().scheduler().host_task_count(),
             1,
             "the future joined the store's host tasks"
         );
@@ -2048,18 +2116,18 @@ mod tests {
         // The turn that sees the future complete queues the
         // lowering, and the turn after it runs the item.
         assert_eq!(
-            store.turn(Waker::noop()).expect("a turn"),
+            store.internal().turn(Waker::noop()).expect("a turn"),
             Outcome::Progress,
             "the completed host task left an item ready to run"
         );
-        store.turn(Waker::noop()).expect("a turn");
+        store.internal().turn(Waker::noop()).expect("a turn");
 
         assert_eq!(
             lowered(&slot),
             vec![Val::U32(9)],
             "the result crossed in the turn that ran the lowering"
         );
-        let mut guard = store.lock_tables().expect("tables");
+        let mut guard = store.internal().lock_tables().expect("tables");
         assert_eq!(
             guard.tasks.subtask(subtask).map(|record| record.state),
             Some(SubtaskState::Returned),
@@ -2126,6 +2194,7 @@ mod tests {
         // does nothing. The task joins the store all the same, and
         // counts as woken for the turn that follows.
         store
+            .internal()
             .context()
             .start_host_task(
                 HostTask::from_future(subtask, recording(&slot), future),
@@ -2145,7 +2214,7 @@ mod tests {
         );
 
         {
-            let mut driver = Box::pin(Driver::new(store.context(), None, never));
+            let mut driver = Box::pin(Driver::new(store.internal().context(), None, never));
             assert!(
                 poll_once(&mut driver, &driver_waker).is_pending(),
                 "the host task is still pending, so the driver waits on it"
@@ -2248,13 +2317,20 @@ mod tests {
     /// body is polled: the ready queues are empty by then, and only
     /// the bodies can still change what the store holds.
     fn gate_the_host_tasks_open(store: &mut Store<()>, log: &Log) {
-        let instance = store.lock_tables().expect("tables").tasks.insert_instance();
+        let instance = store
+            .internal()
+            .lock_tables()
+            .expect("tables")
+            .tasks
+            .insert_instance();
         let holder = store
+            .internal()
             .lock_tables()
             .expect("tables")
             .tasks
             .create_task(None, None, instance);
         store
+            .internal()
             .context()
             .take_exclusive_thread(holder, instance)
             .expect("the callback task takes the instance");
@@ -2262,36 +2338,44 @@ mod tests {
         // An earlier call into the same instance, which the gate
         // holds because the callback task has the instance.
         let waiting = log.clone();
-        start_callback_task(&mut store.context(), instance, move |task| {
+        start_callback_task(&mut store.internal().context(), instance, move |task| {
             export_call(&waiting, "early", task)
         });
 
-        let subtask = store.lock_tables().expect("tables").tasks.push_subtask();
-        let accessor: Accessor<()> = Accessor::new(store.id());
+        let subtask = store
+            .internal()
+            .lock_tables()
+            .expect("tables")
+            .tasks
+            .push_subtask();
+        let accessor: Accessor<()> = Accessor::new(store.internal().id());
         let queued = log.clone();
         let mut reached = false;
-        store.context().push_host_task(HostTask::from_future(
-            subtask,
-            |_store: &mut StoreContext<'_, ()>, _outcome: Result<Vec<Val>>| Ok(()),
-            core::future::poll_fn(move |_context| -> Poll<Result<Vec<Val>>> {
-                if !reached {
-                    reached = true;
-                    accessor
-                        .with(|store: &mut StoreContext<'_, ()>| {
-                            let recorded = queued.clone();
-                            start_callback_task(store, instance, move |_task| {
-                                marker(&recorded, "queued")
-                            });
-                            store.release_exclusive_thread(holder)
-                        })
-                        .expect("reach the store")
-                        .expect("give the instance back");
-                }
-                // The body never resolves, so nothing but the gate
-                // can carry the turn that polls it forward.
-                Poll::Pending
-            }),
-        ));
+        store
+            .internal()
+            .context()
+            .push_host_task(HostTask::from_future(
+                subtask,
+                |_store: &mut StoreContext<'_, ()>, _outcome: Result<Vec<Val>>| Ok(()),
+                core::future::poll_fn(move |_context| -> Poll<Result<Vec<Val>>> {
+                    if !reached {
+                        reached = true;
+                        accessor
+                            .with(|store: &mut StoreContext<'_, ()>| {
+                                let recorded = queued.clone();
+                                start_callback_task(store, instance, move |_task| {
+                                    marker(&recorded, "queued")
+                                });
+                                store.release_exclusive_thread(holder)
+                            })
+                            .expect("reach the store")
+                            .expect("give the instance back");
+                    }
+                    // The body never resolves, so nothing but the gate
+                    // can carry the turn that polls it forward.
+                    Poll::Pending
+                }),
+            ));
     }
 
     #[wcmp_macros::test]
@@ -2304,18 +2388,27 @@ mod tests {
         // A second host task, whose body is ready. The turn queues
         // the lowering of what it produced as it polls it, and the
         // starts the gate releases afterwards queue behind that.
-        let subtask = store.lock_tables().expect("tables").tasks.push_subtask();
+        let subtask = store
+            .internal()
+            .lock_tables()
+            .expect("tables")
+            .tasks
+            .push_subtask();
         let lowered = log.clone();
-        store.context().push_host_task(HostTask::from_future(
-            subtask,
-            move |_store: &mut StoreContext<'_, ()>, _outcome: Result<Vec<Val>>| {
-                lowered.lock().expect("log").push("lowered");
-                Ok(())
-            },
-            core::future::ready(Ok(vec![Val::U32(1)])),
-        ));
+        store
+            .internal()
+            .context()
+            .push_host_task(HostTask::from_future(
+                subtask,
+                move |_store: &mut StoreContext<'_, ()>, _outcome: Result<Vec<Val>>| {
+                    lowered.lock().expect("log").push("lowered");
+                    Ok(())
+                },
+                core::future::ready(Ok(vec![Val::U32(1)])),
+            ));
 
         let polled = store
+            .internal()
             .turn(Waker::noop())
             .expect("the turn that polls the bodies");
 
@@ -2326,7 +2419,7 @@ mod tests {
              rather than a host task to wait on"
         );
         assert_eq!(
-            store.scheduler().waiting_at_gate(),
+            store.internal().scheduler().waiting_at_gate(),
             1,
             "the gate let the start that was waiting at it through as the \
              turn ended; the one the body queued behind it waits for the \
@@ -2338,7 +2431,10 @@ mod tests {
              released are queued for the turn that follows"
         );
 
-        store.turn(Waker::noop()).expect("the turn that runs them");
+        store
+            .internal()
+            .turn(Waker::noop())
+            .expect("the turn that runs them");
 
         assert_eq!(
             entries(&log),
@@ -2352,6 +2448,7 @@ mod tests {
         // second through only as that turn ended, and it is the
         // next turn that runs it.
         store
+            .internal()
             .turn(Waker::noop())
             .expect("the turn that runs the second");
 
@@ -2377,13 +2474,17 @@ mod tests {
         // park the driver on a wake that running that work is what
         // produces.
         let watched = log.clone();
-        let mut driver = Box::pin(Driver::new(store.context(), None, move |_store, _waker| {
-            watched
-                .lock()
-                .expect("log")
-                .contains(&"queued")
-                .then(|| Ok(()))
-        }));
+        let mut driver = Box::pin(Driver::new(
+            store.internal().context(),
+            None,
+            move |_store, _waker| {
+                watched
+                    .lock()
+                    .expect("log")
+                    .contains(&"queued")
+                    .then(|| Ok(()))
+            },
+        ));
 
         let outcome = poll_once(&mut driver, Waker::noop());
 
@@ -2411,6 +2512,7 @@ mod tests {
         // nothing of the suspend seam: the guest gets its result as
         // the call returns.
         store
+            .internal()
             .context()
             .start_host_task(
                 HostTask::from_future(
@@ -2424,8 +2526,14 @@ mod tests {
             .expect("start a host task whose future is ready");
         assert_eq!(lowered(&slot), vec![Val::U32(1)]);
 
-        let subtask = store.lock_tables().expect("tables").tasks.push_subtask();
+        let subtask = store
+            .internal()
+            .lock_tables()
+            .expect("tables")
+            .tasks
+            .push_subtask();
         let error = store
+            .internal()
             .context()
             .start_host_task(
                 HostTask::from_future(
@@ -2446,12 +2554,13 @@ mod tests {
              instead"
         );
         assert_eq!(
-            store.scheduler().host_task_count(),
+            store.internal().scheduler().host_task_count(),
             0,
             "the failed call left no host task in the store"
         );
         assert!(
             store
+                .internal()
                 .lock_tables()
                 .expect("tables")
                 .tasks
@@ -2468,6 +2577,7 @@ mod tests {
         let slot: Lowered = Arc::new(Mutex::new(None));
 
         let error = store
+            .internal()
             .context()
             .start_host_task(
                 HostTask::from_future(
@@ -2491,6 +2601,7 @@ mod tests {
         );
         assert!(
             store
+                .internal()
                 .lock_tables()
                 .expect("tables")
                 .tasks
@@ -2509,6 +2620,7 @@ mod tests {
         let awaited = outside.clone();
 
         let status = store
+            .internal()
             .context()
             .start_host_task(
                 HostTask::from_future(subtask, recording(&slot), async move {
@@ -2529,11 +2641,12 @@ mod tests {
         // The turn that sees the body fail queues the item, and the
         // turn after it runs the item.
         assert_eq!(
-            store.turn(Waker::noop()).expect("a turn"),
+            store.internal().turn(Waker::noop()).expect("a turn"),
             Outcome::Progress,
             "the failed host task left an item ready to run"
         );
         let error = store
+            .internal()
             .turn(Waker::noop())
             .expect_err("the failure has no task to trap, so it ends the turn");
 
@@ -2546,7 +2659,7 @@ mod tests {
             slot.lock().expect("the lowering's slot").is_none(),
             "a call that never returned has nothing to lower"
         );
-        let guard = store.lock_tables().expect("tables");
+        let guard = store.internal().lock_tables().expect("tables");
         assert!(
             guard.tasks.subtask(subtask).is_none(),
             "the subtask did not resolve: its record left the store instead"
@@ -2565,6 +2678,7 @@ mod tests {
         let awaited = outside.clone();
 
         let status = store
+            .internal()
             .context()
             .start_host_task(
                 HostTask::from_future(
@@ -2591,12 +2705,13 @@ mod tests {
         // The turn that sees the body complete queues the lowering,
         // and the turn after it runs the lowering and fails.
         assert_eq!(
-            store.turn(Waker::noop()).expect("a turn"),
+            store.internal().turn(Waker::noop()).expect("a turn"),
             Outcome::Progress,
             "the completed host task left its lowering ready to run"
         );
 
         let error = store
+            .internal()
             .turn(Waker::noop())
             .expect_err("the crossing's failure has no task to trap, so it ends the turn");
 
@@ -2605,7 +2720,7 @@ mod tests {
             "the turn ends with what the crossing failed with, and it ended \
              with {error} instead"
         );
-        let guard = store.lock_tables().expect("tables");
+        let guard = store.internal().lock_tables().expect("tables");
         assert!(
             guard.tasks.subtask(subtask).is_none(),
             "nothing reached the guest, so the subtask did not resolve: its \
@@ -2779,6 +2894,7 @@ mod tests {
         // through the core store's context the runtime layer hands
         // it, which reaches the same scheduler this fills.
         store
+            .internal()
             .scheduler_mut()
             .suspend_seam_mut()
             .set_provider(Resumes(4));
@@ -2845,7 +2961,7 @@ mod tests {
             "the guest's call returned"
         );
         assert_eq!(
-            store.scheduler().host_task_count(),
+            store.internal().scheduler().host_task_count(),
             0,
             "the task the call blocked on stayed in the frame that started it, \
              so the store holds none"
@@ -2892,7 +3008,7 @@ mod tests {
 
     /// The scopes, tasks, and threads the store holds now.
     fn records(store: &Store<()>) -> (usize, usize, usize) {
-        let guard = store.tables().lock().expect("handle tables");
+        let guard = store.internal_ref().tables().lock().expect("handle tables");
         (
             guard.tasks.scopes().len(),
             guard.tasks.task_count(),
@@ -2904,12 +3020,12 @@ mod tests {
     fn it_runs_a_host_resource_destructor_as_a_task_with_one_thread() {
         let engine = Engine::new().expect("engine");
         let mut store = Store::new(&engine, ()).expect("store");
-        let tables = store.tables_handle();
+        let tables = store.internal().tables_handle();
         let seen: Arc<Mutex<Option<SeenByDestructor>>> = Arc::new(Mutex::new(None));
         let recorded = seen.clone();
 
         let type_id = ResourceTypeId::fresh();
-        store.context().register_resource(
+        store.internal().context().register_resource(
             type_id,
             None,
             ResourceDestructor::Host(Arc::new(move |_data: &mut (), _rep: u32| {
@@ -2946,12 +3062,12 @@ mod tests {
     fn it_ends_the_destructor_task_when_a_host_destructor_fails() {
         let engine = Engine::new().expect("engine");
         let mut store = Store::new(&engine, ()).expect("store");
-        let tables = store.tables_handle();
+        let tables = store.internal().tables_handle();
         let seen: Arc<Mutex<Option<SeenByDestructor>>> = Arc::new(Mutex::new(None));
         let recorded = seen.clone();
 
         let type_id = ResourceTypeId::fresh();
-        store.context().register_resource(
+        store.internal().context().register_resource(
             type_id,
             None,
             ResourceDestructor::Host(Arc::new(move |_data: &mut (), _rep: u32| {
@@ -2992,12 +3108,13 @@ mod tests {
         // keeps the first of them and renders that one; it does not
         // carry the set.
         let type_id = ResourceTypeId::fresh();
-        store.context().register_resource(
+        store.internal().context().register_resource(
             type_id,
             Some(ResourceType::new("first")),
             ResourceDestructor::Host(Arc::new(|_data: &mut (), _rep: u32| Ok(()))),
         );
         store
+            .internal()
             .context()
             .name_resource(type_id, ResourceType::new("second"));
 
@@ -3033,15 +3150,18 @@ mod tests {
         // does not take it back.
         let type_id = ResourceTypeId::fresh();
         store
+            .internal()
             .context()
             .fallback_resource_name(type_id, ResourceType::new("swept"));
         store
+            .internal()
             .context()
             .name_resource(type_id, ResourceType::new("imported"));
         store
+            .internal()
             .context()
             .fallback_resource_name(type_id, ResourceType::new("swept-again"));
-        store.context().register_resource(
+        store.internal().context().register_resource(
             type_id,
             None,
             ResourceDestructor::Host(Arc::new(|_data: &mut (), _rep: u32| Ok(()))),

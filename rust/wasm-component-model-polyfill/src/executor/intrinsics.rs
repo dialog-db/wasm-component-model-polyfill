@@ -56,8 +56,10 @@ use crate::abi::transcode::transcode;
 use crate::concurrency::{InstanceId, Scope, ThreadId};
 use crate::error::{Error, Result, TaskCause};
 use crate::executor::ir::{CoreParameter, CoreSignature, TranscodeOp};
+use crate::internal::ErrorInternal;
 use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime};
 use crate::store::StoreContext;
+use crate::store::StoreContextInternalExt;
 
 /// Build a `context.get` intrinsic for `slot`. It reads the slot of
 /// the current thread: the thread of the task on top of the store's
@@ -67,9 +69,9 @@ pub fn build_context_get<T: 'static>(
     slot: usize,
     signature: &CoreSignature,
 ) -> RuntimeFunc {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, _args, results| {
             results[0] = RuntimeVal::I32(context_get(&tables, slot)?);
@@ -98,9 +100,9 @@ pub fn build_context_set<T: 'static>(
     slot: usize,
     signature: &CoreSignature,
 ) -> RuntimeFunc {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, args, _results| {
             let value = arg_u32(args, 0)? as i32;
@@ -168,7 +170,7 @@ pub fn build_trap<T: 'static>(
         .ok_or_else(|| Error::internal(format!("adapter imported an unknown trap code {code}")))?
         .to_string();
     Ok(RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, _args, _results| Err(anyhow!("{message}")),
     ))
@@ -184,9 +186,9 @@ pub fn build_enter_sync_call<T: 'static>(
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, args, _results| {
             let (callee, callee_async) = enter_sync_call_arguments(&abi_state, args)?;
@@ -217,9 +219,9 @@ pub fn build_exit_sync_call<T: 'static>(
     store: &mut StoreContext<'_, T>,
     signature: &CoreSignature,
 ) -> RuntimeFunc {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, _args, _results| exit_sync_call(&tables),
     )
@@ -277,10 +279,10 @@ pub fn build_backpressure_inc<T: 'static>(
     abi_state: Arc<Mutex<AbiRuntimeState>>,
     instance: usize,
 ) -> RuntimeFunc {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     let index = instance as u32;
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, _args, _results| {
             backpressure_inc(&tables, instance_at(&abi_state, index)?)
@@ -298,10 +300,10 @@ pub fn build_backpressure_dec<T: 'static>(
     abi_state: Arc<Mutex<AbiRuntimeState>>,
     instance: usize,
 ) -> RuntimeFunc {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     let index = instance as u32;
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, _args, _results| {
             backpressure_dec(&tables, instance_at(&abi_state, index)?)
@@ -388,9 +390,9 @@ pub fn build_resource_transfer<T: 'static>(
     abi_state: Arc<Mutex<AbiRuntimeState>>,
     own: bool,
 ) -> RuntimeFunc {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, args, results| {
             let index = arg_u32(args, 0)?;
@@ -497,9 +499,9 @@ pub fn build_transcoder<T: 'static>(
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
     let result_widths: Vec<FlatType> = signature.results.clone();
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         core_func_type(signature),
         move |store_ctx, args, results| {
             let source = BoundaryOptions::for_memory(from_memory, &abi_state)?;
@@ -549,8 +551,10 @@ mod tests {
     use super::*;
     use crate::concurrency::{Item, ItemKind};
     use crate::engine::Engine;
+    use crate::internal::ResourceTypeIdInternal;
     use crate::resource::{ResourceTypeId, TableId};
     use crate::store::Store;
+    use crate::store::{StoreContextInternalExt, StoreInternalExt};
 
     fn runtime(table: TableId, type_id: ResourceTypeId) -> ResourceTableRuntime {
         ResourceTableRuntime {
@@ -884,12 +888,14 @@ mod tests {
         item: Item<()>,
     ) {
         let task = store
+            .internal()
             .tables()
             .lock()
             .expect("tables")
             .tasks
             .create_task(None, None, instance);
         store
+            .internal()
             .start_export_thread(task, instance, async_function, false, item)
             .expect("queue the task's start");
     }
@@ -920,15 +926,28 @@ mod tests {
         // backpressure built-ins are built from.
         let engine = Engine::new().expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-        let tables = store.tables_handle();
+        let tables = store.internal().tables_handle();
         let instance = tables.lock().expect("tables").tasks.insert_instance();
         let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
 
         backpressure_inc(&tables, instance).expect("the guest raises backpressure");
-        queue_task(&mut store.context(), &log, instance, true, "async");
-        queue_task(&mut store.context(), &log, instance, false, "sync");
+        queue_task(
+            &mut store.internal().context(),
+            &log,
+            instance,
+            true,
+            "async",
+        );
+        queue_task(
+            &mut store.internal().context(),
+            &log,
+            instance,
+            false,
+            "sync",
+        );
 
         store
+            .internal()
             .turn(Waker::noop())
             .expect("the turn with the gate shut");
 
@@ -938,13 +957,14 @@ mod tests {
             "a task of a synchronous function type ignores the counter"
         );
         assert_eq!(
-            store.scheduler().waiting_at_gate(),
+            store.internal().scheduler().waiting_at_gate(),
             1,
             "the task of an `async` function type waits at the gate"
         );
 
         backpressure_dec(&tables, instance).expect("the guest lowers backpressure");
         store
+            .internal()
             .turn(Waker::noop())
             .expect("the turn with the gate open");
 
@@ -953,14 +973,14 @@ mod tests {
             vec!["sync", "async"],
             "the counter back at zero lets the waiting task start"
         );
-        assert_eq!(store.scheduler().waiting_at_gate(), 0);
+        assert_eq!(store.internal().scheduler().waiting_at_gate(), 0);
     }
 
     #[wcmp_macros::test]
     fn it_opens_the_gate_for_the_next_turn_when_a_running_task_lowers_the_counter() {
         let engine = Engine::new().expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-        let tables = store.tables_handle();
+        let tables = store.internal().tables_handle();
         let instance = tables.lock().expect("tables").tasks.insert_instance();
         let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
 
@@ -981,16 +1001,25 @@ mod tests {
                 },
             )
         };
-        queue_item(&mut store.context(), instance, false, lowering);
-        queue_task(&mut store.context(), &log, instance, true, "async");
+        queue_item(&mut store.internal().context(), instance, false, lowering);
+        queue_task(
+            &mut store.internal().context(),
+            &log,
+            instance,
+            true,
+            "async",
+        );
 
         assert_eq!(
-            store.scheduler().waiting_at_gate(),
+            store.internal().scheduler().waiting_at_gate(),
             1,
             "the task of an `async` function type starts out at the gate"
         );
 
-        store.turn(Waker::noop()).expect("the turn that lowers it");
+        store
+            .internal()
+            .turn(Waker::noop())
+            .expect("the turn that lowers it");
 
         assert_eq!(
             log.lock().expect("log").clone(),
@@ -999,12 +1028,15 @@ mod tests {
              the gate let go of is that turn's fresh readiness"
         );
         assert_eq!(
-            store.scheduler().waiting_at_gate(),
+            store.internal().scheduler().waiting_at_gate(),
             0,
             "the gate let it through as the turn ended"
         );
 
-        store.turn(Waker::noop()).expect("the turn that starts it");
+        store
+            .internal()
+            .turn(Waker::noop())
+            .expect("the turn that starts it");
 
         assert_eq!(
             log.lock().expect("log").clone(),

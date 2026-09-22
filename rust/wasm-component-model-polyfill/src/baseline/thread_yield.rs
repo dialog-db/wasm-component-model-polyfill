@@ -41,13 +41,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use wasm_component_model_polyfill::{
+use crate::internal::AccessorInternal;
+use crate::internal::FuncInternal;
+use crate::store::{StoreContextInternalExt, StoreInternalExt};
+use crate::{
     Accessor, Component, Engine, Error, Func, HostCall, Instance, Linker, Result, Store, Val,
 };
 use wcmp_macros::component;
-
-#[cfg(target_arch = "wasm32")]
-wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 /// Two component instances behind one host import.
 ///
@@ -327,8 +327,8 @@ fn entries(log: &Log) -> Vec<u32> {
 macro_rules! handle_table {
     ($instance:expr, $name:expr) => {{
         let export = func($instance, $name);
-        let state = export.abi_state.lock().expect("the instance's ABI state");
-        state.handle_tables[export.options.instance]
+        let state = export.abi_state().lock().expect("the instance's ABI state");
+        state.handle_tables[export.options().instance]
     }};
 }
 
@@ -340,7 +340,7 @@ macro_rules! handle_table {
 /// through the records.
 fn ready_subtask_in_set(store: &mut Store<()>, instance: &Instance, new_set: &str, set_index: u32) {
     let table = handle_table!(instance, new_set);
-    let mut guard = store.tables().lock().expect("handle tables");
+    let mut guard = store.internal().tables().lock().expect("handle tables");
     let set = guard
         .waitable_set_from_handle(table, set_index)
         .expect("the guest's index names the set it created");
@@ -775,7 +775,7 @@ async fn instantiate_with_a_refusal(binary: &[u8]) -> (Store<()>, Instance, Log)
             if entry != REFUSED_AT {
                 return Ok(());
             }
-            let accessor: Accessor<()> = Accessor::new(call.store().id());
+            let accessor: Accessor<()> = Accessor::new(call.store().internal().id());
             accessor.with(|store| *store.data())?;
             Ok(())
         },

@@ -100,6 +100,7 @@ use crate::component::{
 };
 use crate::error::{Error, LinkError, Result, TypeMismatch, TypeMismatchPosition, TypeRendering};
 use crate::identifier::InterfaceIdentifier;
+use crate::internal::LinkerInternal;
 use crate::resource::ResourceTypeId;
 use crate::types::{ResourceType, ValueType};
 
@@ -239,9 +240,9 @@ fn check_shared_identities<T: 'static>(
             };
             match seen.get(&index) {
                 None => {
-                    seen.insert(index, (host.type_id, position.for_item(&item.name)));
+                    seen.insert(index, (host.type_id(), position.for_item(&item.name)));
                 }
-                Some((first, _)) if *first == host.type_id => {}
+                Some((first, _)) if *first == host.type_id() => {}
                 Some(_) => {
                     return Err(Error::from(TypeMismatch {
                         position: position.for_item(&item.name),

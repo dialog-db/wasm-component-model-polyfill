@@ -27,6 +27,7 @@
 mod handle;
 mod handle_kind;
 mod handle_lookup_error;
+mod handle_parts;
 mod identity;
 mod table;
 mod table_id;
@@ -37,6 +38,7 @@ mod task_end;
 pub use handle::ResourceHandle;
 pub use handle_kind::HandleKind;
 pub use handle_lookup_error::HandleLookupError;
+pub use handle_parts::ResourceHandleParts;
 pub use identity::ResourceTypeId;
 pub use table_id::TableId;
 pub use table_runtime::ResourceTableRuntime;

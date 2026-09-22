@@ -8,7 +8,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::concurrency::{InstanceId, Scheduler, TaskId, TurnGuard};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
-use crate::resource::{HandleLookupError, HandleTables, ResourceHandle, ResourceTypeId};
+use crate::internal::ErrorInternal;
+use crate::resource::{
+    HandleLookupError, HandleTables, ResourceHandle, ResourceHandleParts, ResourceTypeId,
+};
 use crate::types::{ResourceType, ValueType};
 
 use super::store_id::StoreId;
@@ -245,22 +248,23 @@ impl<T: 'static> StoreData<T> {
         let mut guard = self.lock_tables()?;
         let table = guard.host_table(type_id);
         let index = guard.insert_own(table, type_id, guest_defined, rep);
-        Ok(ResourceHandle {
+        Ok(ResourceHandleParts {
             type_id,
             index,
             rep,
-        })
+        }
+        .into())
     }
 
     /// Take the entry of a handle the host holds out of its table,
     /// and report the rep the destructor runs against.
     /// Workspace-internal.
     pub fn remove_host_handle(&self, handle: ResourceHandle) -> Result<u32> {
-        let guest_defined = self.is_guest_defined(handle.type_id);
+        let guest_defined = self.is_guest_defined(handle.type_id());
         let mut guard = self.lock_tables()?;
-        let table = guard.host_table(handle.type_id);
+        let table = guard.host_table(handle.type_id());
         guard
-            .remove_own(table, handle.index, handle.type_id, guest_defined)
+            .remove_own(table, handle.index(), handle.type_id(), guest_defined)
             .map_err(|e| {
                 let reason = match e {
                     HandleLookupError::Unknown { index } => {
@@ -273,7 +277,7 @@ impl<T: 'static> StoreData<T> {
                 };
                 Error::from(AbiError {
                     position: AbiPosition::Argument(0),
-                    valtype: self.resource_type(handle.type_id).map(ValueType::Own),
+                    valtype: self.resource_type(handle.type_id()).map(ValueType::Own),
                     cause: AbiCause::InvalidHandle { reason },
                 })
             })

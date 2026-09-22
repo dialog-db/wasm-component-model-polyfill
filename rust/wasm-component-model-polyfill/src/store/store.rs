@@ -9,11 +9,15 @@ use crate::backend::Backend;
 use crate::concurrency::{Accessor, Outcome, Scheduler};
 use crate::engine::Engine;
 use crate::error::Result;
+use crate::internal::EngineInternal;
 use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId};
 
 use super::store_context::StoreContext;
+use super::store_context::internal::StoreContextInternalExt;
 use super::store_data::StoreData;
 use super::store_id::StoreId;
+
+pub mod internal;
 
 /// The polyfill's owner of guest state.
 ///
@@ -41,6 +45,82 @@ use super::store_id::StoreId;
 /// context and nothing else — but it can build a context of its own,
 /// which is what makes the scheduler and its suspend seam reachable
 /// from inside a guest call.
+///
+/// # What the store does not lend
+///
+/// The scheduler, the handle tables, and the runtime-layer store are
+/// the polyfill's own bookkeeping. Host code holding a `Store` reads
+/// and writes its host data, mints and releases handles, and drives
+/// the store; it reaches none of the three, and the compiler is what
+/// says so. The scheduler:
+///
+/// ```compile_fail
+/// # use wasm_component_model_polyfill::{Engine, Store};
+/// let engine = Engine::new().unwrap();
+/// let mut store = Store::new(&engine, ()).unwrap();
+/// let _ = store.scheduler_mut();
+/// ```
+///
+/// The handle tables:
+///
+/// ```compile_fail
+/// # use wasm_component_model_polyfill::{Engine, Store};
+/// let engine = Engine::new().unwrap();
+/// let store = Store::new(&engine, ()).unwrap();
+/// let _ = store.lock_tables();
+/// ```
+///
+/// The runtime-layer store:
+///
+/// ```compile_fail
+/// # use wasm_component_model_polyfill::{Engine, Store};
+/// let engine = Engine::new().unwrap();
+/// let mut store = Store::new(&engine, ()).unwrap();
+/// let _ = store.inner_mut();
+/// ```
+///
+/// And the seam the crate reaches all three through. That one is not
+/// a private method but a method of [`StoreInternalExt`], so a block
+/// that calls it has to import the trait, and the import is what has
+/// to fail: a caller outside the crate has no name for it, because
+/// `lib.rs` re-exports the store and not its seam. Importing a name
+/// `lib.rs` does re-export, from the same module, is what the working
+/// case looks like:
+///
+/// ```rust
+/// use wasm_component_model_polyfill::Store;
+/// let _: Option<Store<()>> = None;
+/// ```
+///
+/// Importing the seam does not resolve, so the call never gets as far
+/// as being looked up:
+///
+/// ```compile_fail
+/// # use wasm_component_model_polyfill::{Engine, Store};
+/// use wasm_component_model_polyfill::StoreInternalExt;
+/// let engine = Engine::new().unwrap();
+/// let mut store = Store::new(&engine, ()).unwrap();
+/// let _ = store.internal();
+/// ```
+///
+/// The same holds of the borrow of the store a host function is
+/// handed. A turn of the store is reachable from the [`Store`] and
+/// from nowhere else:
+///
+/// ```compile_fail
+/// # use wasm_component_model_polyfill::{Engine, Store};
+/// # use core::task::Waker;
+/// let engine = Engine::new().unwrap();
+/// let mut store = Store::new(&engine, ()).unwrap();
+/// let _ = store.turn(Waker::noop());
+/// ```
+///
+/// A private-method block compiles the moment the method is made
+/// public, and the seam block compiles the moment `lib.rs` re-exports
+/// the trait, so each one is a standing check that neither has
+/// happened.
+///
+/// [`StoreInternalExt`]: super::StoreInternalExt
 pub struct Store<T: 'static> {
     inner: wasm_runtime_layer::Store<StoreData<T>, Backend>,
 }
@@ -74,53 +154,53 @@ impl<T: 'static> Store<T> {
     /// borrow of the core store, which carries everything else the
     /// store holds. Every entry that touches guest state lives
     /// there. Workspace-internal; not re-exported by `lib.rs`.
-    pub fn context(&mut self) -> StoreContext<'_, T> {
+    fn context(&mut self) -> StoreContext<'_, T> {
         StoreContext::new(self.inner.as_context_mut())
     }
 
     /// Everything the store carries: the host's data and the
     /// polyfill's own state. Workspace-internal.
-    pub fn store_data(&self) -> &StoreData<T> {
+    fn store_data(&self) -> &StoreData<T> {
         self.inner.data()
     }
 
     /// Everything the store carries, mutably. Workspace-internal.
-    pub fn store_data_mut(&mut self) -> &mut StoreData<T> {
+    fn store_data_mut(&mut self) -> &mut StoreData<T> {
         self.inner.data_mut()
     }
 
     /// The store's process-unique identity. Workspace-internal.
-    pub fn id(&self) -> StoreId {
+    fn id(&self) -> StoreId {
         self.store_data().id()
     }
 
     /// The store's handle tables. Workspace-internal.
-    pub fn tables(&self) -> &Arc<Mutex<HandleTables>> {
+    fn tables(&self) -> &Arc<Mutex<HandleTables>> {
         self.store_data().tables()
     }
 
     /// Clone the handle for the per-store handle-tables ledger.
     /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn tables_handle(&self) -> Arc<Mutex<HandleTables>> {
+    fn tables_handle(&self) -> Arc<Mutex<HandleTables>> {
         self.store_data().tables_handle()
     }
 
     /// Lock the store's handle tables and record state.
     /// Workspace-internal.
-    pub fn lock_tables(&self) -> Result<MutexGuard<'_, HandleTables>> {
+    fn lock_tables(&self) -> Result<MutexGuard<'_, HandleTables>> {
         self.store_data().lock_tables()
     }
 
     /// The store's cooperative scheduler: the ready queues, the host
     /// tasks, the entry gate, and the suspend seam.
     /// Workspace-internal.
-    pub fn scheduler(&self) -> &Scheduler<T> {
+    fn scheduler(&self) -> &Scheduler<T> {
         self.store_data().scheduler()
     }
 
     /// The store's cooperative scheduler, mutably.
     /// Workspace-internal.
-    pub fn scheduler_mut(&mut self) -> &mut Scheduler<T> {
+    fn scheduler_mut(&mut self) -> &mut Scheduler<T> {
         self.store_data_mut().scheduler_mut()
     }
 
@@ -155,27 +235,22 @@ impl<T: 'static> Store<T> {
     /// Dropping the store instead runs no destructor: a handle the
     /// host never released is leaked, as in Wasmtime.
     pub fn resource_drop(&mut self, handle: ResourceHandle) -> Result<()> {
-        self.context().resource_drop(handle)
+        let mut context = self.context();
+        context.internal().resource_drop(handle)
     }
 
     /// Whether a turn of this store is running. A driver entered
     /// while another driver of the same store is inside a turn fails
     /// with the recursive-driver cause. Workspace-internal.
-    pub fn turn_in_flight(&self) -> bool {
+    fn turn_in_flight(&self) -> bool {
         self.store_data().turn_in_flight()
-    }
-
-    /// Whether the store holds work only a turn can carry forward:
-    /// an item in one of the ready queues, deferred work included,
-    /// or a host task that has not resolved. Workspace-internal.
-    pub fn has_pending_work(&self) -> bool {
-        self.store_data().has_pending_work()
     }
 
     /// Run one turn of the store's scheduler. Workspace-internal;
     /// see [`StoreContext::turn`], which is where a turn lives.
-    pub fn turn(&mut self, waker: &Waker) -> Result<Outcome> {
-        self.context().turn(waker)
+    fn turn(&mut self, waker: &Waker) -> Result<Outcome> {
+        let mut context = self.context();
+        context.internal().turn(waker)
     }
 
     /// Run `body` with an accessor to this store, driving the
@@ -241,20 +316,21 @@ impl<T: 'static> Store<T> {
     where
         F: AsyncFnOnce(&Accessor<T>) -> R,
     {
-        self.context().run_concurrent(body).await
+        let mut context = self.context();
+        context.internal().run_concurrent(body).await
     }
 
     /// Borrow the wrapped runtime-layer store.
     ///
     /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn inner(&self) -> &wasm_runtime_layer::Store<StoreData<T>, Backend> {
+    fn inner(&self) -> &wasm_runtime_layer::Store<StoreData<T>, Backend> {
         &self.inner
     }
 
     /// Mutably borrow the wrapped runtime-layer store.
     ///
     /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn inner_mut(&mut self) -> &mut wasm_runtime_layer::Store<StoreData<T>, Backend> {
+    fn inner_mut(&mut self) -> &mut wasm_runtime_layer::Store<StoreData<T>, Backend> {
         &mut self.inner
     }
 }
@@ -279,6 +355,7 @@ mod tests {
     use crate::concurrency::{HostTask, Item, ItemKind};
     use crate::engine::Engine;
     use crate::executor::ResourceDestructor;
+    use crate::internal::ResourceTypeIdInternal;
     use crate::value::Val;
 
     use super::*;
@@ -293,7 +370,7 @@ mod tests {
         let destructor_runs = Arc::new(AtomicUsize::new(0));
         let counted = destructor_runs.clone();
         let type_id = ResourceTypeId::fresh();
-        store.context().register_resource(
+        store.context().internal().register_resource(
             type_id,
             None,
             ResourceDestructor::Host(Arc::new(move |_data: &mut (), _rep: u32| {

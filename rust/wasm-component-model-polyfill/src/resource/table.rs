@@ -149,6 +149,7 @@ impl Default for HandleTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::internal::ResourceTypeIdInternal;
 
     fn own(rep: u32) -> HandleKind {
         HandleKind::Own {

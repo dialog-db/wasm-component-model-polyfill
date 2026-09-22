@@ -4,6 +4,8 @@
 
 use wasm_runtime_layer::Extern as RuntimeExtern;
 
+use crate::internal::{CoreExternInternal, CoreExternParts, CoreExternTypeInternal};
+use crate::store::StoreInternalExt;
 use crate::store::{Store, StoreId};
 
 use super::core_extern_type::CoreExternType;
@@ -25,18 +27,35 @@ use super::core_extern_type::CoreExternType;
 /// [`Module::instantiate`]: super::Module::instantiate
 #[derive(Clone)]
 pub struct CoreExtern {
-    /// The runtime-layer item. Workspace-internal; never re-exported
-    /// through `lib.rs`.
-    pub inner: RuntimeExtern,
+    /// The runtime-layer item.
+    inner: RuntimeExtern,
     /// The identity of the store the item lives in.
-    /// Workspace-internal; never re-exported through `lib.rs`.
-    pub store_id: StoreId,
+    store_id: StoreId,
+}
+
+impl From<CoreExternParts> for CoreExtern {
+    fn from(parts: CoreExternParts) -> Self {
+        Self {
+            inner: parts.inner,
+            store_id: parts.store_id,
+        }
+    }
+}
+
+impl CoreExternInternal for CoreExtern {
+    fn inner(&self) -> &RuntimeExtern {
+        &self.inner
+    }
+
+    fn store_id(&self) -> StoreId {
+        self.store_id
+    }
 }
 
 impl CoreExtern {
     /// The type of the item.
     pub fn ty<T: 'static>(&self, store: &Store<T>) -> CoreExternType {
-        CoreExternType::from_runtime(&self.inner.ty(store.inner()))
+        CoreExternType::from_runtime(&self.inner.ty(store.internal_ref().inner()))
     }
 }
 

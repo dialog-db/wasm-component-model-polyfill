@@ -904,6 +904,7 @@ impl<T: 'static> Default for Scheduler<T> {
 
 #[cfg(test)]
 mod tests {
+    use crate::store::{StoreContextInternalExt, StoreInternalExt};
     use core::future::Future;
     use core::pin::Pin;
     use core::task::{Context, Poll, Waker};
@@ -958,6 +959,7 @@ mod tests {
     /// A component instance record with nothing set.
     fn instance(store: &Store<()>) -> InstanceId {
         store
+            .internal_ref()
             .tables()
             .lock()
             .expect("tables")
@@ -969,6 +971,7 @@ mod tests {
     /// shuts and opens its entry gate.
     fn set_backpressure(store: &Store<()>, instance: InstanceId, value: u32) {
         store
+            .internal_ref()
             .tables()
             .lock()
             .expect("tables")
@@ -988,12 +991,14 @@ mod tests {
         build: impl FnOnce(TaskId) -> Item<()>,
     ) -> TaskId {
         let task = store
+            .internal()
             .tables()
             .lock()
             .expect("tables")
             .tasks
             .create_task(None, None, instance);
         store
+            .internal()
             .start_export_thread(task, instance, async_function, needs_exclusive, build(task))
             .expect("queue the task's start");
         task
@@ -1022,13 +1027,15 @@ mod tests {
         item: Item<()>,
     ) -> TaskId {
         let task = store
+            .internal()
             .tables()
             .lock()
             .expect("tables")
             .tasks
             .create_task(None, None, instance);
-        store.scheduler_mut().switch_to(item);
+        store.internal().scheduler_mut().switch_to(item);
         store
+            .internal()
             .start_switched_export_thread(task, instance, async_function, needs_exclusive)
             .expect("queue the task's start");
         task
@@ -1046,9 +1053,10 @@ mod tests {
             ItemKind::TaskStart,
             move |store: &mut StoreContext<'_, ()>| {
                 log.lock().expect("log").push(name);
-                store.enter_export_task(task)?;
-                store.resolve_export_task(task, None)?;
+                store.internal().enter_export_task(task)?;
+                store.internal().resolve_export_task(task, None)?;
                 store
+                    .internal()
                     .exit_export_task(task)?
                     .expect("the call dropped every borrow it took");
                 Ok(())
@@ -1061,11 +1069,15 @@ mod tests {
         let mut store = store();
         let log = log();
         store
+            .internal()
             .scheduler_mut()
             .push_high_priority(marker(&log, "high"));
-        store.scheduler_mut().switch_to(marker(&log, "switch"));
+        store
+            .internal()
+            .scheduler_mut()
+            .switch_to(marker(&log, "switch"));
 
-        let outcome = store.turn(Waker::noop()).expect("turn");
+        let outcome = store.internal().turn(Waker::noop()).expect("turn");
 
         assert_eq!(outcome, Outcome::Idle, "both items ran and nothing is left");
         assert_eq!(
@@ -1080,13 +1092,15 @@ mod tests {
         let mut store = store();
         let log = log();
         store
+            .internal()
             .scheduler_mut()
             .push_high_priority(marker(&log, "first"));
         store
+            .internal()
             .scheduler_mut()
             .push_high_priority(marker(&log, "second"));
 
-        store.turn(Waker::noop()).expect("turn");
+        store.internal().turn(Waker::noop()).expect("turn");
 
         assert_eq!(entries(&log), vec!["first", "second"]);
     }
@@ -1101,32 +1115,34 @@ mod tests {
         // Three items of one instance and one of another, plus one
         // that names no instance at all.
         start(
-            &mut store.context(),
+            &mut store.internal().context(),
             mine,
             false,
             true,
             marker(&log, "mine"),
         );
         start(
-            &mut store.context(),
+            &mut store.internal().context(),
             other,
             false,
             true,
             marker(&log, "other"),
         );
         start(
-            &mut store.context(),
+            &mut store.internal().context(),
             mine,
             false,
             true,
             marker(&log, "mine again"),
         );
         store
+            .internal()
             .scheduler_mut()
             .push_high_priority(marker(&log, "no instance"));
 
-        while let Some(item) = store.scheduler_mut().take_ready_in(mine) {
-            item.run(&mut store.context()).expect("the item runs");
+        while let Some(item) = store.internal().scheduler_mut().take_ready_in(mine) {
+            item.run(&mut store.internal().context())
+                .expect("the item runs");
         }
 
         assert_eq!(
@@ -1135,7 +1151,7 @@ mod tests {
             "the instance's own work ran, in queue order, and nothing else did"
         );
         assert_eq!(
-            store.scheduler().queued_items(),
+            store.internal().scheduler().queued_items(),
             2,
             "the other instance's item and the item that names none are still \
              queued for a turn of the scheduler"
@@ -1148,17 +1164,21 @@ mod tests {
         let log = log();
         let mine = instance(&store);
         store
+            .internal()
             .scheduler_mut()
             .push_high_priority(marker(&log, "queued").in_instance(mine));
         store
+            .internal()
             .scheduler_mut()
             .switch_to(marker(&log, "switch").in_instance(mine));
 
         let item = store
+            .internal()
             .scheduler_mut()
             .take_ready_in(mine)
             .expect("the slot holds this instance's work");
-        item.run(&mut store.context()).expect("the item runs");
+        item.run(&mut store.internal().context())
+            .expect("the item runs");
 
         assert_eq!(
             entries(&log),
@@ -1167,7 +1187,7 @@ mod tests {
              a turn of the whole scheduler"
         );
         assert_eq!(
-            store.scheduler().queued_items(),
+            store.internal().scheduler().queued_items(),
             1,
             "the slot is empty and the instance's queued item is what is left"
         );
@@ -1180,17 +1200,21 @@ mod tests {
         let mine = instance(&store);
         let other = instance(&store);
         store
+            .internal()
             .scheduler_mut()
             .push_high_priority(marker(&log, "mine").in_instance(mine));
         store
+            .internal()
             .scheduler_mut()
             .switch_to(marker(&log, "another instance").in_instance(other));
 
         let item = store
+            .internal()
             .scheduler_mut()
             .take_ready_in(mine)
             .expect("the queue holds this instance's work");
-        item.run(&mut store.context()).expect("the item runs");
+        item.run(&mut store.internal().context())
+            .expect("the item runs");
 
         assert_eq!(
             entries(&log),
@@ -1202,10 +1226,12 @@ mod tests {
         // The slot kept its item rather than losing it to the skip: a
         // turn of the whole scheduler still runs it, and runs it first.
         let left = store
+            .internal()
             .scheduler_mut()
             .take_ready()
             .expect("the switch slot kept its item");
-        left.run(&mut store.context()).expect("the item runs");
+        left.run(&mut store.internal().context())
+            .expect("the item runs");
 
         assert_eq!(entries(&log), vec!["mine", "another instance"]);
     }
@@ -1214,15 +1240,22 @@ mod tests {
     fn it_takes_the_resume_after_yield_slot_before_the_low_priority_queue() {
         let mut store = store();
         let log = log();
-        store.scheduler_mut().push_low_priority(marker(&log, "one"));
-        store.scheduler_mut().push_low_priority(marker(&log, "two"));
+        store
+            .internal()
+            .scheduler_mut()
+            .push_low_priority(marker(&log, "one"));
+        store
+            .internal()
+            .scheduler_mut()
+            .push_low_priority(marker(&log, "two"));
         assert!(
-            store.scheduler_mut().defer_low_priority(),
+            store.internal().scheduler_mut().defer_low_priority(),
             "the front of the queue moves into the resume-after-yield slot"
         );
 
-        while let Some(item) = store.scheduler_mut().take_deferred() {
-            item.run(&mut store.context()).expect("the item runs");
+        while let Some(item) = store.internal().scheduler_mut().take_deferred() {
+            item.run(&mut store.internal().context())
+                .expect("the item runs");
         }
 
         assert_eq!(
@@ -1232,7 +1265,7 @@ mod tests {
              order a driver's turns would have run them in"
         );
         assert_eq!(
-            store.scheduler().queued_items(),
+            store.internal().scheduler().queued_items(),
             0,
             "nothing deferred was left behind"
         );
@@ -1245,17 +1278,21 @@ mod tests {
         let mine = instance(&store);
         let other = instance(&store);
         store
+            .internal()
             .scheduler_mut()
             .push_low_priority(marker(&log, "other").in_instance(other));
         store
+            .internal()
             .scheduler_mut()
             .push_low_priority(marker(&log, "mine").in_instance(mine));
         store
+            .internal()
             .scheduler_mut()
             .push_low_priority(marker(&log, "no instance"));
 
-        while let Some(item) = store.scheduler_mut().take_deferred_in(mine) {
-            item.run(&mut store.context()).expect("the item runs");
+        while let Some(item) = store.internal().scheduler_mut().take_deferred_in(mine) {
+            item.run(&mut store.internal().context())
+                .expect("the item runs");
         }
 
         assert_eq!(
@@ -1265,7 +1302,7 @@ mod tests {
              own instance and to nothing else"
         );
         assert_eq!(
-            store.scheduler().queued_items(),
+            store.internal().scheduler().queued_items(),
             2,
             "the other instance's item and the item that names none are still \
              queued for a turn of the scheduler"
@@ -1276,12 +1313,16 @@ mod tests {
     fn it_yields_to_the_driver_before_it_runs_a_low_priority_item() {
         let mut store = store();
         let log = log();
-        store.scheduler_mut().push_low_priority(marker(&log, "low"));
         store
+            .internal()
+            .scheduler_mut()
+            .push_low_priority(marker(&log, "low"));
+        store
+            .internal()
             .scheduler_mut()
             .push_high_priority(marker(&log, "high"));
 
-        let first = store.turn(Waker::noop()).expect("first turn");
+        let first = store.internal().turn(Waker::noop()).expect("first turn");
 
         assert_eq!(
             first,
@@ -1294,7 +1335,7 @@ mod tests {
             "the high-priority queue drains first, and the low-priority item has not run"
         );
 
-        let second = store.turn(Waker::noop()).expect("second turn");
+        let second = store.internal().turn(Waker::noop()).expect("second turn");
 
         assert_eq!(second, Outcome::Idle);
         assert_eq!(
@@ -1312,16 +1353,16 @@ mod tests {
         set_backpressure(&store, instance, 1);
 
         start(
-            &mut store.context(),
+            &mut store.internal().context(),
             instance,
             false,
             true,
             marker(&log, "sync"),
         );
-        store.turn(Waker::noop()).expect("turn");
+        store.internal().turn(Waker::noop()).expect("turn");
 
         assert_eq!(
-            store.scheduler().waiting_at_gate(),
+            store.internal().scheduler().waiting_at_gate(),
             0,
             "a task of a synchronous export never waits at the gate"
         );
@@ -1337,7 +1378,7 @@ mod tests {
 
         for name in ["first", "second", "third"] {
             start(
-                &mut store.context(),
+                &mut store.internal().context(),
                 instance,
                 true,
                 false,
@@ -1345,21 +1386,27 @@ mod tests {
             );
         }
 
-        let shut = store.turn(Waker::noop()).expect("turn with the gate shut");
+        let shut = store
+            .internal()
+            .turn(Waker::noop())
+            .expect("turn with the gate shut");
 
         assert_eq!(
             shut,
             Outcome::Idle,
             "nothing is ready while the gate holds every task"
         );
-        assert_eq!(store.scheduler().waiting_at_gate(), 3);
+        assert_eq!(store.internal().scheduler().waiting_at_gate(), 3);
         assert!(entries(&log).is_empty(), "no task's thread has run");
 
         set_backpressure(&store, instance, 0);
-        let open = store.turn(Waker::noop()).expect("turn with the gate open");
+        let open = store
+            .internal()
+            .turn(Waker::noop())
+            .expect("turn with the gate open");
 
         assert_eq!(open, Outcome::Idle);
-        assert_eq!(store.scheduler().waiting_at_gate(), 0);
+        assert_eq!(store.internal().scheduler().waiting_at_gate(), 0);
         assert_eq!(
             entries(&log),
             vec!["first", "second", "third"],
@@ -1374,7 +1421,7 @@ mod tests {
         let instance = instance(&store);
         set_backpressure(&store, instance, 1);
         start(
-            &mut store.context(),
+            &mut store.internal().context(),
             instance,
             true,
             false,
@@ -1385,13 +1432,13 @@ mod tests {
         // Nothing blocks the second task, but one is already
         // waiting, so it queues behind it rather than overtaking it.
         start(
-            &mut store.context(),
+            &mut store.internal().context(),
             instance,
             true,
             false,
             marker(&log, "late"),
         );
-        store.turn(Waker::noop()).expect("turn");
+        store.internal().turn(Waker::noop()).expect("turn");
 
         assert_eq!(entries(&log), vec!["early", "late"]);
     }
@@ -1405,14 +1452,14 @@ mod tests {
         // already waits at the gate behind it, so the callee of a
         // call between two components arrives third.
         start(
-            &mut store.context(),
+            &mut store.internal().context(),
             instance,
             true,
             true,
             marker(&log, "holder"),
         );
         start(
-            &mut store.context(),
+            &mut store.internal().context(),
             instance,
             true,
             true,
@@ -1420,7 +1467,7 @@ mod tests {
         );
 
         start_switched(
-            &mut store.context(),
+            &mut store.internal().context(),
             instance,
             true,
             true,
@@ -1431,7 +1478,9 @@ mod tests {
         // empty: the callee is not ready, so nothing runs inside the
         // caller's frame.
         store
+            .internal()
             .context()
+            .internal()
             .run_switch_slot()
             .expect("the caller's trampoline runs the slot");
 
@@ -1440,11 +1489,15 @@ mod tests {
             "the gate held the callee, so the slot the trampoline ran was empty"
         );
         assert!(
-            store.scheduler_mut().take_switch_slot().is_none(),
+            store
+                .internal()
+                .scheduler_mut()
+                .take_switch_slot()
+                .is_none(),
             "the held task left nothing in the slot"
         );
         assert_eq!(
-            store.scheduler().waiting_at_gate(),
+            store.internal().scheduler().waiting_at_gate(),
             2,
             "the callee waits at the gate behind the task that arrived before it"
         );
@@ -1458,14 +1511,22 @@ mod tests {
         // The two earlier tasks each end their call the way the
         // export path ends one, so the instance goes back and the
         // gate lets the next task through.
-        start_with(&mut store.context(), instance, true, true, |task| {
-            export_call(&log, "holder", task)
-        });
-        start_with(&mut store.context(), instance, true, true, |task| {
-            export_call(&log, "early", task)
-        });
+        start_with(
+            &mut store.internal().context(),
+            instance,
+            true,
+            true,
+            |task| export_call(&log, "holder", task),
+        );
+        start_with(
+            &mut store.internal().context(),
+            instance,
+            true,
+            true,
+            |task| export_call(&log, "early", task),
+        );
         start_switched(
-            &mut store.context(),
+            &mut store.internal().context(),
             instance,
             true,
             true,
@@ -1473,7 +1534,9 @@ mod tests {
         );
 
         store
+            .internal()
             .context()
+            .internal()
             .run_switch_slot()
             .expect("the caller's trampoline runs the slot");
         // A turn hands what the gate let through to the turn that
@@ -1482,20 +1545,29 @@ mod tests {
         // then the callee the switch slot brought. The log after
         // each turn says so, and says it is one task per turn
         // rather than three in the first.
-        store.turn(Waker::noop()).expect("the holder's turn");
+        store
+            .internal()
+            .turn(Waker::noop())
+            .expect("the holder's turn");
         assert_eq!(
             entries(&log),
             vec!["holder"],
             "the holder ran alone, and the task its ended call released is \
              the next turn's"
         );
-        store.turn(Waker::noop()).expect("the early task's turn");
+        store
+            .internal()
+            .turn(Waker::noop())
+            .expect("the early task's turn");
         assert_eq!(
             entries(&log),
             vec!["holder", "early"],
             "and the callee behind it is the turn after that one's"
         );
-        store.turn(Waker::noop()).expect("the callee's turn");
+        store
+            .internal()
+            .turn(Waker::noop())
+            .expect("the callee's turn");
 
         assert_eq!(
             entries(&log),
@@ -1503,7 +1575,7 @@ mod tests {
             "the callee the gate held started in arrival order, behind the \
              tasks that were already waiting"
         );
-        assert_eq!(store.scheduler().waiting_at_gate(), 0);
+        assert_eq!(store.internal().scheduler().waiting_at_gate(), 0);
     }
 
     #[wcmp_macros::test]
@@ -1513,27 +1585,27 @@ mod tests {
         let instance = instance(&store);
 
         start(
-            &mut store.context(),
+            &mut store.internal().context(),
             instance,
             true,
             true,
             marker(&log, "exclusive"),
         );
         start(
-            &mut store.context(),
+            &mut store.internal().context(),
             instance,
             true,
             true,
             marker(&log, "queued"),
         );
-        store.turn(Waker::noop()).expect("turn");
+        store.internal().turn(Waker::noop()).expect("turn");
 
         assert_eq!(
             entries(&log),
             vec!["exclusive"],
             "the second task waits for the exclusive thread the first took"
         );
-        assert_eq!(store.scheduler().waiting_at_gate(), 1);
+        assert_eq!(store.internal().scheduler().waiting_at_gate(), 1);
     }
 
     #[wcmp_macros::test]
@@ -1547,11 +1619,15 @@ mod tests {
         // exit is what ends the task's implicit thread, so the
         // instance goes back while the task record is still there
         // to say which thread held it.
-        start_with(&mut store.context(), instance, true, true, |task| {
-            export_call(&log, "exclusive", task)
-        });
+        start_with(
+            &mut store.internal().context(),
+            instance,
+            true,
+            true,
+            |task| export_call(&log, "exclusive", task),
+        );
         start(
-            &mut store.context(),
+            &mut store.internal().context(),
             instance,
             true,
             true,
@@ -1560,7 +1636,10 @@ mod tests {
 
         // The first turn runs the holder and opens the gate as it
         // ends; the task the gate let through is the second turn's.
-        store.turn(Waker::noop()).expect("the holder's turn");
+        store
+            .internal()
+            .turn(Waker::noop())
+            .expect("the holder's turn");
 
         assert_eq!(
             entries(&log),
@@ -1569,19 +1648,22 @@ mod tests {
              not run in it"
         );
         assert_eq!(
-            store.scheduler().waiting_at_gate(),
+            store.internal().scheduler().waiting_at_gate(),
             0,
             "though the gate had already let that task go"
         );
 
-        store.turn(Waker::noop()).expect("the released task's turn");
+        store
+            .internal()
+            .turn(Waker::noop())
+            .expect("the released task's turn");
 
         assert_eq!(
             entries(&log),
             vec!["exclusive", "queued"],
             "the task at the gate took the instance the ended call gave back"
         );
-        assert_eq!(store.scheduler().waiting_at_gate(), 0);
+        assert_eq!(store.internal().scheduler().waiting_at_gate(), 0);
     }
 
     #[wcmp_macros::test]
@@ -1593,26 +1675,35 @@ mod tests {
         // The same release on the failure path: a call that trapped
         // is abandoned rather than exited, and the instance it held
         // goes back all the same.
-        start_with(&mut store.context(), instance, true, true, |task| {
-            let log = log.clone();
-            Item::new(
-                ItemKind::TaskStart,
-                move |store: &mut StoreContext<'_, ()>| {
-                    log.lock().expect("log").push("abandoned");
-                    store.enter_export_task(task)?;
-                    store.abandon_export_task(task)
-                },
-            )
-        });
+        start_with(
+            &mut store.internal().context(),
+            instance,
+            true,
+            true,
+            |task| {
+                let log = log.clone();
+                Item::new(
+                    ItemKind::TaskStart,
+                    move |store: &mut StoreContext<'_, ()>| {
+                        log.lock().expect("log").push("abandoned");
+                        store.internal().enter_export_task(task)?;
+                        store.internal().abandon_export_task(task)
+                    },
+                )
+            },
+        );
         start(
-            &mut store.context(),
+            &mut store.internal().context(),
             instance,
             true,
             true,
             marker(&log, "queued"),
         );
 
-        store.turn(Waker::noop()).expect("the holder's turn");
+        store
+            .internal()
+            .turn(Waker::noop())
+            .expect("the holder's turn");
 
         assert_eq!(
             entries(&log),
@@ -1621,19 +1712,22 @@ mod tests {
              through has not run in it"
         );
         assert_eq!(
-            store.scheduler().waiting_at_gate(),
+            store.internal().scheduler().waiting_at_gate(),
             0,
             "though the gate had already let that task go"
         );
 
-        store.turn(Waker::noop()).expect("the released task's turn");
+        store
+            .internal()
+            .turn(Waker::noop())
+            .expect("the released task's turn");
 
         assert_eq!(
             entries(&log),
             vec!["abandoned", "queued"],
             "the task at the gate took the instance the failed call gave back"
         );
-        assert_eq!(store.scheduler().waiting_at_gate(), 0);
+        assert_eq!(store.internal().scheduler().waiting_at_gate(), 0);
     }
 
     /// A fresh waitable set record, with a fresh task's implicit
@@ -1649,7 +1743,7 @@ mod tests {
         store: &Store<()>,
         instance: InstanceId,
     ) -> (TaskId, WaitableSetId, ThreadId) {
-        let mut guard = store.tables().lock().expect("tables");
+        let mut guard = store.internal_ref().tables().lock().expect("tables");
         let set = guard.tasks.insert_waitable_set();
         let task = guard.tasks.create_task(None, None, instance);
         let thread = guard.tasks.task(task).expect("task record").implicit_thread;
@@ -1663,6 +1757,7 @@ mod tests {
     /// A fresh task of `instance` with nothing queued for it.
     fn task(store: &Store<()>, instance: InstanceId) -> TaskId {
         store
+            .internal_ref()
             .tables()
             .lock()
             .expect("tables")
@@ -1675,6 +1770,7 @@ mod tests {
     /// arrival.
     fn waiting_to_enter(store: &Store<()>, instance: InstanceId) -> u32 {
         store
+            .internal_ref()
             .tables()
             .lock()
             .expect("tables")
@@ -1687,6 +1783,7 @@ mod tests {
     /// How many threads `set` counts as waiting on it.
     fn waiters_on(store: &Store<()>, set: WaitableSetId) -> u32 {
         store
+            .internal_ref()
             .tables()
             .lock()
             .expect("tables")
@@ -1711,7 +1808,9 @@ mod tests {
         set_backpressure(&store, instance, 1);
         for (task, name) in [(dead, "dead gated"), (live, "live gated")] {
             store
+                .internal()
                 .context()
+                .internal()
                 .start_export_thread(
                     task,
                     instance,
@@ -1722,49 +1821,53 @@ mod tests {
                 .expect("queue the task's start");
         }
         store
+            .internal()
             .scheduler_mut()
             .switch_to(marker(&log, "dead switch").for_task(dead));
         for (task, name) in [(dead, "dead high"), (live, "live high")] {
             store
+                .internal()
                 .scheduler_mut()
                 .push_high_priority(marker(&log, name).for_task(task));
         }
         for (task, name) in [(dead, "dead low"), (live, "live low")] {
             store
+                .internal()
                 .scheduler_mut()
                 .push_low_priority(marker(&log, name).for_task(task));
         }
-        store.scheduler_mut().hold_for_event(
+        store.internal().scheduler_mut().hold_for_event(
             instance,
             thread,
             set,
             EventSlot::new(),
             marker(&log, "dead held").for_task(dead),
         );
-        store.scheduler_mut().hold_for_exclusive(
+        store.internal().scheduler_mut().hold_for_exclusive(
             instance,
             EventSlot::new(),
             marker(&log, "live held").for_task(live),
         );
-        assert_eq!(store.scheduler().queued_items(), 9);
+        assert_eq!(store.internal().scheduler().queued_items(), 9);
         assert_eq!(waiting_to_enter(&store, instance), 2);
         assert_eq!(waiters_on(&store, set), 1);
 
         {
-            let tables = store.tables_handle();
+            let tables = store.internal().tables_handle();
             let mut guard = tables.lock().expect("tables");
             store
+                .internal()
                 .scheduler_mut()
                 .discard_task_items(&mut guard.tasks, dead);
         }
 
         assert_eq!(
-            store.scheduler().queued_items(),
+            store.internal().scheduler().queued_items(),
             4,
             "the five items of the task that ended went, and the four beside them stayed"
         );
         assert_eq!(
-            store.scheduler().waiting_at_gate(),
+            store.internal().scheduler().waiting_at_gate(),
             1,
             "the start the gate held for the task that ended went with it"
         );
@@ -1774,7 +1877,7 @@ mod tests {
             "and the gate no longer counts it, so a later call is not held behind it"
         );
         assert_eq!(
-            store.scheduler().held_callbacks(),
+            store.internal().scheduler().held_callbacks(),
             1,
             "the held callback of the task that ended went with it"
         );
@@ -1787,11 +1890,13 @@ mod tests {
         // What is left runs, in the order it was queued. The switch
         // slot is empty, because the one item it held was the dead
         // task's.
-        while let Some(item) = store.scheduler_mut().take_ready() {
-            item.run(&mut store.context()).expect("the item runs");
+        while let Some(item) = store.internal().scheduler_mut().take_ready() {
+            item.run(&mut store.internal().context())
+                .expect("the item runs");
         }
-        while let Some(item) = store.scheduler_mut().take_deferred() {
-            item.run(&mut store.context()).expect("the item runs");
+        while let Some(item) = store.internal().scheduler_mut().take_deferred() {
+            item.run(&mut store.internal().context())
+                .expect("the item runs");
         }
         assert_eq!(entries(&log), vec!["live high", "live low"]);
     }
@@ -1809,7 +1914,7 @@ mod tests {
         let instance = instance(&store);
         let (parked, set, thread) = task_waiting_on_a_set(&store, instance);
 
-        store.scheduler_mut().hold_for_event(
+        store.internal().scheduler_mut().hold_for_event(
             instance,
             thread,
             set,
@@ -1817,12 +1922,15 @@ mod tests {
             marker(&log, "parked held").for_task(parked),
         );
         store
+            .internal()
             .scheduler_mut()
             .push_high_priority(marker(&log, "parked ready").for_task(parked));
-        assert_eq!(store.scheduler().queued_items(), 2);
+        assert_eq!(store.internal().scheduler().queued_items(), 2);
 
         store
+            .internal()
             .context()
+            .internal()
             .abandon_export_task(parked)
             .expect("abandon the parked task");
 
@@ -1832,7 +1940,7 @@ mod tests {
              on the stack"
         );
         assert_eq!(
-            store.scheduler().queued_items(),
+            store.internal().scheduler().queued_items(),
             2,
             "so what the task has queued is still its own pending work"
         );
@@ -1845,11 +1953,15 @@ mod tests {
         // The same abandon with the task's scope on the stack does
         // end it, and the sweep is the second half of that end.
         store
+            .internal()
             .context()
+            .internal()
             .enter_export_task(parked)
             .expect("the task becomes the current scope");
         store
+            .internal()
             .context()
+            .internal()
             .abandon_export_task(parked)
             .expect("abandon the entered task");
 
@@ -1858,7 +1970,7 @@ mod tests {
             "the abandon ended the task this time"
         );
         assert_eq!(
-            store.scheduler().queued_items(),
+            store.internal().scheduler().queued_items(),
             0,
             "so both of its items went with it"
         );
@@ -1876,6 +1988,7 @@ mod tests {
     /// Whether the store still holds a record for `task`.
     fn task_is_in_the_store(store: &Store<()>, task: TaskId) -> bool {
         store
+            .internal_ref()
             .tables()
             .lock()
             .expect("tables")
@@ -1892,7 +2005,7 @@ mod tests {
     /// event, because delivery reads the state off the record rather
     /// than out of the slot.
     fn fill_event(store: &Store<()>, set: WaitableSetId) {
-        let mut guard = store.tables().lock().expect("tables");
+        let mut guard = store.internal_ref().tables().lock().expect("tables");
         let subtask = guard.tasks.insert_subtask();
         let waitable = guard.tasks.subtask_waitable(subtask);
         guard
@@ -1913,7 +2026,7 @@ mod tests {
         let instance = instance(&store);
         let (set, thread) = waiting_on_a_set(&store, instance);
         let slot = EventSlot::new();
-        store.scheduler_mut().hold_for_event(
+        store.internal().scheduler_mut().hold_for_event(
             instance,
             thread,
             set,
@@ -1921,7 +2034,10 @@ mod tests {
             marker(&log, "resumed"),
         );
 
-        let parked = store.turn(Waker::noop()).expect("turn with an empty set");
+        let parked = store
+            .internal()
+            .turn(Waker::noop())
+            .expect("turn with an empty set");
 
         assert_eq!(
             parked,
@@ -1929,14 +2045,17 @@ mod tests {
             "a held item is not ready, so the turn goes idle and its driver deadlocks"
         );
         assert!(entries(&log).is_empty());
-        assert_eq!(store.scheduler().held_callbacks(), 1);
+        assert_eq!(store.internal().scheduler().held_callbacks(), 1);
 
         fill_event(&store, set);
-        let woken = store.turn(Waker::noop()).expect("turn with a filled set");
+        let woken = store
+            .internal()
+            .turn(Waker::noop())
+            .expect("turn with a filled set");
 
         assert_eq!(woken, Outcome::Idle, "the item ran and nothing is left");
         assert_eq!(entries(&log), vec!["resumed"]);
-        assert_eq!(store.scheduler().held_callbacks(), 0);
+        assert_eq!(store.internal().scheduler().held_callbacks(), 0);
         assert_eq!(
             slot.take().triple(),
             (1, 3, 1),
@@ -1944,6 +2063,7 @@ mod tests {
         );
         assert_eq!(
             store
+                .internal()
                 .tables()
                 .lock()
                 .expect("tables")
@@ -1964,19 +2084,20 @@ mod tests {
         // Another task of the same instance holds it, which is what a
         // callback item that a turn reaches too early finds.
         let holder = start(
-            &mut store.context(),
+            &mut store.internal().context(),
             instance,
             true,
             true,
             marker(&log, "holder"),
         );
-        store.scheduler_mut().hold_for_exclusive(
+        store.internal().scheduler_mut().hold_for_exclusive(
             instance,
             EventSlot::holding(Event::none()),
             marker(&log, "deferred"),
         );
 
         let held = store
+            .internal()
             .turn(Waker::noop())
             .expect("turn with the instance taken");
 
@@ -1986,19 +2107,23 @@ mod tests {
             "the item that needed the instance did not run"
         );
         assert_eq!(held, Outcome::Idle);
-        assert_eq!(store.scheduler().held_callbacks(), 1);
+        assert_eq!(store.internal().scheduler().held_callbacks(), 1);
 
+        store.internal_ref().scheduler().release_exclusive_thread(
+            &mut store.internal_ref().tables().lock().expect("tables").tasks,
+            holder,
+        );
         store
-            .scheduler()
-            .release_exclusive_thread(&mut store.tables().lock().expect("tables").tasks, holder);
-        store.turn(Waker::noop()).expect("turn with it released");
+            .internal()
+            .turn(Waker::noop())
+            .expect("turn with it released");
 
         assert_eq!(
             entries(&log),
             vec!["holder", "deferred"],
             "the item ran once the holder released the instance"
         );
-        assert_eq!(store.scheduler().held_callbacks(), 0);
+        assert_eq!(store.internal().scheduler().held_callbacks(), 0);
     }
 
     #[wcmp_macros::test]
@@ -2009,26 +2134,26 @@ mod tests {
         // A task of the instance holds it, so neither item held for
         // the exclusive thread is ready in the turn that fails.
         let holder = start(
-            &mut store.context(),
+            &mut store.internal().context(),
             instance,
             true,
             true,
             marker(&log, "holder"),
         );
         let (set, thread) = waiting_on_a_set(&store, instance);
-        store.scheduler_mut().hold_for_exclusive(
+        store.internal().scheduler_mut().hold_for_exclusive(
             instance,
             EventSlot::holding(Event::none()),
             marker(&log, "first"),
         );
-        store.scheduler_mut().hold_for_event(
+        store.internal().scheduler_mut().hold_for_event(
             instance,
             thread,
             set,
             EventSlot::new(),
             marker(&log, "broken"),
         );
-        store.scheduler_mut().hold_for_exclusive(
+        store.internal().scheduler_mut().hold_for_exclusive(
             instance,
             EventSlot::holding(Event::none()),
             marker(&log, "last"),
@@ -2037,33 +2162,38 @@ mod tests {
         // so looking the set up fails. A guest cannot drop a set a
         // thread waits on, so the test ends the wait first.
         {
-            let mut guard = store.tables().lock().expect("tables");
+            let mut guard = store.internal().tables().lock().expect("tables");
             guard.tasks.end_wait(set, thread).expect("end the wait");
             guard.tasks.drop_waitable_set(set).expect("drop the set");
         }
 
         store
+            .internal()
             .turn(Waker::noop())
             .expect_err("the set the held item named is gone");
 
         assert!(entries(&log).is_empty(), "the turn failed before it ran");
         assert_eq!(
-            store.scheduler().held_callbacks(),
+            store.internal().scheduler().held_callbacks(),
             2,
             "only the item whose own release failed was given up"
         );
 
+        store.internal_ref().scheduler().release_exclusive_thread(
+            &mut store.internal_ref().tables().lock().expect("tables").tasks,
+            holder,
+        );
         store
-            .scheduler()
-            .release_exclusive_thread(&mut store.tables().lock().expect("tables").tasks, holder);
-        store.turn(Waker::noop()).expect("turn with it released");
+            .internal()
+            .turn(Waker::noop())
+            .expect("turn with it released");
 
         assert_eq!(
             entries(&log),
             vec!["holder", "first", "last"],
             "both surviving items ran, in the order they were held"
         );
-        assert_eq!(store.scheduler().held_callbacks(), 0);
+        assert_eq!(store.internal().scheduler().held_callbacks(), 0);
     }
 
     /// A host task's body that never completes, so the store that
@@ -2081,12 +2211,13 @@ mod tests {
     /// Give `store` a host task whose body never completes.
     fn pending_host_task(store: &mut StoreContext<'_, ()>) {
         let subtask = store
+            .internal()
             .tables()
             .lock()
             .expect("tables")
             .tasks
             .insert_subtask();
-        store.push_host_task(HostTask::from_future(
+        store.internal().push_host_task(HostTask::from_future(
             subtask,
             |_store: &mut StoreContext<'_, ()>, _outcome: Result<Vec<Val>>| Ok(()),
             NeverReady,
@@ -2096,23 +2227,23 @@ mod tests {
     #[wcmp_macros::test]
     fn it_reports_a_host_future_pending_for_a_host_task_of_the_store() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
 
         assert!(
-            !store.scheduler().host_future_pending(),
+            !store.internal().scheduler().host_future_pending(),
             "a fresh store holds no future that can still resolve"
         );
 
         pending_host_task(&mut store);
         assert!(
-            store.scheduler().host_future_pending(),
+            store.internal().scheduler().host_future_pending(),
             "a host task whose body wants another poll is a future that can \
              still resolve"
         );
 
-        store.scheduler_mut().take_host_tasks();
+        store.internal().scheduler_mut().take_host_tasks();
         assert!(
-            !store.scheduler().host_future_pending(),
+            !store.internal().scheduler().host_future_pending(),
             "the store gave its host tasks away, so it holds no future"
         );
     }
@@ -2120,11 +2251,11 @@ mod tests {
     #[wcmp_macros::test]
     fn it_reports_a_host_future_pending_for_a_call_blocked_on_one_of_its_own() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
 
         SuspendSeam::while_blocked_on_a_call_future(&mut store, |store| {
             assert!(
-                store.scheduler().host_future_pending(),
+                store.internal().scheduler().host_future_pending(),
                 "the future of a call that blocked on one of its own is \
                  pending in the frame that started it, which the store's own \
                  tasks do not show"
@@ -2132,7 +2263,7 @@ mod tests {
         });
 
         assert!(
-            !store.scheduler().host_future_pending(),
+            !store.internal().scheduler().host_future_pending(),
             "the mark came back off when the blocked call's frame ended"
         );
     }
@@ -2140,14 +2271,15 @@ mod tests {
     #[wcmp_macros::test]
     fn it_reports_no_host_future_pending_for_an_item_the_store_holds() {
         let mut owner = store();
-        let mut store = owner.context();
+        let mut store = owner.internal().context();
         let log = log();
         store
+            .internal()
             .scheduler_mut()
             .push_low_priority(marker(&log, "deferred"));
 
         assert!(
-            !store.scheduler().host_future_pending(),
+            !store.internal().scheduler().host_future_pending(),
             "a resumption after a yield is guest work, and a turn that runs \
              it is what moves the store, not an executor's poll"
         );

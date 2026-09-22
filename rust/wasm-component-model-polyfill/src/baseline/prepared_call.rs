@@ -18,13 +18,9 @@
 
 #![cfg(test)]
 
-use wasm_component_model_polyfill::{
-    Component, Engine, EngineConfig, Error, Instance, Linker, Store, Val,
-};
+use crate::store::StoreInternalExt;
+use crate::{Component, Engine, EngineConfig, Error, Instance, Linker, Store, Val};
 use wcmp_macros::component;
-
-#[cfg(target_arch = "wasm32")]
-wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 /// A callee that returns its result and exits in its first call,
 /// called through a synchronous lower by a sync-typed caller. The
@@ -371,6 +367,7 @@ fn chain(error: &Error) -> String {
 /// How many task records the store holds.
 fn task_count(store: &Store<()>) -> usize {
     store
+        .internal_ref()
         .tables()
         .lock()
         .expect("handle tables")
@@ -381,6 +378,7 @@ fn task_count(store: &Store<()>) -> usize {
 /// How many subtask records the store holds.
 fn subtask_count(store: &Store<()>) -> usize {
     store
+        .internal_ref()
         .tables()
         .lock()
         .expect("handle tables")
@@ -401,13 +399,19 @@ fn subtask_count(store: &Store<()>) -> usize {
 fn function_record_count(store: &mut Store<()>) -> usize {
     use wasm_runtime_layer::AsContextMut;
 
-    store.inner_mut().as_context_mut().inner.func_count()
+    store
+        .internal()
+        .inner_mut()
+        .as_context_mut()
+        .inner
+        .func_count()
 }
 
 /// Whether any component instance of the store is held exclusively
 /// by a thread.
 fn any_instance_is_held(store: &Store<()>) -> bool {
     store
+        .internal_ref()
         .tables()
         .lock()
         .expect("handle tables")
@@ -426,6 +430,7 @@ fn any_instance_is_held(store: &Store<()>) -> bool {
 /// crate's public surface.
 fn turn(store: &mut Store<()>) -> String {
     let outcome = store
+        .internal()
         .turn(core::task::Waker::noop())
         .expect("the turn itself does not fail");
     format!("{outcome:?}")
@@ -543,7 +548,7 @@ async fn it_drops_the_callees_queued_callback_when_the_wait_fails_after_a_yield(
     assert_eq!(task_count(&store), 0, "neither task is left in the store");
     assert_eq!(subtask_count(&store), 0, "the subtask left the store");
     assert_eq!(
-        store.scheduler().queued_items(),
+        store.internal().scheduler().queued_items(),
         0,
         "the callback item the yield left went with the task's record"
     );
@@ -581,7 +586,7 @@ async fn it_runs_no_callback_of_a_dead_callee_whose_word_would_be_the_exit_word(
     );
     assert_eq!(task_count(&store), 0, "neither task is left in the store");
     assert_eq!(
-        store.scheduler().queued_items(),
+        store.internal().scheduler().queued_items(),
         0,
         "the callback item the yield left went with the task's record"
     );
@@ -622,12 +627,12 @@ async fn it_drops_the_callees_held_callback_when_the_wait_fails_during_a_wait() 
     );
     assert_eq!(task_count(&store), 0, "neither task is left in the store");
     assert_eq!(
-        store.scheduler().held_callbacks(),
+        store.internal().scheduler().held_callbacks(),
         0,
         "the held callback item went with the task's record"
     );
     assert_eq!(
-        store.scheduler().queued_items(),
+        store.internal().scheduler().queued_items(),
         0,
         "and nothing else of the callee's is queued"
     );
@@ -665,12 +670,12 @@ async fn it_drops_the_callees_start_item_when_the_wait_fails_at_the_entry_gate()
     assert_eq!(task_count(&store), 0, "neither task is left in the store");
     assert_eq!(subtask_count(&store), 0, "the subtask left the store");
     assert_eq!(
-        store.scheduler().waiting_at_gate(),
+        store.internal().scheduler().waiting_at_gate(),
         0,
         "the start item the gate held went with the task's record"
     );
     assert_eq!(
-        store.scheduler().queued_items(),
+        store.internal().scheduler().queued_items(),
         0,
         "and nothing else of the callee's is queued"
     );

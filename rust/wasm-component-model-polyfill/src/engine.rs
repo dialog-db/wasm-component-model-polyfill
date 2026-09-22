@@ -12,6 +12,7 @@
 use crate::backend::Backend;
 use crate::engine_config::EngineConfig;
 use crate::error::Result;
+use crate::internal::EngineInternal;
 
 /// The polyfill's compilation context.
 ///
@@ -54,13 +55,10 @@ impl Engine {
     pub fn config(&self) -> &EngineConfig {
         &self.config
     }
+}
 
-    /// Borrow the wrapped runtime-layer engine.
-    ///
-    /// This accessor is workspace-internal and is the seam through
-    /// which later work reaches into the runtime layer; it is not
-    /// re-exported by `lib.rs` and never reaches downstream consumers.
-    pub fn inner(&self) -> &wasm_runtime_layer::Engine<Backend> {
+impl EngineInternal for Engine {
+    fn inner(&self) -> &wasm_runtime_layer::Engine<Backend> {
         &self.inner
     }
 }

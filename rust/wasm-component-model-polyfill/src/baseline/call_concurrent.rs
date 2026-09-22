@@ -48,14 +48,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Wake;
 
-use wasm_component_model_polyfill::{
+use crate::internal::ResourceTypeIdInternal;
+use crate::store::{StoreContextInternalExt, StoreInternalExt};
+use crate::{
     AbiCause, Accessor, Component, Engine, Error, Func, HostCall, HostResource, Instance,
     InterfaceIdentifier, Linker, ResourceTypeId, Result, Store, Val,
 };
 use wcmp_macros::component;
-
-#[cfg(target_arch = "wasm32")]
-wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 /// One callback export called twice. Its core function logs the
 /// argument, keeps it in the task's own context slot, and gives way;
@@ -445,7 +444,9 @@ async fn join_gated<F: Future>(accessor: &Accessor<()>, calls: Vec<F>) -> Vec<Op
 /// forward.
 fn store_is_spent(accessor: &Accessor<()>) -> bool {
     accessor
-        .with(|store| !store.has_pending_work() && store.scheduler().queued_items() == 0)
+        .with(|store| {
+            !store.internal().has_pending_work() && store.internal().scheduler().queued_items() == 0
+        })
         .expect("reach the store")
 }
 
@@ -462,6 +463,7 @@ fn entries(log: &Log) -> Vec<u32> {
 /// How many task records the store holds.
 fn task_count(store: &Store<()>) -> usize {
     store
+        .internal_ref()
         .tables()
         .lock()
         .expect("handle tables")
@@ -513,8 +515,8 @@ async fn two_calls(
                 accessor
                     .with(|store| {
                         (
-                            store.scheduler().waiting_at_gate(),
-                            store.scheduler().queued_items(),
+                            store.internal().scheduler().waiting_at_gate(),
+                            store.internal().scheduler().queued_items(),
                         )
                     })
                     .expect("reach the store"),
@@ -588,12 +590,12 @@ async fn it_runs_a_call_into_a_synchronous_export_while_a_callback_task_waits() 
             // no turn ever fills, so its callback item is held in the
             // store and its task is in its event loop.
             let held_before = accessor
-                .with(|store| store.scheduler().held_callbacks())
+                .with(|store| store.internal().scheduler().held_callbacks())
                 .expect("reach the store");
             let double_args = [Val::U32(21)];
             let doubled = double.call_concurrent(accessor, &double_args).await;
             let held_after = accessor
-                .with(|store| store.scheduler().held_callbacks())
+                .with(|store| store.internal().scheduler().held_callbacks())
                 .expect("reach the store");
             (returned, held_before, doubled, held_after)
         })
@@ -741,7 +743,7 @@ fn assert_reentrant_call(second: Result<Box<[Val]>>, log: Vec<u32>) {
 /// natively.
 #[cfg(target_arch = "wasm32")]
 fn assert_reentrant_call(second: Result<Box<[Val]>>, log: Vec<u32>) {
-    use wasm_component_model_polyfill::SchedulerCause;
+    use crate::SchedulerCause;
 
     let failure = second.expect_err("the second call fails");
     assert!(
@@ -969,7 +971,7 @@ async fn it_gives_a_host_lend_back_when_the_awaited_future_resolves() {
         .await
         .expect("component parses");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    let tables = store.tables().clone();
+    let tables = store.internal().tables().clone();
     let ty = ResourceTypeId::fresh();
     // What the host lent, and whether the lend stood at the moment
     // it was made, which the `lend` import records from inside the
@@ -1029,7 +1031,7 @@ async fn it_gives_a_host_lend_back_when_the_awaited_future_resolves() {
         .lock()
         .expect("the lend")
         .expect("the guest called the host's `lend`");
-    let mut guard = store.tables().lock().expect("handle tables");
+    let mut guard = store.internal().tables().lock().expect("handle tables");
     assert_eq!(
         guard.tasks.task_count(),
         1,

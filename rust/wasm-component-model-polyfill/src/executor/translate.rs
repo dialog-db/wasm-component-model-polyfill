@@ -28,6 +28,7 @@ use wasmtime_environ::{
 };
 
 use crate::abi::layout::FlatType;
+use crate::internal::{EngineConfigInternal, ErrorInternal};
 
 use crate::component::{ComponentExport, ComponentImport, ExternType, ExternalName, TypeProjector};
 use crate::concurrency::LowerKind;

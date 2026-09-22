@@ -16,7 +16,9 @@ pub enum ItemKind {
     /// A callback invocation: the polyfill re-enters the callback of
     /// an `async` export that returned a status code.
     Callback,
-    /// The resumption of a thread the scheduler suspended.
+    /// The resumption of a thread the scheduler suspended. Nothing
+    /// queues one under this label yet.
+    #[allow(dead_code)]
     ThreadResumption,
     /// The lowering of a completed host task's result into the
     /// subtask that awaits it.

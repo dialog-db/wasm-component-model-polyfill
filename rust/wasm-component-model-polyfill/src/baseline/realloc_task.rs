@@ -29,11 +29,9 @@
 
 #![cfg(test)]
 
-use wasm_component_model_polyfill::{Component, Engine, HostCall, Linker, Result, Store, Val};
+use crate::store::StoreInternalExt;
+use crate::{Component, Engine, HostCall, Linker, Result, Store, Val};
 use wcmp_macros::component;
-
-#[cfg(target_arch = "wasm32")]
-wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 /// A component whose `cabi_realloc` reads its context slot, writes
 /// it, and reads it back, and whose export returns its own slot. The
@@ -307,7 +305,7 @@ async fn run_and_read_records(
     // The guard is scoped so that it is gone before the `check`
     // call below, which takes the same lock as it runs.
     let after = {
-        let guard = store.tables().lock().expect("handle tables");
+        let guard = store.internal().tables().lock().expect("handle tables");
         Seen {
             scopes: guard.tasks.scopes().len(),
             tasks: guard.tasks.task_count(),

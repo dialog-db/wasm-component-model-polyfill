@@ -22,10 +22,13 @@ use crate::component::{Component, ExternType};
 use crate::concurrency::InstanceId;
 use crate::error::{Error, InstantiationError, LinkError, Result};
 use crate::instance::{ExportedFunction, ExportedModule, Instance};
+use crate::internal::{ComponentInternal, ErrorInternal, LinkerInternal};
+use crate::internal::{InstanceParts, ModuleInternal};
 use crate::linker::{HostFuncKind, ImportBinding, InstanceRegistration, Linker, Resolution};
 use crate::module::Module;
 use crate::resource::{ResourceTableRuntime, ResourceTypeId, TableId};
 use crate::store::StoreContext;
+use crate::store::StoreContextInternalExt;
 use crate::types::ResourceType;
 
 use super::ResourceDestructor;
@@ -81,7 +84,7 @@ pub fn instantiate<T: 'static>(
     linker: &Linker<T>,
     resolution: &Resolution,
 ) -> Result<Instance> {
-    let ir: &ExecutorIr = &component.ir;
+    let ir: &ExecutorIr = component.ir();
 
     // One instance record per component instance of this
     // instantiation: the entry gate, the backpressure counter, the
@@ -93,6 +96,7 @@ pub fn instantiate<T: 'static>(
     // destructor's task belongs to.
     let component_instances: Vec<InstanceId> = {
         let mut guard = store
+            .internal()
             .tables()
             .lock()
             .map_err(|_| internal("resource handle tables lock poisoned"))?;
@@ -144,7 +148,9 @@ pub fn instantiate<T: 'static>(
             ResourceDestructor::Local { .. } => declared_names.get(&index).cloned(),
             ResourceDestructor::Host(_) => runtime.name.clone(),
         };
-        store.register_resource(runtime.type_id, name, runtime.destructor.clone());
+        store
+            .internal()
+            .register_resource(runtime.type_id, name, runtime.destructor.clone());
     }
 
     // The host resources the linker holds are then swept for their
@@ -165,7 +171,9 @@ pub fn instantiate<T: 'static>(
     // before this one or after it, so no store renders a label that
     // none of its components ever used while one of them did.
     for (type_id, label) in linker_resource_labels(linker) {
-        store.fallback_resource_name(type_id, ResourceType::new(label));
+        store
+            .internal()
+            .fallback_resource_name(type_id, ResourceType::new(label));
     }
 
     // One fresh handle table per component instance, shared by every
@@ -204,7 +212,7 @@ pub fn instantiate<T: 'static>(
     // read the same globals out of the runtime state below, so the
     // generated code and the polyfill share one flag per instance.
     let flags: Vec<InstanceFlags> = (0..ir.num_component_instances)
-        .map(|_| InstanceFlags::new(store.runtime_mut()))
+        .map(|_| InstanceFlags::new(store.internal().runtime_mut()))
         .collect();
 
     let abi_state = Arc::new(Mutex::new(
@@ -269,10 +277,10 @@ pub fn instantiate<T: 'static>(
                     Some(index) => Some(instance_id_at(&abi_state, *index)?),
                     None => None,
                 };
-                let start = StartTask::enter(store.tables(), owner)?;
+                let start = StartTask::enter(store.internal().tables(), owner)?;
                 let instance = RuntimeInstance::new(
-                    store.runtime_mut(),
-                    &entry.module.inner,
+                    store.internal().runtime_mut(),
+                    entry.module.inner(),
                     &runtime_imports,
                 )
                 .map_err(InstantiationError::SubstrateFailure)
@@ -299,11 +307,14 @@ pub fn instantiate<T: 'static>(
                     Some(index) => Some(instance_id_at(&abi_state, *index)?),
                     None => None,
                 };
-                let start = StartTask::enter(store.tables(), owner)?;
-                let instance =
-                    RuntimeInstance::new(store.runtime_mut(), &module.inner, &runtime_imports)
-                        .map_err(InstantiationError::SubstrateFailure)
-                        .map_err(Error::from);
+                let start = StartTask::enter(store.internal().tables(), owner)?;
+                let instance = RuntimeInstance::new(
+                    store.internal().runtime_mut(),
+                    module.inner(),
+                    &runtime_imports,
+                )
+                .map_err(InstantiationError::SubstrateFailure)
+                .map_err(Error::from);
                 drop(start);
                 items.core_instances.push(instance?);
             }
@@ -344,7 +355,7 @@ pub fn instantiate<T: 'static>(
                             "DefineResource directive resolved to a non-function item",
                         ));
                     };
-                    let ty = function.ty(store.runtime());
+                    let ty = function.ty(store.internal().runtime());
                     if ty.params() != [CoreType::I32] || !ty.results().is_empty() {
                         return Err(Error::from(InstantiationError::SubstrateFailure(anyhow!(
                             "the destructor of a locally-defined resource must have the core type \
@@ -410,14 +421,15 @@ pub fn instantiate<T: 'static>(
 
     let function_exports = collect_function_exports(ir, &items, store)?;
     let module_exports = collect_module_exports(ir, linker, component, resolution)?;
-    Ok(Instance {
+    Ok(InstanceParts {
         core_instances: items.core_instances.into_boxed_slice(),
         function_exports,
         instance_exports: ir.instance_exports.clone(),
         module_exports,
         abi_state,
-        store_id: store.id(),
-    })
+        store_id: store.internal().id(),
+    }
+    .into())
 }
 
 /// Build the runtime-layer trampoline for one entry in
@@ -730,7 +742,7 @@ fn linker_resource_labels<T: 'static>(linker: &Linker<T>) -> Vec<(ResourceTypeId
         into: &mut Vec<(ResourceTypeId, String)>,
     ) {
         for (label, resource) in registration.resources.iter() {
-            into.push((resource.type_id, label.clone()));
+            into.push((resource.type_id(), label.clone()));
         }
         for nested in registration.instances.values() {
             collect(nested, into);
@@ -758,7 +770,7 @@ fn lookup_module<T: 'static>(
 ) -> Result<Module> {
     match source {
         ModuleSource::Static(index) => component
-            .ir
+            .ir()
             .modules
             .get(*index)
             .map(|entry| entry.module.clone())
@@ -876,7 +888,7 @@ fn resolve_core_instance_export<T: 'static>(
         }
     };
     runtime_instance
-        .get_export(store.runtime(), name)
+        .get_export(store.internal().runtime(), name)
         .ok_or_else(|| internal("module did not export the named item at runtime"))
 }
 
@@ -962,7 +974,7 @@ fn instance_id_at(abi_state: &Arc<Mutex<AbiRuntimeState>>, index: usize) -> Resu
 /// table belongs to.
 fn table_instance(component: &Component, table_index: usize) -> Result<usize> {
     component
-        .ir
+        .ir()
         .resource_tables
         .get(table_index)
         .and_then(|spec| spec.as_ref())

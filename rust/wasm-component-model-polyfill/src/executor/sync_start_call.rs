@@ -67,7 +67,9 @@ use crate::error::{Error, Result};
 use crate::executor::CallbackTask;
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::CoreSignature;
+use crate::internal::ErrorInternal;
 use crate::store::StoreContext;
+use crate::store::StoreContextInternalExt;
 
 use super::prepare_call::u32_argument;
 use super::start_call::{Prepared, callee_callback, funcref_argument, lock, release_subtask};
@@ -87,7 +89,7 @@ pub fn build_sync_start_call<T: 'static>(
     // nothing else says what it produces.
     let caller_results = signature.results.clone();
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         core_func_type(signature),
         move |store_ctx, args, results| {
             let mut store = StoreContext::new(store_ctx);
@@ -115,7 +117,7 @@ fn sync_start_call<T: 'static>(
     let callee_function = funcref_argument(args, 0)?;
     let param_count = u32_argument(args, 1)? as usize;
 
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     let prepared = Prepared::take(&tables)?;
     let subtask = prepared.subtask();
 
@@ -156,14 +158,14 @@ fn sync_start_call<T: 'static>(
     // The callee runs next: the item goes in the switch slot, the
     // gate decides whether it stays there, and the slot is run from
     // inside this frame.
-    store.scheduler_mut().switch_to(item);
-    store.start_switched_export_thread(
+    store.internal().scheduler_mut().switch_to(item);
+    store.internal().start_switched_export_thread(
         prepared.task(),
         prepared.instance(),
         prepared.callee_async_typed(),
         true,
     )?;
-    store.run_switch_slot()?;
+    store.internal().run_switch_slot()?;
 
     // The caller waits for the callee's result. A call that resolved
     // while the slot ran does not wait at all, which is what makes
@@ -233,5 +235,5 @@ fn sync_start_call<T: 'static>(
 /// and the scheduler's says what dropping one gives back.
 fn release_wait<T: 'static>(store: &mut StoreContext<'_, T>, subtask: SubtaskId, task: TaskId) {
     release_subtask(store, subtask);
-    let _ = store.end_export_task(task);
+    let _ = store.internal().end_export_task(task);
 }

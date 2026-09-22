@@ -345,7 +345,7 @@ pub fn lower_handle<T: 'static>(
                 },
             })
         })?;
-    if table.type_id != handle.type_id {
+    if table.type_id != handle.type_id() {
         return Err(Error::from(AbiError {
             position,
             valtype: Some(ty.clone()),
@@ -363,9 +363,14 @@ pub fn lower_handle<T: 'static>(
         // or of a rep no handle of this store ever named: the handle
         // is a plain copyable record and says nothing about whether
         // the entry behind it is still live.
-        let host_table = guard.host_table(handle.type_id);
+        let host_table = guard.host_table(handle.type_id());
         let entry = guard
-            .lookup(host_table, handle.index, table.type_id, table.guest_defined)
+            .lookup(
+                host_table,
+                handle.index(),
+                table.type_id,
+                table.guest_defined,
+            )
             .map_err(|e| invalid_host_handle(e, ty, position))?;
         let rep = match entry {
             HandleKind::Own { rep, .. } => rep,
@@ -374,7 +379,7 @@ pub fn lower_handle<T: 'static>(
             _ => {
                 return Err(invalid_host_handle(
                     HandleLookupError::NotOwned {
-                        index: handle.index,
+                        index: handle.index(),
                     },
                     ty,
                     position,
@@ -394,10 +399,10 @@ pub fn lower_handle<T: 'static>(
         // and the rep the entry holds agree for every handle the host
         // actually holds, and disagree exactly when the index came
         // from somewhere else.
-        if rep != handle.rep {
+        if rep != handle.rep() {
             return Err(invalid_host_handle(
                 HandleLookupError::Unknown {
-                    index: handle.index,
+                    index: handle.index(),
                 },
                 ty,
                 position,
@@ -411,7 +416,7 @@ pub fn lower_handle<T: 'static>(
         // borrow a guest lifted out of one of its own owning
         // entries.
         guard
-            .lend_to(ctx.scope(), host_table, handle.index)
+            .lend_to(ctx.scope(), host_table, handle.index())
             .map_err(|e| invalid_host_handle(e, ty, position))?;
         // The defining instance receives its own resource's rep; any
         // other instance receives a borrow entry owed to the current
@@ -439,12 +444,12 @@ pub fn lower_handle<T: 'static>(
     }
     // Ownership moves from the host's table into the instance's: the
     // handle must name a live owning entry the host holds.
-    let host_table = guard.host_table(handle.type_id);
+    let host_table = guard.host_table(handle.type_id());
     let rep = guard
         .remove_own(
             host_table,
-            handle.index,
-            handle.type_id,
+            handle.index(),
+            handle.type_id(),
             table.guest_defined,
         )
         .map_err(|e| invalid_host_handle(e, ty, position))?;

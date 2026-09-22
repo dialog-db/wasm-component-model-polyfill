@@ -43,8 +43,10 @@ use crate::concurrency::{CallBridge, CallerKind, InstanceId, SubtaskId, ThreadId
 use crate::error::{Error, Result};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CanonOptions, CoreSignature, DataModel, StringEncoding};
+use crate::internal::ErrorInternal;
 use crate::resource::{HandleTables, TableId};
 use crate::store::StoreContext;
+use crate::store::StoreContextInternalExt;
 
 /// How many arguments of the prepare intrinsic describe the call.
 /// Everything past them is the caller's own flat arguments.
@@ -59,9 +61,9 @@ pub fn build_prepare_call<T: 'static>(
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, args, _results| Ok(prepare_call(&tables, &abi_state, memory, args)?),
     )

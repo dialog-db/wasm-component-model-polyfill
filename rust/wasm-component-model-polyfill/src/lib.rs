@@ -1,4 +1,11 @@
 #![warn(missing_docs)]
+// An item the crate reaches only from its own tests is not dead
+// code, and the plain library build cannot tell: its reachability
+// walk starts at the public API and never enters a `cfg(test)`
+// module. The test build compiles every line the library build does
+// and the tests besides, so it is the build that answers the
+// question, and `--all-targets` runs the lint there.
+#![cfg_attr(not(test), allow(dead_code))]
 
 //! A polyfill that brings the WebAssembly Component Model (wasip3) to
 //! web browsers where only Wasm Core is presently supported.
@@ -174,6 +181,48 @@
 //!     );
 //! }
 //! ```
+//!
+//! # What the crate keeps to itself
+//!
+//! Re-exporting a type from here carries its whole `pub` surface into
+//! the public API, whether or not the values that surface hands back
+//! can be named outside the crate: a method is reachable by method
+//! syntax and a field by field syntax, however unnameable its type
+//! is. So everything a re-exported type offers the crate and not its
+//! callers is moved off that type — onto an extension trait, a
+//! wrapper over a borrow, or a `Parts` struct the type is built from
+//! — and the module those live in is private. What a caller outside
+//! has is the re-exported name:
+//!
+//! ```rust
+//! use wasm_component_model_polyfill::Func;
+//! let _: Option<Func> = None;
+//! ```
+//!
+//! What it does not have is the module behind them, which is
+//! private, so no path through it resolves:
+//!
+//! ```compile_fail
+//! use wasm_component_model_polyfill::internal::FuncParts;
+//! fn parts() -> FuncParts {
+//!     unimplemented!()
+//! }
+//! ```
+//!
+//! That block covers the module, not the individual seams and parts
+//! inside it. It holds because `internal` is private, and it would
+//! go on holding if one of them were separately re-exported by name
+//! from this file. Keeping the internal surface out of the public
+//! API is a rule about what the list of re-exports below admits, and
+//! the list is the whole of the public API.
+//!
+//! Each type that carries such a seam says so in its own
+//! documentation, and states it the same way: a block that compiles
+//! against the public name beside a block that does not compile
+//! against the internal one.
+
+#[cfg(test)]
+mod baseline;
 
 mod abi;
 mod backend;
@@ -185,6 +234,7 @@ mod error;
 mod executor;
 mod identifier;
 mod instance;
+mod internal;
 mod linker;
 mod module;
 mod resource;

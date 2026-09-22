@@ -58,8 +58,10 @@ use crate::error::{Error, Result};
 use crate::executor::CallbackTask;
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::CoreSignature;
+use crate::internal::ErrorInternal;
 use crate::resource::{HandleTables, TableId};
 use crate::store::StoreContext;
+use crate::store::StoreContextInternalExt;
 
 use super::prepare_call::u32_argument;
 use super::start_call::{Prepared, callee_callback, funcref_argument, lock, post_return_at};
@@ -77,7 +79,7 @@ pub fn build_async_start_call<T: 'static>(
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         core_func_type(signature),
         move |store_ctx, args, results| {
             let mut store = StoreContext::new(store_ctx);
@@ -107,7 +109,7 @@ fn async_start_call<T: 'static>(
     let result_count = u32_argument(args, 2)? as usize;
     let async_lifted = u32_argument(args, 3)? & (START_FLAG_ASYNC_CALLEE as u32) != 0;
 
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     let prepared = Prepared::take(&tables)?;
     let subtask = prepared.subtask();
     let caller_table = caller_table(&tables, subtask)?;
@@ -140,14 +142,14 @@ fn async_start_call<T: 'static>(
     // exclusive thread of the callee's instance — the reference's
     // `not opts.async or opts.callback` — and a sync-typed callee
     // ignores the gate either way.
-    store.scheduler_mut().switch_to(item);
-    store.start_switched_export_thread(
+    store.internal().scheduler_mut().switch_to(item);
+    store.internal().start_switched_export_thread(
         prepared.task(),
         prepared.instance(),
         prepared.callee_async_typed(),
         true,
     )?;
-    if let Err(error) = store.run_switch_slot() {
+    if let Err(error) = store.internal().run_switch_slot() {
         prepared.remove(&tables);
         return Err(error);
     }

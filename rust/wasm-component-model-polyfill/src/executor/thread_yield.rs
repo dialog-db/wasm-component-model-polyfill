@@ -72,6 +72,7 @@ use crate::concurrency::{InstanceId, SuspendSeam};
 use crate::error::{Error, TaskCause};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::CoreSignature;
+use crate::store::StoreContextInternalExt;
 use crate::store::{StoreContext, StoreData};
 
 /// The value `thread.yield` returns. `canon_thread_yield` answers
@@ -91,7 +92,7 @@ pub fn build_thread_yield<T: 'static>(
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
     RuntimeFunc::new(
-        store.runtime_mut(),
+        store.internal().runtime_mut(),
         core_func_type(signature),
         move |store_ctx, _args, results| {
             thread_yield(store_ctx, &abi_state, instance)?;

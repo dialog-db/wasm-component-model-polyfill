@@ -22,6 +22,7 @@
 use wasm_runtime_layer::{AsContextMut, Global as RuntimeGlobal, Val as RuntimeVal};
 
 use crate::error::{Error, Result};
+use crate::internal::ErrorInternal;
 
 /// The may-leave flag of one component instance, as the core global
 /// the instance's adapters import.

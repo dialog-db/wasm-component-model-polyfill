@@ -36,6 +36,7 @@ use crate::component::FunctionType;
 use crate::concurrency::Scope;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::{CanonOptions, StringEncoding};
+use crate::internal::ErrorInternal;
 use crate::types::ValueType;
 
 /// The context of one canonical-ABI crossing.
@@ -413,6 +414,7 @@ mod tests {
     use crate::executor::ir::DataModel;
     use crate::resource::TableId;
     use crate::store::Store;
+    use crate::store::StoreInternalExt;
     use crate::types::PrimitiveType;
     use wasm_runtime_layer::AsContextMut;
 
@@ -465,7 +467,7 @@ mod tests {
     fn it_builds_one_context_from_options_an_instance_and_a_scope() {
         let engine = Engine::new().expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-        let tables = store.tables_handle();
+        let tables = store.internal().tables_handle();
         let (instance, task) = {
             let mut guard = tables.lock().expect("tables");
             let instance = guard.tasks.insert_instance();
@@ -483,7 +485,7 @@ mod tests {
             BoundaryInstance::resolve(&declared, &state(instance, Vec::new()), &tables)
                 .expect("resolve");
         let ctx = BoundaryContext::new(
-            store.inner_mut().as_context_mut(),
+            store.internal().inner_mut().as_context_mut(),
             options,
             boundary_instance,
             Some(Scope::Task(task)),
@@ -525,15 +527,19 @@ mod tests {
         let engine = Engine::new().expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let instance = InstanceId::from_index(0);
-        let tables = store.tables_handle();
+        let tables = store.internal().tables_handle();
         let (options, instance) = BoundaryInstance::resolve(
             &canon(DataModel::LinearMemory),
             &state(instance, Vec::new()),
             &tables,
         )
         .expect("resolve");
-        let mut ctx =
-            BoundaryContext::new(store.inner_mut().as_context_mut(), options, instance, None);
+        let mut ctx = BoundaryContext::new(
+            store.internal().inner_mut().as_context_mut(),
+            options,
+            instance,
+            None,
+        );
 
         assert_eq!(ctx.strategy(), AbiStrategy::Eager);
         // The eager strategy addresses linear memory, so a crossing
@@ -559,7 +565,7 @@ mod tests {
         // and the context selects the other strategy from it.
         let engine = Engine::new().expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-        let tables = store.tables_handle();
+        let tables = store.internal().tables_handle();
         // The allocation below enters a `cabi_realloc` boundary
         // call, which clears the may-leave flag of the instance the
         // options name. The store therefore has to hold that
@@ -570,15 +576,19 @@ mod tests {
             .expect("handle tables")
             .tasks
             .insert_instance();
-        let flags = InstanceFlags::new(store.inner_mut().as_context_mut());
+        let flags = InstanceFlags::new(store.internal().inner_mut().as_context_mut());
         let (options, instance) = BoundaryInstance::resolve(
             &canon(DataModel::Gc),
             &state(instance, vec![flags]),
             &tables,
         )
         .expect("resolve");
-        let mut ctx =
-            BoundaryContext::new(store.inner_mut().as_context_mut(), options, instance, None);
+        let mut ctx = BoundaryContext::new(
+            store.internal().inner_mut().as_context_mut(),
+            options,
+            instance,
+            None,
+        );
 
         assert_eq!(
             ctx.strategy(),
@@ -624,7 +634,7 @@ mod tests {
             )
         };
         let mut ctx = BoundaryContext::for_copy(
-            store.inner_mut().as_context_mut(),
+            store.internal().inner_mut().as_context_mut(),
             destination,
             source,
             BoundaryInstance::without_tables(Some(instance)),

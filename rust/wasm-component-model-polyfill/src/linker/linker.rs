@@ -9,7 +9,9 @@ use crate::engine::Engine;
 use crate::error::{Error, Result, SchedulerCause};
 use crate::identifier::InterfaceIdentifier;
 use crate::instance::Instance;
+use crate::internal::{LinkerInstanceInternal, LinkerInternal};
 use crate::store::{Store, StoreContext};
+use crate::store::{StoreContextInternalExt, StoreInternalExt};
 
 use super::linker_instance::LinkerInstance;
 use super::registration::InstanceRegistration;
@@ -50,6 +52,10 @@ use super::resolve::{Resolution, resolve_imports};
 /// [`PackageName`]: crate::PackageName
 /// [`Error::Link`]: crate::Error::Link
 pub struct Linker<T: 'static> {
+    // Held from construction so that a later entry can build
+    // against the engine the linker was made for; nothing reads it
+    // today.
+    #[allow(dead_code)]
     engine: Engine,
     instances: HashMap<InterfaceIdentifier, InstanceRegistration<T>>,
     /// The root namespace: host items a component imports under a
@@ -67,42 +73,6 @@ impl<T: 'static> Linker<T> {
             root: InstanceRegistration::new(),
             _phantom: PhantomData,
         }
-    }
-
-    /// The [`Engine`] this linker was constructed against.
-    ///
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn engine(&self) -> &Engine {
-        &self.engine
-    }
-
-    /// The set of registered linker-instance keys, in insertion order
-    /// from the underlying map's iteration order. Used by the
-    /// resolver to enumerate candidates when matching a component's
-    /// imports.
-    ///
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn registered_keys(&self) -> impl Iterator<Item = &InterfaceIdentifier> {
-        self.instances.keys()
-    }
-
-    /// The registration entry for a given interface identifier, or
-    /// `None` when no matching entry exists. Used by the resolver
-    /// to look up host-function payloads by interface and by the
-    /// host-trampoline builder to dispatch a lowered import.
-    ///
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn registration_for(&self, id: &InterfaceIdentifier) -> Option<&InstanceRegistration<T>> {
-        self.instances.get(id)
-    }
-
-    /// The root namespace's registration entry. Consulted by the
-    /// resolver for every import that is not an interface-named
-    /// instance.
-    ///
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn root_registration(&self) -> &InstanceRegistration<T> {
-        &self.root
     }
 
     /// Address the root namespace: the host items a component
@@ -182,9 +152,9 @@ impl<T: 'static> Linker<T> {
         store: &mut Store<T>,
         component: &Component,
     ) -> Result<Instance> {
-        let store = store.context();
+        let mut store = store.internal().context();
         let resolution = resolve_imports(component, self)?;
-        if store.turn_in_flight() {
+        if store.internal().turn_in_flight() {
             return Err(Error::Scheduler(SchedulerCause::RecursiveDriver));
         }
         let mut plan = Some(());
@@ -195,6 +165,7 @@ impl<T: 'static> Linker<T> {
                 plan.take()?;
                 Some(
                     store
+                        .internal()
                         .run_in_turn(waker, |store| {
                             self.instantiate_resolved(store, component, &resolution)
                         })
@@ -204,14 +175,22 @@ impl<T: 'static> Linker<T> {
         )
         .await
     }
+}
 
-    /// Drive the runtime substrate against an already-resolved
-    /// import binding. Split out from [`Self::instantiate`] so the
-    /// native and web paths plug in only the substrate-specific
-    /// step; identifier resolution is shared.
-    ///
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn instantiate_resolved(
+impl<T: 'static> LinkerInternal<T> for Linker<T> {
+    fn registered_keys(&self) -> impl Iterator<Item = &InterfaceIdentifier> {
+        self.instances.keys()
+    }
+
+    fn registration_for(&self, id: &InterfaceIdentifier) -> Option<&InstanceRegistration<T>> {
+        self.instances.get(id)
+    }
+
+    fn root_registration(&self) -> &InstanceRegistration<T> {
+        &self.root
+    }
+
+    fn instantiate_resolved(
         &self,
         store: &mut StoreContext<'_, T>,
         component: &Component,

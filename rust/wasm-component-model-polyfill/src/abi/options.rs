@@ -21,6 +21,7 @@ use crate::abi::runtime_state::AbiRuntimeState;
 use crate::concurrency::InstanceId;
 use crate::error::{Error, Result};
 use crate::executor::ir::{CanonOptions, DataModel, StringEncoding};
+use crate::internal::ErrorInternal;
 
 /// The canonical-ABI options of one crossing, resolved against the
 /// instance's runtime state.

@@ -43,6 +43,7 @@ use crate::abi::instance::BoundaryInstance;
 use crate::abi::instance_flags::InstanceFlags;
 use crate::concurrency::{InstanceId, TaskId};
 use crate::error::{Error, Result};
+use crate::internal::ErrorInternal;
 use crate::resource::HandleTables;
 
 /// One call the polyfill makes into a guest, in flight.
@@ -262,6 +263,7 @@ mod tests {
     use crate::executor::ir::{CanonOptions, DataModel, StringEncoding};
     use crate::resource::TableId;
     use crate::store::Store;
+    use crate::store::{StoreContextInternalExt, StoreInternalExt};
 
     /// The declared options of a crossing that names the first
     /// component instance of its instantiation and nothing else.
@@ -287,12 +289,13 @@ mod tests {
         let engine = Engine::new().expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let instance = store
+            .internal()
             .lock_tables()
             .expect("handle tables")
             .tasks
             .insert_instance();
-        let flags = InstanceFlags::new(store.context().runtime_mut());
-        let tables = store.tables_handle();
+        let flags = InstanceFlags::new(store.internal().context().internal().runtime_mut());
+        let tables = store.internal().tables_handle();
         let state = Arc::new(Mutex::new(
             AbiRuntimeState::with_slabs(
                 0,
@@ -336,7 +339,7 @@ mod tests {
         let may_leave = boundary
             .flags()
             .expect("the crossing carries the instance's flag")
-            .may_leave(store.context().runtime_mut())
+            .may_leave(store.internal().context().internal().runtime_mut())
             .expect("read the flag");
         let tables = boundary.tables().expect("the crossing reaches the records");
         let guard = tables.lock().expect("handle tables");
@@ -353,8 +356,11 @@ mod tests {
         let (mut store, _, boundary) = records();
         assert_eq!(state(&mut store, &boundary), (true, 0, 0, 0));
 
-        let call = BoundaryCall::realloc(&boundary, store.context().runtime_mut())
-            .expect("enter the realloc");
+        let call = BoundaryCall::realloc(
+            &boundary,
+            store.internal().context().internal().runtime_mut(),
+        )
+        .expect("enter the realloc");
         let (may_leave, tasks, threads, scopes) = state(&mut store, &boundary);
         assert!(
             !may_leave,
@@ -378,7 +384,7 @@ mod tests {
             );
         }
 
-        call.end(store.context().runtime_mut())
+        call.end(store.internal().context().internal().runtime_mut())
             .expect("end the realloc");
         assert_eq!(
             state(&mut store, &boundary),
@@ -399,25 +405,28 @@ mod tests {
         let flags = boundary.flags().expect("the instance's flag").clone();
         assert!(
             flags
-                .may_leave(store.context().runtime_mut())
+                .may_leave(store.internal().context().internal().runtime_mut())
                 .expect("read the flag"),
             "a fresh instance may be left"
         );
 
-        let call = BoundaryCall::post_return(&boundary, store.context().runtime_mut())
-            .expect("enter the post-return");
+        let call = BoundaryCall::post_return(
+            &boundary,
+            store.internal().context().internal().runtime_mut(),
+        )
+        .expect("enter the post-return");
         assert!(
             !flags
-                .may_leave(store.context().runtime_mut())
+                .may_leave(store.internal().context().internal().runtime_mut())
                 .expect("read the flag"),
             "the global a built-in reads is clear while the post-return runs"
         );
 
-        call.end(store.context().runtime_mut())
+        call.end(store.internal().context().internal().runtime_mut())
             .expect("end the post-return");
         assert!(
             flags
-                .may_leave(store.context().runtime_mut())
+                .may_leave(store.internal().context().internal().runtime_mut())
                 .expect("read the flag"),
             "the global holds the value the call was owed once it has ended"
         );
@@ -427,13 +436,17 @@ mod tests {
     fn it_runs_a_post_return_inside_the_task_that_called_the_export() {
         let (mut store, instance, boundary) = records();
         let export = store
+            .internal()
             .lock_tables()
             .expect("handle tables")
             .tasks
             .push_task(None, None, instance);
 
-        let call = BoundaryCall::post_return(&boundary, store.context().runtime_mut())
-            .expect("enter the post-return");
+        let call = BoundaryCall::post_return(
+            &boundary,
+            store.internal().context().internal().runtime_mut(),
+        )
+        .expect("enter the post-return");
         let (may_leave, tasks, threads, scopes) = state(&mut store, &boundary);
         assert!(
             !may_leave,
@@ -446,6 +459,7 @@ mod tests {
         );
         assert_eq!(
             store
+                .internal()
                 .lock_tables()
                 .expect("handle tables")
                 .tasks
@@ -454,7 +468,7 @@ mod tests {
             "the export's own task is still the current scope"
         );
 
-        call.end(store.context().runtime_mut())
+        call.end(store.internal().context().internal().runtime_mut())
             .expect("end the post-return");
         assert_eq!(
             state(&mut store, &boundary),
@@ -469,10 +483,13 @@ mod tests {
         // rather than a result, and the call site ends the call all
         // the same.
         let (mut store, _, boundary) = records();
-        let call = BoundaryCall::realloc(&boundary, store.context().runtime_mut())
-            .expect("enter the realloc");
+        let call = BoundaryCall::realloc(
+            &boundary,
+            store.internal().context().internal().runtime_mut(),
+        )
+        .expect("enter the realloc");
         let failed: std::result::Result<(), ()> = Err(());
-        call.end(store.context().runtime_mut())
+        call.end(store.internal().context().internal().runtime_mut())
             .expect("end the realloc");
         assert!(failed.is_err());
         assert_eq!(
@@ -490,10 +507,10 @@ mod tests {
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let call = BoundaryCall::realloc(
             &BoundaryInstance::without_tables(None),
-            store.context().runtime_mut(),
+            store.internal().context().internal().runtime_mut(),
         )
         .expect("enter the realloc");
-        call.end(store.context().runtime_mut())
+        call.end(store.internal().context().internal().runtime_mut())
             .expect("end the realloc");
     }
 
@@ -506,7 +523,10 @@ mod tests {
         let engine = Engine::new().expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let (tables, boundary) = records_without_an_instance();
-        let Err(error) = BoundaryCall::realloc(&boundary, store.context().runtime_mut()) else {
+        let Err(error) = BoundaryCall::realloc(
+            &boundary,
+            store.internal().context().internal().runtime_mut(),
+        ) else {
             panic!("the realloc is refused");
         };
         assert!(
@@ -530,7 +550,10 @@ mod tests {
         let engine = Engine::new().expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let (_, boundary) = records_without_an_instance();
-        let Err(error) = BoundaryCall::post_return(&boundary, store.context().runtime_mut()) else {
+        let Err(error) = BoundaryCall::post_return(
+            &boundary,
+            store.internal().context().internal().runtime_mut(),
+        ) else {
             panic!("the post-return is refused");
         };
         assert!(
@@ -549,11 +572,12 @@ mod tests {
         let engine = Engine::new().expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let instance = store
+            .internal()
             .lock_tables()
             .expect("handle tables")
             .tasks
             .insert_instance();
-        let tables = store.tables_handle();
+        let tables = store.internal().tables_handle();
         let state = Arc::new(Mutex::new(AbiRuntimeState::with_slabs(
             0,
             0,
@@ -566,7 +590,10 @@ mod tests {
         let (_, boundary) =
             BoundaryInstance::resolve(&declared(), &state, &tables).expect("resolve the crossing");
 
-        let Err(error) = BoundaryCall::realloc(&boundary, store.context().runtime_mut()) else {
+        let Err(error) = BoundaryCall::realloc(
+            &boundary,
+            store.internal().context().internal().runtime_mut(),
+        ) else {
             panic!("the realloc is refused");
         };
         assert!(

@@ -35,6 +35,7 @@ use crate::concurrency::{
     WaitableId, WaitableSetId,
 };
 use crate::error::Error;
+use crate::internal::ErrorInternal;
 use crate::value::Val;
 
 use super::TaskEnd;
@@ -1074,6 +1075,7 @@ impl Drop for SubtaskExit<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::internal::ResourceTypeIdInternal;
 
     #[wcmp_macros::test]
     fn it_rejects_an_index_of_another_resource_type() {

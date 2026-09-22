@@ -16,11 +16,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use wasm_component_model_polyfill::{Component, Engine, HostCall, Linker, Result, Store, Val};
+use crate::store::StoreInternalExt;
+use crate::{Component, Engine, HostCall, Linker, Result, Store, Val};
 use wcmp_macros::component;
-
-#[cfg(target_arch = "wasm32")]
-wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 /// What a reader saw of the scheduler's state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -62,7 +60,7 @@ async fn it_reads_the_schedulers_state_from_a_host_function_called_by_the_guest(
     // The one handle a trampoline has to the store. Nothing else of
     // the call reaches the host function: no driver, no store
     // reference, only this.
-    let tables = store.tables_handle();
+    let tables = store.internal().tables_handle();
     let during: Arc<Mutex<Seen>> = Arc::new(Mutex::new(Seen::default()));
     let recorded = during.clone();
 
@@ -100,7 +98,7 @@ async fn it_reads_the_schedulers_state_from_a_host_function_called_by_the_guest(
          trampoline, and found the turn that is running and its waker"
     );
 
-    let guard = store.tables().lock().expect("handle tables");
+    let guard = store.internal().tables().lock().expect("handle tables");
     let after = Seen {
         in_turn: guard.scheduler.in_turn(),
         has_waker: guard.scheduler.active_waker().is_some(),

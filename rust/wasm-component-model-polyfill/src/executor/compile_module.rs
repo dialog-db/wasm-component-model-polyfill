@@ -11,6 +11,7 @@ use wasm_runtime_layer::Module as RuntimeModule;
 
 use crate::engine::Engine;
 use crate::error::{Error, InstantiationError, Result};
+use crate::internal::EngineInternal;
 
 /// Compile `bytes`, one core module of a component, against `engine`.
 /// The translator already validated the module; a failure here means

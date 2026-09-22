@@ -7,6 +7,7 @@ use core::ptr::NonNull;
 use core::task::Waker;
 
 use crate::error::{Error, Result, SchedulerCause};
+use crate::store::StoreContextInternalExt;
 use crate::store::{StoreContext, StoreId};
 
 /// The slot this thread's running poll leaves its store in.
@@ -70,7 +71,7 @@ impl<'a> PollScope<'a> {
     pub fn enter<T: 'static>(store: &'a mut StoreContext<'_, T>, waker: &'a Waker) -> Self {
         let held = Slot {
             in_poll: Some(Polled {
-                store: store.id(),
+                store: store.internal().id(),
                 data: TypeId::of::<T>(),
             }),
             lent: Some(Lent {

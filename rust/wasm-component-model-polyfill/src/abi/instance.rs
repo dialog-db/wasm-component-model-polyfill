@@ -25,6 +25,7 @@ use crate::abi::runtime_state::AbiRuntimeState;
 use crate::concurrency::InstanceId;
 use crate::error::{Error, Result};
 use crate::executor::ir::CanonOptions;
+use crate::internal::ErrorInternal;
 use crate::resource::{HandleTables, ResourceTableRuntime};
 
 /// The component instance one crossing belongs to, with the tables

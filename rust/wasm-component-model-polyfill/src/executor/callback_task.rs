@@ -51,8 +51,10 @@ use wasm_runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
 use crate::backend::substrate_failure;
 use crate::concurrency::{Event, EventSlot, InstanceId, Item, ItemKind, TaskId};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, TaskCause};
+use crate::internal::ErrorInternal;
 use crate::resource::TableId;
 use crate::store::StoreContext;
+use crate::store::StoreContextInternalExt;
 
 use super::start_call::release_subtask;
 
@@ -130,8 +132,8 @@ impl CallbackTask {
     /// that has not returned a result fails with the no-result cause,
     /// and its record leaves the store either way.
     fn exit<T: 'static>(&self, store: &mut StoreContext<'_, T>) -> Result<()> {
-        let resolved = store.export_task_resolved(self.task)?;
-        let borrows = store.end_export_task(self.task)?;
+        let resolved = store.internal().export_task_resolved(self.task)?;
+        let borrows = store.internal().end_export_task(self.task)?;
         if !resolved {
             return Err(Error::Task(TaskCause::NoResult));
         }
@@ -145,10 +147,10 @@ impl CallbackTask {
     /// the callback item joins the low-priority queue with the none
     /// event.
     fn give_way<T: 'static>(&self, store: &mut StoreContext<'_, T>) -> Result<()> {
-        store.release_exclusive_thread(self.task)?;
+        store.internal().release_exclusive_thread(self.task)?;
         let slot = EventSlot::holding(Event::none());
         let item = self.item(slot);
-        store.scheduler_mut().push_low_priority(item);
+        store.internal().scheduler_mut().push_low_priority(item);
         Ok(())
     }
 
@@ -159,8 +161,14 @@ impl CallbackTask {
     fn wait<T: 'static>(&self, store: &mut StoreContext<'_, T>, set_index: u32) -> Result<()> {
         let slot = EventSlot::new();
         let item = self.item(slot.clone());
-        let waited =
-            store.wait_callback_on_set(self.task, self.instance, self.table, set_index, slot, item);
+        let waited = store.internal().wait_callback_on_set(
+            self.task,
+            self.instance,
+            self.table,
+            set_index,
+            slot,
+            item,
+        );
         match waited {
             Ok(()) => Ok(()),
             Err(error) => {
@@ -195,19 +203,22 @@ impl CallbackTask {
     /// enters the task, calls the callback, leaves the task, and acts
     /// on the word the callback returned.
     fn run<T: 'static>(&self, store: &mut StoreContext<'_, T>, slot: EventSlot) -> Result<()> {
-        if store.instance_is_held(self.instance)? {
+        if store.internal().instance_is_held(self.instance)? {
             let item = self.item(slot.clone());
             store
+                .internal()
                 .scheduler_mut()
                 .hold_for_exclusive(self.instance, slot, item);
             return Ok(());
         }
-        store.take_exclusive_thread(self.task, self.instance)?;
+        store
+            .internal()
+            .take_exclusive_thread(self.task, self.instance)?;
         let event = slot.take();
-        store.enter_export_task(self.task)?;
+        store.internal().enter_export_task(self.task)?;
         match self.call_callback(store, event) {
             Ok(word) => {
-                store.leave_export_task(self.task)?;
+                store.internal().leave_export_task(self.task)?;
                 self.handle_status_word(store, word)
             }
             Err(error) => {
@@ -242,11 +253,12 @@ impl CallbackTask {
     /// is the driver's turn, not the task the driver was waiting on.
     fn abandon<T: 'static>(&self, store: &mut StoreContext<'_, T>) -> Result<()> {
         let subtask = store
+            .internal()
             .lock_tables()?
             .tasks
             .task(self.task)
             .and_then(|record| record.subtask);
-        store.abandon_export_task(self.task)?;
+        store.internal().abandon_export_task(self.task)?;
         if let Some(subtask) = subtask {
             release_subtask(store, subtask);
         }
@@ -268,7 +280,7 @@ impl CallbackTask {
         ];
         let mut results = [RuntimeVal::I32(0)];
         self.callback
-            .call(store.runtime_mut(), &arguments, &mut results)
+            .call(store.internal().runtime_mut(), &arguments, &mut results)
             .map_err(substrate_failure)?;
         status_word(&results)
     }
@@ -280,7 +292,7 @@ impl CallbackTask {
         // The task is ending on a failure that is already the call's,
         // so a borrow the guest did not drop has nothing to be
         // reported to and the count goes with the record.
-        let _borrows = store.end_export_task(self.task)?;
+        let _borrows = store.internal().end_export_task(self.task)?;
         Ok(())
     }
 }

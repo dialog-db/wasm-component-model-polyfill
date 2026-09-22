@@ -92,6 +92,10 @@ struct Runner {
     instances: Vec<Instance>,
     /// Named instances, as indices into `instances`.
     named: HashMap<String, usize>,
+    /// Every name whose module exports are reflected into the linker,
+    /// with the component and instance the reflection was built from.
+    /// A rebuild of the linker replays them.
+    reflected: HashMap<String, (Component, usize)>,
     /// The instance an unqualified `invoke` targets.
     current: Option<usize>,
 }
@@ -110,6 +114,7 @@ impl Runner {
             last_definition: None,
             instances: Vec::new(),
             named: HashMap::new(),
+            reflected: HashMap::new(),
             current: None,
         }
     }
@@ -170,7 +175,7 @@ impl Runner {
                 // than running against whatever the name was bound to
                 // before.
                 if let Some(name) = &name {
-                    self.unbind(name);
+                    self.unbind(name).await;
                 }
                 let bytes = quote.encode().map_err(|err| format!("encode: {err}"))?;
                 let component = self.component(&bytes).await?;
@@ -350,12 +355,26 @@ impl Runner {
     /// Undo `register_named` for a name: drop the named instance and
     /// the root-level linker entry the registration reflects it into.
     /// `Linker`'s public surface adds registrations and never removes
-    /// one, so the harness clears the root registration's nested entry
-    /// directly; the field is workspace-internal and addresses exactly
-    /// what `register_named` writes.
-    fn unbind(&mut self, name: &str) {
+    /// one, so the harness builds a fresh linker and reflects every
+    /// name that is still bound into it. A name that reflected
+    /// nothing costs nothing: the rebuild runs only when the name
+    /// being unbound had a registration of its own.
+    async fn unbind(&mut self, name: &str) {
         self.named.remove(name);
-        self.linker.root().registration.instances.remove(name);
+        if self.reflected.remove(name).is_none() {
+            return;
+        }
+        let mut linker = Linker::new(&self.engine);
+        link_spectest(&self.engine, &mut linker).await;
+        self.linker = linker;
+        let bound: Vec<(String, Component, usize)> = self
+            .reflected
+            .iter()
+            .map(|(bound_name, (component, index))| (bound_name.clone(), component.clone(), *index))
+            .collect();
+        for (bound_name, component, index) in bound {
+            self.register_named(&bound_name, &component, index);
+        }
     }
 
     /// Reflect a named component's module exports into the linker
@@ -363,6 +382,8 @@ impl Runner {
     /// later directive can import them. Functions are not reflected
     /// there either.
     fn register_named(&mut self, name: &str, component: &Component, index: usize) {
+        self.reflected
+            .insert(name.to_owned(), (component.clone(), index));
         let instance = &self.instances[index];
         let mut root = self.linker.root();
         let mut registration = root.instance(name);
@@ -581,7 +602,7 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
             let (Some(Val::Own(handle)), Some(Val::U32(rep))) = (args.first(), args.get(1)) else {
                 panic!("[static]resource1.assert: expected (own, u32), got {args:?}");
             };
-            assert_eq!(handle.rep, *rep, "[static]resource1.assert: rep mismatch");
+            assert_eq!(handle.rep(), *rep, "[static]resource1.assert: rep mismatch");
             Ok(())
         },
     );
@@ -601,7 +622,7 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
             else {
                 panic!("[method]resource1.simple: expected (borrow, u32), got {args:?}");
             };
-            assert_eq!(handle.rep, *rep, "[method]resource1.simple: rep mismatch");
+            assert_eq!(handle.rep(), *rep, "[method]resource1.simple: rep mismatch");
             Ok(())
         },
     );
