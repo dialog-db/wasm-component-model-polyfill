@@ -691,6 +691,10 @@
             $WASM_BINDGEN_BIN --target web --no-typescript \
               --out-dir $out target/wasm32-unknown-unknown/release/wcmp-smoke.wasm
             cp ${./rust/wcmp-smoke/web/index.html} $out/index.html
+            # The page's script is a file, not an inline element: the
+            # page declares `script-src 'self' 'wasm-unsafe-eval'`, so
+            # the polyfill runs under the policy a hardened site sets.
+            cp ${./rust/wcmp-smoke/web/boot.js} $out/boot.js
           '';
         };
 

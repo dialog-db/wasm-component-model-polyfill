@@ -8,6 +8,12 @@ page's `#out` element to hold the report's summary line, and fails
 unless that line reports no failure and no skip and equals the line
 the native smoke binary printed.
 
+The page declares `script-src 'self' 'wasm-unsafe-eval'`, the policy a
+hardened site sets, so the whole run — composition included — happens
+under it. `boot.js` records on the root element whether the browser is
+enforcing that policy, and this script fails if it is not: a run that
+passed because the policy was lost would prove nothing.
+
 Arguments: the page directory, the native summary line, the report's
 destination path. Environment: `CHROMEDRIVER`, and
 `WASM_BINDGEN_TEST_WEBDRIVER_JSON` for the browser capabilities.
@@ -97,6 +103,14 @@ def main():
                 if lines and lines[-1].startswith("smoke: "):
                     break
                 time.sleep(0.5)
+            csp = request(
+                "POST",
+                f"{base}/session/{session}/execute/sync",
+                {
+                    "script": "return document.documentElement.dataset.csp || 'absent'",
+                    "args": [],
+                },
+            )
         finally:
             request("DELETE", f"{base}/session/{session}")
     finally:
@@ -110,6 +124,12 @@ def main():
     summary = lines[-1] if lines else ""
     if not summary.startswith("smoke: "):
         raise SystemExit(f"the page did not finish within {BUDGET_SECONDS}s")
+    if csp != "enforced":
+        raise SystemExit(
+            "the browser did not enforce the page's content-security policy "
+            f"(`document.documentElement.dataset.csp` read `{csp}`), so the run "
+            "says nothing about instantiating without `'unsafe-eval'`"
+        )
     if summary != NATIVE_SUMMARY:
         raise SystemExit(f"the page reported `{summary}`, the native run `{NATIVE_SUMMARY}`")
     if not summary.endswith(" 0 failed, 0 skipped"):

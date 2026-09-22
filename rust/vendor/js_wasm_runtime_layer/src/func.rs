@@ -4,7 +4,7 @@ use core::fmt;
 
 use anyhow::{Context, Result};
 use js_sys::{Array, Function};
-use wasm_bindgen::{closure::Closure, JsCast, JsValue};
+use wasm_bindgen::{closure::Closure, prelude::wasm_bindgen, JsCast, JsValue};
 use wasm_runtime_layer::{
     backend::{AsContext, AsContextMut, Val, WasmFunc},
     FuncType, ValType,
@@ -209,6 +209,35 @@ macro_rules! func_wrapper {
     }};
 }
 
+/// PATCH (wcmp): the JavaScript half of [`variadic_wrapper`].
+///
+/// `collect_arguments` answers a function of no declared arity that
+/// gathers whatever it was called with into an array and hands the
+/// array to `callee`, which is the closure's own function object.
+///
+/// `wasm_bindgen` writes the snippet to a file beside the module's
+/// own glue and the page loads it as ordinary script, so a
+/// content-security policy whose `script-src` grants `'self'` and
+/// `'wasm-unsafe-eval'` — enough for the module itself, and the
+/// common hardened setting — admits it unchanged. Building the same
+/// function from source text at runtime, with `js_sys`'s
+/// `Function::new_with_args`, would be `new Function`, which such a
+/// policy refuses; every call an adapter prepares — which is every
+/// call whose lower or lift is asynchronous — then fails on a page
+/// that sets one, because a prepared call that passes an argument
+/// reaches the arity this wrapper exists for.
+#[wasm_bindgen(inline_js = "export function collect_arguments(callee) {
+    return function () {
+        return callee(Array.prototype.slice.call(arguments));
+    };
+}
+")]
+extern "C" {
+    /// Wrap `callee` in a function of no declared arity that passes
+    /// it an array of the arguments of each call.
+    fn collect_arguments(callee: &JsValue) -> Function;
+}
+
 /// PATCH (wcmp): the same wrapper, for a host function of more
 /// parameters than a `wasm_bindgen` closure can take.
 ///
@@ -269,17 +298,7 @@ fn variadic_wrapper<T: 'static>(
             (*body)(values)
         });
 
-    // `function () { return f(Array.prototype.slice.call(arguments)); }`,
-    // built by calling a factory with the closure's own function.
-    let factory = Function::new_with_args(
-        "f",
-        "return function () { return f(Array.prototype.slice.call(arguments)); };",
-    );
-    let func = factory
-        .call1(&JsValue::UNDEFINED, closure.as_ref())
-        .expect("the argument-forwarding shim is built from a constant source")
-        .dyn_into::<Function>()
-        .expect("the argument-forwarding shim is a function");
+    let func = collect_arguments(closure.as_ref());
     (DropResource::new(closure), func)
 }
 

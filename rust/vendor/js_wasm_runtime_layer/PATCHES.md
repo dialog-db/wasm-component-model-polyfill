@@ -112,18 +112,44 @@ Upstream builds the JS shim of a host function with `Closure::new`, which
 `wasm_bindgen` implements for at most eight arguments, and reaches
 `unimplemented!()` above that. The prepare-call intrinsic takes eight fixed
 arguments followed by the caller's own flat arguments, which the canonical ABI
-allows sixteen of, so the limit is reached by any call between components that
-passes an argument. The patch adds a variadic wrapper: the closure takes one
-JS array, and a small JS shim built with `Function::new_with_args` collects the
-call's `arguments` into it, so the guest still imports an ordinary function of
-the declared arity.
+allows sixteen of, so the limit is reached by a prepared call that passes an
+argument. A fused adapter prepares a call when the lower or the lift is
+asynchronous, and only then: a synchronous lower of a synchronously lifted
+callee calls the enter and exit intrinsics and nothing else. Wasmtime says the
+same of its own `call_prepare` — "This is part of a async lower and/or async
+lift adapter. This is not used for a sync->sync function call"
+(`crates/environ/src/fact/trampoline.rs`) — and so does the polyfill, in the
+module documentation of `src/executor/prepare_call.rs`. The patch adds a
+variadic wrapper: the closure takes one JS array, and a small JS shim collects
+the call's `arguments` into it, so the guest still imports an ordinary function
+of the declared arity.
 
-The shim is built with `Function::new_with_args`, which is `new Function` under
-another name, so a page whose content-security policy forbids it would need the
-shim as a `wasm_bindgen(inline_js)` snippet instead. A newer `js-sys` than the
-one this workspace locks gates that constructor behind its `unsafe-eval`
-feature, which a bump would have to enable. The proposal for upstream is
-closures of arbitrary arity, which would remove the shim altogether.
+The shim is a `wasm_bindgen(inline_js)` snippet, `collect_arguments`.
+`wasm_bindgen` writes the snippet to a file beside the module's own glue and
+the page loads it as ordinary script, so the whole backend needs no more of a
+page's content-security policy than the module itself does: `script-src 'self'
+'wasm-unsafe-eval'` admits it. The shim was first written with
+`Function::new_with_args`, which is `new Function` under another name, and a
+policy without `'unsafe-eval'` — the common hardened setting — refused it; a
+page under such a policy could then run no composition that prepares a call,
+which is every composition with an asynchronous lower or lift.
+
+Two artifacts hold that down, and each covers one half of it. The browser test
+`it_runs_a_prepared_call_under_a_policy_without_unsafe_eval`, in
+`rust/wasm-component-model-polyfill/tests/baseline_prepared_call.rs`, installs
+the policy, proves the browser enforces it, and under it both runs a
+composition whose lift is asynchronous — which does prepare a call — and builds
+and calls a host function of nine parameters directly, so the wrapper is
+exercised whatever the adapter emits. That test is what catches a return to
+`new Function`. The web smoke page declares the same policy in a `<meta>`
+element and proves the browser enforces it, which is what shows the snippet
+file itself loads under the policy like any other script; its fixtures lift and
+lower synchronously throughout, so no prepare-call trampoline is emitted there
+and the page would not catch the regression on its own.
+
+The proposal for upstream is closures of arbitrary arity, which would remove
+the shim altogether. The filing carries the arity limit and this
+content-security-policy consequence with it.
 
 ## 9. A thrown value with no message string (`src/lib.rs`)
 

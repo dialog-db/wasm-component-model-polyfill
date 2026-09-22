@@ -1,5 +1,18 @@
 <!doctype html>
 <meta charset="utf-8" />
+<!--
+  The page holds itself to the content-security policy a hardened site
+  would set: script only from this origin, and `'wasm-unsafe-eval'` for
+  the module, with no `'unsafe-eval'`. The polyfill and the browser
+  backend it vendors must instantiate a composition under exactly this
+  much, so the page's own script lives in `boot.js` rather than inline,
+  and `boot.js` records whether the browser is enforcing the policy for
+  `check.py` to read.
+-->
+<meta
+  http-equiv="Content-Security-Policy"
+  content="script-src 'self' 'wasm-unsafe-eval'"
+/>
 <title>wcmp smoke</title>
 <style>
   body { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 2rem; }
@@ -8,13 +21,4 @@
 <h1>Wasm Component Model Polyfill smoke test</h1>
 <p>The same host program as <code>smoke native</code>, compiled to <code>wasm32-unknown-unknown</code> and running in this page.</p>
 <pre id="out">loading…</pre>
-<script type="module">
-  import init from "./wcmp-smoke.js";
-  const out = document.getElementById("out");
-  out.textContent = "";
-  window.report = (line) => {
-    out.textContent += line + "\n";
-    console.log(line);
-  };
-  await init();
-</script>
+<script type="module" src="./boot.js"></script>
