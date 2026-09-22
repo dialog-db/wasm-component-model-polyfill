@@ -778,9 +778,14 @@ pub enum AbiCause {
 /// The structured reason the concurrency scheduler failed to carry a
 /// driver through a turn.
 ///
-/// Carried by [`Error::Scheduler`]. Nothing produces this cause yet;
-/// the scheduler, the `run_concurrent` entry, and the suspend seam
-/// each produce it once they land.
+/// Carried by [`Error::Scheduler`]. The scheduler, the
+/// `run_concurrent` entry, and the suspend seam each raise the cause
+/// that names what they met.
+/// [`SchedulerCause::ReentrantHostCall`] is the odd one: it is not
+/// the scheduler's judgement of anything but the browser backend's
+/// refusal of a call the guest made, read back off the failure and
+/// reported here so that a host branching on a scheduler cause finds
+/// it beside the others.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum SchedulerCause {
@@ -845,25 +850,29 @@ pub enum SchedulerCause {
     #[error("an accessor reached its store outside a poll of that store")]
     StoreNotInPoll,
 
-    /// A nested turn ran work that called a host function a call of
-    /// which was still on the stack, on a target whose host
-    /// functions cannot be entered twice.
+    /// Guest work called a host function a call of which was still
+    /// on the stack, on a target whose host functions cannot be
+    /// entered twice.
     ///
     /// A blocking built-in that finds no suspend provider runs a
     /// nested turn from inside the lowered import the guest called,
     /// so that import's host function is still on the stack while
     /// the turn runs. An item of that turn which calls the same
     /// import is therefore a second call of the same host function.
-    /// The native backend serves it, because a native engine enters
-    /// a host function at any depth. The browser backend refuses it:
-    /// the browser has one JavaScript function object per host
-    /// function, and the arguments and results of a call belong to
-    /// that call alone. The refusal reaches the guest as a trap and
-    /// the guest's caller as this cause, so a host reading it knows
-    /// the component is sound and the target is what could not run
-    /// it.
+    /// A destructor reaches the same place with no turn of any kind
+    /// in it: `resource.drop` is a host function, and it runs the
+    /// destructor from inside itself, so a destructor that drops a
+    /// second handle of its own resource type in the same instance
+    /// calls that host function again. The native backend serves
+    /// either, because a native engine enters a host function at any
+    /// depth. The browser backend refuses it: the browser has one
+    /// JavaScript function object per host function, and the
+    /// arguments and results of a call belong to that call alone.
+    /// The refusal reaches the guest as a trap and the guest's caller
+    /// as this cause, so a host reading it knows the component is
+    /// sound and the target is what could not run it.
     #[error(
-        "this target cannot call a host function while a call of the same host function is still on the stack, and a nested turn ran work that did"
+        "this target cannot call a host function while a call of the same host function is still on the stack, and guest work did"
     )]
     ReentrantHostCall,
 }

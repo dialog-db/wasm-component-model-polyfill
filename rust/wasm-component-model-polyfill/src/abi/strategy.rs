@@ -115,6 +115,17 @@ impl AbiStrategy {
                     RuntimeVal::I32(size as i32),
                 ];
                 let mut results = [RuntimeVal::I32(0)];
+                // The call carries whatever it failed with rather
+                // than a rendering of it. A `cabi_realloc` is guest
+                // code and may call an import; on the web target a
+                // call of that import's host function may already be
+                // on the stack, which the backend refuses with an
+                // error of its own type. Naming that refusal is not
+                // this method's to do — it has only an `AbiCause` to
+                // answer with, and the refusal is no ABI failure — so
+                // it travels under `ReallocFailed`, and the crossing
+                // that asked for the allocation reads it back out in
+                // `BoundaryContext::refusal`.
                 realloc
                     .call(&mut *store, &args, &mut results)
                     .map_err(AbiCause::ReallocFailed)?;

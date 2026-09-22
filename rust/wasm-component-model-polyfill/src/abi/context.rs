@@ -31,7 +31,7 @@ use crate::abi::boundary_call::BoundaryCall;
 use crate::abi::instance::BoundaryInstance;
 use crate::abi::options::BoundaryOptions;
 use crate::abi::strategy::AbiStrategy;
-use crate::backend::Backend;
+use crate::backend::{Backend, reentrant_refusal};
 use crate::component::FunctionType;
 use crate::concurrency::Scope;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
@@ -335,10 +335,18 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
         let ran = post_return
             .call(&mut self.store, core_results, &mut empty)
             .map_err(|cause| {
-                Error::from(AbiError {
-                    position: AbiPosition::Result,
-                    valtype: None,
-                    cause: AbiCause::SubstrateFailure(cause),
+                // The `post-return` is guest code and may call an
+                // import; on the web target a call of that import's
+                // host function may already be on the stack, which
+                // the backend refuses. That refusal is not a failure
+                // of the result slot and naming it one would hide
+                // what a host can act on, so it keeps its own cause.
+                reentrant_refusal(&cause).unwrap_or_else(|| {
+                    Error::from(AbiError {
+                        position: AbiPosition::Result,
+                        valtype: None,
+                        cause: AbiCause::SubstrateFailure(cause),
+                    })
                 })
             });
         let ended = call.end(&mut self.store);
@@ -348,18 +356,46 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
     /// Label a strategy's cause with the slot and the value type the
     /// crossing was processing.
     fn labelled(cause: AbiCause, position: AbiPosition, valtype: &ValueType) -> Error {
-        Error::from(AbiError {
-            position,
-            valtype: Some(valtype.clone()),
-            cause,
-        })
+        match Self::refusal(&cause) {
+            Some(refusal) => refusal,
+            None => Error::from(AbiError {
+                position,
+                valtype: Some(valtype.clone()),
+                cause,
+            }),
+        }
     }
 
     /// Report a strategy's cause from a crossing that processes no
     /// value type: a copy between two guest memories moves code
     /// units, not a `Val`.
     fn unlabelled(cause: AbiCause) -> Error {
-        Error::internal(format!("guest memory access failed: {cause}"))
+        match Self::refusal(&cause) {
+            Some(refusal) => refusal,
+            None => Error::internal(format!("guest memory access failed: {cause}")),
+        }
+    }
+
+    /// The browser backend's refusal of a re-entrant host call, when
+    /// that is what a strategy's cause carries, and nothing for an
+    /// ordinary ABI failure.
+    ///
+    /// A strategy reaches the guest at one place: `cabi_realloc`,
+    /// which is guest code and may call an import whose host function
+    /// is already on the stack. The strategy has no polyfill error to
+    /// answer with, so it carries that refusal out under
+    /// [`AbiCause::ReallocFailed`], and this is where the crossing
+    /// unwraps it again. [`AbiCause::SubstrateFailure`] is read for
+    /// the same reason: a memory access cannot meet the refusal
+    /// today, and reading one variant and not the other would leave a
+    /// cause to lose the next time a strategy calls the guest.
+    fn refusal(cause: &AbiCause) -> Option<Error> {
+        match cause {
+            AbiCause::ReallocFailed(error) | AbiCause::SubstrateFailure(error) => {
+                reentrant_refusal(error)
+            }
+            _ => None,
+        }
     }
 }
 
@@ -373,6 +409,7 @@ mod tests {
     use crate::component::{FunctionParameter, FunctionType};
     use crate::concurrency::InstanceId;
     use crate::engine::Engine;
+    use crate::error::SchedulerCause;
     use crate::executor::ir::DataModel;
     use crate::resource::TableId;
     use crate::store::Store;
@@ -600,6 +637,48 @@ mod tests {
         assert!(
             message.contains("data model is not implemented"),
             "the source's own strategy refused the read, not the destination's: {message}"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_reports_a_re_entrant_call_refused_under_a_realloc_as_its_own_cause() {
+        // A `cabi_realloc` is guest code and may call an import whose
+        // host function is already on the stack, which the browser
+        // refuses. The strategy has only an `AbiCause` to carry that
+        // out with, and the crossing reads it back here rather than
+        // reporting the refusal as a realloc failure of whatever
+        // value type it happened to be carrying.
+        let cause = AbiCause::ReallocFailed(anyhow::Error::new(Error::Scheduler(
+            SchedulerCause::ReentrantHostCall,
+        )));
+        let valtype = ValueType::Primitive(PrimitiveType::U32);
+
+        let error = BoundaryContext::<()>::labelled(cause, AbiPosition::Argument(0), &valtype);
+
+        assert!(
+            matches!(error, Error::Scheduler(SchedulerCause::ReentrantHostCall)),
+            "the refusal keeps the cause a host can branch on: {error}"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_labels_an_ordinary_realloc_failure_with_the_slot_and_the_value_type() {
+        let cause = AbiCause::ReallocFailed(anyhow::anyhow!("cabi_realloc trapped"));
+        let valtype = ValueType::Primitive(PrimitiveType::U32);
+
+        let error = BoundaryContext::<()>::labelled(cause, AbiPosition::Argument(0), &valtype);
+
+        let Error::Abi(abi) = error else {
+            panic!("a failure of the realloc itself is still an ABI failure");
+        };
+        assert!(
+            matches!(abi.position, AbiPosition::Argument(0)),
+            "the failure names the slot the crossing was processing"
+        );
+        assert_eq!(
+            abi.valtype,
+            Some(ValueType::Primitive(PrimitiveType::U32)),
+            "and the value type it was processing"
         );
     }
 }

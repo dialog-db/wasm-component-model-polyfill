@@ -78,7 +78,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use wasm_runtime_layer::{
     AsContextMut, Func as RuntimeFunc, FuncType, Val as RuntimeVal, ValType as CoreType,
 };
@@ -109,6 +109,11 @@ use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime, ResourceTy
 use crate::store::{StoreContext, StoreData};
 use crate::types::{PrimitiveType, ResourceType, TupleType, ValueType};
 use crate::value::Val;
+
+/// What the `resource.drop` trampoline says about a destructor that
+/// failed, as the context over the destructor's own error rather
+/// than as a rendering of it.
+const DESTRUCTOR_FAILED: &str = "resource destructor failed";
 
 /// Per-resource runtime data captured by every resource trampoline.
 ///
@@ -234,9 +239,21 @@ pub fn build_resource_drop_trampoline<T: 'static>(
             // with the guard, whether the destructor returned or
             // failed.
             let _call = BoundaryCall::destructor(&tables, runtime.destructor.instance())?;
+            // A destructor's failure is carried, not rendered. The
+            // call this drop is inside reports whatever the
+            // trampoline hands back, and a host that wants to know
+            // what went wrong can read a structured error and cannot
+            // read a string. `context` leaves the error it wraps
+            // reachable, so a failure the browser backend raised —
+            // its refusal of a re-entrant host call, which a
+            // destructor that drops a second handle of its own
+            // resource type meets — still downcasts out of the
+            // `substrate_failure` the export's own call site applies,
+            // and the host reads the cause that names the limitation
+            // rather than a substrate failure.
             match &runtime.destructor {
                 ResourceDestructor::Host(body) => body(store_ctx.data_mut().host_mut(), rep)
-                    .map_err(|err| anyhow!("resource destructor failed: {err}"))?,
+                    .map_err(|err| anyhow::Error::new(err).context(DESTRUCTOR_FAILED))?,
                 ResourceDestructor::Local { function, .. } => {
                     let destructor = function
                         .lock()
@@ -245,7 +262,7 @@ pub fn build_resource_drop_trampoline<T: 'static>(
                     if let Some(destructor) = destructor {
                         destructor
                             .call(&mut store_ctx, &[RuntimeVal::I32(rep as i32)], &mut [])
-                            .map_err(|err| anyhow!("resource destructor failed: {err}"))?;
+                            .context(DESTRUCTOR_FAILED)?;
                     }
                 }
             }

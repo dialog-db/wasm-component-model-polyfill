@@ -170,6 +170,20 @@ reports the recorded error. `ReentrantHostCall` is public, so a caller that
 wants to tell this failure from any other downcasts the `anyhow::Error` to it;
 the polyfill does, and answers its own re-entrant-host-call scheduler cause.
 
+The patch gives up one robustness property in the exchange. The old `FnMut`
+shim's glue cleared the closure's pointer in a `try` and restored it in a
+`finally`, so a call that ended by an engine-level throw — a stack overflow, an
+out-of-memory — still left the closure enterable afterwards. The borrow this
+patch takes is a Rust guard, released when the body's own frame returns, and an
+engine-level throw leaves no frame to return through, so the borrow stays out
+and every later call of that host function is refused for the life of the
+store. An ordinary guest trap is not such a throw: `wasm_bindgen` turns the
+value a guest threw into the `Err` of the call that entered the guest, so the
+body returns and the guard drops. The gap is therefore out of reach of a guest
+that merely traps, and a store that has overflowed the JS stack has little left
+to give in any case; it is recorded because the property existed before and
+does not now.
+
 The refusal is the whole of the change: nothing here makes a host function
 re-entrant. Doing that would need a results buffer per call and a JS shim per
 call, and the aliasing of `StoreInner` that the whole backend rests on would

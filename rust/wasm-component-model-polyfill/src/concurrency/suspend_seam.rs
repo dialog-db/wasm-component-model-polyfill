@@ -125,11 +125,22 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 /// one Rust closure, and the arguments and results of a call belong
 /// to that call alone. The browser backend detects the second call
 /// and fails it with [`SchedulerCause::ReentrantHostCall`], so the
-/// item traps with a message naming the limitation rather than
-/// taking the page down; the component itself is sound, and the
-/// same one runs natively. A call to any other import, or to the
-/// same import of another component instance, runs the same way on
-/// both targets: each of those is a host function of its own.
+/// item traps with a message naming the limitation and the call the
+/// item was made from reports the cause. The backend refused the
+/// second call before it had a guard of its own, too: `wasm_bindgen`
+/// threw a catchable JS exception that named its own mechanism and
+/// left nothing for the outer call to read. Neither took the page
+/// down; what the guard added is a cause a host can act on. The
+/// component itself is sound either way, and the same one runs
+/// natively.
+///
+/// The import the block is inside is not the only one at risk. Every
+/// level of nesting leaves its own import's host function on the
+/// stack, so an item of a turn three levels down which calls the
+/// import a level above it is refused on the same rule. A call to an
+/// import no level has entered, or to the same import of another
+/// component instance, runs the same way on both targets: each of
+/// those is a host function of its own.
 ///
 /// A provider in the slot serves the whole of that instead. It
 /// suspends the thread and ends the turn, and no nested turn runs.
