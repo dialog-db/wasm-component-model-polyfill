@@ -18,3 +18,7 @@ created: 2026-09-21T17:05:56Z
 
 ## Dispatch log
 - 2026-09-22T17:45:08Z dispatched implementor `card-abc01a-c64e5715` from tip `6886b73`. The host drive was lost with its shell before the directive reached the VM, which came up idle; redelivered with `sandbox prompt --redeliver`.
+
+## Review notes
+- 2026-09-22T20:22:33Z **host crash recovery.** The host rebooted at about 20:02Z. The branch carries the card's work at `cbf464b` "fix(executor): A failed instantiation leaves no records in the store"; its last report (18:35:39Z) said it was implemented and green on the native lane and had found the web lane failing to compile at its dispatch seed in `src/baseline/prepared_call.rs` — the pre-existing break the host fixed as `35990fe`. My fix note never reached the VM (the prompt transport refused while turn 1 was in flight), so the branch does not carry the repair and the implementor never filed a terminal report. Fetched from the on-disk mirror. Moved to needs-review on the strength of the native result; the host's composed-tip gate (which already contains `35990fe`) runs the web lanes on landing. The reviewer should confirm the work is complete, since no `done` summary exists. Implementor stopped, not removed.
+- 2026-09-22T20:31:14Z launched reviewer `review-abc01a-ebcb6515` (reads-only) after crash recovery; delivered `sandbox-guest/card-abc01a-c64e5715` (tip cbf464b) as `delivered/card-abc01a-c64e5715`.
