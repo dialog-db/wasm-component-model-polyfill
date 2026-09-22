@@ -604,6 +604,24 @@ async fn it_traps_a_join_whose_first_index_is_not_a_waitable() {
 }
 
 #[wcmp_macros::test]
+async fn it_traps_a_join_of_an_unknown_index_with_wasmtimes_message() {
+    let (mut store, instance) = instantiate(SET_BUILTINS).await;
+
+    let message = call_trap(&mut store, &instance, "join", &[Val::U32(9), Val::U32(0)]).await;
+
+    // Wasmtime raises the lookup's failure as the plain string of its
+    // handle table, so the built-in adds no `wasm trap:` of its own.
+    assert!(
+        message.contains("unknown handle index 9"),
+        "the first index names no entry: {message}"
+    );
+    assert!(
+        !message.contains("wasm trap: unknown handle index"),
+        "the lookup's message reaches the host as Wasmtime words it: {message}"
+    );
+}
+
+#[wcmp_macros::test]
 async fn it_traps_a_join_whose_second_index_is_not_a_set() {
     let (mut store, instance) = instantiate(SET_BUILTINS).await;
     let subtask_index = subtask_in_table(&mut store, &instance);
@@ -619,6 +637,31 @@ async fn it_traps_a_join_whose_second_index_is_not_a_set() {
     assert!(
         message.contains("is not a waitable-set"),
         "the second index must name a waitable set: {message}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_traps_a_join_to_an_unknown_set_index_with_wasmtimes_message() {
+    let (mut store, instance) = instantiate(SET_BUILTINS).await;
+    let subtask_index = subtask_in_table(&mut store, &instance);
+
+    let message = call_trap(
+        &mut store,
+        &instance,
+        "join",
+        &[Val::U32(subtask_index), Val::U32(9)],
+    )
+    .await;
+
+    // The second index goes through the same handle-table lookup as
+    // the first, and Wasmtime words its failure the same way.
+    assert!(
+        message.contains("unknown handle index 9"),
+        "the second index names no entry: {message}"
+    );
+    assert!(
+        !message.contains("wasm trap: unknown handle index"),
+        "the lookup's message reaches the host as Wasmtime words it: {message}"
     );
 }
 

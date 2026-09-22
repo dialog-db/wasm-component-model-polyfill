@@ -53,10 +53,11 @@ pub enum ValueType {
     Enum(EnumType),
     /// An owning handle to a resource (`own<T>`).
     ///
-    /// The full handle-table semantics — index allocation, transfer,
-    /// destructor invocation — are not modelled here; this variant
-    /// names the resource type the handle points at so the
-    /// introspection surface is complete.
+    /// The variant names the resource type the handle points at, and
+    /// nothing more. The handle-table semantics — index allocation,
+    /// transfer, destructor invocation — belong to the store's handle
+    /// tables, which the canonical ABI reaches when it lifts or lowers
+    /// a value of this type.
     Own(ResourceType),
     /// A borrow handle to a resource (`borrow<T>`).
     Borrow(ResourceType),

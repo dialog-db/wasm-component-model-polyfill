@@ -16,11 +16,21 @@ use crate::resource::ResourceHandle;
 /// so on — so a `Val` can be passed across an export call without
 /// borrowing into the runtime substrate's memory.
 ///
-/// The handle variants `Val::Own` and `Val::Borrow` are present so
-/// the enum is closed for every shape `ValueType` admits, but their
-/// canonical-ABI lift and lower are deferred. Constructing or
-/// receiving one against an export today surfaces a structured
-/// error rather than reaching the underlying handle table.
+/// The handle variants `Val::Own` and `Val::Borrow` carry a
+/// [`crate::ResourceHandle`] whose index names an entry in one table:
+/// the store's host table for a handle the host holds, or the guest's
+/// own table for a `Val::Borrow` lifted out of a guest, which keeps
+/// the guest's index.
+///
+/// Lowering an `own` into a call moves the host's entry into the
+/// guest's table. Lowering a `borrow` lends the host's owning entry
+/// to the call, so only a borrow of a handle the host owns can be
+/// lowered. The instance that defines the resource then receives
+/// only the rep and gains no entry; any other instance receives a
+/// borrow entry of its own. Lifting an `own` out of a guest moves the
+/// guest's entry into the host table. Lifting a `borrow` out of a
+/// guest lends the guest's entry to the call when that entry owns the
+/// resource, and lends nothing when the entry is itself a borrow.
 ///
 /// [`wasm_runtime_layer`]: https://docs.rs/wasm_runtime_layer
 #[derive(Clone, Debug, PartialEq)]

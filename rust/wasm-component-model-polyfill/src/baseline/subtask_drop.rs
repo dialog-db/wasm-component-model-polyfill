@@ -537,6 +537,24 @@ async fn it_traps_a_drop_of_an_index_that_names_no_entry() {
 }
 
 #[wcmp_macros::test]
+async fn it_traps_a_drop_of_an_unknown_index_with_wasmtimes_message() {
+    let (mut store, instance) = instantiate(SUBTASK_BUILTINS).await;
+
+    let message = call_trap(&mut store, &instance, "drop-subtask", &[Val::U32(7)]).await;
+
+    // Wasmtime raises the lookup's failure as the plain string of its
+    // handle table, so the built-in adds no `wasm trap:` of its own.
+    assert!(
+        message.contains("unknown handle index 7"),
+        "the index names no entry: {message}"
+    );
+    assert!(
+        !message.contains("wasm trap: unknown handle index"),
+        "the lookup's message reaches the host as Wasmtime words it: {message}"
+    );
+}
+
+#[wcmp_macros::test]
 async fn it_fails_a_drop_from_a_realloc_with_the_cannot_leave_cause() {
     let (mut store, instance) = instantiate(REALLOC_DROPS_A_SUBTASK).await;
 

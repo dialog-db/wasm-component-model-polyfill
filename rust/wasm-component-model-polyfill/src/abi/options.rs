@@ -148,11 +148,9 @@ impl BoundaryOptions {
         self.post_return.as_ref()
     }
 
-    /// The export's callback. Nothing resumes one yet: a host call
-    /// into an asynchronous export is refused until the call is
-    /// built, and the callback is extracted and handed out so that
-    /// the call finds it here when it is.
-    #[allow(dead_code)]
+    /// The export's callback. A host call into an asynchronous export
+    /// reads it here and hands it to the callback task, which calls it
+    /// each time the task resumes.
     pub fn callback(&self) -> Option<&RuntimeFunc> {
         self.callback.as_ref()
     }

@@ -171,7 +171,7 @@ pub fn build_waitable_join<T: 'static>(
             let mut guard = lock_tables(&tables)?;
             let waitable = guard
                 .waitable_from_handle(table, waitable_index)
-                .map_err(|err| anyhow!("wasm trap: {err}"))?;
+                .map_err(|err| anyhow!("{err}"))?;
             // Every lookup that can trap happens before the join, so
             // a join that fails leaves the waitable in the set it
             // already named.
@@ -219,7 +219,7 @@ pub fn build_subtask_drop<T: 'static>(
             let mut guard = lock_tables(&tables)?;
             let subtask = guard
                 .subtask_from_handle(table, subtask_index)
-                .map_err(|err| anyhow!("wasm trap: {err}"))?;
+                .map_err(|err| anyhow!("{err}"))?;
             // The record's own check comes first: a subtask whose
             // resolution is still owed traps and keeps its entry.
             let waitable = guard.tasks.subtask_waitable(subtask);
@@ -412,7 +412,7 @@ fn calling_instance(
 fn set_at(tables: &HandleTables, table: TableId, index: u32) -> anyhow::Result<WaitableSetId> {
     tables
         .waitable_set_from_handle(table, index)
-        .map_err(|err| anyhow!("wasm trap: {err}"))
+        .map_err(|err| anyhow!("{err}"))
 }
 
 /// Refuse the built-in when the instance may not be left, which is

@@ -32,6 +32,16 @@
 //! still owes a borrow cannot return, which is the scope-exit rule
 //! every other end of a call applies.
 //!
+//! Wasmtime orders these checks differently, and the polyfill keeps
+//! the reference's order rather than Wasmtime's. Wasmtime takes the
+//! task's pending result lift before it compares anything, and that
+//! lift is gone once the task has returned, so a task that has
+//! already returned traps as returned twice before its signature is
+//! compared or its result lifted. A second `task.return` whose
+//! signature is also wrong therefore reports the mismatch here and
+//! the returned-twice trap on Wasmtime, and so does a second one
+//! whose result fails to lift.
+//!
 //! A task the prepare intrinsic of a fused adapter created takes a
 //! different crossing. The adapter generated a return function for
 //! the call, and running that function is the crossing: it lowers

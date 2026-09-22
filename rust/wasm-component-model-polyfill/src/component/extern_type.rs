@@ -33,18 +33,22 @@ pub enum ExternType {
     /// A fresh resource type — a `(type (sub resource))` import or
     /// resource declaration. The carried [`ResourceType`] names the
     /// resource for round-tripping; the handle-table semantics that
-    /// give the resource its runtime identity live in a later layer.
+    /// give the resource its runtime identity live in the store.
     Resource(ResourceType),
     /// An equality bound on an existing resource type — the
     /// component asserts the import or export refers to the named
     /// resource rather than introducing a fresh one.
     ResourceEquals(ResourceType),
-    /// A first-class component value of a known [`ValueType`].
+    /// A value type an import or export names: a `type` item, such
+    /// as a record an interface exports or an `eq` bound on a type an
+    /// instance type declares.
     ///
-    /// The Component Model MVP currently treats value imports and
-    /// exports as out-of-scope, but the binary format encodes them
-    /// and the polyfill preserves the shape so that round-tripping
-    /// a binary that contains them is possible. Linking against a
-    /// value import is a separate concern this PDD does not address.
+    /// Despite the variant's name it carries no value. It is
+    /// projected from a type export and describes the type alone. A
+    /// type needs no definition from the host, so an instance type
+    /// whose items are all of this kind, or are instances that are,
+    /// links with nothing registered for it. Value imports and
+    /// exports proper, which the binary format encodes, are refused
+    /// by the validator and never reach this type.
     Value(ValueType),
 }

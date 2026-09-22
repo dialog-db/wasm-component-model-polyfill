@@ -439,7 +439,7 @@ fn transfer_own(
         .map_err(|_| anyhow!("resource handle tables lock poisoned"))?;
     let rep = guard
         .remove_own(src.table, index, src.type_id, src.guest_defined)
-        .map_err(|e| anyhow!("wasm trap: {e}"))?;
+        .map_err(|e| anyhow!("{e}"))?;
     Ok(guard.insert_own(dst.table, dst.type_id, dst.guest_defined, rep))
 }
 
@@ -459,11 +459,11 @@ fn transfer_borrow(
     // call is its subtask and not the callee's task on the stack.
     let entry = guard
         .lookup(src.table, index, src.type_id, src.guest_defined)
-        .map_err(|e| anyhow!("wasm trap: {e}"))?;
+        .map_err(|e| anyhow!("{e}"))?;
     if matches!(entry, HandleKind::Own { .. }) {
         guard
             .lend_for_call(src.table, index)
-            .map_err(|e| anyhow!("wasm trap: {e}"))?;
+            .map_err(|e| anyhow!("{e}"))?;
     }
     let rep = entry
         .rep()
@@ -652,6 +652,78 @@ mod tests {
                 lend_count: 1,
             },
             "the source entry stays, counting the one lend"
+        );
+    }
+
+    // Wasmtime raises a transfer's handle-lookup failures as the
+    // plain strings of its handle table, with no `wasm trap:` prefix,
+    // so the transfers hand the lookup's own message on unchanged.
+
+    #[wcmp_macros::test]
+    fn it_fails_an_owned_transfer_of_an_unknown_index_with_wasmtimes_message() {
+        let tables = Arc::new(Mutex::new(HandleTables::new()));
+        let type_id = ResourceTypeId::fresh();
+        let src = runtime(TableId::fresh(), type_id);
+        let dst = runtime(TableId::fresh(), type_id);
+
+        let err = transfer_own(&tables, src, dst, 5).unwrap_err();
+
+        assert_eq!(err.to_string(), "unknown handle index 5");
+    }
+
+    #[wcmp_macros::test]
+    fn it_fails_an_owned_transfer_of_a_lent_entry_with_wasmtimes_message() {
+        let tables = Arc::new(Mutex::new(HandleTables::new()));
+        let type_id = ResourceTypeId::fresh();
+        let src_table = TableId::fresh();
+        let src = runtime(src_table, type_id);
+        let dst = runtime(TableId::fresh(), type_id);
+        let index = {
+            let mut guard = tables.lock().unwrap();
+            let index = guard.insert_own(src_table, type_id, true, 7);
+            let instance = guard.tasks.insert_instance();
+            guard.tasks.push_task(None, None, instance);
+            index
+        };
+        transfer_borrow(&tables, src, dst, index).expect("the entry is lent to the call");
+
+        let err = transfer_own(&tables, src, dst, index).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "cannot remove owned resource while borrowed"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_fails_a_borrow_transfer_of_an_unknown_index_with_wasmtimes_message() {
+        let tables = Arc::new(Mutex::new(HandleTables::new()));
+        let type_id = ResourceTypeId::fresh();
+        let src = runtime(TableId::fresh(), type_id);
+        let dst = runtime(TableId::fresh(), type_id);
+
+        let err = transfer_borrow(&tables, src, dst, 5).unwrap_err();
+
+        assert_eq!(err.to_string(), "unknown handle index 5");
+    }
+
+    #[wcmp_macros::test]
+    fn it_fails_a_borrow_transfer_of_the_wrong_type_with_wasmtimes_message() {
+        let tables = Arc::new(Mutex::new(HandleTables::new()));
+        let src_table = TableId::fresh();
+        let held = ResourceTypeId::fresh();
+        let src = runtime(src_table, ResourceTypeId::fresh());
+        let dst = runtime(TableId::fresh(), held);
+        let index = tables.lock().unwrap().insert_own(src_table, held, true, 7);
+
+        let err = transfer_borrow(&tables, src, dst, index).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "handle index {index} used with the wrong type, expected guest-defined \
+                 resource but found a different guest-defined resource"
+            )
         );
     }
 

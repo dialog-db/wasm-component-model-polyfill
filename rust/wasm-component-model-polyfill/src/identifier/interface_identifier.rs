@@ -15,18 +15,19 @@ use super::parse::{IdentifierParseError, split_optional_version};
 ///
 /// # Textual form
 ///
-/// `InterfaceIdentifier` parses the canonical WIT identifier syntax:
+/// `InterfaceIdentifier` parses the canonical WIT identifier syntax,
+/// where the version is optional and trails the interface:
 ///
 /// ```text
 /// wasi:cli/run
-/// wasi:cli@0.2.0/run
 /// wasi:cli/run@0.2.0
 /// ```
 ///
-/// The two version positions are equivalent; both spellings parse
-/// to the same value, which prints in the trailing form
-/// (`namespace:name/iface@version`). A version on both sides is
-/// rejected as ambiguous.
+/// The parser also accepts the version between the package and the
+/// interface (`wasi:cli@0.2.0/run`), a spelling the grammar does not
+/// have. Both spellings parse to the same value, which prints in the
+/// grammar's trailing form, so the extra spelling never leaves the
+/// parser. A version on both sides is rejected as ambiguous.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct InterfaceIdentifier {
     package: PackageName,
