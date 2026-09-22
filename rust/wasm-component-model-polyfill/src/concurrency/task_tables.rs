@@ -7,6 +7,7 @@ use crate::executor::ir::CanonOptions;
 use crate::resource::TableId;
 
 use super::event::Event;
+use super::failure_channel::FailureChannel;
 use super::instance_id::InstanceId;
 use super::instance_record::InstanceRecord;
 use super::readiness::Readiness;
@@ -201,6 +202,25 @@ impl TaskTables {
         let channel: ResultChannel = ResultChannel::default();
         self.task_mut(task)?.result = TaskResult::Channel(channel.clone());
         Some(channel)
+    }
+
+    /// Give `task` a channel to fail through and hand the caller its
+    /// half.
+    ///
+    /// The channel is where a failure of the task reaches the call
+    /// that started it, whether the failure came from the item that
+    /// ran the task or from work the store ran for it in a later
+    /// turn. `None` when the store holds no such task.
+    pub fn attach_failure_channel(&mut self, task: TaskId) -> Option<FailureChannel> {
+        let channel: FailureChannel = FailureChannel::default();
+        self.task_mut(task)?.failure = Some(channel.clone());
+        Some(channel)
+    }
+
+    /// The half of `task`'s failure channel the store fills, when
+    /// the call that started the task left one.
+    pub fn failure_channel(&self, task: TaskId) -> Option<FailureChannel> {
+        self.task(task)?.failure.clone()
     }
 
     /// Make `task` the current scope.

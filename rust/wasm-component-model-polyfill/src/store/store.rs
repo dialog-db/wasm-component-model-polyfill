@@ -210,6 +210,33 @@ impl<T: 'static> Store<T> {
     /// the other drivers: `body`'s future can wait on something
     /// outside the store, and the waker it was polled with is the
     /// one that brings the entry back.
+    ///
+    /// # Where a failure surfaces
+    ///
+    /// A failure the store raises while a turn runs surfaces at the
+    /// call it belongs to whenever it has one. The result of a host
+    /// `async` function a task called is such a failure: the body
+    /// failed after the guest's call returned, so the failure is the
+    /// trap of the task that made the call. That task ends with the
+    /// error and the call that started it reports it, whether that
+    /// call is a [`Func::call`] or a [`Func::call_concurrent`]
+    /// awaited inside `body`. A task that ended that way does not
+    /// resolve, so its call never answers with a result as well, and
+    /// no other call of the same store is touched.
+    ///
+    /// A failure that belongs to no call surfaces at whichever
+    /// driver is polling the store, which is this entry while it is
+    /// running turns. That is every other failure a turn meets: a
+    /// callback the store resumed a task through, a crossing whose
+    /// caller has ended, the bookkeeping of an item whose task is
+    /// gone. Such a failure ends the turn and this entry reports it,
+    /// so `body` is dropped wherever its poll left it. It is the
+    /// driver that happens to be running, not a driver the failure
+    /// names: the same failure reaches [`Func::call`] when a call is
+    /// what is polling the store instead.
+    ///
+    /// [`Func::call`]: crate::Func::call
+    /// [`Func::call_concurrent`]: crate::Func::call_concurrent
     pub async fn run_concurrent<R, F>(&mut self, body: F) -> Result<R>
     where
         F: AsyncFnOnce(&Accessor<T>) -> R,

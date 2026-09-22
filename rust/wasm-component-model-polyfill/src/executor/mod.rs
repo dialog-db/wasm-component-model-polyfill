@@ -46,6 +46,7 @@ pub use compile_module::compile_module;
 pub use instantiate::instantiate;
 pub use prepare_call::build_prepare_call;
 pub use resource_destructor::ResourceDestructor;
+pub use start_call::release_subtask;
 pub use sync_start_call::build_sync_start_call;
 pub use task_return::build_task_return;
 pub use thread_yield::build_thread_yield;

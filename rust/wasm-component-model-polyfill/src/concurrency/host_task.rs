@@ -4,6 +4,7 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
 use crate::error::{Error, Result};
+use crate::resource::TableId;
 use crate::store::StoreContext;
 use crate::value::Val;
 
@@ -15,6 +16,7 @@ use super::item::Item;
 use super::item_kind::ItemKind;
 use super::poll_scope::PollScope;
 use super::subtask_id::SubtaskId;
+use super::task_id::TaskId;
 
 /// The boxed lowering of one host task's result, with the `Send`
 /// bound the native target puts on everything a store holds.
@@ -41,6 +43,8 @@ pub struct HostTask<T: 'static> {
     body: Box<dyn HostTaskBody<T>>,
     lowering: BoxedLowering<T>,
     subtask: SubtaskId,
+    caller_task: Option<TaskId>,
+    caller_table: Option<TableId>,
     handle_index: u32,
 }
 
@@ -56,6 +60,8 @@ impl<T: 'static> HostTask<T> {
             body: Box::new(body),
             lowering: Box::new(lowering),
             subtask,
+            caller_task: None,
+            caller_table: None,
             handle_index: 0,
         }
     }
@@ -75,18 +81,17 @@ impl<T: 'static> HostTask<T> {
         self.subtask
     }
 
-    /// Where the subtask sits in the calling instance's handle
-    /// table, which is the first payload of the subtask event the
-    /// guest receives when the call completes.
-    pub fn handle_index(&self) -> u32 {
-        self.handle_index
-    }
-
-    /// Record where the subtask sits in the calling instance's
-    /// handle table. The index exists only once the call is known
-    /// not to have finished at once: a call whose first poll
-    /// resolved reports no subtask, so no entry is made for it.
-    pub fn set_handle_index(&mut self, handle_index: u32) {
+    /// Record what the call left behind when it started: the guest
+    /// task that made it, the handle table of that task's instance,
+    /// and where the subtask sits in that table.
+    ///
+    /// All three exist only once the call is known not to have
+    /// finished at once. A call whose first poll resolved reports no
+    /// subtask, so no entry is made for it and the guest's own call
+    /// is still on the stack to take a failure.
+    pub fn started_in(&mut self, task: Option<TaskId>, table: TableId, handle_index: u32) {
+        self.caller_task = task;
+        self.caller_table = Some(table);
         self.handle_index = handle_index;
     }
 
@@ -125,73 +130,95 @@ impl<T: 'static> HostTask<T> {
     /// of.
     ///
     /// `outcome` is what the body produced. A value crosses through
-    /// the lowering and the subtask returns. A failure is a call
-    /// that never returned, so the subtask resolves as a
-    /// cancellation and nothing crosses, which is what the same
-    /// failure on the first poll does; the difference is only where
-    /// the guest learns of it. The guest's call was on the stack
-    /// then and the failure travelled out to it, and here the guest
-    /// has been told the call started, so what it takes delivery of
-    /// is the subtask event carrying the cancelled state.
+    /// the lowering, the subtask returns, and the guest takes
+    /// delivery of the subtask event.
     ///
-    /// A crossing that fails is a call whose result the guest cannot
-    /// be given. The subtask resolves as a cancellation all the same
-    /// and takes on its event, exactly as a failed body resolves it:
-    /// the guest was told the call started, it holds the subtask in
-    /// its handle table, and a subtask left `started` with no event
-    /// would leave a thread waiting on it waiting for ever. The
-    /// failure itself belongs to no caller — the guest's call
-    /// returned turns ago and nothing of it is on the stack — so
-    /// once the subtask is resolved it ends the turn and reaches
-    /// whichever driver polled it. A subtask record that vanished
-    /// between the poll that completed the body and the turn that
-    /// ran this item ends the turn the same way, with nothing left
-    /// to resolve.
+    /// A body that failed is a call that never returned, and a
+    /// crossing that fails is a call whose result the guest cannot
+    /// be given. Both are the trap of the guest task that made the
+    /// call. That task ends with the error and the call that started
+    /// it reports it, which is the outcome the same failure on the
+    /// first poll gives — the guest's call was on the stack then and
+    /// the failure travelled out to it. The subtask does not
+    /// resolve. Its record and the caller's entry for it leave the
+    /// store together, the handles the guest lent for the call come
+    /// back, and no subtask event is filled: there is no guest task
+    /// left to take delivery of one.
+    ///
+    /// A failure with no task to trap — the task ended before this
+    /// item ran, or the call that started it left no channel — ends
+    /// the turn and reaches whichever driver was polling, which is
+    /// the rule `Func::call` and `Store::run_concurrent` state.
     pub fn lowering_item(self, outcome: Result<Vec<Val>>) -> Item<T> {
         let Self {
             lowering,
             subtask,
+            caller_task,
+            caller_table,
             handle_index,
             ..
         } = self;
         Item::new(
             ItemKind::HostResultLowering,
             move |store: &mut StoreContext<'_, T>| {
-                // A body that failed is a call that never returned, so
-                // nothing crosses: the lowering has no value to take
-                // into the guest. A crossing that fails is the same
-                // thing seen from the other side, so the subtask
-                // resolves the same way and the failure travels on
-                // afterwards.
-                let produced = outcome.is_ok();
                 let crossing = match outcome {
                     Ok(values) => lowering(store, Ok(values)),
-                    Err(_) => Ok(()),
+                    Err(error) => Err(error),
                 };
-                let mut guard = store
-                    .tables()
-                    .lock()
-                    .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
-                // The call is over either way, and the subtask's
-                // readiness is the subtask event a thread waiting on
-                // it takes delivery of. The event carries the
-                // subtask's index in the caller instance's handle
-                // table and the state it resolved to. Returning
-                // records it from the subtask's own handle, which a
-                // subtask this item resolves always has — it was
-                // entered in the caller's table when the first poll
-                // left the body running — so only the cancelled side
-                // records it here.
-                if produced && crossing.is_ok() {
+                let Err(error) = crossing else {
+                    let mut guard = store
+                        .tables()
+                        .lock()
+                        .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
+                    // The call is over, and the subtask's readiness
+                    // is the subtask event a thread waiting on it
+                    // takes delivery of. Returning records it from
+                    // the subtask's own handle, which a subtask this
+                    // item resolves always has: it was entered in
+                    // the caller's table when the first poll left
+                    // the body running.
                     guard.tasks.subtask_returned(subtask)?;
-                } else {
-                    guard.tasks.subtask_cancelled(subtask)?;
-                    guard.tasks.record_subtask_event(subtask, handle_index)?;
-                }
-                crossing
+                    return Ok(());
+                };
+                discard_subtask(store, subtask, caller_table, handle_index);
+                store.fail_export_task(caller_task, error)
             },
         )
     }
+}
+
+/// Take the record of a failed host call out of the store, with the
+/// caller's entry for it.
+///
+/// The call never returned, so the subtask has no resolution to
+/// deliver to a guest. What it does have is the handles the guest
+/// lent for it, and those go back: the record is marked cancelled so
+/// that the lends can be undone, and the record and the entry then
+/// leave the store in the same breath. Nothing reads the state it
+/// was moved to, because the guest task that could have waited on it
+/// is ending with the same failure.
+///
+/// The entry goes with the record because the two are the caller's
+/// one handle on the call: a record removed while an entry still
+/// named it would leave the caller an index that resolves to
+/// nothing. `table` is absent for a host task the store was handed
+/// with no entry made for it, and then there is only the record.
+fn discard_subtask<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    subtask: SubtaskId,
+    table: Option<TableId>,
+    index: u32,
+) {
+    let tables = store.tables_handle();
+    let Ok(mut guard) = tables.lock() else {
+        return;
+    };
+    let _ = guard.tasks.subtask_cancelled(subtask);
+    let _ = guard.deliver_subtask_resolution(subtask);
+    if let Some(table) = table {
+        guard.remove(table, index);
+    }
+    guard.tasks.remove_subtask(subtask);
 }
 
 /// A plain future as the body of a host task. It reaches nothing of

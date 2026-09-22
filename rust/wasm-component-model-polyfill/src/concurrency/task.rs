@@ -5,6 +5,7 @@ use crate::executor::ir::CanonOptions;
 use crate::resource::TableId;
 use crate::value::Val;
 
+use super::failure_channel::FailureChannel;
 use super::instance_id::InstanceId;
 use super::subtask_id::SubtaskId;
 use super::task_result::TaskResult;
@@ -59,6 +60,14 @@ pub struct Task {
     pub lenders: Vec<(TableId, u32)>,
     /// Where the task's result goes.
     pub result: TaskResult,
+    /// Where the task's failure goes: the channel of the call that
+    /// started it, when that call left one. A task the store ends
+    /// with an error fills this, and the call reads it ahead of the
+    /// result. `None` for a task no call watches — the callee of a
+    /// call between two components, a destructor, the task an
+    /// adapter's enter intrinsic pushes — whose failure ends the
+    /// turn instead.
+    pub failure: Option<FailureChannel>,
     /// The subtask of the call this task is the callee of, for a
     /// call between two components the prepare intrinsic set up.
     /// The callee's `task.return` reaches the return function of
@@ -101,6 +110,7 @@ impl Task {
             threads: vec![implicit_thread],
             lenders: Vec::new(),
             result: TaskResult::Pending,
+            failure: None,
             subtask: None,
             thread_exited: false,
             result_tuple: None,

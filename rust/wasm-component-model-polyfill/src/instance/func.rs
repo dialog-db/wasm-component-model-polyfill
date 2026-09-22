@@ -19,7 +19,7 @@ use crate::abi::{lift, lower};
 use crate::backend::substrate_failure;
 use crate::component::FunctionType;
 use crate::concurrency::{
-    Accessor, Driver, InstanceId, Item, ItemKind, ResultChannel, Scope, TaskId, WakeSlot,
+    Accessor, Driver, FailureChannel, InstanceId, Item, ItemKind, ResultChannel, Scope, TaskId,
 };
 use crate::error::{
     AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result, SchedulerCause,
@@ -39,20 +39,24 @@ use crate::value::Val;
 /// future when the future is dropped.
 type CallOutcome = Arc<Mutex<Option<Result<Box<[Val]>>>>>;
 
-/// Where the item of one concurrent call leaves the failure that
-/// belongs to the caller.
+/// Where the failure that belongs to the caller of one concurrent
+/// call is left.
 ///
 /// A call whose task resolves through a channel resolves with a
-/// result and not with a failure. The item that runs the call leaves
-/// what failed here instead: the lowering of the arguments, a trap in
-/// the export's core function, the status word that function
-/// returned, or the borrows the guest still owed when a synchronous
-/// task that had already resolved ended.
+/// result and not with a failure. The failure travels through the
+/// task's own failure channel instead, which this is the caller's
+/// half of. The item that runs the call fills it with what that item
+/// failed with: the lowering of the arguments, a trap in the
+/// export's core function, the status word that function returned,
+/// or the borrows the guest still owed when a synchronous task that
+/// had already resolved ended. A later turn fills it with a failure
+/// of the task's that belongs to no item of the caller's — a host
+/// call the task made whose body never returned.
 ///
 /// The slot carries the caller's waker beside the failure, as the
 /// result channel does, because a caller whose future a host
 /// combinator owns is polled again only after that waker fires.
-type CallFailure = WakeSlot<Error>;
+type CallFailure = FailureChannel;
 
 /// A handle to one exported function of a component [`Instance`].
 ///
@@ -139,6 +143,32 @@ impl Func {
     /// turn that goes idle with the task unresolved fails with the
     /// deadlock cause, or with the cannot-block cause when the task
     /// must not block.
+    ///
+    /// # Where a failure surfaces
+    ///
+    /// A failure the store raises while this call runs turns
+    /// surfaces at the call it belongs to whenever it has one. The
+    /// result of a host `async` function a task called is such a
+    /// failure: the body failed after the guest's call returned, so
+    /// the failure is the trap of the task that made the call. That
+    /// task ends with the error and the call that started it reports
+    /// it — a [`Self::call_concurrent`] awaited inside
+    /// [`Store::run_concurrent`] as readily as this entry. A task
+    /// that ended that way does not resolve, so its call never
+    /// answers with a result as well, and no other call is touched.
+    ///
+    /// A failure that belongs to no call surfaces at whichever
+    /// driver is polling the store, which is this call while it is
+    /// running turns. That is every other failure a turn meets: a
+    /// callback the store resumed a task through, a crossing whose
+    /// caller has ended, the bookkeeping of an item whose task is
+    /// gone. Such a failure ends the turn and this call reports it,
+    /// even when nothing of it is this call's own work. It is the
+    /// driver that happens to be running, not a driver the failure
+    /// names: the same failure reaches [`Store::run_concurrent`]
+    /// when that entry is what is polling the store instead.
+    ///
+    /// [`Store::run_concurrent`]: crate::Store::run_concurrent
     pub async fn call<T: 'static>(&self, store: &mut Store<T>, args: &[Val]) -> Result<Box<[Val]>> {
         let mut store = store.context();
         if store.id() != self.store_id {
@@ -370,7 +400,7 @@ impl Func {
         let task =
             store.create_export_task(self.signature.clone(), self.options.clone(), instance_id)?;
         let channel = store.attach_result_channel(task)?;
-        let failure: CallFailure = CallFailure::new();
+        let failure: CallFailure = store.attach_failure_channel(task)?;
 
         // The item is `'static`: it outlives this future, because
         // dropping the future cancels nothing. It therefore carries
@@ -476,7 +506,7 @@ impl Func {
         let loop_ = CallbackTask::new(task, instance_id, table, callback);
         let channel: ResultChannel = store.attach_result_channel(task)?;
 
-        let failure: CallFailure = CallFailure::new();
+        let failure: CallFailure = store.attach_failure_channel(task)?;
         let queued = failure.clone();
         let replica = self.replica();
         let arguments = args.to_vec();

@@ -42,7 +42,7 @@
 use std::sync::{Arc, Mutex};
 
 use wasm_component_model_polyfill::{
-    Component, Engine, Error, Func, HostCall, Instance, Linker, Result, Store, Val,
+    Accessor, Component, Engine, Error, Func, HostCall, Instance, Linker, Result, Store, Val,
 };
 use wcmp_macros::component;
 
@@ -682,5 +682,214 @@ async fn it_fails_a_host_call_that_gives_way_for_ever_with_the_stack_switch_caus
         "the seam counts the turns the store did not serve and nothing else, \
          so a guest that gives way for ever against a store that holds \
          nothing reaches the budget's failure here too: {message}"
+    );
+}
+
+/// One component instance that both gives way and leaves a callback
+/// item of its own queued.
+///
+/// `give-way-now` is a synchronous export: it logs 1, gives way, and
+/// logs 3. A synchronous export must return before its instance may
+/// block, so the nested turn its yield opens runs the ready work of
+/// that instance and nothing else — and a queued callback of the
+/// same instance is exactly that work. The task a synchronous export
+/// runs takes no exclusive hold of its instance, so the callback
+/// item finds the instance free and runs.
+///
+/// `wait-on` returns its result and waits on a set of its own; its
+/// callback logs 5, gives way in its turn, and logs 6. The two
+/// exports give way through the one `thread.yield` the component
+/// declares, so the callback's yield is a second call of the very
+/// built-in the outer yield is inside.
+const QUEUES_A_CALLBACK_OF_ITS_OWN: &[u8] = component!(
+    r#"
+    (component
+      (import "log" (func $log (param "x" u32)))
+      (core func $log (canon lower (func $log)))
+      (core func $task-return (canon task.return (result u32)))
+      (core func $yield (canon thread.yield))
+      (core func $set-new (canon waitable-set.new))
+      (core module $m
+        (import "" "log" (func $log (param i32)))
+        (import "" "task.return" (func $task-return (param i32)))
+        (import "" "thread.yield" (func $yield (result i32)))
+        (import "" "waitable-set.new" (func $set-new (result i32)))
+        (global $word (mut i32) (i32.const -1))
+        (func (export "give-way-now") (result i32)
+          (call $log (i32.const 1))
+          (global.set $word (call $yield))
+          (call $log (i32.const 3))
+          (global.get $word))
+        (func (export "word") (result i32) (global.get $word))
+        (func (export "new-set") (result i32) (call $set-new))
+        (func (export "wait-on") (param i32) (result i32)
+          (call $task-return (i32.const 0))
+          ;; The wait status word: the set index above the code.
+          (i32.or (i32.shl (local.get 0) (i32.const 4)) (i32.const 2)))
+        (func (export "wait-on-callback") (param i32 i32 i32) (result i32)
+          (call $log (i32.const 5))
+          (drop (call $yield))
+          (call $log (i32.const 6))
+          (i32.const 0)))
+      (core instance $i (instantiate $m (with "" (instance
+        (export "log" (func $log))
+        (export "task.return" (func $task-return))
+        (export "thread.yield" (func $yield))
+        (export "waitable-set.new" (func $set-new))))))
+      (func (export "give-way-now") (result u32)
+        (canon lift (core func $i "give-way-now")))
+      (func (export "word") (result u32) (canon lift (core func $i "word")))
+      (func (export "new-set") (result u32) (canon lift (core func $i "new-set")))
+      (func (export "wait-on") async (param "s" u32) (result u32)
+        (canon lift (core func $i "wait-on") async
+          (callback (core func $i "wait-on-callback")))))
+    "#
+);
+
+/// The entry at which the `log` of [`instantiate_with_a_refusal`]
+/// reaches for its store from where no poll of it is running.
+const REFUSED_AT: u32 = 5;
+
+/// Instantiate `binary` with a `log` that reaches for its store
+/// through an accessor when it is given [`REFUSED_AT`], and hand
+/// back the list it appends to.
+///
+/// The reach is made from inside a synchronous host call, where no
+/// poll of the store is running, so it fails with the
+/// store-not-in-poll cause. That is a scheduler cause a yield never
+/// asked a turn to avoid, and it belongs to the item the nested turn
+/// ran rather than to the yield.
+async fn instantiate_with_a_refusal(binary: &[u8]) -> (Store<()>, Instance, Log) {
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, binary)
+        .await
+        .expect("component parses");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let log: Log = Arc::new(Mutex::new(Vec::new()));
+    let recorded = log.clone();
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker.root().func_wrap(
+        "log",
+        move |mut call: HostCall<'_, ()>, (entry,): (u32,)| -> Result<()> {
+            recorded.lock().expect("log").push(entry);
+            if entry != REFUSED_AT {
+                return Ok(());
+            }
+            let accessor: Accessor<()> = Accessor::new(call.store().id());
+            accessor.with(|store| *store.data())?;
+            Ok(())
+        },
+    );
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    (store, instance, log)
+}
+
+/// Leave the instance's own callback task queued and ready, the one
+/// whose callback logs 5, gives way, and logs 6.
+async fn queue_the_callback(store: &mut Store<()>, instance: &Instance, log: &Log) {
+    queue_a_waiting_task(store, instance, "new-set", "wait-on").await;
+    assert!(
+        entries(log).is_empty(),
+        "the waiting task has logged nothing yet"
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[wcmp_macros::test]
+async fn it_hands_on_a_store_not_in_poll_an_item_of_its_nested_turn_raised() {
+    let (mut store, instance, log) = instantiate_with_a_refusal(QUEUES_A_CALLBACK_OF_ITS_OWN).await;
+    queue_the_callback(&mut store, &instance, &log).await;
+
+    // The yield's nested turn runs the queued callback, whose first
+    // host call reaches for the store from outside any poll of it.
+    // That is a scheduler cause, and it is not one of the three the
+    // seam raises when a wait cannot end: the yield asked for no
+    // wait. It belongs to the work the turn ran, so the yield hands
+    // it on rather than returning zero over it.
+    //
+    // What the call carries is the trap the callback took, which is
+    // how the refusal reached the guest. The cause's own message
+    // does not survive that rendering today, so what this measures
+    // is that the failure travelled at all: the same component with
+    // a `log` that refuses nothing gives way, runs the callback to
+    // its end, and answers zero.
+    let message = call_expecting_a_trap(&mut store, &instance, "give-way-now", &[]).await;
+
+    assert!(
+        !message.is_empty(),
+        "the yield hands on the failure of the item its nested turn ran \
+         rather than returning zero over it"
+    );
+    assert_eq!(
+        entries(&log),
+        vec![1, REFUSED_AT],
+        "the callback logged its way in and was refused there, and the \
+         yielding export never reached the entry after its yield"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_hands_on_what_the_callback_of_its_nested_turn_met_at_the_second_yield() {
+    let (mut store, instance, log) = instantiate(QUEUES_A_CALLBACK_OF_ITS_OWN).await;
+    queue_the_callback(&mut store, &instance, &log).await;
+
+    let outcome = call(&mut store, &instance, "give-way-now", &[]).await;
+
+    assert_second_yield(outcome, entries(&log));
+}
+
+/// What `give-way-now` answers, and what the guest logged, on a
+/// target whose host functions can be called at any depth.
+///
+/// The callback's own yield is an ordinary call there. It gives way
+/// to nothing, returns zero, and the callback runs to its end inside
+/// the nested turn the outer yield opened.
+#[cfg(not(target_arch = "wasm32"))]
+fn assert_second_yield(outcome: std::result::Result<Option<Val>, String>, log: Vec<u32>) {
+    assert_eq!(
+        outcome.expect("the call returns"),
+        Some(Val::U32(0)),
+        "the outer yield returned zero"
+    );
+    assert_eq!(
+        log,
+        vec![1, 5, 6, 3],
+        "the queued callback of the same instance ran inside the yield, gave \
+         way to nothing, and ran to its end before the yielding export logged \
+         its way out"
+    );
+}
+
+/// What `give-way-now` answers, and what the guest logged, in the
+/// browser.
+///
+/// The outer `thread.yield` is still on the stack, and the browser
+/// has one JavaScript function object per host function, so the
+/// callback's own yield is a call of that very object and the
+/// backend refuses it. The refusal is a scheduler cause the seam
+/// never raises, and it belongs to the callback the nested turn was
+/// running, so the outer yield hands it on and the call reports it.
+#[cfg(target_arch = "wasm32")]
+fn assert_second_yield(outcome: std::result::Result<Option<Val>, String>, log: Vec<u32>) {
+    let message = match outcome {
+        Err(message) => message,
+        Ok(value) => panic!("give-way-now returned {value:?} rather than trapping"),
+    };
+    assert!(
+        message.contains(
+            "cannot call a host function while a call of the same host function is \
+             still on the stack"
+        ),
+        "the callback called the built-in its caller's yield is inside, which \
+         this target refuses, and the yield hands the refusal on: {message}"
+    );
+    assert_eq!(
+        log,
+        vec![1, 5],
+        "the callback logged its way in and was refused at its own yield, and \
+         the yielding export never reached the entry after its yield"
     );
 }

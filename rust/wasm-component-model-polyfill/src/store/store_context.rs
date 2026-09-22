@@ -11,13 +11,14 @@ use crate::abi::boundary_call::BoundaryCall;
 use crate::backend::Backend;
 use crate::component::FunctionType;
 use crate::concurrency::{
-    Accessor, CallStatus, EventSlot, HostTask, InstanceId, Item, LowerKind, Outcome, PollScope,
-    ResultChannel, Scheduler, SubtaskId, SubtaskState, SuspendSeam, TaskId, TaskState, TurnGuard,
-    WaitableSetId, YieldWake,
+    Accessor, CallStatus, EventSlot, FailureChannel, HostTask, InstanceId, Item, LowerKind,
+    Outcome, PollScope, ResultChannel, Scheduler, Scope, SubtaskId, SubtaskState, SuspendSeam,
+    TaskId, TaskState, TurnGuard, WaitableSetId, YieldWake,
 };
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
 use crate::executor::ir::CanonOptions;
+use crate::executor::release_subtask;
 use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId, TableId};
 use crate::types::ResourceType;
 use crate::value::Val;
@@ -450,8 +451,14 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             Poll::Pending => match lower {
                 LowerKind::Sync => self.block_on_host_task(task, subtask),
                 LowerKind::Async => {
-                    let index = {
+                    let (task_id, index) = {
                         let mut guard = self.lock_tables()?;
+                        // The guest task that made the call, read
+                        // while its subtask is still the current
+                        // scope. A body that fails after this poll
+                        // is the trap of that task, so the host task
+                        // carries its identity out of here.
+                        let task_id = guard.tasks.current_task();
                         // The subtask starts before its entry is
                         // made, because the status word this call
                         // returns is what tells the caller it
@@ -471,9 +478,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                         if guard.tasks.current_subtask() == Some(subtask) {
                             guard.tasks.pop_scope();
                         }
-                        index
+                        (task_id, index)
                     };
-                    task.set_handle_index(index);
+                    task.started_in(task_id, caller, index);
                     self.push_host_task(task);
                     Ok(CallStatus::started(index))
                 }
@@ -891,6 +898,83 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             .tasks
             .attach_result_channel(task)
             .ok_or_else(|| Error::internal("an export's task is not in the store"))
+    }
+
+    /// Give an export's task a channel to fail through and hand the
+    /// caller its half.
+    ///
+    /// Every call that starts a task it does not hold on the stack
+    /// takes one. The item that runs the task fills it with whatever
+    /// that item failed with, and so does a later turn that ends the
+    /// task with a failure of its own — a host call the task made
+    /// that never returned. The call reads the channel ahead of the
+    /// result. Workspace-internal.
+    pub fn attach_failure_channel(&self, task: TaskId) -> Result<FailureChannel> {
+        self.lock_tables()?
+            .tasks
+            .attach_failure_channel(task)
+            .ok_or_else(|| Error::internal("an export's task is not in the store"))
+    }
+
+    /// End `task` with `error`, which is what a failure that belongs
+    /// to a guest task and not to the turn that found it comes to.
+    ///
+    /// A host `async` function whose body fails after the guest's
+    /// call returned is the case this exists for. The failure is the
+    /// trap of the task that made the call: that task ends here, and
+    /// the error goes to the call that started it, so an unrelated
+    /// driver polling the store at that moment is untouched.
+    ///
+    /// Three answers come out of it:
+    ///
+    /// - The task is on the scope stack, so the guest frame it is
+    ///   running in is below this turn. The error is handed back and
+    ///   ends the turn, which is how it travels out through that
+    ///   frame and traps the task where it stands — the same failure
+    ///   by the shorter road.
+    /// - The task is not on the stack and the call that started it
+    ///   left a failure channel. The task's record leaves the store
+    ///   with the instance it held and whatever it had queued, the
+    ///   caller's record of the call goes the way a trap in a callee
+    ///   sends it, and the error goes through the channel. The turn
+    ///   runs on.
+    /// - There is no task, or no channel. The error belongs to no
+    ///   call, so it is handed back and ends the turn, and whichever
+    ///   driver was polling reports it.
+    ///
+    /// Workspace-internal.
+    pub fn fail_export_task(&mut self, task: Option<TaskId>, error: Error) -> Result<()> {
+        let Some(task) = task else {
+            return Err(error);
+        };
+        let found = {
+            let guard = self.lock_tables()?;
+            guard.tasks.task(task).map(|record| {
+                (
+                    guard.tasks.scopes().contains(&Scope::Task(task)),
+                    guard.tasks.failure_channel(task),
+                    record.subtask,
+                )
+            })
+        };
+        let Some((on_stack, channel, subtask)) = found else {
+            return Err(error);
+        };
+        if on_stack {
+            return Err(error);
+        }
+        let Some(channel) = channel else {
+            return Err(error);
+        };
+        // The borrows the guest still owed go with the record: the
+        // task is ending on a failure that is already the call's, so
+        // there is nobody a borrow check could be reported to.
+        let _borrows = self.end_export_task(task)?;
+        if let Some(subtask) = subtask {
+            release_subtask(self, subtask);
+        }
+        channel.fill(error);
+        Ok(())
     }
 
     /// Whether an export's task has resolved: the reference's
@@ -2405,7 +2489,7 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    async fn it_resolves_the_subtask_when_the_host_task_fails_in_a_later_turn() {
+    async fn it_ends_the_turn_when_a_failed_host_task_has_no_task_to_trap() {
         let engine = Engine::new().expect("engine");
         let (mut store, table, subtask) = host_call(&engine);
         let slot: Lowered = Arc::new(Mutex::new(None));
@@ -2437,29 +2521,32 @@ mod tests {
             Outcome::Progress,
             "the failed host task left an item ready to run"
         );
-        store.turn(Waker::noop()).expect("a turn");
+        let error = store
+            .turn(Waker::noop())
+            .expect_err("the failure has no task to trap, so it ends the turn");
 
+        assert!(
+            error.to_string().contains("the host call failed"),
+            "the turn ends with what the body failed with, and it ended with \
+             {error} instead"
+        );
         assert!(
             slot.lock().expect("the lowering's slot").is_none(),
             "a call that never returned has nothing to lower"
         );
-        let mut guard = store.lock_tables().expect("tables");
-        assert_eq!(
-            guard.tasks.subtask(subtask).map(|record| record.state),
-            Some(SubtaskState::CancelledBeforeReturned),
-            "the call never returned, so its subtask resolved as a cancellation"
+        let guard = store.lock_tables().expect("tables");
+        assert!(
+            guard.tasks.subtask(subtask).is_none(),
+            "the subtask did not resolve: its record left the store instead"
         );
-        assert_eq!(
-            guard
-                .take_event(WaitableId::Subtask(subtask))
-                .expect("the subtask's waitable state"),
-            Some(Event::subtask(index, SubtaskState::CancelledBeforeReturned)),
-            "the guest waiting on the subtask takes delivery of the cancellation"
+        assert!(
+            guard.entry(table, index).is_none(),
+            "and the caller's entry for it went with the record"
         );
     }
 
     #[wcmp_macros::test]
-    async fn it_resolves_the_subtask_when_the_crossing_fails_in_a_later_turn() {
+    async fn it_ends_the_turn_when_a_failed_crossing_has_no_task_to_trap() {
         let engine = Engine::new().expect("engine");
         let (mut store, table, subtask) = host_call(&engine);
         let outside = Outside::default();
@@ -2497,24 +2584,24 @@ mod tests {
             "the completed host task left its lowering ready to run"
         );
 
+        let error = store
+            .turn(Waker::noop())
+            .expect_err("the crossing's failure has no task to trap, so it ends the turn");
+
         assert!(
-            store.turn(Waker::noop()).is_err(),
-            "the crossing's failure belongs to no caller, so it ends the turn"
+            error.to_string().contains("the crossing failed"),
+            "the turn ends with what the crossing failed with, and it ended \
+             with {error} instead"
         );
-        let mut guard = store.lock_tables().expect("tables");
-        assert_eq!(
-            guard.tasks.subtask(subtask).map(|record| record.state),
-            Some(SubtaskState::CancelledBeforeReturned),
-            "nothing reached the guest, so the subtask resolved as a \
-             cancellation rather than staying started for ever"
+        let guard = store.lock_tables().expect("tables");
+        assert!(
+            guard.tasks.subtask(subtask).is_none(),
+            "nothing reached the guest, so the subtask did not resolve: its \
+             record left the store rather than staying started for ever"
         );
-        assert_eq!(
-            guard
-                .take_event(WaitableId::Subtask(subtask))
-                .expect("the subtask's waitable state"),
-            Some(Event::subtask(index, SubtaskState::CancelledBeforeReturned)),
-            "a thread waiting on the subtask takes delivery of that \
-             cancellation rather than waiting for an event that never comes"
+        assert!(
+            guard.entry(table, index).is_none(),
+            "and the caller's entry for it went with the record"
         );
     }
 
