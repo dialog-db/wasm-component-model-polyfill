@@ -59,11 +59,55 @@ line has no category, so the list stays current. The categories are
 listed at the top of the file. `cm/nyi.txt` is the upstream list of
 files that fail in the reference implementation itself.
 
+The `tests regenerate` menu command rewrites the list from a native
+run, in place of a hand loop over the failures a run prints. It runs
+the progress test with `WCMP_REGENERATE_EXPECTATIONS` naming a copy of
+the list, which the harness rewrites, prints the difference, and
+installs the copy. `tests regenerate --dry-run` stops at the
+difference and leaves the list alone. The dry run is also how to read
+what a listed directive fails with today, because the harness compares
+an expectation by file and line only: a reason in the list is never
+checked against a run, so nothing else prints it.
+
+The run's failures decide every line. A directive that still fails
+keeps its line's category and takes the run's reason. A directive that
+passes now loses its line. A directive the list does not name arrives
+with the category `triage`, which is deliberately not a category: the
+harness rejects the list, and every gate keeps failing, until a person
+reads the failure and writes the category that names its cause. The
+entries are sorted by path and then by directive line, so a run
+against an unchanged tree rewrites the list byte for byte.
+
+Two kinds of hand-written text survive the rewrite. A trailing
+parenthetical is a note a person appended, and the rewrite restores it
+after the run's reason, unless the run's reason already ends with the
+same group, which is how the runtime's own wording — `unsupported
+component feature: thread built-ins (table extraction)` — is told
+apart from a note. A reason that ends in the run's cause behind other
+leading text is a sentence a person wrote over that cause, and it is
+kept whole: the five such lines say in one clause what the substrate
+says in a nested error and a backtrace. A line refreshes when the
+cause at the end of the run's reason changes, which is what a change
+to the failure text means. A line the rule reads the other way is
+visible in the difference the command prints, which is where a person
+decides.
+
+Two things about running it. Nix builds the test archive from the
+tracked tree, so commit a code change before regenerating: the reasons
+come from the archive's code, while the merge reads the list on disk.
+And a line the command wrote with `triage` needs its category before
+the command runs again, because the harness parses the list before it
+runs the corpus and refuses the placeholder.
+
 `expected-failures.web.txt` is the browser-only delta: the harness
 applies it on top of the shared list on `wasm32-unknown-unknown`. It
 holds only differences of the substrate (the browser's engine against
 Wasmtime), so a polyfill gap is recorded once, in the shared list, and
-counts on both targets.
+counts on both targets. `tests regenerate` does not touch it. Its
+reasons are the browser engine's wording, which a native run cannot
+produce and must not invent; the delta holds only substrate
+differences, nine lines today, and each one is written by hand from
+the failure a `tests web debug` run prints.
 
 The harness links every file against the host environment Wasmtime's
 wast runner provides: the `host` instance, `host-return-two`, and

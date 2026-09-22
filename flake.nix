@@ -464,6 +464,56 @@
         '';
         conformanceSummaryCommand = conformanceSummaryFor "tests-native-debug";
 
+        # `tests regenerate`: rewrites `tests/corpus/expected-failures.txt`
+        # from a native run, in place of the hand loop that blanked the
+        # list, reran the suite, and merged the printed `unexpected:` lines
+        # back by hand — a loop that once dropped 28 hand-written
+        # parentheticals from lines nothing had touched. The harness does
+        # the merge (`WCMP_REGENERATE_EXPECTATIONS` names the list it
+        # rewrites): a directive that still fails keeps its category and
+        # its parenthetical and takes the run's reason, a directive that
+        # passes loses its line, and a new failure arrives with a
+        # placeholder category the harness rejects until a person replaces
+        # it. The run always writes a copy under the lane workspace and the
+        # diff is printed; `--dry-run` stops there, which is also how to
+        # read the live reason of a directive the list already names.
+        regenerateExpectationsCommand = ''
+          list="$(git rev-parse --show-toplevel)"/rust/wasm-component-model-polyfill/tests/corpus/expected-failures.txt
+          dry=""
+          for argument in "$@"; do
+            case "$argument" in
+              --dry-run) dry=1 ;;
+              *)
+                echo "tests regenerate: $argument is not an argument of this command (only --dry-run)" >&2
+                exit 2
+                ;;
+            esac
+          done
+          archive=$(nix build --no-link --print-out-paths .#tests-native-debug)
+          workspace="''${XDG_CACHE_HOME:-$HOME/.cache}/wcmp-tests/tests-native-debug-regenerate"
+          rm -rf "$workspace"
+          mkdir -p "$workspace/archive"
+          trap 'rm -rf "$workspace"' EXIT
+          candidate="$workspace/expected-failures.txt"
+          cp "$list" "$candidate"
+          WCMP_REGENERATE_EXPECTATIONS="$candidate" cargo nextest run \
+            --workspace-remap ./ \
+            --archive-file "$archive/tests-native-debug.tar.zst" \
+            --extract-to "$workspace/archive" \
+            --extract-overwrite \
+            --no-capture \
+            -E 'test(it_reports_conformance_progress)'
+          echo
+          if diff -u "$list" "$candidate"; then
+            echo "tests regenerate: the list is current, nothing to write"
+          elif [ -n "$dry" ]; then
+            echo "tests regenerate: the diff above is what a run would write; $list is unchanged"
+          else
+            install -m 644 "$candidate" "$list"
+            echo "tests regenerate: wrote $list"
+          fi
+        '';
+
         # Every replay extracts the archive (4 to 7 GB of test binaries)
         # into a directory on disk under the user's cache directory, not
         # under `$TMPDIR`, which is a RAM-backed tmpfs on most Linux
@@ -625,6 +675,10 @@
               conformance = {
                 description = "Conformance progress per corpus on both targets (debug)";
                 command = conformanceSummaryCommand + conformanceSummaryFor "tests-web-debug";
+              };
+              regenerate = {
+                description = "Rewrite the expected-failure list from a native run (`--dry-run` only prints the diff)";
+                command = regenerateExpectationsCommand;
               };
               # The end-to-end smoke test (`rust/wcmp-smoke`): one host
               # program that tells what a developer does with the polyfill,

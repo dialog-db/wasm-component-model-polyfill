@@ -16,6 +16,13 @@
 //! expected failures per category. When `WCMP_CONFORMANCE_SUMMARY`
 //! names a file, the test writes the same summary there as JSON.
 //!
+//! That test is also the regeneration mode of the list: when
+//! `WCMP_REGENERATE_EXPECTATIONS` names a list, it rewrites that file
+//! from the run, which is what the `tests regenerate` menu command
+//! runs. Every failing directive's reason comes from the run, so a
+//! change that alters many reasons at once needs no hand loop over the
+//! printed `unexpected:` lines.
+//!
 //! The host environment is the one Wasmtime's wast runner provides:
 //! the fixed set of `host` items its component spectest registers,
 //! and the module exports of every named component a file
@@ -1110,6 +1117,53 @@ async fn it_reports_conformance_progress() {
                 .unwrap_or_else(|err| panic!("cannot write the summary to {web_target}: {err}"));
             println!("summary written to {target} and {web_target}");
         }
+        if let Ok(list) = std::env::var("WCMP_REGENERATE_EXPECTATIONS") {
+            regenerate_expectations(&list, &reports);
+        }
+    }
+}
+
+/// Rewrite an expected-failures list from this run, in place: a
+/// directive that still fails keeps its line's category and any
+/// hand-written parenthetical and takes the run's reason, a directive
+/// that passes now loses its line, and a directive the list does not
+/// name arrives with the placeholder category, which the harness
+/// rejects until a person replaces it.
+///
+/// `WCMP_REGENERATE_EXPECTATIONS` names the list to rewrite. The
+/// `tests regenerate` menu command points it at a copy of the
+/// checked-in list and installs the result, or, for a dry run, only
+/// prints the diff. The list the harness compiled in is what this run
+/// measured against; the list named here is what the merge reads, so
+/// the reasons come from the run and the categories from the file on
+/// disk.
+#[cfg(not(target_arch = "wasm32"))]
+fn regenerate_expectations(list: &str, reports: &[FileReport]) {
+    let current = std::fs::read_to_string(list)
+        .unwrap_or_else(|err| panic!("cannot read the expectation list {list}: {err}"));
+    let regeneration =
+        report::regenerate(&current, reports).unwrap_or_else(|err| panic!("{list}: {err}"));
+    std::fs::write(list, &regeneration.text)
+        .unwrap_or_else(|err| panic!("cannot write the expectation list {list}: {err}"));
+    println!(
+        "\nregenerated {list}: {} kept, {} dropped, {} new",
+        regeneration.kept,
+        regeneration.dropped.len(),
+        regeneration.added.len()
+    );
+    for line in &regeneration.dropped {
+        println!("passes now: {line}");
+    }
+    for line in &regeneration.added {
+        println!("new failure: {line}");
+    }
+    if !regeneration.added.is_empty() {
+        println!(
+            "{} new line(s) carry the placeholder category `{}`: read each failure and write the \
+             category that names its cause, or the next run rejects the list.",
+            regeneration.added.len(),
+            report::PLACEHOLDER_CATEGORY
+        );
     }
 }
 
