@@ -5,11 +5,13 @@
 //! — and reads the handle table it resolves a handle against off the
 //! instance. This type is that instance as the polyfill holds it:
 //! the store-wide identity of the component instance, the store's
-//! handle tables, and the resource tables of the instantiation. A
-//! crossing that carries an `own<T>` or a `borrow<T>` reaches both
-//! tables through here, so the context of the crossing takes the
-//! instance and derives the tables from it rather than taking each
-//! table separately.
+//! handle tables, the resource tables of the instantiation, and the
+//! instance's may-leave flag. A crossing that carries an `own<T>` or
+//! a `borrow<T>` reaches both tables through here, so the context of
+//! the crossing takes the instance and derives the tables from it
+//! rather than taking each table separately. A call the polyfill
+//! makes into the guest clears the flag it finds here for the length
+//! of the call.
 //!
 //! The options and the instance of a crossing come out of the same
 //! runtime state, so [`BoundaryInstance::resolve`] reads both under
@@ -17,6 +19,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::abi::instance_flags::InstanceFlags;
 use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::concurrency::InstanceId;
@@ -30,8 +33,8 @@ use crate::resource::{HandleTables, ResourceTableRuntime};
 pub struct BoundaryInstance {
     /// The store-wide identity of the component instance. The
     /// instance record it names carries the entry gate, the
-    /// backpressure counter, and the flags an asynchronous crossing
-    /// consults.
+    /// backpressure counter, and the suspend flag an asynchronous
+    /// crossing consults.
     id: Option<InstanceId>,
     /// The per-store handle tables. Required when the crossing
     /// carries `own<T>` or `borrow<T>` valtypes; `None` is rejected
@@ -41,6 +44,12 @@ pub struct BoundaryInstance {
     /// handle's declared type names the index; this maps it to the
     /// table the instantiation keeps and the resource it holds.
     resource_tables: Vec<Option<ResourceTableRuntime>>,
+    /// The may-leave flag of the component instance, which is the
+    /// core global its adapters compile against. A call the polyfill
+    /// makes into the guest clears it for the length of the call.
+    /// `None` for a crossing that names no component instance of an
+    /// instantiation, which is a copy between two guest memories.
+    flags: Option<InstanceFlags>,
 }
 
 impl BoundaryInstance {
@@ -62,6 +71,7 @@ impl BoundaryInstance {
             id: options.instance(),
             tables: Some(tables.clone()),
             resource_tables: state.resource_tables.clone(),
+            flags: state.flags_at(declared.instance).cloned(),
         };
         Ok((options, instance))
     }
@@ -76,6 +86,7 @@ impl BoundaryInstance {
             id,
             tables: None,
             resource_tables: Vec::new(),
+            flags: None,
         }
     }
 
@@ -85,15 +96,18 @@ impl BoundaryInstance {
     /// task, which is the instance the reference builds its context
     /// from.
     ///
-    /// The resource tables stay as [`Self::resolve`] read them, and
-    /// there is nothing to re-resolve them from: the tables are the
-    /// instantiation's, indexed by the translator's table index, and
-    /// one instantiation has one such vector however many component
-    /// instances it holds. The `id` and the instance the options
+    /// The resource tables and the may-leave flag stay as
+    /// [`Self::resolve`] read them, and there is nothing to
+    /// re-resolve them from: the tables are the instantiation's,
+    /// indexed by the translator's table index, and one
+    /// instantiation has one such vector however many component
+    /// instances it holds, while the flag is the one global the
+    /// options' instance owns. The `id` and the instance the options
     /// name also address the same component instance in every
     /// component the translator accepts today, because a built-in is
     /// reachable only from the core modules of the instance whose
-    /// definition declares it.
+    /// definition declares it, so the flag that travels here is that
+    /// instance's either way.
     pub fn with_id(mut self, id: InstanceId) -> Self {
         self.id = Some(id);
         self
@@ -113,5 +127,10 @@ impl BoundaryInstance {
     /// Every resource table of the instantiation, by table index.
     pub fn resource_tables(&self) -> &[Option<ResourceTableRuntime>] {
         &self.resource_tables
+    }
+
+    /// The may-leave flag of the component instance.
+    pub fn flags(&self) -> Option<&InstanceFlags> {
+        self.flags.as_ref()
     }
 }

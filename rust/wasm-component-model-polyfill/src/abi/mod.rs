@@ -28,6 +28,8 @@
 //! so, a `cabi_realloc` and an export's `post-return`, run under a
 //! [`boundary_call`], which is what gives a realloc its own task and
 //! clears the instance's may-leave flag for the length of either.
+//! That flag is the core global the instance's adapters compile
+//! against, held here as [`instance_flags`].
 //!
 //! Workspace-internal: the surface is consumed by `Func::call`, by
 //! the host-trampoline path in [`crate::executor::trampoline`], and
@@ -41,6 +43,7 @@ pub mod boundary_call;
 pub mod context;
 pub mod flatten;
 pub mod instance;
+pub mod instance_flags;
 pub mod layout;
 mod lift;
 mod lower;

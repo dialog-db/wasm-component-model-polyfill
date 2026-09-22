@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::anyhow;
 
 use wasm_runtime_layer::{
-    Extern as RuntimeExtern, Func as RuntimeFunc, Global as RuntimeGlobal, Imports,
-    Instance as RuntimeInstance, Val as RuntimeVal, ValType as CoreType,
+    Extern as RuntimeExtern, Func as RuntimeFunc, Imports, Instance as RuntimeInstance,
+    ValType as CoreType,
 };
 
 use crate::component::{Component, ExternType};
@@ -44,6 +44,7 @@ use super::waitable_builtins::{
     build_subtask_drop, build_waitable_join, build_waitable_set_drop, build_waitable_set_new,
     build_waitable_set_poll, build_waitable_set_wait,
 };
+use crate::abi::instance_flags::InstanceFlags;
 use crate::abi::runtime_state::AbiRuntimeState;
 
 use super::ir::{
@@ -57,12 +58,12 @@ use super::trampoline::{
 
 /// The runtime items the executor has produced so far while walking
 /// the plan: core instances in instantiation order, every trampoline
-/// (built upfront), and one `may_leave` flags global per component
+/// (built upfront), and the may-leave flag of every component
 /// instance.
 struct RuntimeItems {
     core_instances: Vec<RuntimeInstance>,
     trampolines: Vec<RuntimeFunc>,
-    flags: Vec<RuntimeGlobal>,
+    flags: Vec<InstanceFlags>,
 }
 
 /// Drive instantiation of the component's plan against `store`.
@@ -84,7 +85,7 @@ pub fn instantiate<T: 'static>(
 
     // One instance record per component instance of this
     // instantiation: the entry gate, the backpressure counter, the
-    // exclusive thread, and the two flags a call consults. The
+    // exclusive thread, and the suspend flag a call consults. The
     // adapters name their instances by the translator's index, which
     // this list maps onto the store-wide identity. The records come
     // first because a resource this component defines names the
@@ -194,15 +195,30 @@ pub fn instantiate<T: 'static>(
         })
         .collect();
 
-    let abi_state = Arc::new(Mutex::new(AbiRuntimeState::with_slabs(
-        ir.num_runtime_memories,
-        ir.num_runtime_reallocs,
-        ir.num_runtime_post_returns,
-        ir.num_runtime_callbacks,
-        resource_tables,
-        component_instances,
-        instance_tables,
-    )));
+    // One may-leave flag per component instance, minted as the core
+    // global the instance's adapter modules import. A fresh
+    // instantiation starts with every flag set, because every
+    // instance may be left until an adapter is in the middle of
+    // translating values across its boundary, or the polyfill is in
+    // the middle of a call of its own into the guest. The built-ins
+    // read the same globals out of the runtime state below, so the
+    // generated code and the polyfill share one flag per instance.
+    let flags: Vec<InstanceFlags> = (0..ir.num_component_instances)
+        .map(|_| InstanceFlags::new(store.runtime_mut()))
+        .collect();
+
+    let abi_state = Arc::new(Mutex::new(
+        AbiRuntimeState::with_slabs(
+            ir.num_runtime_memories,
+            ir.num_runtime_reallocs,
+            ir.num_runtime_post_returns,
+            ir.num_runtime_callbacks,
+            resource_tables,
+            component_instances,
+            instance_tables,
+        )
+        .with_instance_flags(flags.clone()),
+    ));
 
     // Build every trampoline upfront. Trampolines never depend on
     // core-instance state at construction (memories, reallocs, etc.
@@ -220,17 +236,10 @@ pub fn instantiate<T: 'static>(
             store,
             &abi_state,
             &resource_runtimes,
+            &flags,
         )?;
         trampolines.push(func);
     }
-
-    // One `may_leave` flags global per component instance. Adapter
-    // modules import it; a fresh instantiation starts with the flag
-    // set, because every instance may be left until an adapter is
-    // in the middle of translating values across its boundary.
-    let flags: Vec<RuntimeGlobal> = (0..ir.num_component_instances)
-        .map(|_| RuntimeGlobal::new(store.runtime_mut(), RuntimeVal::I32(1), true))
-        .collect();
 
     let mut items = RuntimeItems {
         core_instances: Vec::new(),
@@ -424,6 +433,7 @@ fn build_runtime_trampoline<T: 'static>(
     store: &mut StoreContext<'_, T>,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     resource_runtimes: &[ResourceRuntime<T>],
+    flags: &[InstanceFlags],
 ) -> Result<RuntimeFunc> {
     match spec {
         TrampolineSpec::LowerImport(lowering) => {
@@ -440,15 +450,22 @@ fn build_runtime_trampoline<T: 'static>(
             let runtime = resource_runtimes
                 .get(table.resource_index)
                 .ok_or_else(|| internal("ResourceDrop.table_index names an unknown resource"))?;
+            let calling = table_instance(component, *table_index)?;
             Ok(build_resource_drop_trampoline(
                 store,
                 table,
                 runtime.clone(),
+                instance_flags(flags, calling)?,
             ))
         }
         TrampolineSpec::ResourceNew { table_index } => {
             let table = resource_table(abi_state, *table_index)?;
-            Ok(build_resource_new_trampoline(store, table))
+            let calling = table_instance(component, *table_index)?;
+            Ok(build_resource_new_trampoline(
+                store,
+                table,
+                instance_flags(flags, calling)?,
+            ))
         }
         TrampolineSpec::ResourceRep { table_index } => {
             let table = resource_table(abi_state, *table_index)?;
@@ -825,8 +842,7 @@ fn resolve_source<T: 'static>(
         ImportSource::InstanceFlags(idx) => items
             .flags
             .get(*idx)
-            .cloned()
-            .map(RuntimeExtern::Global)
+            .map(|flags| RuntimeExtern::Global(flags.global().clone()))
             .ok_or_else(|| internal("ImportSource::InstanceFlags index is out of bounds")),
     }
 }
@@ -938,6 +954,30 @@ fn instance_id_at(abi_state: &Arc<Mutex<AbiRuntimeState>>, index: usize) -> Resu
         .get(index)
         .copied()
         .ok_or_else(|| internal("an initializer names a component instance the plan does not hold"))
+}
+
+/// The translator's index of the component instance that keeps the
+/// resource table at `table_index`, which is the instance whose core
+/// code calls the `resource.new` or `resource.drop` built-in the
+/// table belongs to.
+fn table_instance(component: &Component, table_index: usize) -> Result<usize> {
+    component
+        .ir
+        .resource_tables
+        .get(table_index)
+        .and_then(|spec| spec.as_ref())
+        .map(|spec| spec.instance)
+        .ok_or_else(|| {
+            internal("resource trampoline names a table the instantiation does not hold")
+        })
+}
+
+/// The may-leave flag of the component instance at `index`.
+fn instance_flags(flags: &[InstanceFlags], index: usize) -> Result<InstanceFlags> {
+    flags
+        .get(index)
+        .cloned()
+        .ok_or_else(|| internal("a component instance of the plan has no may-leave flag"))
 }
 
 /// The runtime data of one resource table of the instantiation.

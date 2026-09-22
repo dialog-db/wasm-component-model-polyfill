@@ -833,6 +833,7 @@ mod tests {
             resource_tables: Vec::new(),
             component_instances: vec![caller, callee],
             handle_tables: Vec::new(),
+            instance_flags: Vec::new(),
         }));
 
         // The adapter passes the caller instance, whether the callee
@@ -1030,6 +1031,7 @@ mod tests {
             resource_tables: Vec::new(),
             component_instances: vec![first, second],
             handle_tables: Vec::new(),
+            instance_flags: Vec::new(),
         }));
         let named_first = instance_at(&abi_state, 0).expect("the first instantiation");
         let named_second = instance_at(&abi_state, 1).expect("the second instantiation");

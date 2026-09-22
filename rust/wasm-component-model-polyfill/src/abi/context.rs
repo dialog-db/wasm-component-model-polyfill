@@ -251,18 +251,19 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
         valtype: &ValueType,
         position: AbiPosition,
     ) -> Result<usize> {
-        let call = BoundaryCall::realloc(&self.instance)?;
         let Self {
             store,
             options,
             strategy,
+            instance,
             ..
         } = self;
+        let call = BoundaryCall::realloc(instance, &mut *store)?;
         let allocated = strategy
             .allocate(store, options, size, alignment)
             .map_err(|cause| Self::labelled(cause, position, valtype));
-        drop(call);
-        allocated
+        let ended = call.end(&mut *store);
+        allocated.and_then(|pointer| ended.map(|()| pointer))
     }
 
     /// Read `length` bytes at `offset` out of the side a copy
@@ -329,9 +330,9 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
         let Some(post_return) = self.options.post_return().cloned() else {
             return Ok(());
         };
-        let _call = BoundaryCall::post_return(&self.instance)?;
+        let call = BoundaryCall::post_return(&self.instance, &mut self.store)?;
         let mut empty: [RuntimeVal; 0] = [];
-        post_return
+        let ran = post_return
             .call(&mut self.store, core_results, &mut empty)
             .map_err(|cause| {
                 Error::from(AbiError {
@@ -339,7 +340,9 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
                     valtype: None,
                     cause: AbiCause::SubstrateFailure(cause),
                 })
-            })
+            });
+        let ended = call.end(&mut self.store);
+        ran.and(ended)
     }
 
     /// Label a strategy's cause with the slot and the value type the
@@ -365,6 +368,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::abi::instance_flags::InstanceFlags;
     use crate::abi::runtime_state::AbiRuntimeState;
     use crate::component::{FunctionParameter, FunctionType};
     use crate::concurrency::InstanceId;
@@ -390,17 +394,22 @@ mod tests {
     }
 
     /// An instance runtime state holding one component instance and
-    /// no filled slot.
-    fn state(instance: InstanceId) -> Arc<Mutex<AbiRuntimeState>> {
-        Arc::new(Mutex::new(AbiRuntimeState::with_slabs(
-            0,
-            0,
-            0,
-            0,
-            Vec::new(),
-            vec![instance],
-            vec![TableId::fresh()],
-        )))
+    /// no filled slot. `flags` carries the instance's may-leave flag
+    /// for a crossing that calls the guest's `cabi_realloc`, which
+    /// clears it, and is empty for one that does not.
+    fn state(instance: InstanceId, flags: Vec<InstanceFlags>) -> Arc<Mutex<AbiRuntimeState>> {
+        Arc::new(Mutex::new(
+            AbiRuntimeState::with_slabs(
+                0,
+                0,
+                0,
+                0,
+                Vec::new(),
+                vec![instance],
+                vec![TableId::fresh()],
+            )
+            .with_instance_flags(flags),
+        ))
     }
 
     /// The `(result u32)` signature a task is a call into.
@@ -434,7 +443,8 @@ mod tests {
         // the options name — which carries the tables of the
         // crossing — and the scope.
         let (options, boundary_instance) =
-            BoundaryInstance::resolve(&declared, &state(instance), &tables).expect("resolve");
+            BoundaryInstance::resolve(&declared, &state(instance, Vec::new()), &tables)
+                .expect("resolve");
         let ctx = BoundaryContext::new(
             store.inner_mut().as_context_mut(),
             options,
@@ -479,9 +489,12 @@ mod tests {
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let instance = InstanceId::from_index(0);
         let tables = store.tables_handle();
-        let (options, instance) =
-            BoundaryInstance::resolve(&canon(DataModel::LinearMemory), &state(instance), &tables)
-                .expect("resolve");
+        let (options, instance) = BoundaryInstance::resolve(
+            &canon(DataModel::LinearMemory),
+            &state(instance, Vec::new()),
+            &tables,
+        )
+        .expect("resolve");
         let mut ctx =
             BoundaryContext::new(store.inner_mut().as_context_mut(), options, instance, None);
 
@@ -520,9 +533,13 @@ mod tests {
             .expect("handle tables")
             .tasks
             .insert_instance();
-        let (options, instance) =
-            BoundaryInstance::resolve(&canon(DataModel::Gc), &state(instance), &tables)
-                .expect("resolve");
+        let flags = InstanceFlags::new(store.inner_mut().as_context_mut());
+        let (options, instance) = BoundaryInstance::resolve(
+            &canon(DataModel::Gc),
+            &state(instance, vec![flags]),
+            &tables,
+        )
+        .expect("resolve");
         let mut ctx =
             BoundaryContext::new(store.inner_mut().as_context_mut(), options, instance, None);
 
@@ -561,7 +578,7 @@ mod tests {
         let engine = Engine::new().expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let instance = InstanceId::from_index(0);
-        let state = state(instance);
+        let state = state(instance, Vec::new());
         let (destination, source) = {
             let guard = state.lock().expect("runtime state");
             (

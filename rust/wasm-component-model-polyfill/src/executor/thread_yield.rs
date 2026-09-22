@@ -72,7 +72,6 @@ use crate::concurrency::{InstanceId, SuspendSeam};
 use crate::error::{Error, TaskCause};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::CoreSignature;
-use crate::resource::HandleTables;
 use crate::store::{StoreContext, StoreData};
 
 /// The value `thread.yield` returns. `canon_thread_yield` answers
@@ -91,12 +90,11 @@ pub fn build_thread_yield<T: 'static>(
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
-    let tables = store.tables_handle();
     RuntimeFunc::new(
         store.runtime_mut(),
         core_func_type(signature),
         move |store_ctx, _args, results| {
-            thread_yield(store_ctx, &abi_state, &tables, instance)?;
+            thread_yield(store_ctx, &abi_state, instance)?;
             results[0] = RuntimeVal::I32(ALWAYS_ZERO);
             Ok(())
         },
@@ -108,11 +106,10 @@ pub fn build_thread_yield<T: 'static>(
 fn thread_yield<T: 'static>(
     mut store_ctx: RuntimeContextMut<'_, StoreData<T>, Backend>,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
-    tables: &Arc<Mutex<HandleTables>>,
     instance: usize,
 ) -> anyhow::Result<()> {
     let id = calling_instance(abi_state, instance)?;
-    trap_if_cannot_leave(tables, id)?;
+    trap_if_cannot_leave(abi_state, id, &mut store_ctx)?;
 
     // One chance to be given back control, which is the whole of
     // what a yield waits for. The seam runs exactly one nested turn
@@ -147,19 +144,22 @@ fn calling_instance(
 
 /// Refuse the built-in when the instance may not be left, which is
 /// the case while a `realloc` or a `post-return` of that instance
-/// runs.
+/// runs. The flag is the core global the instance's adapters compile
+/// against, so this reads what the generated code reads.
 fn trap_if_cannot_leave(
-    tables: &Arc<Mutex<HandleTables>>,
+    abi_state: &Arc<Mutex<AbiRuntimeState>>,
     instance: InstanceId,
+    store: impl AsContextMut,
 ) -> anyhow::Result<()> {
-    let guard = tables
-        .lock()
-        .map_err(|_| anyhow!("resource handle tables lock poisoned"))?;
-    let record = guard
-        .tasks
-        .instance(instance)
-        .ok_or_else(|| anyhow!("a built-in named an instance the store does not hold"))?;
-    if record.may_leave {
+    let flags = {
+        let state = abi_state
+            .lock()
+            .map_err(|_| anyhow!("ABI runtime state lock poisoned"))?;
+        state.flags_of(instance).cloned().ok_or_else(|| {
+            anyhow!("a built-in named an instance with no may-leave flag of its own")
+        })?
+    };
+    if flags.may_leave(store).map_err(|err| anyhow!("{err}"))? {
         return Ok(());
     }
     Err(trap(Error::Task(TaskCause::CannotLeave)))

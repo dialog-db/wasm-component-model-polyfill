@@ -15,6 +15,14 @@
 //!    slots, or written into the return area the caller supplied
 //!    when the result is too wide for flat passing.
 //!
+//! A lowered import leaves the component instance, so the call is
+//! refused before any of that happens when the instance's may-leave
+//! flag is clear, which is the case while a `cabi_realloc` or a
+//! `post-return` the polyfill called runs. The reference traps in
+//! `canon_lower` on the same condition, and the flag is the core
+//! global the instance's adapters compile against, so a guest reads
+//! one flag whichever way it tries to leave.
+//!
 //! Both crossings run on a boundary context the trampoline builds
 //! from the lowering's canon options, resolved at call time against
 //! the instantiation's
@@ -79,6 +87,7 @@ use crate::abi::boundary_call::BoundaryCall;
 use crate::abi::context::BoundaryContext;
 use crate::abi::flatten::{lift_from_flat_slots, lower_into_flat_slots};
 use crate::abi::instance::BoundaryInstance;
+use crate::abi::instance_flags::InstanceFlags;
 use crate::abi::layout::{
     FlatType, MAX_FLAT_ASYNC_PARAMS, flat_param_count, flat_types, params_spill, result_spills,
     spill_layout,
@@ -88,7 +97,7 @@ use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::{lift, lower};
 use crate::backend::Backend;
 use crate::component::FunctionType;
-use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
+use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, TaskCause};
 use crate::executor::ir::{CanonOptions, LoweringSpec};
 use crate::linker::{HostCall, HostFuncFuture, HostFuncKind, HostResource};
 
@@ -179,10 +188,33 @@ impl<T> Clone for ResourceRuntime<T> {
 /// end with it, so the destructor sees zeros and what it sets does
 /// not reach the thread that dropped the handle. A destructor that
 /// drops another resource nests a second task the same way.
+///
+/// The built-in leaves the component instance, so it is refused
+/// while `flags` — the may-leave flag of the instance whose table
+/// the handle is in — is clear. That instance is the calling one,
+/// and its flag is the only one either reference reads, including
+/// when another component instance defines the resource and so
+/// supplies the destructor.
+///
+/// In the spec's `canon_resource_drop`
+/// (`design/mvp/canonical-abi/definitions.py`) the trap on entry
+/// reads the calling instance, and the destructor then goes out
+/// through `inst.store.lower(callee, ft, opts, inst)`, lowered for
+/// that same calling instance, so the `canon_lower` it reaches
+/// traps on the caller's flag a second time. The defining instance
+/// is reached through the `lift` beside that `lower`, which gates
+/// on may-enter rather than may-leave. Wasmtime agrees: right
+/// before the destructor it calls `check_may_leave_instance` on
+/// `self.types[resource].unwrap_concrete_instance()`
+/// (`crates/cranelift/src/compiler/component.rs`), which is the
+/// instance the handle table belongs to and so is the caller again;
+/// the `!= def.instance` test around it only skips that second read
+/// when the resource is the caller's own.
 pub fn build_resource_drop_trampoline<T: 'static>(
     store: &mut StoreContext<'_, T>,
     table: ResourceTableRuntime,
     runtime: ResourceRuntime<T>,
+    flags: InstanceFlags,
 ) -> RuntimeFunc {
     let tables = store.tables_handle();
     let func_type = FuncType::new([CoreType::I32], []);
@@ -190,6 +222,7 @@ pub fn build_resource_drop_trampoline<T: 'static>(
         store.runtime_mut(),
         func_type,
         move |mut store_ctx, args, _results| {
+            refuse_unless_may_leave(&flags, &mut store_ctx)?;
             let index = take_i32(args, 0).map_err(|err| anyhow!("resource.drop: {err}"))?;
             // Dropping a borrow returns it to its call and runs no
             // destructor; dropping an owned entry runs the destructor,
@@ -224,17 +257,21 @@ pub fn build_resource_drop_trampoline<T: 'static>(
 /// Build a runtime-layer host function that implements the
 /// canonical `resource.new` intrinsic for a single resource type.
 /// The returned function takes one i32 (the rep) and returns the
-/// minted index.
+/// minted index. It leaves the component instance, so it is refused
+/// while `flags` — the may-leave flag of the instance whose table
+/// the handle enters — is clear.
 pub fn build_resource_new_trampoline<T: 'static>(
     store: &mut StoreContext<'_, T>,
     table: ResourceTableRuntime,
+    flags: InstanceFlags,
 ) -> RuntimeFunc {
     let tables = store.tables_handle();
     let func_type = FuncType::new([CoreType::I32], [CoreType::I32]);
     RuntimeFunc::new(
         store.runtime_mut(),
         func_type,
-        move |_store_ctx, args, results| {
+        move |mut store_ctx, args, results| {
+            refuse_unless_may_leave(&flags, &mut store_ctx)?;
             let rep = take_i32(args, 0).map_err(|err| anyhow!("resource.new: {err}"))?;
             let index = insert_handle(&tables, table, rep)?;
             results[0] = RuntimeVal::I32(index as i32);
@@ -263,6 +300,29 @@ pub fn build_resource_rep_trampoline<T: 'static>(
             Ok(())
         },
     )
+}
+
+/// Refuse a lowered import while the component instance it belongs
+/// to may not be left.
+fn trap_if_cannot_leave(instance: &BoundaryInstance, store: impl AsContextMut) -> Result<()> {
+    let Some(flags) = instance.flags() else {
+        return Err(Error::internal(
+            "a lowered import names a component instance with no may-leave flag of its own",
+        ));
+    };
+    refuse_unless_may_leave(flags, store)
+}
+
+/// Refuse a built-in that leaves the component instance while the
+/// instance's may-leave flag is clear, which is the case while a
+/// `cabi_realloc` or a `post-return` of that instance runs. The flag
+/// is the core global the instance's adapters compile against, so
+/// this reads what the generated code reads.
+fn refuse_unless_may_leave(flags: &InstanceFlags, store: impl AsContextMut) -> Result<()> {
+    if flags.may_leave(store)? {
+        return Ok(());
+    }
+    Err(Error::Task(TaskCause::CannotLeave))
 }
 
 fn take_i32(args: &[RuntimeVal], cursor: usize) -> Result<u32> {
@@ -520,6 +580,15 @@ fn invoke_trampoline<T: 'static>(
     // two, and the instance is where the handle tables of the
     // crossing come from.
     let (options, instance) = BoundaryInstance::resolve(declared, abi_state, tables)?;
+
+    // A lowered import leaves the component instance, so it is
+    // refused while the instance may not be left: the reference
+    // traps in `canon_lower` on the same condition, and the flag is
+    // clear for the length of a `cabi_realloc` or a `post-return`
+    // the polyfill called. The check comes before anything of the
+    // call happens, so a refused call lifts no argument and pushes
+    // no subtask.
+    trap_if_cannot_leave(&instance, &mut store_ctx)?;
 
     // A call from the guest into the host is a subtask: it goes on
     // the stack of current scopes and stays there while the host side

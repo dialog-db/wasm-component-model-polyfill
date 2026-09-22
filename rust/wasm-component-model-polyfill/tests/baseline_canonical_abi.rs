@@ -756,22 +756,23 @@ async fn it_round_trips_list_of_bytes_through_an_export() {
 
 #[wcmp_macros::test]
 async fn it_observes_cabi_realloc_during_string_lower() {
-    // The component imports a host counter the realloc call
-    // increments. Lowering a string into guest memory has to call
-    // realloc; the host observes the call by reading the counter
-    // afterwards.
+    // The component counts the bytes its realloc was asked for in a
+    // global of its own, and exports it. Lowering a string into
+    // guest memory has to call realloc; the host observes the call
+    // by reading the count afterwards.
+    //
+    // The realloc cannot call out to the host to report it: the
+    // instance may not be left while a call the polyfill made into
+    // it runs, which `baseline_may_leave` proves, so what the
+    // realloc saw has to wait in the guest until the call has
+    // ended.
     const COMPONENT: &[u8] = component!(
         r#"
         (component
-          (type $iface (instance
-            (export "bump" (func (param "n" s32)))))
-          (import "pdd-tests:host/probe@0.1.0" (instance $imports (type $iface)))
-          (alias export $imports "bump" (func $bump))
-          (core func $core-bump (canon lower (func $bump)))
           (core module $m
-            (func (import "host" "bump") (param i32))
             (memory (export "memory") 1)
             (global $bump (mut i32) (i32.const 16))
+            (global $asked (mut i32) (i32.const 0))
             (func (export "cabi_realloc")
                   (param i32 i32 i32 i32) (result i32)
               (local $ptr i32)
@@ -781,39 +782,25 @@ async fn it_observes_cabi_realloc_during_string_lower() {
               local.get 3
               i32.add
               global.set $bump
+              global.get $asked
               local.get 3
-              call 0
+              i32.add
+              global.set $asked
               local.get $ptr)
             (func (export "len") (param i32 i32) (result i32)
-              local.get 1))
-          (core instance $i (instantiate $m
-            (with "host" (instance
-              (export "bump" (func $core-bump))))))
+              local.get 1)
+            (func (export "asked") (result i32)
+              global.get $asked))
+          (core instance $i (instantiate $m))
+          (func (export "asked") (result s32)
+            (canon lift (core func $i "asked")))
           (func (export "len") (param "s" string) (result s32)
             (canon lift (core func $i "len")
                        (memory (core memory $i "memory"))
                        (realloc (core func $i "cabi_realloc")))))
         "#
     );
-    let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT)
-        .await
-        .expect("component parses");
-    let mut linker: Linker<i32> = Linker::new(&engine);
-    let iface: wasm_component_model_polyfill::InterfaceIdentifier =
-        "pdd-tests:host/probe@0.1.0".parse().expect("identifier");
-    linker.instance(&iface).func_wrap(
-        "bump",
-        |mut data: HostCall<'_, i32>, (n,): (i32,)| -> wasm_component_model_polyfill::Result<()> {
-            *data.data_mut() += n;
-            Ok(())
-        },
-    );
-    let mut store: Store<i32> = Store::new(&engine, 0).expect("store");
-    let inst = linker
-        .instantiate(&mut store, &component)
-        .await
-        .expect("instantiate");
+    let (mut store, inst) = instantiate(COMPONENT).await;
     let len = inst.get_func("len").expect("len export present");
     let results = len
         .call(&mut store, &[Val::String("hello".to_owned())])
@@ -821,27 +808,25 @@ async fn it_observes_cabi_realloc_during_string_lower() {
         .expect("call");
     assert_eq!(results.as_ref(), &[Val::S32(5)]);
     // The realloc fired once for the 5-byte UTF-8 payload.
-    assert_eq!(*store.data(), 5);
+    let asked = call(&inst, &mut store, "asked", &[]).await;
+    assert_eq!(asked.as_ref(), &[Val::S32(5)]);
 }
 
 #[wcmp_macros::test]
 async fn it_invokes_post_return_after_a_sync_lift() {
-    // The component's `post-return` calls a host counter once. The
-    // export's body is the "string-length" pattern; the host
-    // observes the post-return having fired by reading the counter
-    // after the call returns.
+    // The component's `post-return` bumps a counter of its own, and
+    // exports it. The export's body is the "string-length" pattern;
+    // the host observes the post-return having fired by reading the
+    // counter after the call returns. The post-return cannot report
+    // it by calling out, for the same reason the realloc above
+    // cannot.
     const COMPONENT: &[u8] = component!(
         r#"
         (component
-          (type $iface (instance
-            (export "tick" (func))))
-          (import "pdd-tests:host/probe@0.1.0" (instance $imports (type $iface)))
-          (alias export $imports "tick" (func $tick))
-          (core func $core-tick (canon lower (func $tick)))
           (core module $m
-            (func (import "host" "tick"))
             (memory (export "memory") 1)
             (global $bump (mut i32) (i32.const 16))
+            (global $ticks (mut i32) (i32.const 0))
             (func (export "cabi_realloc")
                   (param i32 i32 i32 i32) (result i32)
               (local $ptr i32)
@@ -855,10 +840,15 @@ async fn it_invokes_post_return_after_a_sync_lift() {
             (func (export "len") (param i32 i32) (result i32)
               local.get 1)
             (func (export "after") (param i32)
-              call 0))
-          (core instance $i (instantiate $m
-            (with "host" (instance
-              (export "tick" (func $core-tick))))))
+              global.get $ticks
+              i32.const 1
+              i32.add
+              global.set $ticks)
+            (func (export "ticks") (result i32)
+              global.get $ticks))
+          (core instance $i (instantiate $m))
+          (func (export "ticks") (result s32)
+            (canon lift (core func $i "ticks")))
           (func (export "len") (param "s" string) (result s32)
             (canon lift (core func $i "len")
                        (memory (core memory $i "memory"))
@@ -866,27 +856,14 @@ async fn it_invokes_post_return_after_a_sync_lift() {
                        (post-return (core func $i "after")))))
         "#
     );
-    let engine = Engine::new().expect("engine");
-    let component = Component::new(&engine, COMPONENT)
-        .await
-        .expect("component parses");
-    let mut linker: Linker<u32> = Linker::new(&engine);
-    let iface: wasm_component_model_polyfill::InterfaceIdentifier =
-        "pdd-tests:host/probe@0.1.0".parse().expect("identifier");
-    linker.instance(&iface).func_wrap(
-        "tick",
-        |mut data: HostCall<'_, u32>, (): ()| -> wasm_component_model_polyfill::Result<()> {
-            *data.data_mut() += 1;
-            Ok(())
-        },
+    let (mut store, inst) = instantiate(COMPONENT).await;
+    let ticks = call(&inst, &mut store, "ticks", &[]).await;
+    assert_eq!(
+        ticks.as_ref(),
+        &[Val::S32(0)],
+        "post-return has not run yet"
     );
-    let mut store: Store<u32> = Store::new(&engine, 0).expect("store");
-    let inst = linker
-        .instantiate(&mut store, &component)
-        .await
-        .expect("instantiate");
     let len = inst.get_func("len").expect("len export");
-    assert_eq!(*store.data(), 0, "post-return has not run yet");
     let results = len
         .call(&mut store, &[Val::String("ab".to_owned())])
         .await
@@ -894,7 +871,12 @@ async fn it_invokes_post_return_after_a_sync_lift() {
     assert_eq!(results.as_ref(), &[Val::S32(2)]);
     // After the call returns, post-return has been invoked exactly
     // once.
-    assert_eq!(*store.data(), 1, "post-return fired exactly once");
+    let ticks = call(&inst, &mut store, "ticks", &[]).await;
+    assert_eq!(
+        ticks.as_ref(),
+        &[Val::S32(1)],
+        "post-return fired exactly once"
+    );
 }
 
 #[wcmp_macros::test]

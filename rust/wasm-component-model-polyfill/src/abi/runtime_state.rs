@@ -3,8 +3,9 @@
 //! A `canon lift` or `canon lower` names its memory, its
 //! `cabi_realloc`, its `post-return`, and its callback by index into
 //! slabs the executor's `Extract*` directives fill during
-//! instantiation. This is those slabs, with the resource tables and
-//! the component instances the same instantiation produced.
+//! instantiation. This is those slabs, with the resource tables,
+//! the component instances, and the may-leave flags the same
+//! instantiation produced.
 //!
 //! The state lives under [`crate::abi`] because the memory and the
 //! `cabi_realloc` it holds are the guest's, and the lift and lower
@@ -15,6 +16,7 @@
 
 use wasm_runtime_layer::{Func as RuntimeFunc, Memory};
 
+use crate::abi::instance_flags::InstanceFlags;
 use crate::concurrency::InstanceId;
 use crate::resource::{ResourceTableRuntime, TableId};
 
@@ -50,6 +52,13 @@ pub struct AbiRuntimeState {
     /// shared by every handle kind it uses, so a waitable-set entry
     /// and a resource entry of one instance name the same table.
     pub handle_tables: Vec<TableId>,
+    /// The may-leave flag of every component instance of this
+    /// instantiation, by the same index. It is the core global the
+    /// instance's adapters import, so a built-in that reads it here
+    /// reads exactly what the generated code reads. Empty for a
+    /// state built without an instantiation behind it, which is what
+    /// a unit test of one crossing builds.
+    pub instance_flags: Vec<InstanceFlags>,
 }
 
 impl AbiRuntimeState {
@@ -72,6 +81,33 @@ impl AbiRuntimeState {
             resource_tables,
             component_instances,
             handle_tables,
+            instance_flags: Vec::new(),
         }
+    }
+
+    /// Give the state the may-leave flags of the instantiation's
+    /// component instances, by the index the translator names an
+    /// instance with.
+    pub fn with_instance_flags(mut self, flags: Vec<InstanceFlags>) -> Self {
+        self.instance_flags = flags;
+        self
+    }
+
+    /// The may-leave flag of the component instance at `index`, the
+    /// index the translator names an instance with.
+    pub fn flags_at(&self, index: usize) -> Option<&InstanceFlags> {
+        self.instance_flags.get(index)
+    }
+
+    /// The may-leave flag of the component instance `id`. A built-in
+    /// whose crossing belongs to a task takes the instance off the
+    /// task, which names it store-wide rather than by the
+    /// translator's index.
+    pub fn flags_of(&self, id: InstanceId) -> Option<&InstanceFlags> {
+        let index = self
+            .component_instances
+            .iter()
+            .position(|held| *held == id)?;
+        self.flags_at(index)
     }
 }

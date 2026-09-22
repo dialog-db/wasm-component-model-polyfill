@@ -376,11 +376,13 @@ fn resolve_sync_lift<T: 'static>(
         core_results,
     )?;
     if let Some((post_return, boundary)) = &callee.post_return {
-        let _call = BoundaryCall::post_return(boundary)?;
+        let call = BoundaryCall::post_return(boundary, store.runtime_mut())?;
         let mut empty: [RuntimeVal; 0] = [];
-        post_return
+        let ran = post_return
             .call(store.runtime_mut(), core_results, &mut empty)
-            .map_err(substrate_failure)?;
+            .map_err(substrate_failure);
+        call.end(store.runtime_mut())?;
+        ran?;
     }
     match store.exit_export_task(task)? {
         Ok(()) => Ok(()),

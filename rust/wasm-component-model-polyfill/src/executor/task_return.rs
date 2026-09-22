@@ -111,7 +111,7 @@ fn task_return<T: 'static>(
 ) -> Result<()> {
     let current = current_task(tables)?;
     let (task, task_instance) = (current.task, current.instance);
-    if !current.may_leave {
+    if !may_leave(abi_state, task_instance, &mut store_ctx)? {
         return Err(Error::Task(TaskCause::CannotLeave));
     }
 
@@ -185,14 +185,31 @@ struct Current {
     task: TaskId,
     /// The component instance the task belongs to.
     instance: InstanceId,
-    /// Whether that instance may be left.
-    may_leave: bool,
     /// The subtask of the call the task is the callee of, for a call
     /// between two components the prepare intrinsic set up. `None`
     /// for a call from the host.
     subtask: Option<SubtaskId>,
     /// The interned result tuple the adapter named for such a call.
     result_tuple: Option<usize>,
+}
+
+/// Whether `instance` may be left, read off the instance's
+/// may-leave flag, which is the core global its adapters compile
+/// against.
+fn may_leave(
+    abi_state: &Arc<Mutex<AbiRuntimeState>>,
+    instance: InstanceId,
+    store: impl AsContextMut,
+) -> Result<bool> {
+    let flags = {
+        let state = abi_state
+            .lock()
+            .map_err(|_| Error::internal("ABI runtime state lock poisoned"))?;
+        state.flags_of(instance).cloned().ok_or_else(|| {
+            Error::internal("`task.return` ran in an instance with no may-leave flag of its own")
+        })?
+    };
+    flags.may_leave(store)
 }
 
 /// The task the built-in resolves, with what the traps below
@@ -220,15 +237,9 @@ fn current_task(tables: &Arc<Mutex<HandleTables>>) -> Result<Current> {
     let instance = record
         .instance
         .ok_or_else(|| Error::internal("the current task belongs to no component instance"))?;
-    let may_leave = guard
-        .tasks
-        .instance(instance)
-        .map(|record| record.may_leave)
-        .ok_or_else(|| Error::internal("the current task names no instance record"))?;
     Ok(Current {
         task,
         instance,
-        may_leave,
         subtask,
         result_tuple,
     })
@@ -472,6 +483,7 @@ mod tests {
     use wasm_runtime_layer::{Memory, MemoryType};
 
     use super::*;
+    use crate::abi::instance_flags::InstanceFlags;
     use crate::abi::layout::{FlatType, flat_types};
     use crate::component::FunctionType;
     use crate::concurrency::{InstanceId, TaskResult};
@@ -500,15 +512,21 @@ mod tests {
             let mut store: Store<()> = Store::new(&engine, ()).expect("store");
             let tables = store.tables_handle();
             let instance = tables.lock().expect("records").tasks.insert_instance();
-            let abi_state = Arc::new(Mutex::new(AbiRuntimeState::with_slabs(
-                memories,
-                0,
-                0,
-                0,
-                Vec::new(),
-                vec![instance],
-                vec![TableId::fresh()],
-            )));
+            // The built-in reads the instance's may-leave flag, which
+            // an instantiation mints as a core global of the store.
+            let flags = InstanceFlags::new(store.inner_mut().as_context_mut());
+            let abi_state = Arc::new(Mutex::new(
+                AbiRuntimeState::with_slabs(
+                    memories,
+                    0,
+                    0,
+                    0,
+                    Vec::new(),
+                    vec![instance],
+                    vec![TableId::fresh()],
+                )
+                .with_instance_flags(vec![flags]),
+            ));
             for slot in 0..memories {
                 let memory = Memory::new(store.inner_mut(), MemoryType::new(1, None))
                     .expect("a fresh memory");

@@ -139,15 +139,6 @@ impl TaskTables {
         Some(())
     }
 
-    /// Set the may-leave flag of `instance` and return the value it
-    /// had. `None` when the store holds no such instance.
-    pub fn set_may_leave(&mut self, instance: InstanceId, value: bool) -> Option<bool> {
-        let record = self.instance_mut(instance)?;
-        let old = record.may_leave;
-        record.may_leave = value;
-        Some(old)
-    }
-
     /// Create a task for a call into an export of `instance`,
     /// without making it the current scope. The task's implicit
     /// thread is created with it.

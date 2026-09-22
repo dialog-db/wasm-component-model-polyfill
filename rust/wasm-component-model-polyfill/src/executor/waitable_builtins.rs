@@ -65,10 +65,10 @@ pub fn build_waitable_set_new<T: 'static>(
     RuntimeFunc::new(
         store.runtime_mut(),
         core_func_type(signature),
-        move |_store_ctx, _args, results| {
+        move |mut store_ctx, _args, results| {
             let (id, table) = calling_instance(&abi_state, instance)?;
+            trap_if_cannot_leave(&abi_state, id, &mut store_ctx)?;
             let mut guard = lock_tables(&tables)?;
-            trap_if_cannot_leave(&guard, id)?;
             let set = guard.tasks.insert_waitable_set();
             let index = guard.insert_waitable_set(table, set);
             results[0] = RuntimeVal::I32(index as i32);
@@ -130,11 +130,11 @@ pub fn build_waitable_set_drop<T: 'static>(
     RuntimeFunc::new(
         store.runtime_mut(),
         core_func_type(signature),
-        move |_store_ctx, args, _results| {
+        move |mut store_ctx, args, _results| {
             let set_index = arg_u32(args, 0)?;
             let (id, table) = calling_instance(&abi_state, instance)?;
+            trap_if_cannot_leave(&abi_state, id, &mut store_ctx)?;
             let mut guard = lock_tables(&tables)?;
-            trap_if_cannot_leave(&guard, id)?;
             let set = set_at(&guard, table, set_index)?;
             // The record's own checks come first: a set that still
             // holds a waitable, or one a thread waits on, traps and
@@ -159,12 +159,12 @@ pub fn build_waitable_join<T: 'static>(
     RuntimeFunc::new(
         store.runtime_mut(),
         core_func_type(signature),
-        move |_store_ctx, args, _results| {
+        move |mut store_ctx, args, _results| {
             let waitable_index = arg_u32(args, 0)?;
             let set_index = arg_u32(args, 1)?;
             let (id, table) = calling_instance(&abi_state, instance)?;
+            trap_if_cannot_leave(&abi_state, id, &mut store_ctx)?;
             let mut guard = lock_tables(&tables)?;
-            trap_if_cannot_leave(&guard, id)?;
             let waitable = guard
                 .waitable_from_handle(table, waitable_index)
                 .map_err(|err| anyhow!("wasm trap: {err}"))?;
@@ -208,11 +208,11 @@ pub fn build_subtask_drop<T: 'static>(
     RuntimeFunc::new(
         store.runtime_mut(),
         core_func_type(signature),
-        move |_store_ctx, args, _results| {
+        move |mut store_ctx, args, _results| {
             let subtask_index = arg_u32(args, 0)?;
             let (id, table) = calling_instance(&abi_state, instance)?;
+            trap_if_cannot_leave(&abi_state, id, &mut store_ctx)?;
             let mut guard = lock_tables(&tables)?;
-            trap_if_cannot_leave(&guard, id)?;
             let subtask = guard
                 .subtask_from_handle(table, subtask_index)
                 .map_err(|err| anyhow!("wasm trap: {err}"))?;
@@ -238,10 +238,10 @@ fn waitable_set_wait<T: 'static>(
     let set_index = arg_u32(args, 0)?;
     let pointer = arg_u32(args, 1)?;
     let (id, table) = calling_instance(abi_state, options.instance)?;
+    trap_if_cannot_leave(abi_state, id, &mut store_ctx)?;
 
     let (set, thread, delivered) = {
         let mut guard = lock_tables(tables)?;
-        trap_if_cannot_leave(&guard, id)?;
         let set = set_at(&guard, table, set_index)?;
         let thread = current_thread(&guard)?;
         // A set that already holds an event delivers it here and the
@@ -281,10 +281,10 @@ fn waitable_set_poll<T: 'static>(
     let set_index = arg_u32(args, 0)?;
     let pointer = arg_u32(args, 1)?;
     let (id, table) = calling_instance(abi_state, options.instance)?;
+    trap_if_cannot_leave(abi_state, id, &mut store_ctx)?;
 
     let delivered = {
         let mut guard = lock_tables(tables)?;
-        trap_if_cannot_leave(&guard, id)?;
         let set = set_at(&guard, table, set_index)?;
         if guard.tasks.set_has_pending_event(set).map_err(trap)? {
             Some(guard.poll_waitable_set(set).map_err(trap)?)
@@ -411,13 +411,22 @@ fn set_at(tables: &HandleTables, table: TableId, index: u32) -> anyhow::Result<W
 
 /// Refuse the built-in when the instance may not be left, which is
 /// the case while a `realloc` or a `post-return` of that instance
-/// runs.
-fn trap_if_cannot_leave(tables: &HandleTables, instance: InstanceId) -> anyhow::Result<()> {
-    let record = tables
-        .tasks
-        .instance(instance)
-        .ok_or_else(|| anyhow!("a built-in named an instance the store does not hold"))?;
-    if record.may_leave {
+/// runs. The flag is the core global the instance's adapters compile
+/// against, so this reads what the generated code reads.
+fn trap_if_cannot_leave(
+    abi_state: &Arc<Mutex<AbiRuntimeState>>,
+    instance: InstanceId,
+    store: impl AsContextMut,
+) -> anyhow::Result<()> {
+    let flags = {
+        let state = abi_state
+            .lock()
+            .map_err(|_| anyhow!("ABI runtime state lock poisoned"))?;
+        state.flags_of(instance).cloned().ok_or_else(|| {
+            anyhow!("a built-in named an instance with no may-leave flag of its own")
+        })?
+    };
+    if flags.may_leave(store).map_err(|err| anyhow!("{err}"))? {
         return Ok(());
     }
     Err(trap(Error::Task(TaskCause::CannotLeave)))

@@ -15,6 +15,14 @@
 //! a resource it implements itself is a unit test beside
 //! `StoreContext::resource_drop`, because a host destructor closure
 //! reads the store's records rather than a context slot.
+//!
+//! The instance may still be left while a destructor runs, which the
+//! reference states by clearing the may-leave flag around a realloc
+//! and a post-return and not around a destructor. Every destructor
+//! below proves it by calling a host import: a call that leaves the
+//! instance traps while the flag is clear, so a destructor that
+//! reaches the host at all is a destructor whose instance may be
+//! left.
 
 #![cfg(test)]
 
@@ -37,8 +45,6 @@ struct Seen {
     subtasks: usize,
     /// How many thread records the store held.
     threads: usize,
-    /// Whether each component instance of the store could be left.
-    may_leave: Vec<bool>,
     /// The context slots of the current thread.
     context: [i32; 2],
 }
@@ -269,12 +275,6 @@ macro_rules! seen {
             tasks: guard.tasks.task_count(),
             subtasks: guard.tasks.subtask_count(),
             threads: guard.tasks.thread_count(),
-            may_leave: guard
-                .tasks
-                .instances()
-                .iter()
-                .map(|record| record.may_leave)
-                .collect(),
             context: guard
                 .tasks
                 .current_thread()
@@ -338,19 +338,16 @@ async fn it_runs_a_guest_drop_destructor_on_a_task_of_its_own() {
             tasks: 2,
             subtasks: 1,
             threads: 2,
-            may_leave: vec![true],
             context: [0xdead, 0],
         },
         "the destructor's task sits on the export's task, with the subtask of \
-         the host call on top of both; its own fresh thread carries the slot \
-         it set, and the instance may still be left"
+         the host call on top of both, which the host call could only reach \
+         because the instance may still be left; its own fresh thread carries \
+         the slot it set"
     );
     assert_eq!(
         after,
-        Seen {
-            may_leave: vec![true],
-            ..Seen::default()
-        },
+        Seen::default(),
         "the destructor's task and its thread are gone"
     );
 }
@@ -370,17 +367,13 @@ async fn it_ends_the_destructor_task_when_the_destructor_traps() {
             tasks: 2,
             subtasks: 1,
             threads: 2,
-            may_leave: vec![true],
             context: [0xdead, 0],
         },
         "the destructor's task was the current scope while it ran"
     );
     assert_eq!(
         after,
-        Seen {
-            may_leave: vec![true],
-            ..Seen::default()
-        },
+        Seen::default(),
         "nothing of the failed destructor is left in the store"
     );
 }
@@ -401,7 +394,6 @@ async fn it_nests_a_task_for_a_destructor_that_drops_another_resource() {
             tasks: 3,
             subtasks: 1,
             threads: 3,
-            may_leave: vec![true],
             context: [0x3333, 0],
         },
         "the inner destructor's task nests inside the outer one, which nests \
@@ -409,10 +401,7 @@ async fn it_nests_a_task_for_a_destructor_that_drops_another_resource() {
     );
     assert_eq!(
         after,
-        Seen {
-            may_leave: vec![true],
-            ..Seen::default()
-        },
+        Seen::default(),
         "both destructor tasks and both threads are gone"
     );
 }
@@ -442,10 +431,7 @@ async fn it_runs_a_host_release_destructor_on_a_task_of_its_own() {
     after.context = [0; 2];
     assert_eq!(
         after,
-        Seen {
-            may_leave: vec![true],
-            ..Seen::default()
-        },
+        Seen::default(),
         "both destructor tasks and their threads ended with the release"
     );
 
