@@ -105,15 +105,16 @@ Five rules hold:
   built-in fails with the deadlock cause. When a host task is pending, only a
   real suspension can wait for the executor, so the built-in fails with the
   stack-switch cause.
-- A sync-typed call in progress turns both failures into the cannot-block cause.
-  The reference runs the ready threads of a sync-typed task's own instance while
-  the task blocks, and traps when none remains. A sync-typed task's block
-  therefore runs only items of its own instance. Items of other instances stay
-  queued for the driver. An async-typed task's block runs any ready item,
+- A task that must not block turns both failures into the cannot-block cause. A
+  task must not block when it is a sync-typed call, a start function, or a
+  resource destructor. The reference runs the ready threads of such a task's own
+  instance while the task blocks, and traps when none remains. The block of such
+  a task therefore runs only items of its own instance. Items of other instances
+  stay queued for the driver. An async-typed task's block runs any ready item,
   because the reference returns control to the caller there and any thread can
   run. When the nested turn cannot progress and any instance in the store has a
-  sync-typed call in progress, the cause is the cannot-block cause, as Wasmtime
-  reports it on idle.
+  task that must not block in progress, the cause is the cannot-block cause, as
+  Wasmtime reports it on idle.
 - The seam keeps one budget, and past it the call fails with the stack-switch
   cause. This is the one departure of this design from the reference, and the
   section below states it.
@@ -122,6 +123,8 @@ Five rules hold:
 
 ```text
 fn block(store, condition) -> Result:
+    if seam.has_provider() and not current_task().must_not_block():
+        return seam.suspend(condition)
     // a nested turn runs ready items, then yielded items, then polls the
     // host tasks, and reports Progress, Idle, or Waiting
     filter = own_instance if current_task().must_not_block() else any_instance
@@ -135,21 +138,30 @@ fn block(store, condition) -> Result:
             _:                           break
     if condition():   return Ok
     if past_budget:   return Err(StackSwitchNeeded)
-    if any_sync_typed_call_in_progress(): return Err(CannotBlock)
+    if any_task_must_not_block():         return Err(CannotBlock)
     if host_tasks_pending():             return Err(StackSwitchNeeded)
     return Err(Deadlock)
 
 fn give_way(store) -> Result:                 // what thread.yield asks for
+    if seam.has_provider() and not current_task().must_not_block():
+        return seam.suspend(ready_again)
     filter = own_instance if current_task().must_not_block() else any_instance
     store.nested_turn(active_waker, filter)
     if seam.note_turn(store): return Err(StackSwitchNeeded)
     return Ok
 ```
 
-A nested turn runs only when the suspend seam has no provider. A provider
-suspends the thread and ends the turn instead, as [PDD018] states, and the
-driver's turn then serves the same work under the same rules. A target with a
-provider never consults the budget.
+A task that must not block never reaches the suspend provider. The reference
+lets such a task switch only to ready threads of its own instance, and it traps
+when none remains. Wasmtime does the same. The block of such a task therefore
+always runs as a nested turn limited to its own instance, and it fails with the
+cannot-block cause when that turn cannot progress. This holds on every target,
+with or without a provider.
+
+A task that can block uses the provider when the target has one. The provider
+suspends the thread and ends the turn, as [PDD018] states. The driver's turn
+then serves the same work under the same rules. A block that the provider serves
+never consults the budget.
 
 ### The One Budget
 
@@ -309,8 +321,8 @@ The rules of the protocol:
   [PDD018] and runs from inside the trampoline. That is the nested turn
   restricted to the switch slot. The reference resumes the callee's thread
   before the lower returns, and the corpus reads `STARTED` right after a call
-  whose gate was open. A suspend provider suspends the caller instead and lets
-  the driver run the item.
+  whose gate was open. When the caller can block, a suspend provider suspends it
+  instead and lets the driver run the item.
 - The gate holds the item as [PDD019] states. A callback export and a
   synchronous export of an async-typed function need the exclusive thread of
   their instance. A held item leaves the subtask in `STARTING`, and the item
@@ -547,8 +559,10 @@ The translator accepts what this design builds and refuses the rest with
 
 The adapters of Wasmtime 49 import no may-block global. The may-not-suspend flag
 of the instance record of [PDD018] carries that state. The enter intrinsic sets
-it for a synchronous call between components, a host call into a sync-typed
-export sets it for the length of the call, and each clears it on exit.
+it for a synchronous call between components. A host call into a sync-typed
+export sets it for the length of the call. A resource destructor sets it on its
+defining instance for the length of the destructor, as Wasmtime enters a
+destructor as a synchronous call. Each clears the flag on exit.
 
 ## Error Model Growth
 
@@ -561,8 +575,8 @@ export sets it for the length of the call, and each clears it on exit.
   returns a result.
 - The nested turn's failures are the existing causes under the revised rules:
   deadlock on idle, stack switch needed on a pending host task, cannot block
-  when a sync-typed call is in progress, and stack switch needed once the seam's
-  budget runs out.
+  when a task that must not block is in progress, with or without a provider,
+  and stack switch needed once the seam's budget runs out.
 - `subtask.drop` on an undelivered resolution is the subtask-not-resolved cause
   [PDD018] already defines, with Wasmtime's message.
 
@@ -752,9 +766,11 @@ The nested turn follows its five rules. `drop-subtask.wast` and
 `wait-forever.wast`, `wait-forever2.wast`, `backpressure-deadlock.wast`, and the
 eighth case of the Component Model `reentrance.wast` prove the deadlock cause on
 idle. The second directive of `dont-block-start.wast` proves the cannot-block
-cause. Repository tests prove the stack-switch cause with a host task pending,
-that a sync-typed task's block runs only items of its own instance, and that a
-nested turn can open another.
+cause. Repository tests prove that a resource destructor that blocks fails with
+the cannot-block cause, and that a task that must not block never reaches a
+suspend provider. Repository tests prove the stack-switch cause with a host task
+pending, that a sync-typed task's block runs only items of its own instance, and
+that a nested turn can open another.
 
 The seam's budget ends a wait the store never serves. `async-calls-sync.wast`
 and `reenter-during-yield.wast` reach it from their two shapes, the spin-waiting
