@@ -1,17 +1,93 @@
 #!/usr/bin/env bash
 # Regenerates every fixture under this directory from its sources. The
-# `fixtures` menu command runs this script with the flake's `wasm-tools`
-# and `wac` on the PATH, so the outputs are reproducible byte for byte.
+# `fixtures` menu command runs this script with the flake's `wasm-tools`,
+# `wac`, and Rust toolchain on the PATH, so a rerun on the same system
+# reproduces every output byte for byte. The fixtures README records
+# what that claim covers.
 #
-# Each fixture directory holds a WIT package, one core module in WAT per
-# world, and `assertions.wast`. This script builds each core module into
-# a component with `wasm-tools component embed` + `wasm-tools component
-# new`, composes with `wac plug` where a fixture has a socket, and writes
-# `<fixture>.wast` next to the directory: the final component as a
-# `(component binary ...)` directive followed by the assertions. The
-# conformance harness runs those `.wast` files like the vendored corpora.
+# A fixture directory holds a WIT package and either one core module in
+# WAT per world or one Rust crate per component. A WAT fixture becomes a
+# component with `wasm-tools component embed` + `wasm-tools component
+# new`; a Rust one is built by `cargo` and `wasm-tools component new`
+# (see `rust_components`). Either kind composes with `wac plug` where it
+# has a socket. The script writes `<fixture>.wast` next to the
+# directory: the final component as a `(component binary ...)` directive
+# followed by the hand-written `assertions.wast`. The conformance
+# harness runs those `.wast` files like the vendored corpora.
 set -euo pipefail
 cd "$(dirname "$0")"
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+cargo_home=${CARGO_HOME:-$HOME/.cargo}
+# The Rust toolchain ships the standard library's sources, and a panic
+# in `alloc` or `core` names them by absolute path. On Nix that path
+# carries a store hash that differs per platform and per nixpkgs
+# revision, so it is remapped like the other two roots below.
+sysroot=$(rustc --print sysroot)
+
+# Build every component of a fixture that a language toolchain
+# compiles rather than a hand-written WAT. Such a fixture holds its WIT
+# under `wit/` and one directory per component, and its cargo metadata
+# is spelled `cargo-workspace.toml`, `cargo-lock.toml`, and
+# `<component>/cargo-manifest.toml` rather than `Cargo.toml` and
+# `Cargo.lock`: the Nix source filter carries everything under `rust/`
+# into the polyfill workspace's dependency bundle, and a manifest it
+# finds there invalidates that bundle on every rebuild. This function
+# assembles a cargo workspace under `$TMPDIR` from those files and
+# builds it with the flake's Rust toolchain, leaving one component per
+# member at `$work/<fixture>-<component>.wasm`.
+#
+# `RUSTFLAGS` remaps the build directory, the cargo registry, and the
+# toolchain's sysroot out of the binary, so the output depends on
+# neither where the build ran nor which machine ran it.
+#
+# The guests build for `wasm32-unknown-unknown` rather than for a
+# `wasip2` or `wasip3` target. What these fixtures exercise is the
+# canonical ABI, not a WASI host: nothing in them calls libc, and the
+# binding layer is the same either way — `cabi_realloc` comes from
+# `wit-bindgen-rt` over dlmalloc, and a `wasi:` world still reaches the
+# component level through wit-bindgen's own bindings, so the
+# `wasi-http` guest carries `wasi:http/types@0.3.0` as a component
+# import from a `wasm32-unknown-unknown` build. A `wasip2` target would
+# additionally link the standard library against `wasi:cli`,
+# `wasi:filesystem`, `wasi:io`, and the rest, adding imports no
+# assertion exercises and the polyfill's linker would have to be
+# handed.
+#
+# `wit-bindgen`'s macro writes the component type into a custom
+# section, so `wasm-tools component new` needs no `embed` step.
+rust_components() { # fixture, component...
+  local fixture=$1
+  shift
+  local dir="$work/$fixture" component
+  mkdir -p "$dir"
+  cp -R "$fixture/wit" "$dir/wit"
+  cp "$fixture/cargo-workspace.toml" "$dir/Cargo.toml"
+  cp "$fixture/cargo-lock.toml" "$dir/Cargo.lock"
+  for component in "$@"; do
+    mkdir -p "$dir/$component"
+    cp "$fixture/$component/cargo-manifest.toml" "$dir/$component/Cargo.toml"
+    cp -R "$fixture/$component/src" "$dir/$component/src"
+  done
+  (
+    cd "$dir"
+    CARGO_TARGET_DIR="$dir/target" \
+      RUSTFLAGS="--remap-path-prefix=$work=/fixture --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$sysroot=/rust" \
+      cargo build --locked --release --workspace --target wasm32-unknown-unknown
+  )
+  for component in "$@"; do
+    # `wasm-tools component new` validates its output against the
+    # WebAssembly proposals at phase 4 and later. The asynchronous
+    # component model is not one of them and the `wasi-http` fixture
+    # is built on it, so the encode step skips that check and the
+    # component is validated separately with the feature turned on.
+    wasm-tools component new --skip-validation \
+      "$dir/target/wasm32-unknown-unknown/release/$component.wasm" \
+      -o "$work/$fixture-$component.wasm"
+    wasm-tools validate -f cm-async "$work/$fixture-$component.wasm"
+  done
+}
 
 # Write a component binary as a `(component $name binary "...")`
 # directive, 32 bytes per line so the file diffs line by line.
@@ -26,7 +102,7 @@ binary_directive() { # name, path
 emit_wast() { # fixture, name, binary
   {
     echo ";; Generated by \`fixtures\` from $1/. Do not edit by hand: the"
-    echo ";; sources are the WIT, the WAT, and assertions.wast in that directory."
+    echo ";; sources are the WIT, the guests, and assertions.wast in that directory."
     echo
     binary_directive "$2" "$3"
     echo
@@ -61,6 +137,28 @@ wasm-tools component new composition/socket.core.wasm -o composition/socket.wasm
 rm composition/plug.core.wasm composition/socket.core.wasm
 wac plug --plug composition/plug.wasm composition/socket.wasm -o composition/composed.wasm
 emit_wast composition composed composition/composed.wasm
+
+# rich: three components built by `cargo` and wit-bindgen against a
+# world of records, variants, enums, flags, options, results, nested
+# lists, strings, and two resources. `support` answers the shapes and
+# owns the `tally` resource; `guest` imports it, exports its own
+# `counter` resource, and exports the functions the assertions call;
+# `driver` forwards each of those and drives `counter` from outside
+# the component that defines it. Two `wac plug` steps join them, so
+# every value crosses three component boundaries.
+rust_components rich support guest driver
+wac plug --plug "$work/rich-support.wasm" "$work/rich-guest.wasm" -o "$work/rich-linked.wasm"
+wac plug --plug "$work/rich-linked.wasm" "$work/rich-driver.wasm" -o rich/rich.wasm
+emit_wast rich rich rich/rich.wasm
+
+# wasi-http: one component built by `cargo` and wit-bindgen against
+# the WASI 0.3 packages under `wasi-http/wit/deps/`. It exports
+# `wasi:http/handler@0.3.0` — an `async func` whose request and
+# response carry a `stream<u8>` body and a `future` of trailers — and
+# `drain`, the same machinery in a signature a directive can call.
+rust_components wasi-http handler
+cp "$work/wasi-http-handler.wasm" wasi-http/handler.wasm
+emit_wast wasi-http handler wasi-http/handler.wasm
 
 # The harness manifest: one `corpus_test!` per `.wast` under the corpus
 # and the table the progress summary reads. A fixture's own directory

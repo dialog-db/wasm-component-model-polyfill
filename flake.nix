@@ -180,6 +180,31 @@
           ];
         };
 
+        # `wac` composes the fixtures. The pinned nixpkgs carries 0.10.0,
+        # which is wrong for that in two ways. It encodes a composition
+        # whose socket names a type from an interface it imports (WIT's
+        # `use` at world level) as a root-level type import with an `eq`
+        # bound — a form the component model does not allow, so the
+        # composed component fails validation. And `wac plug` iterated
+        # its plugs through a `std` `HashMap`, whose order Rust
+        # randomises per run, so a composition with more than one plug
+        # was not byte-stable; upstream `1171a94`, "Make `wac plug`
+        # output deterministic", fixed that after 0.10.1. 0.11.0 carries
+        # both fixes, so it is built here from its own source until
+        # nixpkgs catches up.
+        wac-cli = pkgs.rustPlatform.buildRustPackage (final: {
+          pname = "wac-cli";
+          version = "0.11.0";
+          src = pkgs.fetchFromGitHub {
+            owner = "bytecodealliance";
+            repo = "wac";
+            tag = "v${final.version}";
+            hash = "sha256-nNFdEU0T7Zf9q3boozA0fU+9sCxhnUGf/azVtNesIac=";
+          };
+          cargoHash = "sha256-seLmdg6p644E/XqyCqTGjufMuXkR9PBtoEvjrp664Go=";
+          meta.mainProgram = "wac";
+        });
+
         # Chrome differs by platform: Darwin uses google-chrome (unfree)
         # because chromium is unmaintained there; everything else uses
         # chromium.
@@ -519,13 +544,15 @@
           };
 
           # The real-guest fixtures under the conformance corpus, rebuilt
-          # from their WIT and WAT sources with the flake's pinned
-          # `wasm-tools` and `wac`, so a rebuild is byte-for-byte stable
-          # until one of the tools is bumped on purpose.
+          # from their WIT, WAT, and Rust sources with the flake's pinned
+          # `wasm-tools`, `wac`, and Rust toolchain, so a rerun on the same
+          # system reproduces every output byte for byte until one of the
+          # tools is bumped on purpose. The fixtures README records how far
+          # that claim reaches beyond the machine it was observed on.
           "fixtures" = {
-            description = "Regenerate the conformance fixtures with wasm-tools and wac";
+            description = "Regenerate the conformance fixtures with cargo, wasm-tools, and wac";
             command = ''
-              export PATH=${pkgs.wasm-tools}/bin:${pkgs.wac-cli}/bin:$PATH
+              export PATH=${pkgs.wasm-tools}/bin:${wac-cli}/bin:${rustToolchain}/bin:$PATH
               "$(git rev-parse --show-toplevel)"/rust/wasm-component-model-polyfill/tests/corpus/fixtures/build.sh
             '';
           };
@@ -657,7 +684,7 @@
           # The component toolchain the `fixtures` command runs, exposed so
           # the pinned versions are one `nix build` away.
           wasm-tools = pkgs.wasm-tools;
-          wac = pkgs.wac-cli;
+          wac = wac-cli;
 
           smoke-native = smokeNative;
           smoke-web = smokeWeb;

@@ -1,0 +1,19 @@
+package wcmp:wasi-http@0.1.0;
+
+// `wit/deps/` holds the WASI 0.3 packages this world builds against,
+// vendored verbatim; the fixtures README records the commit.
+
+world handler {
+  /// The interface `wasi:http` released with WASI 0.3: the handler is
+  /// an `async func`, its request and response carry their body as a
+  /// `stream<u8>`, and their trailers as a
+  /// `future<result<option<trailers>, error-code>>`.
+  export wasi:http/handler@0.3.0;
+
+  /// The same body-and-trailers machinery in a signature a `.wast`
+  /// directive can call: no `wasi:http` type appears in it, so the
+  /// assertion beside it turns green on the async lift and the stream
+  /// and future built-ins alone, without a host implementation of
+  /// `wasi:http/types@0.3.0`.
+  export drain: async func(bytes: list<u8>) -> list<u8>;
+}

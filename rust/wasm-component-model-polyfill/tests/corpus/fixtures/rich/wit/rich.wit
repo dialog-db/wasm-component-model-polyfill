@@ -1,0 +1,132 @@
+package wcmp:rich@0.1.0;
+
+/// Every value shape the fixture carries across a component
+/// boundary: records, variants, enums, flags, options, results,
+/// nested lists, and strings.
+interface shapes {
+  record point {
+    x: s32,
+    y: s32,
+  }
+
+  record label {
+    name: string,
+    tags: list<string>,
+  }
+
+  variant outline {
+    empty,
+    dot(point),
+    path(list<point>),
+    tagged(label),
+  }
+
+  enum colour {
+    red,
+    green,
+    blue,
+  }
+
+  flags style {
+    bold,
+    italic,
+    underline,
+  }
+
+  record drawing {
+    outline: outline,
+    colour: colour,
+    style: style,
+    title: option<string>,
+    rows: list<list<u32>>,
+  }
+
+  variant failure {
+    blank,
+    unpaintable(colour),
+  }
+}
+
+/// What the support component provides: the same shapes, and a
+/// resource whose constructor, methods, and destructor run in the
+/// component that defines it while another component holds the
+/// handle.
+interface host-ops {
+  use shapes.{drawing, point, outline, colour, style, failure};
+
+  resource tally {
+    constructor(seed: u32);
+    add: func(amount: u32);
+    total: func() -> u32;
+  }
+
+  transform: func(picture: drawing) -> drawing;
+  measure: func(shape: outline) -> result<point, failure>;
+  describe: func(colour: colour, style: style, title: option<string>) -> string;
+  fold: func(rows: list<list<u32>>) -> list<u32>;
+  tally-drops: func() -> u32;
+}
+
+/// The resource the guest defines: a constructor, two methods, a
+/// static method over two borrows, and a destructor.
+interface counters {
+  resource counter {
+    constructor(start: u32);
+    bump: func(amount: u32) -> u32;
+    value: func() -> u32;
+    sum: static func(first: borrow<counter>, second: borrow<counter>) -> u32;
+  }
+
+  drops: func() -> u32;
+}
+
+/// The component the assertions reach. It holds no logic of its own:
+/// every call it answers is forwarded through the guest, so a value
+/// crosses three component boundaries and back.
+world driver {
+  use shapes.{drawing, point, outline, colour, style, failure};
+
+  import counters;
+  import round-trip: func(picture: drawing) -> drawing;
+  import measure-all: func(shapes: list<outline>) -> list<result<point, failure>>;
+  import paint: func(picture: drawing) -> result<string, failure>;
+  import describe: func(colour: colour, style: style, title: option<string>) -> string;
+  import fold: func(rows: list<list<u32>>) -> list<u32>;
+  import exercise-tallies: func(steps: list<u32>) -> u32;
+  import tally-drops: func() -> u32;
+
+  export round-trip: func(picture: drawing) -> drawing;
+  export measure-all: func(shapes: list<outline>) -> list<result<point, failure>>;
+  export paint: func(picture: drawing) -> result<string, failure>;
+  export describe: func(colour: colour, style: style, title: option<string>) -> string;
+  export fold: func(rows: list<list<u32>>) -> list<u32>;
+  export exercise-tallies: func(steps: list<u32>) -> u32;
+  export tally-drops: func() -> u32;
+  export exercise-counters: func(steps: list<u32>) -> u32;
+  export counter-drops: func() -> u32;
+}
+
+/// The guest under test: it imports the support component's shapes
+/// and resource, and exports its own resource beside the functions
+/// the driver calls.
+world guest {
+  use shapes.{drawing, point, outline, colour, style, failure};
+
+  import host-ops;
+
+  export counters;
+
+  export round-trip: func(picture: drawing) -> drawing;
+  export measure-all: func(shapes: list<outline>) -> list<result<point, failure>>;
+  export paint: func(picture: drawing) -> result<string, failure>;
+  export describe: func(colour: colour, style: style, title: option<string>) -> string;
+  export fold: func(rows: list<list<u32>>) -> list<u32>;
+  export exercise-tallies: func(steps: list<u32>) -> u32;
+  export tally-drops: func() -> u32;
+}
+
+/// The support component: the far side of every shape the guest
+/// imports.
+world support {
+  export host-ops;
+}

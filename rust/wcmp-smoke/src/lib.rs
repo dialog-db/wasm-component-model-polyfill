@@ -1,12 +1,13 @@
 //! The smoke test: one host program that walks the polyfill from the
 //! foundations through a `wac` composition, real-toolchain maps and
-//! fixed-length lists, core modules at the boundary, export
-//! navigation by name, a 64-bit memory, engine configuration, and a
-//! `run_concurrent` entry that waits outside the store,
-//! and reports each step. It runs
-//! as a native binary (`smoke native`) and as a page in the browser
-//! (`smoke web`) from the same source, so a reader can check the
-//! polyfill by reading this file and by running it on both targets.
+//! fixed-length lists, a rich world three real-toolchain components
+//! share, a WASI 0.3 HTTP handler, core modules at the boundary,
+//! export navigation by name, a 64-bit memory, engine configuration,
+//! and a `run_concurrent` entry that waits outside the store, and
+//! reports each step. It runs as a native binary (`smoke native`) and
+//! as a page in the browser (`smoke web`) from the same source, so a
+//! reader can check the polyfill by reading this file and by running
+//! it on both targets.
 //!
 //! Each step is self-contained: it builds its own store, runs a
 //! component, and returns the evidence it observed. A failure in one
@@ -27,7 +28,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use wasm_component_model_polyfill::{
     Component, CoreExternType, Engine, EngineConfig, Error, HostCall, InterfaceIdentifier, Linker,
-    Store, Val, ValueType,
+    Store, Val, ValField, ValueType,
 };
 use wcmp_macros::component;
 
@@ -56,6 +57,22 @@ const MAPS: &[u8] =
 /// and return a `list<u32, 4>` and a `list<u8, 16>`.
 const FIXED_LISTS: &[u8] = include_bytes!(
     "../../wasm-component-model-polyfill/tests/corpus/fixtures/fixed-lists/fixed-lists.wasm"
+);
+
+/// The `rich` fixture: three components `cargo` and wit-bindgen
+/// built against a world of records, variants, enums, flags,
+/// options, results, nested lists, strings, and two resources,
+/// joined by two `wac plug` steps. Every call it answers has crossed
+/// three component boundaries and come back.
+const RICH: &[u8] =
+    include_bytes!("../../wasm-component-model-polyfill/tests/corpus/fixtures/rich/rich.wasm");
+
+/// The `wasi-http` fixture: a WASI 0.3 HTTP handler the same
+/// toolchain built. Its export is an `async func` whose request and
+/// response carry a `stream<u8>` body and a `future` of trailers,
+/// none of which the polyfill lifts yet.
+const WASI_HTTP: &[u8] = include_bytes!(
+    "../../wasm-component-model-polyfill/tests/corpus/fixtures/wasi-http/handler.wasm"
 );
 
 /// A component that exports a core module for the host to take: one
@@ -330,6 +347,12 @@ pub async fn run() -> Vec<Step> {
         Step::run("core modules at the boundary", core_modules(&engine)).await,
         Step::run("export navigation by name", navigation(&engine)).await,
         Step::run("string through a 64-bit memory", memory64(&engine)).await,
+        Step::run("rich world from cargo and wit-bindgen", rich_world(&engine)).await,
+        Step::run(
+            "WASI 0.3 HTTP handler from wit-bindgen (held target)",
+            wasi_http(&engine),
+        )
+        .await,
         Step::run("engine configuration", engine_configuration()).await,
         Step::run(
             "run_concurrent waits outside the store",
@@ -954,4 +977,184 @@ async fn run_concurrent_outside(engine: &Engine) -> Result<String, String> {
          data the closure wrote through the accessor stayed in the store as {:?}",
         store.data().tallies
     ))
+}
+
+/// The `rich` fixture: a world of records, variants, enums, flags,
+/// options, results, nested lists, and strings, and a resource on
+/// each side of an import. Every value crosses three component
+/// boundaries — driver to guest, guest to support, and back — so one
+/// call exercises wit-bindgen's lift and lower code and the
+/// allocator's `cabi_realloc` six times.
+async fn rich_world(engine: &Engine) -> Result<String, String> {
+    let linker: Linker<HostState> = Linker::new(engine);
+    let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
+    let component = Component::new(engine, RICH).await.map_err(fail)?;
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .map_err(fail)?;
+
+    let call = |name: &'static str| {
+        instance
+            .get_func(name)
+            .ok_or_else(|| format!("no `{name}` export"))
+    };
+
+    // An enum, a flags set, an option, and a string back.
+    let described = call("describe")?
+        .call(
+            &mut store,
+            &[
+                Val::Enum("green".to_owned()),
+                Val::Flags(Box::new(["bold".to_owned(), "italic".to_owned()])),
+                Val::Option(Some(Box::new(Val::String("hello".to_owned())))),
+            ],
+        )
+        .await
+        .map_err(fail)?;
+    expect(
+        "describe(green, {bold, italic}, some(\"hello\"))",
+        described.as_ref(),
+        &[Val::String("green[bold,italic] hello".to_owned())],
+    )?;
+
+    // A nested list in, a flat one out.
+    let folded = call("fold")?
+        .call(
+            &mut store,
+            &[Val::List(Box::new([
+                Val::List(Box::new([Val::U32(1), Val::U32(2), Val::U32(3)])),
+                Val::List(Box::new([Val::U32(10)])),
+            ]))],
+        )
+        .await
+        .map_err(fail)?;
+    expect(
+        "fold([[1, 2, 3], [10]])",
+        folded.as_ref(),
+        &[Val::List(Box::new([
+            Val::U32(6),
+            Val::U32(10),
+            Val::U32(16),
+        ]))],
+    )?;
+
+    // Both arms of a `result`, one of them carrying a variant.
+    let point = |x: i32, y: i32| {
+        Val::Record(Box::new([
+            ValField {
+                name: "x".to_owned(),
+                value: Val::S32(x),
+            },
+            ValField {
+                name: "y".to_owned(),
+                value: Val::S32(y),
+            },
+        ]))
+    };
+    let measured = call("measure-all")?
+        .call(
+            &mut store,
+            &[Val::List(Box::new([
+                Val::Variant {
+                    discriminant: "dot".to_owned(),
+                    payload: Some(Box::new(point(3, -4))),
+                },
+                Val::Variant {
+                    discriminant: "empty".to_owned(),
+                    payload: None,
+                },
+            ]))],
+        )
+        .await
+        .map_err(fail)?;
+    expect(
+        "measure-all([dot(3, -4), empty])",
+        measured.as_ref(),
+        &[Val::List(Box::new([
+            Val::Result(Ok(Some(Box::new(point(3, -4))))),
+            Val::Result(Err(Some(Box::new(Val::Variant {
+                discriminant: "blank".to_owned(),
+                payload: None,
+            })))),
+        ]))],
+    )?;
+
+    // The support component's resource, constructed and dropped by
+    // the guest, and the guest's own resource, constructed and
+    // dropped by the driver. Each destructor runs in the component
+    // that defines it, and each count is read back through it.
+    let steps =
+        |values: &[u32]| Val::List(values.iter().copied().map(Val::U32).collect::<Box<[_]>>());
+    let tallied = call("exercise-tallies")?
+        .call(&mut store, &[steps(&[1, 2, 3])])
+        .await
+        .map_err(fail)?;
+    expect(
+        "exercise-tallies([1, 2, 3])",
+        tallied.as_ref(),
+        &[Val::U32(106)],
+    )?;
+    let tally_drops = call("tally-drops")?
+        .call(&mut store, &[])
+        .await
+        .map_err(fail)?;
+    expect("tally-drops", tally_drops.as_ref(), &[Val::U32(2)])?;
+
+    let counted = call("exercise-counters")?
+        .call(&mut store, &[steps(&[5, 7, 9])])
+        .await
+        .map_err(fail)?;
+    expect(
+        "exercise-counters([5, 7, 9])",
+        counted.as_ref(),
+        &[Val::U32(28)],
+    )?;
+    let counter_drops = call("counter-drops")?
+        .call(&mut store, &[])
+        .await
+        .map_err(fail)?;
+    expect("counter-drops", counter_drops.as_ref(), &[Val::U32(2)])?;
+
+    Ok("every shape crossed three component boundaries; both \
+        destructors ran twice"
+        .to_owned())
+}
+
+/// The feature the polyfill names when it refuses the `wasi-http`
+/// handler. The handler's request and response carry a
+/// `future<result<option<trailers>, error-code>>`, and the pass that
+/// projects the component's declared types meets that before any
+/// other missing piece, so it is the first of the several refusals a
+/// WASI 0.3 handler would collect.
+/// `tests/corpus/expected-failures.txt` records the same text for the
+/// fixture's definition directive.
+const WASI_HTTP_REFUSAL: &str = "`future<T>` values";
+
+/// The `wasi-http` fixture holds a target rather than a result: the
+/// polyfill refuses the component today, so the step asserts that
+/// exact refusal, as `tests/corpus/expected-failures.txt` does for the
+/// fixture's directives. Matching the feature rather than any error
+/// keeps an unrelated decode bug from passing as the expected
+/// rejection. When the async lift, the stream and future built-ins,
+/// `error-context`, and the task built-ins land, the component
+/// translates and this step fails until someone gives it the call the
+/// fixture's assertions describe.
+async fn wasi_http(engine: &Engine) -> Result<String, String> {
+    match Component::new(engine, WASI_HTTP).await {
+        Ok(_) => Err("the polyfill now translates the handler: give this step \
+                      the call `fixtures/wasi-http/assertions.wast` describes, \
+                      and take the fixture off the expected-failure list"
+            .to_owned()),
+        Err(Error::Unsupported { feature }) if feature == WASI_HTTP_REFUSAL => Ok(format!(
+            "the polyfill refuses the component for {WASI_HTTP_REFUSAL}, as the \
+             fixture's expected failure records; a WASI 0.3 handler needs the \
+             async lift, the stream and future built-ins, `error-context`, and \
+             the task built-ins before it translates"
+        )),
+        Err(other) => Err(format!(
+            "the polyfill refused the handler, but not for {WASI_HTTP_REFUSAL} \
+             as `tests/corpus/expected-failures.txt` records: {other}"
+        )),
+    }
 }

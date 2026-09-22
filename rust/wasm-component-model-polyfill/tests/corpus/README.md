@@ -39,10 +39,11 @@ could wait. An exception thrown in a callee reaches the host as the
 trap the synchronous baseline gives it.
 
 The directive that first meets what is missing is an expected failure
-of category `deferred-feature`, for one of seven reasons: a call whose
+of category `deferred-feature`, for one of eight reasons: a call whose
 callee can be released only by a caller that is on the stack, which
-needs a stack switch, a future or stream built-in, the stackful lift, a
-thread built-in other than `thread.yield`, cancellation, an error
+needs a stack switch, a future or stream built-in, a `future<T>` or
+`stream<T>` value in a type the component declares, the stackful lift,
+a thread built-in other than `thread.yield`, cancellation, an error
 context, or the rules that decide which trap poisons an instance. Most
 of the rest is `cascade`: a component definition that fails leaves its
 name unbound and no instance current, so every later directive in the
@@ -100,21 +101,16 @@ test), and writes both as JSON to `$CARGO_TARGET_DIR/conformance/`.
 ## Fixtures
 
 `fixtures/` holds components built with the component toolchain rather
-than written as `.wast` by hand. The `fixtures` menu command runs
-`fixtures/build.sh` with the flake's pinned `wasm-tools` and `wac` and
-regenerates every output byte for byte, including the harness manifest.
-Each fixture directory holds the sources; the `.wast` next to it is
-generated and runs under the harness like the vendored corpora.
-
-| Fixture       | Sources                                                                       | Build                                                                       |
-| ------------- | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `guest`       | `guest/guest.wit` (world `guest`), `guest/guest.wat`                          | `wasm-tools component embed --world guest`, then `wasm-tools component new` |
-| `composition` | `composition/math.wit` (worlds `plug` and `socket`), `plug.wat`, `socket.wat` | each world as above, then `wac plug --plug plug.wasm socket.wasm`           |
-| `maps`        | `maps/maps.wit` (world `maps`), `maps/maps.wat`                               | as `guest`                                                                  |
-| `fixed-lists` | `fixed-lists/fixed-lists.wit` (world `fixed-lists`), `fixed-lists.wat`        | as `guest`                                                                  |
-
-`build.sh` records the exact commands. The `.wasm` binaries are checked
-in next to their sources.
+than written as `.wast` by hand: four from a core module in WAT, and
+two — `rich` and `wasi-http` — from Rust crates that `cargo` and
+wit-bindgen build, so the binding layer is the one a real guest
+carries. The `fixtures` menu command runs `fixtures/build.sh` with the
+flake's pinned tools and regenerates every output byte for byte,
+including the harness manifest. Each fixture directory holds the
+sources; the `.wast` next to it is generated and runs under the
+harness like the vendored corpora. `fixtures/README.md` documents each
+fixture, the pinned tools, and what the WASI 0.3 handler still needs
+from the polyfill.
 
 `wast` has no syntax for a `map` value or a fixed-length list value.
 A directive spells a map as a list of two-element tuples, the map's
@@ -132,15 +128,15 @@ conformance` prints the current one):
 | ---------------- | ---------- | ------ | ------ | -------------------------------------------------------------- |
 | `cm`             | 1126       | 1038   | 92.2   | deferred-feature 2, substrate 4, validation 20, cascade 62     |
 | `cm/async`       | 393        | 83     | 21.1   | deferred-feature 44, cascade 266                               |
-| `fixtures`       | 17         | 17     | 100.0  | none                                                           |
+| `fixtures`       | 48         | 45     | 93.8   | deferred-feature 1, cascade 2                                  |
 | `wasmtime`       | 469        | 431    | 91.9   | deferred-feature 2, substrate 8, cascade 28                    |
 | `wasmtime/async` | 387        | 125    | 32.3   | deferred-feature 82, cascade 180                               |
-| total            | 2392       | 1694   | 70.8   | deferred-feature 130, substrate 12, validation 20, cascade 536 |
+| total            | 2423       | 1722   | 71.1   | deferred-feature 131, substrate 12, validation 20, cascade 538 |
 
 The browser's summary differs by the nine lines of
 `expected-failures.web.txt`, which move nine passing directives into
 `substrate`: `cm/async` passes 82 (20.9%), `wasmtime` 425 (90.6%),
-`wasmtime/async` 123 (31.8%), and the total is 1685 (70.4%) with
+`wasmtime/async` 123 (31.8%), and the total is 1713 (70.7%) with
 substrate 21. Every other cell is the same.
 
 The `async` rows still hold the pass rate down, though the asynchronous
@@ -149,11 +145,11 @@ directives into the passing column. The polyfill runs a host call into
 a callback export, the task built-ins that export uses, all four
 combinations of lift and lower between two components, either lower of
 a host `async` function, and the reentrance the reference allows, but
-the seven reasons above cover most of what those directories still
+the eight reasons above cover most of what those directories still
 exercise. Each component those directories define that the polyfill
 rejects is a `deferred-feature` failure, and every later directive in
 the same file that names it is a `cascade` one, which is why the two
-async rows together hold 446 of the 536 cascade lines, while `cm` and
+async rows together hold 446 of the 538 cascade lines, while `cm` and
 `wasmtime` alone pass at 92.2% and 91.9%. Seventeen files that held
 expected failures now pass whole: `cm/async/cross-abi-calls.wast`,
 `cm/async/deadlock.wast`, `cm/async/dont-block-start.wast`,
