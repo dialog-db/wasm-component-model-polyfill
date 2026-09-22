@@ -14,7 +14,10 @@ The review of card `0ed715` accepted the benchmark suite (`rust/wcmp-bench`) and
 - [ ] Unit tests pin the median, the percentiles, the spread and the JSON report's shape.
 - [ ] `tests all` runs every benchmark once on both targets with a one-sample plan and fails if any benchmark fails.
 - [ ] The calibration batch is described as it behaves, and a report marks a sample that hit the batch ceiling below the clock floor.
-- [ ] The WebDriver plumbing is one shared Python module used by the smoke check and the bench runner.
+- [ ] The WebDriver plumbing is shared by the smoke check and the bench runner rather than duplicated.
 - [ ] A `Plan` cannot reach `Run` unvalidated.
 - [ ] `lint` passes and `tests all` is green on both targets with the conformance summary unchanged.
 
+
+## Review notes
+- 2026-09-22T19:30:13Z **this card's premise moved under it.** Commit `dfc1083` deleted `rust/wcmp-smoke/web/check.py` and `web/serve.py` and replaced them with `web/check.sh`, a curl-driven WebDriver script served by static-web-server, while the bench runner still carries `rust/wcmp-bench/web/run.py` in Python. The duplication this card was filed for (identical `free_port`/`serve`/`wait_for_port`/`request` helpers and chromedriver session dance) is therefore no longer two copies of the same Python — it is now one shell script and one Python script doing the same job in different languages. Decide which one the project keeps before sharing anything; the criterion above no longer says Python.
