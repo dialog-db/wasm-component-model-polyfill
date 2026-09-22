@@ -195,10 +195,15 @@ async fn it_leaves_the_store_as_it_found_it_when_a_resource_runtime_does_not_lin
             name: "nothing-is-registered-here".to_owned(),
         }],
     };
-    let mut context = store.internal().context();
-    let error = match crate::executor::instantiate(&works, &mut context, &linker, &resolution) {
-        Ok(_) => panic!("the resource import resolves to no registration"),
-        Err(error) => error,
+    // The context borrows the store, so it is held in a block of its
+    // own: the borrow ends with the block, and the records are read
+    // through the store again afterwards.
+    let error = {
+        let mut context = store.internal().context();
+        match crate::executor::instantiate(&works, &mut context, &linker, &resolution) {
+            Ok(_) => panic!("the resource import resolves to no registration"),
+            Err(error) => error,
+        }
     };
     assert!(
         matches!(error, Error::Link(_)),

@@ -266,23 +266,56 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// lifts the destructor as a synchronous function of one `u32`
     /// parameter and lowers a call to it, whoever released the
     /// handle. The thread's slots start at zero and end with it.
+    ///
+    /// A locally-defined resource's destructor is guest code, so it
+    /// runs inside a turn, which is where guest code runs. The turn
+    /// takes the waker of the turn the release is already inside,
+    /// and a waker that does nothing when the host released the
+    /// handle from outside every turn, which is the case for a host
+    /// that only drops handles. A host task the destructor starts
+    /// and leaves pending therefore counts as woken, and the next
+    /// turn of any driver polls it again.
+    ///
+    /// Two rules follow from the turn, and they are the rules every
+    /// other piece of guest work gets. A driver entered from inside
+    /// the destructor fails with the recursive-driver cause, because
+    /// [`turn_in_flight`](Self::turn_in_flight) is true for as long
+    /// as the destructor runs. A destructor that blocks on a host
+    /// task through a synchronous lower blocks through the suspend
+    /// seam, whose nested turns nest in this one, and a task that
+    /// never resolves fails the release with the cause the seam
+    /// selects — the stack-switch cause while no target fills the
+    /// seam's provider slot.
+    ///
+    /// A host resource's destructor is the host's own closure rather
+    /// than guest code. It reaches the store's host data and nothing
+    /// else, so it runs outside a turn, as the host call that
+    /// released the handle does.
     fn resource_drop(&mut self, handle: ResourceHandle) -> Result<()> {
         let rep = self.store_data().remove_host_handle(handle)?;
         let Some(destructor) = self.store_data().destructor(handle.type_id()) else {
             return Ok(());
         };
         let tables = self.tables_handle();
-        let _call = BoundaryCall::destructor(&tables, destructor.instance())?;
+        let instance = destructor.instance();
         match destructor {
-            ResourceDestructor::Host(body) => body(self.data_mut(), rep),
+            ResourceDestructor::Host(body) => {
+                let _call = BoundaryCall::destructor(&tables, instance)?;
+                body(self.data_mut(), rep)
+            }
             ResourceDestructor::Local { function: slot, .. } => {
-                let function = slot
-                    .lock()
-                    .map_err(|_| Error::internal("resource destructor slot poisoned"))?
-                    .clone();
-                if let Some(function) = function {
+                let waker = self.active_waker();
+                self.run_in_turn(&waker, move |store| {
+                    let _call = BoundaryCall::destructor(&tables, instance)?;
+                    let function = slot
+                        .lock()
+                        .map_err(|_| Error::internal("resource destructor slot poisoned"))?
+                        .clone();
+                    let Some(function) = function else {
+                        return Ok(());
+                    };
                     function
-                        .call(&mut self.runtime, &[RuntimeVal::I32(rep as i32)], &mut [])
+                        .call(&mut store.runtime, &[RuntimeVal::I32(rep as i32)], &mut [])
                         .map_err(|err| {
                             // A destructor is guest code and may call
                             // an import; on the web target a call of
@@ -307,8 +340,8 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                                 })
                             })
                         })?;
-                }
-                Ok(())
+                    Ok(())
+                })?
             }
         }
     }
