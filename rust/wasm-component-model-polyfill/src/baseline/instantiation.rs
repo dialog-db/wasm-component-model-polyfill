@@ -200,7 +200,6 @@ async fn it_leaves_the_store_as_it_found_it_when_a_resource_runtime_does_not_lin
         Ok(_) => panic!("the resource import resolves to no registration"),
         Err(error) => error,
     };
-    drop(context);
     assert!(
         matches!(error, Error::Link(_)),
         "the resource runtime is what failed to link, got {error:?}"
