@@ -713,8 +713,8 @@ fn invoke_trampoline<T: 'static>(
             // well.
             HostFuncKind::Concurrent(start) => {
                 let mut store = StoreContext::new(store_ctx.as_context_mut());
-                let accessor: Accessor<T> = Accessor::new(store.id());
-                let waker = store.active_waker();
+                let accessor: Accessor<T> = Accessor::new(store.internal().id());
+                let waker = store.internal().active_waker();
                 let started = {
                     let _poll = PollScope::enter(&mut store, &waker);
                     start(&accessor, lifted)
