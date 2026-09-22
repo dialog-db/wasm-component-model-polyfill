@@ -63,6 +63,12 @@
 //! subtask event that `waitable-set.wait` and `waitable-set.poll`
 //! deliver.
 //!
+//! The call that produces that future runs inside a poll scope of the
+//! store, so the registration's closure reaches the store through the
+//! accessor it is handed before the future exists. That is how a host
+//! carries a piece of the store into an `async` block, which borrows
+//! nothing: the value is read out in the closure and moved in.
+//!
 //! The opposite pairing — a concurrent registration reached through
 //! a *synchronous* lower — is reachable, because the two axes move
 //! separately: the link rule holds a concurrent registration to an
@@ -103,7 +109,8 @@ use crate::linker::{HostCall, HostFuncFuture, HostFuncKind, HostResource};
 
 use super::ResourceDestructor;
 use crate::concurrency::{
-    Accessor, CallStatus, HostTask, InstanceId, LowerKind, Scope, SubtaskId, SubtaskState,
+    Accessor, CallStatus, HostTask, InstanceId, LowerKind, PollScope, Scope, SubtaskId,
+    SubtaskState,
 };
 use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime, ResourceTypeId, TableId};
 use crate::store::{StoreContext, StoreData};
@@ -688,9 +695,27 @@ fn invoke_trampoline<T: 'static>(
             // the future outlives this frame: the store owns it and
             // polls it, and it reaches the store again only inside a
             // poll.
+            //
+            // That run is itself a poll of the store, so it happens
+            // inside a scope of its own. A registration whose closure
+            // reads the host data before it builds its future — the
+            // plain way to carry a piece of the store into an `async`
+            // block — reaches the store through the token it is
+            // handed, exactly as the future reaches it from a later
+            // poll; without the scope such a reach would find an
+            // empty slot and fail. The waker is the running turn's,
+            // or one that does nothing when no turn is running, which
+            // is the waker the first poll of the host task takes as
+            // well.
             HostFuncKind::Concurrent(start) => {
-                let accessor: Accessor<T> = Accessor::new(store_ctx.data().id());
-                HostOutcome::Future(start(&accessor, lifted))
+                let mut store = StoreContext::new(store_ctx.as_context_mut());
+                let accessor: Accessor<T> = Accessor::new(store.id());
+                let waker = store.active_waker();
+                let started = {
+                    let _poll = PollScope::enter(&mut store, &waker);
+                    start(&accessor, lifted)
+                };
+                HostOutcome::Future(started)
             }
         };
         Ok((outcome, return_area_ptr))

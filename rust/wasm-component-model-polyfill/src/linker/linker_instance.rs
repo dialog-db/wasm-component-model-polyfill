@@ -224,12 +224,14 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
     /// The accessor is a token, not a borrow. It carries the store's
     /// identity, borrows nothing, and reaches the store only inside
     /// the closure [`Accessor::with`] runs, and only while a poll of
-    /// that store is running. A future therefore clones the token it
-    /// is handed, holds the clone across its awaits, and reaches the
-    /// store again in a later poll; a value read out of the host data
-    /// must be cloned out of the closure, and a reach made where no
-    /// poll of the store is running fails rather than lending the
-    /// store.
+    /// that store is running. The call of the registration's closure
+    /// is one such poll, and so is every poll of the future it
+    /// answers with: the closure reaches the store before the future
+    /// exists, and the future — which can clone the token and hold
+    /// the clone across its awaits — reaches it again in a later
+    /// poll. A value read out of the host data must be cloned out of
+    /// the reach, and a reach made where no poll of the store is
+    /// running fails rather than lending the store.
     ///
     /// The caller supplies the declared [`FunctionType`] here, as
     /// [`Self::func_new`] does; the resolver checks it against the
@@ -285,12 +287,15 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
     /// The accessor is a token, not a borrow. It carries the store's
     /// identity, borrows nothing, and reaches the store only inside
     /// the closure [`Accessor::with`] runs, and only while a poll of
-    /// that store is running. A closure that returns an `async` block
-    /// therefore clones the token it is handed into the block, awaits,
-    /// and reaches the host data through the clone on the other side
-    /// of the await; a value read out of the host data must be cloned
-    /// out of the closure, and a reach made where no poll of the store
-    /// is running fails rather than lending the store.
+    /// that store is running. The call of the registration's closure
+    /// is one such poll, and so is every poll of the future it
+    /// answers with: a closure that returns an `async` block reaches
+    /// the store before the block exists and moves what it read in,
+    /// and the block, which can hold a clone of the token across its
+    /// awaits, reaches the store again on the other side of an await.
+    /// A value read out of the host data must be cloned out of the
+    /// reach, and a reach made where no poll of the store is running
+    /// fails rather than lending the store.
     ///
     /// The vector the call answers with is the closure's return, so
     /// its length is the declared result's by construction: one value

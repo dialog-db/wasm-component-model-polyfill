@@ -13,11 +13,12 @@ use super::poll_scope::PollScope;
 /// borrows nothing, so it has no lifetime and a future can own one
 /// and hold it across its awaits. What it reaches, it reaches
 /// through the slot the store leaves itself in while a poll is
-/// running: around each poll of the `run_concurrent` closure, and
-/// around each poll of a host task's body, the store puts its
-/// context in the slot and takes it out again before the poll
-/// returns. [`Accessor::with`] takes the store out of that slot,
-/// runs a closure against it, and puts it back.
+/// running: around each poll of the `run_concurrent` closure, around
+/// each poll of a host task's body, and around the call of a
+/// concurrent registration's closure that produces such a body, the
+/// store puts its context in the slot and takes it out again before
+/// the poll returns. [`Accessor::with`] takes the store out of that
+/// slot, runs a closure against it, and puts it back.
 ///
 /// Everything the store offers reaches a body this way: the host
 /// data and the resource table a synchronous host function reaches

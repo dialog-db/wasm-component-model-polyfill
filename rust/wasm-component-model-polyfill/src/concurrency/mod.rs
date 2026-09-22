@@ -28,7 +28,10 @@
 //! inside a [`PollScope`] of its own and hands it an [`Accessor`],
 //! so a body that has to read the host data reaches it the way a
 //! `run_concurrent` closure does — and, because the accessor
-//! borrows nothing, can hold one across its awaits.
+//! borrows nothing, can hold one across its awaits. The call that
+//! produces the body runs inside such a scope too, so a registration
+//! that reads the host data before it builds its future reaches the
+//! store there as well.
 //! [`CallStatus`] is the word the call returns to the guest, and
 //! [`LowerKind`] is which lowering the guest called through.
 //!

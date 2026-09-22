@@ -34,6 +34,15 @@
 //! the subtask event; a guest that drops the owning handle before
 //! then traps as PDD014 states.
 //!
+//! The registration's closure runs inside a poll of the store, so it
+//! reaches the store through the token it is handed before its future
+//! exists at all. That is how a host carries a piece of the store
+//! into an `async` block, which borrows nothing: the value is read
+//! out in the closure and moved in. The scope the closure runs under
+//! is a whole poll, so a reach made from inside another reach there
+//! is refused with the recursive-driver cause, as it is from inside a
+//! host task's poll.
+//!
 //! Three more components take the same reading at the lower's other
 //! edges. One lowers a *sync-typed* import with the `async` option,
 //! which is the pairing that would reach a synchronous registration
@@ -54,7 +63,7 @@ use core::task::{Context, Poll};
 
 use wasm_component_model_polyfill::{
     Accessor, Component, Engine, Error, Func, FunctionParameter, FunctionType, HostResource,
-    Instance, Linker, PrimitiveType, ResourceType, Store, Val, ValueType,
+    Instance, Linker, PrimitiveType, ResourceType, SchedulerCause, Store, Val, ValueType,
 };
 use wcmp_macros::component;
 
@@ -515,6 +524,30 @@ where
     instantiate(CALLS_A_HOST_ASYNC_FUNCTION, register).await
 }
 
+/// Instantiate [`CALLS_A_HOST_ASYNC_FUNCTION`] in a fresh store
+/// holding `data`, with `register` registering the `answer` import.
+///
+/// Every other store in this file carries `()`, because nothing else
+/// here reads the store from a registration. A registration that does
+/// read it needs a store with something in it to find.
+async fn caller_holding<T: 'static>(
+    data: T,
+    register: impl FnOnce(&mut Linker<T>),
+) -> (Store<T>, Instance) {
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, CALLS_A_HOST_ASYNC_FUNCTION)
+        .await
+        .expect("component parses");
+    let mut linker: Linker<T> = Linker::new(&engine);
+    register(&mut linker);
+    let mut store: Store<T> = Store::new(&engine, data).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    (store, instance)
+}
+
 /// Instantiate `binary` in a fresh store, with `register` making
 /// every host registration its imports name.
 async fn instantiate<F>(binary: &[u8], register: F) -> (Store<()>, Instance)
@@ -772,6 +805,116 @@ async fn it_starts_a_subtask_for_an_untyped_registration_whose_future_is_pending
         (STARTED_AT_ONE, 2, SUBTASK_RETURNED_AT_ONE),
         "the untyped entry's pending future reads back exactly as the typed \
          entry's does"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_reaches_the_host_data_from_a_typed_registrations_closure() {
+    // The closure reads the store before it builds its future. That
+    // is how a host carries a piece of the store into an `async`
+    // block, which borrows nothing and so cannot read the store
+    // itself; the value it needs is read out and moved in. The call
+    // of the closure is a poll of the store, so the token the
+    // closure is handed reaches the store there and then, and the
+    // block is built from what it read.
+    let (mut store, instance) = caller_holding(20u32, |linker| {
+        linker
+            .root()
+            .func_wrap_concurrent("answer", |accessor: &Accessor<u32>, (x,): (u32,)| {
+                let base = accessor.with(|store| *store.data());
+                async move { Ok(x + base?) }
+            });
+    })
+    .await;
+
+    let result = func(&instance, "run")
+        .call(&mut store, &[Val::U32(22)])
+        .await
+        .expect("call run");
+
+    assert_eq!(
+        result.first(),
+        Some(&Val::U32(42)),
+        "the closure read the host data before its future existed, and the \
+         future answered with what it read"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_reaches_the_host_data_from_an_untyped_registrations_closure() {
+    // The same reach through the untyped entry, whose closure is
+    // handed the lifted values and answers with the value vector.
+    let (mut store, instance) = caller_holding(20u32, |linker| {
+        linker.root().func_new_concurrent(
+            "answer",
+            answer_type(),
+            |accessor: &Accessor<u32>, args: Vec<Val>| {
+                let Some(Val::U32(x)) = args.first() else {
+                    panic!("`answer` was given {args:?}");
+                };
+                let x = *x;
+                let base = accessor.with(|store| *store.data());
+                async move { Ok(vec![Val::U32(x + base?)]) }
+            },
+        );
+    })
+    .await;
+
+    let result = func(&instance, "run")
+        .call(&mut store, &[Val::U32(22)])
+        .await
+        .expect("call run");
+
+    assert_eq!(
+        result.first(),
+        Some(&Val::U32(42)),
+        "the untyped entry's closure reads the host data exactly as the typed \
+         entry's does"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_reach_nested_inside_the_closures_own_reach() {
+    // The scope the closure runs under is one poll of the store, so
+    // it carries the whole of the accessor's contract and not only
+    // the reach that succeeds. A second reach made from inside the
+    // first finds the slot the outer reach emptied, and is refused
+    // with the recursive-driver cause exactly as it is from inside a
+    // host task's poll. The cause is written into the host data by
+    // the outer reach, which is the one thing that outlives the call.
+    let (mut store, instance) = caller_holding(String::new(), |linker| {
+        linker.root().func_wrap_concurrent(
+            "answer",
+            |accessor: &Accessor<String>, (x,): (u32,)| {
+                let doubled = accessor.with(|store| {
+                    let nested = accessor
+                        .with(|_store| ())
+                        .expect_err("a reach nested inside a reach is refused")
+                        .to_string();
+                    store.data_mut().push_str(&nested);
+                    x * 2
+                });
+                async move { doubled }
+            },
+        );
+    })
+    .await;
+
+    let result = func(&instance, "run")
+        .call(&mut store, &[Val::U32(21)])
+        .await
+        .expect("call run");
+
+    assert_eq!(
+        result.first(),
+        Some(&Val::U32(42)),
+        "the outer reach ran and the call went through"
+    );
+    assert_eq!(
+        store.data(),
+        &Error::Scheduler(SchedulerCause::RecursiveDriver).to_string(),
+        "the reach nested inside the closure's own reach was refused with the \
+         recursive-driver cause"
     );
 }
 
