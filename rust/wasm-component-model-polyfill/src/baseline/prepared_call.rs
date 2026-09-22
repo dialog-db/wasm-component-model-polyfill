@@ -969,7 +969,7 @@ async fn it_runs_a_prepared_call_under_a_policy_without_unsafe_eval() {
         &arguments,
         &mut results,
     )
-        .expect("a nine-parameter host function runs under the policy");
+    .expect("a nine-parameter host function runs under the policy");
     let RuntimeVal::I32(total) = &results[0] else {
         panic!("the host function declares one `i32` result");
     };
