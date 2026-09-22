@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>wcmp bench</title>
+<style>
+  body { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 2rem; }
+  pre { white-space: pre; overflow-x: auto; }
+</style>
+<h1>Wasm Component Model Polyfill benchmarks</h1>
+<p>The same suite as <code>bench native</code>, compiled to <code>wasm32-unknown-unknown</code> and measured here against <code>performance.now()</code>. Run controls go in the query string, for example <code>?samples=5&amp;warmup=2</code>.</p>
+<pre id="out">measuring…</pre>
+<script type="module">
+  import init from "./wcmp-bench.js";
+  const out = document.getElementById("out");
+  // The suite reports once, at the end: a benchmark that shared the
+  // page with a DOM update would be measuring the update too.
+  window.report = (table, json) => {
+    out.textContent = table;
+    window.wcmpBenchReport = json;
+    console.log(table);
+  };
+  // A suite that dies says so, so that the driver fails now rather
+  // than waiting out its budget for a report that is not coming.
+  const failed = (reason) => {
+    out.textContent = String(reason);
+    window.wcmpBenchReport = JSON.stringify({ error: String(reason) });
+  };
+  window.addEventListener("error", (event) => failed(event.message ?? event.error));
+  window.addEventListener("unhandledrejection", (event) => failed(event.reason));
+  await init();
+</script>

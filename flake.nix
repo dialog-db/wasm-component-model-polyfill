@@ -213,6 +213,7 @@
             "CLAUDE.md"
             "project/design/**/*.md"
             "project/kanban/README.md"
+            "rust/wcmp-bench/README.md"
           ];
           exclude = project.markdownExclude;
         };
@@ -392,6 +393,38 @@
             };
           };
 
+          # The benchmark suite. Nix builds the suite; the measurement
+          # itself runs here rather than inside a derivation, because a
+          # derivation's output is cached and a cached benchmark result
+          # is a stale one. Both lanes write their JSON report under the
+          # cargo target directory, as the conformance summary does, and
+          # both take `key=value` run controls after the leaf, for
+          # example `bench native samples=50 warmup=4`.
+          "bench" = {
+            description = "Measure the polyfill on one target with the benchmark suite";
+            subcommands = {
+              native = {
+                description = "Run the benchmark suite on ${system}";
+                command = ''
+                  report="''${CARGO_TARGET_DIR:-target}/bench/native.json"
+                  mkdir -p "$(dirname "$report")"
+                  binary=$(nix build --no-link --print-out-paths .#bench-native)
+                  WCMP_BENCH_REPORT="$report" "$binary"/bin/wcmp-bench "$@"
+                '';
+              };
+              web = {
+                description = "Run the same suite in headless Chrome, timed with performance.now()";
+                command = ''
+                  report="''${CARGO_TARGET_DIR:-target}/bench/web.json"
+                  mkdir -p "$(dirname "$report")"
+                  site=$(nix build --no-link --print-out-paths .#bench-web)
+                  ${pkgs.python3}/bin/python3 ${./rust/wcmp-bench/web/run.py} \
+                    "$site" "$report" "$@"
+                '';
+              };
+            };
+          };
+
           "tests" = {
             description = "Run the test suites from Nix-built archives";
             subcommands = {
@@ -550,6 +583,31 @@
               python3 ${./rust/wcmp-smoke/web/check.py} ${smokeWeb} "$native" $out/report.txt
             '';
 
+        # The benchmark suite (`rust/wcmp-bench`): one binary that
+        # measures the polyfill, natively and, through the same
+        # `wasm-bindgen` path the smoke page takes, in a browser. The
+        # `bench` menu command builds these and then runs them; a
+        # measurement is never a derivation's output, because that
+        # output would be cached and a cached benchmark is stale.
+        benchNative = buildCrate {
+          pname = "wcmp-bench";
+          version = "0.1.0";
+          cargoExtraArgs = "--package wcmp-bench";
+        };
+        benchWeb = buildWasmCrate {
+          pname = "wcmp-bench-web";
+          version = "0.1.0";
+          cargoExtraArgs = "--package wcmp-bench --bin wcmp-bench";
+          doInstallCargoArtifacts = false;
+          doNotPostBuildInstallCargoBinaries = true;
+          installPhaseCommand = ''
+            mkdir -p $out
+            $WASM_BINDGEN_BIN --target web --no-typescript \
+              --out-dir $out target/wasm32-unknown-unknown/release/wcmp-bench.wasm
+            cp ${./rust/wcmp-bench/web/index.html} $out/index.html
+          '';
+        };
+
         # The polyfill crate itself, as a derivation per (target, profile).
         # Building an `rlib` installs no binary; the store path holds the
         # build log and proves the crate compiles for the target.
@@ -604,6 +662,9 @@
           smoke-native = smokeNative;
           smoke-web = smokeWeb;
 
+          bench-native = benchNative;
+          bench-web = benchWeb;
+
           polyfill-native-debug = polyfillCrate { profile = "dev"; };
           polyfill-native-release = polyfillCrate { profile = "release"; };
           polyfill-web-debug = polyfillCrate {
@@ -649,6 +710,10 @@
           // {
             # The web smoke page must still run: see `smokeWebCheck`.
             smoke-web = smokeWebCheck;
+            # The suite must build for both targets on every check; running
+            # it stays a menu command, so a number is never a cached one.
+            bench-native = benchNative;
+            bench-web = benchWeb;
             # The doctests are not in a nextest archive (nextest does not run
             # them), so they get a derivation of their own: the workspace's
             # `cargo test --doc` against the `dev` dependency bundle.

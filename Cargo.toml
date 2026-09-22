@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "rust/wasm-component-model-polyfill",
+  "rust/wcmp-bench",
   "rust/wcmp-macros",
   "rust/wcmp-smoke",
 ]

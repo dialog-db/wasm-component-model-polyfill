@@ -1,10 +1,12 @@
 //! Procedural macros for the Wasm Component Model Polyfill workspace.
 //!
-//! Three macros live here:
+//! Four macros live here:
 //!
 //! - [`macro@test`] — cross-target attribute that expands to `#[tokio::test]`
 //!   on native, or to the built-in `#[test]` for a synchronous body, and to
 //!   `#[wasm_bindgen_test]` on `wasm32-unknown-unknown`.
+//! - [`macro@bench`] — attribute that turns one benchmark body into the
+//!   descriptors a benchmark suite drives unchanged on either target.
 //! - [`wasm!`] — assemble inline WebAssembly Text Format into a core-module
 //!   byte slice at compile time.
 //! - [`component!`] — assemble inline WebAssembly Text Format into a
@@ -13,7 +15,9 @@
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
-use syn::{ItemFn, LitStr, parse_macro_input};
+use syn::parse::Parser;
+use syn::punctuated::Punctuated;
+use syn::{Expr, ItemFn, Lit, LitStr, MetaNameValue, Token, Visibility, parse_macro_input};
 
 /// Assemble inline WebAssembly Text Format into a core-module binary.
 ///
@@ -94,6 +98,165 @@ pub fn test(attr: TokenStream, item: TokenStream) -> TokenStream {
         #function
     }
     .into()
+}
+
+/// Benchmark attribute.
+///
+/// The attribute marks an `async fn` as one benchmark definition that the
+/// suite's runner drives unchanged on both targets. The body takes the
+/// benchmark's run and returns the suite's `Result<()>`:
+///
+/// ```ignore
+/// #[wcmp_macros::bench(
+///     guest = "the `guest` corpus fixture",
+///     payload = "one u32 in, one u32 out",
+/// )]
+/// async fn u32_call(run: &mut Run) -> Result<()> {
+///     let (mut store, function) = setup().await?;
+///     while run.iterate() {
+///         function.call(&mut store, &[Val::U32(21)]).await?;
+///     }
+///     Ok(())
+/// }
+/// ```
+///
+/// `guest` names the guest the benchmark drives and `payload` the value it
+/// moves; both are required, and both reach the report so that a number has
+/// a meaning. The optional `cases` argument repeats one definition over
+/// several payload sizes, or over several named guests:
+///
+/// ```ignore
+/// #[wcmp_macros::bench(guest = "...", payload = "...", cases = [64, 4096])]
+/// async fn string_roundtrip(run: &mut Run) -> Result<()> {
+///     let size = run.case().number();
+///     // ...
+/// }
+/// ```
+///
+/// The attribute expands to a function of the same name that takes no
+/// arguments and returns one benchmark descriptor per case, so a suite lists
+/// its benchmarks by calling them. A numeric case is named
+/// `<benchmark>/<number>` and a string case `<benchmark>/<name>`; underscores
+/// in the function's name become hyphens.
+#[proc_macro_attribute]
+pub fn bench(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let function = parse_macro_input!(item as ItemFn);
+    match expand_bench(attr.into(), function) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// The `bench` expansion: the benchmark body nested inside the descriptor
+/// function that names it.
+fn expand_bench(attr: TokenStream2, function: ItemFn) -> syn::Result<TokenStream2> {
+    let arguments = Punctuated::<MetaNameValue, Token![,]>::parse_terminated.parse2(attr)?;
+    let mut guest = None;
+    let mut payload = None;
+    let mut cases = Vec::new();
+    for argument in &arguments {
+        let key = argument
+            .path
+            .get_ident()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        match key.as_str() {
+            "guest" => guest = Some(string_argument(&argument.value)?),
+            "payload" => payload = Some(string_argument(&argument.value)?),
+            "cases" => cases = case_arguments(&argument.value)?,
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    &argument.path,
+                    "`#[wcmp_macros::bench]` takes `guest`, `payload`, and `cases`",
+                ));
+            }
+        }
+    }
+    let guest = guest.ok_or_else(|| {
+        syn::Error::new(
+            Span::call_site(),
+            "`#[wcmp_macros::bench]` needs `guest = \"...\"`: the guest the benchmark drives",
+        )
+    })?;
+    let payload = payload.ok_or_else(|| {
+        syn::Error::new(
+            Span::call_site(),
+            "`#[wcmp_macros::bench]` needs `payload = \"...\"`: the value the benchmark moves",
+        )
+    })?;
+    if cases.is_empty() {
+        cases.push(quote!(::wcmp_bench::Case::None));
+    }
+
+    let name = function.sig.ident.to_string().replace('_', "-");
+    let ident = function.sig.ident.clone();
+    let visibility = function.vis.clone();
+    let mut body = function;
+    body.vis = Visibility::Inherited;
+
+    // The body keeps the author's name and the descriptor function takes it
+    // too: an item declared in a block shadows the enclosing one, so the
+    // thunk below reaches the benchmark and not itself.
+    Ok(quote! {
+        #visibility fn #ident() -> ::std::vec::Vec<::wcmp_bench::Benchmark> {
+            #body
+
+            fn thunk(
+                run: &mut ::wcmp_bench::Run,
+            ) -> ::std::pin::Pin<
+                ::std::boxed::Box<
+                    dyn ::std::future::Future<Output = ::wcmp_bench::Result<()>> + '_,
+                >,
+            > {
+                ::std::boxed::Box::pin(#ident(run))
+            }
+
+            ::wcmp_bench::Benchmark::cases(#name, #guest, #payload, &[#(#cases),*], thunk)
+        }
+    })
+}
+
+/// A `key = "..."` argument's string.
+fn string_argument(value: &Expr) -> syn::Result<LitStr> {
+    match value {
+        Expr::Lit(literal) => match &literal.lit {
+            Lit::Str(text) => Ok(text.clone()),
+            other => Err(syn::Error::new_spanned(other, "expected a string literal")),
+        },
+        other => Err(syn::Error::new_spanned(other, "expected a string literal")),
+    }
+}
+
+/// A `cases = [...]` argument's cases: integer literals for payload sizes,
+/// string literals for named guests.
+fn case_arguments(value: &Expr) -> syn::Result<Vec<TokenStream2>> {
+    let Expr::Array(array) = value else {
+        return Err(syn::Error::new_spanned(
+            value,
+            "expected an array of integer or string literals",
+        ));
+    };
+    array
+        .elems
+        .iter()
+        .map(|element| match element {
+            Expr::Lit(literal) => match &literal.lit {
+                Lit::Int(number) => {
+                    let number = number.base10_parse::<u64>()?;
+                    Ok(quote!(::wcmp_bench::Case::Number(#number)))
+                }
+                Lit::Str(text) => Ok(quote!(::wcmp_bench::Case::Name(#text))),
+                other => Err(syn::Error::new_spanned(
+                    other,
+                    "expected an integer or string literal",
+                )),
+            },
+            other => Err(syn::Error::new_spanned(
+                other,
+                "expected an integer or string literal",
+            )),
+        })
+        .collect()
 }
 
 #[proc_macro]

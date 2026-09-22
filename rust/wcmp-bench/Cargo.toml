@@ -1,0 +1,33 @@
+[package]
+name = "wcmp-bench"
+description = "The polyfill's benchmark suite: one definition per benchmark, measured natively and in the browser"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+thiserror = { workspace = true }
+wasm-component-model-polyfill = { workspace = true }
+wcmp-macros = { workspace = true }
+
+# The suite's calls are awaited, so the native runner needs a runtime to
+# drive them on. `time` is not among the features: a benchmark measures
+# work, never a sleep.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+# The browser half reads `performance.now()` off the global the way the
+# polyfill's own scheduler reaches `setTimeout`, so the suite works on a
+# page without a `web-sys` dependency of its own.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+
+# The harness's own tests run on both targets through
+# `#[wcmp_macros::test]`, which needs the browser runner on the web.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = { workspace = true }
