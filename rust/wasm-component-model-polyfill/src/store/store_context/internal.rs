@@ -33,6 +33,7 @@ use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId, TableId};
 use crate::types::ResourceType;
 use crate::value::Val;
 
+use super::super::resource_record::ResourceRecord;
 use super::super::store_data::StoreData;
 use super::super::store_id::StoreId;
 use super::StoreContext;
@@ -115,6 +116,18 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
     /// component in this store has named it.
     pub fn fallback_resource_name(self, type_id: ResourceTypeId, name: ResourceType) {
         self.context.fallback_resource_name(type_id, name);
+    }
+
+    /// What the store knows about `type_id` at this moment, as a
+    /// record an instantiation whose plan fails hands back.
+    pub fn resource_record(self, type_id: ResourceTypeId) -> ResourceRecord {
+        self.context.resource_record(type_id)
+    }
+
+    /// Put back what the store knew about one resource type before
+    /// an instantiation registered it.
+    pub fn restore_resource(self, record: ResourceRecord) {
+        self.context.restore_resource(record);
     }
 
     /// Release a handle the host holds.
@@ -357,6 +370,17 @@ impl<'b, 'a, T: 'static> StoreContextRefInternal<'b, 'a, T> {
     /// when it learned one.
     pub fn resource_type(self, type_id: ResourceTypeId) -> Option<ResourceType> {
         self.context.resource_type(type_id)
+    }
+
+    /// How many resource types the store has a destructor
+    /// registered for.
+    pub fn registered_destructors(self) -> usize {
+        self.context.registered_destructors()
+    }
+
+    /// How many resource types the store has learned a name for.
+    pub fn learned_resource_names(self) -> usize {
+        self.context.learned_resource_names()
     }
 }
 

@@ -26,7 +26,8 @@ use crate::internal::{ComponentInternal, ErrorInternal, LinkerInternal};
 use crate::internal::{InstanceParts, ModuleInternal};
 use crate::linker::{HostFuncKind, ImportBinding, InstanceRegistration, Linker, Resolution};
 use crate::module::Module;
-use crate::resource::{ResourceTableRuntime, ResourceTypeId, TableId};
+use crate::resource::{HandleTables, ResourceTableRuntime, ResourceTypeId, TableId};
+use crate::store::ResourceRecord;
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 use crate::types::ResourceType;
@@ -69,6 +70,128 @@ struct RuntimeItems {
     flags: Vec<InstanceFlags>,
 }
 
+/// The store records one instantiation has added, and what the
+/// store held before it.
+///
+/// An instantiation writes to the store before it can fail. The
+/// instance records come first, because a resource the component
+/// defines names the instance that defines it; the destructors and
+/// the resource names follow, because the trampolines the plan
+/// builds run against them. Both of the plan's own failures come
+/// after that — a start function that traps, and an import the
+/// linker cannot satisfy — and the records they leave would be one
+/// more set in the store for every attempt.
+///
+/// So an instantiation reserves its records through this value and
+/// takes them back when the plan fails. Wasmtime's store keeps what
+/// a failed instantiation left in it, so this is hygiene rather than
+/// parity: no instance of the store reaches a withdrawn record
+/// either way, and an identity the store hands out again names a
+/// record no instance holds.
+struct ReservedRecords {
+    /// The store's records, where the instance records live.
+    tables: Arc<Mutex<HandleTables>>,
+    /// How many instance records the store held before this
+    /// instantiation reserved its own.
+    instances_before: usize,
+    /// The records this instantiation reserved, one per component
+    /// instance of the plan, in the order the plan names them.
+    instances: Vec<InstanceId>,
+    /// What the store knew about each resource type this
+    /// instantiation has registered, from before it registered
+    /// anything for that type.
+    resources: HashMap<ResourceTypeId, ResourceRecord>,
+}
+
+impl ReservedRecords {
+    /// Reserve one instance record per component instance of the
+    /// plan: the entry gate, the backpressure counter, the
+    /// exclusive thread, and the suspend flag a call consults.
+    ///
+    /// The adapters name their instances by the translator's index,
+    /// which the reserved list maps onto the store-wide identity.
+    fn reserve<T: 'static>(store: &mut StoreContext<'_, T>, count: usize) -> Result<Self> {
+        let tables = store.internal().tables_handle();
+        let (instances_before, instances) = {
+            let mut guard = tables
+                .lock()
+                .map_err(|_| internal("resource handle tables lock poisoned"))?;
+            let before = guard.tasks.instances().len();
+            let reserved = (0..count).map(|_| guard.tasks.insert_instance()).collect();
+            (before, reserved)
+        };
+        Ok(Self {
+            tables,
+            instances_before,
+            instances,
+            resources: HashMap::new(),
+        })
+    }
+
+    /// The instance records reserved, by the plan's own index for
+    /// each component instance.
+    fn instances(&self) -> &[InstanceId] {
+        &self.instances
+    }
+
+    /// Register what the store is to know about a resource type
+    /// this instantiation introduces: the destructor to run when a
+    /// handle to it is released, and the name to render beside it.
+    fn register_resource<T: 'static>(
+        &mut self,
+        store: &mut StoreContext<'_, T>,
+        type_id: ResourceTypeId,
+        name: Option<ResourceType>,
+        destructor: ResourceDestructor<T>,
+    ) {
+        self.note(store, type_id);
+        store
+            .internal()
+            .register_resource(type_id, name, destructor);
+    }
+
+    /// Record a label for the store to fall back on for `type_id`
+    /// while no component in the store has named it.
+    fn fallback_resource_name<T: 'static>(
+        &mut self,
+        store: &mut StoreContext<'_, T>,
+        type_id: ResourceTypeId,
+        name: ResourceType,
+    ) {
+        self.note(store, type_id);
+        store.internal().fallback_resource_name(type_id, name);
+    }
+
+    /// Note what the store knows about `type_id` now, unless this
+    /// instantiation has written to it already: a record taken
+    /// after that would hold this instantiation's own registration
+    /// rather than what preceded it.
+    fn note<T: 'static>(&mut self, store: &mut StoreContext<'_, T>, type_id: ResourceTypeId) {
+        self.resources
+            .entry(type_id)
+            .or_insert_with(|| store.internal().resource_record(type_id));
+    }
+
+    /// Take the records back, which is what a failed instantiation
+    /// does: every resource type this instantiation registered goes
+    /// back to what the store knew about it, and the instance
+    /// records leave the store's list.
+    ///
+    /// A poisoned lock leaves the instance records where they are,
+    /// because there is no list left to read or write. The
+    /// registrations go back either way: they are the store's own
+    /// data rather than the records behind the lock.
+    fn withdraw<T: 'static>(self, store: &mut StoreContext<'_, T>) {
+        for (_, record) in self.resources {
+            store.internal().restore_resource(record);
+        }
+        let Ok(mut guard) = self.tables.lock() else {
+            return;
+        };
+        guard.tasks.truncate_instances(self.instances_before);
+    }
+}
+
 /// Drive instantiation of the component's plan against `store`.
 ///
 /// Takes the linker so host-function trampolines can dispatch to the
@@ -78,11 +201,38 @@ struct RuntimeItems {
 /// registration the resolver chose. The linker is borrowed only for
 /// the duration of instantiation; the trampolines hold `Arc` clones
 /// of the closures they need.
+///
+/// The store records the plan needs are reserved before it runs and
+/// taken back when it fails, so a failed instantiation leaves the
+/// store as it found it. See [`ReservedRecords`].
 pub fn instantiate<T: 'static>(
     component: &Component,
     store: &mut StoreContext<'_, T>,
     linker: &Linker<T>,
     resolution: &Resolution,
+) -> Result<Instance> {
+    let mut reserved = ReservedRecords::reserve(store, component.ir().num_component_instances)?;
+    match run_plan(component, store, linker, resolution, &mut reserved) {
+        Ok(instance) => Ok(instance),
+        Err(error) => {
+            reserved.withdraw(store);
+            Err(error)
+        }
+    }
+}
+
+/// Walk the plan against `store`, with the records `reserved` holds
+/// standing in the store for the length of the walk.
+///
+/// Every failure of the walk returns here, and the caller is what
+/// takes the reserved records back: a walk that returns an error has
+/// left the store holding them.
+fn run_plan<T: 'static>(
+    component: &Component,
+    store: &mut StoreContext<'_, T>,
+    linker: &Linker<T>,
+    resolution: &Resolution,
+    reserved: &mut ReservedRecords,
 ) -> Result<Instance> {
     let ir: &ExecutorIr = component.ir();
 
@@ -90,20 +240,11 @@ pub fn instantiate<T: 'static>(
     // instantiation: the entry gate, the backpressure counter, the
     // exclusive thread, and the suspend flag a call consults. The
     // adapters name their instances by the translator's index, which
-    // this list maps onto the store-wide identity. The records come
-    // first because a resource this component defines names the
-    // instance that defines it, which is the instance its
-    // destructor's task belongs to.
-    let component_instances: Vec<InstanceId> = {
-        let mut guard = store
-            .internal()
-            .tables()
-            .lock()
-            .map_err(|_| internal("resource handle tables lock poisoned"))?;
-        (0..ir.num_component_instances)
-            .map(|_| guard.tasks.insert_instance())
-            .collect()
-    };
+    // this list maps onto the store-wide identity. The records were
+    // reserved before this walk began because a resource this
+    // component defines names the instance that defines it, which is
+    // the instance its destructor's task belongs to.
+    let component_instances: Vec<InstanceId> = reserved.instances().to_vec();
 
     // Resolve each `ResourceSpec` against the linker's registered
     // host resources before building the runtime state. The host
@@ -148,9 +289,7 @@ pub fn instantiate<T: 'static>(
             ResourceDestructor::Local { .. } => declared_names.get(&index).cloned(),
             ResourceDestructor::Host(_) => runtime.name.clone(),
         };
-        store
-            .internal()
-            .register_resource(runtime.type_id, name, runtime.destructor.clone());
+        reserved.register_resource(store, runtime.type_id, name, runtime.destructor.clone());
     }
 
     // The host resources the linker holds are then swept for their
@@ -171,9 +310,7 @@ pub fn instantiate<T: 'static>(
     // before this one or after it, so no store renders a label that
     // none of its components ever used while one of them did.
     for (type_id, label) in linker_resource_labels(linker) {
-        store
-            .internal()
-            .fallback_resource_name(type_id, ResourceType::new(label));
+        reserved.fallback_resource_name(store, type_id, ResourceType::new(label));
     }
 
     // One fresh handle table per component instance, shared by every

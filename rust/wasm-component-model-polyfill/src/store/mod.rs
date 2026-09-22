@@ -23,14 +23,21 @@
 //! any poll of a driver, so the scheduler's state has to be
 //! reachable with no driver on the stack.
 //!
+//! [`ResourceRecord`] is what the store knew about one resource
+//! type at one moment. An instantiation takes one per resource type
+//! it registers and puts them back when its plan fails, so that a
+//! failed instantiation leaves the store as it found it.
+//!
 //! [`StoreId`] is the process-unique identity a store mints at
 //! construction, which an instance records and checks.
+mod resource_record;
 #[allow(clippy::module_inception)]
 mod store;
 mod store_context;
 mod store_data;
 mod store_id;
 
+pub use resource_record::ResourceRecord;
 pub use store::Store;
 pub use store::internal::StoreInternalExt;
 pub use store_context::StoreContext;

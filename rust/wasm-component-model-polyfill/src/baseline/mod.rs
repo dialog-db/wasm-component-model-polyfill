@@ -16,6 +16,7 @@ mod call_concurrent;
 mod callback_export;
 mod canonical_abi;
 mod destructor_task;
+mod instantiation;
 mod prepared_call;
 mod realloc_task;
 mod resources;

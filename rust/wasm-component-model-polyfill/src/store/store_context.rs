@@ -24,6 +24,7 @@ use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId, TableId};
 use crate::types::ResourceType;
 use crate::value::Val;
 
+use super::resource_record::ResourceRecord;
 use super::store_data::StoreData;
 use super::store_id::StoreId;
 
@@ -224,6 +225,33 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// names it this way. Workspace-internal.
     fn resource_type(&self, type_id: ResourceTypeId) -> Option<ResourceType> {
         self.store_data().resource_type(type_id)
+    }
+
+    /// What the store knows about `type_id` at this moment, as a
+    /// record an instantiation whose plan fails hands back to
+    /// `restore_resource`. Workspace-internal.
+    fn resource_record(&self, type_id: ResourceTypeId) -> ResourceRecord {
+        self.store_data().resource_record(type_id)
+    }
+
+    /// Put back what the store knew about one resource type before
+    /// an instantiation registered it, so that a failed
+    /// instantiation leaves the store's registrations as it found
+    /// them. Workspace-internal.
+    fn restore_resource(&mut self, record: ResourceRecord) {
+        self.store_data_mut().restore_resource(record);
+    }
+
+    /// How many resource types the store has a destructor
+    /// registered for. Workspace-internal.
+    fn registered_destructors(&self) -> usize {
+        self.store_data().registered_destructors()
+    }
+
+    /// How many resource types the store has learned a name for.
+    /// Workspace-internal.
+    fn learned_resource_names(&self) -> usize {
+        self.store_data().learned_resource_names()
     }
 
     /// Release a handle the host holds. The handle's entry leaves

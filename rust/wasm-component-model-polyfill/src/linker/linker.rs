@@ -143,6 +143,16 @@ impl<T: 'static> Linker<T> {
     /// they run inside a turn the driver opens instead. Work the
     /// initializers leave behind stays in the store.
     ///
+    /// An instantiation that fails leaves the store's own records as
+    /// it found them: the instance records the plan reserved, the
+    /// destructors its resource types registered, and the names it
+    /// taught for them all go back. Wasmtime keeps what a failed
+    /// instantiation left in its store, so this is hygiene rather
+    /// than parity — no instance of either store can reach the
+    /// records of an instantiation that produced none. The work the
+    /// initializers left behind is not part of it, as above: that is
+    /// guest work the store has taken on, and it stays.
+    ///
     /// Entering instantiation while another driver of the same store
     /// is inside a turn fails with the recursive-driver cause, and a
     /// turn that goes idle with the plan unfinished fails with the

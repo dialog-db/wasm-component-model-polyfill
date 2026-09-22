@@ -14,6 +14,7 @@ use crate::resource::{
 };
 use crate::types::{ResourceType, ValueType};
 
+use super::resource_record::ResourceRecord;
 use super::store_id::StoreId;
 
 /// Everything a store carries: the host's data of type `T`, and the
@@ -213,6 +214,64 @@ impl<T: 'static> StoreData<T> {
         self.resource_types
             .entry(type_id)
             .or_insert(LearnedName::Fallback(name));
+    }
+
+    /// What the store knows about `type_id` at this moment: whether
+    /// a destructor is registered for it, and the name it renders
+    /// for it with the tier that taught it.
+    ///
+    /// An instantiation takes one record per resource type before it
+    /// registers anything, and hands the records back through
+    /// [`StoreData::restore_resource`] when its plan fails, so a
+    /// failed instantiation leaves the store as it found it.
+    /// Workspace-internal.
+    pub fn resource_record(&self, type_id: ResourceTypeId) -> ResourceRecord {
+        let (taught_name, fallback_name) = match self.resource_types.get(&type_id) {
+            Some(LearnedName::Component(name)) => (Some(name.clone()), None),
+            Some(LearnedName::Fallback(name)) => (None, Some(name.clone())),
+            None => (None, None),
+        };
+        ResourceRecord {
+            type_id,
+            destructor: self.destructors.contains_key(&type_id),
+            taught_name,
+            fallback_name,
+        }
+    }
+
+    /// Put back what the store knew about one resource type before
+    /// an instantiation registered it.
+    ///
+    /// A destructor the record did not hold is forgotten, because
+    /// the registration that added it is the one being taken back; a
+    /// destructor the store already had is left alone, because
+    /// registering one never displaces it. The name goes back to the
+    /// label the record holds, in the tier the record holds it in,
+    /// and a store that had learned no name for the type learns none
+    /// from the attempt. Workspace-internal.
+    pub fn restore_resource(&mut self, record: ResourceRecord) {
+        if !record.destructor {
+            self.destructors.remove(&record.type_id);
+        }
+        self.resource_types.remove(&record.type_id);
+        if let Some(name) = record.taught_name {
+            self.name_resource(record.type_id, name);
+        } else if let Some(name) = record.fallback_name {
+            self.fallback_resource_name(record.type_id, name);
+        }
+    }
+
+    /// How many resource types the store has a destructor
+    /// registered for. Workspace-internal.
+    pub fn registered_destructors(&self) -> usize {
+        self.destructors.len()
+    }
+
+    /// How many resource types the store has learned a name for,
+    /// whether a component taught it or a linker's sweep left it as
+    /// a fallback. Workspace-internal.
+    pub fn learned_resource_names(&self) -> usize {
+        self.resource_types.len()
     }
 
     /// The name the store renders for the resource type `type_id`,

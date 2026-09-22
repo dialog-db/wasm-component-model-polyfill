@@ -108,6 +108,22 @@ impl TaskTables {
         &self.instances
     }
 
+    /// Drop every instance record from `kept` on, which is how an
+    /// instantiation that failed leaves the store's records as it
+    /// found them.
+    ///
+    /// Only a tail can leave the list, because an identity is an
+    /// index into it and the records that follow one would move. A
+    /// failed instantiation has a tail to take back: it reserves
+    /// every record it needs before any fallible step of its plan
+    /// runs, and nothing else in the runtime adds one, so the
+    /// records it reserved are the last ones in the list. `kept` is
+    /// the length the list had before it reserved them, and a
+    /// longer list is left alone.
+    pub fn truncate_instances(&mut self, kept: usize) {
+        self.instances.truncate(kept);
+    }
+
     /// Set the may-not-suspend flag of `instance` and return the
     /// value it had. `None` when the store holds no such instance.
     pub fn set_may_not_suspend(&mut self, instance: InstanceId, value: bool) -> Option<bool> {
