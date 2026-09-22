@@ -4,7 +4,6 @@ kanban-plugin: basic
 
 ## To-do
 
-- [ ] [[91b9aa]]
 - [ ] [[7d72a0]]
 - [ ] [[49c524]]
 - [ ] [[0ed715]]
@@ -49,16 +48,17 @@ kanban-plugin: basic
 - [ ] [[7fc25a]]
 - [ ] [[bd9a73]]
 - [ ] [[41ab99]]
+- [ ] [[983049]]
 
 ## In Progress
 
 - [ ] [[90d05d]]
 - [ ] [[0a7c63]]
+- [ ] [[91b9aa]]
 
 ## Needs Review
 
 - [ ] [[c723cc]]
-- [ ] [[8a0e7a]]
 - [ ] [[dda886]]
 
 ## Ready
@@ -121,6 +121,7 @@ kanban-plugin: basic
 - [ ] [[4a29c4]]
 - [ ] [[6c8808]]
 - [ ] [[7feb91]]
+- [ ] [[8a0e7a]]
 - [ ] [[86cb02]]
 
 ---
