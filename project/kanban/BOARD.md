@@ -50,12 +50,12 @@ kanban-plugin: basic
 
 - [ ] [[90d05d]]
 - [ ] [[d0d703]]
-- [ ] [[4027b5]]
 - [ ] [[222d16]]
 
 ## Needs Review
 
 - [ ] [[c723cc]]
+- [ ] [[4027b5]]
 
 ## Ready
 
