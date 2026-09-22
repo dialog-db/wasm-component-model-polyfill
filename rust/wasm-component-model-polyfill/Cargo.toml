@@ -38,10 +38,11 @@ wasmtime_runtime_layer = { workspace = true }
 js_wasm_runtime_layer = { workspace = true }
 # The wake after a yield crosses a macrotask boundary in the browser:
 # a self-wake from a microtask lands ahead of every network response
-# and timer and starves the page. Reaching `setTimeout` through the
-# global is all the polyfill needs of the JavaScript bindings, and it
-# works in a worker as well as on a page. The tests of the browser
-# target link this same dependency, so it is not repeated below.
+# and timer and starves the page. Reaching `MessageChannel`, and the
+# `setTimeout` it falls back to, through the global is all the polyfill
+# needs of the JavaScript bindings, and both work in a worker as well
+# as on a page. The tests of the browser target link this same
+# dependency, so it is not repeated below.
 js-sys = { workspace = true }
 wasm-bindgen = { workspace = true }
 
