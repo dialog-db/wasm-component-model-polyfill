@@ -944,7 +944,7 @@ async fn it_runs_a_prepared_call_under_a_policy_without_unsafe_eval() {
          for the variadic wrapper"
     );
     let sum = RuntimeFunc::new(
-        store.inner_mut().as_context_mut(),
+        store.internal().inner_mut().as_context_mut(),
         ty,
         |_ctx, args, results| {
             let total: i32 = args
@@ -964,7 +964,11 @@ async fn it_runs_a_prepared_call_under_a_policy_without_unsafe_eval() {
     );
     let arguments: Vec<RuntimeVal> = (1..=PARAMETERS as i32).map(RuntimeVal::I32).collect();
     let mut results = [RuntimeVal::I32(0)];
-    sum.call(store.inner_mut().as_context_mut(), &arguments, &mut results)
+    sum.call(
+        store.internal().inner_mut().as_context_mut(),
+        &arguments,
+        &mut results,
+    )
         .expect("a nine-parameter host function runs under the policy");
     let RuntimeVal::I32(total) = &results[0] else {
         panic!("the host function declares one `i32` result");
