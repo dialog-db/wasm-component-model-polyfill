@@ -114,7 +114,10 @@ fn records<T: 'static>(store: &mut Store<T>) -> Records {
 fn things_linker(engine: &Engine, resource: HostResource<()>) -> Linker<()> {
     let mut linker: Linker<()> = Linker::new(engine);
     let iface: InterfaceIdentifier = THINGS.parse().expect("identifier");
-    linker.instance(&iface).resource_with("thing", resource);
+    linker
+        .instance(&iface)
+        .resource_with("thing", resource)
+        .expect("the registration");
     linker
 }
 
@@ -229,7 +232,10 @@ async fn it_puts_back_the_resource_name_a_failed_instantiation_displaced() {
         .expect("component parses");
     let resource = thing();
     let mut linker = things_linker(&engine, resource.clone());
-    let type_id = linker.root().resource_with("alias", resource);
+    let type_id = linker
+        .root()
+        .resource_with("alias", resource)
+        .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
 
     let _instance = linker
