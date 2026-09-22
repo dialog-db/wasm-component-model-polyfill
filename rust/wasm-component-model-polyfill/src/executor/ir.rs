@@ -761,8 +761,8 @@ pub struct ResourceTableSpec {
     pub resource_index: usize,
     /// The component instance (by runtime index) that keeps the table.
     pub instance: usize,
-    /// Whether that instance is the one that defines the resource. The
-    /// defining instance handles reps directly for borrows.
+    /// Whether that instance is the one that defines the resource. A
+    /// borrow lowered into the defining instance is the rep itself.
     pub defining: bool,
     /// The resource the table holds, as the component names it: the
     /// label the resource is imported or exported under, and the

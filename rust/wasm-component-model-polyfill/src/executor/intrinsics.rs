@@ -450,25 +450,22 @@ fn transfer_borrow(
     let mut guard = tables
         .lock()
         .map_err(|_| anyhow!("resource handle tables lock poisoned"))?;
-    // Lift the borrow out of the caller: the defining instance holds
-    // reps directly; anyone else holds a table entry, and an owning
+    // Lift the borrow out of the caller: every instance addresses its
+    // own handles by table index, the instance that defines the
+    // resource included, so the index is always looked up. An owning
     // entry is lent to the record of the call, which for a prepared
     // call is its subtask and not the callee's task on the stack.
-    let rep = if src.defining {
-        index
-    } else {
-        let entry = guard
-            .lookup(src.table, index, src.type_id, src.guest_defined)
+    let entry = guard
+        .lookup(src.table, index, src.type_id, src.guest_defined)
+        .map_err(|e| anyhow!("wasm trap: {e}"))?;
+    if matches!(entry, HandleKind::Own { .. }) {
+        guard
+            .lend_for_call(src.table, index)
             .map_err(|e| anyhow!("wasm trap: {e}"))?;
-        if matches!(entry, HandleKind::Own { .. }) {
-            guard
-                .lend_for_call(src.table, index)
-                .map_err(|e| anyhow!("wasm trap: {e}"))?;
-        }
-        entry
-            .rep()
-            .expect("lookup only ever returns a resource entry")
-    };
+    }
+    let rep = entry
+        .rep()
+        .expect("lookup only ever returns a resource entry");
     // Lower it into the callee: the defining instance receives the
     // rep; anyone else receives a borrow entry owed to the call.
     if dst.defining {

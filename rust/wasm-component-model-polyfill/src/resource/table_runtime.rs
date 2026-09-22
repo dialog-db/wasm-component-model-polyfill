@@ -7,9 +7,10 @@ use super::table_id::TableId;
 /// as the canonical ABI addresses it: the table (one per instance,
 /// shared by every resource type the instance uses), the resource
 /// type, and whether the instance is the one that defines it. The
-/// defining instance handles its own resource's reps directly: a
-/// borrow lowered into it, or lifted out of it, is the rep itself
-/// rather than a table entry.
+/// defining instance handles its own resource's reps directly on the
+/// lower side only: a borrow lowered into it is the rep itself rather
+/// than a table entry, while a borrow lifted out of it reads the entry
+/// its index names, as any other instance's does.
 #[derive(Clone, Copy, Debug)]
 pub struct ResourceTableRuntime {
     /// The table the instance keeps for the resource.

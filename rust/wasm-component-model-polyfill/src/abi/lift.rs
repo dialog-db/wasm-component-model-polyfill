@@ -461,15 +461,13 @@ pub fn lift_handle<T: 'static>(
             index: host_index,
             rep,
         }))
-    } else if table.defining {
-        // The defining instance passes its own resource's rep for a
-        // borrow, with no table entry behind it.
-        Ok(Val::Borrow(ResourceHandle {
-            type_id: table.type_id,
-            index,
-            rep: index,
-        }))
     } else {
+        // Every instance addresses its own handles by table index, the
+        // instance that defines the resource included: a lift of a
+        // borrow always reads the entry the index names. Only the
+        // lower side short-circuits to the rep, when the instance the
+        // borrow is lowered into is the resource's definer.
+        //
         // A borrow lifted out of an owning entry lends that entry to
         // the current scope, which gives it back when the scope ends;
         // a borrow of a borrow needs no bookkeeping of its own.

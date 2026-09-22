@@ -1167,6 +1167,143 @@ async fn it_allocates_from_index_one_in_each_nested_instance() {
     );
 }
 
+/// An outer component that defines `r`, mints a handle for rep 42,
+/// and hands that handle to a nested component as `borrow<r>`. The
+/// nested component imports the type and the method, and its one
+/// export forwards its borrow straight back through the method,
+/// which lands in the defining instance and so receives the rep. The
+/// nested component drops the borrow entry its own table holds before
+/// it returns, as a callee that is not the definer must.
+///
+/// `run` takes a flag: when it is set the method drops the owning
+/// handle while the borrow is still out, which must trap.
+const OUTER_DEFINES_INNER_BORROWS: &[u8] = component!(
+    r#"
+    (component
+      (type $r (resource (rep i32)))
+      (core func $new (canon resource.new $r))
+      (core func $drop (canon resource.drop $r))
+      (core module $method-m
+        (import "" "drop" (func $drop (param i32)))
+        (global $owner (mut i32) (i32.const 0))
+        (global $drop-owner (mut i32) (i32.const 0))
+        (func (export "rep") (param $rep i32) (result i32)
+          (if (global.get $drop-owner)
+            (then global.get $owner call $drop))
+          local.get $rep)
+        (func (export "arm") (param i32 i32)
+          local.get 0 global.set $owner
+          local.get 1 global.set $drop-owner))
+      (core instance $method-i (instantiate $method-m
+        (with "" (instance (export "drop" (func $drop))))))
+      (func $method (param "self" (borrow $r)) (result u32)
+        (canon lift (core func $method-i "rep")))
+      (component $inner
+        (import "r" (type $r (sub resource)))
+        (import "[method]r.rep" (func $method (param "self" (borrow $r)) (result u32)))
+        (core func $method' (canon lower (func $method)))
+        (core func $drop (canon resource.drop $r))
+        (core module $m
+          (import "" "rep" (func $rep (param i32) (result i32)))
+          (import "" "drop" (func $drop (param i32)))
+          (func (export "forward") (param i32) (result i32)
+            (local $seen i32)
+            local.get 0 call $rep local.set $seen
+            local.get 0 call $drop
+            local.get $seen))
+        (core instance $i (instantiate $m
+          (with "" (instance
+            (export "rep" (func $method'))
+            (export "drop" (func $drop))))))
+        (func (export "forward") (param "self" (borrow $r)) (result u32)
+          (canon lift (core func $i "forward"))))
+      (instance $in (instantiate $inner
+        (with "r" (type $r))
+        (with "[method]r.rep" (func $method))))
+      (core func $forward (canon lower (func $in "forward")))
+      (core module $main
+        (import "" "new" (func $new (param i32) (result i32)))
+        (import "" "drop" (func $drop (param i32)))
+        (import "" "forward" (func $forward (param i32) (result i32)))
+        (import "" "arm" (func $arm (param i32 i32)))
+        (func (export "run") (param $drop-owner i32) (result i32)
+          (local $handle i32) (local $seen i32)
+          i32.const 42 call $new local.set $handle
+          local.get $handle local.get $drop-owner call $arm
+          local.get $handle call $forward local.set $seen
+          local.get $handle call $drop
+          local.get $seen))
+      (core instance $main-i (instantiate $main
+        (with "" (instance
+          (export "new" (func $new))
+          (export "drop" (func $drop))
+          (export "forward" (func $forward))
+          (export "arm" (func $method-i "arm"))))))
+      (export $r' "r" (type $r))
+      (func (export "run") (param "drop-owner" u32) (result u32)
+        (canon lift (core func $main-i "run"))))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_lifts_a_borrow_out_of_the_defining_instance_through_its_table() {
+    // The defining instance addresses its own handles by table index,
+    // so the borrow it hands the nested component has to be looked up
+    // rather than taken for a rep: `resource.new` put rep 42 at index
+    // 1, and the two differ. The nested component sends the borrow
+    // straight back through the method, whose lower lands in the
+    // defining instance and therefore does pass the rep. A method
+    // that sees 1 read the caller's index as a rep.
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, OUTER_DEFINES_INNER_BORROWS)
+        .await
+        .expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    let run = instance.get_func("run").expect("run export");
+    let seen = run
+        .call(&mut store, &[Val::U32(0)])
+        .await
+        .expect("the borrow crosses into the nested component and back");
+    assert_eq!(
+        seen.as_ref(),
+        &[Val::U32(42)],
+        "the method saw the resource's rep, not the owner's table index"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_lends_the_owning_handle_a_borrow_leaves_the_defining_instance_on() {
+    // The same shape, with the method dropping the owning handle
+    // while the borrow it was given is still out. The lift of the
+    // borrow lent the owner to the call, so the drop must trap; the
+    // drop that follows the call in `run` is never reached.
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, OUTER_DEFINES_INNER_BORROWS)
+        .await
+        .expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    let run = instance.get_func("run").expect("run export");
+    let err = run
+        .call(&mut store, &[Val::U32(1)])
+        .await
+        .expect_err("the owning handle is lent out for the duration of the call");
+    let text = format!("{err:?}");
+    assert!(
+        text.contains("cannot remove owned resource while borrowed"),
+        "expected the borrowed-resource cause, got {text}"
+    );
+}
+
 // ----------------------------------------------------------------
 // Disposal: releasing what the host holds.
 // ----------------------------------------------------------------
