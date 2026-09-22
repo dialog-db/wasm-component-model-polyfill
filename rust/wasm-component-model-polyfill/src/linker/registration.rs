@@ -56,6 +56,19 @@ impl<T: 'static> InstanceRegistration<T> {
         }
     }
 
+    /// Every name this registration holds something under, in
+    /// sorted order within each kind. A name registered under two
+    /// kinds appears once per kind. Consulted when a lookup misses
+    /// and the resolver looks for a version-compatible name instead.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.funcs
+            .keys()
+            .chain(self.resources.keys())
+            .chain(self.modules.keys())
+            .chain(self.instances.keys())
+            .map(String::as_str)
+    }
+
     /// Look up the nested registration for a plain-named instance.
     pub fn instance(&self, name: &str) -> Option<&InstanceRegistration<T>> {
         self.instances.get(name)

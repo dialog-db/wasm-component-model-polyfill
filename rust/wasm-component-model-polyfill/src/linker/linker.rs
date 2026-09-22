@@ -27,9 +27,24 @@ use super::resolve::{Resolution, resolve_imports};
 /// single interface's worth of host items," addressed by a
 /// [`PackageName`] and an [`InterfaceIdentifier`].
 ///
-/// Plain-named imports resolve through the root namespace,
-/// addressed with [`Linker::root`]. A component whose imports have
-/// no matching registration fails cleanly with [`Error::Link`].
+/// Every import that is not an interface-named instance resolves
+/// through the root namespace, addressed with [`Linker::root`],
+/// under the import's own name written out in full. That is the
+/// plain-named imports, and it is also a function, resource, or
+/// module import written under an interface name, which asks for a
+/// single host item rather than an interface's worth of them.
+///
+/// The root matches a versioned name the way a registered interface
+/// key is matched, because a root name is a name like any other: a
+/// registration under `pkg:ns/iface@0.1.0` answers an import of
+/// `pkg:ns/iface@0.1.3`, while a registration under the import's
+/// exact name answers ahead of any merely compatible one. A plain
+/// name carries no version and so is only ever matched exactly. The
+/// polyfill's identifier-resolution module states the version rules
+/// in full.
+///
+/// A component whose imports have no matching registration fails
+/// cleanly with [`Error::Link`].
 ///
 /// [`Component`]: crate::Component
 /// [`PackageName`]: crate::PackageName
@@ -116,7 +131,7 @@ impl<T: 'static> Linker<T> {
     /// Calling `instance` with the same identifier twice returns a
     /// view onto the same registration entry. The semver value
     /// captured in the identifier participates in resolution per the
-    /// WIT compatibility rules; see the polyfill's identifier
+    /// resolver's version rules; see the polyfill's identifier
     /// resolution module for the matching semantics.
     pub fn instance(&mut self, id: &InterfaceIdentifier) -> LinkerInstance<'_, T> {
         let entry = self.instances.entry(id.clone()).or_default();
@@ -126,8 +141,8 @@ impl<T: 'static> Linker<T> {
     /// Instantiate a [`Component`] into the given [`Store`].
     ///
     /// Resolves every declared import of the component against the
-    /// linker's registered linker instances using WIT-spec semver
-    /// compatibility, then drives the underlying runtime substrate
+    /// linker's registered linker instances using the resolver's
+    /// version rules, then drives the underlying runtime substrate
     /// through the resulting wiring. The returned [`Instance`]'s
     /// lifetime is bound to `store`; multiple instances of the same
     /// component can coexist in a single store and remain isolated.

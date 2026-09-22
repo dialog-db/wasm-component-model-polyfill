@@ -1,22 +1,36 @@
 //! Identifier resolution: matching a component's imports against
 //! the linker's registered [`LinkerInstance`]s.
 //!
-//! The matching rules implement the WIT specification's reading of
-//! semver and are narrower than cargo-style caret matching:
+//! The matching rules are Wasmtime's. The WIT specification fixes
+//! the grammar of a versioned name and leaves to the host the
+//! question of which registered version answers an import, so the
+//! polyfill follows the host it stands in for: `NameMap::get` and
+//! `alternate_lookup_key` in Wasmtime's
+//! `crates/environ/src/component/names.rs`. They are narrower than
+//! cargo-style caret matching:
 //!
-//! - For pre-`1.0.0` versions the compatibility range is the *minor*
-//!   segment: `0.2.0` and `0.2.7` are compatible, `0.2.0` and
-//!   `0.3.0` are not.
-//! - For `>= 1.0.0` versions the compatibility range is the *major*
-//!   segment: `1.4.0` and `1.7.2` are compatible, `1.4.0` and
-//!   `2.0.0` are not.
+//! - An *exact* name answers first. With `a:b/c@0.2.0` and
+//!   `a:b/c@0.2.7` both registered, an import of `a:b/c@0.2.0`
+//!   resolves to the `0.2.0` registration, not to the newer one.
+//! - Failing an exact name, a version sits on a *compatibility
+//!   track*, and an import is answered by the highest-versioned
+//!   registration sharing its track. A version at or above `1.0.0`
+//!   tracks by its major segment: `1.4.0` and `1.7.2` share a
+//!   track, `1.4.0` and `2.0.0` do not. A version below `1.0.0`
+//!   whose minor segment is non-zero tracks by that minor: `0.2.0`
+//!   and `0.2.7` share a track, `0.2.0` and `0.3.0` do not.
+//! - A version carrying a prerelease tag sits on no track, so
+//!   `0.2.0-rc.1` is answered by a registration of `0.2.0-rc.1` and
+//!   by nothing else — not by `0.2.0`, and not by another
+//!   prerelease of the same release.
+//! - A `0.0.x` version likewise sits on no track: nothing is
+//!   compatible with a patch-only version, so `0.0.1` and `0.0.2`
+//!   are unrelated names.
+//! - Build metadata plays no part in a track, and is compared only
+//!   when an exact name is.
 //! - An import without a version matches a registration without a
 //!   version exactly. A versioned import does not match an
 //!   unversioned registration, and vice versa.
-//!
-//! When more than one registered candidate falls in an import's
-//! compatibility range, resolution selects the *highest-versioned*
-//! candidate.
 //!
 //! Identifier matching decides *which* registered linker instance
 //! satisfies an import, and it only comes into play for the imports
@@ -34,6 +48,16 @@
 //!   host function registered on the root view under the name
 //!   `pkg:ns/iface@0.1.0`.
 //!
+//! The version rules above govern both namespaces. A root name is a
+//! name like any other, so a root registration under
+//! `pkg:ns/iface@0.1.0` answers a function import of
+//! `pkg:ns/iface@0.1.3`, and a root registration under the import's
+//! exact name beats a merely compatible one. That is Wasmtime's
+//! arrangement too: its root is the same `NameMap` its interfaces
+//! are, and the version fallback lives in `get` rather than in any
+//! one caller. A plain root name carries no `@`, sits on no track,
+//! and so is only ever matched exactly.
+//!
 //! An interface name on a function import is a valid shape rather
 //! than a malformed one. The Component Model constrains an import's
 //! sort from its name only for the annotated plain names —
@@ -43,10 +67,8 @@
 //! import asks for a single host item rather than an interface's
 //! worth of them, and a single host item is what the root namespace
 //! holds. Wasmtime reads every top-level import the same way,
-//! looking its literal name up in the root of the linker whatever
-//! the import's sort. A root entry matches by name alone: the
-//! compatibility range above governs the registered interface keys
-//! and never the root's.
+//! looking its name up in the root of the linker whatever the
+//! import's sort.
 //!
 //! Beyond identifier matching, the resolver checks every item an
 //! import asks for against the registration that satisfies it. A
@@ -102,11 +124,17 @@ pub enum ImportBinding {
     Vacuous,
     /// The import was satisfied through the root namespace: the root
     /// entry itself for a function, resource, or module import, or
-    /// the nested entry under the import's name for a plain-named
-    /// instance import. A function, resource, or module import
-    /// carries this binding whether its name is plain or an
-    /// interface identifier.
-    Root,
+    /// the nested entry under `name` for a plain-named instance
+    /// import. A function, resource, or module import carries this
+    /// binding whether its name is plain or an interface identifier.
+    Root {
+        /// The root key chosen for this import. That is the
+        /// import's own name written out in full, except where a
+        /// versioned name resolved through the compatibility track
+        /// at the top of this module, in which case it is the
+        /// registered name that answered.
+        name: String,
+    },
 }
 
 /// The outcome of resolving every import of a component, in
@@ -159,7 +187,8 @@ pub fn resolve_imports<T: 'static>(
             // An interface name sits on an import that is not an
             // instance the same way a plain name does: it names one
             // host item, and one host item lives in the root
-            // namespace under the name as written.
+            // namespace, under the name as written or under a
+            // version compatible with it.
             (ExternalName::Interface(id), _) => resolve_root(import, &id.to_string(), linker)?,
             (ExternalName::Plain(name), _) => resolve_root(import, name, linker)?,
         };
@@ -191,7 +220,7 @@ fn check_shared_identities<T: 'static>(
                 };
                 (registration, ItemPosition::interface(chosen))
             }
-            (ImportBinding::Root, ExternalName::Plain(name)) => {
+            (ImportBinding::Root { name }, _) => {
                 let Some(registration) = linker.root_registration().instance(name) else {
                     continue;
                 };
@@ -348,18 +377,25 @@ fn instance_is_vacuous(instance: &InstanceType) -> bool {
 /// interface-named import that is not an instance: the name says
 /// where a host would look the item up and nothing about the
 /// import's sort.
+///
+/// The root holds versioned names as well as plain ones, so the
+/// lookup goes through [`root_key`] rather than straight to `name`:
+/// a registration under a version on the import's compatibility
+/// track answers when nothing sits under the name as written.
 fn resolve_root<T: 'static>(
     import: &ComponentImport,
     name: &str,
     linker: &Linker<T>,
 ) -> Result<ImportBinding> {
     let root = linker.root_registration();
+    let name = &root_key(root, name);
     let unresolved = || {
         Error::from(LinkError::UnresolvedImport {
             import: import.name.clone(),
             item: None,
         })
     };
+    let bound = || ImportBinding::Root { name: name.clone() };
     match &import.ty {
         ExternType::Function(declared) => {
             check_function_item(
@@ -368,15 +404,15 @@ fn resolve_root<T: 'static>(
                 declared,
                 root,
             )?;
-            Ok(ImportBinding::Root)
+            Ok(bound())
         }
         ExternType::Resource(_) | ExternType::ResourceEquals(_) => {
             check_resource_item(name, root, &import.name, None)?;
-            Ok(ImportBinding::Root)
+            Ok(bound())
         }
         ExternType::Module(declared) => {
             check_module_item(&import.name, name, declared, root, None)?;
-            Ok(ImportBinding::Root)
+            Ok(bound())
         }
         ExternType::Instance(instance) => match root.instance(name) {
             Some(registration) => {
@@ -386,7 +422,7 @@ fn resolve_root<T: 'static>(
                     registration,
                     &ItemPosition::root(&import.name, name),
                 )?;
-                Ok(ImportBinding::Root)
+                Ok(bound())
             }
             None => {
                 check_kind(root, name, "instance", &import.name, None)?;
@@ -701,12 +737,23 @@ fn find_match<'a>(
     import: &InterfaceIdentifier,
     candidates: impl Iterator<Item = &'a InterfaceIdentifier>,
 ) -> Option<&'a InterfaceIdentifier> {
+    let same_shape: Vec<&'a InterfaceIdentifier> = candidates
+        .filter(|candidate| shape_matches(import, candidate))
+        .collect();
+    let wanted = import.package().version();
+    // An exact version answers before any compatible one, so that a
+    // host registering several versions of one interface hands each
+    // import the version it asked for.
+    if let Some(exact) = same_shape
+        .iter()
+        .copied()
+        .find(|candidate| candidate.package().version() == wanted)
+    {
+        return Some(exact);
+    }
     let mut best: Option<&InterfaceIdentifier> = None;
-    for candidate in candidates {
-        if !shape_matches(import, candidate) {
-            continue;
-        }
-        if !versions_compatible(import.package().version(), candidate.package().version()) {
+    for candidate in same_shape {
+        if !versions_compatible(wanted, candidate.package().version()) {
             continue;
         }
         best = match best {
@@ -724,17 +771,93 @@ fn shape_matches(import: &InterfaceIdentifier, candidate: &InterfaceIdentifier) 
         && import.name() == candidate.name()
 }
 
-/// True when `candidate` falls in `import`'s WIT-spec compatibility
-/// range.
+/// The root-namespace key that answers a lookup of `name`: `name`
+/// itself whenever the root holds anything at all under it, and
+/// otherwise the highest-versioned registered key on `name`'s
+/// compatibility track. That ordering is Wasmtime's `NameMap::get`,
+/// which consults its exact definitions before its table of
+/// alternate names.
+///
+/// When nothing answers, the result is `name` as written, so that
+/// the caller's kind check and its unresolved-import diagnostic
+/// name what the component asked for.
+fn root_key<T: 'static>(root: &InstanceRegistration<T>, name: &str) -> String {
+    if root.kind_of(name).is_some() {
+        return name.to_owned();
+    }
+    let Some((stem, wanted)) = split_version(name) else {
+        return name.to_owned();
+    };
+    let Some(track) = compatibility_track(&wanted) else {
+        return name.to_owned();
+    };
+    let mut best: Option<(&str, Version)> = None;
+    for candidate in root.names() {
+        let Some((candidate_stem, version)) = split_version(candidate) else {
+            continue;
+        };
+        if candidate_stem != stem || compatibility_track(&version) != Some(track) {
+            continue;
+        }
+        let better = match &best {
+            None => true,
+            Some((_, current)) => version > *current,
+        };
+        if better {
+            best = Some((candidate, version));
+        }
+    }
+    match best {
+        Some((chosen, _)) => chosen.to_owned(),
+        None => name.to_owned(),
+    }
+}
+
+/// Split a name into the part ahead of its version and the version
+/// itself: `pkg:ns/iface@0.1.0` into `pkg:ns/iface` and `0.1.0`. A
+/// name with no `@`, or one whose tail is not a semver version,
+/// carries no version and so answers its own name alone.
+fn split_version(name: &str) -> Option<(&str, Version)> {
+    let at = name.find('@')?;
+    let version = name[at + 1..].parse().ok()?;
+    Some((&name[..at], version))
+}
+
+/// The compatibility track a version sits on, or `None` when it
+/// sits on none and so answers its own name alone. Mirrors the
+/// `alternate_lookup_key` half of Wasmtime's rule, which chops a
+/// registered name down to the segment a compatible import would
+/// share with it: `1.7.2` to `1`, `0.2.7` to `0.2`, and `0.2.0-rc.1`
+/// and `0.0.1` to nothing.
+fn compatibility_track(version: &Version) -> Option<(u64, u64)> {
+    if !version.pre.is_empty() {
+        // A prerelease is on a track of its own making, which is to
+        // say on none: nothing else is a release of it.
+        None
+    } else if version.major != 0 {
+        Some((version.major, 0))
+    } else if version.minor != 0 {
+        Some((0, version.minor))
+    } else {
+        // The patch segment is the first non-zero one, and a
+        // patch-only version promises compatibility with nothing.
+        None
+    }
+}
+
+/// True when `candidate` answers `import`: the same version, or a
+/// version sharing `import`'s compatibility track.
 pub fn versions_compatible(import: Option<&Version>, candidate: Option<&Version>) -> bool {
     match (import, candidate) {
         (None, None) => true,
         (None, Some(_)) | (Some(_), None) => false,
         (Some(imp), Some(cand)) => {
-            if imp.major == 0 && cand.major == 0 {
-                imp.minor == cand.minor
-            } else {
-                imp.major == cand.major
+            if imp == cand {
+                return true;
+            }
+            match (compatibility_track(imp), compatibility_track(cand)) {
+                (Some(imp), Some(cand)) => imp == cand,
+                _ => false,
             }
         }
     }
@@ -742,7 +865,8 @@ pub fn versions_compatible(import: Option<&Version>, candidate: Option<&Version>
 
 /// Prefer `candidate` over `current` when its version is strictly
 /// greater. Both must already have been confirmed compatible with
-/// the same import.
+/// the same import, and neither is the import's exact version:
+/// [`find_match`] answers an exact version before it gets here.
 fn prefer(candidate: &InterfaceIdentifier, current: &InterfaceIdentifier) -> bool {
     match (candidate.package().version(), current.package().version()) {
         (Some(n), Some(c)) => n > c,
@@ -817,11 +941,110 @@ mod tests {
     }
 
     #[wcmp_macros::test]
+    fn it_treats_a_prerelease_as_answering_only_its_own_name() {
+        // Wasmtime's `alternate_lookup_key` puts a prerelease on no
+        // compatibility track, so `0.2.0-rc.1` is neither answered
+        // by the release it precedes nor by a sibling prerelease.
+        assert!(versions_compatible(
+            Some(&version("0.2.0-rc.1")),
+            Some(&version("0.2.0-rc.1"))
+        ));
+        assert!(!versions_compatible(
+            Some(&version("0.2.0-rc.1")),
+            Some(&version("0.2.0"))
+        ));
+        assert!(!versions_compatible(
+            Some(&version("0.2.0")),
+            Some(&version("0.2.0-rc.1"))
+        ));
+        assert!(!versions_compatible(
+            Some(&version("0.2.0-rc.1")),
+            Some(&version("0.2.0-rc.2"))
+        ));
+    }
+
+    #[wcmp_macros::test]
+    fn it_treats_two_patch_only_versions_as_incompatible() {
+        // Nothing is compatible with a `0.0.x` but the very same
+        // version: the patch segment is the first non-zero one, so
+        // there is no track to share.
+        assert!(!versions_compatible(
+            Some(&version("0.0.1")),
+            Some(&version("0.0.2"))
+        ));
+        assert!(versions_compatible(
+            Some(&version("0.0.1")),
+            Some(&version("0.0.1"))
+        ));
+    }
+
+    #[wcmp_macros::test]
     fn it_picks_highest_version_when_multiple_match() {
         let import = id("wasi:cli/run@0.2.0");
         let registered = [id("wasi:cli/run@0.2.5"), id("wasi:cli/run@0.2.7")];
         let chosen = find_match(&import, registered.iter()).cloned();
         assert_eq!(chosen, Some(id("wasi:cli/run@0.2.7")));
+    }
+
+    #[wcmp_macros::test]
+    fn it_picks_the_exact_version_over_a_higher_compatible_one() {
+        // A host that registers two versions of one interface hands
+        // each import the version it asked for; only an import with
+        // no registration of its own falls through to the track.
+        let registered = [id("wasi:cli/run@0.2.0"), id("wasi:cli/run@0.2.7")];
+        for (import, expected) in [
+            ("wasi:cli/run@0.2.0", "wasi:cli/run@0.2.0"),
+            ("wasi:cli/run@0.2.7", "wasi:cli/run@0.2.7"),
+            ("wasi:cli/run@0.2.3", "wasi:cli/run@0.2.7"),
+        ] {
+            let chosen = find_match(&id(import), registered.iter()).cloned();
+            assert_eq!(chosen, Some(id(expected)), "import of `{import}`");
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_answers_a_root_lookup_from_a_compatible_registration() {
+        // The root namespace matches a versioned name the way a
+        // registered interface key is matched: `@0.1.0` answers an
+        // import of `@0.1.3`, and an exact registration answers
+        // ahead of it.
+        let engine = crate::Engine::new().expect("engine construction succeeds");
+        let mut linker: Linker<()> = Linker::new(&engine);
+        let register = |linker: &mut Linker<()>, name: &str| {
+            linker.root().func_wrap(
+                name,
+                |_call: crate::linker::HostCall<'_, ()>, (): ()| Ok(()),
+            );
+        };
+
+        register(&mut linker, "pdd-tests:host/answers@0.1.0");
+        assert_eq!(
+            root_key(linker.root_registration(), "pdd-tests:host/answers@0.1.3"),
+            "pdd-tests:host/answers@0.1.0"
+        );
+
+        register(&mut linker, "pdd-tests:host/answers@0.1.3");
+        assert_eq!(
+            root_key(linker.root_registration(), "pdd-tests:host/answers@0.1.3"),
+            "pdd-tests:host/answers@0.1.3"
+        );
+
+        // The highest registration on the track answers a version
+        // that has none of its own.
+        register(&mut linker, "pdd-tests:host/answers@0.1.9");
+        assert_eq!(
+            root_key(linker.root_registration(), "pdd-tests:host/answers@0.1.5"),
+            "pdd-tests:host/answers@0.1.9"
+        );
+
+        // A version off the track, and a plain name, are left as
+        // written so the caller reports what the component asked
+        // for.
+        assert_eq!(
+            root_key(linker.root_registration(), "pdd-tests:host/answers@0.2.0"),
+            "pdd-tests:host/answers@0.2.0"
+        );
+        assert_eq!(root_key(linker.root_registration(), "answers"), "answers");
     }
 
     #[wcmp_macros::test]

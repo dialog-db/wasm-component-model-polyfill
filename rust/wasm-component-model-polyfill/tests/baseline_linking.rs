@@ -2069,6 +2069,177 @@ async fn it_refuses_a_registration_of_another_kind_under_an_interface_name() {
     }
 }
 
+/// The same component as [`INTERFACE_NAMED_FUNCTION`], importing a
+/// later patch of the same interface version. A host that
+/// registered `@0.1.0` on the root view satisfies it, because the
+/// root matches a versioned name the way a registered interface key
+/// is matched.
+const INTERFACE_NAMED_FUNCTION_LATER_PATCH: &[u8] = component!(
+    r#"
+    (component
+      (import "pdd-tests:host/answers@0.1.3" (func $answer (param "x" u32) (result u32)))
+      (core func $lowered (canon lower (func $answer)))
+      (core module $m
+        (import "" "answer" (func $answer (param i32) (result i32)))
+        (func (export "run") (result i32) (call $answer (i32.const 20))))
+      (core instance $i (instantiate $m
+        (with "" (instance (export "answer" (func $lowered))))))
+      (func (export "run") (result u32) (canon lift (core func $i "run"))))
+    "#
+);
+
+/// The interface identifier the later-patch component imports.
+const ANSWERS_LATER_PATCH: &str = "pdd-tests:host/answers@0.1.3";
+
+#[wcmp_macros::test]
+async fn it_links_a_function_import_under_an_interface_name_to_a_compatible_root_registration() {
+    // The host registered `@0.1.0`; the component imports `@0.1.3`.
+    // Both sit on the `0.1` compatibility track, so the root
+    // registration answers and the guest's call reaches its closure.
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, INTERFACE_NAMED_FUNCTION_LATER_PATCH)
+        .await
+        .expect("component parses");
+
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker
+        .root()
+        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2));
+
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("a compatible root registration satisfies the import");
+    let run = instance
+        .get_func("run")
+        .expect("`run` is exported")
+        .typed::<(), u32>()
+        .expect("typed");
+    assert_eq!(run.call(&mut store, ()).await.expect("call succeeds"), 40);
+}
+
+#[wcmp_macros::test]
+async fn it_prefers_an_exact_root_registration_over_a_compatible_one() {
+    // With `@0.1.0` and `@0.1.3` both on the root view, an import of
+    // `@0.1.3` takes the exact registration. The two closures
+    // differ, so the value the guest gets back names the one that
+    // answered.
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, INTERFACE_NAMED_FUNCTION_LATER_PATCH)
+        .await
+        .expect("component parses");
+
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker
+        .root()
+        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2));
+    linker.root().func_wrap(
+        ANSWERS_LATER_PATCH,
+        |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 3),
+    );
+
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the exact root registration satisfies the import");
+    let run = instance
+        .get_func("run")
+        .expect("`run` is exported")
+        .typed::<(), u32>()
+        .expect("typed");
+    assert_eq!(run.call(&mut store, ()).await.expect("call succeeds"), 60);
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_root_registration_on_another_compatibility_track() {
+    // A registration on another track answers nothing, and the
+    // unresolved import names the version the component asked for
+    // rather than the one the host offered.
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, INTERFACE_NAMED_FUNCTION_LATER_PATCH)
+        .await
+        .expect("component parses");
+    let wanted: InterfaceIdentifier = ANSWERS_LATER_PATCH.parse().expect("identifier parses");
+
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker.root().func_wrap(
+        "pdd-tests:host/answers@0.2.0",
+        |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2),
+    );
+
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let err = match linker.instantiate(&mut store, &component).await {
+        Ok(_) => panic!("a registration off the track must not link"),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(
+            &err,
+            Error::Link(inner)
+                if matches!(
+                    &**inner,
+                    LinkError::UnresolvedImport { import, .. }
+                        if *import == ExternalName::Interface(wanted.clone())
+                )
+        ),
+        "expected an unresolved import naming `{ANSWERS_LATER_PATCH}`, got {err:?}",
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_prefers_an_exact_linker_instance_over_a_compatible_one() {
+    // The interface registry answers an exact version before a
+    // compatible one, as the root namespace does. With `@0.2.0` and
+    // `@0.2.7` both registered, an import of `@0.2.0` reaches the
+    // `@0.2.0` registration's closure.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (type $iface (instance
+            (export "double" (func (param "n" s32) (result s32)))))
+          (import "pdd-tests:host/maths@0.2.0" (instance $imports (type $iface)))
+          (alias export $imports "double" (func $double))
+          (core func $core-double (canon lower (func $double)))
+          (core module $m
+            (func (import "host" "double") (param i32) (result i32))
+            (func (export "go") (param i32) (result i32) local.get 0 call 0))
+          (core instance $i (instantiate $m
+            (with "host" (instance
+              (export "double" (func $core-double))))))
+          (func (export "go") (param "n" s32) (result s32)
+            (canon lift (core func $i "go"))))
+        "#
+    );
+
+    let engine = Engine::new().expect("engine construction succeeds");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let exact: InterfaceIdentifier = "pdd-tests:host/maths@0.2.0".parse().expect("identifier");
+    let newer: InterfaceIdentifier = "pdd-tests:host/maths@0.2.7".parse().expect("identifier");
+    linker
+        .instance(&exact)
+        .func_wrap("double", |_call: HostCall<'_, ()>, (n,): (i32,)| Ok(n * 2));
+    linker
+        .instance(&newer)
+        .func_wrap("double", |_call: HostCall<'_, ()>, (n,): (i32,)| Ok(n * 3));
+
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the exact registration satisfies the import");
+    let go = instance
+        .get_func("go")
+        .expect("`go` is exported")
+        .typed::<(i32,), i32>()
+        .expect("typed");
+    assert_eq!(go.call(&mut store, (7,)).await.expect("call succeeds"), 14);
+}
+
 #[wcmp_macros::test]
 async fn it_refuses_a_mismatched_signature_under_an_interface_name() {
     // The signature comparison runs too, and the diagnostic names

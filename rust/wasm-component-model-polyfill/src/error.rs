@@ -82,7 +82,7 @@ pub enum Error {
     /// Resolution failures fall into a small set of structured
     /// shapes: the import has no candidate, more than one candidate
     /// is equally good, the candidate's version is outside the
-    /// import's WIT-spec compatibility range, or the import requires
+    /// import's compatibility range, or the import requires
     /// a host item the polyfill does not yet support
     /// (every host-function and host-resource registration mode).
     ///
@@ -218,7 +218,7 @@ impl From<AbiError> for Error {
 #[non_exhaustive]
 pub enum LinkError {
     /// No registered linker instance matched the import's
-    /// identifier or its WIT-spec compatibility range, or the
+    /// identifier or its compatibility range, or the
     /// registration that did match holds nothing under the name one
     /// of the import's items asks for.
     #[error("{}", UnresolvedContext { import, item })]
@@ -232,7 +232,7 @@ pub enum LinkError {
     },
 
     /// More than one registered linker instance was equally good a
-    /// match for the import, and the WIT-spec tie-break did not
+    /// match for the import, and the version tie-break did not
     /// disambiguate.
     #[error("more than one registered linker instance satisfies import `{import}`: {candidates:?}")]
     AmbiguousImport {
@@ -245,7 +245,7 @@ pub enum LinkError {
 
     /// A registered linker instance shared the import's interface
     /// identifier but its version fell outside the import's
-    /// WIT-spec compatibility range.
+    /// compatibility range.
     #[error(
         "import `{import}` requested version {requested:?}, available versions {available:?} are not compatible"
     )]
@@ -254,7 +254,7 @@ pub enum LinkError {
         import: ExternalName,
         /// The version the import requested. `None` represents an
         /// unversioned import; pairing it with a versioned
-        /// registration is rejected by the WIT compatibility rules.
+        /// registration is rejected by the resolver's version rules.
         requested: Option<Version>,
         /// The versions of the candidate registrations the linker
         /// considered. An empty vector here can occur when an

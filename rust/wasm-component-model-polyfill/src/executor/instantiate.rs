@@ -18,7 +18,7 @@ use wasm_runtime_layer::{
     Instance as RuntimeInstance, Val as RuntimeVal, ValType as CoreType,
 };
 
-use crate::component::{Component, ExternType, ExternalName};
+use crate::component::{Component, ExternType};
 use crate::concurrency::InstanceId;
 use crate::error::{Error, InstantiationError, LinkError, Result};
 use crate::instance::{ExportedFunction, ExportedModule, Instance};
@@ -615,8 +615,10 @@ fn build_runtime_trampoline<T: 'static>(
 /// either is then walked one nested registration per leading segment
 /// of `path`, and the last segment is the item. A function,
 /// resource, or module import resolves to the root entry under the
-/// import's own name — plain or an interface identifier, as the
-/// resolver's rule has it — with an empty `path`.
+/// name the resolver recorded on the binding — the import's own
+/// name, plain or an interface identifier, unless a
+/// version-compatible root registration answered it — with an empty
+/// `path`.
 fn registration_and_item<'l, T: 'static>(
     linker: &'l Linker<T>,
     component: &Component,
@@ -638,18 +640,11 @@ fn registration_and_item<'l, T: 'static>(
         Some(ImportBinding::Resolved { chosen }) => {
             linker.registration_for(chosen).ok_or_else(unresolved)?
         }
-        Some(ImportBinding::Root) => {
+        Some(ImportBinding::Root { name }) => {
             let root = linker.root_registration();
             match &import.ty {
-                ExternType::Instance(_) => {
-                    let ExternalName::Plain(name) = &import.name else {
-                        return Err(internal(
-                            "a root binding on an interface-named instance import",
-                        ));
-                    };
-                    root.instance(name).ok_or_else(unresolved)?
-                }
-                _ => return Ok((root, import.name.to_string())),
+                ExternType::Instance(_) => root.instance(name).ok_or_else(unresolved)?,
+                _ => return Ok((root, name.clone())),
             }
         }
         Some(ImportBinding::Vacuous) | None => return Err(unresolved()),
