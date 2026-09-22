@@ -338,11 +338,9 @@ pub fn cross_result_into_caller<T: 'static>(
         bridge.flat_results = results;
     }
     guard.tasks.subtask_returned(subtask)?;
-    guard
-        .tasks
-        .task_mut(task)
-        .ok_or_else(|| Error::internal("the current task has no record"))?
-        .resolve(None);
+    if !guard.resolve_task(task, None) {
+        return Err(Error::internal("the current task has no record"));
+    }
     Ok(())
 }
 
@@ -377,11 +375,9 @@ fn resolve(
     if record.num_borrows > 0 {
         return Err(outstanding_borrows(record.num_borrows, result));
     }
-    guard
-        .tasks
-        .task_mut(task)
-        .ok_or_else(|| Error::internal("the current task has no record"))?
-        .resolve(value);
+    if !guard.resolve_task(task, value) {
+        return Err(Error::internal("the current task has no record"));
+    }
     Ok(())
 }
 

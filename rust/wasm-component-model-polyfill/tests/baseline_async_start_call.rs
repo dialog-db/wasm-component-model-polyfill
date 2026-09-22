@@ -30,6 +30,12 @@
 //! joined the subtask to, because the failure ends the driver's turn
 //! and not the task the driver was waiting on.
 //!
+//! The lends are the subtask's, which is what makes the cancellation
+//! the moment they come back. The success path is here for the same
+//! reason: a callee that `task.return`s and keeps running gives the
+//! caller its handles back at the delivery of the resolution, which
+//! is earlier than that callee's task exit.
+//!
 //! The other half of the gate is here too: a callee the gate holds
 //! reads `STARTING`, and the call is served rather than refused
 //! once the gate opens. Nothing traps for reentrance — the gate is
@@ -455,6 +461,134 @@ const THROWS_AFTER_YIELD: &[u8] = component!(
     "#
 );
 
+/// A callee that `task.return`s and keeps running, with a caller
+/// that lends it a borrow of its own owning handle.
+///
+/// This is where the record a lend lives on can be read off the
+/// store. The callee gives way in its first phase, so the caller
+/// reads `STARTED`, joins the subtask to a set and parks. The
+/// callee's callback then calls `task.return`, which resolves the
+/// call, and waits on a fresh set no turn ever fills, so the
+/// callee's task is still in the store — and still holds the
+/// instance — for the rest of the test.
+///
+/// The caller's callback takes the subtask event, which delivers the
+/// resolution, and drops the owning handle it lent from. That drop
+/// stands only if the lend went on the subtask: a lend on the
+/// callee's task would still be outstanding, because that task has
+/// not exited and will not. `run` therefore answers 43 — the
+/// callee's 42 plus one — only when the delivery is what gave the
+/// handle back.
+///
+/// `drop-early` is the negative control on the same component. It
+/// drops the owning handle on the instruction after the lower
+/// returns, with the resolution undelivered, and traps.
+const RETURNS_AND_KEEPS_RUNNING: &[u8] = component!(
+    r#"
+    (component
+      (component $callee
+        (type $t' (resource (rep i32)))
+        (core func $new (canon resource.new $t'))
+        (core func $task-return (canon task.return (result u32)))
+        (core func $set-new (canon waitable-set.new))
+        (core module $m
+          (import "" "new" (func $new (param i32) (result i32)))
+          (import "" "task.return" (func $task-return (param i32)))
+          (import "" "waitable-set.new" (func $set-new (result i32)))
+          (func (export "make") (param i32) (result i32)
+            (call $new (local.get 0)))
+          (func (export "answer") (param i32) (result i32)
+            (i32.const 1))
+          (func (export "cb") (param i32 i32 i32) (result i32)
+            (call $task-return (i32.const 42))
+            (i32.or (i32.shl (call $set-new) (i32.const 4)) (i32.const 2))))
+        (core instance $i (instantiate $m (with "" (instance
+          (export "new" (func $new))
+          (export "task.return" (func $task-return))
+          (export "waitable-set.new" (func $set-new))))))
+        (export $t "thing" (type $t'))
+        (func (export "make") (param "rep" u32) (result (own $t))
+          (canon lift (core func $i "make")))
+        (func (export "answer") async (param "x" (borrow $t)) (result u32)
+          (canon lift (core func $i "answer") async (callback (core func $i "cb")))))
+      (component $caller
+        (import "thing" (type $t (sub resource)))
+        (import "make" (func $make (param "rep" u32) (result (own $t))))
+        (import "answer" (func $answer async (param "x" (borrow $t)) (result u32)))
+        (core module $libc (memory (export "mem") 1))
+        (core instance $libc (instantiate $libc))
+        (core func $make (canon lower (func $make)))
+        (core func $lowered
+          (canon lower (func $answer) async (memory (core memory $libc "mem"))))
+        (core func $drop-thing (canon resource.drop $t))
+        (core func $task-return (canon task.return (result u32)))
+        (core func $set-new (canon waitable-set.new))
+        (core func $set-drop (canon waitable-set.drop))
+        (core func $join (canon waitable.join))
+        (core func $subtask-drop (canon subtask.drop))
+        (core module $m
+          (import "" "mem" (memory 1))
+          (import "" "make" (func $make (param i32) (result i32)))
+          (import "" "answer" (func $answer (param i32 i32) (result i32)))
+          (import "" "drop-thing" (func $drop-thing (param i32)))
+          (import "" "task.return" (func $task-return (param i32)))
+          (import "" "waitable-set.new" (func $set-new (result i32)))
+          (import "" "waitable-set.drop" (func $set-drop (param i32)))
+          (import "" "waitable.join" (func $join (param i32 i32)))
+          (import "" "subtask.drop" (func $subtask-drop (param i32)))
+          (global $handle (mut i32) (i32.const 0))
+          (global $set (mut i32) (i32.const 0))
+          (func (export "run") (param i32) (result i32)
+            (local $status i32)
+            (global.set $handle (call $make (local.get 0)))
+            (local.set $status (call $answer (global.get $handle) (i32.const 8)))
+            (if (i32.ne (i32.and (local.get $status) (i32.const 0xf)) (i32.const 1))
+              (then unreachable))
+            (global.set $set (call $set-new))
+            (call $join (i32.shr_u (local.get $status) (i32.const 4)) (global.get $set))
+            (i32.or (i32.shl (global.get $set) (i32.const 4)) (i32.const 2)))
+          (func (export "drop-early") (param i32) (result i32)
+            (local $status i32)
+            (global.set $handle (call $make (local.get 0)))
+            (local.set $status (call $answer (global.get $handle) (i32.const 8)))
+            (if (i32.ne (i32.and (local.get $status) (i32.const 0xf)) (i32.const 1))
+              (then unreachable))
+            (call $drop-thing (global.get $handle))
+            (i32.const 0))
+          (func (export "cb") (param i32 i32 i32) (result i32)
+            (if (i32.ne (local.get 0) (i32.const 1)) (then unreachable))
+            (if (i32.ne (local.get 2) (i32.const 2)) (then unreachable))
+            (call $join (local.get 1) (i32.const 0))
+            (call $subtask-drop (local.get 1))
+            (call $set-drop (global.get $set))
+            (call $drop-thing (global.get $handle))
+            (call $task-return (i32.add (i32.load (i32.const 8)) (i32.const 1)))
+            (i32.const 0)))
+        (core instance $i (instantiate $m (with "" (instance
+          (export "mem" (memory $libc "mem"))
+          (export "make" (func $make))
+          (export "answer" (func $lowered))
+          (export "drop-thing" (func $drop-thing))
+          (export "task.return" (func $task-return))
+          (export "waitable-set.new" (func $set-new))
+          (export "waitable-set.drop" (func $set-drop))
+          (export "waitable.join" (func $join))
+          (export "subtask.drop" (func $subtask-drop))))))
+        (func (export "run") async (param "x" u32) (result u32)
+          (canon lift (core func $i "run") async (callback (core func $i "cb"))))
+        (func (export "drop-early") async (param "x" u32) (result u32)
+          (canon lift (core func $i "drop-early") async (callback (core func $i "cb")))))
+      (instance $a (instantiate $callee))
+      (alias export $a "thing" (type $t))
+      (instance $b (instantiate $caller
+        (with "thing" (type $t))
+        (with "make" (func $a "make"))
+        (with "answer" (func $a "answer"))))
+      (export "run" (func $b "run"))
+      (export "drop-early" (func $b "drop-early")))
+    "#
+);
+
 async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, bytes)
@@ -660,7 +794,9 @@ async fn it_fails_the_driver_that_ran_the_callback_when_the_callee_throws_after_
     // fails with the message the synchronous baseline gives the same
     // throw. The callee's task and the caller's record of the call
     // go with it, so the instance the callback held exclusively is
-    // back and the handles the caller lent are given back.
+    // back and the handles the caller lent are given back. The lends
+    // are on the subtask, so it is the cancellation of the call that
+    // gives them back rather than the callee's task ending.
     let (mut store, instance) = instantiate(THROWS_AFTER_YIELD).await;
     let run = instance.get_func("run").expect("the caller's export");
     let err = run
@@ -728,4 +864,60 @@ async fn it_fails_the_driver_that_ran_the_callback_when_the_callee_throws_after_
         .call(&mut store, &[])
         .await
         .expect("the owning handle drops, so the borrow is no longer lent");
+}
+
+#[wcmp_macros::test]
+async fn it_gives_a_lent_handle_back_when_the_caller_takes_delivery_of_the_resolution() {
+    // The lend a guest-to-guest call records lives on the subtask,
+    // so it comes back at the delivery of the resolution rather than
+    // at the callee's task exit. The two moments are different here:
+    // the callee `task.return`s and then waits on a set no turn ever
+    // fills, so its task is still running when the caller takes the
+    // subtask event. The caller drops the owning handle it lent from
+    // the instruction after that delivery, and 43 is what says the
+    // drop stood.
+    let (mut store, instance) = instantiate(RETURNS_AND_KEEPS_RUNNING).await;
+    let run = instance.get_func("run").expect("the caller's export");
+    let result = run
+        .call(&mut store, &[Val::U32(7)])
+        .await
+        .expect("the call returns");
+    assert_eq!(
+        result.as_ref(),
+        &[Val::U32(43)],
+        "the caller dropped the handle it lent once the resolution was delivered"
+    );
+    assert_eq!(
+        task_count(&store),
+        1,
+        "the callee's task is still in the store, so the lend did not come \
+         back with its exit"
+    );
+    assert_eq!(
+        subtask_count(&store),
+        0,
+        "the caller dropped the subtask the delivered resolution let it drop"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_keeps_a_handle_lent_until_the_resolution_is_delivered() {
+    // The negative control on the same component. `drop-early` is
+    // `run` with the drop moved to the instruction after the lower
+    // returned, where the call has started and nothing has taken its
+    // resolution. The lend still stands, so the drop traps, which is
+    // what the test above runs past rather than around.
+    let (mut store, instance) = instantiate(RETURNS_AND_KEEPS_RUNNING).await;
+    let early = instance
+        .get_func("drop-early")
+        .expect("the caller's early-drop export");
+    let err = early
+        .call(&mut store, &[Val::U32(7)])
+        .await
+        .expect_err("the owning handle cannot be dropped while it is lent");
+    let message = chain(&err);
+    assert!(
+        message.contains("cannot remove owned resource while borrowed"),
+        "expected the lent-handle trap, got {message}"
+    );
 }

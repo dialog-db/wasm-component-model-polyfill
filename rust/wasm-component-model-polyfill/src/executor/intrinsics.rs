@@ -378,8 +378,9 @@ fn lock_tables(
 /// the index in the callee's table. An owned handle moves between the
 /// tables: it leaves the caller's table, which it cannot do while a
 /// borrow of it is lent out, and enters the callee's. A borrowed
-/// handle lends the caller's entry for the call and gives the callee
-/// a borrow owed to the call's scope, or the rep itself when the
+/// handle lends the caller's entry to the record of the call, under
+/// the rule [`HandleTables::lend_to`] states, and gives the callee a
+/// borrow owed to the callee's task, or the rep itself when the
 /// callee is the resource's defining instance.
 pub fn build_resource_transfer<T: 'static>(
     store: &mut StoreContext<'_, T>,
@@ -451,7 +452,8 @@ fn transfer_borrow(
         .map_err(|_| anyhow!("resource handle tables lock poisoned"))?;
     // Lift the borrow out of the caller: the defining instance holds
     // reps directly; anyone else holds a table entry, and an owning
-    // entry is lent for the rest of the call.
+    // entry is lent to the record of the call, which for a prepared
+    // call is its subtask and not the callee's task on the stack.
     let rep = if src.defining {
         index
     } else {
@@ -460,7 +462,7 @@ fn transfer_borrow(
             .map_err(|e| anyhow!("wasm trap: {e}"))?;
         if matches!(entry, HandleKind::Own { .. }) {
             guard
-                .lend(src.table, index)
+                .lend_for_call(src.table, index)
                 .map_err(|e| anyhow!("wasm trap: {e}"))?;
         }
         entry

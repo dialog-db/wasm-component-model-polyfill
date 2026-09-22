@@ -360,6 +360,28 @@ impl TaskTables {
         }
     }
 
+    /// The scope a handle lent for the call in flight counts
+    /// against, read off the stack alone: the subtask of the call
+    /// the current task is the callee of, when a prepare intrinsic
+    /// set one up, and the current scope otherwise.
+    ///
+    /// A lend lives on the record of the call it was made for, so
+    /// that it comes back when that call's caller takes delivery of
+    /// the result. A fused adapter's borrow transfer runs while the
+    /// callee's task is on top of the stack, and the record of the
+    /// call the caller lent for is the subtask that task names, so
+    /// reading the stack alone would credit the callee's task with a
+    /// lend the caller made.
+    pub fn lending_scope(&self) -> Option<Scope> {
+        match self.current_scope()? {
+            Scope::Task(task) => match self.task(task).and_then(|record| record.subtask) {
+                Some(subtask) => Some(Scope::Subtask(subtask)),
+                None => Some(Scope::Task(task)),
+            },
+            scope => Some(scope),
+        }
+    }
+
     /// The current thread: the thread the current task is running.
     /// A synchronous task runs its implicit thread from the call
     /// that starts it to the return that ends it.

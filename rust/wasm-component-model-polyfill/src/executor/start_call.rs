@@ -37,6 +37,11 @@
 //! ends the call: the subtask's resolution is a cancellation, which
 //! gives back every handle the caller lent, and the failure travels
 //! to whichever of the two intrinsics is waiting for it.
+//!
+//! The handles come back with the cancellation because the lends
+//! the start function recorded are on the subtask, which is the
+//! record of the call, rather than on the callee's task.
+//! [`HandleTables::lend_to`] states that rule.
 
 use std::sync::{Arc, Mutex};
 
@@ -423,7 +428,10 @@ fn call_start_function<T: 'static>(
 
 /// End a prepared call whose start failed: the subtask's resolution
 /// is a cancellation, and the handles the caller lent for the call
-/// are given back with it.
+/// are given back with it. The lends are on the subtask, so the
+/// delivery of the cancellation is what gives them back, under the
+/// rule [`HandleTables::lend_to`] states. A callee that `task.return`s
+/// and keeps running holds none of them past that delivery.
 pub fn abandon<T: 'static>(store: &mut StoreContext<'_, T>, subtask: SubtaskId) {
     let tables = store.tables_handle();
     let Ok(mut guard) = tables.lock() else {
@@ -438,12 +446,14 @@ pub fn abandon<T: 'static>(store: &mut StoreContext<'_, T>, subtask: SubtaskId) 
 /// caller lent, the entry the caller holds for the subtask leaves
 /// that caller's table, and the record itself is removed.
 ///
-/// A prepared call's subtask is never a scope of its own — the
+/// A prepared call's subtask is never on the stack of scopes — the
 /// caller's task holds the stack while the callee runs, and an
 /// asynchronous lower hands the record back to the caller to wait on
 /// — so the scope stack has nothing to unwind for it and
 /// `HandleTables::abandon_subtask` would find nothing to do. This is
-/// what abandoning one means instead.
+/// what abandoning one means instead. The record still carries the
+/// call's lends, which the start function named it for rather than
+/// reading the stack, so the delivery here is what gives them back.
 ///
 /// The entry goes with the record because the two are the caller's
 /// one handle on the call: a record removed while an entry still

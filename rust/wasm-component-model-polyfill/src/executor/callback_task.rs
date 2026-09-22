@@ -228,9 +228,12 @@ impl CallbackTask {
     /// from another component, goes the way a trap in the callee's
     /// first phase sends it: its resolution is a cancellation, which
     /// gives back every handle the caller lent, and the record and
-    /// the caller's entry for it leave the store. A call that came
-    /// from the host has no such record, and the driver whose turn
-    /// ran the callback takes the failure instead.
+    /// the caller's entry for it leave the store. The lends are the
+    /// subtask's rather than the abandoned task's, under the rule
+    /// `HandleTables::lend_to` states, so it is the cancellation
+    /// that gives them back and not the task's exit above. A call
+    /// that came from the host has no such record, and the driver
+    /// whose turn ran the callback takes the failure instead.
     ///
     /// The caller's own task is not ended here. A caller that gave
     /// way to park on the subtask is still parked when the failure

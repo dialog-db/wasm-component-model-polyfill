@@ -21,9 +21,11 @@
 //!
 //! Borrows live in the table too: a `borrow<T>` lowered into the
 //! guest is an entry owed to the call it was lowered in, and an
-//! owning entry lent to the host as a borrow counts its lends, which
+//! owning entry a borrow was lifted out of counts its lends, which
 //! is what the collection's owned-removal path reads to refuse the
-//! removal before the call ends.
+//! removal before the call the borrow was lent to takes delivery of
+//! its result. A borrow entry counts no lends of its own, for the
+//! reason `HandleTables::lend_to` gives.
 //!
 //! [`Store`]: crate::Store
 

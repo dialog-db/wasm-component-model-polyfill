@@ -16,9 +16,12 @@ use super::thread_id::ThreadId;
 /// A task is the scope a borrow lowered into a guest is owed to: the
 /// lowering raises `num_borrows`, the guest's drop lowers it, and the
 /// return of a synchronous export traps while the count is above
-/// zero. It is also the scope a borrow lifted out of an owning handle
-/// is lent to while a call between two components runs, which is
-/// where Wasmtime keeps the same list.
+/// zero. It is also the record of two kinds of call, and so the
+/// scope their lends go on: a call from the host into an export,
+/// whose lends come back when the task resolves, and a call between
+/// two components the enter and exit intrinsics carry alone, whose
+/// lends come back at the task's exit. `HandleTables::lend_to`
+/// states the rule both follow.
 ///
 /// A synchronous call is a task with one thread: the implicit thread
 /// runs the callee's core function to its return on the one real
@@ -50,8 +53,9 @@ pub struct Task {
     /// Every thread the task contains, its implicit thread first.
     pub threads: Vec<ThreadId>,
     /// The owning handle-table entries lent to this task, as
-    /// `(table, index)`. Each lend is undone when the task's scope
-    /// ends.
+    /// `(table, index)`. Each lend is undone when the task
+    /// resolves, and again at the task's scope exit for a task that
+    /// never resolved.
     pub lenders: Vec<(TableId, u32)>,
     /// Where the task's result goes.
     pub result: TaskResult,

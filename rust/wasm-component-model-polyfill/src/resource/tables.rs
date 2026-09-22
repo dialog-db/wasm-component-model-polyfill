@@ -14,8 +14,11 @@
 //! both: a borrow lowered into a guest takes an index in a handle
 //! table and counts against the current task, a borrow lifted out of
 //! an owning entry raises that entry's lend count and is recorded on
-//! the current scope, and delivering a subtask's event lowers those
-//! counts again.
+//! the record of the call it was lent for, and delivering that
+//! call's result lowers those counts again.
+//!
+//! [`HandleTables::lend_to`] states where a lend lives and when it
+//! comes back, for every direction a call crosses in.
 //!
 //! Workspace-internal: the collection is reached only through
 //! crate-private accessors on [`Store`]. The public API exposes the
@@ -32,6 +35,7 @@ use crate::concurrency::{
     WaitableId, WaitableSetId,
 };
 use crate::error::Error;
+use crate::value::Val;
 
 use super::TaskEnd;
 use super::handle_kind::HandleKind;
@@ -111,6 +115,31 @@ impl HandleTables {
     /// always [`TaskEnd::Ended`].
     pub fn end_task(&mut self, task: TaskId) -> TaskEnd {
         TaskEnd::Ended(TaskExit::begin(self, task).finish())
+    }
+
+    /// Resolve `task` with `result`: every handle lent for the call
+    /// the task is serving comes back, and the record takes the
+    /// result for whoever is waiting on it. Answers whether the
+    /// store still held a record to resolve.
+    ///
+    /// The lends come back here rather than at the task's exit
+    /// because the resolution is when the caller takes delivery of
+    /// the result, which is the rule
+    /// [`lend_to`](Self::lend_to) states. A callback export can
+    /// `task.return` and keep running, and the host that called it
+    /// has its result the moment it does, so a handle the host lent
+    /// for the call cannot stay lent for the rest of the task. A
+    /// task that resolves and later exits finds its lender list
+    /// already empty, so the exit gives nothing back twice.
+    pub fn resolve_task(&mut self, task: TaskId, result: Option<Val>) -> bool {
+        self.undo_lends(Scope::Task(task));
+        match self.tasks.task_mut(task) {
+            Some(record) => {
+                record.resolve(result);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Pop `task`'s scope without ending the task: the record stays
@@ -429,6 +458,17 @@ impl HandleTables {
         self.lend_to(None, table, index)
     }
 
+    /// Record the lend against the scope [`TaskTables::lending_scope`]
+    /// reads off the stack, which is the record of the call in
+    /// flight. A fused adapter's borrow transfer lends this way: the
+    /// intrinsic is built once per instantiation and is handed no
+    /// call of its own, so the stack is the only thing that names
+    /// the call the caller is lending for.
+    pub fn lend_for_call(&mut self, table: TableId, index: u32) -> Result<(), HandleLookupError> {
+        let scope = self.tasks.lending_scope();
+        self.lend_to(scope, table, index)
+    }
+
     /// Record the lend against `scope` rather than against whatever
     /// is on top of the stack. A crossing names the scope its lends
     /// count against when it is built, and hands it here; `None`
@@ -437,6 +477,54 @@ impl HandleTables {
     /// [`TaskTables::counting_scope`], which is the one rule a
     /// crossing's scope is read by, here and in
     /// [`insert_borrow_for`](Self::insert_borrow_for).
+    ///
+    /// # Where a lend lives and when it comes back
+    ///
+    /// This is the one rule, and every crossing that lends obeys it:
+    /// a handle the caller lends for a call goes on the record of
+    /// that call, and comes back when the caller takes delivery of
+    /// the call's result.
+    ///
+    /// - A guest calling a host function lends to the subtask the
+    ///   trampoline pushed. The lend comes back when the guest takes
+    ///   the subtask event, or as a synchronous lower returns.
+    /// - A guest calling another component's export through a
+    ///   prepared call lends to that call's subtask, not to the
+    ///   callee's task. The two differ for a callback callee, which
+    ///   can `task.return` and keep running: the caller's lend ends
+    ///   at the delivery of the resolution, which is earlier than
+    ///   the callee's task exit.
+    /// - A guest calling another component's export through the
+    ///   enter and exit intrinsics alone has no subtask record. The
+    ///   callee's task is the record of that call, and its exit is
+    ///   the call's return, so the lend goes there.
+    /// - The host calling a guest export lends to the export's task,
+    ///   and the lend comes back when that task resolves. That is
+    ///   the return of `Func::call` and the resolution of the future
+    ///   of `Func::call_concurrent`, so a callback callee that
+    ///   returns and keeps running holds no host handle past its
+    ///   `task.return`. [`resolve_task`](Self::resolve_task) is
+    ///   where the two meet.
+    ///
+    /// # A borrow entry is not counted as lent
+    ///
+    /// Only an owning entry can be lent: a borrow of a borrow is
+    /// refused here with [`HandleLookupError::NotOwned`], and every
+    /// call site skips the lend for such an entry rather than
+    /// reaching it. A caller that drops a borrow entry while an
+    /// asynchronous call still holds it is therefore not refused.
+    ///
+    /// This departs from the reference, whose `add_lender` counts
+    /// any handle and whose `canon resource.drop` traps while the
+    /// count is above zero. Wasmtime's `resource_lend` raises the
+    /// count for an owning slot only and answers a borrow slot with
+    /// the rep alone, and the polyfill follows Wasmtime: a borrow
+    /// entry already belongs to the task it was lowered into and
+    /// must be dropped before that task returns, so its own lifetime
+    /// already bounds the window a lend would protect. Where the
+    /// design documents are silent, Wasmtime's behavior decides.
+    ///
+    /// # Why the two writes are one step
     ///
     /// A lend is two writes — the count on the entry and the scope's
     /// list of lenders — and only the pair is safe: a count raised
@@ -1559,6 +1647,10 @@ mod tests {
 
     #[wcmp_macros::test]
     fn it_refuses_a_lend_of_an_entry_that_owns_nothing() {
+        // A borrow entry is not counted as lent, which is the
+        // departure from the reference that [`HandleTables::lend_to`]
+        // states: the reference counts any handle, Wasmtime counts an
+        // owning slot alone, and the polyfill follows Wasmtime.
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
         let ty = ResourceTypeId::fresh();

@@ -181,8 +181,11 @@ impl Func {
         // ever runs the item that starts it; the task goes on the
         // stack of current scopes only when its thread runs. Borrows
         // the host lowers in are owed to it and must be dropped by
-        // the guest before the call ends; borrows the guest lifts out
-        // in results lend to it until the call ends.
+        // the guest before the call ends; handles the host lends for
+        // the call go on the task and come back when the task
+        // resolves, which is when this call yields its result. A
+        // callback export that resolves and keeps running therefore
+        // holds no host handle past its `task.return`.
         let task =
             store.create_export_task(self.signature.clone(), self.options.clone(), instance_id)?;
 

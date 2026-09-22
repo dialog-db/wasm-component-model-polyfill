@@ -10,11 +10,13 @@ use super::waitable_state::WaitableState;
 /// The record of one call out through an import.
 ///
 /// A subtask is the scope a borrow lifted out of the caller's owning
-/// handle is lent to: the lift raises the lend count on the owning
-/// entry and records the entry here, and delivering the subtask's
-/// resolution lowers those counts again. A resolution is delivered
-/// when the caller's thread receives the subtask event, or when a
-/// synchronous lower returns.
+/// handle is lent to, whether the callee is a host function or
+/// another component's export: the lift raises the lend count on the
+/// owning entry and records the entry here, and delivering the
+/// subtask's resolution lowers those counts again. A resolution is
+/// delivered when the caller's thread receives the subtask event, or
+/// when a synchronous lower returns. `HandleTables::lend_to` states
+/// the rule.
 ///
 /// A subtask is also a waitable, so the record carries the waitable
 /// state a guest waits on: the pending event slot, the set the

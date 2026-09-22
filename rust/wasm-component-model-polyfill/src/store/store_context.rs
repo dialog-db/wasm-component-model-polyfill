@@ -1031,12 +1031,11 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     }
 
     /// Resolve an export's task with the result it returned, which
-    /// the caller on the stack takes as the call returns.
+    /// the caller on the stack takes as the call returns. Every
+    /// handle lent for the call comes back with the resolution.
     /// Workspace-internal.
     pub fn resolve_export_task(&self, task: TaskId, result: Option<Val>) -> Result<()> {
-        if let Some(record) = self.lock_tables()?.tasks.task_mut(task) {
-            record.resolve(result);
-        }
+        self.lock_tables()?.resolve_task(task, result);
         Ok(())
     }
 
