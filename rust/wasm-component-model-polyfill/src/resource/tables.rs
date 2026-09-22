@@ -505,6 +505,35 @@ impl HandleTables {
     ///   returns and keeps running holds no host handle past its
     ///   `task.return`. [`resolve_task`](Self::resolve_task) is
     ///   where the two meet.
+    /// - The host returning a `borrow<T>` out of a synchronous host
+    ///   function the guest called lends to the caller's task. The
+    ///   call's subtask has already left the stack by the time the
+    ///   result crosses, so the scope the pop uncovered is the only
+    ///   record left to lend against, and it is the right one: the
+    ///   call is over, and what holds the borrow from here is the
+    ///   task that made it.
+    /// - The host returning a `borrow<T>` out of an asynchronous
+    ///   host function lends to that call's subtask instead. That
+    ///   lowering runs in the turn that resolves the subtask, while
+    ///   the subtask is still the record of the call.
+    ///
+    /// # A host lend is counted like any other
+    ///
+    /// A handle the host lowers as a `borrow<T>` is lent on the same
+    /// terms as one a guest lifts out of its own owning entry: the
+    /// host's handle names an owning entry in the host's table for
+    /// the resource type, that entry's count rises for the length of
+    /// the crossing's scope, and the scope's end lowers it again.
+    /// Nothing else about a host lend is special — the bullets above
+    /// say where each one lives.
+    ///
+    /// While the lend stands, the entry cannot be taken back out of
+    /// the host's table: `Store::resource_drop` from a host function
+    /// the guest called, and a second lowering of the same handle as
+    /// an `own<T>`, both fail with [`HandleLookupError::Lent`]. That
+    /// is what makes the host's own handles obey the rule the
+    /// canonical ABI states for every other lender, that an owning
+    /// handle can be destroyed only while nothing is borrowing it.
     ///
     /// # A borrow entry is not counted as lent
     ///

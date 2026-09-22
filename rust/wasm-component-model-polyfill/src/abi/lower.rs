@@ -10,7 +10,7 @@ use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
 use crate::abi::lift::declared_resource_index;
 use crate::abi::strings;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
-use crate::resource::{HandleLookupError, ResourceHandle};
+use crate::resource::{HandleKind, HandleLookupError, ResourceHandle};
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
 
@@ -298,9 +298,27 @@ fn write_discriminant<T: 'static>(
 /// `own<T>` parameter the handle must name a live owning entry in the
 /// host's table, which moves into the instance's table: this is the
 /// canonical ABI's transfer of ownership into the guest. For a
-/// `borrow<T>` parameter the guest receives a borrow entry owed to
-/// the current task, or the rep itself when the instance defines the
-/// resource.
+/// `borrow<T>` parameter the handle must name a live owning entry in
+/// the host's table too: the entry is lent to the crossing's scope
+/// for the length of the call, and the guest receives a borrow entry
+/// owed to the current task, or the rep itself when the instance
+/// defines the resource.
+///
+/// Both handle types therefore refuse a handle the host has released
+/// and one the host never minted, with the invalid-handle cause. A
+/// handle is a copyable record of an index and a rep, so a stale
+/// copy of one outlives the entry it names; the lookup is what keeps
+/// such a copy from putting a freed or arbitrary rep in front of the
+/// guest. A `borrow<T>` is checked further: the entry the index
+/// names must hold the rep the handle records. That is what refuses
+/// a handle whose index belongs to a guest's table rather than the
+/// host's — which is what a borrow the host received out of a guest
+/// carries — instead of silently lending whichever host entry sits
+/// at the same index. The lend is what keeps the entry from going
+/// away under a borrow the guest still holds: while it stands, taking
+/// the entry back out — for a `Store::resource_drop` from a host
+/// function the guest called, or for a second lowering as an
+/// `own<T>` — fails.
 pub fn lower_handle<T: 'static>(
     ctx: &BoundaryContext<'_, T>,
     handle: &ResourceHandle,
@@ -338,11 +356,68 @@ pub fn lower_handle<T: 'static>(
         message: "resource handle tables lock poisoned".to_owned(),
     })?;
     if matches!(ty, ValueType::Borrow(_)) {
+        // The handle names an entry in the host's table for the
+        // resource type, and the rep the guest borrows is the one
+        // that entry holds. Taking `handle.rep` at its word instead
+        // would lower a borrow of a resource the host has released,
+        // or of a rep no handle of this store ever named: the handle
+        // is a plain copyable record and says nothing about whether
+        // the entry behind it is still live.
+        let host_table = guard.host_table(handle.type_id);
+        let entry = guard
+            .lookup(host_table, handle.index, table.type_id, table.guest_defined)
+            .map_err(|e| invalid_host_handle(e, ty, position))?;
+        let rep = match entry {
+            HandleKind::Own { rep, .. } => rep,
+            // A borrow entry is not the host's to lend on: it is
+            // already owed to a call of its own.
+            _ => {
+                return Err(invalid_host_handle(
+                    HandleLookupError::NotOwned {
+                        index: handle.index,
+                    },
+                    ty,
+                    position,
+                ));
+            }
+        };
+        // The entry must be the one the handle records, and an index
+        // on its own does not say that: the host's table and every
+        // guest's table allocate from a free list that starts low, so
+        // one index names a live entry in each of them. A `borrow<T>`
+        // the host received out of a guest carries that guest's table
+        // index, and lowering it back would otherwise reach whatever
+        // host entry of the same type happens to sit at the same
+        // index — a different resource, lent and handed to the guest
+        // with nothing to say it went wrong. A host entry's rep never
+        // changes after it is minted, so the rep the handle carries
+        // and the rep the entry holds agree for every handle the host
+        // actually holds, and disagree exactly when the index came
+        // from somewhere else.
+        if rep != handle.rep {
+            return Err(invalid_host_handle(
+                HandleLookupError::Unknown {
+                    index: handle.index,
+                },
+                ty,
+                position,
+            ));
+        }
+        // The entry is lent to the crossing's scope for the length
+        // of the call, so nothing can take it back out — a
+        // re-entrant `Store::resource_drop`, or a second lowering as
+        // an `own<T>` — while the guest still holds the borrow. The
+        // scope's end gives the lend back, exactly as it does for a
+        // borrow a guest lifted out of one of its own owning
+        // entries.
+        guard
+            .lend_to(ctx.scope(), host_table, handle.index)
+            .map_err(|e| invalid_host_handle(e, ty, position))?;
         // The defining instance receives its own resource's rep; any
         // other instance receives a borrow entry owed to the current
         // task, which the guest must drop before that task returns.
         if table.defining {
-            return Ok(handle.rep);
+            return Ok(rep);
         }
         return guard
             .insert_borrow_for(
@@ -350,7 +425,7 @@ pub fn lower_handle<T: 'static>(
                 table.table,
                 table.type_id,
                 table.guest_defined,
-                handle.rep,
+                rep,
             )
             .ok_or_else(|| {
                 Error::from(AbiError {
@@ -372,21 +447,30 @@ pub fn lower_handle<T: 'static>(
             handle.type_id,
             table.guest_defined,
         )
-        .map_err(|e| {
-            Error::from(AbiError {
-                position,
-                valtype: Some(ty.clone()),
-                cause: AbiCause::InvalidHandle {
-                    reason: match e {
-                        HandleLookupError::Unknown { index } => {
-                            format!("handle index {index} is not live in the host's resource table")
-                        }
-                        other => other.to_string(),
-                    },
-                },
-            })
-        })?;
+        .map_err(|e| invalid_host_handle(e, ty, position))?;
     Ok(guard.insert_own(table.table, table.type_id, table.guest_defined, rep))
+}
+
+/// The invalid-handle failure a lookup in the host's table raises,
+/// under the declared type `ty` at `position`.
+///
+/// An index that names nothing is reported against the host's table
+/// by name: that is the table a handle the host holds addresses, and
+/// a bare "unknown handle index" would read as a guest's mistake.
+/// Every other reason says enough on its own.
+fn invalid_host_handle(error: HandleLookupError, ty: &ValueType, position: AbiPosition) -> Error {
+    Error::from(AbiError {
+        position,
+        valtype: Some(ty.clone()),
+        cause: AbiCause::InvalidHandle {
+            reason: match error {
+                HandleLookupError::Unknown { index } => {
+                    format!("handle index {index} is not live in the host's resource table")
+                }
+                other => other.to_string(),
+            },
+        },
+    })
 }
 
 fn host_value_mismatch(ty: &ValueType, position: AbiPosition) -> Error {
