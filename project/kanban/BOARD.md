@@ -51,13 +51,13 @@ kanban-plugin: basic
 ## In Progress
 
 - [ ] [[90d05d]]
-- [ ] [[11041d]]
 - [ ] [[c2c588]]
 - [ ] [[e0d48d]]
 
 ## Needs Review
 
 - [ ] [[c723cc]]
+- [ ] [[11041d]]
 
 ## Ready
 
