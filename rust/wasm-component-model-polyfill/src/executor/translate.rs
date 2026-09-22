@@ -191,7 +191,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 let (import_index, path) = import_path(&translation, runtime_import)?;
                 let signature = projector.function(*lower_ty)?;
                 let options = trampoline_options(&translation, *options)?;
-                let kind = lower_kind(&options)?;
+                let kind = lower_kind(&options);
                 TrampolineSpec::LowerImport(LoweringSpec {
                     import_index,
                     path,
@@ -624,24 +624,24 @@ fn project_imports(
 /// Which lowering a `canon lower` declared, from the `async` option
 /// of its canon options.
 ///
-/// An asynchronous lower carries its parameters, its result, or both
-/// through linear memory whenever they do not fit the four flat
-/// slots it has, so validation requires the `memory` option on it
-/// whatever the lowered type is. A component that declares one
-/// without a memory is invalid, and the translation says so here
-/// rather than at the first call that would have read the memory.
-fn lower_kind(options: &CanonOptions) -> Result<LowerKind> {
-    if !options.async_ {
-        return Ok(LowerKind::Sync);
+/// The `memory` option is not this function's business. The
+/// reference requires it where the canonical ABI loads or stores,
+/// and validation — which the translator runs over the binary before
+/// any of this — already holds an asynchronous lower to exactly that
+/// rule: it refuses one whose parameter tuple transitively contains
+/// a pointer, one whose flattened tuple exceeds the four slots such
+/// a lower has and therefore spills through one, and one whose type
+/// has a result, which always comes back through a return-area
+/// pointer. What is left is the shape that addresses no memory at
+/// all — at most four flat parameters and no result — and that shape
+/// is valid without the option, so the kind is read here and nothing
+/// is refused.
+fn lower_kind(options: &CanonOptions) -> LowerKind {
+    if options.async_ {
+        LowerKind::Async
+    } else {
+        LowerKind::Sync
     }
-    if options.memory.is_none() {
-        return Err(Error::InvalidComponentBinary {
-            message: "`canon lower` with the `async` option requires the `memory` option"
-                .to_owned(),
-            offset: 0,
-        });
-    }
-    Ok(LowerKind::Async)
 }
 
 /// Project the component's declared exports, in declaration order.

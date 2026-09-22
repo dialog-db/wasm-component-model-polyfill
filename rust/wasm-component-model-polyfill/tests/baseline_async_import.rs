@@ -11,9 +11,14 @@
 //! synchronous canonical ABI. A lower with it presents a different
 //! one — at most four flat parameters, the result always through a
 //! return-area pointer, and one `i32` result, the status word — and
-//! validation requires the `memory` option on it. The two axes move
-//! separately: an async-typed import may be lowered either way, and
-//! only the `async` option itself requires the effect on the type.
+//! validation requires the `memory` option on it only where the
+//! canonical ABI loads or stores: when a parameter carries a
+//! pointer, when the parameter tuple spills, or when the type has a
+//! result. A lower of at most four flat parameters with no result is
+//! valid without a memory, and the call through it never reads the
+//! empty slot. The two axes move separately: an async-typed import
+//! may be lowered either way, and only the `async` option itself
+//! requires the effect on the type.
 //!
 //! A component that lowers asynchronously translates, links,
 //! instantiates, and calls: through that lower the guest reaches a
@@ -91,9 +96,9 @@ const ASYNCHRONOUS_LOWER: &[u8] = component!(
     "#
 );
 
-/// The same lower without the `memory` option. Its parameter fits a
-/// flat slot and it has no result, so nothing in the signature needs
-/// a pointer — and validation requires the memory all the same.
+/// The same lower without the `memory` option. Its one parameter
+/// fits a flat slot and it has no result, so nothing in the flattened
+/// signature is a pointer and validation asks for no memory.
 const ASYNCHRONOUS_LOWER_WITHOUT_MEMORY: &[u8] = component!(
     r#"
     (component
@@ -103,6 +108,47 @@ const ASYNCHRONOUS_LOWER_WITHOUT_MEMORY: &[u8] = component!(
         (import "" "answer" (func $answer (param i32) (result i32)))
         (func (export "run") (result i32)
           (call $answer (i32.const 7))))
+      (core instance $i (instantiate $m
+        (with "" (instance (export "answer" (func $lowered))))))
+      (func (export "run") (result u32) (canon lift (core func $i "run"))))
+    "#
+);
+
+/// An asynchronous lower of a type that has a result, without the
+/// `memory` option. Such a lower never returns the result, which
+/// travels through a return-area pointer the guest passes, so the
+/// canonical ABI stores through the memory and validation requires
+/// the option.
+const ASYNCHRONOUS_LOWER_OF_A_RESULT_WITHOUT_MEMORY: &[u8] = component!(
+    r#"
+    (component
+      (import "answer" (func $answer async (param "x" u32) (result u32)))
+      (core func $lowered (canon lower (func $answer) async))
+      (core module $m
+        (import "" "answer" (func $answer (param i32 i32) (result i32)))
+        (func (export "run") (result i32)
+          (call $answer (i32.const 7) (i32.const 0))))
+      (core instance $i (instantiate $m
+        (with "" (instance (export "answer" (func $lowered))))))
+      (func (export "run") (result u32) (canon lift (core func $i "run"))))
+    "#
+);
+
+/// An asynchronous lower whose five flat parameters exceed the four
+/// slots such a lower has, without the `memory` option. The tuple
+/// spills through one pointer, so the canonical ABI loads it out of
+/// the memory and validation requires the option.
+const ASYNCHRONOUS_LOWER_OF_FIVE_PARAMETERS_WITHOUT_MEMORY: &[u8] = component!(
+    r#"
+    (component
+      (import "answer" (func $answer async
+        (param "a" u32) (param "b" u32) (param "c" u32)
+        (param "d" u32) (param "e" u32)))
+      (core func $lowered (canon lower (func $answer) async))
+      (core module $m
+        (import "" "answer" (func $answer (param i32) (result i32)))
+        (func (export "run") (result i32)
+          (call $answer (i32.const 0))))
       (core instance $i (instantiate $m
         (with "" (instance (export "answer" (func $lowered))))))
       (func (export "run") (result u32) (canon lift (core func $i "run"))))
@@ -243,16 +289,95 @@ async fn it_instantiates_a_component_whose_import_is_lowered_asynchronously() {
 }
 
 #[wcmp_macros::test]
-async fn it_refuses_an_asynchronous_lower_without_the_memory_option() {
-    // Validation requires the `memory` option on an asynchronous
-    // lower whatever the lowered type is, so a component that
-    // declares one without a memory is invalid rather than
-    // unsupported.
-    let err = parse(ASYNCHRONOUS_LOWER_WITHOUT_MEMORY)
+async fn it_translates_an_asynchronous_lower_without_memory_when_nothing_spills() {
+    // The reference requires the `memory` option where the canonical
+    // ABI loads or stores. This lower's one parameter travels in a
+    // flat slot and its type has no result, so the flattened
+    // signature holds no pointer at all and the lower is valid with
+    // no memory named.
+    parse(ASYNCHRONOUS_LOWER_WITHOUT_MEMORY)
         .await
-        .expect_err("the lower without a memory is refused");
+        .expect("the lower with nothing to spill needs no memory");
+}
+
+#[wcmp_macros::test]
+async fn it_calls_through_an_asynchronous_lower_without_memory() {
+    // The trampoline of such a lower holds an empty memory slot, and
+    // the call path never reads it: the parameters are lifted from
+    // the flat slots, and the host's future produces no value to
+    // lower. What the guest is answered with is the status word.
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, ASYNCHRONOUS_LOWER_WITHOUT_MEMORY)
+        .await
+        .expect("component parses");
+
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker.root().func_wrap_concurrent(
+        "answer",
+        |_accessor: &Accessor<()>, (_x,): (u32,)| async move { Ok(()) },
+    );
+
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the component instantiates");
+
+    // The registration's future resolves on its first poll, so the
+    // call returned before the lower did: the word is the returned
+    // state alone, with no subtask index above it.
+    let status = instance
+        .get_func("run")
+        .expect("the component exports `run`")
+        .call(&mut store, &[])
+        .await
+        .expect("the asynchronous host call runs");
+    assert_eq!(
+        status.first(),
+        Some(&Val::U32(2)),
+        "the guest saw the returned state with no index"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_an_asynchronous_lower_without_memory_when_the_type_has_a_result() {
+    // An asynchronous lower never returns the result: it travels
+    // through a return-area pointer, which is a store through the
+    // memory, so validation requires the option.
+    let err = parse(ASYNCHRONOUS_LOWER_OF_A_RESULT_WITHOUT_MEMORY)
+        .await
+        .expect_err("the lower of a result without a memory is refused");
+    assert_memory_option_required(&err);
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_an_asynchronous_lower_without_memory_when_the_parameters_spill() {
+    // Five flat parameters exceed the four slots an asynchronous
+    // lower has, so the tuple spills and the lower loads it out of
+    // the memory, which validation therefore requires.
+    let err = parse(ASYNCHRONOUS_LOWER_OF_FIVE_PARAMETERS_WITHOUT_MEMORY)
+        .await
+        .expect_err("the lower of a spilled tuple without a memory is refused");
+    assert_memory_option_required(&err);
+}
+
+/// Assert that `err` is the refusal of an asynchronous lower that
+/// needs the `memory` option and does not declare one.
+///
+/// The refusal is validation's, and the message is the one
+/// `wasmparser` gives it: `ComponentFuncType::lower` in
+/// `src/validator/component_types.rs` at `0.258.0` requires the
+/// option for a parameter that transitively contains a pointer, for
+/// a parameter tuple that spills, and for a result. The polyfill
+/// adds no check of its own, so what a host reads is that text with
+/// the offset of the `canon` definition.
+fn assert_memory_option_required(err: &Error) {
     assert!(
-        matches!(&err, Error::InvalidComponentBinary { message, .. } if message.contains("memory")),
+        matches!(
+            err,
+            Error::InvalidComponentBinary { message, .. }
+                if message.starts_with("canonical option `memory` is required")
+        ),
         "expected Error::InvalidComponentBinary naming the memory option, got {err:?}"
     );
 }

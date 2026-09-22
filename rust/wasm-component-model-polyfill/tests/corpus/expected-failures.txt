@@ -437,7 +437,7 @@ wasmtime/async/async-builtins.wast:5 deferred-feature component rejected: unsupp
 wasmtime/async/async-builtins.wast:15 deferred-feature component rejected: unsupported component feature: the `stream-cancel-write` trampoline
 wasmtime/async/async-builtins.wast:25 deferred-feature component rejected: unsupported component feature: the `future-cancel-read` trampoline
 wasmtime/async/async-builtins.wast:35 deferred-feature component rejected: unsupported component feature: the `future-cancel-write` trampoline
-wasmtime/async/cancel-host.wast:7 validation component rejected: invalid component binary at offset 0: `canon lower` with the `async` option requires the `memory` option
+wasmtime/async/cancel-host.wast:7 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
 wasmtime/async/cancel-host.wast:80 cascade no instance to invoke
 wasmtime/async/cancel-host.wast:85 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
 wasmtime/async/cancel-host.wast:167 cascade no instance to invoke

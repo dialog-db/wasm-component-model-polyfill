@@ -43,16 +43,13 @@ of category `deferred-feature`, for one of seven reasons: a call whose
 callee can be released only by a caller that is on the stack, which
 needs a stack switch, a future or stream built-in, the stackful lift, a
 thread built-in other than `thread.yield`, cancellation, an error
-context, or the rules that decide which trap poisons an instance. One
-directive is a `validation` failure instead, the first component of
-`wasmtime/async/cancel-host.wast`: it lowers asynchronously without the
-`memory` option, which the reference requires and Wasmtime does not
-enforce. Most of the rest is `cascade`: a component definition that
-fails leaves its name unbound and no instance current, so every later
-directive in the file that names the definition or invokes the instance
-fails as bookkeeping rather than on its own merits. The async files
-define a component once and then drive it over dozens of directives, so
-those rows carry far more `cascade` lines than `deferred-feature` ones.
+context, or the rules that decide which trap poisons an instance. Most
+of the rest is `cascade`: a component definition that fails leaves its
+name unbound and no instance current, so every later directive in the
+file that names the definition or invokes the instance fails as
+bookkeeping rather than on its own merits. The async files define a
+component once and then drive it over dozens of directives, so those
+rows carry far more `cascade` lines than `deferred-feature` ones.
 
 `expected-failures.txt` lists every directive the polyfill does not pass
 yet, one per line, as `<path>:<line> <category> <reason>`. The harness
@@ -128,7 +125,7 @@ alike.
 
 ## Baseline
 
-The progress summary on the native target, as of 2026-09-21 (`tests
+The progress summary on the native target, as of 2026-09-22 (`tests
 conformance` prints the current one):
 
 | Corpus           | Directives | Passed | Pass % | Expected failures by category                                  |
@@ -137,8 +134,8 @@ conformance` prints the current one):
 | `cm/async`       | 393        | 83     | 21.1   | deferred-feature 44, cascade 266                               |
 | `fixtures`       | 17         | 17     | 100.0  | none                                                           |
 | `wasmtime`       | 469        | 431    | 91.9   | deferred-feature 2, substrate 8, cascade 28                    |
-| `wasmtime/async` | 387        | 125    | 32.3   | deferred-feature 81, validation 1, cascade 180                 |
-| total            | 2392       | 1694   | 70.8   | deferred-feature 129, substrate 12, validation 21, cascade 536 |
+| `wasmtime/async` | 387        | 125    | 32.3   | deferred-feature 82, cascade 180                               |
+| total            | 2392       | 1694   | 70.8   | deferred-feature 130, substrate 12, validation 20, cascade 536 |
 
 The browser's summary differs by the nine lines of
 `expected-failures.web.txt`, which move nine passing directives into
