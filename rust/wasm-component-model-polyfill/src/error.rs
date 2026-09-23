@@ -16,6 +16,7 @@ use semver::Version;
 use thiserror::Error;
 
 use crate::component::{ExternalName, FunctionType};
+use crate::concurrency::EndKind;
 use crate::identifier::InterfaceIdentifier;
 use crate::internal::ErrorInternal;
 use crate::types::ValueType;
@@ -145,6 +146,13 @@ pub enum Error {
     /// names which rule. Each is a trap in the reference.
     #[error("task error: {0}")]
     Task(#[source] TaskCause),
+
+    /// A guest broke one of the rules that govern the ends of a
+    /// stream or a future and the copies made through them. The
+    /// carried [`CopyCause`] names which rule. Each is a trap in the
+    /// reference.
+    #[error("copy error: {0}")]
+    Copy(#[source] CopyCause),
 
     /// The component uses a Component Model feature the polyfill
     /// does not implement yet. The feature is named so a caller can
@@ -1090,6 +1098,55 @@ impl core::fmt::Display for ReturnMismatchKind {
     }
 }
 
+/// The structured reason a stream or future built-in failed.
+///
+/// Carried by [`Error::Copy`]. Each cause is a trap in the reference,
+/// so a built-in that meets one fails the guest's call. Where
+/// Wasmtime raises the same trap, the message is Wasmtime's, so the
+/// conformance corpora can match it by substring.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum CopyCause {
+    /// A guest dropped a writable future end before it wrote the
+    /// future's value, which would leave the reader with none. The
+    /// message is the one Wasmtime raises from its drop of a future's
+    /// writable end in `futures_and_streams.rs`.
+    #[error("cannot drop future write end without first writing a value")]
+    FutureWriteEndNotWritten,
+
+    /// A guest dropped an end while a copy on it was in progress,
+    /// being either copied or cancelled. The message is the one
+    /// Wasmtime's handle table raises for the kind: a readable end
+    /// cannot be removed and a writable end cannot be dropped.
+    #[error("{}", CopyCause::busy_message(*kind))]
+    BusyEnd {
+        /// The kind of end the guest dropped.
+        kind: EndKind,
+    },
+
+    /// A built-in named an end whose stream or future carries another
+    /// payload type than the one the built-in was declared with.
+    /// Wasmtime checks the same thing through the types of its handle
+    /// tables, so the message is the polyfill's own.
+    #[error("the {kind} carries another payload type than the built-in declares")]
+    PayloadMismatch {
+        /// The kind of end the built-in works on.
+        kind: EndKind,
+    },
+}
+
+impl CopyCause {
+    /// Wasmtime's message for a drop of a busy end of `kind`.
+    fn busy_message(kind: EndKind) -> &'static str {
+        match kind {
+            EndKind::StreamReadable => "cannot remove busy stream",
+            EndKind::StreamWritable => "cannot drop busy stream",
+            EndKind::FutureReadable => "cannot remove busy future",
+            EndKind::FutureWritable => "cannot drop busy future",
+        }
+    }
+}
+
 /// A `Result` whose error variant is the polyfill's [`Error`].
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -1434,6 +1491,55 @@ mod tests {
                  `TaskCause` message {cause:?}; the conformance corpus matches these \
                  traps by substring, so the messages have to follow the traps"
             );
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_renders_the_copy_causes_with_wasmtimes_messages() {
+        // Wasmtime raises these from its drop of an end and from its
+        // handle table as plain strings, not as trap codes, so there
+        // is no `Trap` to pin them to: the expected text is the
+        // string in `futures_and_streams.rs` and
+        // `vm/component/handle_table.rs` of the `wasmtime` release
+        // the workspace pins.
+        for (cause, rendered) in [
+            (
+                CopyCause::FutureWriteEndNotWritten,
+                "copy error: cannot drop future write end without first writing a value",
+            ),
+            (
+                CopyCause::BusyEnd {
+                    kind: EndKind::StreamReadable,
+                },
+                "copy error: cannot remove busy stream",
+            ),
+            (
+                CopyCause::BusyEnd {
+                    kind: EndKind::StreamWritable,
+                },
+                "copy error: cannot drop busy stream",
+            ),
+            (
+                CopyCause::BusyEnd {
+                    kind: EndKind::FutureReadable,
+                },
+                "copy error: cannot remove busy future",
+            ),
+            (
+                CopyCause::BusyEnd {
+                    kind: EndKind::FutureWritable,
+                },
+                "copy error: cannot drop busy future",
+            ),
+            (
+                CopyCause::PayloadMismatch {
+                    kind: EndKind::FutureWritable,
+                },
+                "copy error: the writable end of a future carries another payload type than \
+                 the built-in declares",
+            ),
+        ] {
+            assert_eq!(Error::Copy(cause).to_string(), rendered);
         }
     }
 }

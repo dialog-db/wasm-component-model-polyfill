@@ -18,7 +18,7 @@ use wasmtime_environ::component::{
     ComponentTypes, ComponentTypesBuilder, CoreDef, CoreExport, Export as EnvironExport,
     ExportIndex, ExportItem as EnvironExportItem, ExtractCallback, ExtractMemory,
     ExtractPostReturn, ExtractRealloc, FixedEncoding, GlobalInitializer, InstantiateModule,
-    LoweredIndex, OptionsIndex, RuntimeImportIndex, StaticModuleIndex,
+    InterfaceType, LoweredIndex, OptionsIndex, RuntimeImportIndex, StaticModuleIndex,
     StringEncoding as EnvironStringEncoding, Trampoline, TrampolineIndex, Transcode, Translator,
     TypeResourceTable, TypeResourceTableIndex, UnsafeIntrinsic,
 };
@@ -33,11 +33,12 @@ use crate::abi::signature::Signature;
 use crate::internal::{EngineConfigInternal, ErrorInternal, ModuleInternal};
 
 use crate::component::{ComponentExport, ComponentImport, ExternType, ExternalName, TypeProjector};
-use crate::concurrency::LowerKind;
+use crate::concurrency::{EndKind, LowerKind};
 use crate::engine::Engine;
 use crate::error::{Error, Result};
 
 use crate::module::Module;
+use crate::types::ValueType;
 
 use super::compile_modules;
 use super::ir::{
@@ -297,6 +298,44 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
             // as the waitable built-ins beside it do.
             Trampoline::SubtaskDrop { instance } => TrampolineSpec::SubtaskDrop {
                 instance: instance.as_u32() as usize,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            // The built-ins that create and drop the ends of a stream
+            // or a future. Each names the instance whose handle table
+            // holds the ends, and the stream or future type it was
+            // declared with, whose payload the ends carry.
+            Trampoline::StreamNew { instance, ty } => TrampolineSpec::StreamNew {
+                instance: instance.as_u32() as usize,
+                payload: payload_of(&projector, InterfaceType::Stream(*ty))?,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::FutureNew { instance, ty } => TrampolineSpec::FutureNew {
+                instance: instance.as_u32() as usize,
+                payload: payload_of(&projector, InterfaceType::Future(*ty))?,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::StreamDropReadable { instance, ty } => TrampolineSpec::DropEnd {
+                kind: EndKind::StreamReadable,
+                instance: instance.as_u32() as usize,
+                payload: payload_of(&projector, InterfaceType::Stream(*ty))?,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::StreamDropWritable { instance, ty } => TrampolineSpec::DropEnd {
+                kind: EndKind::StreamWritable,
+                instance: instance.as_u32() as usize,
+                payload: payload_of(&projector, InterfaceType::Stream(*ty))?,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::FutureDropReadable { instance, ty } => TrampolineSpec::DropEnd {
+                kind: EndKind::FutureReadable,
+                instance: instance.as_u32() as usize,
+                payload: payload_of(&projector, InterfaceType::Future(*ty))?,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::FutureDropWritable { instance, ty } => TrampolineSpec::DropEnd {
+                kind: EndKind::FutureWritable,
+                instance: instance.as_u32() as usize,
+                payload: payload_of(&projector, InterfaceType::Future(*ty))?,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
             // The prepare-and-start pair of a fused adapter whose
@@ -826,6 +865,19 @@ fn resolve_table_index(
         Err(Error::internal(
             "resource trampoline references a table outside the component's resource tables",
         ))
+    }
+}
+
+/// The payload type of the stream or future type `ty`, which a
+/// built-in that works on the type's ends was declared with, or
+/// `None` for one that carries no values.
+fn payload_of(projector: &TypeProjector<'_>, ty: InterfaceType) -> Result<Option<ValueType>> {
+    match projector.value_type(&ty)? {
+        ValueType::Stream(stream) => Ok(stream.payload().cloned()),
+        ValueType::Future(future) => Ok(future.payload().cloned()),
+        _ => Err(Error::internal(
+            "a stream or future built-in names a type that is neither",
+        )),
     }
 }
 

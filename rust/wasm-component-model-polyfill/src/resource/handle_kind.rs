@@ -1,6 +1,6 @@
 //! What a handle-table entry names, for every kind a guest can hold.
 
-use crate::concurrency::{SubtaskId, TaskId, WaitableSetId};
+use crate::concurrency::{EndId, EndKind, SubtaskId, TaskId, WaitableSetId};
 
 use super::identity::ResourceTypeId;
 
@@ -58,22 +58,31 @@ pub enum HandleKind {
         /// the identity a subtask entry carries.
         set: WaitableSetId,
     },
-    /// A readable stream end. Reserved for the feature that defines
-    /// streams; nothing constructs this variant yet.
-    #[allow(dead_code)]
-    StreamReadable,
-    /// A writable stream end. Reserved for the feature that defines
-    /// streams; nothing constructs this variant yet.
-    #[allow(dead_code)]
-    StreamWritable,
-    /// A readable future end. Reserved for the feature that defines
-    /// futures; nothing constructs this variant yet.
-    #[allow(dead_code)]
-    FutureReadable,
-    /// A writable future end. Reserved for the feature that defines
-    /// futures; nothing constructs this variant yet.
-    #[allow(dead_code)]
-    FutureWritable,
+    /// A readable stream end: the identity of its record in the
+    /// store's table of ends, under the same rule as the identity a
+    /// subtask entry carries.
+    StreamReadable {
+        /// The end the entry names.
+        end: EndId,
+    },
+    /// A writable stream end, under the same rule as
+    /// [`HandleKind::StreamReadable`].
+    StreamWritable {
+        /// The end the entry names.
+        end: EndId,
+    },
+    /// A readable future end, under the same rule as
+    /// [`HandleKind::StreamReadable`].
+    FutureReadable {
+        /// The end the entry names.
+        end: EndId,
+    },
+    /// A writable future end, under the same rule as
+    /// [`HandleKind::StreamReadable`].
+    FutureWritable {
+        /// The end the entry names.
+        end: EndId,
+    },
     /// An error context. Reserved for the feature that defines error
     /// contexts; nothing constructs this variant yet.
     #[allow(dead_code)]
@@ -86,6 +95,28 @@ impl HandleKind {
     pub fn rep(&self) -> Option<u32> {
         match *self {
             Self::Own { rep, .. } | Self::Borrow { rep, .. } => Some(rep),
+            _ => None,
+        }
+    }
+
+    /// The entry of kind `kind` that names the end record `end`.
+    pub fn end(kind: EndKind, end: EndId) -> Self {
+        match kind {
+            EndKind::StreamReadable => Self::StreamReadable { end },
+            EndKind::StreamWritable => Self::StreamWritable { end },
+            EndKind::FutureReadable => Self::FutureReadable { end },
+            EndKind::FutureWritable => Self::FutureWritable { end },
+        }
+    }
+
+    /// The kind of end and the end record the entry names, for a
+    /// stream or future end. `None` for every other kind.
+    pub fn as_end(&self) -> Option<(EndKind, EndId)> {
+        match *self {
+            Self::StreamReadable { end } => Some((EndKind::StreamReadable, end)),
+            Self::StreamWritable { end } => Some((EndKind::StreamWritable, end)),
+            Self::FutureReadable { end } => Some((EndKind::FutureReadable, end)),
+            Self::FutureWritable { end } => Some((EndKind::FutureWritable, end)),
             _ => None,
         }
     }

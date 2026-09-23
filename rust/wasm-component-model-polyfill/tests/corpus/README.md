@@ -41,7 +41,8 @@ trap the synchronous baseline gives it.
 The directive that first meets what is missing is an expected failure
 of category `deferred-feature`, for one of seven reasons: a call whose
 callee can be released only by a caller that is on the stack, which
-needs a stack switch, a future or stream built-in, the stackful lift,
+needs a stack switch, a future or stream built-in or the transfer of
+an end, the stackful lift,
 a thread built-in other than `thread.yield`, cancellation, an error
 context, or the rules that decide which trap poisons an instance. Most
 of the rest is `cascade`: a component definition that fails leaves its
@@ -186,17 +187,17 @@ conformance` prints the current one):
 | Corpus           | Directives | Passed | Pass % | Expected failures by category                                  |
 | ---------------- | ---------- | ------ | ------ | -------------------------------------------------------------- |
 | `cm`             | 1126       | 1038   | 92.2   | deferred-feature 2, substrate 4, validation 20, cascade 62     |
-| `cm/async`       | 393        | 85     | 21.6   | deferred-feature 44, cascade 264                               |
+| `cm/async`       | 393        | 88     | 22.4   | deferred-feature 45, cascade 260                               |
 | `fixtures`       | 48         | 45     | 93.8   | deferred-feature 1, cascade 2                                  |
 | `wasmtime`       | 469        | 431    | 91.9   | deferred-feature 2, substrate 8, cascade 28                    |
-| `wasmtime/async` | 387        | 133    | 34.4   | deferred-feature 81, cascade 173                               |
-| total            | 2423       | 1732   | 71.5   | deferred-feature 130, substrate 12, validation 20, cascade 529 |
+| `wasmtime/async` | 387        | 160    | 41.3   | deferred-feature 75, cascade 152                               |
+| total            | 2423       | 1762   | 72.7   | deferred-feature 125, substrate 12, validation 20, cascade 504 |
 
 The browser's summary differs by the ten lines of
 `expected-failures.web.txt`, which move ten passing directives into
 `substrate`: `cm` passes 1037 (92.1%) with substrate 5, `cm/async`
-84 (21.4%), `wasmtime` 425 (90.6%), `wasmtime/async` 131 (33.9%), and
-the total is 1722 (71.1%) with substrate 22. Every other cell is the
+87 (22.1%), `wasmtime` 425 (90.6%), `wasmtime/async` 158 (40.8%), and
+the total is 1752 (72.3%) with substrate 22. Every other cell is the
 same.
 
 The `async` rows still hold the pass rate down, though the asynchronous
@@ -209,8 +210,8 @@ the seven reasons above cover most of what those directories still
 exercise. Each component those directories define that the polyfill
 rejects is a `deferred-feature` failure, and every later directive in
 the same file that names it is a `cascade` one, which is why the two
-async rows together hold 437 of the 529 cascade lines, while `cm` and
-`wasmtime` alone pass at 92.2% and 91.9%. Seventeen files that held
+async rows together hold 412 of the 504 cascade lines, while `cm` and
+`wasmtime` alone pass at 92.2% and 91.9%. Nineteen files that held
 expected failures now pass whole: `cm/async/cross-abi-calls.wast`,
 `cm/async/deadlock.wast`, `cm/async/dont-block-start.wast`,
 `cm/async/drop-subtask.wast`, `cm/async/drop-waitable-set.wast`,
@@ -218,10 +219,12 @@ expected failures now pass whole: `cm/async/cross-abi-calls.wast`,
 `wasmtime/async/callback-yield-then-exit.wast`,
 `wasmtime/async/context-in-compositions.wast`,
 `wasmtime/async/drop-host.wast`, `wasmtime/async/exceptions.wast`,
-`wasmtime/async/fused.wast`, `wasmtime/async/lower.wast`,
+`wasmtime/async/fused.wast`, `wasmtime/async/futures-must-write2.wast`,
+`wasmtime/async/lower.wast`,
 `wasmtime/async/many-params-with-retptr.wast`,
 `wasmtime/async/reentrance.wast`, `wasmtime/async/subtask-wait.wast`,
-`wasmtime/async/wait-forever.wast`, and
+`wasmtime/async/wait-forever.wast`,
+`wasmtime/async/waitable-set-stale-entry.wast`, and
 `wasmtime/async/wait-forever2.wast`. Eight of the twelve cases of
 `cm/async/reentrance.wast` pass, and the four that remain need a thread
 built-in or cancellation. The `subtask.drop` component of

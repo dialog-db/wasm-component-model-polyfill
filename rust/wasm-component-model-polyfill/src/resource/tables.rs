@@ -31,8 +31,8 @@
 use std::collections::HashMap;
 
 use crate::concurrency::{
-    Event, SchedulerState, Scope, SubtaskId, SubtaskState, TaskId, TaskTables, ThreadId,
-    WaitableId, WaitableSetId,
+    EndId, EndKind, Event, SchedulerState, Scope, SubtaskId, SubtaskState, TaskId, TaskTables,
+    ThreadId, WaitableId, WaitableSetId,
 };
 use crate::error::Error;
 use crate::internal::ErrorInternal;
@@ -258,7 +258,32 @@ impl HandleTables {
     ) -> Result<WaitableId, HandleLookupError> {
         match self.entry(table, index) {
             Some(HandleKind::Subtask { subtask }) => Ok(self.tasks.subtask_waitable(subtask)),
-            Some(_) => Err(HandleLookupError::NotAWaitable { index }),
+            Some(entry) => match entry.as_end() {
+                Some((kind, end)) => Ok(WaitableId::from_end(kind, end)),
+                None => Err(HandleLookupError::NotAWaitable { index }),
+            },
+            None => Err(HandleLookupError::Unknown { index }),
+        }
+    }
+
+    /// The end the entry at `index` of `table` names, when the entry
+    /// is an end of kind `kind`. A built-in that takes a stream or
+    /// future end reaches its record this way, and each names the one
+    /// kind it works on.
+    pub fn end_from_handle(
+        &self,
+        table: TableId,
+        index: u32,
+        kind: EndKind,
+    ) -> Result<EndId, HandleLookupError> {
+        match self.entry(table, index) {
+            Some(entry) => match entry.as_end() {
+                Some((found, end)) if found == kind => Ok(end),
+                _ => Err(HandleLookupError::NotAnEnd {
+                    index,
+                    expected: kind,
+                }),
+            },
             None => Err(HandleLookupError::Unknown { index }),
         }
     }
@@ -666,6 +691,13 @@ impl HandleTables {
     pub fn insert_waitable_set(&mut self, table: TableId, set: WaitableSetId) -> u32 {
         self.for_table_mut(table)
             .insert_entry(HandleKind::WaitableSet { set })
+    }
+
+    /// Insert an entry of kind `kind` that names the end record
+    /// `end`, and return the handle-table index.
+    pub fn insert_end(&mut self, table: TableId, kind: EndKind, end: EndId) -> u32 {
+        self.for_table_mut(table)
+            .insert_entry(HandleKind::end(kind, end))
     }
 
     /// Read the entry at `index` of `table`, of any kind, with no

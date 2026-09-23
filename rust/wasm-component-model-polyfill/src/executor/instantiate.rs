@@ -50,6 +50,7 @@ use super::waitable_builtins::{
     build_subtask_drop, build_waitable_join, build_waitable_set_drop, build_waitable_set_new,
     build_waitable_set_poll, build_waitable_set_wait,
 };
+use super::{build_drop_end, build_future_new, build_stream_new};
 use crate::abi::instance_flags::InstanceFlags;
 use crate::abi::runtime_state::AbiRuntimeState;
 
@@ -750,6 +751,41 @@ fn build_runtime_trampoline<T: 'static>(
         } => Ok(build_subtask_drop(
             store,
             *instance,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::StreamNew {
+            instance,
+            payload,
+            signature,
+        } => Ok(build_stream_new(
+            store,
+            *instance,
+            payload.clone(),
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::FutureNew {
+            instance,
+            payload,
+            signature,
+        } => Ok(build_future_new(
+            store,
+            *instance,
+            payload.clone(),
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::DropEnd {
+            kind,
+            instance,
+            payload,
+            signature,
+        } => Ok(build_drop_end(
+            store,
+            *kind,
+            *instance,
+            payload.clone(),
             signature,
             abi_state.clone(),
         )),

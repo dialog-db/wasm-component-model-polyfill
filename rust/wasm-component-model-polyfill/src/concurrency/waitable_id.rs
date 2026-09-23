@@ -1,5 +1,7 @@
 //! The identity of one waitable.
 
+use super::end_id::EndId;
+use super::end_kind::EndKind;
 use super::subtask_id::SubtaskId;
 
 /// The identity of one waitable: a handle a guest can wait on.
@@ -10,24 +12,43 @@ use super::subtask_id::SubtaskId;
 /// store takes one of these.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum WaitableId {
-    /// A subtask, by its index in the store's table of subtasks.
+    /// A subtask, by the identity of its record in the store's table
+    /// of subtasks.
     Subtask(SubtaskId),
-    /// A readable stream end, by its index in the store's table of
-    /// stream ends. Reserved for the feature that defines streams;
-    /// nothing constructs this variant yet.
-    #[allow(dead_code)]
-    StreamReadable(u32),
+    /// A readable stream end, by the identity of its record in the
+    /// store's table of ends.
+    StreamReadable(EndId),
     /// A writable stream end, under the same rule as
     /// [`WaitableId::StreamReadable`].
-    #[allow(dead_code)]
-    StreamWritable(u32),
-    /// A readable future end, by its index in the store's table of
-    /// future ends. Reserved for the feature that defines futures;
-    /// nothing constructs this variant yet.
-    #[allow(dead_code)]
-    FutureReadable(u32),
+    StreamWritable(EndId),
+    /// A readable future end, under the same rule as
+    /// [`WaitableId::StreamReadable`].
+    FutureReadable(EndId),
     /// A writable future end, under the same rule as
-    /// [`WaitableId::FutureReadable`].
-    #[allow(dead_code)]
-    FutureWritable(u32),
+    /// [`WaitableId::StreamReadable`].
+    FutureWritable(EndId),
+}
+
+impl WaitableId {
+    /// The waitable that `end`, an end of kind `kind`, is.
+    pub fn from_end(kind: EndKind, end: EndId) -> Self {
+        match kind {
+            EndKind::StreamReadable => Self::StreamReadable(end),
+            EndKind::StreamWritable => Self::StreamWritable(end),
+            EndKind::FutureReadable => Self::FutureReadable(end),
+            EndKind::FutureWritable => Self::FutureWritable(end),
+        }
+    }
+
+    /// The kind of end and the end record the waitable names, for a
+    /// stream or future end. `None` for a subtask.
+    pub fn end(self) -> Option<(EndKind, EndId)> {
+        match self {
+            Self::Subtask(_) => None,
+            Self::StreamReadable(end) => Some((EndKind::StreamReadable, end)),
+            Self::StreamWritable(end) => Some((EndKind::StreamWritable, end)),
+            Self::FutureReadable(end) => Some((EndKind::FutureReadable, end)),
+            Self::FutureWritable(end) => Some((EndKind::FutureWritable, end)),
+        }
+    }
 }

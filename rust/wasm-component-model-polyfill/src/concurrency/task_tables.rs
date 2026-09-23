@@ -1,14 +1,20 @@
-//! The store's tables of task, subtask, thread, waitable set, and
-//! instance records, with the stack of current scopes.
+//! The store's tables of task, subtask, thread, waitable set, end,
+//! shared, and instance records, with the stack of current scopes.
 
 use std::sync::Arc;
 
 use crate::abi::signature::Signature;
-use crate::error::{Error, Result, WaitableCause};
+use crate::error::{CopyCause, Error, Result, WaitableCause};
 use crate::executor::ir::CanonOptions;
 use crate::internal::ErrorInternal;
 use crate::resource::TableId;
+use crate::types::ValueType;
 
+use super::copy_end::CopyEnd;
+use super::copy_state::CopyState;
+use super::end_direction::EndDirection;
+use super::end_id::EndId;
+use super::end_kind::EndKind;
 use super::event::Event;
 use super::failure_channel::FailureChannel;
 use super::instance_id::InstanceId;
@@ -16,6 +22,7 @@ use super::instance_record::InstanceRecord;
 use super::readiness::Readiness;
 use super::record_table::RecordTable;
 use super::scope::Scope;
+use super::shared_record::SharedRecord;
 use super::subtask::Subtask;
 use super::subtask_id::SubtaskId;
 use super::subtask_state::SubtaskState;
@@ -30,8 +37,8 @@ use super::waitable_set::WaitableSet;
 use super::waitable_set_id::WaitableSetId;
 use super::waitable_state::WaitableState;
 
-/// The store's tables of task, subtask, thread, waitable set, and
-/// instance records, with the stack of current scopes.
+/// The store's tables of task, subtask, thread, waitable set, end,
+/// shared, and instance records, with the stack of current scopes.
 ///
 /// A scope is a task record or a subtask record, and the top of the
 /// stack is the current scope. Every borrow operation consults it: a
@@ -41,8 +48,9 @@ use super::waitable_state::WaitableState;
 /// was lent.
 ///
 /// The waitable state a guest waits on lives on the records
-/// themselves — a subtask carries its own — so the waitable
-/// operations here take a [`WaitableId`] and reach through it.
+/// themselves — a subtask and a stream or future end each carry
+/// their own — so the waitable operations here take a [`WaitableId`]
+/// and reach through it.
 ///
 /// The tables also keep the list of waitable sets that took on an
 /// event since the scheduler last looked: a waitable of the set was
@@ -54,6 +62,8 @@ pub struct TaskTables {
     subtasks: RecordTable<Subtask>,
     threads: RecordTable<Thread>,
     waitable_sets: RecordTable<WaitableSet>,
+    ends: RecordTable<CopyEnd>,
+    shared_records: RecordTable<SharedRecord>,
     instances: Vec<InstanceRecord>,
     scopes: Vec<Scope>,
     prepared_call: Option<SubtaskId>,
@@ -68,6 +78,8 @@ impl TaskTables {
             subtasks: RecordTable::new(),
             threads: RecordTable::new(),
             waitable_sets: RecordTable::new(),
+            ends: RecordTable::new(),
+            shared_records: RecordTable::new(),
             instances: Vec::new(),
             scopes: Vec::new(),
             prepared_call: None,
@@ -657,9 +669,8 @@ impl TaskTables {
         self.signalled_sets.len()
     }
 
-    /// The waitable a subtask is. A subtask is the one kind of
-    /// waitable the polyfill builds today; the features that add
-    /// streams and futures name their ends the same way.
+    /// The waitable a subtask is. A stream or future end is named
+    /// the same way, through [`WaitableId::from_end`].
     pub fn subtask_waitable(&self, subtask: SubtaskId) -> WaitableId {
         WaitableId::Subtask(subtask)
     }
@@ -903,8 +914,9 @@ impl TaskTables {
     /// Drop the waitable `waitable` and the record it names. A
     /// subtask whose resolution was not delivered traps, because the
     /// handles the call borrowed are still lent out; so does a
-    /// waitable a thread waits on synchronously. The waitable leaves
-    /// the set it joined on its way out.
+    /// waitable a thread waits on synchronously. A stream or future
+    /// end follows the rules [`drop_end`](Self::drop_end) states. The
+    /// waitable leaves the set it joined on its way out.
     pub fn drop_waitable(&mut self, waitable: WaitableId) -> Result<()> {
         let state = self.waitable_state(waitable)?;
         if state.synchronous_waiter {
@@ -919,10 +931,123 @@ impl TaskTables {
                 self.remove_subtask(subtask);
                 Ok(())
             }
-            // The feature that adds streams and futures removes
-            // their end records here.
-            _ => Err(Error::internal("waitable kind has no record in the store")),
+            _ => match waitable.end() {
+                Some((kind, end)) => self.drop_end(kind, end),
+                None => Err(Error::internal("waitable kind has no record in the store")),
+            },
         }
+    }
+
+    // ---- stream and future ends ----
+
+    /// Create one stream or future: its shared record, carrying
+    /// `payload`, and its two end records, both idle. Answers the
+    /// readable end and then the writable end.
+    ///
+    /// The `stream.new` and `future.new` built-ins call this and put
+    /// the two identities in handle-table entries for the guest.
+    pub fn insert_ends(&mut self, payload: Option<ValueType>) -> (EndId, EndId) {
+        // Each end names the shared record by its index, and the
+        // shared record names both ends, so the shared record is
+        // built against the index it is about to take.
+        let shared = self.shared_records.next_index();
+        let (index, generation) = self
+            .ends
+            .insert_with_generation(CopyEnd::new(EndDirection::Readable, shared));
+        let readable = EndId::new(index, generation);
+        let (index, generation) = self
+            .ends
+            .insert_with_generation(CopyEnd::new(EndDirection::Writable, shared));
+        let writable = EndId::new(index, generation);
+        let inserted = self
+            .shared_records
+            .insert(SharedRecord::new(payload, readable, writable));
+        debug_assert_eq!(
+            inserted, shared,
+            "the shared record took the index its ends were built against"
+        );
+        (readable, writable)
+    }
+
+    /// The index `end` names, under the rule
+    /// [`task_index`](Self::task_index) states: `None` once the end
+    /// the identity was minted for is gone, so an entry left naming
+    /// a removed end cannot reach whichever end took the index.
+    fn end_index(&self, end: EndId) -> Option<u32> {
+        (self.ends.generation(end.index()) == end.generation()).then_some(end.index())
+    }
+
+    /// One end record.
+    pub fn end(&self, end: EndId) -> Option<&CopyEnd> {
+        self.ends.get(self.end_index(end)?)
+    }
+
+    /// One end record, mutably.
+    pub fn end_mut(&mut self, end: EndId) -> Option<&mut CopyEnd> {
+        let index = self.end_index(end)?;
+        self.ends.get_mut(index)
+    }
+
+    /// The shared record of `end`: the state its stream or future
+    /// shares with the other end.
+    pub fn shared_record(&self, end: EndId) -> Option<&SharedRecord> {
+        self.shared_records.get(self.end(end)?.shared)
+    }
+
+    /// How many end records the store holds.
+    pub fn end_count(&self) -> usize {
+        self.ends.len()
+    }
+
+    /// How many shared records the store holds: one per stream or
+    /// future that has an end left.
+    pub fn shared_record_count(&self) -> usize {
+        self.shared_records.len()
+    }
+
+    /// Drop `end`, an end of kind `kind`, once its handle-table entry
+    /// is gone. The reference's `drop` makes the same checks, and the
+    /// traps carry Wasmtime's messages:
+    ///
+    /// - An end that is copying or cancelling a copy traps with the
+    ///   busy cause of its kind.
+    /// - A writable future end that has not written its value traps,
+    ///   so that a reader always gets one. A writable future end whose
+    ///   reader dropped is done and drops cleanly.
+    ///
+    /// The end leaves the set it joined, as the reference's drop of a
+    /// waitable does. Dropping the first end of a pair marks the
+    /// shared record dropped and leaves both end records in the
+    /// store; dropping the second removes the shared record and both
+    /// end records.
+    pub fn drop_end(&mut self, kind: EndKind, end: EndId) -> Result<()> {
+        let record = self.end_record(end)?;
+        if record.state.busy() {
+            return Err(Error::Copy(CopyCause::BusyEnd { kind }));
+        }
+        if kind == EndKind::FutureWritable && record.state != CopyState::Done {
+            return Err(Error::Copy(CopyCause::FutureWriteEndNotWritten));
+        }
+        let shared = record.shared;
+        self.leave_waitable_set(WaitableId::from_end(kind, end));
+        let record = self
+            .shared_records
+            .get_mut(shared)
+            .ok_or_else(|| Error::internal("shared record is not in the store"))?;
+        if !record.dropped {
+            record.dropped = true;
+            return Ok(());
+        }
+        let record = self
+            .shared_records
+            .remove(shared)
+            .ok_or_else(|| Error::internal("shared record is not in the store"))?;
+        for end in [record.readable, record.writable] {
+            if let Some(index) = self.end_index(end) {
+                self.ends.remove(index);
+            }
+        }
+        Ok(())
     }
 
     /// The waitable of `set` that holds the oldest pending event, in
@@ -990,13 +1115,21 @@ impl TaskTables {
             .ok_or_else(|| Error::internal("waitable set record is not in the store"))
     }
 
+    /// One end record, or the internal error when the identity names
+    /// none.
+    fn end_record(&self, end: EndId) -> Result<&CopyEnd> {
+        self.end(end)
+            .ok_or_else(|| Error::internal("end record is not in the store"))
+    }
+
     /// The waitable state on the record `waitable` names.
     fn waitable_state(&self, waitable: WaitableId) -> Result<&WaitableState> {
         match waitable {
             WaitableId::Subtask(subtask) => Ok(&self.subtask_record(subtask)?.waitable),
-            // The feature that adds streams and futures answers with
-            // the state on their end records.
-            _ => Err(Error::internal("waitable kind has no record in the store")),
+            WaitableId::StreamReadable(end)
+            | WaitableId::StreamWritable(end)
+            | WaitableId::FutureReadable(end)
+            | WaitableId::FutureWritable(end) => Ok(&self.end_record(end)?.waitable),
         }
     }
 
@@ -1007,9 +1140,13 @@ impl TaskTables {
                 Some(record) => Ok(&mut record.waitable),
                 None => Err(Error::internal("subtask record is not in the store")),
             },
-            // The feature that adds streams and futures answers with
-            // the state on their end records.
-            _ => Err(Error::internal("waitable kind has no record in the store")),
+            WaitableId::StreamReadable(end)
+            | WaitableId::StreamWritable(end)
+            | WaitableId::FutureReadable(end)
+            | WaitableId::FutureWritable(end) => match self.end_mut(end) {
+                Some(record) => Ok(&mut record.waitable),
+                None => Err(Error::internal("end record is not in the store")),
+            },
         }
     }
 }
@@ -1261,5 +1398,64 @@ mod tests {
             tables.remove_task(task).is_some(),
             "and the record leaves when it does"
         );
+    }
+
+    #[wcmp_macros::test]
+    fn it_keeps_both_ends_until_the_second_one_drops() {
+        let mut tables = TaskTables::new();
+        let (readable, writable) = tables.insert_ends(None);
+        assert_eq!(tables.end_count(), 2);
+        assert_eq!(tables.shared_record_count(), 1);
+        assert_eq!(
+            tables.end(readable).map(|end| end.direction),
+            Some(EndDirection::Readable)
+        );
+        assert_eq!(
+            tables.end(writable).map(|end| end.direction),
+            Some(EndDirection::Writable)
+        );
+
+        tables
+            .drop_end(EndKind::StreamWritable, writable)
+            .expect("an idle writable stream end drops");
+        assert!(
+            tables
+                .shared_record(readable)
+                .is_some_and(|record| record.dropped),
+            "the first drop marks the shared record"
+        );
+        assert_eq!(tables.end_count(), 2, "and leaves both ends in the store");
+
+        tables
+            .drop_end(EndKind::StreamReadable, readable)
+            .expect("an idle readable stream end drops");
+        assert_eq!(tables.end_count(), 0, "the second drop frees both ends");
+        assert_eq!(tables.shared_record_count(), 0, "and the shared record");
+        assert!(tables.end(readable).is_none());
+    }
+
+    #[wcmp_macros::test]
+    fn it_takes_an_end_out_of_its_set_when_the_end_drops() {
+        let mut tables = TaskTables::new();
+        let set = tables.insert_waitable_set();
+        let (readable, _) = tables.insert_ends(None);
+        let waitable = WaitableId::from_end(EndKind::FutureReadable, readable);
+        tables
+            .join_waitable_set(waitable, Some(set))
+            .expect("the end joins the set");
+
+        tables
+            .drop_waitable(waitable)
+            .expect("an idle readable future end drops");
+
+        assert!(
+            tables
+                .waitable_set(set)
+                .is_some_and(|record| record.waitables.is_empty()),
+            "the dropped end left the set"
+        );
+        tables
+            .drop_waitable_set(set)
+            .expect("so the set drops cleanly");
     }
 }

@@ -24,6 +24,12 @@ pub wasm_component_model_polyfill::AbiPosition::Argument(usize)
 pub wasm_component_model_polyfill::AbiPosition::Result
 impl core::fmt::Display for wasm_component_model_polyfill::AbiPosition
 pub fn wasm_component_model_polyfill::AbiPosition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum wasm_component_model_polyfill::CopyCause
+pub wasm_component_model_polyfill::CopyCause::BusyEnd
+pub wasm_component_model_polyfill::CopyCause::BusyEnd::kind: wasm_component_model_polyfill::EndKind
+pub wasm_component_model_polyfill::CopyCause::FutureWriteEndNotWritten
+pub wasm_component_model_polyfill::CopyCause::PayloadMismatch
+pub wasm_component_model_polyfill::CopyCause::PayloadMismatch::kind: wasm_component_model_polyfill::EndKind
 #[non_exhaustive] pub enum wasm_component_model_polyfill::CoreExternType
 pub wasm_component_model_polyfill::CoreExternType::Func
 pub wasm_component_model_polyfill::CoreExternType::Func::params: alloc::vec::Vec<wasm_component_model_polyfill::CoreValueType>
@@ -50,10 +56,18 @@ pub wasm_component_model_polyfill::CoreValueType::FuncRef
 pub wasm_component_model_polyfill::CoreValueType::I32
 pub wasm_component_model_polyfill::CoreValueType::I64
 pub wasm_component_model_polyfill::CoreValueType::V128
+pub enum wasm_component_model_polyfill::EndKind
+pub wasm_component_model_polyfill::EndKind::FutureReadable
+pub wasm_component_model_polyfill::EndKind::FutureWritable
+pub wasm_component_model_polyfill::EndKind::StreamReadable
+pub wasm_component_model_polyfill::EndKind::StreamWritable
+impl core::fmt::Display for wasm_component_model_polyfill::EndKind
+pub fn wasm_component_model_polyfill::EndKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum wasm_component_model_polyfill::Error
 pub wasm_component_model_polyfill::Error::Abi(alloc::boxed::Box<wasm_component_model_polyfill::AbiError>)
 pub wasm_component_model_polyfill::Error::BackendEngineConstruction(anyhow::Error)
 pub wasm_component_model_polyfill::Error::BackendStoreCreation(anyhow::Error)
+pub wasm_component_model_polyfill::Error::Copy(wasm_component_model_polyfill::CopyCause)
 pub wasm_component_model_polyfill::Error::Instantiation(alloc::boxed::Box<wasm_component_model_polyfill::InstantiationError>)
 pub wasm_component_model_polyfill::Error::Internal
 pub wasm_component_model_polyfill::Error::Internal::message: alloc::string::String

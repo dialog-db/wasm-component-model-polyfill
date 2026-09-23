@@ -71,8 +71,12 @@
 //!   [`TaskTables`].
 //! - [`WaitableId`] names one waitable and [`Event`] is what one
 //!   delivers. A waitable's own state lives on its record, as
-//!   [`WaitableState`](waitable_state::WaitableState); a subtask is
-//!   the only kind of waitable the polyfill builds today.
+//!   [`WaitableState`](waitable_state::WaitableState). A waitable is
+//!   a subtask or a stream or future end.
+//! - [`CopyEnd`](copy_end::CopyEnd) is the record of one stream or
+//!   future end, named by an [`EndId`] and of one [`EndKind`], and
+//!   [`SharedRecord`](shared_record::SharedRecord) is the state its
+//!   two ends share. The store keeps one table of each.
 //!
 //! A synchronous call is a task with one thread, so the synchronous
 //! baseline is the case of one task per instance at a time.
@@ -81,7 +85,13 @@ mod accessor;
 mod call_bridge;
 mod call_status;
 mod caller_kind;
+mod copy_buffer;
+mod copy_end;
+mod copy_state;
 mod driver;
+mod end_direction;
+mod end_id;
+mod end_kind;
 mod event;
 mod event_code;
 mod event_slot;
@@ -104,6 +114,7 @@ mod record_table;
 mod scheduler;
 mod scheduler_state;
 mod scope;
+mod shared_record;
 mod subtask;
 mod subtask_id;
 mod subtask_state;
@@ -131,8 +142,20 @@ pub use accessor::Accessor;
 pub use call_bridge::CallBridge;
 pub use call_status::CallStatus;
 pub use caller_kind::CallerKind;
+// A copy state is spelled outside this module only by the tests that
+// arrange the state a copy would leave an end in; the built-ins that
+// start and cancel a copy move it from inside.
+#[cfg(test)]
+pub use copy_state::CopyState;
 pub use driver::Driver;
+pub use end_id::EndId;
+pub use end_kind::EndKind;
 pub use event::Event;
+// An event code is spelled outside this module only by the tests that
+// leave a copy event on an end, which the built-ins that finish a copy
+// will do themselves.
+#[cfg(test)]
+pub use event_code::EventCode;
 pub use event_slot::EventSlot;
 pub use failure_channel::FailureChannel;
 pub use host_future::HostFuture;

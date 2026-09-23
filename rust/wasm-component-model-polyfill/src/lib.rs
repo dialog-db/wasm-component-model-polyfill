@@ -246,11 +246,11 @@ pub use crate::component::{
     Component, ComponentExport, ComponentImport, ExternType, ExternalName, FunctionParameter,
     FunctionType, InstanceItem, InstanceType, ModuleType,
 };
-pub use crate::concurrency::{Accessor, HostFuture};
+pub use crate::concurrency::{Accessor, EndKind, HostFuture};
 pub use crate::engine::Engine;
 pub use crate::engine_config::EngineConfig;
 pub use crate::error::{
-    AbiCause, AbiError, AbiPosition, Error, InstantiationError, LinkError, Result,
+    AbiCause, AbiError, AbiPosition, CopyCause, Error, InstantiationError, LinkError, Result,
     ReturnMismatchKind, SchedulerCause, TaskCause, TypeMismatch, TypeMismatchPosition,
     TypeRendering, WaitableCause,
 };

@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use crate::concurrency::EndKind;
+
 /// The reason a handle index did not name the entry a caller
 /// expected, or the entry it named could not be used the way the
 /// caller asked. Three messages for a resource lookup match the
@@ -18,7 +20,9 @@ use std::fmt;
 /// a named trap, with the handle index added: Wasmtime says only
 /// that the handle is not a waitable, a waitable set, or a subtask,
 /// and a guest that misuses one index among many is better served by
-/// being told which.
+/// being told which. `NotAnEnd` follows Wasmtime's wording for a
+/// readable end, `handle is not a readable end of a stream`, under
+/// the same rule, and says the same of the other three kinds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HandleLookupError {
     /// No live entry sits at the index.
@@ -40,6 +44,10 @@ pub enum HandleLookupError {
     /// A live entry sits there, but it is not a waitable set: one of
     /// the waitable set built-ins named it as the set to work on.
     NotAWaitableSet { index: u32 },
+    /// A live entry sits there, but it is not an end of the kind a
+    /// stream or future built-in works on: a drop of a readable end
+    /// named a writable one, or an entry that is not an end at all.
+    NotAnEnd { index: u32, expected: EndKind },
     /// A live entry sits there, but it is not a subtask:
     /// `subtask.drop` named it as the subtask to drop.
     NotASubtask { index: u32 },
@@ -88,6 +96,9 @@ impl fmt::Display for HandleLookupError {
             }
             Self::NotAWaitableSet { index } => {
                 write!(f, "handle index {index} is not a waitable-set")
+            }
+            Self::NotAnEnd { index, expected } => {
+                write!(f, "handle index {index} is not a {expected}")
             }
             Self::NotASubtask { index } => {
                 write!(f, "handle index {index} is not a subtask")
@@ -148,6 +159,28 @@ mod tests {
         assert_eq!(
             HandleLookupError::Lent.to_string(),
             "cannot remove owned resource while borrowed"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_names_the_kind_of_end_a_built_in_expected() {
+        // Wasmtime says `handle is not a readable end of a stream`;
+        // the polyfill names the index, as the waitable causes do.
+        assert_eq!(
+            HandleLookupError::NotAnEnd {
+                index: 2,
+                expected: EndKind::StreamReadable,
+            }
+            .to_string(),
+            "handle index 2 is not a readable end of a stream"
+        );
+        assert_eq!(
+            HandleLookupError::NotAnEnd {
+                index: 4,
+                expected: EndKind::FutureWritable,
+            }
+            .to_string(),
+            "handle index 4 is not a writable end of a future"
         );
     }
 }

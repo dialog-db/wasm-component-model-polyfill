@@ -12,7 +12,7 @@ use std::sync::Arc;
 use crate::abi::layout::FlatType;
 use crate::abi::signature::Signature;
 use crate::component::ExternalName;
-use crate::concurrency::LowerKind;
+use crate::concurrency::{EndKind, LowerKind};
 use crate::module::Module;
 use crate::types::{ResourceType, ValueType};
 
@@ -641,6 +641,47 @@ pub enum TrampolineSpec {
     SubtaskDrop {
         /// The component instance that calls the built-in.
         instance: usize,
+        /// The core signature the guest imports.
+        signature: CoreSignature,
+    },
+    /// The `stream.new` built-in: a stream's shared record and its
+    /// two end records enter the store, and the built-in returns the
+    /// readable end's index in the calling instance's handle table in
+    /// the low half of an `i64` and the writable end's in the high
+    /// half.
+    StreamNew {
+        /// The component instance that calls the built-in.
+        instance: usize,
+        /// The type of each value the stream carries, or `None` for a
+        /// stream that carries none.
+        payload: Option<ValueType>,
+        /// The core signature the guest imports.
+        signature: CoreSignature,
+    },
+    /// The `future.new` built-in: as [`TrampolineSpec::StreamNew`],
+    /// for a future.
+    FutureNew {
+        /// The component instance that calls the built-in.
+        instance: usize,
+        /// The type of the value the future carries, or `None` for a
+        /// future that carries none.
+        payload: Option<ValueType>,
+        /// The core signature the guest imports.
+        signature: CoreSignature,
+    },
+    /// One of the four drop built-ins of a stream or future end,
+    /// `stream.drop-readable`, `stream.drop-writable`,
+    /// `future.drop-readable`, and `future.drop-writable`: the named
+    /// end's entry leaves the calling instance's handle table, and
+    /// the end is dropped.
+    DropEnd {
+        /// The kind of end the built-in drops.
+        kind: EndKind,
+        /// The component instance that calls the built-in.
+        instance: usize,
+        /// The payload type the built-in was declared with, which the
+        /// end's stream or future must carry.
+        payload: Option<ValueType>,
         /// The core signature the guest imports.
         signature: CoreSignature,
     },

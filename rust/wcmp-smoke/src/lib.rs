@@ -1266,12 +1266,13 @@ async fn rich_world(engine: &Engine) -> Result<String, String> {
 /// handler. The handler's request and response carry streams and
 /// futures, which the type projection accepts. The binding layer of
 /// the Rust toolchain links `task.cancel` into every `async` export,
-/// which the translator accepts and which fails only when called. The
-/// next built-in the translator meets is `future.new`, which it
+/// which the translator accepts and which fails only when called.
+/// `future.new` and the drops of an end are built too. The next
+/// built-in the translator meets is `future.cancel-read`, which it
 /// lacks, so that is the first of the several refusals a WASI 0.3
 /// handler would collect. `tests/corpus/expected-failures.txt`
 /// records the same text for the fixture's definition directive.
-const WASI_HTTP_REFUSAL: &str = "the `future-new` trampoline";
+const WASI_HTTP_REFUSAL: &str = "the `future-cancel-read` trampoline";
 
 /// The `wasi-http` fixture holds a target rather than a result: the
 /// polyfill refuses the component today, so the step asserts that
