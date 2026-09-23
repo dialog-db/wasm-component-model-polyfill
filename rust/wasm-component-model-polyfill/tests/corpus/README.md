@@ -109,6 +109,22 @@ produce and must not invent; the delta holds only substrate
 differences, ten lines today, and each one is written by hand from
 the failure a `tests web debug` run prints.
 
+One difference of the substrate is not about wording. The browser
+cannot call a host function while a call of the same host function is
+still on the stack, and a blocking built-in or adapter intrinsic that
+finds no suspend provider runs a nested turn from inside itself. So
+without a suspend provider, a nested turn cannot enter any host
+function already on the stack. That covers the import the block is
+inside and the host function an outer nesting level blocks in. It also
+covers a shape where no instance calls anything twice. The
+`sync-start-call` intrinsic of a fused adapter names no component
+instance, so two different caller instances that synchronously lower
+the same asynchronous callee export share it, and the second caller
+reaches it while the first caller's block is still inside it. Each of
+these runs natively and fails in the browser with the re-entrant
+scheduler cause. No directive of the corpus fails that way today, so no
+line of the delta records it.
+
 The harness links every file against the host environment Wasmtime's
 wast runner provides: the `host` instance, `host-return-two`, and
 the rest of its component spectest (`crates/wast/src/spectest.rs`

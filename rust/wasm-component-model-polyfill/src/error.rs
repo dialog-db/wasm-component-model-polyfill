@@ -910,11 +910,17 @@ pub enum SchedulerCause {
     /// on the stack, on a target whose host functions cannot be
     /// entered twice.
     ///
-    /// A blocking built-in that finds no suspend provider runs a
-    /// nested turn from inside the lowered import the guest called,
-    /// so that import's host function is still on the stack while
-    /// the turn runs. An item of that turn which calls the same
-    /// import is therefore a second call of the same host function.
+    /// A blocking built-in or adapter intrinsic that finds no suspend
+    /// provider runs a nested turn from inside itself, so without a
+    /// provider a nested turn cannot enter any host function already
+    /// on the stack: the import a synchronous lower blocks in, the
+    /// host function an outer nested turn blocks in, and the
+    /// intrinsic a fused adapter blocks in. That intrinsic names no
+    /// component instance, so two different caller instances that
+    /// synchronously lower the same asynchronous callee export both
+    /// call the one `sync-start-call` of that callee, and the second
+    /// is a second call of the same host function. So is an item of
+    /// the turn that calls the import the block is inside.
     /// A destructor reaches the same place with no turn of any kind
     /// in it: `resource.drop` is a host function, and it runs the
     /// destructor from inside itself, so a destructor that drops a

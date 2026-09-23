@@ -594,10 +594,34 @@ No trap cause is added. `CannotEnterComponent` is raised nowhere.
 
 ## Target Differences
 
-Nothing in this document differs between the native target and the browser
-beyond the four differences [PDD018] states. The accessor's slot is a
-thread-local natively and one static cell in the browser, under one declaration.
-The host future bound is the per-target bound of [PDD018].
+This document adds one difference to the four differences [PDD018] states. The
+accessor's slot is a thread-local natively and one static cell in the browser,
+under one declaration. The host future bound is the per-target bound of
+[PDD018].
+
+The added difference is the browser's refusal of a re-entrant host call. A
+native engine can enter a host function that is already on the stack, and the
+browser cannot. Without a suspend provider, a call that blocks runs a nested
+turn from inside the host function it blocks in. So in the browser, a nested
+turn cannot enter any host function that is already on the stack. Each of these
+shapes runs natively and fails in the browser with the re-entrant host-call
+cause:
+
+- A second call of the import that the block is inside.
+- A call of the host function that an outer nesting level blocks in.
+- Two caller instances that synchronously lower the same asynchronous callee
+  export. The adapter reaches the callee through a sync-start-call intrinsic
+  that names no component instance. The two callers share one host function, and
+  the second caller enters it while the block of the first caller is still
+  inside it.
+- A destructor that drops a second handle of its own resource type in the same
+  instance. `resource.drop` runs the destructor from inside itself, so this
+  shape needs no nested turn.
+
+A lowered import and a built-in each name their instance, so the same import or
+built-in in another instance is a different host function. If a call already
+recorded an earlier host failure, the call reports that earlier failure, and the
+backend still refuses the re-entrant call.
 
 ## The Corpus
 
