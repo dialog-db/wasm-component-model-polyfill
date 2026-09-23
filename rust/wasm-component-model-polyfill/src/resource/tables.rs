@@ -694,10 +694,16 @@ impl HandleTables {
     }
 
     /// Insert an entry of kind `kind` that names the end record
-    /// `end`, and return the handle-table index.
+    /// `end`, and return the handle-table index. The end record
+    /// learns the index too, because the events it delivers carry it.
     pub fn insert_end(&mut self, table: TableId, kind: EndKind, end: EndId) -> u32 {
-        self.for_table_mut(table)
-            .insert_entry(HandleKind::end(kind, end))
+        let index = self
+            .for_table_mut(table)
+            .insert_entry(HandleKind::end(kind, end));
+        if let Some(record) = self.tasks.end_mut(end) {
+            record.handle = Some(index);
+        }
+        index
     }
 
     /// Read the entry at `index` of `table`, of any kind, with no

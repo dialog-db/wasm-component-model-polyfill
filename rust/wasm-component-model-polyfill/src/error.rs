@@ -1162,6 +1162,53 @@ pub enum CopyCause {
         /// The kind of end that crossed.
         kind: EndKind,
     },
+
+    /// A guest started a read or a write on an end whose previous
+    /// copy has not been reported. The message is Wasmtime's trap,
+    /// `Trap::ConcurrentFutureStreamOp` in `wasmtime-environ`'s
+    /// `src/trap_encoding.rs`.
+    #[error("cannot have concurrent operations active on a future/stream")]
+    ConcurrentOperation,
+
+    /// A guest asked a read or a write to move 2^28 values or more,
+    /// which a packed copy result cannot count. The message is
+    /// Wasmtime's trap, `Trap::StreamOpTooBig`.
+    #[error("stream read/write count too large")]
+    CountTooLarge,
+
+    /// The pointer of a read or a write is not aligned for the values
+    /// it names. The polyfill checks when the copy starts; Wasmtime
+    /// checks when values move, and its message there names the
+    /// pointer of the direction, `read` for the reader's buffer and
+    /// `write` for the writer's. The message is that one.
+    #[error("{} pointer not aligned", CopyCause::pointer(*kind))]
+    BufferNotAligned {
+        /// The kind of end the read or the write was on.
+        kind: EndKind,
+    },
+
+    /// The values a read or a write names do not all lie inside the
+    /// memory. The polyfill checks when the copy starts, as Wasmtime
+    /// does, and the message is the one Wasmtime's check there gives
+    /// a read and a write alike: it names the read pointer in both
+    /// directions.
+    #[error("read pointer out of bounds of memory")]
+    BufferOutOfBounds {
+        /// The kind of end the read or the write was on.
+        kind: EndKind,
+    },
+
+    /// A guest read from a readable stream end after the end reported
+    /// that the writable end dropped. The message is the one
+    /// Wasmtime's read of a stream raises.
+    #[error("cannot read after being notified that the writable end dropped")]
+    ReadAfterDropped,
+
+    /// A guest wrote to a writable stream end after the end reported
+    /// that the readable end dropped. The message is the one
+    /// Wasmtime's write to a stream raises.
+    #[error("cannot write after being notified that the readable end dropped")]
+    WriteAfterDropped,
 }
 
 impl CopyCause {
@@ -1183,6 +1230,16 @@ impl CopyCause {
             EndKind::FutureReadable | EndKind::FutureWritable => {
                 "cannot lift future after previous read succeeded"
             }
+        }
+    }
+
+    /// The word Wasmtime's messages name the pointer of a copy on an
+    /// end of `kind` by: a read's pointer is the read pointer and a
+    /// write's is the write pointer.
+    fn pointer(kind: EndKind) -> &'static str {
+        match kind {
+            EndKind::StreamReadable | EndKind::FutureReadable => "read",
+            EndKind::StreamWritable | EndKind::FutureWritable => "write",
         }
     }
 
@@ -1625,8 +1682,59 @@ mod tests {
                 },
                 "copy error: cannot remove busy future",
             ),
+            (
+                CopyCause::BufferNotAligned {
+                    kind: EndKind::StreamReadable,
+                },
+                "copy error: read pointer not aligned",
+            ),
+            (
+                CopyCause::BufferNotAligned {
+                    kind: EndKind::StreamWritable,
+                },
+                "copy error: write pointer not aligned",
+            ),
+            (
+                CopyCause::BufferOutOfBounds {
+                    kind: EndKind::StreamReadable,
+                },
+                "copy error: read pointer out of bounds of memory",
+            ),
+            (
+                CopyCause::BufferOutOfBounds {
+                    kind: EndKind::StreamWritable,
+                },
+                "copy error: read pointer out of bounds of memory",
+            ),
+            (
+                CopyCause::ReadAfterDropped,
+                "copy error: cannot read after being notified that the writable end dropped",
+            ),
+            (
+                CopyCause::WriteAfterDropped,
+                "copy error: cannot write after being notified that the readable end dropped",
+            ),
         ] {
             assert_eq!(Error::Copy(cause).to_string(), rendered);
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_pins_the_copy_causes_to_the_traps_wasmtime_environ_renders() {
+        for (trap, cause) in [
+            (
+                Trap::ConcurrentFutureStreamOp,
+                CopyCause::ConcurrentOperation.to_string(),
+            ),
+            (Trap::StreamOpTooBig, CopyCause::CountTooLarge.to_string()),
+        ] {
+            let rendered = trap.to_string();
+            assert!(
+                rendered.ends_with(&cause),
+                "{trap:?} now renders as {rendered:?}, which no longer ends with the \
+                 `CopyCause` message {cause:?}; the conformance corpus matches these \
+                 traps by substring, so the messages have to follow the traps"
+            );
         }
     }
 }

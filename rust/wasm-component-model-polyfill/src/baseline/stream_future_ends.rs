@@ -8,11 +8,13 @@
 //! entries the two indices name, the shared record's dropped mark,
 //! and how many records are left once both ends are gone.
 //!
-//! Nothing starts a copy yet, so the states a copy moves an end
-//! through are arranged by writing the end's record directly, the
-//! way the subtask baselines arrange a subtask's state. The same goes
-//! for the event a finished copy leaves on an end, which a waitable
-//! set built-in then delivers.
+//! The states a copy moves an end through are arranged by writing the
+//! end's record directly, the way the subtask baselines arrange a
+//! subtask's state, so that each test reaches the state it names
+//! without the copy that would lead there. The same goes for the
+//! event a finished copy leaves on an end, which a waitable set
+//! built-in then delivers. The copies themselves have baselines of
+//! their own.
 
 #![cfg(test)]
 

@@ -24,19 +24,22 @@ pub struct CopyEnd {
     pub waitable: WaitableState,
     /// How far the end is through its copies.
     pub state: CopyState,
-    /// Which way the values move through the end. Nothing reads it
-    /// yet: the pairing of a read with a write does.
-    #[allow(dead_code)]
+    /// Which way the values move through the end.
     pub direction: EndDirection,
     /// The index of the shared record in the store's table of shared
     /// records. The shared record lives until both of its ends are
     /// dropped, so the index names it for as long as this record
     /// lives.
     pub shared: u32,
-    /// The buffer of the copy in progress, while the end is copying.
-    /// Nothing starts a copy yet, so the slot stays empty.
-    #[allow(dead_code)]
+    /// The buffer of the copy in progress, from the moment a read or
+    /// a write starts until the event that reports it is delivered.
     pub buffer: Option<CopyBuffer>,
+    /// The index of the entry that names the end in the handle table
+    /// of the instance that holds it, which the event the end
+    /// delivers carries. A readable end that crosses a boundary takes
+    /// a new index in the receiver's table, and the entry that
+    /// receives it records the new one here.
+    pub handle: Option<u32>,
 }
 
 impl CopyEnd {
@@ -50,6 +53,7 @@ impl CopyEnd {
             direction,
             shared,
             buffer: None,
+            handle: None,
         }
     }
 }

@@ -87,6 +87,7 @@ mod call_status;
 mod caller_kind;
 mod copy_buffer;
 mod copy_end;
+mod copy_result;
 mod copy_state;
 mod driver;
 mod end_direction;
@@ -108,6 +109,7 @@ mod item_action;
 mod item_kind;
 mod lower_kind;
 mod outcome;
+mod pairing;
 mod poll_scope;
 mod readiness;
 mod record_table;
@@ -142,14 +144,15 @@ pub use accessor::Accessor;
 pub use call_bridge::CallBridge;
 pub use call_status::CallStatus;
 pub use caller_kind::CallerKind;
+pub use copy_buffer::CopyBuffer;
 pub use copy_state::CopyState;
 pub use driver::Driver;
 pub use end_id::EndId;
 pub use end_kind::EndKind;
 pub use event::Event;
 // An event code is spelled outside this module only by the tests that
-// leave a copy event on an end, which the built-ins that finish a copy
-// will do themselves.
+// leave a copy event on an end by hand; the built-ins that finish a
+// copy reach the code through the task tables.
 #[cfg(test)]
 pub use event_code::EventCode;
 pub use event_slot::EventSlot;
@@ -161,6 +164,7 @@ pub use item::Item;
 pub use item_kind::ItemKind;
 pub use lower_kind::LowerKind;
 pub use outcome::Outcome;
+pub use pairing::Pairing;
 pub use poll_scope::PollScope;
 pub use scheduler::Scheduler;
 pub use scheduler_state::SchedulerState;

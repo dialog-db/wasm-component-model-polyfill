@@ -40,10 +40,7 @@ impl Event {
 
     /// The event a finished copy delivers: the stream or future
     /// end's index in the handle table and the copy result. `code`
-    /// is the read or write code of the end's kind. Nothing
-    /// constructs one yet; the features that add streams and futures
-    /// do.
-    #[allow(dead_code)]
+    /// is the read or write code of the end's kind.
     pub fn copy(code: EventCode, handle_index: u32, result: u32) -> Self {
         Self {
             code,

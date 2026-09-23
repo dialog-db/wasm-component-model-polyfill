@@ -699,6 +699,24 @@ pub enum TrampolineSpec {
         /// The core signature the guest imports.
         signature: CoreSignature,
     },
+    /// `stream.read` or `stream.write`: a copy on the named end, into
+    /// or out of a buffer in guest memory, which pairs with a copy on
+    /// the other end of the stream.
+    StreamCopy {
+        /// The kind of end the built-in copies on: the readable end
+        /// for `stream.read`, the writable end for `stream.write`.
+        kind: EndKind,
+        /// The canon options the built-in was declared with: the
+        /// calling instance, the `async` flag, and the memory the
+        /// buffer lives in, with the `realloc` a value lowered into
+        /// it may call.
+        options: CanonOptions,
+        /// The payload type the built-in was declared with, which the
+        /// end's stream must carry.
+        payload: Option<ValueType>,
+        /// The core signature the guest imports.
+        signature: CoreSignature,
+    },
     /// The `prepare-call` intrinsic of a fused adapter whose lower
     /// or lift is asynchronous: it creates the callee's task and the
     /// caller's subtask, and records on the subtask the two

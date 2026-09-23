@@ -380,6 +380,21 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 payload: payload_of(&projector, InterfaceType::Future(*ty))?,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
+            // The two copies of a stream. Each carries its canon
+            // options, which name the calling instance, the `async`
+            // flag, and the memory the guest's buffer lives in.
+            Trampoline::StreamRead { ty, options, .. } => TrampolineSpec::StreamCopy {
+                kind: EndKind::StreamReadable,
+                options: trampoline_options(&translation, *options)?,
+                payload: payload_of(&projector, InterfaceType::Stream(*ty))?,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::StreamWrite { ty, options, .. } => TrampolineSpec::StreamCopy {
+                kind: EndKind::StreamWritable,
+                options: trampoline_options(&translation, *options)?,
+                payload: payload_of(&projector, InterfaceType::Stream(*ty))?,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
             // The prepare-and-start pair of a fused adapter whose
             // lower or lift is asynchronous. Prepare names the
             // memory the callee's lift declared, which the callee's
@@ -910,9 +925,6 @@ fn resolve_table_index(
     }
 }
 
-/// The payload type of the stream or future type `ty`, which a
-/// built-in that works on the type's ends was declared with, or
-/// `None` for one that carries no values.
 /// The `count` stream or future tables of a component, each built by
 /// `table` from its index.
 fn end_tables(
@@ -922,6 +934,9 @@ fn end_tables(
     (0..count as u32).map(table).collect()
 }
 
+/// The payload type of the stream or future type `ty`, which a
+/// built-in that works on the type's ends was declared with, or
+/// `None` for one that carries no values.
 fn payload_of(projector: &TypeProjector<'_>, ty: InterfaceType) -> Result<Option<ValueType>> {
     match projector.value_type(&ty)? {
         ValueType::Stream(stream) => Ok(stream.payload().cloned()),

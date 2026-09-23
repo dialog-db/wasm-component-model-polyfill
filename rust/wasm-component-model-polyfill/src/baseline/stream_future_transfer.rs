@@ -14,9 +14,9 @@
 //! parameter, or receives one the reader made, as a result: a
 //! synchronous result in the flat form, a synchronous result inside
 //! a tuple in the memory form, and an asynchronous result through
-//! `task.return`. Nothing starts a copy yet, so the states a copy
-//! moves an end through are arranged by writing the end's record
-//! directly, as the baselines of the ends themselves do.
+//! `task.return`. The states a copy moves an end through are
+//! arranged by writing the end's record directly, as the baselines of
+//! the ends themselves do.
 //!
 //! Between a guest and the host the same crossing has no host value
 //! to carry the end in yet, so it fails with `Error::Unsupported`

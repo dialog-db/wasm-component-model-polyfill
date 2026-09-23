@@ -18,9 +18,12 @@ import, so part of `cm/async/` and `wasmtime/async/` passes: a host
 call into such an export, `task.return`, backpressure, the waitable set
 built-ins, `thread.yield`, and the context slots. A call between two
 components crosses in all four combinations of lift and lower, and the
-readable end of a stream or a future crosses with it. The
-asynchronous lower answers with the status word, the subtask enters the
-caller's handle table when the call does not resolve at once, and the
+readable end of a stream or a future crosses with it. A read and a
+write on the two ends of a stream pair up as the reference's stream
+state pairs them, with partial and zero-length copies, and a copy
+that does not finish at once completes through an event on its end.
+The asynchronous lower answers with the status word, the subtask enters
+the caller's handle table when the call does not resolve at once, and the
 callee's start and resolution reach the caller as subtask events; the
 synchronous lower returns at the callee's `task.return` and leaves the
 callee's late exit to the next turn. A guest that lowers a host `async`
@@ -42,9 +45,10 @@ trap the synchronous baseline gives it.
 The directive that first meets what is missing is an expected failure
 of category `deferred-feature`, for one of seven reasons: a call whose
 callee can be released only by a caller that is on the stack, which
-needs a stack switch, a future or stream built-in, the stackful lift,
-a thread built-in other than `thread.yield`, cancellation, an error
-context, or the rules that decide which trap poisons an instance. Most
+needs a stack switch, a future or stream built-in or rule, the
+stackful lift, a thread built-in other than `thread.yield`,
+cancellation, an error context, or the rules that decide which trap
+poisons an instance. Most
 of the rest is `cascade`: a component definition that fails leaves its
 name unbound and no instance current, so every later directive in the
 file that names the definition or invokes the instance fails as
@@ -85,7 +89,7 @@ same group, which is how the runtime's own wording — `unsupported
 component feature: thread built-ins (table extraction)` — is told
 apart from a note. A reason that ends in the run's cause behind other
 leading text is a sentence a person wrote over that cause, and it is
-kept whole: the five such lines say in one clause what the substrate
+kept whole: the nine such lines say in one clause what the substrate
 says in a nested error and a backtrace. A line refreshes when the
 cause at the end of the run's reason changes, which is what a change
 to the failure text means. A line the rule reads the other way is
@@ -187,17 +191,17 @@ conformance` prints the current one):
 | Corpus           | Directives | Passed | Pass % | Expected failures by category                                  |
 | ---------------- | ---------- | ------ | ------ | -------------------------------------------------------------- |
 | `cm`             | 1126       | 1038   | 92.2   | deferred-feature 2, substrate 4, validation 20, cascade 62     |
-| `cm/async`       | 393        | 90     | 22.9   | deferred-feature 43, cascade 260                               |
+| `cm/async`       | 393        | 106    | 27.0   | deferred-feature 39, cascade 248                               |
 | `fixtures`       | 48         | 45     | 93.8   | deferred-feature 1, cascade 2                                  |
 | `wasmtime`       | 469        | 431    | 91.9   | deferred-feature 2, substrate 8, cascade 28                    |
-| `wasmtime/async` | 387        | 162    | 41.9   | deferred-feature 73, cascade 152                               |
-| total            | 2423       | 1766   | 72.9   | deferred-feature 121, substrate 12, validation 20, cascade 504 |
+| `wasmtime/async` | 387        | 188    | 48.6   | deferred-feature 61, cascade 138                               |
+| total            | 2423       | 1808   | 74.6   | deferred-feature 105, substrate 12, validation 20, cascade 478 |
 
 The browser's summary differs by the ten lines of
 `expected-failures.web.txt`, which move ten passing directives into
 `substrate`: `cm` passes 1037 (92.1%) with substrate 5, `cm/async`
-89 (22.6%), `wasmtime` 425 (90.6%), `wasmtime/async` 160 (41.3%), and
-the total is 1756 (72.5%) with substrate 22. Every other cell is the
+105 (26.7%), `wasmtime` 425 (90.6%), `wasmtime/async` 186 (48.1%), and
+the total is 1798 (74.2%) with substrate 22. Every other cell is the
 same.
 
 The `async` rows still hold the pass rate down, though the asynchronous
@@ -210,7 +214,7 @@ the seven reasons above cover most of what those directories still
 exercise. Each component those directories define that the polyfill
 rejects is a `deferred-feature` failure, and every later directive in
 the same file that names it is a `cascade` one, which is why the two
-async rows together hold 412 of the 504 cascade lines, while `cm` and
+async rows together hold 386 of the 478 cascade lines, while `cm` and
 `wasmtime` alone pass at 92.2% and 91.9%. Twenty-one files that held
 expected failures now pass whole: `cm/async/cross-abi-calls.wast`,
 `cm/async/deadlock.wast`, `cm/async/dont-block-start.wast`,
@@ -241,3 +245,24 @@ switch. Of the three corpus files that exercise a host `async` item,
 `wasmtime/async/lower.wast` and `wasmtime/async/drop-host.wast` pass
 whole, and `wasmtime/async/cancel-host.wast` is held up by
 cancellation.
+
+The copies of a stream moved six more files into the passing column
+whole: `cm/async/closed-stream.wast`, `cm/async/drop-stream.wast`,
+`cm/async/partial-stream-copies.wast`, `cm/async/zero-length.wast`,
+`wasmtime/async/partial-stream-copies.wast`, and
+`wasmtime/async/stream-big-read-and-writes.wast`. They also pass
+every directive of `wasmtime/async/streams.wast` but the two
+components that declare `stream.cancel-read` and `stream.cancel-write`,
+which wait for cancellation, three of the four components of
+`wasmtime/async/intra-streams.wast`, and the busy-drop directive of
+`cm/async/builtin-trap-poisons-instance.wast`. Four files stay
+deferred on a stack switch, which the suspend capability serves and
+which has no provider on either target until the stackful design
+fills it. Both `sync-streams.wast` and
+`wasmtime/async/streams-massive-send.wast` have a callee that writes
+synchronously after `task.return` for its caller below it to read,
+and the massive send first waits on the `future-write` built-in.
+`wasmtime/async/stream-zero-ops.wast` has a synchronously lifted
+callee that blocks in `waitable-set.wait` until its caller, below it
+on the stack, writes. The repository's test of the copy budget stands
+in for the massive send's stream write.

@@ -25,8 +25,14 @@ pub wasm_component_model_polyfill::AbiPosition::Result
 impl core::fmt::Display for wasm_component_model_polyfill::AbiPosition
 pub fn wasm_component_model_polyfill::AbiPosition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum wasm_component_model_polyfill::CopyCause
+pub wasm_component_model_polyfill::CopyCause::BufferNotAligned
+pub wasm_component_model_polyfill::CopyCause::BufferNotAligned::kind: wasm_component_model_polyfill::EndKind
+pub wasm_component_model_polyfill::CopyCause::BufferOutOfBounds
+pub wasm_component_model_polyfill::CopyCause::BufferOutOfBounds::kind: wasm_component_model_polyfill::EndKind
 pub wasm_component_model_polyfill::CopyCause::BusyEnd
 pub wasm_component_model_polyfill::CopyCause::BusyEnd::kind: wasm_component_model_polyfill::EndKind
+pub wasm_component_model_polyfill::CopyCause::ConcurrentOperation
+pub wasm_component_model_polyfill::CopyCause::CountTooLarge
 pub wasm_component_model_polyfill::CopyCause::FutureWriteEndNotWritten
 pub wasm_component_model_polyfill::CopyCause::LiftAfterDone
 pub wasm_component_model_polyfill::CopyCause::LiftAfterDone::kind: wasm_component_model_polyfill::EndKind
@@ -36,6 +42,8 @@ pub wasm_component_model_polyfill::CopyCause::LiftInWaitableSet
 pub wasm_component_model_polyfill::CopyCause::LiftInWaitableSet::kind: wasm_component_model_polyfill::EndKind
 pub wasm_component_model_polyfill::CopyCause::PayloadMismatch
 pub wasm_component_model_polyfill::CopyCause::PayloadMismatch::kind: wasm_component_model_polyfill::EndKind
+pub wasm_component_model_polyfill::CopyCause::ReadAfterDropped
+pub wasm_component_model_polyfill::CopyCause::WriteAfterDropped
 #[non_exhaustive] pub enum wasm_component_model_polyfill::CoreExternType
 pub wasm_component_model_polyfill::CoreExternType::Func
 pub wasm_component_model_polyfill::CoreExternType::Func::params: alloc::vec::Vec<wasm_component_model_polyfill::CoreValueType>

@@ -23,8 +23,10 @@
 //! that succeeds takes the entry away, frees its index to the
 //! instance's free list, and takes the end out of the waitable set
 //! it joined. The first of a pair to go marks the shared record
-//! dropped, and the second takes the shared record and both end
-//! records out of the store.
+//! dropped and gives the other end the dropped result, when that end
+//! is copying as the pending side, is idle, or is a stream end whose
+//! completed copy has not been delivered, and the second takes the
+//! shared record and both end records out of the store.
 //!
 //! Every one of the six traps with the cannot-leave cause when the
 //! instance's may-leave flag is clear, which is the case while a

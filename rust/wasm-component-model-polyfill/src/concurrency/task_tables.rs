@@ -10,15 +10,19 @@ use crate::internal::ErrorInternal;
 use crate::resource::TableId;
 use crate::types::ValueType;
 
+use super::copy_buffer::CopyBuffer;
 use super::copy_end::CopyEnd;
+use super::copy_result::CopyResult;
 use super::copy_state::CopyState;
 use super::end_direction::EndDirection;
 use super::end_id::EndId;
 use super::end_kind::EndKind;
 use super::event::Event;
+use super::event_code::EventCode;
 use super::failure_channel::FailureChannel;
 use super::instance_id::InstanceId;
 use super::instance_record::InstanceRecord;
+use super::pairing::Pairing;
 use super::readiness::Readiness;
 use super::record_table::RecordTable;
 use super::scope::Scope;
@@ -914,10 +918,16 @@ impl TaskTables {
     /// Drop the waitable `waitable` and the record it names. A
     /// subtask whose resolution was not delivered traps, because the
     /// handles the call borrowed are still lent out; so does a
-    /// waitable a thread waits on synchronously. A stream or future
+    /// subtask a thread waits on synchronously. A stream or future
     /// end follows the rules [`drop_end`](Self::drop_end) states. The
     /// waitable leaves the set it joined on its way out.
     pub fn drop_waitable(&mut self, waitable: WaitableId) -> Result<()> {
+        // An end a thread waits on synchronously is copying, and the
+        // end's own busy check names that the way Wasmtime does, so
+        // an end goes to its own rules before the waiter is looked at.
+        if let Some((kind, end)) = waitable.end() {
+            return self.drop_end(kind, end);
+        }
         let state = self.waitable_state(waitable)?;
         if state.synchronous_waiter {
             return Err(Error::Waitable(WaitableCause::SyncAndAsync));
@@ -931,10 +941,7 @@ impl TaskTables {
                 self.remove_subtask(subtask);
                 Ok(())
             }
-            _ => match waitable.end() {
-                Some((kind, end)) => self.drop_end(kind, end),
-                None => Err(Error::internal("waitable kind has no record in the store")),
-            },
+            _ => Err(Error::internal("waitable kind has no record in the store")),
         }
     }
 
@@ -1020,6 +1027,21 @@ impl TaskTables {
     /// shared record dropped and leaves both end records in the
     /// store; dropping the second removes the shared record and both
     /// end records.
+    ///
+    /// The first drop also tells the other end. A copy of it that is
+    /// the pending side completes with the dropped result and the
+    /// progress it made, which is the reference's `drop` of its shared
+    /// stream. An other end that is idle and not done is given the
+    /// dropped result with nothing moved, so a guest waiting on it in
+    /// a set learns of the drop before it copies again. A stream end
+    /// that holds the completed event of a copy not yet delivered has
+    /// that event turned into the dropped result, and the event keeps
+    /// the progress the copy made, because the count is read when the
+    /// event is delivered. A future end keeps an event it holds. Those
+    /// rules are the ones the reference's current `End.drop` and
+    /// `stream_event` state and Wasmtime's `update_event` follows,
+    /// where the reference the conformance corpus is drawn from tells
+    /// a pending copy alone.
     pub fn drop_end(&mut self, kind: EndKind, end: EndId) -> Result<()> {
         let record = self.end_record(end)?;
         if record.state.busy() {
@@ -1029,6 +1051,7 @@ impl TaskTables {
             return Err(Error::Copy(CopyCause::FutureWriteEndNotWritten));
         }
         let shared = record.shared;
+        let direction = record.direction;
         self.leave_waitable_set(WaitableId::from_end(kind, end));
         let record = self
             .shared_records
@@ -1036,6 +1059,21 @@ impl TaskTables {
             .ok_or_else(|| Error::internal("shared record is not in the store"))?;
         if !record.dropped {
             record.dropped = true;
+            let other = match direction {
+                EndDirection::Readable => record.writable,
+                EndDirection::Writable => record.readable,
+            };
+            let other_kind = counterpart(kind);
+            if record.pending.is_some_and(|pending| pending != direction) {
+                record.pending = None;
+                return self.notify_copy(other_kind, other, CopyResult::Dropped);
+            }
+            let other_record = self.end_record(other)?;
+            let holds_future_event =
+                is_future(other_kind) && other_record.waitable.pending_event.is_some();
+            if other_record.state != CopyState::Done && !holds_future_event {
+                return self.notify_copy(other_kind, other, CopyResult::Dropped);
+            }
             return Ok(());
         }
         let record = self
@@ -1092,7 +1130,156 @@ impl TaskTables {
             let taken = self.waitable_state_mut(waitable)?.pending_event.take();
             return Ok(taken.map(|event| Event::subtask(event.payloads()[0], state)));
         }
-        Ok(self.waitable_state_mut(waitable)?.pending_event.take())
+        let taken = self.waitable_state_mut(waitable)?.pending_event.take();
+        match (waitable.end(), taken) {
+            (Some((kind, end)), Some(event)) => self.deliver_copy_event(kind, end, event).map(Some),
+            (_, taken) => Ok(taken),
+        }
+    }
+
+    // ---- copies ----
+
+    /// Start a copy on `end`, an end of kind `kind`, over `buffer`,
+    /// and pair it with the other end of its stream. The rules are
+    /// the reference's `SharedStreamImpl.read` and `write`:
+    ///
+    /// - A copy on a stream whose other end was dropped completes at
+    ///   once with the dropped result.
+    /// - The first copy on a stream with no pending side becomes the
+    ///   pending side.
+    /// - A copy that finds the other end pending with room left moves
+    ///   the smaller of the two remaining counts at once, which the
+    ///   caller does with the [`Pairing::Move`] it is handed. A copy
+    ///   that asked for nothing completes at once with nothing moved
+    ///   instead, which makes it a readiness probe.
+    /// - A copy that finds the pending side full completes it and
+    ///   takes its place. A write that asked for nothing, against a
+    ///   pending read that asked for nothing, completes at once
+    ///   instead and leaves the read pending.
+    ///
+    /// The end moves to `copying` and keeps the buffer until the event
+    /// that reports its copy is delivered.
+    pub fn start_copy(&mut self, kind: EndKind, end: EndId, buffer: CopyBuffer) -> Result<Pairing> {
+        let (remain, zero_length) = (buffer.remain(), buffer.is_zero_length());
+        let record = self.end_record_mut(end)?;
+        record.state = CopyState::Copying;
+        record.buffer = Some(buffer);
+        let (shared, direction) = (record.shared, record.direction);
+        let record = self.shared_record_at(shared)?;
+        if record.dropped {
+            self.notify_copy(kind, end, CopyResult::Dropped)?;
+            return Ok(Pairing::Settled);
+        }
+        let Some(pending) = record.pending else {
+            self.shared_record_at_mut(shared)?.pending = Some(direction);
+            return Ok(Pairing::Settled);
+        };
+        if pending == direction {
+            return Err(Error::internal(
+                "an idle end's own direction is the pending side of its stream",
+            ));
+        }
+        let (other, other_kind) = (record.end_of(pending), counterpart(kind));
+        let other_buffer = self
+            .end_record(other)?
+            .buffer
+            .as_ref()
+            .ok_or_else(|| Error::internal("the pending side of a stream holds no buffer"))?;
+        let (other_remain, other_zero_length) =
+            (other_buffer.remain(), other_buffer.is_zero_length());
+        if other_remain > 0 {
+            if remain == 0 {
+                self.notify_copy(kind, end, CopyResult::Completed)?;
+                return Ok(Pairing::Settled);
+            }
+            let count = remain.min(other_remain);
+            let (writer, reader) = match direction {
+                EndDirection::Readable => (other, end),
+                EndDirection::Writable => (end, other),
+            };
+            return Ok(Pairing::Move {
+                writer,
+                reader,
+                count,
+            });
+        }
+        if direction == EndDirection::Writable && zero_length && other_zero_length {
+            self.notify_copy(kind, end, CopyResult::Completed)?;
+            return Ok(Pairing::Settled);
+        }
+        self.shared_record_at_mut(shared)?.pending = Some(direction);
+        self.notify_copy(other_kind, other, CopyResult::Completed)?;
+        Ok(Pairing::Settled)
+    }
+
+    /// The values the [`Pairing::Move`] of a copy on `end`, an end of
+    /// kind `kind`, named have moved: both buffers record `count` more
+    /// values of progress. The copy on `end` completes. The pending
+    /// copy completes too, but stays the pending side, and its buffer
+    /// keeps taking values from later copies until its event is
+    /// delivered, which then reports the total. That is the
+    /// reference's reclaim rule.
+    pub fn finish_move(&mut self, kind: EndKind, end: EndId, count: u32) -> Result<()> {
+        let shared = self.end_record(end)?.shared;
+        let record = self.shared_record_at(shared)?;
+        let other = match direction_of(kind) {
+            EndDirection::Readable => record.writable,
+            EndDirection::Writable => record.readable,
+        };
+        for side in [end, other] {
+            let buffer = self
+                .end_record_mut(side)?
+                .buffer
+                .as_mut()
+                .ok_or_else(|| Error::internal("a moving copy's end holds no buffer"))?;
+            buffer.progress += count;
+        }
+        self.notify_copy(counterpart(kind), other, CopyResult::Completed)?;
+        self.notify_copy(kind, end, CopyResult::Completed)
+    }
+
+    /// Give `end`, an end of kind `kind`, the event of a finished
+    /// copy with `result`. The event carries the end's index; the
+    /// count the copy moved is read when the event is delivered,
+    /// because a pending copy's buffer can take more values between
+    /// now and then.
+    fn notify_copy(&mut self, kind: EndKind, end: EndId, result: CopyResult) -> Result<()> {
+        let handle = self.end_record(end)?.handle.unwrap_or(0);
+        self.set_pending_event(
+            WaitableId::from_end(kind, end),
+            Event::copy(event_code(kind), handle, result.pack(0)),
+        )
+    }
+
+    /// Finish the delivery of `event`, just taken from `end`, an end
+    /// of kind `kind`: what the reference's `stream_event` does when a
+    /// copy's event is taken. The count the copy moved goes into the
+    /// packed result, the buffer is given back, and the end moves on:
+    /// to `done` after a dropped result, and for a future after a
+    /// completed one too, and to `idle` otherwise. An end still the
+    /// pending side of its stream stops being it, which is the
+    /// reclaim of its buffer. The index is the one the end has now.
+    fn deliver_copy_event(&mut self, kind: EndKind, end: EndId, event: Event) -> Result<Event> {
+        let [index, packed] = event.payloads();
+        let result = CopyResult::from_packed(packed);
+        let record = self.end_record_mut(end)?;
+        let packed = match (record.buffer.take(), result) {
+            (Some(buffer), Some(result)) => result.pack(buffer.progress),
+            _ => packed,
+        };
+        record.state = match result {
+            Some(CopyResult::Dropped) => CopyState::Done,
+            Some(CopyResult::Completed) if is_future(kind) => CopyState::Done,
+            _ => CopyState::Idle,
+        };
+        let index = record.handle.unwrap_or(index);
+        let (shared, direction) = (record.shared, record.direction);
+        if let Some(record) = self.shared_records.get_mut(shared)
+            && record.pending == Some(direction)
+        {
+            record.pending = None;
+        }
+        Ok(Event::copy(event.code(), index, packed))
     }
 
     /// One subtask record, or the internal error when the identity
@@ -1120,6 +1307,27 @@ impl TaskTables {
     fn end_record(&self, end: EndId) -> Result<&CopyEnd> {
         self.end(end)
             .ok_or_else(|| Error::internal("end record is not in the store"))
+    }
+
+    /// One end record, mutably.
+    fn end_record_mut(&mut self, end: EndId) -> Result<&mut CopyEnd> {
+        self.end_mut(end)
+            .ok_or_else(|| Error::internal("end record is not in the store"))
+    }
+
+    /// The shared record at `index`, or the internal error when there
+    /// is none.
+    fn shared_record_at(&self, index: u32) -> Result<&SharedRecord> {
+        self.shared_records
+            .get(index)
+            .ok_or_else(|| Error::internal("shared record is not in the store"))
+    }
+
+    /// The shared record at `index`, mutably.
+    fn shared_record_at_mut(&mut self, index: u32) -> Result<&mut SharedRecord> {
+        self.shared_records
+            .get_mut(index)
+            .ok_or_else(|| Error::internal("shared record is not in the store"))
     }
 
     /// The waitable state on the record `waitable` names.
@@ -1154,6 +1362,40 @@ impl TaskTables {
 impl Default for TaskTables {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The kind of the other end of the stream or future an end of `kind`
+/// belongs to.
+fn counterpart(kind: EndKind) -> EndKind {
+    match kind {
+        EndKind::StreamReadable => EndKind::StreamWritable,
+        EndKind::StreamWritable => EndKind::StreamReadable,
+        EndKind::FutureReadable => EndKind::FutureWritable,
+        EndKind::FutureWritable => EndKind::FutureReadable,
+    }
+}
+
+/// Which way the values move through an end of `kind`.
+fn direction_of(kind: EndKind) -> EndDirection {
+    match kind {
+        EndKind::StreamReadable | EndKind::FutureReadable => EndDirection::Readable,
+        EndKind::StreamWritable | EndKind::FutureWritable => EndDirection::Writable,
+    }
+}
+
+/// Whether an end of `kind` belongs to a future rather than a stream.
+fn is_future(kind: EndKind) -> bool {
+    matches!(kind, EndKind::FutureReadable | EndKind::FutureWritable)
+}
+
+/// The code of the event a copy on an end of `kind` delivers.
+fn event_code(kind: EndKind) -> EventCode {
+    match kind {
+        EndKind::StreamReadable => EventCode::StreamRead,
+        EndKind::StreamWritable => EventCode::StreamWrite,
+        EndKind::FutureReadable => EventCode::FutureRead,
+        EndKind::FutureWritable => EventCode::FutureWrite,
     }
 }
 
@@ -1457,5 +1699,106 @@ mod tests {
         tables
             .drop_waitable_set(set)
             .expect("so the set drops cleanly");
+    }
+
+    /// The buffer of a copy of `length` values on a stream that
+    /// carries none, under canon options that name no runtime slot.
+    fn empty_buffer(length: u32) -> CopyBuffer {
+        use crate::abi::runtime_state::AbiRuntimeState;
+        use crate::executor::ir::{DataModel, StringEncoding};
+        use std::sync::Mutex;
+        CopyBuffer {
+            payload: None,
+            options: Arc::new(CanonOptions {
+                instance: 0,
+                memory: None,
+                realloc: None,
+                post_return: None,
+                async_: true,
+                callback: None,
+                string_encoding: StringEncoding::Utf8,
+                data_model: DataModel::LinearMemory,
+            }),
+            abi_state: Arc::new(Mutex::new(AbiRuntimeState::with_slabs(
+                0,
+                0,
+                0,
+                0,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ))),
+            pointer: 0,
+            length,
+            progress: 0,
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_turns_the_undelivered_completion_of_an_end_that_is_not_pending_into_a_drop() {
+        // A full pending read is completed and replaced as the pending
+        // side by a write. The write then leaves the copy, as a cancel
+        // of it will, so the writable end is idle while the read still
+        // holds its completed event. That is the one shape in which
+        // the end a drop reaches holds an event without being the
+        // pending side.
+        let mut tables = TaskTables::new();
+        let (readable, writable) = tables.insert_ends(None);
+        let read = WaitableId::from_end(EndKind::StreamReadable, readable);
+        let write = WaitableId::from_end(EndKind::StreamWritable, writable);
+        assert_eq!(
+            tables
+                .start_copy(EndKind::StreamReadable, readable, empty_buffer(2))
+                .expect("the read starts"),
+            Pairing::Settled
+        );
+        let pairing = tables
+            .start_copy(EndKind::StreamWritable, writable, empty_buffer(2))
+            .expect("the write starts");
+        assert_eq!(
+            pairing,
+            Pairing::Move {
+                writer: writable,
+                reader: readable,
+                count: 2
+            }
+        );
+        tables
+            .finish_move(EndKind::StreamWritable, writable, 2)
+            .expect("the move finishes");
+        tables
+            .take_pending_event(write)
+            .expect("the write's event")
+            .expect("the write completed");
+        tables
+            .start_copy(EndKind::StreamWritable, writable, empty_buffer(3))
+            .expect("a second write replaces the full read");
+        let shared = tables.end(writable).expect("the writable end").shared;
+        tables
+            .shared_records
+            .get_mut(shared)
+            .expect("the record")
+            .pending = None;
+        let record = tables.end_record_mut(writable).expect("the writable end");
+        record.state = CopyState::Idle;
+        record.buffer = None;
+
+        tables
+            .drop_end(EndKind::StreamWritable, writable)
+            .expect("the idle writable end drops");
+
+        let event = tables
+            .take_pending_event(read)
+            .expect("the read's event")
+            .expect("the read holds an event");
+        assert_eq!(
+            event.payloads()[1],
+            CopyResult::Dropped.pack(2),
+            "the completion became the dropped result and kept the two it moved"
+        );
+        assert_eq!(
+            tables.end(readable).map(|end| end.state),
+            Some(CopyState::Done)
+        );
     }
 }

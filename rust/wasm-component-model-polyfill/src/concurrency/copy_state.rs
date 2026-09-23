@@ -13,11 +13,8 @@
 pub enum CopyState {
     /// No copy is in progress and another may start.
     Idle,
-    /// A read or write on the end has started and not completed.
-    ///
-    /// Nothing moves an end here yet: the built-ins that start a copy
-    /// do.
-    #[allow(dead_code)]
+    /// A read or write on the end has started, and the event that
+    /// reports it has not been delivered.
     Copying,
     /// A cancel of the end's copy has started and not completed.
     ///
@@ -26,10 +23,8 @@ pub enum CopyState {
     #[allow(dead_code)]
     Cancelling,
     /// The end can make no further copy, and accepts only a drop.
-    ///
-    /// Nothing moves an end here yet: a completed future copy and a
-    /// copy that finds the other end dropped do.
-    #[allow(dead_code)]
+    /// The delivery of a dropped result moves an end here, and so does
+    /// the delivery of a completed future copy.
     Done,
 }
 

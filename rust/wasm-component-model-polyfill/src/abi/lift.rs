@@ -238,10 +238,18 @@ pub fn lift_end_for_host<T: 'static>(
 /// type `ty`, a `stream<T>` or a `future<T>`: the entry leaves the
 /// sender's table and the end it named is returned, to be lowered
 /// into the receiver's table. The reference's `lift_async_value`
-/// makes the same checks, in the order [`readable_end_at`] states,
-/// and a lift that fails leaves the entry where it was. Only the
-/// readable end ever crosses: the writable end stays in the instance
-/// that created the pair.
+/// makes the same checks, in the order [`readable_end_at`] states.
+/// Only the readable end ever crosses: the writable end stays in the
+/// instance that created the pair.
+///
+/// A lift that fails leaves the entry where it was. That departs from
+/// the reference and Wasmtime, which both take the entry out of the
+/// table first and check after, so a failed lift there has already
+/// removed it. Every such failure is a trap, so the difference shows
+/// only after the trap, to a later call into the same instance, which
+/// finds the entry still there. The polyfill checks before it removes
+/// because its lift of a readable end toward the host makes the same
+/// checks and must keep the entry when that crossing is refused.
 ///
 /// An end is an index, as a resource handle is, so its lift charges
 /// the crossing's copy budget nothing, as Wasmtime charges its
@@ -263,14 +271,20 @@ pub fn lift_readable_end<E: From<Error>>(
 }
 
 /// The readable end at `index` of `table`, when it may cross as a
-/// value of type `ty`. The checks run in the reference's order, and
-/// each trap carries Wasmtime's message:
+/// value of type `ty`. The checks run in the order of the
+/// reference's `lift_async_value` and of Wasmtime's removal of a
+/// readable end from its handle table, and each trap carries
+/// Wasmtime's message:
 ///
 /// 1. The entry must be a readable end of the kind `ty` names.
 /// 2. The end's stream or future must carry the payload `ty` names.
-/// 3. The end must not be done.
+/// 3. No copy may be in progress on the end, and the end must not be
+///    done. The two cannot hold at once, so their order is moot.
 /// 4. The end must not be in a waitable set.
-/// 5. No copy may be in progress on the end.
+///
+/// An end that is copying and in a set therefore fails as busy, which
+/// is what a guest that started an asynchronous read and then joined
+/// the end to a set meets.
 pub fn readable_end_at<E: From<Error>>(
     tables: &HandleTables,
     table: TableId,
@@ -299,14 +313,14 @@ pub fn readable_end_at<E: From<Error>>(
     if shared.payload.as_ref() != payload {
         return Err(Error::Copy(CopyCause::PayloadMismatch { kind }).into());
     }
+    if record.state.busy() {
+        return Err(Error::Copy(CopyCause::LiftDuringCopy { kind }).into());
+    }
     if record.state == CopyState::Done {
         return Err(Error::Copy(CopyCause::LiftAfterDone { kind }).into());
     }
     if record.waitable.set.is_some() {
         return Err(Error::Copy(CopyCause::LiftInWaitableSet { kind }).into());
-    }
-    if record.state.busy() {
-        return Err(Error::Copy(CopyCause::LiftDuringCopy { kind }).into());
     }
     Ok(end)
 }
