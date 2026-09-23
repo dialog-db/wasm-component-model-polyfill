@@ -98,10 +98,6 @@ pub struct ExecutorIr {
     /// global that adapter modules import through
     /// [`ImportSource::InstanceFlags`].
     pub num_component_instances: usize,
-    /// The most list elements one crossing into or out of this
-    /// component may lift, from the configuration of the engine the
-    /// component was translated against.
-    pub max_list_elements: usize,
 }
 
 /// One core module pre-translated to the runtime layer.

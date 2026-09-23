@@ -60,9 +60,6 @@ pub trait EngineInternal {
 pub trait EngineConfigInternal {
     /// The validator features this configuration selects.
     fn wasm_features(&self) -> WasmFeatures;
-
-    /// The most list elements one crossing may lift.
-    fn list_element_bound(&self) -> usize;
 }
 
 /// The crate-internal face of a compound value type: a

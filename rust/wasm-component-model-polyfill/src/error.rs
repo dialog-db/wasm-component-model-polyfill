@@ -794,27 +794,29 @@ pub enum AbiCause {
         count: usize,
     },
 
-    /// A guest list held more elements than the crossing may still
-    /// lift. The host holds one [`Val`](crate::Val) per element, which
-    /// is several times the element's size in guest memory, so the
-    /// crossing counts the elements of every list it lifts against
-    /// the bound [`EngineConfig::max_list_elements`] sets, and refuses
-    /// the list that would pass it before reserving anything for it.
+    /// The crossing spent its copy budget. Every crossing may build
+    /// as many bytes of host values out of a guest as the store's
+    /// [`Store::hostcall_fuel`] says when the crossing begins, which
+    /// is 128 MiB unless the host set another amount with
+    /// [`Store::set_hostcall_fuel`], as in Wasmtime. Each lift
+    /// charges it before anything is reserved for the value: a list
+    /// or a fixed-length list 32 bytes per element, a map 64 bytes
+    /// per entry, a string the byte length of its range, and a typed
+    /// vector of numbers its own bytes. The per-element costs are the
+    /// sizes of a [`Val`](crate::Val) and of a pair of them on a 64-bit
+    /// host, fixed so that a list is refused at the same length on
+    /// every target. A guest therefore cannot have the host build a
+    /// value without bound.
     ///
-    /// [`EngineConfig::max_list_elements`]: crate::EngineConfig::max_list_elements
+    /// The message is Wasmtime's, word for word, so a test written
+    /// against Wasmtime matches it.
+    ///
+    /// [`Store::hostcall_fuel`]: crate::Store::hostcall_fuel
+    /// [`Store::set_hostcall_fuel`]: crate::Store::set_hostcall_fuel
     #[error(
-        "too many list elements for one crossing: a list of {length} elements, with {remaining} of the {limit} the crossing may lift left"
+        "too much data is being copied between the host and the guest: fuel allocated for hostcalls has been exhausted"
     )]
-    ListElementLimit {
-        /// The element count of the list that was refused.
-        length: usize,
-        /// The elements the crossing could still lift when it met the
-        /// list: the bound, less the elements of the lists it already
-        /// lifted.
-        remaining: usize,
-        /// The bound itself.
-        limit: usize,
-    },
+    CopyBudgetSpent,
 
     /// A failure surfaced by a lower-level component (e.g. the
     /// runtime substrate) while reading or writing memory. The

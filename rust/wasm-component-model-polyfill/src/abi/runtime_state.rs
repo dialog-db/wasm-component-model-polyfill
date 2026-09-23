@@ -20,7 +20,6 @@ use wasm_runtime_layer::{Func as RuntimeFunc, Memory};
 
 use crate::abi::instance_flags::InstanceFlags;
 use crate::concurrency::InstanceId;
-use crate::engine_config::DEFAULT_MAX_LIST_ELEMENTS;
 use crate::resource::{ResourceTableRuntime, TableId};
 
 /// Per-component canonical-ABI runtime state. Populated by the
@@ -64,11 +63,6 @@ pub struct AbiRuntimeState {
     /// state built without an instantiation behind it, which is what
     /// a unit test of one crossing builds.
     pub instance_flags: Vec<InstanceFlags>,
-    /// The most list elements one crossing of this instantiation may
-    /// lift, from the configuration of the engine the component was
-    /// translated against. A state built without an instantiation
-    /// behind it takes the default.
-    pub max_list_elements: usize,
 }
 
 impl AbiRuntimeState {
@@ -92,7 +86,6 @@ impl AbiRuntimeState {
             component_instances,
             handle_tables,
             instance_flags: Vec::new(),
-            max_list_elements: DEFAULT_MAX_LIST_ELEMENTS,
         }
     }
 
@@ -101,13 +94,6 @@ impl AbiRuntimeState {
     /// instance with.
     pub fn with_instance_flags(mut self, flags: Vec<InstanceFlags>) -> Self {
         self.instance_flags = flags;
-        self
-    }
-
-    /// Bound the list elements one crossing of the instantiation may
-    /// lift to `limit`.
-    pub fn with_max_list_elements(mut self, limit: usize) -> Self {
-        self.max_list_elements = limit;
         self
     }
 

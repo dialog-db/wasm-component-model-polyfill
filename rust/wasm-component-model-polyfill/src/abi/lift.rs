@@ -11,7 +11,7 @@ use crate::abi::strings;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::internal::ErrorInternal;
 use crate::resource::{HandleKind, ResourceHandleParts};
-use crate::types::{PrimitiveType, ValueType};
+use crate::types::{MapType, PrimitiveType, ValueType};
 use crate::value::{Val, ValField};
 
 /// Lift the value of type `ty` out of the guest's linear memory at
@@ -34,6 +34,7 @@ pub fn lift<T: 'static>(
             // Elements sit inline, one element size apart.
             let element_ty = fixed.element();
             let element_size = size_of(element_ty);
+            ctx.charge_copy_budget(fixed.length() as usize, LIST_ELEMENT_COST, position, ty)?;
             let mut out = Vec::with_capacity(fixed.length() as usize);
             for i in 0..fixed.length() as usize {
                 out.push(lift(ctx, offset + i * element_size, element_ty, position)?);
@@ -42,8 +43,9 @@ pub fn lift<T: 'static>(
         }
         ValueType::Map(map) => {
             // A map is laid out as the list of its entry tuples.
-            let entries = lift(ctx, offset, &crate::abi::map_entries_type(map), position)?;
-            crate::abi::entries_to_map(entries, ty, position)
+            let entries_ty = crate::abi::map_entries_type(map);
+            let (ptr, len) = read_pointer_pair(ctx, offset, position, &entries_ty)?;
+            lift_map(ctx, ptr, len, map, ty, position)
         }
         ValueType::Record(record) => {
             let mut fields: Vec<ValField> = Vec::with_capacity(record.fields().len());
@@ -187,6 +189,10 @@ pub fn lift<T: 'static>(
 /// of the instance that holds it, and an end cannot cross a boundary
 /// yet. The type that carries it translates; the crossing fails at
 /// the call.
+///
+/// An end is an index, as a resource handle is, so its lift charges
+/// the crossing's copy budget nothing, as Wasmtime charges its
+/// hostcall fuel nothing for one.
 pub fn end_transfer_unsupported(ty: &ValueType) -> Error {
     Error::unsupported(match ty {
         ValueType::Future(_) => "the transfer of a `future<T>` readable end",
@@ -218,12 +224,13 @@ pub fn end_transfer_unsupported(ty: &ValueType) -> Error {
 /// range the memory does not hold.
 ///
 /// A range the memory holds can still cost the host far more than
-/// the guest: the host reserves one [`Val`] per element, several
-/// times the size of a `u8`, so a `list<u8>` as long as a large
-/// memory is wide asks for many times that memory. The element count
-/// is therefore counted last against the bound the engine
-/// configuration sets on the list elements one crossing may lift, as
-/// Wasmtime charges its fuel after its bounds check.
+/// the guest: the host holds one [`Val`] per element, several times
+/// the size of a `u8`, so a `list<u8>` as long as a large memory is
+/// wide asks for many times that memory. Once the range has passed
+/// the gate, the list therefore charges the crossing's copy budget
+/// [`LIST_ELEMENT_COST`] bytes per element, before anything is read
+/// or reserved, as Wasmtime charges its hostcall fuel after its
+/// bounds check.
 ///
 /// Once the gate has passed, the whole byte range is read out of the
 /// guest in one access, and the elements are decoded from that copy.
@@ -238,9 +245,62 @@ pub fn lift_list<T: 'static>(
     ty: &ValueType,
     position: AbiPosition,
 ) -> Result<Val> {
+    lift_elements(ctx, ptr, len, element_ty, ty, position, LIST_ELEMENT_COST)
+}
+
+/// Lift the `len` entries of the map `ty` that start at `ptr`. The
+/// entries are laid out and gated as the list of their key-value
+/// tuples, and every failure on that list names it, but the copy
+/// budget is charged [`MAP_ENTRY_COST`] bytes per entry, for the key
+/// and the value the host holds for it.
+pub fn lift_map<T: 'static>(
+    ctx: &mut BoundaryContext<'_, T>,
+    ptr: usize,
+    len: usize,
+    map: &MapType,
+    ty: &ValueType,
+    position: AbiPosition,
+) -> Result<Val> {
+    let entries = lift_elements(
+        ctx,
+        ptr,
+        len,
+        &map.entry(),
+        &crate::abi::map_entries_type(map),
+        position,
+        MAP_ENTRY_COST,
+    )?;
+    crate::abi::entries_to_map(entries, ty, position)
+}
+
+/// What one element of a list or of a fixed-length list charges the
+/// crossing's copy budget, in bytes: the size of a [`Val`] on a 64-bit
+/// host, as Wasmtime charges the size of its own `Val` per element.
+/// It is fixed rather than the size of a `Val` on the target, which
+/// is smaller in a browser, so a list is refused at the same length
+/// on every target.
+pub const LIST_ELEMENT_COST: usize = 32;
+
+/// What one entry of a map charges the crossing's copy budget, in
+/// bytes: the size of a key and a value, a pair of [`Val`]s, on a
+/// 64-bit host, fixed for the same reason as [`LIST_ELEMENT_COST`].
+pub const MAP_ENTRY_COST: usize = 64;
+
+/// Lift the `len` elements of a list that starts at `ptr`, as
+/// [`lift_list`] states, charging the copy budget `cost` bytes per
+/// element.
+fn lift_elements<T: 'static>(
+    ctx: &mut BoundaryContext<'_, T>,
+    ptr: usize,
+    len: usize,
+    element_ty: &ValueType,
+    ty: &ValueType,
+    position: AbiPosition,
+    cost: usize,
+) -> Result<Val> {
     let element_size = size_of(element_ty);
     let (byte_len, memory_size) = gate_list(ctx, ptr, len, element_ty, ty, position)?;
-    ctx.count_list_elements(len, position, ty)?;
+    ctx.charge_copy_budget(len, cost, position, ty)?;
     if let ValueType::Primitive(prim) = element_ty
         && let Some(decode) = numeric_decoder(*prim)
     {
@@ -424,6 +484,11 @@ fn lift_primitive<T: 'static>(
 /// against the memory. The bytes are read in one access and a UTF-8
 /// string keeps the buffer they were read into, so the string costs
 /// the host one copy of its bytes.
+///
+/// Once the range has passed the gate, the string charges the
+/// crossing's copy budget its code units times the bytes of a code
+/// unit, which is the byte length of its range, as Wasmtime charges
+/// its host fuel. The charge comes before the bytes are read.
 pub fn lift_string<T: 'static>(
     ctx: &mut BoundaryContext<'_, T>,
     ptr: usize,
@@ -451,6 +516,7 @@ pub fn lift_string<T: 'static>(
             "string pointer/length out of bounds of memory",
         ));
     }
+    ctx.charge_copy_budget(byte_len, 1, position, ty)?;
     let raw = ctx.read_bytes(ptr, byte_len, position, ty)?;
     strings::decode_owned(encoding, units, raw)
         .map_err(|message| invalid_encoding(ty, position, message))
@@ -685,6 +751,16 @@ mod tests {
         });
         let tables = store.internal().tables_handle();
         BoundaryInstance::resolve(&declared, &state, &tables).expect("resolve")
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[wcmp_macros::test]
+    fn it_charges_the_size_of_a_val_on_a_64_bit_host_per_element_and_entry() {
+        // The costs are fixed so that every target charges alike, and
+        // they are what the host holds per element and per entry
+        // where a pointer is 64 bits wide.
+        assert_eq!(LIST_ELEMENT_COST, std::mem::size_of::<Val>());
+        assert_eq!(MAP_ENTRY_COST, std::mem::size_of::<(Val, Val)>());
     }
 
     #[wcmp_macros::test]

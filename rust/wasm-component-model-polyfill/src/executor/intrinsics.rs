@@ -551,7 +551,6 @@ mod tests {
     use super::*;
     use crate::concurrency::{Item, ItemKind};
     use crate::engine::Engine;
-    use crate::engine_config::DEFAULT_MAX_LIST_ELEMENTS;
     use crate::internal::ResourceTypeIdInternal;
     use crate::resource::{ResourceTypeId, TableId};
     use crate::store::Store;
@@ -911,7 +910,6 @@ mod tests {
             component_instances: vec![caller, callee],
             handle_tables: Vec::new(),
             instance_flags: Vec::new(),
-            max_list_elements: DEFAULT_MAX_LIST_ELEMENTS,
         }));
 
         // The adapter passes the caller instance, whether the callee
@@ -1138,7 +1136,6 @@ mod tests {
             component_instances: vec![first, second],
             handle_tables: Vec::new(),
             instance_flags: Vec::new(),
-            max_list_elements: DEFAULT_MAX_LIST_ELEMENTS,
         }));
         let named_first = instance_at(&abi_state, 0).expect("the first instantiation");
         let named_second = instance_at(&abi_state, 1).expect("the second instantiation");

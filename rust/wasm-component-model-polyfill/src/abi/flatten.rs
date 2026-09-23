@@ -22,7 +22,10 @@ use wasm_runtime_layer::Val as RuntimeVal;
 
 use super::context::BoundaryContext;
 use super::layout::{FlatType, flags_chunk_count, flat_types};
-use super::{end_transfer_unsupported, lift_list, lift_string, lower, lower_list, lower_str};
+use super::{
+    LIST_ELEMENT_COST, end_transfer_unsupported, lift_list, lift_map, lift_string, lower,
+    lower_list, lower_str,
+};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::internal::ErrorInternal;
 use crate::types::{PrimitiveType, ValueType};
@@ -223,6 +226,8 @@ pub fn lift_from_flat_slots<T: 'static>(
             lift_list(ctx, ptr, len, list.element(), ty, position)
         }
         ValueType::FixedLengthList(fixed) => {
+            // As much per element as the memory path charges.
+            ctx.charge_copy_budget(fixed.length() as usize, LIST_ELEMENT_COST, position, ty)?;
             let mut out = Vec::with_capacity(fixed.length() as usize);
             for _ in 0..fixed.length() {
                 out.push(lift_from_flat_slots(
@@ -236,14 +241,13 @@ pub fn lift_from_flat_slots<T: 'static>(
             Ok(Val::FixedLengthList(out.into_boxed_slice()))
         }
         ValueType::Map(map) => {
-            let entries = lift_from_flat_slots(
-                ctx,
-                args,
-                cursor,
-                &crate::abi::map_entries_type(map),
-                position,
-            )?;
-            crate::abi::entries_to_map(entries, ty, position)
+            // A map arrives as the pointer and the length of the list
+            // of its entry tuples, and a slot that fails names that
+            // list.
+            let entries_ty = crate::abi::map_entries_type(map);
+            let ptr = take_i32(args, cursor, &entries_ty, position)? as u32 as usize;
+            let len = take_i32(args, cursor, &entries_ty, position)? as u32 as usize;
+            lift_map(ctx, ptr, len, map, ty, position)
         }
         ValueType::Record(record) => {
             let mut fields: Vec<ValField> = Vec::with_capacity(record.fields().len());

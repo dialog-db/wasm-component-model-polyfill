@@ -327,23 +327,25 @@ async fn it_refuses_a_typed_handle_of_the_wrong_element_type() {
     assert!(matches!(func.ty().parameters[0].ty, ValueType::List(_)));
 }
 
-/// Several hundred megabytes, which the untyped path would hold as
-/// several gigabytes of `Val`.
+/// Over a hundred megabytes, which the untyped path would hold as
+/// several gigabytes of `Val`. It stays inside the copy budget of
+/// 128 MiB one crossing may build, which a typed vector of bytes
+/// charges a byte per element, as Wasmtime charges it.
 #[cfg(not(target_arch = "wasm32"))]
-const HUNDREDS_OF_MEGABYTES: usize = 300 << 20;
+const OVER_A_HUNDRED_MEGABYTES: usize = 120 << 20;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[wcmp_macros::test]
-async fn it_round_trips_hundreds_of_megabytes_in_one_copy_per_direction() {
+async fn it_round_trips_over_a_hundred_megabytes_in_one_copy_per_direction() {
     let (mut store, instance) = echo().await;
     let echo_bytes = typed::<(Vec<u8>,), Vec<u8>>(&instance, "echo-bytes");
 
-    let payload = pattern(HUNDREDS_OF_MEGABYTES);
-    start_counting(HUNDREDS_OF_MEGABYTES / 2);
+    let payload = pattern(OVER_A_HUNDRED_MEGABYTES);
+    start_counting(OVER_A_HUNDRED_MEGABYTES / 2);
     let returned = echo_bytes
         .call(&mut store, (payload,))
         .await
-        .expect("several hundred megabytes echo");
+        .expect("over a hundred megabytes echo");
     let allocated = stop_counting();
 
     // The way in is the write from the caller's vector into guest
@@ -355,10 +357,10 @@ async fn it_round_trips_hundreds_of_megabytes_in_one_copy_per_direction() {
         "one payload-sized allocation for the two directions: {allocated:?}"
     );
     assert!(
-        allocated.bytes < HUNDREDS_OF_MEGABYTES + (1 << 20),
+        allocated.bytes < OVER_A_HUNDRED_MEGABYTES + (1 << 20),
         "nothing but that one copy is of any size: {allocated:?}"
     );
-    assert_eq!(returned.len(), HUNDREDS_OF_MEGABYTES);
+    assert_eq!(returned.len(), OVER_A_HUNDRED_MEGABYTES);
     assert!(
         returned
             .iter()

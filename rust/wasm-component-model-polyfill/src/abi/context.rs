@@ -20,6 +20,14 @@
 //! exposes the lift options and the result type of the task on the
 //! stack, which a `task.return` compares its own against.
 //!
+//! Every context carries a copy budget: the bytes of host values the
+//! crossing may still build out of the guest. It starts at the
+//! store's hostcall fuel, 128 MiB unless the host set another amount,
+//! and each list, string, and map the crossing lifts spends from it.
+//! One call into the host, one `task.return`, and one result a host
+//! reads back each build a context of their own, so each has one
+//! budget.
+//!
 //! Construction is workspace-internal — the context is always built
 //! immediately before a call drives the canonical ABI.
 //!
@@ -39,6 +47,7 @@ use crate::concurrency::Scope;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::{CanonOptions, StringEncoding};
 use crate::internal::ErrorInternal;
+use crate::store::StoreData;
 use crate::types::ValueType;
 
 /// The context of one canonical-ABI crossing.
@@ -88,8 +97,9 @@ pub struct BoundaryContext<'a, T: 'static> {
     /// itself, which is the cost a browser pays a JavaScript boundary
     /// crossing apiece for.
     accesses: usize,
-    /// How many more list elements the crossing may lift.
-    elements_left: usize,
+    /// How many more bytes of host values the crossing may build out
+    /// of the guest.
+    budget_left: usize,
 }
 
 /// A range of guest bytes the crossing holds on the host side: the
@@ -115,19 +125,19 @@ impl GuestBytes {
     }
 }
 
-impl<'a, T: 'static> BoundaryContext<'a, T> {
+impl<'a, T: 'static> BoundaryContext<'a, StoreData<T>> {
     /// Build the context of one crossing between a host value and a
     /// guest, under `options`, for `instance`, counted against
     /// `scope`. The tables the crossing resolves a handle against
-    /// come off the instance.
+    /// come off the instance, and the copy budget off the store.
     pub fn new(
-        store: StoreContextMut<'a, T, Backend>,
+        store: StoreContextMut<'a, StoreData<T>, Backend>,
         options: BoundaryOptions,
         instance: BoundaryInstance,
         scope: Option<Scope>,
     ) -> Self {
         let strategy = AbiStrategy::select(&options);
-        let elements_left = options.max_list_elements();
+        let budget_left = store.data().hostcall_fuel();
         Self {
             store,
             options,
@@ -138,7 +148,7 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
             window: None,
             staged: None,
             accesses: 0,
-            elements_left,
+            budget_left,
         }
     }
 
@@ -147,7 +157,7 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
     /// reads through `source` and writes through `destination`, and
     /// carries no handles of its own.
     pub fn for_copy(
-        store: StoreContextMut<'a, T, Backend>,
+        store: StoreContextMut<'a, StoreData<T>, Backend>,
         destination: BoundaryOptions,
         source: BoundaryOptions,
         instance: BoundaryInstance,
@@ -155,7 +165,7 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
     ) -> Self {
         let strategy = AbiStrategy::select(&destination);
         let source_strategy = AbiStrategy::select(&source);
-        let elements_left = destination.max_list_elements();
+        let budget_left = store.data().hostcall_fuel();
         Self {
             store,
             options: destination,
@@ -166,10 +176,12 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
             window: None,
             staged: None,
             accesses: 0,
-            elements_left,
+            budget_left,
         }
     }
+}
 
+impl<'a, T: 'static> BoundaryContext<'a, T> {
     /// The options of the crossing. Nothing reads them back yet: a
     /// `task.return` compares its own against the task's.
     #[allow(dead_code)]
@@ -366,29 +378,30 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
         }
     }
 
-    /// Count `length` list elements against the elements the crossing
-    /// may still lift, or refuse them with
-    /// [`AbiCause::ListElementLimit`] when they are more than that.
-    /// A list is counted before anything is reserved for it.
-    pub fn count_list_elements(
+    /// Charge `count` host values of `size` bytes apiece against the
+    /// crossing's copy budget, or refuse them with
+    /// [`AbiCause::CopyBudgetSpent`] when they cost more than the
+    /// budget has left. A lift charges before it reserves anything
+    /// for the values, and a refused charge spends nothing.
+    pub fn charge_copy_budget(
         &mut self,
-        length: usize,
+        count: usize,
+        size: usize,
         position: AbiPosition,
         valtype: &ValueType,
     ) -> Result<()> {
-        match self.elements_left.checked_sub(length) {
+        match count
+            .checked_mul(size)
+            .and_then(|cost| self.budget_left.checked_sub(cost))
+        {
             Some(left) => {
-                self.elements_left = left;
+                self.budget_left = left;
                 Ok(())
             }
             None => Err(Error::from(AbiError {
                 position,
                 valtype: Some(valtype.clone()),
-                cause: AbiCause::ListElementLimit {
-                    length,
-                    remaining: self.elements_left,
-                    limit: self.options.max_list_elements(),
-                },
+                cause: AbiCause::CopyBudgetSpent,
             })),
         }
     }
@@ -845,6 +858,49 @@ mod tests {
         assert!(
             matches!(error, Error::Scheduler(SchedulerCause::ReentrantHostCall)),
             "the refusal keeps the cause a host can branch on: {error}"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_refuses_a_charge_past_the_copy_budget_and_spends_nothing_on_it() {
+        let engine = Engine::new().expect("engine");
+        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+        assert_eq!(store.hostcall_fuel(), 128 << 20, "Wasmtime's default");
+        // The context starts from the fuel the store holds when it is
+        // built.
+        store.set_hostcall_fuel(40);
+        let instance = InstanceId::from_index(0);
+        let tables = store.internal().tables_handle();
+        let (options, instance) = BoundaryInstance::resolve(
+            &canon(DataModel::LinearMemory),
+            &state(instance, Vec::new()),
+            &tables,
+        )
+        .expect("resolve");
+        let mut ctx = BoundaryContext::new(
+            store.internal().inner_mut().as_context_mut(),
+            options,
+            instance,
+            None,
+        );
+        let ty = ValueType::Primitive(PrimitiveType::String);
+
+        ctx.charge_copy_budget(32, 1, AbiPosition::Result, &ty)
+            .expect("a charge inside the budget is taken");
+        for (count, size) in [(9, 1), (3, 3), (usize::MAX, 2)] {
+            let Err(Error::Abi(error)) =
+                ctx.charge_copy_budget(count, size, AbiPosition::Result, &ty)
+            else {
+                panic!("{count} values of {size} bytes cost more than the 8 bytes left");
+            };
+            assert!(matches!(error.cause, AbiCause::CopyBudgetSpent));
+        }
+        ctx.charge_copy_budget(4, 2, AbiPosition::Result, &ty)
+            .expect("the refused charges spent nothing, so the last 8 bytes are left");
+        assert!(
+            ctx.charge_copy_budget(1, 1, AbiPosition::Result, &ty)
+                .is_err(),
+            "and then nothing is"
         );
     }
 

@@ -53,7 +53,14 @@ pub struct StoreData<T: 'static> {
     destructors: HashMap<ResourceTypeId, ResourceDestructor<T>>,
     resource_types: HashMap<ResourceTypeId, LearnedName>,
     scheduler: Scheduler<T>,
+    /// The copy budget each crossing starts with, in bytes of host
+    /// values: what Wasmtime calls the store's hostcall fuel.
+    hostcall_fuel: usize,
 }
+
+/// The copy budget a crossing starts with unless the host sets
+/// another: 128 MiB, Wasmtime's default hostcall fuel.
+const DEFAULT_HOSTCALL_FUEL: usize = 128 << 20;
 
 /// A name the store learned for a resource type, with who taught it,
 /// which is what settles whether a later name replaces it.
@@ -91,6 +98,7 @@ impl<T: 'static> StoreData<T> {
             destructors: HashMap::new(),
             resource_types: HashMap::new(),
             scheduler: Scheduler::new(),
+            hostcall_fuel: DEFAULT_HOSTCALL_FUEL,
         }
     }
 
@@ -102,6 +110,18 @@ impl<T: 'static> StoreData<T> {
     /// The host data the embedder gave the store, mutably.
     pub fn host_mut(&mut self) -> &mut T {
         &mut self.data
+    }
+
+    /// The copy budget each crossing of the store starts with, in
+    /// bytes of host values. Workspace-internal.
+    pub fn hostcall_fuel(&self) -> usize {
+        self.hostcall_fuel
+    }
+
+    /// Set the copy budget each later crossing of the store starts
+    /// with. Workspace-internal.
+    pub fn set_hostcall_fuel(&mut self, fuel: usize) {
+        self.hostcall_fuel = fuel;
     }
 
     /// The store's process-unique identity. Workspace-internal.

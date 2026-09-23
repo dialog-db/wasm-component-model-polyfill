@@ -139,6 +139,22 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         self.store_data_mut().host_mut()
     }
 
+    /// The copy budget each crossing of the store starts with. See
+    /// [`Store::hostcall_fuel`].
+    ///
+    /// [`Store::hostcall_fuel`]: super::Store::hostcall_fuel
+    pub fn hostcall_fuel(&self) -> usize {
+        self.store_data().hostcall_fuel()
+    }
+
+    /// Set the copy budget each later crossing of the store starts
+    /// with. See [`Store::set_hostcall_fuel`].
+    ///
+    /// [`Store::set_hostcall_fuel`]: super::Store::set_hostcall_fuel
+    pub fn set_hostcall_fuel(&mut self, fuel: usize) {
+        self.store_data_mut().set_hostcall_fuel(fuel);
+    }
+
     /// The store's process-unique identity. Workspace-internal.
     fn id(&self) -> StoreId {
         self.store_data().id()

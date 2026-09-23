@@ -55,8 +55,6 @@ pub struct BoundaryOptions {
     string_encoding: StringEncoding,
     /// Where the values of the crossing live.
     data_model: DataModel,
-    /// The most list elements the crossing may lift.
-    max_list_elements: usize,
 }
 
 impl BoundaryOptions {
@@ -91,7 +89,6 @@ impl BoundaryOptions {
                 .and_then(|slot| state.callbacks.get(slot).and_then(|f| f.clone())),
             string_encoding: declared.string_encoding,
             data_model: declared.data_model,
-            max_list_elements: state.max_list_elements,
         }
     }
 
@@ -120,7 +117,6 @@ impl BoundaryOptions {
             callback: None,
             string_encoding: StringEncoding::Utf8,
             data_model: DataModel::LinearMemory,
-            max_list_elements: state.max_list_elements,
         })
     }
 
@@ -167,10 +163,5 @@ impl BoundaryOptions {
     /// Where the values of the crossing live.
     pub fn data_model(&self) -> DataModel {
         self.data_model
-    }
-
-    /// The most list elements the crossing may lift.
-    pub fn max_list_elements(&self) -> usize {
-        self.max_list_elements
     }
 }

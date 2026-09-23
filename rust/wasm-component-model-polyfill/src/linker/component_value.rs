@@ -294,12 +294,12 @@ impl ComponentValue for String {
 /// A vector of numbers crosses as the list's bytes: one write into the
 /// guest on the way in and one read out of it on the way back, with no
 /// `Val` per element, and a `Vec<u8>` is those bytes without a further
-/// copy. The elements it lifts are not charged against the engine's
-/// bound on lifted list elements. That bound exists because the `Val`
-/// path holds a `Val` per element, several times the element's own
-/// size; this path holds the element's own bytes, no more than the
-/// guest memory the list's range was measured against. A vector of
-/// anything else crosses through `Val`, bound and all.
+/// copy. A lifted vector of numbers charges the crossing's copy
+/// budget one element's own size apiece, which is the same on every
+/// target, rather than the fixed per-element cost of the `Val` path:
+/// it holds the element's own bytes and no `Val` for it. A vector of
+/// anything else crosses through `Val`, and is charged as that path
+/// charges a list.
 impl<T: ComponentValue> ComponentValue for Vec<T> {
     fn value_type() -> ValueType {
         ValueType::List(ListType::new(T::value_type()))
@@ -412,6 +412,9 @@ fn lower_numeric_list<Data: 'static, T: ComponentValue>(
 
 /// Read the numeric list `ty` of `len` elements at `ptr` in one
 /// access, after the gate every lifted list passes, and decode it.
+/// The list charges the crossing's copy budget one `T` per element,
+/// which is what the host holds for it, as Wasmtime charges a typed
+/// list the size of its element type.
 fn lift_numeric_list<Data: 'static, T: ComponentValue>(
     cx: &mut BoundaryContext<'_, Data>,
     ptr: usize,
@@ -423,6 +426,7 @@ fn lift_numeric_list<Data: 'static, T: ComponentValue>(
         return Err(declared_mismatch(ty, position));
     };
     let (byte_len, _) = gate_list(cx, ptr, len, list.element(), ty, position)?;
+    cx.charge_copy_budget(len, std::mem::size_of::<T>(), position, ty)?;
     let bytes = if byte_len == 0 {
         Vec::new()
     } else {

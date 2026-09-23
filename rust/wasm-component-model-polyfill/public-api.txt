@@ -1,14 +1,11 @@
 pub mod wasm_component_model_polyfill
 #[non_exhaustive] pub enum wasm_component_model_polyfill::AbiCause
+pub wasm_component_model_polyfill::AbiCause::CopyBudgetSpent
 pub wasm_component_model_polyfill::AbiCause::HostValueMismatch
 pub wasm_component_model_polyfill::AbiCause::InvalidEncoding
 pub wasm_component_model_polyfill::AbiCause::InvalidEncoding::message: alloc::string::String
 pub wasm_component_model_polyfill::AbiCause::InvalidHandle
 pub wasm_component_model_polyfill::AbiCause::InvalidHandle::reason: alloc::string::String
-pub wasm_component_model_polyfill::AbiCause::ListElementLimit
-pub wasm_component_model_polyfill::AbiCause::ListElementLimit::length: usize
-pub wasm_component_model_polyfill::AbiCause::ListElementLimit::limit: usize
-pub wasm_component_model_polyfill::AbiCause::ListElementLimit::remaining: usize
 pub wasm_component_model_polyfill::AbiCause::OutOfBoundsMemory
 pub wasm_component_model_polyfill::AbiCause::OutOfBoundsMemory::length: usize
 pub wasm_component_model_polyfill::AbiCause::OutOfBoundsMemory::offset: usize
@@ -300,7 +297,6 @@ pub fn wasm_component_model_polyfill::Engine::new() -> wasm_component_model_poly
 pub fn wasm_component_model_polyfill::Engine::with_config(config: &wasm_component_model_polyfill::EngineConfig) -> wasm_component_model_polyfill::Result<Self>
 pub struct wasm_component_model_polyfill::EngineConfig
 impl wasm_component_model_polyfill::EngineConfig
-pub fn wasm_component_model_polyfill::EngineConfig::max_list_elements(&mut self, limit: usize) -> &mut Self
 pub fn wasm_component_model_polyfill::EngineConfig::new() -> Self
 pub fn wasm_component_model_polyfill::EngineConfig::wasm_component_model_async_stackful(&mut self, enable: bool) -> &mut Self
 pub fn wasm_component_model_polyfill::EngineConfig::wasm_component_model_error_context(&mut self, enable: bool) -> &mut Self
@@ -493,14 +489,18 @@ pub struct wasm_component_model_polyfill::Store<T: 'static>
 impl<T: 'static> wasm_component_model_polyfill::Store<T>
 pub fn wasm_component_model_polyfill::Store<T>::data(&self) -> &T
 pub fn wasm_component_model_polyfill::Store<T>::data_mut(&mut self) -> &mut T
+pub fn wasm_component_model_polyfill::Store<T>::hostcall_fuel(&self) -> usize
 pub fn wasm_component_model_polyfill::Store<T>::new(engine: &wasm_component_model_polyfill::Engine, data: T) -> wasm_component_model_polyfill::Result<Self>
 pub fn wasm_component_model_polyfill::Store<T>::resource_drop(&mut self, handle: wasm_component_model_polyfill::ResourceHandle) -> wasm_component_model_polyfill::Result<()>
 pub fn wasm_component_model_polyfill::Store<T>::resource_new(&self, type_id: wasm_component_model_polyfill::ResourceTypeId, rep: u32) -> wasm_component_model_polyfill::Result<wasm_component_model_polyfill::ResourceHandle>
 pub async fn wasm_component_model_polyfill::Store<T>::run_concurrent<R, F>(&mut self, body: F) -> wasm_component_model_polyfill::Result<R> where F: core::ops::async_function::AsyncFnOnce(&wasm_component_model_polyfill::Accessor<T>) -> R
+pub fn wasm_component_model_polyfill::Store<T>::set_hostcall_fuel(&mut self, fuel: usize)
 pub struct wasm_component_model_polyfill::StoreContext<'a, T: 'static>
 impl<'a, T: 'static> wasm_component_model_polyfill::StoreContext<'a, T>
 pub fn wasm_component_model_polyfill::StoreContext<'a, T>::data(&self) -> &T
 pub fn wasm_component_model_polyfill::StoreContext<'a, T>::data_mut(&mut self) -> &mut T
+pub fn wasm_component_model_polyfill::StoreContext<'a, T>::hostcall_fuel(&self) -> usize
+pub fn wasm_component_model_polyfill::StoreContext<'a, T>::set_hostcall_fuel(&mut self, fuel: usize)
 pub struct wasm_component_model_polyfill::StreamType
 impl wasm_component_model_polyfill::StreamType
 pub fn wasm_component_model_polyfill::StreamType::new(payload: core::option::Option<wasm_component_model_polyfill::ValueType>) -> Self

@@ -150,6 +150,45 @@ impl<T: 'static> Store<T> {
         self.inner.data_mut().host_mut()
     }
 
+    /// The copy budget each crossing of this store starts with, in
+    /// bytes: the default of 128 MiB, or the last amount passed to
+    /// [`Store::set_hostcall_fuel`]. Wasmtime calls this budget the
+    /// store's hostcall fuel, and names the method the same.
+    pub fn hostcall_fuel(&self) -> usize {
+        self.store_data().hostcall_fuel()
+    }
+
+    /// Set the copy budget each crossing of this store starts with to
+    /// `fuel` bytes.
+    ///
+    /// A value a guest hands the host — the arguments of a call into
+    /// the host, a `task.return`, the result of a call the host made
+    /// — is built on the host out of the guest's memory, and a lifted
+    /// value can cost the host far more than the guest bytes it came
+    /// from. The budget caps what one crossing may build, so a guest
+    /// cannot have the host allocate without bound. Each crossing
+    /// starts from the whole of it, and each lift charges it before
+    /// reserving anything: a list or a fixed-length list 32 bytes per
+    /// element, a map 64 bytes per entry, a string the byte length of
+    /// its range, and a typed vector of numbers its own bytes. The
+    /// lift that would pass it fails with
+    /// [`AbiCause::CopyBudgetSpent`]. The per-element costs are fixed
+    /// rather than the size of a host value on the target, so a
+    /// guest's value is accepted or refused alike natively and in a
+    /// browser.
+    ///
+    /// A value the host lowers into a guest is not charged: the host
+    /// already holds it. A crossing already under way keeps the
+    /// budget it started with.
+    ///
+    /// The default is 128 MiB, as in Wasmtime, whose
+    /// `Store::set_hostcall_fuel` this mirrors.
+    ///
+    /// [`AbiCause::CopyBudgetSpent`]: crate::AbiCause::CopyBudgetSpent
+    pub fn set_hostcall_fuel(&mut self, fuel: usize) {
+        self.store_data_mut().set_hostcall_fuel(fuel);
+    }
+
     /// The store as a turn, an item, or a trampoline reaches it: a
     /// borrow of the core store, which carries everything else the
     /// store holds. Every entry that touches guest state lives
