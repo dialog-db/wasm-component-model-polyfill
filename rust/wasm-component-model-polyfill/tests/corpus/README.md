@@ -39,10 +39,9 @@ could wait. An exception thrown in a callee reaches the host as the
 trap the synchronous baseline gives it.
 
 The directive that first meets what is missing is an expected failure
-of category `deferred-feature`, for one of eight reasons: a call whose
+of category `deferred-feature`, for one of seven reasons: a call whose
 callee can be released only by a caller that is on the stack, which
-needs a stack switch, a future or stream built-in, a `future<T>` or
-`stream<T>` value in a type the component declares, the stackful lift,
+needs a stack switch, a future or stream built-in, the stackful lift,
 a thread built-in other than `thread.yield`, cancellation, an error
 context, or the rules that decide which trap poisons an instance. Most
 of the rest is `cascade`: a component definition that fails leaves its
@@ -206,7 +205,7 @@ directives into the passing column. The polyfill runs a host call into
 a callback export, the task built-ins that export uses, all four
 combinations of lift and lower between two components, either lower of
 a host `async` function, and the reentrance the reference allows, but
-the eight reasons above cover most of what those directories still
+the seven reasons above cover most of what those directories still
 exercise. Each component those directories define that the polyfill
 rejects is a `deferred-feature` failure, and every later directive in
 the same file that names it is a `cascade` one, which is why the two

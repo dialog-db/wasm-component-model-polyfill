@@ -1263,14 +1263,14 @@ async fn rich_world(engine: &Engine) -> Result<String, String> {
 }
 
 /// The feature the polyfill names when it refuses the `wasi-http`
-/// handler. The handler's request and response carry a
-/// `future<result<option<trailers>, error-code>>`, and the pass that
-/// projects the component's declared types meets that before any
-/// other missing piece, so it is the first of the several refusals a
-/// WASI 0.3 handler would collect.
-/// `tests/corpus/expected-failures.txt` records the same text for the
-/// fixture's definition directive.
-const WASI_HTTP_REFUSAL: &str = "`future<T>` values";
+/// handler. The handler's request and response carry streams and
+/// futures, which the type projection accepts. The binding layer of
+/// the Rust toolchain links `task.cancel` into every `async` export,
+/// and the translator meets that built-in before any other missing
+/// piece, so it is the first of the several refusals a WASI 0.3
+/// handler would collect. `tests/corpus/expected-failures.txt`
+/// records the same text for the fixture's definition directive.
+const WASI_HTTP_REFUSAL: &str = "the `task-cancel` trampoline";
 
 /// The `wasi-http` fixture holds a target rather than a result: the
 /// polyfill refuses the component today, so the step asserts that

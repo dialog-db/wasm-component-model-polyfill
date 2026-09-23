@@ -22,7 +22,7 @@ use wasm_runtime_layer::Val as RuntimeVal;
 
 use super::context::BoundaryContext;
 use super::layout::{FlatType, flags_chunk_count, flat_types};
-use super::{lift_list, lift_string, lower, lower_list, lower_str};
+use super::{end_transfer_unsupported, lift_list, lift_string, lower, lower_list, lower_str};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::internal::ErrorInternal;
 use crate::types::{PrimitiveType, ValueType};
@@ -189,6 +189,7 @@ pub fn lower_into_flat_slots<T: 'static>(
             out.push(RuntimeVal::I32(index as i32));
             Ok(())
         }
+        (ValueType::Stream(_) | ValueType::Future(_), _) => Err(end_transfer_unsupported(ty)),
         _ => Err(host_value_mismatch(ty, position)),
     }
 }
@@ -388,6 +389,7 @@ pub fn lift_from_flat_slots<T: 'static>(
             let index = take_i32(args, cursor, ty, position)? as u32;
             crate::abi::lift_handle(ctx, index, ty, position, matches!(ty, ValueType::Own(_)))
         }
+        ValueType::Stream(_) | ValueType::Future(_) => Err(end_transfer_unsupported(ty)),
     }
 }
 

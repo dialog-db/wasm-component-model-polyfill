@@ -164,7 +164,11 @@ pub fn canonical_abi(ty: &ValueType) -> CanonicalAbiInfo {
         ValueType::Enum(en) => CanonicalAbiInfo::enum_(en.cases().len()),
         ValueType::Flags(flags) => CanonicalAbiInfo::flags(flags.names().len()),
         ValueType::List(_) | ValueType::Map(_) => CanonicalAbiInfo::POINTER_PAIR,
-        ValueType::Own(_) | ValueType::Borrow(_) => CanonicalAbiInfo::SCALAR4,
+        // A stream or a future is the index of its readable end in a
+        // handle table, laid out as a handle is.
+        ValueType::Own(_) | ValueType::Borrow(_) | ValueType::Stream(_) | ValueType::Future(_) => {
+            CanonicalAbiInfo::SCALAR4
+        }
     }
 }
 
@@ -205,7 +209,11 @@ pub fn flat_types(ty: &ValueType) -> Cow<'_, [FlatType]> {
                 FlatType::F64 => F64,
             });
         }
-        ValueType::Enum(_) | ValueType::Own(_) | ValueType::Borrow(_) => {
+        ValueType::Enum(_)
+        | ValueType::Own(_)
+        | ValueType::Borrow(_)
+        | ValueType::Stream(_)
+        | ValueType::Future(_) => {
             return Cow::Borrowed(I32);
         }
         ValueType::Flags(flags) => {
@@ -305,5 +313,46 @@ pub fn join_flat(a: FlatType, b: FlatType) -> FlatType {
     match (a, b) {
         (FlatType::I32, FlatType::F32) | (FlatType::F32, FlatType::I32) => FlatType::I32,
         _ => FlatType::I64,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{FutureType, RecordField, RecordType, StreamType};
+
+    #[wcmp_macros::test]
+    fn it_lays_out_a_stream_and_a_future_as_a_handle() {
+        // Whatever the payload, the value is the index of a readable
+        // end: four bytes in memory and one `i32` slot.
+        let string = || Some(ValueType::Primitive(PrimitiveType::String));
+        for ty in [
+            ValueType::Stream(StreamType::new(string())),
+            ValueType::Stream(StreamType::new(None)),
+            ValueType::Future(FutureType::new(string())),
+            ValueType::Future(FutureType::new(None)),
+        ] {
+            assert_eq!(size_of(&ty), 4, "{ty:?}");
+            assert_eq!(alignment_of(&ty), 4, "{ty:?}");
+            assert_eq!(flat_types(&ty).as_ref(), &[FlatType::I32], "{ty:?}");
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_lays_out_a_stream_inside_a_record_as_a_handle_field() {
+        let record = ValueType::Record(RecordType::new([
+            RecordField::new("tag", ValueType::Primitive(PrimitiveType::U8)),
+            RecordField::new(
+                "body",
+                ValueType::Stream(StreamType::new(Some(ValueType::Primitive(
+                    PrimitiveType::U8,
+                )))),
+            ),
+        ]));
+        assert_eq!(size_of(&record), 8);
+        assert_eq!(
+            flat_types(&record).as_ref(),
+            &[FlatType::I32, FlatType::I32]
+        );
     }
 }

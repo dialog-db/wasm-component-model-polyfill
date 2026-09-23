@@ -178,7 +178,20 @@ pub fn lift<T: 'static>(
             let index = u32::from_le_bytes(ctx.read_array(offset, position, ty)?);
             lift_handle(ctx, index, ty, position, matches!(ty, ValueType::Own(_)))
         }
+        ValueType::Stream(_) | ValueType::Future(_) => Err(end_transfer_unsupported(ty)),
     }
+}
+
+/// The refusal of a lift or a lower that reaches a `stream<T>` or a
+/// `future<T>`. Such a value names a readable end in the handle table
+/// of the instance that holds it, and an end cannot cross a boundary
+/// yet. The type that carries it translates; the crossing fails at
+/// the call.
+pub fn end_transfer_unsupported(ty: &ValueType) -> Error {
+    Error::unsupported(match ty {
+        ValueType::Future(_) => "the transfer of a `future<T>` readable end",
+        _ => "the transfer of a `stream<T>` readable end",
+    })
 }
 
 /// Lift the `len` elements of a list that starts at `ptr`, after

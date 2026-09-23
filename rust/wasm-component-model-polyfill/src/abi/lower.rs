@@ -7,7 +7,7 @@
 
 use crate::abi::context::BoundaryContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
-use crate::abi::lift::declared_resource_index;
+use crate::abi::lift::{declared_resource_index, end_transfer_unsupported};
 use crate::abi::strings;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::resource::{HandleKind, HandleLookupError, ResourceHandle};
@@ -184,6 +184,7 @@ pub fn lower<T: 'static>(
             let index = lower_handle(ctx, handle, ty, position)?;
             ctx.write_bytes(offset, &index.to_le_bytes(), position, ty)
         }
+        (ValueType::Stream(_) | ValueType::Future(_), _) => Err(end_transfer_unsupported(ty)),
         _ => Err(host_value_mismatch(ty, position)),
     }
 }

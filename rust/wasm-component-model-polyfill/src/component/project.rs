@@ -34,9 +34,9 @@ use crate::error::{Error, Result};
 use crate::internal::{CoreValueTypeInternal, ErrorInternal};
 use crate::module::{CoreExternType, CoreValueType, ModuleExport, ModuleImport};
 use crate::types::{
-    EnumType, FixedLengthListType, FlagsType, ListType, MapType, OptionType, PrimitiveType,
-    RecordField, RecordType, ResourceType, ResultType, TupleType, ValueType, VariantCase,
-    VariantType,
+    EnumType, FixedLengthListType, FlagsType, FutureType, ListType, MapType, OptionType,
+    PrimitiveType, RecordField, RecordType, ResourceType, ResultType, StreamType, TupleType,
+    ValueType, VariantCase, VariantType,
 };
 
 /// The label a resource receives when no import or export names it.
@@ -196,8 +196,23 @@ impl<'a> TypeProjector<'a> {
                     fixed.size,
                 ))
             }
-            InterfaceType::Future(_) => return Err(Error::unsupported("`future<T>` values")),
-            InterfaceType::Stream(_) => return Err(Error::unsupported("`stream<T>` values")),
+            // Validation has already refused a payload that holds a
+            // `borrow`, and `stream<char>`, so the payload projects as
+            // any other value type does.
+            InterfaceType::Future(index) => {
+                let future = &self.types[self.types[*index].ty];
+                ValueType::Future(FutureType::new(match &future.payload {
+                    Some(ty) => Some(self.value_type(ty)?),
+                    None => None,
+                }))
+            }
+            InterfaceType::Stream(index) => {
+                let stream = &self.types[self.types[*index].ty];
+                ValueType::Stream(StreamType::new(match &stream.payload {
+                    Some(ty) => Some(self.value_type(ty)?),
+                    None => None,
+                }))
+            }
             InterfaceType::ErrorContext(_) => {
                 return Err(Error::unsupported("`error-context` values"));
             }

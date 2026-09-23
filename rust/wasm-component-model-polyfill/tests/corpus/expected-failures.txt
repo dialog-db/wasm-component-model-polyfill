@@ -86,7 +86,7 @@ cm/async/cancel-subtask.wast:217 cascade no instance to invoke
 cm/async/closed-stream.wast:4 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
 cm/async/closed-stream.wast:101 cascade no definition named `Tester`
 cm/async/closed-stream.wast:102 cascade no instance to invoke
-cm/async/cross-task-future.wast:2 deferred-feature component rejected: unsupported component feature: `future<T>` values
+cm/async/cross-task-future.wast:2 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 cm/async/cross-task-future.wast:103 cascade no instance to invoke
 cm/async/drop-cross-task-borrow.wast:9 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 cm/async/drop-cross-task-borrow.wast:304 cascade no definition named `Test`
@@ -157,7 +157,7 @@ cm/async/empty-wait.wast:199 cascade no instance to invoke
 cm/async/futures-must-write.wast:5 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 cm/async/futures-must-write.wast:117 cascade no instance to invoke
 cm/async/futures-must-write.wast:118 cascade expected a trap `cannot drop future write end without first writing a value`, got `no instance to invoke`
-cm/async/partial-stream-copies.wast:7 deferred-feature component rejected: unsupported component feature: `stream<T>` values
+cm/async/partial-stream-copies.wast:7 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
 cm/async/partial-stream-copies.wast:238 cascade no instance to invoke
 cm/async/passing-resources.wast:7 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
 cm/async/passing-resources.wast:175 cascade no instance to invoke
@@ -208,7 +208,7 @@ cm/async/switch-to-ready-callback.wast:369 cascade no instance to invoke
 cm/async/sync-barges-in.wast:6 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 cm/async/sync-barges-in.wast:322 cascade no definition named `Tester`
 cm/async/sync-barges-in.wast:323 cascade no instance to invoke
-cm/async/sync-streams.wast:7 deferred-feature component rejected: unsupported component feature: `stream<T>` values
+cm/async/sync-streams.wast:7 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
 cm/async/sync-streams.wast:208 cascade no instance to invoke
 cm/async/trap-if-block-and-sync.wast:5 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
 cm/async/trap-if-block-and-sync.wast:315 cascade no definition named `Tester`
@@ -258,7 +258,7 @@ cm/async/trap-if-block-and-sync.wast:358 cascade expected a trap `cannot block a
 cm/async/trap-if-block-and-sync.wast:359 cascade no definition named `Tester`
 cm/async/trap-if-block-and-sync.wast:360 cascade expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
 cm/async/trap-if-block-and-sync.wast:361 cascade no definition named `Tester`
-cm/async/trap-if-done.wast:15 deferred-feature component rejected: unsupported component feature: `future<T>` values
+cm/async/trap-if-done.wast:15 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 cm/async/trap-if-done.wast:445 cascade no definition named `Tester`
 cm/async/trap-if-done.wast:446 cascade expected a trap `cannot write to future after previous write succeeded`, got `no instance to invoke`
 cm/async/trap-if-done.wast:447 cascade no definition named `Tester`
@@ -314,14 +314,14 @@ cm/async/trap-if-sync-and-waitable-set.wast:324 cascade no definition named `Tes
 cm/async/trap-if-sync-and-waitable-set.wast:325 cascade expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
 cm/async/trap-if-sync-and-waitable-set.wast:326 cascade no definition named `Tester`
 cm/async/trap-if-sync-and-waitable-set.wast:327 cascade expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
-cm/async/trap-if-transfer-in-waitable-set.wast:6 deferred-feature component rejected: unsupported component feature: `future<T>` values
+cm/async/trap-if-transfer-in-waitable-set.wast:6 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 cm/async/trap-if-transfer-in-waitable-set.wast:48 cascade no definition named `Tester`
 cm/async/trap-if-transfer-in-waitable-set.wast:49 cascade expected a trap `cannot lift future while it's in a waitable set`, got `no instance to invoke`
 cm/async/trap-if-transfer-in-waitable-set.wast:50 cascade no definition named `Tester`
 cm/async/trap-if-transfer-in-waitable-set.wast:51 cascade expected a trap `cannot lift stream while it's in a waitable set`, got `no instance to invoke`
 cm/async/wait-during-callback.wast:2 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 cm/async/wait-during-callback.wast:77 cascade no instance to invoke
-cm/async/zero-length.wast:7 deferred-feature component rejected: unsupported component feature: `stream<T>` values
+cm/async/zero-length.wast:7 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
 cm/async/zero-length.wast:223 cascade no instance to invoke
 cm/binary/binary.wast:1186 validation expected rejection `non-zero reserved byte`, but the component parsed (wasmparser 0.254 still reads the byte as the `cancellable` flag the corpus removed; the reference implementation does not pass this file either, see cm/nyi.txt)
 cm/binary/binary.wast:1208 validation expected rejection `non-zero reserved byte`, but the component parsed (wasmparser 0.254 still reads the byte as the `cancellable` flag the corpus removed; the reference implementation does not pass this file either, see cm/nyi.txt)
@@ -411,7 +411,7 @@ cm/values/post-return.wast:254 cascade expected a trap `cannot leave component i
 cm/values/post-return.wast:255 cascade no definition named `Tester`
 cm/values/post-return.wast:256 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
 cm/values/variants.wast:186 deferred-feature the invoked export is lifted stackfully: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
-fixtures/wasi-http.wast:4 deferred-feature component rejected: unsupported component feature: `future<T>` values
+fixtures/wasi-http.wast:4 deferred-feature component rejected: unsupported component feature: the `task-cancel` trampoline
 fixtures/wasi-http.wast:2121 cascade no instance to invoke
 fixtures/wasi-http.wast:2124 cascade no instance to invoke
 wasmtime/alias-region-known-imported-entities.wast:13 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref i31) is not supported in the wasm_runtime_layer
@@ -518,7 +518,7 @@ wasmtime/async/intra-streams.wast:179 deferred-feature component rejected: unsup
 wasmtime/async/intra-streams.wast:239 cascade no instance to invoke
 wasmtime/async/join-during-sync-read.wast:8 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
 wasmtime/async/join-during-sync-read.wast:66 cascade expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
-wasmtime/async/partial-stream-copies.wast:14 deferred-feature component rejected: unsupported component feature: `stream<T>` values
+wasmtime/async/partial-stream-copies.wast:14 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
 wasmtime/async/partial-stream-copies.wast:243 cascade no instance to invoke
 wasmtime/async/reenter-during-yield.wast:81 deferred-feature the callee's core function yields for ever and only its caller can release it, which needs a stack switch: the call fails with `blocking here requires a stack switch, but the target has no suspend provider`
 wasmtime/async/stackful.wast:7 deferred-feature component rejected: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
@@ -551,7 +551,7 @@ wasmtime/async/stream-cancel-finished-op.wast:250 cascade no definition named `A
 wasmtime/async/stream-cancel-finished-op.wast:251 cascade expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
 wasmtime/async/stream-zero-ops.wast:7 deferred-feature component rejected: unsupported component feature: the `stream-read` trampoline
 wasmtime/async/stream-zero-ops.wast:201 cascade no instance to invoke
-wasmtime/async/streams-massive-send.wast:10 deferred-feature component rejected: unsupported component feature: `future<T>` values
+wasmtime/async/streams-massive-send.wast:10 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
 wasmtime/async/streams-massive-send.wast:237 cascade no definition named `A`
 wasmtime/async/streams-massive-send.wast:238 cascade expected a trap `fuel allocated for hostcalls has been exhausted`, got `no instance to invoke`
 wasmtime/async/streams-massive-send.wast:239 cascade no definition named `A`
@@ -573,7 +573,7 @@ wasmtime/async/streams.wast:187 cascade no definition named `A`
 wasmtime/async/streams.wast:188 cascade expected a trap `cannot have concurrent operations active on a future/stream`, got `no instance to invoke`
 wasmtime/async/sync-and-async-waitable.wast:5 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 wasmtime/async/sync-and-async-waitable.wast:123 cascade expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
-wasmtime/async/sync-streams.wast:14 deferred-feature component rejected: unsupported component feature: `stream<T>` values
+wasmtime/async/sync-streams.wast:14 deferred-feature component rejected: unsupported component feature: the `stream-new` trampoline
 wasmtime/async/sync-streams.wast:186 cascade no instance to invoke
 wasmtime/async/task-builtins.wast:74 deferred-feature component rejected: unsupported component feature: the `subtask-cancel` trampoline
 wasmtime/async/task-builtins.wast:470 deferred-feature component rejected: unsupported component feature: the `future-read` trampoline
@@ -600,7 +600,7 @@ wasmtime/async/task-return-traps.wast:121 deferred-feature component rejected: u
 wasmtime/async/task-return-traps.wast:135 cascade expected a trap `invalid `task.return` signature and/or options for current task`, got `no instance to invoke`
 wasmtime/async/task-return-traps.wast:138 deferred-feature component rejected: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
 wasmtime/async/task-return-traps.wast:150 cascade expected a trap `invalid `task.return` signature and/or options for current task`, got `no instance to invoke`
-wasmtime/async/trap-if-done.wast:22 deferred-feature component rejected: unsupported component feature: `future<T>` values
+wasmtime/async/trap-if-done.wast:22 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 wasmtime/async/trap-if-done.wast:580 cascade no definition named `Tester`
 wasmtime/async/trap-if-done.wast:581 cascade expected a trap `cannot write to future after previous write succeeded or readable end dropped`, got `no instance to invoke`
 wasmtime/async/trap-if-done.wast:582 cascade no definition named `Tester`
@@ -679,7 +679,7 @@ wasmtime/async/trap-if-done.wast:661 cascade no definition named `Tester`
 wasmtime/async/trap-if-done.wast:662 cascade expected a trap `cannot lift stream after being notified that the writable end dropped`, got `no instance to invoke`
 wasmtime/async/trap-if-done.wast:664 deferred-feature component rejected: unsupported component feature: the `future-drop-readable` trampoline
 wasmtime/async/trap-if-done.wast:722 cascade expected a trap `cannot lift future after previous read succeeded`, got `no instance to invoke`
-wasmtime/async/trap-if-transfer-in-waitable-set.wast:6 deferred-feature component rejected: unsupported component feature: `future<T>` values
+wasmtime/async/trap-if-transfer-in-waitable-set.wast:6 deferred-feature component rejected: unsupported component feature: the `future-new` trampoline
 wasmtime/async/trap-if-transfer-in-waitable-set.wast:48 cascade no definition named `Tester`
 wasmtime/async/trap-if-transfer-in-waitable-set.wast:49 cascade expected a trap `cannot lift future while it's in a waitable set`, got `no instance to invoke`
 wasmtime/async/trap-if-transfer-in-waitable-set.wast:50 cascade no definition named `Tester`

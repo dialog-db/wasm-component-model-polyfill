@@ -268,9 +268,9 @@ pub use crate::module::{
 pub use crate::resource::{ResourceHandle, ResourceTypeId};
 pub use crate::store::{Store, StoreContext};
 pub use crate::types::{
-    EnumType, FixedLengthListType, FlagsType, ListType, MapType, OptionType, PrimitiveType,
-    RecordField, RecordType, ResourceType, ResultType, TupleType, ValueType, VariantCase,
-    VariantType,
+    EnumType, FixedLengthListType, FlagsType, FutureType, ListType, MapType, OptionType,
+    PrimitiveType, RecordField, RecordType, ResourceType, ResultType, StreamType, TupleType,
+    ValueType, VariantCase, VariantType,
 };
 pub use crate::value::{Val, ValField};
 

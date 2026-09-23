@@ -1472,27 +1472,29 @@ async fn it_rejects_a_call_made_through_a_different_store() {
 
 #[wcmp_macros::test]
 async fn it_reports_an_unsupported_feature_as_a_structured_error() {
-    // A component whose export takes a `stream<u8>` uses a feature
-    // the polyfill has not built. The translator reports it at
-    // construction as a structured `Error::Unsupported` naming the
-    // feature, never as a panic.
+    // A component whose export takes an `error-context` uses a
+    // feature the polyfill has not built. The translator reports it
+    // at construction as a structured `Error::Unsupported` naming the
+    // feature, never as a panic. Validation admits the type only with
+    // its feature enabled, so the engine enables it.
     const COMPONENT: &[u8] = component!(
         r#"
         (component
           (core module $m
             (func (export "f") (param i32)))
           (core instance $i (instantiate $m))
-          (type $s (stream u8))
-          (func (export "f") (param "x" $s)
+          (func (export "f") (param "x" error-context)
             (canon lift (core func $i "f"))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let mut config = wasm_component_model_polyfill::EngineConfig::default();
+    config.wasm_component_model_error_context(true);
+    let engine = Engine::with_config(&config).expect("engine");
     let err = Component::new(&engine, COMPONENT)
         .await
-        .expect_err("stream values are not supported yet");
+        .expect_err("error-context values are not supported yet");
     assert!(
-        matches!(&err, Error::Unsupported { feature } if feature.contains("stream")),
+        matches!(&err, Error::Unsupported { feature } if feature.contains("error-context")),
         "expected Error::Unsupported, got {err:?}"
     );
 }

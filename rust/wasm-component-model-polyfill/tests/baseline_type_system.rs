@@ -5,8 +5,9 @@
 //! lift/lower behaviour is exercised in `baseline_canonical_abi.rs`;
 //! the tests here are the structural complement.
 //!
-//! Wasip3-only valtypes (`future`, `stream`, `error-context`) and
-//! subtyping live in a separate, forthcoming test file.
+//! The `stream` and `future` valtypes are exercised in
+//! `baseline_stream_future_types.rs`. `error-context` and subtyping
+//! live in a separate, forthcoming test file.
 
 #![cfg(test)]
 

@@ -57,7 +57,10 @@ pub mod strategy;
 pub mod strings;
 pub mod transcode;
 
-pub use lift::{gate_list, lift, lift_handle, lift_list, lift_string, read_pointer_pair};
+pub use lift::{
+    end_transfer_unsupported, gate_list, lift, lift_handle, lift_list, lift_string,
+    read_pointer_pair,
+};
 pub use lower::{lower, lower_list, lower_list_bytes, lower_str, write_pointer_pair};
 
 /// The list-of-entries type a map is laid out as.

@@ -3,6 +3,7 @@
 use super::enum_type::EnumType;
 use super::fixed_length_list_type::FixedLengthListType;
 use super::flags_type::FlagsType;
+use super::future_type::FutureType;
 use super::list_type::ListType;
 use super::map_type::MapType;
 use super::option_type::OptionType;
@@ -10,6 +11,7 @@ use super::primitive_type::PrimitiveType;
 use super::record_type::RecordType;
 use super::resource_type::ResourceType;
 use super::result_type::ResultType;
+use super::stream_type::StreamType;
 use super::tuple_type::TupleType;
 use super::variant_type::VariantType;
 
@@ -17,7 +19,8 @@ use super::variant_type::VariantType;
 ///
 /// `ValueType` carries the shape of every primitive, compound type,
 /// and resource handle the synchronous Component Model surface
-/// admits. It is data only: there is no host-side value attached, no
+/// admits, and of the stream and future types the asynchronous one
+/// adds. It is data only: there is no host-side value attached, no
 /// canonical-ABI behaviour, and no runtime-state coupling — those
 /// concerns are layered on top elsewhere.
 ///
@@ -61,6 +64,16 @@ pub enum ValueType {
     Own(ResourceType),
     /// A borrow handle to a resource (`borrow<T>`).
     Borrow(ResourceType),
+    /// The readable end of a stream (`stream<T>`).
+    ///
+    /// Like a handle, the value is an index into the handle table of
+    /// the component instance that holds the end.
+    Stream(StreamType),
+    /// The readable end of a future (`future<T>`).
+    ///
+    /// Like a handle, the value is an index into the handle table of
+    /// the component instance that holds the end.
+    Future(FutureType),
 }
 
 #[cfg(test)]

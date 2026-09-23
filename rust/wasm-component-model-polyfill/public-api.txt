@@ -243,6 +243,7 @@ pub wasm_component_model_polyfill::ValueType::Borrow(wasm_component_model_polyfi
 pub wasm_component_model_polyfill::ValueType::Enum(wasm_component_model_polyfill::EnumType)
 pub wasm_component_model_polyfill::ValueType::FixedLengthList(wasm_component_model_polyfill::FixedLengthListType)
 pub wasm_component_model_polyfill::ValueType::Flags(wasm_component_model_polyfill::FlagsType)
+pub wasm_component_model_polyfill::ValueType::Future(wasm_component_model_polyfill::FutureType)
 pub wasm_component_model_polyfill::ValueType::List(wasm_component_model_polyfill::ListType)
 pub wasm_component_model_polyfill::ValueType::Map(wasm_component_model_polyfill::MapType)
 pub wasm_component_model_polyfill::ValueType::Option(wasm_component_model_polyfill::OptionType)
@@ -250,6 +251,7 @@ pub wasm_component_model_polyfill::ValueType::Own(wasm_component_model_polyfill:
 pub wasm_component_model_polyfill::ValueType::Primitive(wasm_component_model_polyfill::PrimitiveType)
 pub wasm_component_model_polyfill::ValueType::Record(wasm_component_model_polyfill::RecordType)
 pub wasm_component_model_polyfill::ValueType::Result(wasm_component_model_polyfill::ResultType)
+pub wasm_component_model_polyfill::ValueType::Stream(wasm_component_model_polyfill::StreamType)
 pub wasm_component_model_polyfill::ValueType::Tuple(wasm_component_model_polyfill::TupleType)
 pub wasm_component_model_polyfill::ValueType::Variant(wasm_component_model_polyfill::VariantType)
 #[non_exhaustive] pub enum wasm_component_model_polyfill::WaitableCause
@@ -346,6 +348,10 @@ pub struct wasm_component_model_polyfill::FunctionType
 pub wasm_component_model_polyfill::FunctionType::async_: bool
 pub wasm_component_model_polyfill::FunctionType::parameters: alloc::vec::Vec<wasm_component_model_polyfill::FunctionParameter>
 pub wasm_component_model_polyfill::FunctionType::result: core::option::Option<wasm_component_model_polyfill::ValueType>
+pub struct wasm_component_model_polyfill::FutureType
+impl wasm_component_model_polyfill::FutureType
+pub fn wasm_component_model_polyfill::FutureType::new(payload: core::option::Option<wasm_component_model_polyfill::ValueType>) -> Self
+pub fn wasm_component_model_polyfill::FutureType::payload(&self) -> core::option::Option<&wasm_component_model_polyfill::ValueType>
 pub struct wasm_component_model_polyfill::HostCall<'a, T: 'static>
 impl<'a, T: 'static> wasm_component_model_polyfill::HostCall<'a, T>
 pub fn wasm_component_model_polyfill::HostCall<'a, T>::data(&self) -> &T
@@ -495,6 +501,10 @@ pub struct wasm_component_model_polyfill::StoreContext<'a, T: 'static>
 impl<'a, T: 'static> wasm_component_model_polyfill::StoreContext<'a, T>
 pub fn wasm_component_model_polyfill::StoreContext<'a, T>::data(&self) -> &T
 pub fn wasm_component_model_polyfill::StoreContext<'a, T>::data_mut(&mut self) -> &mut T
+pub struct wasm_component_model_polyfill::StreamType
+impl wasm_component_model_polyfill::StreamType
+pub fn wasm_component_model_polyfill::StreamType::new(payload: core::option::Option<wasm_component_model_polyfill::ValueType>) -> Self
+pub fn wasm_component_model_polyfill::StreamType::payload(&self) -> core::option::Option<&wasm_component_model_polyfill::ValueType>
 pub struct wasm_component_model_polyfill::TupleType
 impl wasm_component_model_polyfill::TupleType
 pub fn wasm_component_model_polyfill::TupleType::elements(&self) -> &[wasm_component_model_polyfill::ValueType]
