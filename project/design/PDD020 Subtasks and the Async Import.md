@@ -26,9 +26,12 @@ Wasmtime 49 or later. Where the design departs from the reference or from
 Wasmtime, it states the reason.
 
 Two terms recur. An async-typed function is a function whose type carries the
-`async` effect. A sync-typed function is one whose type does not. The lift and
-the lower are separate axes: an async-typed export can be lifted synchronously,
-and a sync-typed import can be lowered asynchronously.
+`async` effect. A sync-typed function is one whose type does not. For an
+async-typed function the lift and the lower are separate axes. An async-typed
+export can be lifted synchronously, and an async-typed import can be lowered
+synchronously. A sync-typed import cannot be lowered asynchronously. The
+reference allows the `async` option only on an async-typed function, and
+validation refuses the component.
 
 ## Goals
 
@@ -64,8 +67,10 @@ and a sync-typed import can be lowered asynchronously.
 - `subtask.cancel`, `task.cancel`, and cancellation delivery. Cancellation is
   one mechanism with two ends, and one design owns both. `subtask.cancel` stays
   refused at translation. The cancel-requested flag of the subtask record stays
-  unused. The two cancelled states are reached here only through the failure
-  path [PDD018] has, where a host task's body fails.
+  unused. No guest observes the two cancelled states. When a call fails, the
+  store marks its subtask cancelled only to give back the handles the caller
+  lent. It then removes the record and the caller's entry, and the caller's call
+  fails.
 - A callee whose core function blocks before it returns and whose block only its
   caller can release. That shape needs a stack switch. The polyfill fails it
   with the stack-switch cause, and the corpus files that need it stay deferred.
@@ -219,8 +224,11 @@ its lower. A synchronous lower keeps the signature of [PDD008]. An asynchronous
 lower has at most four flat parameters. When the flattened parameters exceed
 four, it takes one pointer instead. When the type has a result, it always
 returns the result through a pointer parameter. It returns one `i32`, the status
-word. Validation requires the `memory` option on an asynchronous lower. The
-`LowerImport` trampoline derives the signature from the options of the lower.
+word. Validation requires the `memory` option on an asynchronous lower only
+where the Canonical ABI loads or stores. That is the case when a parameter
+contains a pointer at any depth, when the flattened parameters exceed four, or
+when the type has a result. The `LowerImport` trampoline derives the signature
+from the options of the lower.
 
 The status word is the one [PDD018] defines. Its low four bits are the subtask
 state and its high bits are the subtask's index in the caller's handle table.
@@ -234,8 +242,8 @@ it. This design fills in the parts that the asynchronous lower observes.
 
 - The record starts in `STARTING`. It moves to `STARTED` when the callee has
   read its parameters, and to `RETURNED` when the callee has produced its
-  result. The two cancelled states are resolved states that only a failure
-  reaches here.
+  result. The two cancelled states are resolved states that only a failed call
+  reaches here, and the record leaves the store in the same step.
 - The record enters the caller's handle table only when the lower returns with a
   state other than `RETURNED`. Indices come from the caller instance's allocator
   in call order, as [PDD018] states for every handle. A call that resolves
@@ -409,12 +417,12 @@ future satisfies the browser bound.
 The accessor of [PDD018] reaches the store's host data from a future that does
 not borrow the store. This design revises its shape. `Accessor<T>` carries no
 store and no lifetime. It holds the store's identity and nothing else. The store
-owns one slot per thread. Around each poll of a host task's body, and around
-each poll of the `run_concurrent` closure, the store places a pointer to its own
-context in the slot and takes it out again before the poll returns. Outside a
-poll the slot is empty. This is Wasmtime's design: its accessor holds a store
-token, and `with` reads the store from thread-local storage set around each
-poll.
+owns one slot per thread. Around each poll of a host task's body, around each
+poll of the `run_concurrent` closure, and around the call of a concurrent
+registration's closure, the store places a pointer to its own context in the
+slot and takes it out again before the poll returns. Outside a poll the slot is
+empty. This is Wasmtime's design: its accessor holds a store token, and `with`
+reads the store from thread-local storage set around each poll.
 
 ```text
 fn with(accessor, body) -> Result<R>:
@@ -463,12 +471,14 @@ the subtask and fills the subtask event.
 Through a synchronous lower, the call blocks the guest thread where it stands.
 [PDD018] let the call succeed only when the first poll resolved the future or a
 provider filled the seam. This design revises that rule. The block runs under
-the blocking section, and the blocked call's own future is polled at every
-check. A future that completes after a few polls, as a future that yields once
-does, resolves inside the nested turn and the call returns its result. A future
-that stays pending leaves the store waiting, so the call fails with the
-stack-switch cause, or with the cannot-block cause when the caller is a
-sync-typed task that has not returned.
+the blocking section, and the blocked call's own future is polled at every check
+of the condition. A future that is pending once and then ready, as a future that
+yields once is, resolves at the seam's first check of the condition. No nested
+turn runs, and the call returns its result. A future that only the store's own
+work releases resolves inside the nested turn that runs that work. A future that
+stays pending leaves the store waiting, so the call fails with the stack-switch
+cause, or with the cannot-block cause when the caller is a sync-typed task that
+has not returned.
 
 Handles the guest lends for the call go on the subtask's lender list and come
 back when the resolution is delivered. A borrow lent to a host task therefore
@@ -652,18 +662,21 @@ In the Wasmtime corpus:
 
 The files that stay deferred, with the reason:
 
-- A stack switch: `async-calls-sync.wast`. Its synchronous lowers reach a
-  callback export that yields until the outer caller unblocks it, so only the
-  caller can release the callee.
+- A stack switch: `async-calls-sync.wast` and `reenter-during-yield.wast`. The
+  synchronous lowers of `async-calls-sync.wast` reach a callback export that
+  yields until the outer caller unblocks it. The callee of
+  `reenter-during-yield.wast` yields in its core function until its caller
+  releases it. In both, only the caller can release the callee.
 - The stackful lift: `stackful.wast`, `drop-waitable-set-stackful.wast`,
-  `reenter-during-yield.wast`, `sync-barges-in.wast`, and five directives of
-  `task-return-traps.wast`.
+  `sync-barges-in.wast`, `task-deletion.wast`, five directives of
+  `task-return-traps.wast`, and one directive of the Component Model
+  `values/variants.wast`.
 - Thread built-ins: the `during-sync-call-*.wast` group,
   `during-sync-scheduling-candidates.wast`, `self-switch-traps.wast`,
   `switch-to-ready-callback.wast`, `trap-if-block-and-sync.wast`,
-  `trap-if-sync-and-waitable-set.wast`, `join-during-sync-read.wast`,
-  `task-deletion.wast`, the second directive of `task-return-traps.wast`, and
-  the two thread directives of the Component Model `reentrance.wast`.
+  `trap-if-sync-and-waitable-set.wast`, `join-during-sync-read.wast`, the second
+  directive of `task-return-traps.wast`, and the two thread directives of the
+  Component Model `reentrance.wast`.
 - Streams and futures: `empty-wait.wast`, `wait-during-callback.wast`,
   `drop-cross-task-borrow.wast`, `passing-resources.wast`,
   `cross-task-future.wast`, `trap-if-done.wast`,
@@ -717,8 +730,8 @@ A contributor adds a stack switch to one target.
 A reviewer reads the conformance summary after the feature lands.
 
 > The reviewer sees the two `async` rows, the lines this design removed, the
-> same counts on both targets, and the five asynchronous spectest items in the
-> harness.
+> same outcome for every directive on both targets, and the five asynchronous
+> spectest items in the harness.
 
 ## Test Cases
 
@@ -739,11 +752,13 @@ the subtask event with that index and `RETURNED`. A borrow lent for the call is
 released only when the event is delivered. Repository tests prove each case, on
 a hand-written component, in both registration forms.
 
-A synchronous lower of a host `async` function resolves inside nested turns. A
-future that is pending once and then ready returns its result. A future that
+A synchronous lower of a host `async` function blocks under the blocking
+section. A future that is pending once and then ready resolves at the seam's
+first check of the condition and returns its result. A future that a sibling's
+item releases resolves inside the nested turn that runs the item. A future that
 stays pending fails with the stack-switch cause from an async-typed caller and
 with the cannot-block cause from a sync-typed caller. Repository tests prove the
-three cases.
+four cases.
 
 The four combinations cross correctly. `fused.wast` and `cross-abi-calls.wast`
 pass whole. The four async permutations of `task-builtins.wast` and of
@@ -751,10 +766,10 @@ pass whole. The four async permutations of `task-builtins.wast` and of
 
 The gate holds a callee. `backpressure-deadlock.wast` reads `STARTING` under
 backpressure. The Wasmtime `reentrance.wast` holds a callback callee at the
-root's gate while the root's own task runs and completes when it exits. The
-seventh case of the Component Model `reentrance.wast` completes the callback
-cycle. A repository test proves that a held sync export runs when the gate opens
-and delivers `RETURNED`.
+root's gate while the root's own task runs, and the host reads the root's
+result. The seventh case of the Component Model `reentrance.wast` completes the
+callback cycle. A repository test proves that a held sync export runs when the
+gate opens and delivers `RETURNED`.
 
 Subtask events and drops behave as the reference states. `drop-subtask.wast`,
 `drop-host.wast`, and `subtask-wait.wast` pass, and the `subtask.drop` component
@@ -804,8 +819,8 @@ promise and returns its value to the guest.
 
 The corpus lines are removed. The expected-failure list loses every line the
 owned files and directives above account for, and no other line. The progress
-summary shows the two `async` rows with the new counts, the same on both
-targets.
+summary shows the two `async` rows with the new counts. Both targets give the
+same pass and failure outcome for every directive.
 
 Every facet above holds on both targets. The native run and the browser run
 report the same pass and failure results for every named file and every
