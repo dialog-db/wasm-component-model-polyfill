@@ -60,17 +60,17 @@ kanban-plugin: basic
 
 ## In Progress
 
-- [ ] [[3fdd33]]
 - [ ] [[f4b617]]
 
 ## Needs Review
 
 - [ ] [[c723cc]]
-- [ ] [[f65b25]]
+- [ ] [[3fdd33]]
 
 ## Ready
 
 - [ ] [[f1f6de]]
+- [ ] [[f65b25]]
 
 ---
 
