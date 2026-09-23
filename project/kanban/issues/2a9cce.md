@@ -22,10 +22,10 @@ Add the store's waitable records and waitable set records, with no built-in. A w
 
 
 ## Dispatch log
-- 2026-09-16T20:44:08Z dispatched implementor `card-2a9cce-b0055f33` (implement session, PDD018 thread, Opus 5; seeded after 87cf207 landed)
+- 2026-09-16T20:44:08Z dispatched implementor `card-2a9cce-b0055f33` (implement session, PDD018 thread, Opus 5; seeded after 3ab1833 landed)
 - 2026-09-16T21:57:35Z implementor reported done at `a079b7b` (gate green; new `Error::Waitable` variant; waitable state on the `Subtask` record). Fetched, needs-review, paused the implementor; launched reviewer `review-2a9cce-b7a48f16`, delivered the branch.
 
 ## Review notes
 
 - 2026-09-16 reviewer `review-2a9cce-b7a48f16` on tip `a079b7b`: **accept**. All six criteria and all seven record rules enforced in the records (`waitable_state.rs:20-32`, `waitable_set.rs:13-18`); `EventCode` matches `definitions.py:695-702`; nine integration tests run in both lanes and assert record state; trap strings match `cm/async/drop-waitable-set.wast:84`, `wasmtime/async/drop-host.wast:56`, `sync-and-async-waitable.wast`. `Error::Waitable(WaitableCause)` judged the right shape (one variant per subsystem with a structured cause, like `Abi` and `Scheduler`); the fourth trap is required by `definitions.py:793` and absent in Wasmtime. Non-blocking, filed as `8ab86d`: `join_waitable_set` and `begin_wait` mutate before validating (internal-error paths); `TaskTables::take_pending_event` is public without delivering the resolution; `discard_scope`/`exit_subtask` remove a subtask without leaving its set (latent ABA with index reuse). For the owner: `waitable_set.rs:9-11` and PDD018 line ~473 say join order is what Wasmtime delivers, but Wasmtime pops a `BTreeSet<Waitable>` (identity order); and PDD018 §Error Model Growth still names only the scheduler variant. Gate: `tests all` native 379, web 306 both green; `lint` 9/9. Menu gap noted: no test-name filter on `tests`.
-- 2026-09-16T22:50:30Z reviewer accepted; landed as `d31c678`; card to ready; removed `card-2a9cce-b0055f33` and `review-2a9cce-b7a48f16`. Revert artifact: `sandbox-guest/card-2a9cce-b0055f33`.
+- 2026-09-16T22:50:30Z reviewer accepted; landed as `0f9ebd8`; card to ready; removed `card-2a9cce-b0055f33` and `review-2a9cce-b7a48f16`. Revert artifact: `sandbox-guest/card-2a9cce-b0055f33`.
