@@ -5,6 +5,8 @@ type: chore
 blocked_by: []
 labels: [correctness-performance-checkup-01, concurrency]
 created: 2026-09-21T17:05:56Z
+disposition: accepted
+disposition_at: 2026-09-23T05:35:12Z
 ---
 
 ## What to build

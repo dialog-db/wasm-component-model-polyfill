@@ -5,6 +5,8 @@ type: bug
 blocked_by: [7e0512]
 labels: [PDD020, concurrency]
 created: 2026-09-19T22:32:22Z
+disposition: accepted
+disposition_at: 2026-09-23T05:35:12Z
 ---
 
 ## What to build

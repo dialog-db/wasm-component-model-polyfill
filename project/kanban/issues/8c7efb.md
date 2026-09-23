@@ -5,6 +5,8 @@ type: feature
 blocked_by: [3e657c]
 labels: [PDD020, concurrency]
 created: 2026-09-19T06:42:49Z
+disposition: accepted
+disposition_at: 2026-09-23T05:35:12Z
 ---
 
 ## What to build
