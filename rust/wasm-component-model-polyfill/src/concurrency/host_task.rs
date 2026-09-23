@@ -37,9 +37,9 @@ type BoxedLowering<T> =
 /// The runtime layer gives a host trampoline a synchronous closure
 /// and nothing else, so the trampoline cannot run the call's future
 /// itself. It gives the task to the store and returns to the guest,
-/// and the store polls it once per turn with the driver's waker, so
-/// a wake the executor delivers reaches the driver that is running
-/// the store. When the body completes, the turn queues the lowering
+/// and the store polls it in the turn after each wake, with a waker
+/// of its own that passes the wake on to the driver's, so a wake the
+/// executor delivers reaches the driver that is running the store. When the body completes, the turn queues the lowering
 /// of the result into the subtask that awaits it.
 pub struct HostTask<T: 'static> {
     body: Box<dyn HostTaskBody<T>>,

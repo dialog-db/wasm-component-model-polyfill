@@ -5,8 +5,13 @@
 //! host and, compiled to `wasm32-unknown-unknown`, in a browser;
 //! nothing below is written per target.
 
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll, Waker};
+use std::sync::{Arc, Mutex};
+
 use wasm_component_model_polyfill::{
-    Component, Engine, Func, Instance, Linker, Store, Val, ValField,
+    Accessor, Component, Engine, Func, Instance, Linker, Store, Val, ValField,
 };
 
 use crate::benchmark::Benchmark;
@@ -16,7 +21,7 @@ use crate::run::Run;
 
 /// Every benchmark of the suite, in the order a report lists them:
 /// the call floor first, then the canonical ABI's heap values, then
-/// handles, composition, and parsing.
+/// handles, composition, host calls in flight, and parsing.
 pub fn benchmarks() -> Vec<Benchmark> {
     [
         u32_call(),
@@ -29,6 +34,7 @@ pub fn benchmarks() -> Vec<Benchmark> {
         list_record_roundtrip(),
         resource_handle(),
         composition_call(),
+        host_calls_in_flight(),
         component_new(),
     ]
     .into_iter()
@@ -241,6 +247,123 @@ async fn composition_call(run: &mut Run) -> Result<()> {
     let arguments = [Val::U32(20)];
     while run.iterate() {
         call_run.call(&mut store, &arguments).await?;
+    }
+    Ok(())
+}
+
+/// The host side of [`host_calls_in_flight`]: the calls of one
+/// iteration resolve one at a time, the last one the guest made
+/// first, each one waking the call made before it as it completes.
+///
+/// That is the shape that tells a store which polls every host task
+/// on every turn from one that polls only the tasks that were woken.
+/// A call is woken by the one made after it, which a store that polls
+/// its tasks in the order they joined has already polled in that
+/// pass, so every turn has one call to finish and all the others
+/// still pending: the first kind of store does work in the square of
+/// the number of calls and the second in the number itself.
+#[derive(Clone, Default)]
+struct Relay(Arc<Mutex<RelayState>>);
+
+/// Where the relay stands within one iteration.
+#[derive(Default)]
+struct RelayState {
+    /// The index of the call whose turn it is to complete.
+    next: u32,
+    /// The waker each pending call left, by the index of the call.
+    wakers: Vec<Option<Waker>>,
+}
+
+impl Relay {
+    /// Make ready for an iteration of `calls` calls, the last of
+    /// which is the next to complete.
+    fn reset(&self, calls: u32) {
+        if let Ok(mut state) = self.0.lock() {
+            state.next = calls.saturating_sub(1);
+            state.wakers.clear();
+            state.wakers.resize(calls as usize, None);
+        }
+    }
+
+    /// The future of the call with index `index`.
+    fn call(&self, index: u32) -> RelayCall {
+        RelayCall {
+            relay: self.clone(),
+            index,
+            polled: false,
+        }
+    }
+}
+
+/// One call's future: pending on its first poll whatever its turn,
+/// so the guest sees every call start, and ready on a later poll once
+/// every call made after it has completed.
+struct RelayCall {
+    relay: Relay,
+    index: u32,
+    polled: bool,
+}
+
+impl Future for RelayCall {
+    type Output = core::result::Result<u32, wasm_component_model_polyfill::Error>;
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let Ok(mut state) = this.relay.0.lock() else {
+            return Poll::Pending;
+        };
+        if this.polled && state.next == this.index {
+            let woken = match this.index.checked_sub(1) {
+                Some(before) => {
+                    state.next = before;
+                    state.wakers.get_mut(before as usize).and_then(Option::take)
+                }
+                None => None,
+            };
+            drop(state);
+            if let Some(waker) = woken {
+                waker.wake();
+            }
+            return Poll::Ready(Ok(this.index));
+        }
+        let first = !this.polled;
+        this.polled = true;
+        if let Some(slot) = state.wakers.get_mut(this.index as usize) {
+            *slot = Some(context.waker().clone());
+        }
+        let turn = state.next == this.index;
+        drop(state);
+        if first && turn {
+            context.waker().wake_by_ref();
+        }
+        Poll::Pending
+    }
+}
+
+#[wcmp_macros::bench(
+    guest = "the inline `fan-out` component: `fan-out: async func(n: u32) -> u32`, which starts `n` calls of the async-typed host import `answer` and waits on them through one waitable set",
+    payload = "the case's number of host calls in flight at once, completing one per turn, the last one made first, each waking the call made before it",
+    cases = [8, 64, 512]
+)]
+async fn host_calls_in_flight(run: &mut Run) -> Result<()> {
+    let calls = u32::try_from(run.case().number()).unwrap_or(u32::MAX);
+    let relay = Relay::default();
+    let engine = Engine::new()?;
+    let component = Component::new(&engine, guests::FAN_OUT).await?;
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let answering = relay.clone();
+    linker.root().func_wrap_concurrent(
+        "answer",
+        move |_accessor: &Accessor<()>, (index,): (u32,)| answering.call(index),
+    )?;
+    let mut store: Store<()> = Store::new(&engine, ())?;
+    let instance = linker.instantiate(&mut store, &component).await?;
+    let fan_out = export(&instance, "fan-out")?;
+    let arguments = [Val::U32(calls)];
+    run.moves_elements(u64::from(calls));
+    while run.iterate() {
+        relay.reset(calls);
+        fan_out.call(&mut store, &arguments).await?;
     }
     Ok(())
 }

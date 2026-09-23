@@ -1,10 +1,12 @@
 //! The store's ready queues, its host tasks, and its entry gate.
 
-use std::collections::VecDeque;
+use core::task::Waker;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use super::SuspendSeam;
 use super::event_slot::EventSlot;
 use super::host_task::HostTask;
+use super::host_task_set::HostTaskSet;
 use super::instance_id::InstanceId;
 use super::item::Item;
 use super::task_id::TaskId;
@@ -44,6 +46,7 @@ struct HeldCallback<T: 'static> {
 }
 
 /// What a held callback item waits for.
+#[derive(Clone, Copy)]
 enum HeldFor {
     /// An event on the waitable set the task's implicit thread is
     /// parked on. The item is queued when a waitable of the set
@@ -58,6 +61,100 @@ enum HeldFor {
     /// The instance's exclusive thread, which another task holds.
     /// The item is queued when the holder releases it.
     ExclusiveThread,
+}
+
+/// The held callback items, in the order they were held, with the
+/// indexes that say which of them a turn has to look at.
+///
+/// A turn does not examine every held item. An item held for an
+/// event is looked at only when its set has been signalled — a
+/// waitable of the set took on an event, or one holding an event
+/// joined it — which the task tables record as it happens. An item
+/// held for the exclusive thread is looked at every time, because a
+/// release of the instance leaves no such record; those are the
+/// callbacks that met another task inside their instance, never the
+/// ones parked waiting for an event. An item is also looked at once
+/// on the first turn after it was held, whatever was signalled.
+///
+/// Each item carries the number it was held under, and the items a
+/// turn looks at are looked at in that order, so what is released
+/// together is queued in the order it was held.
+struct HeldCallbacks<T: 'static> {
+    entries: BTreeMap<u64, HeldCallback<T>>,
+    next: u64,
+    /// The items held for an event, by the set they wait on.
+    by_set: HashMap<WaitableSetId, Vec<u64>>,
+    /// The items held for the exclusive thread.
+    exclusive: Vec<u64>,
+    /// The items held since the last look, which the next one
+    /// examines whatever was signalled.
+    fresh: Vec<u64>,
+}
+
+impl<T: 'static> HeldCallbacks<T> {
+    fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            next: 0,
+            by_set: HashMap::new(),
+            exclusive: Vec::new(),
+            fresh: Vec::new(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Hold `entry` behind every item already held.
+    fn hold(&mut self, entry: HeldCallback<T>) {
+        let number = self.next;
+        self.next += 1;
+        match entry.condition {
+            HeldFor::Event { set, .. } => self.by_set.entry(set).or_default().push(number),
+            HeldFor::ExclusiveThread => self.exclusive.push(number),
+        }
+        self.fresh.push(number);
+        self.entries.insert(number, entry);
+    }
+
+    /// Take the item held under `number` out, and out of the index
+    /// that named it.
+    fn remove(&mut self, number: u64) -> Option<HeldCallback<T>> {
+        let entry = self.entries.remove(&number)?;
+        match entry.condition {
+            HeldFor::Event { set, .. } => {
+                if let Some(numbers) = self.by_set.get_mut(&set) {
+                    numbers.retain(|held| *held != number);
+                    if numbers.is_empty() {
+                        self.by_set.remove(&set);
+                    }
+                }
+            }
+            HeldFor::ExclusiveThread => self.exclusive.retain(|held| *held != number),
+        }
+        Some(entry)
+    }
+
+    /// The numbers of the items a turn has to look at, given the sets
+    /// signalled since the last look, in the order the items were
+    /// held.
+    fn take_to_examine(&mut self, signalled: &[WaitableSetId]) -> Vec<u64> {
+        let mut numbers = core::mem::take(&mut self.fresh);
+        numbers.extend_from_slice(&self.exclusive);
+        for set in signalled {
+            if let Some(held) = self.by_set.get(set) {
+                numbers.extend_from_slice(held);
+            }
+        }
+        numbers.sort_unstable();
+        numbers.dedup();
+        numbers
+    }
 }
 
 /// The store's ready queues, its host tasks, and its entry gate.
@@ -152,8 +249,8 @@ pub struct Scheduler<T: 'static> {
     low_priority: VecDeque<Item<T>>,
     resume_after_yield: Option<Item<T>>,
     entry_gate: VecDeque<GateEntry<T>>,
-    held_callbacks: VecDeque<HeldCallback<T>>,
-    host_tasks: Vec<HostTask<T>>,
+    held_callbacks: HeldCallbacks<T>,
+    host_tasks: HostTaskSet<T>,
     suspend_seam: SuspendSeam<T>,
     resumptions: u64,
     items_run: u64,
@@ -189,8 +286,8 @@ impl<T: 'static> Scheduler<T> {
             low_priority: VecDeque::new(),
             resume_after_yield: None,
             entry_gate: VecDeque::new(),
-            held_callbacks: VecDeque::new(),
-            host_tasks: Vec::new(),
+            held_callbacks: HeldCallbacks::new(),
+            host_tasks: HostTaskSet::new(),
             suspend_seam: SuspendSeam::new(),
             resumptions: 0,
             items_run: 0,
@@ -245,18 +342,36 @@ impl<T: 'static> Scheduler<T> {
         self.host_tasks.push(task);
     }
 
-    /// Take every host task out, so a turn can poll them while it
-    /// holds the store. The ones that are still pending go back
-    /// through [`restore_host_tasks`](Self::restore_host_tasks).
-    pub fn take_host_tasks(&mut self) -> Vec<HostTask<T>> {
-        core::mem::take(&mut self.host_tasks)
+    /// Record `waker`, the waker of the driver polling the store, as
+    /// the one a host task's wake is passed on to.
+    pub fn watch_host_tasks(&self, waker: &Waker) {
+        self.host_tasks.watch(waker);
     }
 
-    /// Put the host tasks that are still pending back, ahead of any
-    /// task that joined while they were being polled.
-    pub fn restore_host_tasks(&mut self, mut pending: Vec<HostTask<T>>) {
-        pending.append(&mut self.host_tasks);
-        self.host_tasks = pending;
+    /// Take out the host tasks woken since the last take, in the
+    /// order they were woken, so a turn can poll them while it holds
+    /// the store. Each comes with its key and the waker to poll it
+    /// with; a task that is still pending goes back through
+    /// [`restore_host_task`](Self::restore_host_task) and one that
+    /// completed leaves through
+    /// [`complete_host_task`](Self::complete_host_task).
+    pub fn take_woken_host_tasks(&mut self) -> Vec<(u64, Waker, HostTask<T>)> {
+        self.host_tasks.take_woken()
+    }
+
+    /// Put back a host task that is still pending.
+    pub fn restore_host_task(&mut self, key: u64, task: HostTask<T>) {
+        self.host_tasks.restore(key, task);
+    }
+
+    /// Let go of a host task that completed.
+    pub fn complete_host_task(&mut self, key: u64) {
+        self.host_tasks.complete(key);
+    }
+
+    /// Take every host task out, woken or not.
+    pub fn take_host_tasks(&mut self) -> Vec<HostTask<T>> {
+        self.host_tasks.take_all()
     }
 
     /// How many host tasks the store holds.
@@ -664,7 +779,7 @@ impl<T: 'static> Scheduler<T> {
         slot: EventSlot,
         item: Item<T>,
     ) {
-        self.held_callbacks.push_back(HeldCallback {
+        self.held_callbacks.hold(HeldCallback {
             instance,
             condition: HeldFor::Event { thread, set },
             slot,
@@ -680,7 +795,7 @@ impl<T: 'static> Scheduler<T> {
     /// finds the instance free queues it again with the event it
     /// already carries.
     pub fn hold_for_exclusive(&mut self, instance: InstanceId, slot: EventSlot, item: Item<T>) {
-        self.held_callbacks.push_back(HeldCallback {
+        self.held_callbacks.hold(HeldCallback {
             instance,
             condition: HeldFor::ExclusiveThread,
             slot,
@@ -698,52 +813,70 @@ impl<T: 'static> Scheduler<T> {
     /// readiness is fresh, and a yield that gave way has given way
     /// already.
     ///
+    /// Only the items that could have become ready are looked at: an
+    /// item held for an event is looked at when its set was signalled
+    /// since the last look, so a turn costs nothing for a callback
+    /// task whose set nothing has touched. The documentation of the
+    /// held items' store states the whole rule.
+    ///
+    /// The list of signalled sets is taken on every look, whether or
+    /// not anything is held, so a store that never holds a callback
+    /// item does not keep a growing list of every set that ever took
+    /// on an event. Nothing is lost by it: an item held after its
+    /// set was signalled is examined on the first look after it was
+    /// held, whatever was signalled.
+    ///
     /// An item whose release fails is dropped and its error ends the
     /// turn. Every other item is still held when the next turn looks.
     pub fn release_held_callbacks(&mut self, tables: &mut HandleTables) -> Result<()> {
+        let signalled = tables.tasks.take_signalled_sets();
         if self.held_callbacks.is_empty() {
             return Ok(());
         }
-        // Only the entry whose own release failed is given up. Every
-        // other entry goes back in the order it was held, examined or
-        // not: an item held for one instance or set is no less held
-        // because the store lost a record another item named.
-        let mut held: VecDeque<HeldCallback<T>> = VecDeque::new();
-        let mut failure = None;
-        while let Some(entry) = self.held_callbacks.pop_front() {
-            if let Err(error) = self.release_one(entry, tables, &mut held) {
-                failure = Some(error);
-                break;
+        let numbers = self.held_callbacks.take_to_examine(&signalled);
+        for (position, number) in numbers.iter().enumerate() {
+            if let Err(error) = self.release_one(*number, tables) {
+                // Only the entry whose own release failed is given
+                // up. The ones not looked at yet are no less held
+                // because the store lost a record another item
+                // named, and the signal that brought them here has
+                // been taken, so the next look examines them anyway.
+                self.held_callbacks
+                    .fresh
+                    .extend_from_slice(&numbers[position + 1..]);
+                return Err(error);
             }
         }
-        held.append(&mut self.held_callbacks);
-        self.held_callbacks = held;
-        match failure {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+        Ok(())
     }
 
-    /// Queue `entry` when its condition holds, and leave it on `held`
-    /// when it does not.
-    fn release_one(
-        &mut self,
-        entry: HeldCallback<T>,
-        tables: &mut HandleTables,
-        held: &mut VecDeque<HeldCallback<T>>,
-    ) -> Result<()> {
-        let ready = match entry.condition {
+    /// Queue the item held under `number` when its condition holds,
+    /// and leave it held when it does not.
+    fn release_one(&mut self, number: u64, tables: &mut HandleTables) -> Result<()> {
+        let Some(entry) = self.held_callbacks.entries.get(&number) else {
+            return Ok(());
+        };
+        let condition = entry.condition;
+        let ready = match condition {
             HeldFor::ExclusiveThread => tables
                 .tasks
                 .instance(entry.instance)
                 .is_none_or(|record| record.exclusive_thread.is_none()),
-            HeldFor::Event { set, .. } => tables.tasks.set_has_pending_event(set)?,
+            HeldFor::Event { set, .. } => match tables.tasks.set_has_pending_event(set) {
+                Ok(ready) => ready,
+                Err(error) => {
+                    self.held_callbacks.remove(number);
+                    return Err(error);
+                }
+            },
         };
         if !ready {
-            held.push_back(entry);
             return Ok(());
         }
-        if let HeldFor::Event { thread, set } = entry.condition {
+        let Some(entry) = self.held_callbacks.remove(number) else {
+            return Ok(());
+        };
+        if let HeldFor::Event { thread, set } = condition {
             entry
                 .slot
                 .fill(tables.finish_wait_on_waitable_set(set, thread)?);
@@ -804,15 +937,20 @@ impl<T: 'static> Scheduler<T> {
             }
             false
         });
-        self.held_callbacks.retain(|entry| {
-            if !names_task(&entry.item) {
-                return true;
-            }
-            if let HeldFor::Event { thread, set } = entry.condition {
+        let named: Vec<u64> = self
+            .held_callbacks
+            .entries
+            .iter()
+            .filter(|(_, entry)| names_task(&entry.item))
+            .map(|(number, _)| *number)
+            .collect();
+        for number in named {
+            if let Some(entry) = self.held_callbacks.remove(number)
+                && let HeldFor::Event { thread, set } = entry.condition
+            {
                 let _ = tables.end_wait(set, thread);
             }
-            false
-        });
+        }
     }
 
     /// The reference's `has_backpressure`, for one waiting task.
@@ -2074,6 +2212,170 @@ mod tests {
             0,
             "the wait ended as the item was queued"
         );
+    }
+
+    /// Give a waitable an event first and join it to `set` after,
+    /// which fills the set through the join rather than through the
+    /// event.
+    fn join_with_event(store: &Store<()>, set: WaitableSetId) {
+        let mut guard = store.internal_ref().tables().lock().expect("tables");
+        let subtask = guard.tasks.insert_subtask();
+        let waitable = guard.tasks.subtask_waitable(subtask);
+        guard.tasks.start_subtask(subtask);
+        guard
+            .tasks
+            .set_pending_event(waitable, Event::subtask(4, SubtaskState::Started))
+            .expect("the subtask is ready");
+        guard
+            .tasks
+            .join_waitable_set(waitable, Some(set))
+            .expect("the subtask joins the set");
+    }
+
+    #[wcmp_macros::test]
+    fn it_releases_a_callback_item_when_a_waitable_holding_an_event_joins_its_set() {
+        let mut store = store();
+        let log = log();
+        let instance = instance(&store);
+        let (set, thread) = waiting_on_a_set(&store, instance);
+        let slot = EventSlot::new();
+        store.internal().scheduler_mut().hold_for_event(
+            instance,
+            thread,
+            set,
+            slot.clone(),
+            marker(&log, "resumed"),
+        );
+        store.internal().turn(Waker::noop()).expect("turn");
+        assert_eq!(store.internal().scheduler().held_callbacks(), 1);
+
+        join_with_event(&store, set);
+        store.internal().turn(Waker::noop()).expect("turn");
+
+        assert_eq!(entries(&log), vec!["resumed"]);
+        assert_eq!(
+            slot.take().triple(),
+            (1, 4, 1),
+            "the join filled the set, and the item was queued with its event"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_queues_callback_items_released_together_in_the_order_they_were_held() {
+        let mut store = store();
+        let log = log();
+        let instance = instance(&store);
+        let (first_set, first_thread) = waiting_on_a_set(&store, instance);
+        let (second_set, second_thread) = waiting_on_a_set(&store, instance);
+        let (idle_set, idle_thread) = waiting_on_a_set(&store, instance);
+        for (set, thread, name) in [
+            (first_set, first_thread, "held first"),
+            (idle_set, idle_thread, "never signalled"),
+            (second_set, second_thread, "held second"),
+        ] {
+            store.internal().scheduler_mut().hold_for_event(
+                instance,
+                thread,
+                set,
+                EventSlot::new(),
+                marker(&log, name),
+            );
+        }
+        store.internal().turn(Waker::noop()).expect("turn");
+
+        // The sets are signalled in the opposite order to the holds.
+        fill_event(&store, second_set);
+        fill_event(&store, first_set);
+        store.internal().turn(Waker::noop()).expect("turn");
+
+        assert_eq!(
+            entries(&log),
+            vec!["held first", "held second"],
+            "the items the two signals released ran in the order they were held"
+        );
+        assert_eq!(
+            store.internal().scheduler().held_callbacks(),
+            1,
+            "the item whose set nothing signalled is still held"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_does_not_examine_a_held_item_whose_set_was_not_signalled_since_the_last_look() {
+        let mut store = store();
+        let log = log();
+        let instance = instance(&store);
+        let (set, thread) = waiting_on_a_set(&store, instance);
+        store.internal().scheduler_mut().hold_for_event(
+            instance,
+            thread,
+            set,
+            EventSlot::new(),
+            marker(&log, "held"),
+        );
+        store.internal().turn(Waker::noop()).expect("turn");
+
+        // The set takes on an event, and its signal is taken before
+        // the turn looks, so the set holds an event the list of
+        // signalled sets does not name.
+        fill_event(&store, set);
+        store
+            .internal()
+            .tables()
+            .lock()
+            .expect("tables")
+            .tasks
+            .take_signalled_sets();
+        store.internal().turn(Waker::noop()).expect("turn");
+
+        assert!(
+            entries(&log).is_empty(),
+            "the turn did not look at the item, though its set holds an event"
+        );
+        assert_eq!(store.internal().scheduler().held_callbacks(), 1);
+
+        fill_event(&store, set);
+        store.internal().turn(Waker::noop()).expect("turn");
+
+        assert_eq!(
+            entries(&log),
+            vec!["held"],
+            "the next signal of the set brought the item to the turn's look"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_takes_the_signalled_sets_in_a_store_that_holds_no_callback_item() {
+        let mut store = store();
+        let instance = instance(&store);
+        for _ in 0..16 {
+            let (set, _thread) = waiting_on_a_set(&store, instance);
+            fill_event(&store, set);
+            assert_eq!(
+                store
+                    .internal()
+                    .tables()
+                    .lock()
+                    .expect("tables")
+                    .tasks
+                    .signalled_set_count(),
+                1,
+                "the event put the set on the list"
+            );
+            store.internal().turn(Waker::noop()).expect("turn");
+            assert_eq!(
+                store
+                    .internal()
+                    .tables()
+                    .lock()
+                    .expect("tables")
+                    .tasks
+                    .signalled_set_count(),
+                0,
+                "the turn took the list though no callback item was held"
+            );
+        }
+        assert_eq!(store.internal().scheduler().held_callbacks(), 0);
     }
 
     #[wcmp_macros::test]

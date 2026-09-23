@@ -23,7 +23,7 @@
 //! whether the turn returned or unwound.
 //!
 //! [`HostTask`] is one call of a host `async` function: a body the
-//! store polls once per turn, and the lowering that carries what it
+//! store polls in the turn after each wake, and the lowering that carries what it
 //! produced into the subtask that awaits it. The store polls a body
 //! inside a [`PollScope`] of its own and hands it an [`Accessor`],
 //! so a body that has to read the host data reaches it the way a
@@ -90,6 +90,7 @@ mod host_future;
 mod host_result_lowering;
 mod host_task;
 mod host_task_body;
+mod host_task_set;
 mod instance_id;
 mod instance_record;
 mod item;

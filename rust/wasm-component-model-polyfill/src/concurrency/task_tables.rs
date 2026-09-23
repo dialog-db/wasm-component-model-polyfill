@@ -41,6 +41,12 @@ use super::waitable_state::WaitableState;
 /// The waitable state a guest waits on lives on the records
 /// themselves — a subtask carries its own — so the waitable
 /// operations here take a [`WaitableId`] and reach through it.
+///
+/// The tables also keep the list of waitable sets that took on an
+/// event since the scheduler last looked: a waitable of the set was
+/// given an event, or a waitable holding one joined it. That list is
+/// how a callback item held until its set holds an event is found
+/// without examining every held item on every turn.
 pub struct TaskTables {
     tasks: RecordTable<Task>,
     subtasks: RecordTable<Subtask>,
@@ -49,6 +55,7 @@ pub struct TaskTables {
     instances: Vec<InstanceRecord>,
     scopes: Vec<Scope>,
     prepared_call: Option<SubtaskId>,
+    signalled_sets: Vec<WaitableSetId>,
 }
 
 impl TaskTables {
@@ -62,6 +69,7 @@ impl TaskTables {
             instances: Vec::new(),
             scopes: Vec::new(),
             prepared_call: None,
+            signalled_sets: Vec::new(),
         }
     }
 
@@ -641,6 +649,12 @@ impl TaskTables {
         self.waitable_sets.len()
     }
 
+    /// How many waitable sets are on the list of sets signalled since
+    /// the scheduler last looked.
+    pub fn signalled_set_count(&self) -> usize {
+        self.signalled_sets.len()
+    }
+
     /// The waitable a subtask is. A subtask is the one kind of
     /// waitable the polyfill builds today; the features that add
     /// streams and futures name their ends the same way.
@@ -703,9 +717,42 @@ impl TaskTables {
     /// slot. A slot that already held an event is overwritten, which
     /// is what a waitable that progressed twice before either event
     /// was delivered needs: the guest sees the later state.
+    ///
+    /// The set the waitable joined, if it joined one, goes on the
+    /// list of signalled sets.
     pub fn set_pending_event(&mut self, waitable: WaitableId, event: Event) -> Result<()> {
-        self.waitable_state_mut(waitable)?.pending_event = Some(event);
+        let state = self.waitable_state_mut(waitable)?;
+        state.pending_event = Some(event);
+        if let Some(set) = state.set {
+            self.signal_waitable_set(set);
+        }
         Ok(())
+    }
+
+    /// Put `set` on the list of sets that took on an event since the
+    /// scheduler last looked, unless it is on the list already.
+    fn signal_waitable_set(&mut self, set: WaitableSetId) {
+        let Some(record) = self.waitable_set_mut(set) else {
+            return;
+        };
+        if !record.signalled {
+            record.signalled = true;
+            self.signalled_sets.push(set);
+        }
+    }
+
+    /// Take the list of sets that took on an event since the last
+    /// take, in the order they were first signalled. A set on the
+    /// list may hold no event by now — a poll can have taken it — so
+    /// the list says where to look and not what will be found.
+    pub fn take_signalled_sets(&mut self) -> Vec<WaitableSetId> {
+        let signalled = core::mem::take(&mut self.signalled_sets);
+        for set in &signalled {
+            if let Some(record) = self.waitable_set_mut(*set) {
+                record.signalled = false;
+            }
+        }
+        signalled
     }
 
     /// Whether `waitable` holds a pending event.
@@ -748,7 +795,13 @@ impl TaskTables {
         self.leave_waitable_set(waitable);
         if let Some(set) = set {
             self.waitable_set_record_mut(set)?.waitables.push(waitable);
-            self.waitable_state_mut(waitable)?.set = Some(set);
+            let state = self.waitable_state_mut(waitable)?;
+            state.set = Some(set);
+            // A waitable that brings an event with it fills the set
+            // as surely as an event given to a member does.
+            if state.pending_event.is_some() {
+                self.signal_waitable_set(set);
+            }
         }
         Ok(())
     }
@@ -833,6 +886,11 @@ impl TaskTables {
         }
         if record.num_waiting > 0 {
             return Err(Error::Waitable(WaitableCause::SetHasWaiters));
+        }
+        // A dropped set leaves the list of signalled sets with it, so
+        // the list names only sets that are still there.
+        if record.signalled {
+            self.signalled_sets.retain(|signalled| *signalled != set);
         }
         if let Some(index) = self.waitable_set_index(set) {
             self.waitable_sets.remove(index);
@@ -1038,6 +1096,39 @@ mod tests {
                 .context,
             [0, 0],
             "and the thread that took the index kept its own slots"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_strikes_a_dropped_set_from_the_signalled_sets() {
+        let mut tables = TaskTables::new();
+        let kept = tables.insert_waitable_set();
+        let dropped = tables.insert_waitable_set();
+        for set in [kept, dropped] {
+            let subtask = tables.insert_subtask();
+            let waitable = tables.subtask_waitable(subtask);
+            tables
+                .join_waitable_set(waitable, Some(set))
+                .expect("the subtask joins the set");
+            tables
+                .set_pending_event(waitable, Event::none())
+                .expect("the subtask is ready");
+            // The waitable leaves so that the set can be dropped; the
+            // signal the event raised stays.
+            tables
+                .join_waitable_set(waitable, None)
+                .expect("the subtask leaves the set");
+        }
+        assert_eq!(tables.signalled_set_count(), 2);
+
+        tables
+            .drop_waitable_set(dropped)
+            .expect("a set nothing is in drops");
+
+        assert_eq!(
+            tables.take_signalled_sets(),
+            vec![kept],
+            "the dropped set left the list and the other set stayed on it"
         );
     }
 

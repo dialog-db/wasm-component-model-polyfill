@@ -15,6 +15,10 @@ pub struct WaitableSet {
     /// How many threads are waiting on the set. The set cannot be
     /// dropped while the count is above zero.
     pub num_waiting: u32,
+    /// Whether the set is on the store's list of sets that took on
+    /// an event since the scheduler last looked, so a set is listed
+    /// once however many events arrive before it does.
+    pub signalled: bool,
 }
 
 impl WaitableSet {
@@ -23,6 +27,7 @@ impl WaitableSet {
         Self {
             waitables: Vec::new(),
             num_waiting: 0,
+            signalled: false,
         }
     }
 }

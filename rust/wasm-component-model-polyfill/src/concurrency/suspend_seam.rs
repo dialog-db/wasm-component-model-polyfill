@@ -48,9 +48,9 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 /// - **A yielded item runs inside a nested turn once no other item
 ///   is ready.** A yield gives way to every other ready item, so
 ///   the nested turn runs a resumption after a yield only when it
-///   has run every other ready item and polled every host task. A
-///   driver's turn keeps the rule it always had: it defers the
-///   resumption, ends, and returns control to the host executor
+///   has run every other ready item and polled every woken host
+///   task. A driver's turn keeps the rule it always had: it defers
+///   the resumption, ends, and returns control to the host executor
 ///   before the item runs. A nested turn has no control to return,
 ///   and a task waiting on what a yielded item will produce would
 ///   otherwise wait for ever on work the store was holding back, so
@@ -80,7 +80,7 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 ///   whether or not the provider slot is filled: a provider would
 ///   let the store run on while the task is suspended, which is the
 ///   block the reference forbids it. A task that is allowed to block
-///   runs every ready item and polls every host task.
+///   runs every ready item and polls every woken host task.
 /// - **The seam keeps one budget, and past it the call fails with
 ///   the stack-switch cause.** This is the polyfill's one departure
 ///   from the reference, which bounds neither the yielded item the
@@ -370,12 +370,12 @@ impl<T: 'static> SuspendSeam<T> {
         store: &mut StoreContext<'_, T>,
         condition: &mut dyn FnMut(&mut StoreContext<'_, T>) -> bool,
     ) -> Result<()> {
-        // The waker of the outer turn, so that a host task polled
-        // here carries the waker the executor already holds. There
-        // is none when no turn is running — a thread resumed outside
-        // any poll of a driver — and a waker that does nothing
-        // serves instead, as it does for a trampoline that starts a
-        // host task outside a turn.
+        // The waker of the outer turn, so that a wake of a host task
+        // polled here reaches the waker the executor already holds.
+        // There is none when no turn is running — a thread resumed
+        // outside any poll of a driver — and a waker that does
+        // nothing serves instead, as it does for a trampoline that
+        // starts a host task outside a turn.
         let waker = store.internal().active_waker();
         // A task that must not block gives way only to the ready
         // work of its own instance. The instance is read once: what
@@ -547,13 +547,13 @@ mod tests {
     /// readiness condition.
     type Slot = Arc<Mutex<Option<Result<Vec<Val>>>>>;
 
-    /// Whether each poll of a test's host task saw the waker of the
-    /// outer turn.
+    /// Whether a wake of the waker each poll of a test's host task was
+    /// handed reached the waker of the outer turn.
     type Polls = Arc<Mutex<Vec<bool>>>;
 
-    /// A waker with an identity of its own, so that a test can tell
-    /// the waker of the outer turn from any other waker the store
-    /// might reach for, and which counts the wakes it receives.
+    /// The waker of an outer turn, which counts the wakes it receives,
+    /// so that a test can tell whether a wake sent to the waker a
+    /// host task was polled with reached the outer turn.
     #[derive(Default)]
     struct Outer(AtomicUsize);
 
@@ -567,11 +567,20 @@ mod tests {
         }
     }
 
-    /// A host task's future that records, for every poll, whether
-    /// the waker it was polled with is the one the outer turn holds,
-    /// and completes on its `ready_on`th poll.
+    /// The waker of an outer turn, with the count behind it.
+    fn outer_waker() -> (Arc<Outer>, Waker) {
+        let outer = Arc::new(Outer::default());
+        let waker = Waker::from(outer.clone());
+        (outer, waker)
+    }
+
+    /// A host task's future that records, for every poll, whether a
+    /// wake of the waker it was polled with reaches the waker the
+    /// outer turn holds, and completes on its `ready_on`th poll. It
+    /// wakes that waker on every poll to find out, which is also what
+    /// asks for the poll after a pending one.
     struct Probe {
-        outer: Waker,
+        outer: Arc<Outer>,
         ready_on: usize,
         polls: Polls,
     }
@@ -581,7 +590,9 @@ mod tests {
 
         fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
             let this = self.get_mut();
-            let matched = context.waker().will_wake(&this.outer);
+            let before = this.outer.0.load(Ordering::Relaxed);
+            context.waker().wake_by_ref();
+            let matched = this.outer.0.load(Ordering::Relaxed) > before;
             let polled = {
                 let mut polls = this.polls.lock().expect("polls");
                 polls.push(matched);
@@ -729,7 +740,7 @@ mod tests {
     /// uses as its readiness condition.
     fn host_task(
         store: &mut StoreContext<'_, ()>,
-        outer: &Waker,
+        outer: &Arc<Outer>,
         ready_on: usize,
     ) -> (Slot, Polls) {
         let subtask = store
@@ -833,8 +844,8 @@ mod tests {
     fn it_polls_a_host_task_with_the_outer_waker_and_returns_when_the_condition_holds() {
         let mut owner = store();
         let mut store = owner.internal().context();
-        let outer = Waker::from(Arc::new(Outer::default()));
-        let (slot, polls) = host_task(&mut store, &outer, 1);
+        let (reached, outer) = outer_waker();
+        let (slot, polls) = host_task(&mut store, &reached, 1);
 
         let watched = slot.clone();
         let outcome = store
@@ -852,7 +863,7 @@ mod tests {
         assert_eq!(
             polls.lock().expect("polls").clone(),
             vec![true],
-            "the nested turn polled the host task with the waker of the outer turn"
+            "the nested turn polled the host task with a waker that wakes the outer turn's"
         );
         assert!(
             slot.lock().expect("slot").is_some(),
@@ -869,8 +880,8 @@ mod tests {
     fn it_runs_ready_work_of_another_task_while_the_condition_is_unmet() {
         let mut owner = store();
         let mut store = owner.internal().context();
-        let outer = Waker::from(Arc::new(Outer::default()));
-        let (slot, _polls) = host_task(&mut store, &outer, 1);
+        let (reached, outer) = outer_waker();
+        let (slot, _polls) = host_task(&mut store, &reached, 1);
 
         // The ready work of another task. It records the condition
         // as it saw it, so the test can show that it ran before the
@@ -918,10 +929,10 @@ mod tests {
     fn it_leaves_a_host_task_it_left_pending_in_the_store_for_the_outer_driver() {
         let mut owner = store();
         let mut store = owner.internal().context();
-        let outer = Waker::from(Arc::new(Outer::default()));
+        let (reached, outer) = outer_waker();
         // The future is ready on its second poll, so the one poll
         // the nested turn makes leaves it pending.
-        let (slot, polls) = host_task(&mut store, &outer, 2);
+        let (slot, polls) = host_task(&mut store, &reached, 2);
 
         // What the nested turn's condition watches is the ready work
         // of another task, not the host task, so the nested turn
@@ -951,7 +962,7 @@ mod tests {
         assert_eq!(
             polls.lock().expect("polls").clone(),
             vec![true],
-            "the nested turn polled the host task once, with the outer waker"
+            "the nested turn polled the host task once, with a waker that wakes the outer one"
         );
         assert_eq!(
             store.internal().scheduler().host_task_count(),
@@ -979,7 +990,7 @@ mod tests {
         assert_eq!(
             polls.lock().expect("polls").clone(),
             vec![true, true],
-            "the second poll carried the driver's waker too, so no wake was lost"
+            "the second poll carried a waker that wakes the driver's too, so no wake was lost"
         );
     }
 
@@ -1073,12 +1084,12 @@ mod tests {
     fn it_traps_with_the_stack_switch_cause_while_a_host_task_is_still_pending() {
         let mut owner = store();
         let mut store = owner.internal().context();
-        let outer = Waker::from(Arc::new(Outer::default()));
+        let (reached, outer) = outer_waker();
         current_task(&store, false);
         // A body that never completes, so the nested turn polls it,
         // leaves it in the store, and gives up with the condition
         // unmet.
-        let (_slot, polls) = host_task(&mut store, &outer, usize::MAX);
+        let (_slot, polls) = host_task(&mut store, &reached, usize::MAX);
 
         let outcome = store
             .internal()
@@ -1094,7 +1105,7 @@ mod tests {
         assert_eq!(
             polls.lock().expect("polls").clone(),
             vec![true],
-            "the nested turn polled the pending body once, with the outer waker"
+            "the nested turn polled the pending body once, with a waker that wakes the outer one"
         );
         assert_eq!(
             store.internal().scheduler().host_task_count(),
@@ -1107,8 +1118,8 @@ mod tests {
     fn it_does_not_raise_the_recursive_driver_cause_from_inside_a_drivers_turn() {
         let mut owner = store();
         let mut store = owner.internal().context();
-        let outer = Waker::from(Arc::new(Outer::default()));
-        let (slot, polls) = host_task(&mut store, &outer, 1);
+        let (reached, outer) = outer_waker();
+        let (slot, polls) = host_task(&mut store, &reached, 1);
 
         let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let recorded = seen.clone();
@@ -1148,7 +1159,7 @@ mod tests {
         assert_eq!(
             polls.lock().expect("polls").clone(),
             vec![true],
-            "the nested turn polled with the driver's own waker"
+            "the nested turn polled with a waker that wakes the driver's own"
         );
     }
 
@@ -1600,7 +1611,7 @@ mod tests {
     fn it_runs_a_nested_turn_again_once_an_earlier_one_has_returned() {
         let mut owner = store();
         let mut store = owner.internal().context();
-        let outer = Waker::from(Arc::new(Outer::default()));
+        let (reached, outer) = outer_waker();
 
         let first = store
             .internal()
@@ -1616,7 +1627,7 @@ mod tests {
         // A host task whose future completes on its first poll, so a
         // second nested turn has something to make the condition
         // hold.
-        let (slot, polls) = host_task(&mut store, &outer, 1);
+        let (slot, polls) = host_task(&mut store, &reached, 1);
         let watched = slot.clone();
         let second = store
             .internal()
@@ -2323,11 +2334,11 @@ mod tests {
     fn it_starts_the_run_of_give_ways_over_while_a_host_future_is_pending() {
         let mut owner = store();
         let mut store = owner.internal().context();
-        let outer = Waker::from(Arc::new(Outer::default()));
+        let reached = Arc::new(Outer::default());
         // A body that never completes: the store holds a future
         // that can still resolve, so nothing here can say a yield
         // gave way to nothing.
-        let (_slot, _polls) = host_task(&mut store, &outer, usize::MAX);
+        let (_slot, _polls) = host_task(&mut store, &reached, usize::MAX);
 
         assert_eq!(
             cause(gives_way(&mut store, SPIN_BUDGET * 2 + 2)),

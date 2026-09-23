@@ -358,8 +358,10 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Run one turn of the store's scheduler.
     ///
     /// A turn runs every item that is ready, one at a time, each to
-    /// its next yield point; then it polls the host tasks with
-    /// `waker`, the waker of the driver that is polling. The waker
+    /// its next yield point; then it polls the host tasks woken
+    /// since the last turn, each with a waker of its own that passes
+    /// its wakes on to `waker`, the waker of the driver that is
+    /// polling. The waker
     /// is recorded for the duration of the turn so that a trampoline
     /// which starts a host task can poll its future once with the
     /// same waker before it returns to the guest.
@@ -376,6 +378,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Workspace-internal; not re-exported by `lib.rs`.
     fn turn(&mut self, waker: &Waker) -> Result<Outcome> {
         let _turn = TurnGuard::enter(self.tables(), waker);
+        self.scheduler().watch_host_tasks(waker);
         self.run_turn(waker, false, None)
     }
 
@@ -428,8 +431,8 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// turn's.
     ///
     /// A nested turn runs a resumption after a yield itself, once
-    /// it has run every other ready item and polled every host
-    /// task. It takes that resumption out of the resume-after-yield
+    /// it has run every other ready item and polled every woken
+    /// host task. It takes that resumption out of the resume-after-yield
     /// slot or off the front of the low-priority queue, runs it,
     /// and reports [`Outcome::Progress`]. It never fills the slot
     /// and never reports [`Outcome::Yield`]. A driver's turn keeps
@@ -679,8 +682,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         })
     }
 
-    /// Give a host task to the store. The next turn polls it with
-    /// the driver's waker, so no wake is lost. Workspace-internal.
+    /// Give a host task to the store. It counts as woken, so the next
+    /// turn polls it with its own waker and no wake is lost.
+    /// Workspace-internal.
     fn push_host_task(&mut self, task: HostTask<T>) {
         self.scheduler_mut().push_host_task(task);
     }
@@ -823,8 +827,8 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             return Ok(Outcome::Progress);
         }
         // Only deferred work is left. A nested turn runs it: every
-        // other ready item has run and every host task has been
-        // polled, so the yield has given way to all there was, and
+        // other ready item has run and every woken host task has
+        // been polled, so the yield has given way to all there was, and
         // the turn has no control to hand the host executor first.
         // A driver's turn does not reach this, because the loop
         // above deferred the front of the queue and returned
@@ -846,9 +850,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
 
     /// Make ready every piece of work the store was holding back:
     /// the callback items whose condition now holds, then the tasks
-    /// the entry gate can release. Costs nothing while the store
-    /// holds neither, which is every turn of the synchronous
-    /// baseline.
+    /// the entry gate can release. While the store holds neither,
+    /// which is every turn of the synchronous baseline, it costs one
+    /// look at the tables.
     ///
     /// The held callbacks go first, so that a task whose wait a
     /// previous turn satisfied resumes ahead of a task that has yet
@@ -859,11 +863,13 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// still held is the measure: everything this releases is queued
     /// and leaves the two holdings, so the answer is true exactly
     /// when something that was held no longer is.
+    ///
+    /// The look happens even when nothing is held, because it is also
+    /// what takes the list of waitable sets signalled since the last
+    /// look, which would otherwise grow without bound in a store that
+    /// never holds a callback item.
     fn open_entry_gate(&mut self) -> Result<bool> {
         let held = self.held_work();
-        if held == 0 {
-            return Ok(false);
-        }
         // The tables are reached through a handle of their own, so
         // that the guard on them and the borrow of the scheduler,
         // which the store's data holds, do not overlap.
@@ -881,29 +887,42 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         self.scheduler().waiting_at_gate() + self.scheduler().held_callbacks()
     }
 
-    /// Poll every host task the store holds with the turn's waker.
-    /// A host task that joined since the last turn counts as woken,
-    /// and the waker the executor holds is the driver's, so polling
-    /// them all is what "the ones the executor woke" comes to while
-    /// one waker serves the whole store. Each poll puts this store
-    /// in the thread's slot and hands the body an accessor to it,
-    /// which is how a body that has to read the host data reaches
-    /// it. A body that completes queues the lowering of what it
-    /// produced into the subtask that awaits it.
+    /// Poll the host tasks woken since the last turn polled any, in
+    /// the order they were woken, each with a waker of its own.
+    ///
+    /// A host task that joined since the last turn counts as woken.
+    /// One that was not woken is not polled: its future said it would
+    /// wake when it could go on, and the store holds it until then. A
+    /// wake reaches the store through the task's own waker, which
+    /// marks the task for the next turn and wakes `waker`, the waker
+    /// of the driver polling the store, so the executor still hears
+    /// of it.
+    ///
+    /// Each poll puts this store in the thread's slot and hands the
+    /// body an accessor to it, which is how a body that has to read
+    /// the host data reaches it. A body that completes queues the
+    /// lowering of what it produced into the subtask that awaits it.
     fn poll_host_tasks(&mut self, waker: &Waker) -> Result<()> {
-        let mut tasks = self.scheduler_mut().take_host_tasks();
-        if tasks.is_empty() {
+        // The waker a nested turn polls with when no turn is running
+        // is one that does nothing, and passing wakes on to that one
+        // would lose them for the driver that polls the store next.
+        if self.turn_in_flight() {
+            self.scheduler().watch_host_tasks(waker);
+        }
+        let woken = self.scheduler_mut().take_woken_host_tasks();
+        if woken.is_empty() {
             return Ok(());
         }
-        let mut pending = Vec::with_capacity(tasks.len());
         let mut completed = Vec::new();
-        for mut task in tasks.drain(..) {
-            match task.poll(self, waker) {
-                Poll::Ready(value) => completed.push((task, value)),
-                Poll::Pending => pending.push(task),
+        for (key, task_waker, mut task) in woken {
+            match task.poll(self, &task_waker) {
+                Poll::Ready(value) => {
+                    self.scheduler_mut().complete_host_task(key);
+                    completed.push((task, value));
+                }
+                Poll::Pending => self.scheduler_mut().restore_host_task(key, task),
             }
         }
-        self.scheduler_mut().restore_host_tasks(pending);
         for (task, value) in completed {
             self.scheduler_mut()
                 .push_high_priority(task.lowering_item(value));
@@ -2300,6 +2319,170 @@ mod tests {
             counted.count(),
             1,
             "the next turn polled it with the driver's waker, so no wake is lost"
+        );
+    }
+
+    /// A host task's future that never resolves on its own: each poll
+    /// writes its name to a log and keeps the waker it was handed,
+    /// for the test to wake when it chooses.
+    struct Parked {
+        name: &'static str,
+        polls: Log,
+        waker: Arc<Mutex<Option<Waker>>>,
+    }
+
+    impl Future for Parked {
+        type Output = Result<Vec<Val>>;
+
+        fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+            self.polls.lock().expect("log").push(self.name);
+            *self.waker.lock().expect("waker") = Some(context.waker().clone());
+            Poll::Pending
+        }
+    }
+
+    /// Give `store` one parked host task per name, in order, and hand
+    /// back the slot each one keeps its latest waker in.
+    fn parked_host_tasks(
+        store: &mut Store<()>,
+        names: &[&'static str],
+        polls: &Log,
+    ) -> Vec<Arc<Mutex<Option<Waker>>>> {
+        let slot: Lowered = Arc::new(Mutex::new(None));
+        names
+            .iter()
+            .map(|name| {
+                let subtask = store
+                    .internal_ref()
+                    .lock_tables()
+                    .expect("tables")
+                    .tasks
+                    .insert_subtask();
+                let waker = Arc::new(Mutex::new(None));
+                store
+                    .internal()
+                    .scheduler_mut()
+                    .push_host_task(HostTask::from_future(
+                        subtask,
+                        recording(&slot),
+                        Parked {
+                            name,
+                            polls: polls.clone(),
+                            waker: waker.clone(),
+                        },
+                    ));
+                waker
+            })
+            .collect()
+    }
+
+    /// Wake the waker a parked host task kept from its last poll.
+    fn wake(kept: &Arc<Mutex<Option<Waker>>>) {
+        kept.lock()
+            .expect("waker")
+            .as_ref()
+            .expect("the task was polled")
+            .wake_by_ref();
+    }
+
+    #[wcmp_macros::test]
+    fn it_polls_only_the_host_tasks_woken_since_the_previous_turn() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+        let polls = log();
+        let counted = Arc::new(CountingWaker::default());
+        let driver_waker = Waker::from(counted.clone());
+        let wakers = parked_host_tasks(
+            &mut store,
+            &["parked 1", "parked 2", "parked 3", "parked 4", "woken"],
+            &polls,
+        );
+
+        let outcome = store.internal().turn(&driver_waker).expect("a turn");
+        assert_eq!(outcome, Outcome::Waiting);
+        assert_eq!(
+            entries(&polls),
+            vec!["parked 1", "parked 2", "parked 3", "parked 4", "woken"],
+            "every task that joined counts as woken, so the first turn polled them all"
+        );
+
+        polls.lock().expect("log").clear();
+        let outcome = store.internal().turn(&driver_waker).expect("a turn");
+        assert_eq!(outcome, Outcome::Waiting);
+        assert!(
+            entries(&polls).is_empty(),
+            "nothing was woken, so the turn polled nothing"
+        );
+
+        wake(&wakers[4]);
+        assert_eq!(
+            counted.count(),
+            1,
+            "the task's wake reached the driver's waker"
+        );
+        let outcome = store.internal().turn(&driver_waker).expect("a turn");
+        assert_eq!(outcome, Outcome::Waiting);
+        assert_eq!(
+            entries(&polls),
+            vec!["woken"],
+            "the turn polled the one task that was woken and none of the others"
+        );
+        assert_eq!(store.internal().scheduler().host_task_count(), 5);
+    }
+
+    #[wcmp_macros::test]
+    fn it_polls_the_host_tasks_woken_in_one_turn_in_the_order_they_were_woken() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+        let polls = log();
+        let wakers = parked_host_tasks(&mut store, &["a", "b", "c", "d"], &polls);
+        store.internal().turn(Waker::noop()).expect("a turn");
+        polls.lock().expect("log").clear();
+
+        wake(&wakers[2]);
+        wake(&wakers[0]);
+        wake(&wakers[2]);
+        wake(&wakers[3]);
+        store.internal().turn(Waker::noop()).expect("a turn");
+
+        assert_eq!(
+            entries(&polls),
+            vec!["c", "a", "d"],
+            "the woken tasks were polled in the order of their first wakes, once \
+             each, and the task nothing woke was not polled"
+        );
+    }
+
+    // A browser build has no second thread to send the wake from, so
+    // the test is native only.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn it_polls_a_host_task_woken_from_another_thread_in_the_next_turn() {
+        let engine = Engine::new().expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+        let polls = log();
+        let counted = Arc::new(CountingWaker::default());
+        let driver_waker = Waker::from(counted.clone());
+        let wakers = parked_host_tasks(&mut store, &["idle", "woken elsewhere"], &polls);
+        store.internal().turn(&driver_waker).expect("a turn");
+        polls.lock().expect("log").clear();
+
+        let kept = wakers[1].clone();
+        std::thread::spawn(move || wake(&kept))
+            .join()
+            .expect("the waking thread");
+        assert_eq!(
+            counted.count(),
+            1,
+            "the wake from the other thread reached the driver's waker"
+        );
+
+        let outcome = store.internal().turn(&driver_waker).expect("a turn");
+        assert_eq!(outcome, Outcome::Waiting);
+        assert_eq!(
+            entries(&polls),
+            vec!["woken elsewhere"],
+            "the next turn polled the task the other thread woke, and only it"
         );
     }
 

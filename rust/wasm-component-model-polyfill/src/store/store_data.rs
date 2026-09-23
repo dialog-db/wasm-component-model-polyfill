@@ -382,12 +382,13 @@ impl<T: 'static> StoreData<T> {
     ///
     /// Two callers want it. A trampoline that starts a host task
     /// polls its body once before it returns to the guest, and a
-    /// body polled outside a turn counts as woken all the same,
-    /// because the next turn polls every host task the store holds.
-    /// The suspend seam's nested turn wants it for the same reason:
-    /// it polls with the waker the outer turn recorded rather than
-    /// recording one of its own, so a host task it leaves pending
-    /// carries the waker the executor already holds.
+    /// body polled outside a turn is not lost all the same, because
+    /// a host task that joins the store counts as woken and the next
+    /// turn polls it. The suspend seam's nested turn wants it for a
+    /// like reason: it polls with the waker the outer turn recorded
+    /// rather than recording one of its own, so the wake of a host
+    /// task it leaves pending reaches the waker the executor already
+    /// holds.
     /// Workspace-internal.
     pub fn active_waker(&self) -> Waker {
         self.tables

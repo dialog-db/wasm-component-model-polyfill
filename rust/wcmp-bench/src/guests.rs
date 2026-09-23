@@ -2,11 +2,12 @@
 //!
 //! Four are the real-toolchain fixtures under the conformance corpus,
 //! the same components the smoke test walks: `wasm-tools` builds from
-//! WIT and WAT, and a `wac plug` composition of two of them. Two more
-//! are assembled here from WebAssembly text, because no fixture moves
-//! the values the canonical-ABI benchmarks need: a component that
-//! echoes a string or a list back, and a component with a resource of
-//! its own to mint and drop.
+//! WIT and WAT, and a `wac plug` composition of two of them. Three
+//! more are assembled here from WebAssembly text, because no fixture
+//! moves the values the canonical-ABI benchmarks need or keeps a host
+//! call in flight: a component that echoes a string or a list back, a
+//! component with a resource of its own to mint and drop, and a
+//! component that starts many host calls and waits for them all.
 
 use wcmp_macros::component;
 
@@ -118,5 +119,81 @@ pub const RESOURCE: &[u8] = component!(
       (func (export "dispose") (param "h" (own $thing'))
         (canon lift (core func $i "dispose")))
       (func (export "dropped") (result u32) (canon lift (core func $di "dropped"))))
+    "#
+);
+
+/// A component that keeps many host calls in flight at once. Its
+/// `fan-out: async func(n: u32) -> u32` calls the async-typed import
+/// `answer` `n` times through an asynchronous lower, joins every
+/// subtask it is given to one waitable set, and waits on the set. Its
+/// callback drops each subtask whose `RETURNED` event it receives and
+/// returns `n` once the last one has come back, dropping the set, so
+/// nothing of a call is left in the store when the host's call
+/// returns.
+///
+/// The guest traps unless every call starts: the benchmark's host
+/// future is pending on its first poll, so a call that returned at
+/// once would mean the store was not holding the host task at all.
+pub const FAN_OUT: &[u8] = component!(
+    r#"
+    (component
+      (import "answer" (func $answer async (param "x" u32) (result u32)))
+      (core module $libc (memory (export "mem") 1))
+      (core instance $libc (instantiate $libc))
+      (core func $lowered
+        (canon lower (func $answer) async (memory (core memory $libc "mem"))))
+      (core func $task-return (canon task.return (result u32)))
+      (core func $set-new (canon waitable-set.new))
+      (core func $set-drop (canon waitable-set.drop))
+      (core func $join (canon waitable.join))
+      (core func $subtask-drop (canon subtask.drop))
+      (core module $m
+        (import "" "mem" (memory 1))
+        (import "" "answer" (func $answer (param i32 i32) (result i32)))
+        (import "" "task.return" (func $task-return (param i32)))
+        (import "" "waitable-set.new" (func $set-new (result i32)))
+        (import "" "waitable-set.drop" (func $set-drop (param i32)))
+        (import "" "waitable.join" (func $join (param i32 i32)))
+        (import "" "subtask.drop" (func $subtask-drop (param i32)))
+        (global $set (mut i32) (i32.const 0))
+        (global $calls (mut i32) (i32.const 0))
+        (global $left (mut i32) (i32.const 0))
+        (func (export "fan-out") (param $n i32) (result i32)
+          (local $i i32)
+          (local $status i32)
+          (global.set $calls (local.get $n))
+          (global.set $left (local.get $n))
+          (global.set $set (call $set-new))
+          (block $done
+            (loop $next
+              (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+              (local.set $status (call $answer (local.get $i) (i32.const 8)))
+              (if (i32.ne (i32.and (local.get $status) (i32.const 0xf)) (i32.const 1))
+                (then unreachable))
+              (call $join (i32.shr_u (local.get $status) (i32.const 4)) (global.get $set))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $next)))
+          (i32.or (i32.shl (global.get $set) (i32.const 4)) (i32.const 2)))
+        (func (export "cb") (param i32 i32 i32) (result i32)
+          (if (i32.ne (local.get 0) (i32.const 1)) (then unreachable))
+          (if (i32.ne (local.get 2) (i32.const 2)) (then unreachable))
+          (call $join (local.get 1) (i32.const 0))
+          (call $subtask-drop (local.get 1))
+          (global.set $left (i32.sub (global.get $left) (i32.const 1)))
+          (if (i32.ne (global.get $left) (i32.const 0))
+            (then (return (i32.or (i32.shl (global.get $set) (i32.const 4)) (i32.const 2)))))
+          (call $set-drop (global.get $set))
+          (call $task-return (global.get $calls))
+          (i32.const 0)))
+      (core instance $i (instantiate $m (with "" (instance
+        (export "mem" (memory $libc "mem"))
+        (export "answer" (func $lowered))
+        (export "task.return" (func $task-return))
+        (export "waitable-set.new" (func $set-new))
+        (export "waitable-set.drop" (func $set-drop))
+        (export "waitable.join" (func $join))
+        (export "subtask.drop" (func $subtask-drop))))))
+      (func (export "fan-out") async (param "n" u32) (result u32)
+        (canon lift (core func $i "fan-out") async (callback (core func $i "cb")))))
     "#
 );
