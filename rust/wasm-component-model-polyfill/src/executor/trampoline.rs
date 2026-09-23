@@ -513,7 +513,7 @@ fn sync_runtime_func_type(signature: &FunctionType) -> FuncType {
         if result_spills(signature) {
             params.push(CoreType::I32);
         } else {
-            for slot in flat_types(result_ty) {
+            for slot in flat_types(result_ty).iter().copied() {
                 results.push(core_type_of_flat(slot));
             }
         }
@@ -559,7 +559,7 @@ fn flat_parameters(signature: &FunctionType) -> Vec<CoreType> {
     signature
         .parameters
         .iter()
-        .flat_map(|p| flat_types(&p.ty))
+        .flat_map(|p| flat_types(&p.ty).into_owned())
         .map(core_type_of_flat)
         .collect()
 }

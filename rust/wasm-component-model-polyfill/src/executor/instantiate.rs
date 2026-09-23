@@ -362,7 +362,8 @@ fn run_plan<T: 'static>(
             component_instances,
             instance_tables,
         )
-        .with_instance_flags(flags.clone()),
+        .with_instance_flags(flags.clone())
+        .with_max_list_elements(ir.max_list_elements),
     ));
 
     // Build every trampoline upfront. Trampolines never depend on

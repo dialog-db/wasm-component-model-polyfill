@@ -7,7 +7,8 @@
 //!
 //! The module is organised by concern. [`layout`] computes the
 //! size, alignment, flat-slot count, variant-discriminant width, and
-//! the parameter-spill layout every other path needs. [`lift`] and
+//! the parameter-spill layout every other path needs, reading the
+//! [`shape`] a compound type computed when it was built. [`lift`] and
 //! [`lower`] are the per-valtype recursions that read a
 //! [`crate::Val`] out of guest memory and write one back. [`flatten`]
 //! is the counterpart for values that travel in flat core slots.
@@ -49,12 +50,13 @@ mod lift;
 mod lower;
 pub mod options;
 pub mod runtime_state;
+pub mod shape;
 pub mod strategy;
 pub mod strings;
 pub mod transcode;
 
 pub use lift::{lift, lift_handle, lift_list};
-pub use lower::lower;
+pub use lower::{lower, lower_list};
 
 /// The list-of-entries type a map is laid out as.
 pub fn map_entries_type(map: &crate::types::MapType) -> crate::types::ValueType {

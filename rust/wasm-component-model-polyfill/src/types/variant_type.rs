@@ -1,6 +1,10 @@
 //! The structural shape of a `variant` value type.
 
+use std::fmt;
+
 use super::value_type::ValueType;
+use crate::abi::shape::AbiShape;
+use crate::internal::CompoundTypeInternal;
 
 /// A variant: a tagged union with named cases that may carry a
 /// payload.
@@ -8,22 +12,37 @@ use super::value_type::ValueType;
 /// Two variant types are structurally equal when their cases appear
 /// in the same order and each pair of corresponding case names and
 /// optional payloads is itself structurally equal.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Eq, Hash, PartialEq)]
 pub struct VariantType {
     cases: Vec<VariantCase>,
+    shape: AbiShape,
 }
 
 impl VariantType {
     /// Construct a variant type from an ordered list of cases.
     pub fn new(cases: impl IntoIterator<Item = VariantCase>) -> Self {
-        Self {
-            cases: cases.into_iter().collect(),
-        }
+        let cases: Vec<VariantCase> = cases.into_iter().collect();
+        let shape = AbiShape::variant(cases.iter().map(VariantCase::payload));
+        Self { cases, shape }
     }
 
     /// The cases of this variant, in declaration order.
     pub fn cases(&self) -> &[VariantCase] {
         &self.cases
+    }
+}
+
+impl CompoundTypeInternal for VariantType {
+    fn abi_shape(&self) -> &AbiShape {
+        &self.shape
+    }
+}
+
+impl fmt::Debug for VariantType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VariantType")
+            .field("cases", &self.cases)
+            .finish()
     }
 }
 

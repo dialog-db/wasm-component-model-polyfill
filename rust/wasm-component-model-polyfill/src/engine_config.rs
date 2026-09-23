@@ -6,7 +6,8 @@ use crate::internal::EngineConfigInternal;
 use wasmtime_environ::wasmparser::WasmFeatures;
 
 /// The configuration an [`Engine`] is built from: which Component
-/// Model features the translator accepts.
+/// Model features the translator accepts, and how many list elements
+/// one crossing may lift out of a guest.
 ///
 /// The polyfill validates a component with the gates Wasmtime
 /// validates with, so a binary Wasmtime rejects is rejected here
@@ -18,11 +19,20 @@ use wasmtime_environ::wasmparser::WasmFeatures;
 /// projections in extern names have no setter: Wasmtime rejects them
 /// too.
 ///
+/// The element bound is described at
+/// [`EngineConfig::max_list_elements`].
+///
 /// [`Engine`]: crate::Engine
 #[derive(Clone, Debug)]
 pub struct EngineConfig {
     features: WasmFeatures,
+    max_list_elements: usize,
 }
+
+/// The default bound on the list elements one crossing may lift:
+/// 4 194 304, which is `1 << 22`. See
+/// [`EngineConfig::max_list_elements`].
+pub const DEFAULT_MAX_LIST_ELEMENTS: usize = 1 << 22;
 
 impl Default for EngineConfig {
     fn default() -> Self {
@@ -31,6 +41,7 @@ impl Default for EngineConfig {
                 | WasmFeatures::CM_MAP
                 | WasmFeatures::CM_FIXED_LENGTH_LISTS
                 | WasmFeatures::CM64,
+            max_list_elements: DEFAULT_MAX_LIST_ELEMENTS,
         }
     }
 }
@@ -39,6 +50,36 @@ impl EngineConfig {
     /// A configuration with the default feature set.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Bound the list elements one crossing may lift out of a guest
+    /// to `limit`. The default is 4 194 304 (`1 << 22`).
+    ///
+    /// A lifted list holds one [`Val`](crate::Val) per element, which
+    /// is several times what the element occupies in guest memory —
+    /// about forty bytes on a 64-bit host and about twenty in a
+    /// browser, against one byte for a `u8` — so a guest that hands
+    /// the host a list as long as its memory is wide would have the
+    /// host reserve many times that memory. The bound is an element
+    /// count because that count is what the host's allocation grows
+    /// with, and it reads the same on both targets; it plays the part
+    /// Wasmtime's per-call host fuel plays, whose default of 128 MiB
+    /// charges one `Val` apiece. The default admits a little over
+    /// that on a 64-bit host and a little under it in a browser.
+    ///
+    /// Every list one crossing lifts counts against the bound — the
+    /// arguments of one call, or the result of one — nested lists and
+    /// the entries of a `map` included, and the list that would pass
+    /// it fails with [`AbiCause::ListElementLimit`] before anything
+    /// is reserved for its elements or read out of it. A string is
+    /// not a list and does not count: it crosses as one host string
+    /// of the guest's bytes. The bound applies to lifting alone; a
+    /// list the host lowers is one it already holds.
+    ///
+    /// [`AbiCause::ListElementLimit`]: crate::AbiCause::ListElementLimit
+    pub fn max_list_elements(&mut self, limit: usize) -> &mut Self {
+        self.max_list_elements = limit;
+        self
     }
 
     fn set(&mut self, feature: WasmFeatures, enable: bool) -> &mut Self {
@@ -100,5 +141,9 @@ impl EngineConfig {
 impl EngineConfigInternal for EngineConfig {
     fn wasm_features(&self) -> WasmFeatures {
         self.features
+    }
+
+    fn list_element_bound(&self) -> usize {
+        self.max_list_elements
     }
 }

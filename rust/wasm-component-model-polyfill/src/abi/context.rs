@@ -73,6 +73,44 @@ pub struct BoundaryContext<'a, T: 'static> {
     scope: Option<Scope>,
     /// The strategy the options selected.
     strategy: AbiStrategy,
+    /// The guest bytes of the list whose elements the crossing is
+    /// lifting, read in one access. A read that falls inside them is
+    /// served from here rather than from the guest.
+    window: Option<GuestBytes>,
+    /// The guest bytes of the list whose elements the crossing is
+    /// lowering, assembled here and written to the guest in one
+    /// access once the last element is in. A write that falls inside
+    /// them lands here rather than in the guest.
+    staged: Option<GuestBytes>,
+    /// How many reads and writes the crossing has made of the guest
+    /// itself, which is the cost a browser pays a JavaScript boundary
+    /// crossing apiece for.
+    accesses: usize,
+    /// How many more list elements the crossing may lift.
+    elements_left: usize,
+}
+
+/// A range of guest bytes the crossing holds on the host side: the
+/// offset of the first, and the bytes.
+struct GuestBytes {
+    offset: usize,
+    bytes: Vec<u8>,
+}
+
+impl GuestBytes {
+    /// The `length` bytes at `offset`, when all of them fall inside
+    /// the range.
+    fn slice(&self, offset: usize, length: usize) -> Option<&[u8]> {
+        let start = offset.checked_sub(self.offset)?;
+        self.bytes.get(start..start.checked_add(length)?)
+    }
+
+    /// The `length` bytes at `offset`, writable, when all of them fall
+    /// inside the range.
+    fn slice_mut(&mut self, offset: usize, length: usize) -> Option<&mut [u8]> {
+        let start = offset.checked_sub(self.offset)?;
+        self.bytes.get_mut(start..start.checked_add(length)?)
+    }
 }
 
 impl<'a, T: 'static> BoundaryContext<'a, T> {
@@ -87,6 +125,7 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
         scope: Option<Scope>,
     ) -> Self {
         let strategy = AbiStrategy::select(&options);
+        let elements_left = options.max_list_elements();
         Self {
             store,
             options,
@@ -94,6 +133,10 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
             instance,
             scope,
             strategy,
+            window: None,
+            staged: None,
+            accesses: 0,
+            elements_left,
         }
     }
 
@@ -110,6 +153,7 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
     ) -> Self {
         let strategy = AbiStrategy::select(&destination);
         let source_strategy = AbiStrategy::select(&source);
+        let elements_left = destination.max_list_elements();
         Self {
             store,
             options: destination,
@@ -117,6 +161,10 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
             instance,
             scope,
             strategy,
+            window: None,
+            staged: None,
+            accesses: 0,
+            elements_left,
         }
     }
 
@@ -199,7 +247,8 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
 
     /// Read `length` bytes starting at `offset` out of the guest.
     /// Surfaces a structured [`AbiError`] labelled with `position`
-    /// and `valtype`.
+    /// and `valtype`. Bytes that fall inside the list the crossing is
+    /// lifting come out of the copy it already read.
     pub fn read_bytes(
         &mut self,
         offset: usize,
@@ -207,18 +256,59 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
         position: AbiPosition,
         valtype: &ValueType,
     ) -> Result<Vec<u8>> {
-        let Self {
-            store,
-            options,
-            strategy,
-            ..
-        } = self;
-        strategy
-            .load(store, options, offset, length)
+        if let Some(bytes) = self.window.as_ref().and_then(|w| w.slice(offset, length)) {
+            return Ok(bytes.to_vec());
+        }
+        self.load(offset, length)
             .map_err(|cause| Self::labelled(cause, position, valtype))
     }
 
-    /// Write `bytes` at `offset` into the guest.
+    /// Read the `N` bytes starting at `offset` out of the guest, as
+    /// [`read_bytes`](Self::read_bytes) does, into an array rather
+    /// than a fresh allocation: a scalar is read this way.
+    pub fn read_array<const N: usize>(
+        &mut self,
+        offset: usize,
+        position: AbiPosition,
+        valtype: &ValueType,
+    ) -> Result<[u8; N]> {
+        let mut out = [0u8; N];
+        match self.window.as_ref().and_then(|w| w.slice(offset, N)) {
+            Some(bytes) => out.copy_from_slice(bytes),
+            None => out.copy_from_slice(&self.read_bytes(offset, N, position, valtype)?),
+        }
+        Ok(out)
+    }
+
+    /// Read the `length` bytes at `offset` in one access and serve
+    /// every read `lift` makes inside them from that copy until `lift`
+    /// returns. A list's elements are lifted this way, so the list
+    /// costs one access of the guest however many elements and fields
+    /// it has; a read outside the range — the bytes of a string an
+    /// element points to — still goes to the guest. Nothing runs
+    /// guest code during a lift, so the copy cannot go stale.
+    pub fn lifting_within<R>(
+        &mut self,
+        offset: usize,
+        length: usize,
+        position: AbiPosition,
+        valtype: &ValueType,
+        lift: impl FnOnce(&mut Self) -> Result<R>,
+    ) -> Result<R> {
+        let bytes = if length == 0 {
+            Vec::new()
+        } else {
+            self.read_bytes(offset, length, position, valtype)?
+        };
+        let outer = self.window.replace(GuestBytes { offset, bytes });
+        let lifted = lift(self);
+        self.window = outer;
+        lifted
+    }
+
+    /// Write `bytes` at `offset` into the guest. Bytes that fall
+    /// inside the list the crossing is lowering land in the copy it
+    /// is assembling.
     pub fn write_bytes(
         &mut self,
         offset: usize,
@@ -226,15 +316,114 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
         position: AbiPosition,
         valtype: &ValueType,
     ) -> Result<()> {
+        if let Some(target) = self
+            .staged
+            .as_mut()
+            .and_then(|s| s.slice_mut(offset, bytes.len()))
+        {
+            target.copy_from_slice(bytes);
+            return Ok(());
+        }
+        self.store_bytes(offset, bytes)
+            .map_err(|cause| Self::labelled(cause, position, valtype))
+    }
+
+    /// Assemble the `length` bytes at `offset` on the host while
+    /// `lower` writes into them, then write them to the guest in one
+    /// access. A list's elements are lowered this way, so the list
+    /// costs one access of the guest however many elements and fields
+    /// it has. Bytes `lower` leaves unwritten — padding, and the tail
+    /// of a variant's payload area its case does not use — reach the
+    /// guest as zeros; the canonical ABI gives them no value.
+    ///
+    /// A write outside the range goes to the guest as `lower` makes
+    /// it. The range is the allocation `cabi_realloc` returned for
+    /// the list, and a `cabi_realloc` the elements call for strings
+    /// and nested lists hands out memory outside it, so the order in
+    /// which the list's own bytes reach the guest is not observable.
+    pub fn lowering_within(
+        &mut self,
+        offset: usize,
+        length: usize,
+        position: AbiPosition,
+        valtype: &ValueType,
+        lower: impl FnOnce(&mut Self) -> Result<()>,
+    ) -> Result<()> {
+        let outer = self.staged.replace(GuestBytes {
+            offset,
+            bytes: vec![0u8; length],
+        });
+        let lowered = lower(self);
+        let staged = std::mem::replace(&mut self.staged, outer);
+        lowered?;
+        match staged {
+            Some(staged) if !staged.bytes.is_empty() => {
+                self.write_bytes(staged.offset, &staged.bytes, position, valtype)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Count `length` list elements against the elements the crossing
+    /// may still lift, or refuse them with
+    /// [`AbiCause::ListElementLimit`] when they are more than that.
+    /// A list is counted before anything is reserved for it.
+    pub fn count_list_elements(
+        &mut self,
+        length: usize,
+        position: AbiPosition,
+        valtype: &ValueType,
+    ) -> Result<()> {
+        match self.elements_left.checked_sub(length) {
+            Some(left) => {
+                self.elements_left = left;
+                Ok(())
+            }
+            None => Err(Error::from(AbiError {
+                position,
+                valtype: Some(valtype.clone()),
+                cause: AbiCause::ListElementLimit {
+                    length,
+                    remaining: self.elements_left,
+                    limit: self.options.max_list_elements(),
+                },
+            })),
+        }
+    }
+
+    /// How many reads and writes the crossing has made of the guest
+    /// itself, as opposed to those served on the host side.
+    #[cfg(test)]
+    pub fn substrate_accesses(&self) -> usize {
+        self.accesses
+    }
+
+    /// Load `length` bytes at `offset` through the crossing's own
+    /// strategy, and count the access.
+    fn load(&mut self, offset: usize, length: usize) -> std::result::Result<Vec<u8>, AbiCause> {
         let Self {
             store,
             options,
             strategy,
+            accesses,
             ..
         } = self;
-        strategy
-            .store(store, options, offset, bytes)
-            .map_err(|cause| Self::labelled(cause, position, valtype))
+        *accesses += 1;
+        strategy.load(store, options, offset, length)
+    }
+
+    /// Store `bytes` at `offset` through the crossing's own strategy,
+    /// and count the access.
+    fn store_bytes(&mut self, offset: usize, bytes: &[u8]) -> std::result::Result<(), AbiCause> {
+        let Self {
+            store,
+            options,
+            strategy,
+            accesses,
+            ..
+        } = self;
+        *accesses += 1;
+        strategy.store(store, options, offset, bytes)
     }
 
     /// Ask the guest for `size` bytes at an explicit `alignment` and
@@ -279,8 +468,10 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
             options,
             source,
             strategy,
+            accesses,
             ..
         } = self;
+        *accesses += 1;
         let (options, strategy) = match source {
             Some((source_options, source_strategy)) => (&*source_options, &*source_strategy),
             None => (&*options, &*strategy),
@@ -294,29 +485,13 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
     /// writes to, which a copy between two guest memories needs when
     /// it rewrites what it already copied.
     pub fn read_own_bytes(&mut self, offset: usize, length: usize) -> Result<Vec<u8>> {
-        let Self {
-            store,
-            options,
-            strategy,
-            ..
-        } = self;
-        strategy
-            .load(store, options, offset, length)
-            .map_err(Self::unlabelled)
+        self.load(offset, length).map_err(Self::unlabelled)
     }
 
     /// Write `bytes` at `offset` into the side this crossing writes
     /// to, with no valtype to label a failure with.
     pub fn write_own_bytes(&mut self, offset: usize, bytes: &[u8]) -> Result<()> {
-        let Self {
-            store,
-            options,
-            strategy,
-            ..
-        } = self;
-        strategy
-            .store(store, options, offset, bytes)
-            .map_err(Self::unlabelled)
+        self.store_bytes(offset, bytes).map_err(Self::unlabelled)
     }
 
     /// Run the export's `post-return` over the core results the

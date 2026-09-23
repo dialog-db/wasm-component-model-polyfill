@@ -794,6 +794,28 @@ pub enum AbiCause {
         count: usize,
     },
 
+    /// A guest list held more elements than the crossing may still
+    /// lift. The host holds one [`Val`](crate::Val) per element, which
+    /// is several times the element's size in guest memory, so the
+    /// crossing counts the elements of every list it lifts against
+    /// the bound [`EngineConfig::max_list_elements`] sets, and refuses
+    /// the list that would pass it before reserving anything for it.
+    ///
+    /// [`EngineConfig::max_list_elements`]: crate::EngineConfig::max_list_elements
+    #[error(
+        "too many list elements for one crossing: a list of {length} elements, with {remaining} of the {limit} the crossing may lift left"
+    )]
+    ListElementLimit {
+        /// The element count of the list that was refused.
+        length: usize,
+        /// The elements the crossing could still lift when it met the
+        /// list: the bound, less the elements of the lists it already
+        /// lifted.
+        remaining: usize,
+        /// The bound itself.
+        limit: usize,
+    },
+
     /// A failure surfaced by a lower-level component (e.g. the
     /// runtime substrate) while reading or writing memory. The
     /// underlying cause is captured as `#[source]`.

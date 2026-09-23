@@ -21,10 +21,8 @@
 use wasm_runtime_layer::Val as RuntimeVal;
 
 use super::context::BoundaryContext;
-use super::layout::{
-    FlatType, alignment_of, flags_chunk_count, flat_types, join_flat_slots, size_of,
-};
-use super::{lift_list, lower, strings};
+use super::layout::{FlatType, flags_chunk_count, flat_types};
+use super::{lift_list, lower, lower_list, strings};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::internal::ErrorInternal;
 use crate::types::{PrimitiveType, ValueType};
@@ -51,15 +49,7 @@ pub fn lower_into_flat_slots<T: 'static>(
             Ok(())
         }
         (ValueType::List(list), Val::List(elements)) => {
-            let element_ty = list.element().clone();
-            let element_size = size_of(&element_ty);
-            let total_size = element_size.saturating_mul(elements.len());
-            // `cabi_realloc` runs even for an empty list, as the canonical
-            // ABI prescribes, so a guest allocator that misbehaves traps.
-            let ptr = ctx.allocate_aligned(total_size, alignment_of(&element_ty), ty, position)?;
-            for (i, elem) in elements.iter().enumerate() {
-                lower(ctx, ptr + i * element_size, elem, &element_ty, position)?;
-            }
+            let ptr = lower_list(ctx, elements, list.element(), ty, position)?;
             out.push(RuntimeVal::I32(ptr as i32));
             out.push(RuntimeVal::I32(elements.len() as i32));
             Ok(())
@@ -125,7 +115,7 @@ pub fn lower_into_flat_slots<T: 'static>(
                 tag,
                 payload_ty,
                 payload_value,
-                variant.cases().iter().map(|c| c.payload().cloned()),
+                &flat_types(ty)[1..],
                 out,
                 ty,
                 position,
@@ -146,7 +136,7 @@ pub fn lower_into_flat_slots<T: 'static>(
                 tag,
                 active_payload_ty,
                 payload_value,
-                [None, Some(option.payload().clone())].into_iter(),
+                &flat_types(ty)[1..],
                 out,
                 ty,
                 position,
@@ -162,7 +152,7 @@ pub fn lower_into_flat_slots<T: 'static>(
                 tag,
                 active_payload_ty,
                 payload_value,
-                [result.ok().cloned(), result.err().cloned()].into_iter(),
+                &flat_types(ty)[1..],
                 out,
                 ty,
                 position,
@@ -284,19 +274,13 @@ pub fn lift_from_flat_slots<T: 'static>(
                     ),
                 )
             })?;
-            let payload_ty = case.payload().cloned();
             let case_name = case.name().to_owned();
-            let case_payloads: Vec<Option<ValueType>> = variant
-                .cases()
-                .iter()
-                .map(|c| c.payload().cloned())
-                .collect();
             let payload = lift_variant_payload_flat(
                 ctx,
                 args,
                 cursor,
-                payload_ty.as_ref(),
-                &case_payloads,
+                case.payload(),
+                &flat_types(ty)[1..],
                 ty,
                 position,
             )?;
@@ -307,7 +291,7 @@ pub fn lift_from_flat_slots<T: 'static>(
         }
         ValueType::Option(option) => {
             let tag = take_i32(args, cursor, ty, position)? as usize;
-            let case_payloads: Vec<Option<ValueType>> = vec![None, Some(option.payload().clone())];
+            let joined = flat_types(ty);
             match tag {
                 0 => {
                     // Skip the joined payload slots without reading
@@ -317,7 +301,7 @@ pub fn lift_from_flat_slots<T: 'static>(
                         args,
                         cursor,
                         None,
-                        &case_payloads,
+                        &joined[1..],
                         ty,
                         position,
                     )?;
@@ -329,7 +313,7 @@ pub fn lift_from_flat_slots<T: 'static>(
                         args,
                         cursor,
                         Some(option.payload()),
-                        &case_payloads,
+                        &joined[1..],
                         ty,
                         position,
                     )?;
@@ -344,8 +328,7 @@ pub fn lift_from_flat_slots<T: 'static>(
         }
         ValueType::Result(result) => {
             let tag = take_i32(args, cursor, ty, position)? as usize;
-            let case_payloads: Vec<Option<ValueType>> =
-                vec![result.ok().cloned(), result.err().cloned()];
+            let joined = flat_types(ty);
             match tag {
                 0 => {
                     let payload = lift_variant_payload_flat(
@@ -353,7 +336,7 @@ pub fn lift_from_flat_slots<T: 'static>(
                         args,
                         cursor,
                         result.ok(),
-                        &case_payloads,
+                        &joined[1..],
                         ty,
                         position,
                     )?;
@@ -365,7 +348,7 @@ pub fn lift_from_flat_slots<T: 'static>(
                         args,
                         cursor,
                         result.err(),
-                        &case_payloads,
+                        &joined[1..],
                         ty,
                         position,
                     )?;
@@ -409,22 +392,22 @@ pub fn lift_from_flat_slots<T: 'static>(
 }
 
 /// Lower a single variant arm into the flat-slot encoding. The
-/// joined-flat-slot list is computed from `case_payloads`; the
+/// joined payload slots are `joined`, the variant type's flat slots
+/// after its discriminant; the
 /// active case's payload is filled in at the matching slot
 /// positions, and remaining slots are zero-filled (or
 /// reinterpreted) per the canonical ABI's join rules.
 #[allow(clippy::too_many_arguments)]
-fn lower_variant_flat<T: 'static, I: Iterator<Item = Option<ValueType>>>(
+fn lower_variant_flat<T: 'static>(
     ctx: &mut BoundaryContext<'_, T>,
     tag: usize,
     payload_ty: Option<&ValueType>,
     payload_value: Option<&Val>,
-    case_payloads: I,
+    joined: &[FlatType],
     out: &mut Vec<RuntimeVal>,
     ty: &ValueType,
     position: AbiPosition,
 ) -> Result<()> {
-    let joined = join_flat_slots(case_payloads);
     out.push(RuntimeVal::I32(tag as i32));
 
     // Flatten the active payload (if any) into a parallel vector.
@@ -435,10 +418,7 @@ fn lower_variant_flat<T: 'static, I: Iterator<Item = Option<ValueType>>>(
     // Cross-reference the active slots with the joined flat shape;
     // pad with zeros / reinterpret where the active case's flat
     // type does not match the joined slot.
-    let active_types: Vec<FlatType> = match payload_ty {
-        Some(t) => flat_types(t),
-        None => Vec::new(),
-    };
+    let active_types = payload_ty.map(flat_types).unwrap_or_default();
     if active_slots.len() != active_types.len() {
         return Err(Error::internal(
             "variant payload flat-slot count disagreed with declared flat shape",
@@ -465,15 +445,11 @@ fn lift_variant_payload_flat<T: 'static>(
     args: &[RuntimeVal],
     cursor: &mut usize,
     payload_ty: Option<&ValueType>,
-    case_payloads: &[Option<ValueType>],
+    joined: &[FlatType],
     ty: &ValueType,
     position: AbiPosition,
 ) -> Result<Option<Val>> {
-    let joined = join_flat_slots(case_payloads.iter().cloned());
-    let active_types: Vec<FlatType> = match payload_ty {
-        Some(t) => flat_types(t),
-        None => Vec::new(),
-    };
+    let active_types = payload_ty.map(flat_types).unwrap_or_default();
     // Capture the joined slots first.
     let mut joined_slots: Vec<RuntimeVal> = Vec::with_capacity(joined.len());
     for joined_ty in joined.iter().copied() {

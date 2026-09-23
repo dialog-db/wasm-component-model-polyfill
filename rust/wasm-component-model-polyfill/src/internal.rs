@@ -32,6 +32,7 @@ use wasm_runtime_layer::{
 use wasmtime_environ::wasmparser::WasmFeatures;
 
 use crate::abi::runtime_state::AbiRuntimeState;
+use crate::abi::shape::AbiShape;
 use crate::backend::Backend;
 use crate::component::{Component, ExternalName, FunctionType};
 use crate::error::{Error, Result};
@@ -59,6 +60,19 @@ pub trait EngineInternal {
 pub trait EngineConfigInternal {
     /// The validator features this configuration selects.
     fn wasm_features(&self) -> WasmFeatures;
+
+    /// The most list elements one crossing may lift.
+    fn list_element_bound(&self) -> usize;
+}
+
+/// The crate-internal face of a compound value type: a
+/// [`RecordType`](crate::RecordType), [`TupleType`](crate::TupleType),
+/// [`VariantType`](crate::VariantType), [`OptionType`](crate::OptionType),
+/// [`ResultType`](crate::ResultType), or
+/// [`FixedLengthListType`](crate::FixedLengthListType).
+pub trait CompoundTypeInternal {
+    /// The canonical-ABI shape the type computed when it was built.
+    fn abi_shape(&self) -> &AbiShape;
 }
 
 /// The crate-internal face of [`Error`](crate::Error).

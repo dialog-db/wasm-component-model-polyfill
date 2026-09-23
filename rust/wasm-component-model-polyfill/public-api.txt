@@ -5,6 +5,10 @@ pub wasm_component_model_polyfill::AbiCause::InvalidEncoding
 pub wasm_component_model_polyfill::AbiCause::InvalidEncoding::message: alloc::string::String
 pub wasm_component_model_polyfill::AbiCause::InvalidHandle
 pub wasm_component_model_polyfill::AbiCause::InvalidHandle::reason: alloc::string::String
+pub wasm_component_model_polyfill::AbiCause::ListElementLimit
+pub wasm_component_model_polyfill::AbiCause::ListElementLimit::length: usize
+pub wasm_component_model_polyfill::AbiCause::ListElementLimit::limit: usize
+pub wasm_component_model_polyfill::AbiCause::ListElementLimit::remaining: usize
 pub wasm_component_model_polyfill::AbiCause::OutOfBoundsMemory
 pub wasm_component_model_polyfill::AbiCause::OutOfBoundsMemory::length: usize
 pub wasm_component_model_polyfill::AbiCause::OutOfBoundsMemory::offset: usize
@@ -294,6 +298,7 @@ pub fn wasm_component_model_polyfill::Engine::new() -> wasm_component_model_poly
 pub fn wasm_component_model_polyfill::Engine::with_config(config: &wasm_component_model_polyfill::EngineConfig) -> wasm_component_model_polyfill::Result<Self>
 pub struct wasm_component_model_polyfill::EngineConfig
 impl wasm_component_model_polyfill::EngineConfig
+pub fn wasm_component_model_polyfill::EngineConfig::max_list_elements(&mut self, limit: usize) -> &mut Self
 pub fn wasm_component_model_polyfill::EngineConfig::new() -> Self
 pub fn wasm_component_model_polyfill::EngineConfig::wasm_component_model_async_stackful(&mut self, enable: bool) -> &mut Self
 pub fn wasm_component_model_polyfill::EngineConfig::wasm_component_model_error_context(&mut self, enable: bool) -> &mut Self
@@ -321,6 +326,8 @@ impl wasm_component_model_polyfill::FixedLengthListType
 pub fn wasm_component_model_polyfill::FixedLengthListType::element(&self) -> &wasm_component_model_polyfill::ValueType
 pub fn wasm_component_model_polyfill::FixedLengthListType::length(&self) -> u32
 pub fn wasm_component_model_polyfill::FixedLengthListType::new(element: wasm_component_model_polyfill::ValueType, length: u32) -> Self
+impl core::fmt::Debug for wasm_component_model_polyfill::FixedLengthListType
+pub fn wasm_component_model_polyfill::FixedLengthListType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wasm_component_model_polyfill::FlagsType
 impl wasm_component_model_polyfill::FlagsType
 pub fn wasm_component_model_polyfill::FlagsType::names(&self) -> &[alloc::string::String]
@@ -427,6 +434,8 @@ pub struct wasm_component_model_polyfill::OptionType
 impl wasm_component_model_polyfill::OptionType
 pub fn wasm_component_model_polyfill::OptionType::new(payload: wasm_component_model_polyfill::ValueType) -> Self
 pub fn wasm_component_model_polyfill::OptionType::payload(&self) -> &wasm_component_model_polyfill::ValueType
+impl core::fmt::Debug for wasm_component_model_polyfill::OptionType
+pub fn wasm_component_model_polyfill::OptionType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wasm_component_model_polyfill::PackageName
 impl wasm_component_model_polyfill::PackageName
 pub fn wasm_component_model_polyfill::PackageName::name(&self) -> &str
@@ -448,6 +457,8 @@ pub struct wasm_component_model_polyfill::RecordType
 impl wasm_component_model_polyfill::RecordType
 pub fn wasm_component_model_polyfill::RecordType::fields(&self) -> &[wasm_component_model_polyfill::RecordField]
 pub fn wasm_component_model_polyfill::RecordType::new(fields: impl core::iter::traits::collect::IntoIterator<Item = wasm_component_model_polyfill::RecordField>) -> Self
+impl core::fmt::Debug for wasm_component_model_polyfill::RecordType
+pub fn wasm_component_model_polyfill::RecordType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wasm_component_model_polyfill::ResourceHandle
 impl wasm_component_model_polyfill::ResourceHandle
 pub fn wasm_component_model_polyfill::ResourceHandle::index(&self) -> u32
@@ -470,6 +481,8 @@ impl wasm_component_model_polyfill::ResultType
 pub fn wasm_component_model_polyfill::ResultType::err(&self) -> core::option::Option<&wasm_component_model_polyfill::ValueType>
 pub fn wasm_component_model_polyfill::ResultType::new(ok: core::option::Option<wasm_component_model_polyfill::ValueType>, err: core::option::Option<wasm_component_model_polyfill::ValueType>) -> Self
 pub fn wasm_component_model_polyfill::ResultType::ok(&self) -> core::option::Option<&wasm_component_model_polyfill::ValueType>
+impl core::fmt::Debug for wasm_component_model_polyfill::ResultType
+pub fn wasm_component_model_polyfill::ResultType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wasm_component_model_polyfill::Store<T: 'static>
 impl<T: 'static> wasm_component_model_polyfill::Store<T>
 pub fn wasm_component_model_polyfill::Store<T>::data(&self) -> &T
@@ -486,6 +499,8 @@ pub struct wasm_component_model_polyfill::TupleType
 impl wasm_component_model_polyfill::TupleType
 pub fn wasm_component_model_polyfill::TupleType::elements(&self) -> &[wasm_component_model_polyfill::ValueType]
 pub fn wasm_component_model_polyfill::TupleType::new(elements: impl core::iter::traits::collect::IntoIterator<Item = wasm_component_model_polyfill::ValueType>) -> Self
+impl core::fmt::Debug for wasm_component_model_polyfill::TupleType
+pub fn wasm_component_model_polyfill::TupleType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wasm_component_model_polyfill::TypeMismatch
 pub wasm_component_model_polyfill::TypeMismatch::actual: wasm_component_model_polyfill::TypeRendering
 pub wasm_component_model_polyfill::TypeMismatch::expected: wasm_component_model_polyfill::TypeRendering
@@ -510,6 +525,8 @@ pub struct wasm_component_model_polyfill::VariantType
 impl wasm_component_model_polyfill::VariantType
 pub fn wasm_component_model_polyfill::VariantType::cases(&self) -> &[wasm_component_model_polyfill::VariantCase]
 pub fn wasm_component_model_polyfill::VariantType::new(cases: impl core::iter::traits::collect::IntoIterator<Item = wasm_component_model_polyfill::VariantCase>) -> Self
+impl core::fmt::Debug for wasm_component_model_polyfill::VariantType
+pub fn wasm_component_model_polyfill::VariantType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub trait wasm_component_model_polyfill::ComponentParameters: core::marker::Sized + core::marker::Send + core::marker::Sync + 'static
 pub fn wasm_component_model_polyfill::ComponentParameters::from_vals(vals: &[wasm_component_model_polyfill::Val]) -> wasm_component_model_polyfill::Result<Self>
 pub fn wasm_component_model_polyfill::ComponentParameters::into_vals(self) -> alloc::vec::Vec<wasm_component_model_polyfill::Val>

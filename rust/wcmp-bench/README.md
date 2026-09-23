@@ -3,11 +3,11 @@
 One benchmark definition, measured on both targets.
 
 The polyfill runs on a native engine and in a browser, and the same code path
-can cost wildly different amounts on the two. The canonical ABI lowers a value
-one field at a time through runtime-layer memory writes, which in a browser is a
-JavaScript boundary crossing per write, and the untyped `Val` path allocates per
-value. This suite exists so that those costs are numbers rather than suspicions,
-and so that a change can be read on both targets from one definition.
+can cost wildly different amounts on the two. A value crosses the canonical ABI
+through runtime-layer memory reads and writes, each of which in a browser is a
+JavaScript boundary crossing, and the untyped `Val` path allocates per value.
+This suite exists so that those costs are numbers rather than suspicions, and so
+that a change can be read on both targets from one definition.
 
 ## Running it
 
@@ -91,7 +91,8 @@ named guests. A body states the size of what it moves with `run.moves_bytes` or
 | `u32-call`                | the floor: a call with no memory traffic under it              |
 | `u32-call-typed`          | the same call without the untyped `Val` path's allocation      |
 | `string-roundtrip/N`      | a string lowered into guest memory and lifted back             |
-| `list-u32-roundtrip/N`    | a list whose elements cross one at a time                      |
+| `list-u8-roundtrip/N`     | the bytes of a string, as a list of `u8` values                |
+| `list-u32-roundtrip/N`    | a list of numbers, copied straight to and from its bytes       |
 | `list-record-roundtrip/N` | the same, with a two-field record per element                  |
 | `resource-handle`         | one owned handle minted, passed, handed back, and dropped      |
 | `composition-call`        | a call through the adapter `wac plug` wrote between two guests |

@@ -27,12 +27,8 @@ pub fn lift<T: 'static>(
     match ty {
         ValueType::Primitive(prim) => lift_primitive(ctx, offset, *prim, position),
         ValueType::List(list) => {
-            let element_ty = list.element().clone();
-            let ptr_bytes = ctx.read_bytes(offset, 4, position, ty)?;
-            let len_bytes = ctx.read_bytes(offset + 4, 4, position, ty)?;
-            let ptr = read_u32(&ptr_bytes) as usize;
-            let len = read_u32(&len_bytes) as usize;
-            lift_list(ctx, ptr, len, &element_ty, ty, position)
+            let (ptr, len) = read_pointer_pair(ctx, offset, position, ty)?;
+            lift_list(ctx, ptr, len, list.element(), ty, position)
         }
         ValueType::FixedLengthList(fixed) => {
             // Elements sit inline, one element size apart.
@@ -76,8 +72,7 @@ pub fn lift<T: 'static>(
         ValueType::Variant(variant) => {
             let case_count = variant.cases().len();
             let disc_size = discriminant_size(case_count);
-            let disc_bytes = ctx.read_bytes(offset, disc_size, position, ty)?;
-            let discriminant = read_discriminant(&disc_bytes);
+            let discriminant = read_discriminant(ctx, offset, disc_size, position, ty)?;
             let case = variant.cases().get(discriminant).ok_or_else(|| {
                 invalid_encoding(
                     ty,
@@ -103,8 +98,8 @@ pub fn lift<T: 'static>(
             })
         }
         ValueType::Option(option) => {
-            let disc_bytes = ctx.read_bytes(offset, 1, position, ty)?;
-            let discriminant = disc_bytes[0] as usize;
+            let [discriminant] = ctx.read_array(offset, position, ty)?;
+            let discriminant = discriminant as usize;
             let payload_align = alignment_of(option.payload());
             let payload_offset = align_to(offset + 1, payload_align);
             match discriminant {
@@ -121,8 +116,8 @@ pub fn lift<T: 'static>(
             }
         }
         ValueType::Result(result) => {
-            let disc_bytes = ctx.read_bytes(offset, 1, position, ty)?;
-            let discriminant = disc_bytes[0] as usize;
+            let [discriminant] = ctx.read_array(offset, position, ty)?;
+            let discriminant = discriminant as usize;
             let payload_align = result
                 .ok()
                 .map(alignment_of)
@@ -157,8 +152,7 @@ pub fn lift<T: 'static>(
         }
         ValueType::Enum(en) => {
             let disc_size = discriminant_size(en.cases().len());
-            let disc_bytes = ctx.read_bytes(offset, disc_size, position, ty)?;
-            let discriminant = read_discriminant(&disc_bytes);
+            let discriminant = read_discriminant(ctx, offset, disc_size, position, ty)?;
             let case = en
                 .cases()
                 .get(discriminant)
@@ -181,8 +175,7 @@ pub fn lift<T: 'static>(
             Ok(Val::Flags(active.into_boxed_slice()))
         }
         ValueType::Own(_) | ValueType::Borrow(_) => {
-            let bytes = ctx.read_bytes(offset, 4, position, ty)?;
-            let index = read_u32(&bytes);
+            let index = u32::from_le_bytes(ctx.read_array(offset, position, ty)?);
             lift_handle(ctx, index, ty, position, matches!(ty, ValueType::Own(_)))
         }
     }
@@ -198,20 +191,32 @@ pub fn lift<T: 'static>(
 /// allocator for about 160 GiB natively and overflows the capacity
 /// computation where a pointer is 32 bits wide.
 ///
-/// The bounds trap measures two things against the memory, because
-/// a list costs the host two: the byte range the guest presented,
-/// and the element count behind it, which the host reserves one
-/// [`Val`] apiece for. The byte range bounds the count only while
-/// an element spans a byte. An element of zero size — a `flags`
-/// with no labels, an empty record, a fixed-length list of length
-/// zero — spans none, so its byte range is empty at every length,
-/// and the count is measured against the memory itself: a list
-/// holds no more elements than the memory the length was measured
-/// against holds bytes.
-///
-/// The traps are ordered as the canonical ABI's
+/// The gate first measures the byte range against the memory. The
+/// traps on the range are ordered as the canonical ABI's
 /// `load_list_from_range` orders them: the byte length, then the
-/// alignment of the pointer, then the bounds.
+/// alignment of the pointer, then the bounds. The byte range bounds
+/// the element count only while an element spans a byte. An element
+/// of zero size — a fixed-length list of length zero — spans none,
+/// so its byte range is empty at every length, and the count is also
+/// measured against the memory itself: a list holds no more elements
+/// than the memory the length was measured against holds bytes.
+/// Wasmtime raises that shape as the exhaustion of its per-call
+/// fuel; the bounds wording here is borrowed from its trap for a
+/// range the memory does not hold.
+///
+/// A range the memory holds can still cost the host far more than
+/// the guest: the host reserves one [`Val`] per element, several
+/// times the size of a `u8`, so a `list<u8>` as long as a large
+/// memory is wide asks for many times that memory. The element count
+/// is therefore counted last against the bound the engine
+/// configuration sets on the list elements one crossing may lift, as
+/// Wasmtime charges its fuel after its bounds check.
+///
+/// Once the gate has passed, the whole byte range is read out of the
+/// guest in one access, and the elements are decoded from that copy.
+/// A numeric element is copied straight out of it; any other element
+/// is lifted by [`lift`], whose reads inside the range the copy
+/// serves.
 pub fn lift_list<T: 'static>(
     ctx: &mut BoundaryContext<'_, T>,
     ptr: usize,
@@ -232,7 +237,8 @@ pub fn lift_list<T: 'static>(
             "list pointer is not aligned",
         ));
     }
-    let within_memory = match ctx.memory_size() {
+    let memory_size = ctx.memory_size();
+    let within_memory = match memory_size {
         Some(size) => ptr.checked_add(byte_len).is_some_and(|end| end <= size) && len <= size,
         None => ptr.checked_add(byte_len).is_some(),
     };
@@ -243,6 +249,30 @@ pub fn lift_list<T: 'static>(
             "list pointer/length out of bounds of memory",
         ));
     }
+    ctx.count_list_elements(len, position, ty)?;
+    if let ValueType::Primitive(prim) = element_ty
+        && let Some(decode) = numeric_decoder(*prim)
+    {
+        let bytes = if byte_len == 0 {
+            Vec::new()
+        } else {
+            ctx.read_bytes(ptr, byte_len, position, ty)?
+        };
+        // Collecting through `Option` hides the length from the
+        // vector, which would then grow by doubling; the count is
+        // already gated, so it is reserved up front.
+        let mut out = Vec::with_capacity(len);
+        for chunk in bytes.chunks_exact(element_size) {
+            out.push(decode(chunk).ok_or_else(|| {
+                invalid_encoding(
+                    element_ty,
+                    position,
+                    "char value is not a valid Unicode scalar",
+                )
+            })?);
+        }
+        return Ok(Val::List(out.into_boxed_slice()));
+    }
     // The capacity is reserved once the range has passed the gate,
     // and only when the crossing addresses a store of a bounded
     // size, because that size is what the length was measured
@@ -250,15 +280,48 @@ pub fn lift_list<T: 'static>(
     // size reserves nothing at any length and the vector grows as
     // the elements arrive. A crossing that addresses no bounded
     // store reserves nothing either.
-    let capacity = match ctx.memory_size() {
+    let capacity = match memory_size {
         Some(_) => len.min(byte_len),
         None => 0,
     };
-    let mut out = Vec::with_capacity(capacity);
-    for i in 0..len {
-        out.push(lift(ctx, ptr + i * element_size, element_ty, position)?);
+    ctx.lifting_within(ptr, byte_len, position, ty, |ctx| {
+        let mut out = Vec::with_capacity(capacity);
+        for i in 0..len {
+            out.push(lift(ctx, ptr + i * element_size, element_ty, position)?);
+        }
+        Ok(Val::List(out.into_boxed_slice()))
+    })
+}
+
+/// Decode one list element from its bytes, or answer `None` for bytes
+/// that are no value of the element type.
+type ElementDecoder = fn(&[u8]) -> Option<Val>;
+
+/// How to decode one element of a list of `prim` straight from its
+/// little-endian bytes, for every primitive but `string`, which
+/// points elsewhere. The decoder answers `None` only for a `char`
+/// that is not a Unicode scalar.
+fn numeric_decoder(prim: PrimitiveType) -> Option<ElementDecoder> {
+    fn array<const N: usize>(bytes: &[u8]) -> [u8; N] {
+        let mut out = [0u8; N];
+        out.copy_from_slice(bytes);
+        out
     }
-    Ok(Val::List(out.into_boxed_slice()))
+    Some(match prim {
+        PrimitiveType::Bool => |b| Some(Val::Bool(b[0] != 0)),
+        PrimitiveType::S8 => |b| Some(Val::S8(b[0] as i8)),
+        PrimitiveType::U8 => |b| Some(Val::U8(b[0])),
+        PrimitiveType::S16 => |b| Some(Val::S16(i16::from_le_bytes(array(b)))),
+        PrimitiveType::U16 => |b| Some(Val::U16(u16::from_le_bytes(array(b)))),
+        PrimitiveType::S32 => |b| Some(Val::S32(i32::from_le_bytes(array(b)))),
+        PrimitiveType::U32 => |b| Some(Val::U32(u32::from_le_bytes(array(b)))),
+        PrimitiveType::S64 => |b| Some(Val::S64(i64::from_le_bytes(array(b)))),
+        PrimitiveType::U64 => |b| Some(Val::U64(u64::from_le_bytes(array(b)))),
+        PrimitiveType::F32 => |b| Some(Val::F32(f32::from_le_bytes(array(b)))),
+        PrimitiveType::F64 => |b| Some(Val::F64(f64::from_le_bytes(array(b)))),
+        PrimitiveType::Char => |b| char::from_u32(u32::from_le_bytes(array(b))).map(Val::Char),
+        PrimitiveType::String => return None,
+    })
 }
 
 fn lift_primitive<T: 'static>(
@@ -270,61 +333,57 @@ fn lift_primitive<T: 'static>(
     let ty = ValueType::Primitive(prim);
     match prim {
         PrimitiveType::Bool => {
-            let bytes = ctx.read_bytes(offset, 1, position, &ty)?;
+            let bytes = ctx.read_array::<1>(offset, position, &ty)?;
             Ok(Val::Bool(bytes[0] != 0))
         }
         PrimitiveType::S8 => {
-            let bytes = ctx.read_bytes(offset, 1, position, &ty)?;
+            let bytes = ctx.read_array::<1>(offset, position, &ty)?;
             Ok(Val::S8(bytes[0] as i8))
         }
         PrimitiveType::U8 => {
-            let bytes = ctx.read_bytes(offset, 1, position, &ty)?;
+            let bytes = ctx.read_array::<1>(offset, position, &ty)?;
             Ok(Val::U8(bytes[0]))
         }
         PrimitiveType::S16 => {
-            let bytes = ctx.read_bytes(offset, 2, position, &ty)?;
-            Ok(Val::S16(i16::from_le_bytes([bytes[0], bytes[1]])))
+            let bytes = ctx.read_array(offset, position, &ty)?;
+            Ok(Val::S16(i16::from_le_bytes(bytes)))
         }
         PrimitiveType::U16 => {
-            let bytes = ctx.read_bytes(offset, 2, position, &ty)?;
-            Ok(Val::U16(u16::from_le_bytes([bytes[0], bytes[1]])))
+            let bytes = ctx.read_array(offset, position, &ty)?;
+            Ok(Val::U16(u16::from_le_bytes(bytes)))
         }
         PrimitiveType::S32 => {
-            let bytes = ctx.read_bytes(offset, 4, position, &ty)?;
-            Ok(Val::S32(i32::from_le_bytes(bytes_4(&bytes))))
+            let bytes = ctx.read_array(offset, position, &ty)?;
+            Ok(Val::S32(i32::from_le_bytes(bytes)))
         }
         PrimitiveType::U32 => {
-            let bytes = ctx.read_bytes(offset, 4, position, &ty)?;
-            Ok(Val::U32(u32::from_le_bytes(bytes_4(&bytes))))
+            let bytes = ctx.read_array(offset, position, &ty)?;
+            Ok(Val::U32(u32::from_le_bytes(bytes)))
         }
         PrimitiveType::S64 => {
-            let bytes = ctx.read_bytes(offset, 8, position, &ty)?;
-            Ok(Val::S64(i64::from_le_bytes(bytes_8(&bytes))))
+            let bytes = ctx.read_array(offset, position, &ty)?;
+            Ok(Val::S64(i64::from_le_bytes(bytes)))
         }
         PrimitiveType::U64 => {
-            let bytes = ctx.read_bytes(offset, 8, position, &ty)?;
-            Ok(Val::U64(u64::from_le_bytes(bytes_8(&bytes))))
+            let bytes = ctx.read_array(offset, position, &ty)?;
+            Ok(Val::U64(u64::from_le_bytes(bytes)))
         }
         PrimitiveType::F32 => {
-            let bytes = ctx.read_bytes(offset, 4, position, &ty)?;
-            Ok(Val::F32(f32::from_le_bytes(bytes_4(&bytes))))
+            let bytes = ctx.read_array(offset, position, &ty)?;
+            Ok(Val::F32(f32::from_le_bytes(bytes)))
         }
         PrimitiveType::F64 => {
-            let bytes = ctx.read_bytes(offset, 8, position, &ty)?;
-            Ok(Val::F64(f64::from_le_bytes(bytes_8(&bytes))))
+            let bytes = ctx.read_array(offset, position, &ty)?;
+            Ok(Val::F64(f64::from_le_bytes(bytes)))
         }
         PrimitiveType::Char => {
-            let bytes = ctx.read_bytes(offset, 4, position, &ty)?;
-            let raw = u32::from_le_bytes(bytes_4(&bytes));
+            let raw = u32::from_le_bytes(ctx.read_array(offset, position, &ty)?);
             char::from_u32(raw).map(Val::Char).ok_or_else(|| {
                 invalid_encoding(&ty, position, "char value is not a valid Unicode scalar")
             })
         }
         PrimitiveType::String => {
-            let ptr_bytes = ctx.read_bytes(offset, 4, position, &ty)?;
-            let len_bytes = ctx.read_bytes(offset + 4, 4, position, &ty)?;
-            let ptr = read_u32(&ptr_bytes) as usize;
-            let len = read_u32(&len_bytes) as usize;
+            let (ptr, len) = read_pointer_pair(ctx, offset, position, &ty)?;
             lift_string(ctx, ptr, len, position, &ty)
         }
     }
@@ -363,29 +422,35 @@ fn lift_string<T: 'static>(
         .map_err(|message| invalid_encoding(ty, position, message))
 }
 
-fn read_u32(bytes: &[u8]) -> u32 {
-    u32::from_le_bytes(bytes_4(bytes))
+/// Read the pointer and the length of a string or a list, which sit
+/// side by side at `offset`.
+fn read_pointer_pair<T: 'static>(
+    ctx: &mut BoundaryContext<'_, T>,
+    offset: usize,
+    position: AbiPosition,
+    ty: &ValueType,
+) -> Result<(usize, usize)> {
+    let pair: [u8; 8] = ctx.read_array(offset, position, ty)?;
+    let [p0, p1, p2, p3, l0, l1, l2, l3] = pair;
+    Ok((
+        u32::from_le_bytes([p0, p1, p2, p3]) as usize,
+        u32::from_le_bytes([l0, l1, l2, l3]) as usize,
+    ))
 }
 
-fn bytes_4(bytes: &[u8]) -> [u8; 4] {
-    let mut out = [0u8; 4];
-    out.copy_from_slice(&bytes[..4]);
-    out
-}
-
-fn bytes_8(bytes: &[u8]) -> [u8; 8] {
-    let mut out = [0u8; 8];
-    out.copy_from_slice(&bytes[..8]);
-    out
-}
-
-fn read_discriminant(bytes: &[u8]) -> usize {
-    match bytes.len() {
-        1 => bytes[0] as usize,
-        2 => u16::from_le_bytes([bytes[0], bytes[1]]) as usize,
-        4 => u32::from_le_bytes(bytes_4(bytes)) as usize,
-        _ => 0,
-    }
+/// Read a discriminant `width` bytes wide at `offset`.
+fn read_discriminant<T: 'static>(
+    ctx: &mut BoundaryContext<'_, T>,
+    offset: usize,
+    width: usize,
+    position: AbiPosition,
+    ty: &ValueType,
+) -> Result<usize> {
+    Ok(match width {
+        1 => usize::from(u8::from_le_bytes(ctx.read_array(offset, position, ty)?)),
+        2 => usize::from(u16::from_le_bytes(ctx.read_array(offset, position, ty)?)),
+        _ => u32::from_le_bytes(ctx.read_array(offset, position, ty)?) as usize,
+    })
 }
 
 /// Lift a `own<T>` or `borrow<T>` handle from a 4-byte index that
@@ -515,14 +580,19 @@ pub fn declared_resource_index(ty: &ValueType) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use wasm_runtime_layer::{AsContextMut, Memory, MemoryType, Val as RuntimeVal};
+    use wasm_runtime_layer::{
+        AsContextMut, Func as RuntimeFunc, FuncType, Memory, MemoryType, Val as RuntimeVal,
+        ValType as CoreType,
+    };
 
     use super::*;
     use crate::abi::context::BoundaryContext;
-    use crate::abi::flatten::lift_from_flat_slots;
+    use crate::abi::flatten::{lift_from_flat_slots, lower_into_flat_slots};
     use crate::abi::instance::BoundaryInstance;
+    use crate::abi::instance_flags::InstanceFlags;
     use crate::abi::options::BoundaryOptions;
     use crate::abi::runtime_state::AbiRuntimeState;
     use crate::concurrency::InstanceId;
@@ -530,8 +600,8 @@ mod tests {
     use crate::executor::ir::{CanonOptions, DataModel, StringEncoding};
     use crate::resource::TableId;
     use crate::store::Store;
-    use crate::store::StoreInternalExt;
-    use crate::types::{FlagsType, ListType};
+    use crate::store::{StoreContextInternalExt, StoreInternalExt};
+    use crate::types::{FlagsType, ListType, RecordField, RecordType};
 
     /// The size of the guest memory every crossing below reads
     /// through, in pages. One page is 65 536 bytes, and that count
@@ -653,5 +723,452 @@ mod tests {
                 .all(|element| matches!(element, Val::Flags(names) if names.is_empty())),
             "a `flags` with no labels has no flag set"
         );
+    }
+
+    /// Where the bump `cabi_realloc` of [`with_realloc`] hands out its
+    /// first block. The lists a test writes for a lift sit beneath it.
+    const HEAP: u32 = 32 * 1024;
+
+    /// Give `store` one page of guest memory, a bump `cabi_realloc`
+    /// over it, and one component instance in its records, and return
+    /// the memory with the options and instance of a crossing that
+    /// reads, writes, and allocates through them. A lower asks the
+    /// realloc for its memory as a real one would, on a task of its
+    /// own, which is what the instance's records are for.
+    fn with_realloc(store: &mut Store<()>) -> (Memory, BoundaryOptions, BoundaryInstance) {
+        let memory = Memory::new(
+            store.internal().inner_mut().as_context_mut(),
+            MemoryType::new(PAGES, None),
+        )
+        .expect("one page of guest memory");
+        let next = Arc::new(AtomicU32::new(HEAP));
+        let realloc = RuntimeFunc::new(
+            store.internal().inner_mut().as_context_mut(),
+            FuncType::new([CoreType::I32; 4], [CoreType::I32]),
+            move |_store, args, results| {
+                let [.., RuntimeVal::I32(align), RuntimeVal::I32(size)] = args else {
+                    anyhow::bail!("`cabi_realloc` takes four `i32`s");
+                };
+                let ptr = next.load(Ordering::Relaxed).next_multiple_of(*align as u32);
+                next.store(ptr + *size as u32, Ordering::Relaxed);
+                results[0] = RuntimeVal::I32(ptr as i32);
+                Ok(())
+            },
+        );
+        let instance = store
+            .internal()
+            .lock_tables()
+            .expect("handle tables")
+            .tasks
+            .insert_instance();
+        let flags = InstanceFlags::new(store.internal().context().internal().runtime_mut());
+        let state = Arc::new(Mutex::new(
+            AbiRuntimeState::with_slabs(
+                1,
+                1,
+                0,
+                0,
+                Vec::new(),
+                vec![instance],
+                vec![TableId::fresh()],
+            )
+            .with_instance_flags(vec![flags]),
+        ));
+        {
+            let mut state = state.lock().expect("runtime state");
+            state.memories[0] = Some(memory.clone());
+            state.reallocs[0] = Some(realloc);
+        }
+        let declared = CanonOptions {
+            instance: 0,
+            memory: Some(0),
+            realloc: Some(0),
+            post_return: None,
+            async_: false,
+            callback: None,
+            string_encoding: StringEncoding::Utf8,
+            data_model: DataModel::LinearMemory,
+        };
+        let tables = store.internal().tables_handle();
+        let (options, instance) =
+            BoundaryInstance::resolve(&declared, &state, &tables).expect("resolve");
+        (memory, options, instance)
+    }
+
+    /// `record point { x: u32, y: u16 }`, whose second field leaves
+    /// two bytes of padding at the end of every element.
+    fn point() -> ValueType {
+        ValueType::Record(RecordType::new([
+            RecordField::new("x", ValueType::Primitive(PrimitiveType::U32)),
+            RecordField::new("y", ValueType::Primitive(PrimitiveType::U16)),
+        ]))
+    }
+
+    /// The point at `index` of the lists below.
+    fn point_at(index: usize) -> Val {
+        Val::Record(Box::new([
+            ValField {
+                name: "x".to_owned(),
+                value: Val::U32(index as u32 * 7),
+            },
+            ValField {
+                name: "y".to_owned(),
+                value: Val::U16(index as u16),
+            },
+        ]))
+    }
+
+    /// The bytes the guest holds for the point at `index`.
+    fn point_bytes(index: usize) -> [u8; 8] {
+        let mut out = [0u8; 8];
+        out[..4].copy_from_slice(&(index as u32 * 7).to_le_bytes());
+        out[4..6].copy_from_slice(&(index as u16).to_le_bytes());
+        out
+    }
+
+    /// Lift the list of `ty` whose pointer and length are `ptr` and
+    /// `len`, through flat slots.
+    fn lift_flat<T: 'static>(
+        ctx: &mut BoundaryContext<'_, T>,
+        ty: &ValueType,
+        ptr: u32,
+        len: u32,
+    ) -> Val {
+        let args = [RuntimeVal::I32(ptr as i32), RuntimeVal::I32(len as i32)];
+        let mut cursor = 0;
+        lift_from_flat_slots(ctx, &args, &mut cursor, ty, AbiPosition::Argument(0))
+            .expect("the list lifts")
+    }
+
+    /// Lower `value` of `ty` into flat slots and return its pointer
+    /// and length.
+    fn lower_flat<T: 'static>(
+        ctx: &mut BoundaryContext<'_, T>,
+        ty: &ValueType,
+        value: &Val,
+    ) -> (u32, u32) {
+        let mut out = Vec::new();
+        lower_into_flat_slots(ctx, value, ty, &mut out, AbiPosition::Argument(0))
+            .expect("the list lowers");
+        let [RuntimeVal::I32(ptr), RuntimeVal::I32(len)] = out[..] else {
+            panic!("a list lowers to a pointer and a length, got {out:?}");
+        };
+        (ptr as u32, len as u32)
+    }
+
+    #[wcmp_macros::test]
+    fn it_lifts_a_list_of_u32_in_one_read_of_the_guest() {
+        const LEN: usize = 1000;
+        let engine = Engine::new().expect("engine");
+        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+        let (memory, options, instance) = with_realloc(&mut store);
+        let bytes: Vec<u8> = (0..LEN as u32)
+            .flat_map(|i| (i * 3).to_le_bytes())
+            .collect();
+        memory
+            .write(store.internal().inner_mut().as_context_mut(), 0, &bytes)
+            .expect("write the list");
+        let mut ctx = BoundaryContext::new(
+            store.internal().inner_mut().as_context_mut(),
+            options,
+            instance,
+            None,
+        );
+
+        let ty = ValueType::List(ListType::new(ValueType::Primitive(PrimitiveType::U32)));
+        let lifted = lift_flat(&mut ctx, &ty, 0, LEN as u32);
+
+        let expected: Box<[Val]> = (0..LEN as u32).map(|i| Val::U32(i * 3)).collect();
+        assert_eq!(lifted, Val::List(expected));
+        assert_eq!(
+            ctx.substrate_accesses(),
+            1,
+            "a thousand elements cost one read of the guest"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_lifts_a_list_of_records_in_one_read_of_the_guest() {
+        const LEN: usize = 500;
+        let engine = Engine::new().expect("engine");
+        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+        let (memory, options, instance) = with_realloc(&mut store);
+        let bytes: Vec<u8> = (0..LEN).flat_map(point_bytes).collect();
+        memory
+            .write(store.internal().inner_mut().as_context_mut(), 0, &bytes)
+            .expect("write the list");
+        let mut ctx = BoundaryContext::new(
+            store.internal().inner_mut().as_context_mut(),
+            options,
+            instance,
+            None,
+        );
+
+        let ty = ValueType::List(ListType::new(point()));
+        let lifted = lift_flat(&mut ctx, &ty, 0, LEN as u32);
+
+        let expected: Box<[Val]> = (0..LEN).map(point_at).collect();
+        assert_eq!(lifted, Val::List(expected));
+        assert_eq!(
+            ctx.substrate_accesses(),
+            1,
+            "five hundred two-field records cost one read of the guest"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_lowers_a_list_of_u32_in_one_write_to_the_guest() {
+        const LEN: usize = 1000;
+        let engine = Engine::new().expect("engine");
+        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+        let (memory, options, instance) = with_realloc(&mut store);
+        let mut ctx = BoundaryContext::new(
+            store.internal().inner_mut().as_context_mut(),
+            options,
+            instance,
+            None,
+        );
+
+        let ty = ValueType::List(ListType::new(ValueType::Primitive(PrimitiveType::U32)));
+        let value = Val::List((0..LEN as u32).map(|i| Val::U32(i * 5)).collect());
+        let (ptr, len) = lower_flat(&mut ctx, &ty, &value);
+        assert_eq!(
+            ctx.substrate_accesses(),
+            1,
+            "a thousand elements cost one write to the guest"
+        );
+        drop(ctx);
+
+        assert_eq!((ptr, len), (HEAP, LEN as u32));
+        let mut written = vec![0u8; LEN * 4];
+        memory
+            .read(
+                store.internal().inner_mut().as_context_mut(),
+                ptr as usize,
+                &mut written,
+            )
+            .expect("read the list back");
+        let expected: Vec<u8> = (0..LEN as u32)
+            .flat_map(|i| (i * 5).to_le_bytes())
+            .collect();
+        assert_eq!(written, expected);
+    }
+
+    #[wcmp_macros::test]
+    fn it_lowers_a_list_of_records_in_one_write_to_the_guest() {
+        const LEN: usize = 500;
+        let engine = Engine::new().expect("engine");
+        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+        let (memory, options, instance) = with_realloc(&mut store);
+        // The arena starts dirty, so a padding byte the lower leaves
+        // unwritten would show here as 0xa5 rather than as zero.
+        memory
+            .write(
+                store.internal().inner_mut().as_context_mut(),
+                HEAP as usize,
+                &[0xa5; LEN * 8],
+            )
+            .expect("dirty the realloc arena");
+        let mut ctx = BoundaryContext::new(
+            store.internal().inner_mut().as_context_mut(),
+            options,
+            instance,
+            None,
+        );
+
+        let ty = ValueType::List(ListType::new(point()));
+        let value = Val::List((0..LEN).map(point_at).collect());
+        let (ptr, len) = lower_flat(&mut ctx, &ty, &value);
+        assert_eq!(
+            ctx.substrate_accesses(),
+            1,
+            "five hundred two-field records cost one write to the guest"
+        );
+        assert_eq!(
+            lift_flat(&mut ctx, &ty, ptr, len),
+            value,
+            "the list lifts back as it was lowered"
+        );
+        drop(ctx);
+
+        let mut written = vec![0u8; LEN * 8];
+        memory
+            .read(
+                store.internal().inner_mut().as_context_mut(),
+                ptr as usize,
+                &mut written,
+            )
+            .expect("read the list back");
+        let expected: Vec<u8> = (0..LEN).flat_map(point_bytes).collect();
+        assert_eq!(written, expected, "padding reaches the guest as zeros");
+    }
+
+    #[wcmp_macros::test]
+    fn it_reaches_the_guest_once_more_for_each_string_a_list_points_to() {
+        // The list's own bytes cross once either way; what each
+        // element points to lies outside them and crosses on its own.
+        let engine = Engine::new().expect("engine");
+        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+        let (_memory, options, instance) = with_realloc(&mut store);
+        let mut ctx = BoundaryContext::new(
+            store.internal().inner_mut().as_context_mut(),
+            options,
+            instance,
+            None,
+        );
+
+        let ty = ValueType::List(ListType::new(ValueType::Primitive(PrimitiveType::String)));
+        let value = Val::List(
+            ["one", "two", "three"]
+                .into_iter()
+                .map(|s| Val::String(s.to_owned()))
+                .collect(),
+        );
+        let (ptr, len) = lower_flat(&mut ctx, &ty, &value);
+        assert_eq!(
+            ctx.substrate_accesses(),
+            1 + 3,
+            "the list, then each string"
+        );
+        assert_eq!(lift_flat(&mut ctx, &ty, ptr, len), value);
+        assert_eq!(
+            ctx.substrate_accesses(),
+            4 + 1 + 3,
+            "the same on the way back"
+        );
+    }
+
+    /// Write `bytes` at the start of a fresh guest memory and lift
+    /// them as a list of `len` elements of `prim`.
+    fn lift_written(prim: PrimitiveType, bytes: &[u8], len: u32) -> Result<Val> {
+        let engine = Engine::new().expect("engine");
+        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+        let (memory, options, instance) = with_realloc(&mut store);
+        memory
+            .write(store.internal().inner_mut().as_context_mut(), 0, bytes)
+            .expect("write the list");
+        let mut ctx = BoundaryContext::new(
+            store.internal().inner_mut().as_context_mut(),
+            options,
+            instance,
+            None,
+        );
+        let ty = ValueType::List(ListType::new(ValueType::Primitive(prim)));
+        let args = [RuntimeVal::I32(0), RuntimeVal::I32(len as i32)];
+        let mut cursor = 0;
+        lift_from_flat_slots(&mut ctx, &args, &mut cursor, &ty, AbiPosition::Argument(0))
+    }
+
+    /// Whether `result` failed as bytes that are no value of the type.
+    fn is_invalid_encoding(result: &Result<Val>) -> bool {
+        matches!(
+            result,
+            Err(Error::Abi(abi)) if matches!(abi.cause, AbiCause::InvalidEncoding { .. })
+        )
+    }
+
+    /// Lower `value` as a list of `prim`, then lift it back, and return
+    /// the lifted list with the bytes the lower wrote.
+    fn round_trip(prim: PrimitiveType, value: &Val, element_size: usize) -> (Val, Vec<u8>) {
+        let engine = Engine::new().expect("engine");
+        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+        let (memory, options, instance) = with_realloc(&mut store);
+        let mut ctx = BoundaryContext::new(
+            store.internal().inner_mut().as_context_mut(),
+            options,
+            instance,
+            None,
+        );
+        let ty = ValueType::List(ListType::new(ValueType::Primitive(prim)));
+        let (ptr, len) = lower_flat(&mut ctx, &ty, value);
+        let lifted = lift_flat(&mut ctx, &ty, ptr, len);
+        drop(ctx);
+        let mut written = vec![0u8; len as usize * element_size];
+        memory
+            .read(
+                store.internal().inner_mut().as_context_mut(),
+                ptr as usize,
+                &mut written,
+            )
+            .expect("read the list back");
+        (lifted, written)
+    }
+
+    #[wcmp_macros::test]
+    fn it_refuses_a_list_of_char_holding_a_surrogate() {
+        let bytes: Vec<u8> = [0x41u32, 0xd800]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        let lifted = lift_written(PrimitiveType::Char, &bytes, 2);
+        assert!(
+            is_invalid_encoding(&lifted),
+            "a surrogate is no Unicode scalar, got {lifted:?}"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_refuses_a_list_of_char_holding_a_value_past_the_last_scalar() {
+        let bytes: Vec<u8> = [0x41u32, 0x11_0000]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        let lifted = lift_written(PrimitiveType::Char, &bytes, 2);
+        assert!(
+            is_invalid_encoding(&lifted),
+            "0x110000 is past the last Unicode scalar, got {lifted:?}"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_lifts_any_nonzero_byte_of_a_list_of_bool_as_true() {
+        let lifted =
+            lift_written(PrimitiveType::Bool, &[0, 1, 2, 0xff], 4).expect("the list lifts");
+        assert_eq!(
+            lifted,
+            Val::List(Box::new([
+                Val::Bool(false),
+                Val::Bool(true),
+                Val::Bool(true),
+                Val::Bool(true),
+            ]))
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_round_trips_a_list_of_s16_through_its_little_endian_bytes() {
+        let numbers = [i16::MIN, -2, -1, 0, 1, i16::MAX];
+        let value = Val::List(numbers.iter().copied().map(Val::S16).collect());
+        let (lifted, written) = round_trip(PrimitiveType::S16, &value, 2);
+        assert_eq!(lifted, value);
+        let expected: Vec<u8> = numbers.iter().flat_map(|n| n.to_le_bytes()).collect();
+        assert_eq!(written, expected);
+    }
+
+    #[wcmp_macros::test]
+    fn it_round_trips_a_list_of_f64_bit_for_bit() {
+        let numbers = [
+            -0.0,
+            1.5,
+            f64::NEG_INFINITY,
+            f64::MIN_POSITIVE / 2.0,
+            f64::from_bits(0x7ff8_0000_dead_beef),
+        ];
+        let value = Val::List(numbers.iter().copied().map(Val::F64).collect());
+        let (lifted, written) = round_trip(PrimitiveType::F64, &value, 8);
+        let expected: Vec<u8> = numbers.iter().flat_map(|n| n.to_le_bytes()).collect();
+        assert_eq!(written, expected);
+        let Val::List(elements) = lifted else {
+            panic!("a `list` lifts to a list");
+        };
+        let bits: Vec<u64> = elements
+            .iter()
+            .map(|element| match element {
+                Val::F64(n) => n.to_bits(),
+                other => panic!("expected an f64, got {other:?}"),
+            })
+            .collect();
+        let expected: Vec<u64> = numbers.iter().map(|n| n.to_bits()).collect();
+        assert_eq!(bits, expected, "sign, subnormal, and NaN payload survive");
     }
 }

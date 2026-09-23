@@ -518,6 +518,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
             num_runtime_post_returns: state.num_runtime_post_returns,
             num_runtime_callbacks: state.num_runtime_callbacks,
             num_component_instances: translation.component.num_runtime_component_instances as usize,
+            max_list_elements: engine.config().list_element_bound(),
         },
     })
 }

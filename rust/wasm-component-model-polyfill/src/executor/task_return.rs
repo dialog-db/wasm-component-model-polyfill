@@ -584,7 +584,8 @@ mod tests {
                     None => Vec::new(),
                     Some(ty) if spills(ty) => vec![CoreParameter::Value(FlatType::I32)],
                     Some(ty) => flat_types(ty)
-                        .into_iter()
+                        .iter()
+                        .copied()
                         .map(CoreParameter::Value)
                         .collect(),
                 },

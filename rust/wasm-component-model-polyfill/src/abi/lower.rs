@@ -27,23 +27,8 @@ pub fn lower<T: 'static>(
     match (ty, value) {
         (ValueType::Primitive(prim), _) => lower_primitive(ctx, offset, value, *prim, position),
         (ValueType::List(list), Val::List(elements)) => {
-            let element_ty = list.element();
-            let element_size = size_of(element_ty);
-            let total_size = element_size.saturating_mul(elements.len());
-            // `cabi_realloc` runs even for an empty list, as the canonical
-            // ABI prescribes, so a guest allocator that misbehaves traps.
-            let ptr = ctx.allocate_aligned(total_size, alignment_of(element_ty), ty, position)?;
-            for (i, element) in elements.iter().enumerate() {
-                lower(ctx, ptr + i * element_size, element, element_ty, position)?;
-            }
-            ctx.write_bytes(offset, &(ptr as u32).to_le_bytes(), position, ty)?;
-            ctx.write_bytes(
-                offset + 4,
-                &(elements.len() as u32).to_le_bytes(),
-                position,
-                ty,
-            )?;
-            Ok(())
+            let ptr = lower_list(ctx, elements, list.element(), ty, position)?;
+            write_pointer_pair(ctx, offset, ptr, elements.len(), position, ty)
         }
         (ValueType::FixedLengthList(fixed), Val::FixedLengthList(items)) => {
             if items.len() != fixed.length() as usize {
@@ -203,6 +188,92 @@ pub fn lower<T: 'static>(
     }
 }
 
+/// Lower the elements of a list into memory the guest's
+/// `cabi_realloc` hands out for them, and return the pointer it
+/// handed out. The caller writes that pointer and the element count
+/// wherever the list itself goes: a pair of fields, or a pair of
+/// flat slots.
+///
+/// The list's bytes are assembled on the host and reach the guest in
+/// one write, however many elements and fields it has. A numeric
+/// element is encoded straight into them; any other element is
+/// lowered by [`lower`], whose writes inside the list's bytes land
+/// in the host copy. What an element points to — a string, a nested
+/// list — is allocated and written on its own as the element is
+/// lowered.
+pub fn lower_list<T: 'static>(
+    ctx: &mut BoundaryContext<'_, T>,
+    elements: &[Val],
+    element_ty: &ValueType,
+    ty: &ValueType,
+    position: AbiPosition,
+) -> Result<usize> {
+    let element_size = size_of(element_ty);
+    let total_size = element_size.saturating_mul(elements.len());
+    // `cabi_realloc` runs even for an empty list, as the canonical
+    // ABI prescribes, so a guest allocator that misbehaves traps.
+    let ptr = ctx.allocate_aligned(total_size, alignment_of(element_ty), ty, position)?;
+    if let ValueType::Primitive(prim) = element_ty
+        && *prim != PrimitiveType::String
+    {
+        let mut bytes = Vec::with_capacity(total_size);
+        for element in elements {
+            if !encode_numeric(*prim, element, &mut bytes) {
+                return Err(host_value_mismatch(element_ty, position));
+            }
+        }
+        if !bytes.is_empty() {
+            ctx.write_bytes(ptr, &bytes, position, ty)?;
+        }
+        return Ok(ptr);
+    }
+    ctx.lowering_within(ptr, total_size, position, ty, |ctx| {
+        for (i, element) in elements.iter().enumerate() {
+            lower(ctx, ptr + i * element_size, element, element_ty, position)?;
+        }
+        Ok(())
+    })?;
+    Ok(ptr)
+}
+
+/// Append the little-endian bytes of `value` as a `prim` to `out`,
+/// for every primitive but `string`. Answers `false`, appending
+/// nothing, when `value` is not a `prim`.
+fn encode_numeric(prim: PrimitiveType, value: &Val, out: &mut Vec<u8>) -> bool {
+    match (prim, value) {
+        (PrimitiveType::Bool, Val::Bool(v)) => out.push(u8::from(*v)),
+        (PrimitiveType::S8, Val::S8(v)) => out.push(*v as u8),
+        (PrimitiveType::U8, Val::U8(v)) => out.push(*v),
+        (PrimitiveType::S16, Val::S16(v)) => out.extend_from_slice(&v.to_le_bytes()),
+        (PrimitiveType::U16, Val::U16(v)) => out.extend_from_slice(&v.to_le_bytes()),
+        (PrimitiveType::S32, Val::S32(v)) => out.extend_from_slice(&v.to_le_bytes()),
+        (PrimitiveType::U32, Val::U32(v)) => out.extend_from_slice(&v.to_le_bytes()),
+        (PrimitiveType::S64, Val::S64(v)) => out.extend_from_slice(&v.to_le_bytes()),
+        (PrimitiveType::U64, Val::U64(v)) => out.extend_from_slice(&v.to_le_bytes()),
+        (PrimitiveType::F32, Val::F32(v)) => out.extend_from_slice(&v.to_le_bytes()),
+        (PrimitiveType::F64, Val::F64(v)) => out.extend_from_slice(&v.to_le_bytes()),
+        (PrimitiveType::Char, Val::Char(c)) => out.extend_from_slice(&(*c as u32).to_le_bytes()),
+        _ => return false,
+    }
+    true
+}
+
+/// Write the pointer and the length of a string or a list side by
+/// side at `offset`, in one write.
+fn write_pointer_pair<T: 'static>(
+    ctx: &mut BoundaryContext<'_, T>,
+    offset: usize,
+    ptr: usize,
+    len: usize,
+    position: AbiPosition,
+    ty: &ValueType,
+) -> Result<()> {
+    let mut pair = [0u8; 8];
+    pair[..4].copy_from_slice(&(ptr as u32).to_le_bytes());
+    pair[4..].copy_from_slice(&(len as u32).to_le_bytes());
+    ctx.write_bytes(offset, &pair, position, ty)
+}
+
 fn lower_primitive<T: 'static>(
     ctx: &mut BoundaryContext<'_, T>,
     offset: usize,
@@ -262,9 +333,7 @@ fn lower_string<T: 'static>(
     // ABI prescribes, so a guest allocator that misbehaves traps.
     let ptr = ctx.allocate_aligned(bytes.len(), strings::alignment(encoding), ty, position)?;
     ctx.write_bytes(ptr, &bytes, position, ty)?;
-    ctx.write_bytes(offset, &(ptr as u32).to_le_bytes(), position, ty)?;
-    ctx.write_bytes(offset + 4, &units.to_le_bytes(), position, ty)?;
-    Ok(())
+    write_pointer_pair(ctx, offset, ptr, units as usize, position, ty)
 }
 
 fn write_discriminant<T: 'static>(

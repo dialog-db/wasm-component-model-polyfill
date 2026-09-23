@@ -22,6 +22,7 @@ pub fn benchmarks() -> Vec<Benchmark> {
         u32_call(),
         u32_call_typed(),
         string_roundtrip(),
+        list_u8_roundtrip(),
         list_u32_roundtrip(),
         list_record_roundtrip(),
         resource_handle(),
@@ -100,8 +101,26 @@ async fn string_roundtrip(run: &mut Run) -> Result<()> {
 }
 
 #[wcmp_macros::bench(
+    guest = "the inline `echo` component: `echo-list-u8: func(xs: list<u8>) -> list<u8>`, which returns the pointer and length it was given",
+    payload = "the case's number of u8 elements, the untyped counterpart of a string of the same bytes",
+    cases = [64, 4096, 65536]
+)]
+async fn list_u8_roundtrip(run: &mut Run) -> Result<()> {
+    let count = run.case().number();
+    let (_engine, mut store, instance) = instantiate(guests::ECHO).await?;
+    let echo = export(&instance, "echo-list-u8")?;
+    let elements: Vec<Val> = (0..count).map(|index| Val::U8(index as u8)).collect();
+    let arguments = [Val::List(elements.into_boxed_slice())];
+    run.moves_bytes(count);
+    while run.iterate() {
+        echo.call(&mut store, &arguments).await?;
+    }
+    Ok(())
+}
+
+#[wcmp_macros::bench(
     guest = "the inline `echo` component: `echo-list-u32: func(xs: list<u32>) -> list<u32>`, which returns the pointer and length it was given",
-    payload = "the case's number of u32 elements, each lowered and lifted one at a time",
+    payload = "the case's number of u32 elements, lowered in one write of the list's bytes and lifted in one read",
     cases = [16, 256, 4096]
 )]
 async fn list_u32_roundtrip(run: &mut Run) -> Result<()> {
