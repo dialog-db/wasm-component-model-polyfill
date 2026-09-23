@@ -22,7 +22,7 @@ use wasm_runtime_layer::Val as RuntimeVal;
 
 use super::context::BoundaryContext;
 use super::layout::{FlatType, flags_chunk_count, flat_types};
-use super::{lift_list, lower, lower_list, strings};
+use super::{lift_list, lift_string, lower, lower_list, lower_str};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::internal::ErrorInternal;
 use crate::types::{PrimitiveType, ValueType};
@@ -39,7 +39,7 @@ pub fn lower_into_flat_slots<T: 'static>(
 ) -> Result<()> {
     match (ty, value) {
         (ValueType::Primitive(PrimitiveType::String), Val::String(s)) => {
-            let (ptr, units) = lower_string(ctx, s, position, ty)?;
+            let (ptr, units) = lower_str(ctx, s, position, ty)?;
             out.push(RuntimeVal::I32(ptr as i32));
             out.push(RuntimeVal::I32(units as i32));
             Ok(())
@@ -209,7 +209,7 @@ pub fn lift_from_flat_slots<T: 'static>(
             // value bit rather than a sign bit.
             let ptr = take_i32(args, cursor, ty, position)? as u32 as usize;
             let len = take_i32(args, cursor, ty, position)? as u32 as usize;
-            lift_string_from_memory(ctx, ptr, len, ty, position)
+            lift_string(ctx, ptr, len, position, ty).map(Val::String)
         }
         ValueType::Primitive(prim) => primitive_from_flat(*prim, args, cursor, ty, position),
         ValueType::List(list) => {
@@ -643,55 +643,7 @@ fn primitive_from_flat(
     }
 }
 
-fn lift_string_from_memory<T: 'static>(
-    ctx: &mut BoundaryContext<'_, T>,
-    ptr: usize,
-    units: usize,
-    ty: &ValueType,
-    position: AbiPosition,
-) -> Result<Val> {
-    let encoding = ctx.string_encoding();
-    let units = u32::try_from(units)
-        .map_err(|_| invalid_encoding(ty, position, "string length overflow"))?;
-    let alignment = strings::alignment(encoding);
-    if !ptr.is_multiple_of(alignment) {
-        return Err(invalid_encoding(
-            ty,
-            position,
-            &format!("string pointer not aligned to {alignment}"),
-        ));
-    }
-    let byte_len = strings::byte_length(encoding, units)
-        .ok_or_else(|| invalid_encoding(ty, position, "string length overflow"))?;
-    if !ctx.in_bounds(ptr, byte_len) {
-        return Err(invalid_encoding(
-            ty,
-            position,
-            "string pointer/length out of bounds of memory",
-        ));
-    }
-    let raw = ctx.read_bytes(ptr, byte_len, position, ty)?;
-    strings::decode(encoding, units, &raw)
-        .map(Val::String)
-        .map_err(|message| invalid_encoding(ty, position, message))
-}
-
-fn lower_string<T: 'static>(
-    ctx: &mut BoundaryContext<'_, T>,
-    s: &str,
-    position: AbiPosition,
-    ty: &ValueType,
-) -> Result<(usize, usize)> {
-    let encoding = ctx.string_encoding();
-    let (bytes, units) = strings::encode(encoding, s);
-    // `cabi_realloc` runs even for an empty string, as the canonical
-    // ABI prescribes, so a guest allocator that misbehaves traps.
-    let ptr = ctx.allocate_aligned(bytes.len(), strings::alignment(encoding), ty, position)?;
-    ctx.write_bytes(ptr, &bytes, position, ty)?;
-    Ok((ptr, units as usize))
-}
-
-fn take_i32(
+pub fn take_i32(
     args: &[RuntimeVal],
     cursor: &mut usize,
     ty: &ValueType,

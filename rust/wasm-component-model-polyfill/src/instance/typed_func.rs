@@ -6,7 +6,9 @@
 //! handle acquisition (via [`Func::typed`]) against the export's
 //! declared component-level signature, and at call time native Rust
 //! values flow across the canonical-ABI boundary without the caller
-//! ever constructing a [`Val`].
+//! ever constructing a [`Val`]. Nor does the polyfill construct one
+//! for a string or a vector of numbers: those cross as one block of
+//! bytes, copied once into guest memory and once out of it.
 //!
 //! The handle's parameter tuple and return type are constrained by
 //! the polyfill's own [`ComponentParameters`] / [`ComponentResult`]
@@ -24,9 +26,9 @@ use crate::error::{Error, Result, TypeMismatch, TypeMismatchPosition, TypeRender
 use crate::internal::{FuncInternal, TypedFuncInternal};
 use crate::linker::{ComponentParameters, ComponentResult};
 use crate::store::Store;
-use crate::value::Val;
 
 use super::func::Func;
+use super::typed_call::TypedCall;
 
 /// A statically-typed handle for invoking one component export.
 ///
@@ -34,13 +36,17 @@ use super::func::Func;
 /// checks that the export's declared signature matches the function
 /// type derived from `P` and `R` and surfaces a structured
 /// [`Error::TypeMismatch`] on mismatch. Calling the handle takes a
-/// native Rust tuple and returns the native Rust return value;
-/// internally the call delegates to [`Func::call`], so heap-
-/// allocating valtypes drive the same `cabi_realloc` /
-/// `post-return` round-trip the untyped path observes.
+/// native Rust tuple and returns the native Rust return value. The
+/// call runs the same task, scheduler item, and driver as
+/// [`Func::call`], so heap-allocating valtypes drive the same
+/// `cabi_realloc` / `post-return` round-trip the untyped path
+/// observes; only the lowering of the arguments and the lifting of
+/// the result differ, and they go straight between the Rust values
+/// and the guest rather than through [`Val`].
 ///
 /// [`Func::typed`]: super::Func::typed
 /// [`Func::call`]: super::Func::call
+/// [`Val`]: crate::Val
 pub struct TypedFunc<P, R> {
     inner: Func,
     _phantom: PhantomData<fn(P) -> R>,
@@ -78,16 +84,26 @@ where
     /// `post-return` after the result is observed — that the
     /// untyped [`Func::call`] path observes.
     ///
+    /// The values go straight between Rust and the guest. A `String`
+    /// or a `Vec` of numbers is written into guest memory in one
+    /// access and read back out in one, and a `Vec<u8>` or a UTF-8
+    /// string is not copied on the host beyond that, so a payload of
+    /// hundreds of megabytes costs its own size once per direction.
+    /// The one exception is the result of an export lifted `async`:
+    /// it arrives through `task.return` as a [`Val`] and is decoded
+    /// from it.
+    ///
     /// `T` is the host-data type of the [`Store`] the export's
     /// owning [`Instance`] was created in.
     ///
     /// [`Func::call`]: super::Func::call
     /// [`Store`]: crate::Store
     /// [`Instance`]: super::Instance
+    /// [`Val`]: crate::Val
     pub async fn call<T: 'static>(&self, store: &mut Store<T>, args: P) -> Result<R> {
-        let lowered = args.into_vals();
-        let results = self.inner.call(store, &lowered).await?;
-        typed_result(&results)
+        self.inner
+            .call_values(store, TypedCall::<P, R>::new(args))
+            .await
     }
 
     /// Invoke the export from inside a poll of the store, with
@@ -115,24 +131,9 @@ where
     /// [`Store`]: crate::Store
     /// [`Instance`]: super::Instance
     pub async fn call_concurrent<T: 'static>(&self, accessor: &Accessor<T>, args: P) -> Result<R> {
-        let lowered = args.into_vals();
-        let results = self.inner.call_concurrent(accessor, &lowered).await?;
-        typed_result(&results)
-    }
-}
-
-/// The native Rust value an export's returned values stand for. A
-/// component function declares at most one result, so anything else
-/// is the polyfill disagreeing with itself.
-fn typed_result<R: ComponentResult>(results: &[Val]) -> Result<R> {
-    match results.len() {
-        0 => R::from_val(None),
-        1 => R::from_val(Some(&results[0])),
-        n => Err(Error::Internal {
-            message: format!(
-                "typed export call observed {n} return values; an export admits at most one"
-            ),
-        }),
+        self.inner
+            .call_concurrent_values(accessor, TypedCall::<P, R>::new(args))
+            .await
     }
 }
 

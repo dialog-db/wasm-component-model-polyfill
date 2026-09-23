@@ -163,4 +163,5 @@ pub use thread_id::ThreadId;
 pub use turn_guard::TurnGuard;
 pub use waitable_id::WaitableId;
 pub use waitable_set_id::WaitableSetId;
+pub use wake_slot::WakeSlot;
 pub use yield_wake::YieldWake;

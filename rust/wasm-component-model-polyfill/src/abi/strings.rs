@@ -51,14 +51,49 @@ pub fn decode(encoding: StringEncoding, units: u32, raw: &[u8]) -> Result<String
     }
 }
 
+/// Decode the bytes of a string of `units` under `encoding`, as
+/// [`decode`] does, keeping `raw` as the string's buffer when the
+/// bytes are UTF-8: a UTF-8 string then costs no copy past the read
+/// that produced its bytes.
+pub fn decode_owned(
+    encoding: StringEncoding,
+    units: u32,
+    raw: Vec<u8>,
+) -> Result<String, &'static str> {
+    match encoding {
+        StringEncoding::Utf8 => {
+            String::from_utf8(raw).map_err(|err| utf8_diagnosis(err.utf8_error()))
+        }
+        _ => decode(encoding, units, &raw),
+    }
+}
+
+/// Wasmtime's diagnosis of bytes that are not UTF-8: a sequence the
+/// string ends in the middle of, or anything else.
+fn utf8_diagnosis(err: std::str::Utf8Error) -> &'static str {
+    if err.error_len().is_none() {
+        "incomplete utf-8 byte sequence"
+    } else {
+        "invalid utf-8"
+    }
+}
+
+/// The UTF-8 bytes of `s` with no copy of them, when the crossing
+/// encodes strings as UTF-8, and the length word that goes with them.
+/// Every other encoding re-encodes, and answers `None`.
+pub fn utf8_view(encoding: StringEncoding, s: &str) -> Option<(&[u8], u32)> {
+    match encoding {
+        StringEncoding::Utf8 => Some((s.as_bytes(), s.len() as u32)),
+        _ => None,
+    }
+}
+
 /// Decode UTF-8 with Wasmtime's two diagnoses: bytes that are not
 /// UTF-8, and a sequence the string ends in the middle of.
 fn decode_utf8(raw: &[u8]) -> Result<String, &'static str> {
-    match std::str::from_utf8(raw) {
-        Ok(text) => Ok(text.to_owned()),
-        Err(err) if err.error_len().is_none() => Err("incomplete utf-8 byte sequence"),
-        Err(_) => Err("invalid utf-8"),
-    }
+    std::str::from_utf8(raw)
+        .map(str::to_owned)
+        .map_err(utf8_diagnosis)
 }
 
 fn decode_utf16(raw: &[u8]) -> Result<String, &'static str> {

@@ -8,18 +8,15 @@ use std::sync::{Arc, Mutex};
 use wasm_runtime_layer::{AsContextMut, Val as RuntimeVal};
 
 use crate::abi::context::BoundaryContext;
-use crate::abi::flatten::{lift_from_flat_slots, lower_into_flat_slots};
 use crate::abi::instance::BoundaryInstance;
-use crate::abi::layout::{
-    alignment_of, flat_types, params_spill, result_spills, size_of, spill_layout,
-};
+use crate::abi::layout::{flat_types, result_spills};
 use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
-use crate::abi::{lift, lower};
 use crate::backend::substrate_failure;
 use crate::component::FunctionType;
 use crate::concurrency::{
     Accessor, Driver, FailureChannel, InstanceId, Item, ItemKind, ResultChannel, Scope, TaskId,
+    WakeSlot,
 };
 use crate::error::{
     AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result, SchedulerCause,
@@ -30,8 +27,9 @@ use crate::internal::{ErrorInternal, FuncInternal, FuncParts};
 use crate::resource::TableId;
 use crate::store::{Store, StoreContext, StoreId};
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
-use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
+
+use super::call_values::CallValues;
 
 /// Where the queued item of one call leaves what the call produced.
 ///
@@ -39,7 +37,7 @@ use crate::value::Val;
 /// when the export's task resolves or fails, and the driver takes
 /// the value out. Both sides hold it, because the item outlives the
 /// future when the future is dropped.
-type CallOutcome = Arc<Mutex<Option<Result<Box<[Val]>>>>>;
+type CallOutcome<O> = Arc<Mutex<Option<Result<O>>>>;
 
 /// Where the failure that belongs to the caller of one concurrent
 /// call is left.
@@ -59,6 +57,17 @@ type CallOutcome = Arc<Mutex<Option<Result<Box<[Val]>>>>>;
 /// result channel does, because a caller whose future a host
 /// combinator owns is polled again only after that waker fires.
 type CallFailure = FailureChannel;
+
+/// Where a concurrent call takes its result from.
+enum Delivery<O> {
+    /// A synchronous export's result, in the shape the call carries:
+    /// the item that ran the task leaves it here once the task has
+    /// ended cleanly.
+    Returned(WakeSlot<O>),
+    /// The channel an export lifted `async` resolves its task through
+    /// when it calls `task.return`.
+    Resolved(ResultChannel),
+}
 
 /// A handle to one exported function of a component [`Instance`].
 ///
@@ -197,23 +206,22 @@ impl Func {
     ///
     /// [`Store::run_concurrent`]: crate::Store::run_concurrent
     pub async fn call<T: 'static>(&self, store: &mut Store<T>, args: &[Val]) -> Result<Box<[Val]>> {
+        self.call_values(store, args.to_vec()).await
+    }
+
+    /// The body of [`Self::call`], for whatever the call carries: the
+    /// untyped call's [`Val`]s, or a typed call's Rust values.
+    #[doc(hidden)]
+    pub async fn call_values<T: 'static, C: CallValues>(
+        &self,
+        store: &mut Store<T>,
+        values: C,
+    ) -> Result<C::Output> {
         let mut store = store.internal().context();
         if store.internal().id() != self.store_id {
             return Err(Error::from(InstantiationError::WrongStore));
         }
-        if args.len() != self.signature.parameters.len() {
-            return Err(Error::from(AbiError {
-                position: AbiPosition::Argument(0),
-                valtype: None,
-                cause: AbiCause::InvalidEncoding {
-                    message: format!(
-                        "expected {} arguments, got {}",
-                        self.signature.parameters.len(),
-                        args.len()
-                    ),
-                },
-            }));
-        }
+        values.check_arity(&self.signature)?;
 
         // A driver entered while another driver of the same store is
         // inside a turn fails before it has created a task or queued
@@ -258,7 +266,7 @@ impl Func {
         // watches the task's channel rather than a slot of its own.
         if self.options.async_ {
             return self
-                .call_async(store, task, instance_id, instance, options, args)
+                .call_async(store, task, instance_id, instance, options, values)
                 .await;
         }
 
@@ -267,14 +275,13 @@ impl Func {
         // its own copy of everything the call needs — the resolved
         // options among them — and leaves what the call produced in
         // a slot both sides hold.
-        let outcome: CallOutcome = Arc::new(Mutex::new(None));
+        let outcome: CallOutcome<C::Output> = Arc::new(Mutex::new(None));
         let queued = outcome.clone();
         let replica = self.replica();
-        let arguments = args.to_vec();
         let item = Item::new(
             ItemKind::TaskStart,
             move |store: &mut StoreContext<'_, T>| {
-                let result = replica.run_task(task, &instance, store, &arguments, &options);
+                let result = replica.run_task(task, &instance, store, values, &options);
                 if let Ok(mut slot) = queued.lock() {
                     *slot = Some(result);
                 }
@@ -365,11 +372,23 @@ impl Func {
         accessor: &Accessor<T>,
         args: &[Val],
     ) -> Result<Box<[Val]>> {
+        self.call_concurrent_values(accessor, args.to_vec()).await
+    }
+
+    /// The body of [`Self::call_concurrent`], for whatever the call
+    /// carries: the untyped call's [`Val`]s, or a typed call's Rust
+    /// values.
+    #[doc(hidden)]
+    pub async fn call_concurrent_values<T: 'static, C: CallValues>(
+        &self,
+        accessor: &Accessor<T>,
+        values: C,
+    ) -> Result<C::Output> {
         // The start runs inside one reach into the store, which is a
         // turn: it queues the task's start and runs none of it. What
         // it hands back is what the task leaves behind, which
         // outlives this future.
-        let (channel, failure) = accessor.with(|store| self.start_concurrent(store, args))??;
+        let (delivery, failure) = accessor.with(|store| self.start_concurrent(store, values))??;
 
         core::future::poll_fn(move |context| {
             let waker = context.waker();
@@ -380,8 +399,12 @@ impl Func {
             if let Some(error) = failure.take_or_wait(waker) {
                 return Poll::Ready(Err(error));
             }
-            match channel.take_or_wait(waker) {
-                Some(result) => Poll::Ready(Ok(result.into_iter().collect())),
+            let delivered = match &delivery {
+                Delivery::Returned(slot) => slot.take_or_wait(waker).map(Ok),
+                Delivery::Resolved(channel) => channel.take_or_wait(waker).map(C::from_resolution),
+            };
+            match delivered {
+                Some(result) => Poll::Ready(result),
                 // The waker is left in both slots, and whatever
                 // fills either of them wakes it. A turn is the only
                 // thing that carries the task forward, and the
@@ -398,33 +421,21 @@ impl Func {
     }
 
     /// Start the task of one concurrent call and hand back what that
-    /// call watches: the task's result channel, and the slot the
-    /// start leaves a failure of the caller's in.
+    /// call watches: where its result arrives, and the slot the start
+    /// leaves a failure of the caller's in.
     ///
     /// Everything happens inside the one reach into the store, so a
     /// call whose arguments or whose export are wrong fails before
     /// anything is queued and leaves the store untouched.
-    fn start_concurrent<T: 'static>(
+    fn start_concurrent<T: 'static, C: CallValues>(
         &self,
         store: &mut StoreContext<'_, T>,
-        args: &[Val],
-    ) -> Result<(ResultChannel, CallFailure)> {
+        values: C,
+    ) -> Result<(Delivery<C::Output>, CallFailure)> {
         if store.internal().id() != self.store_id {
             return Err(Error::from(InstantiationError::WrongStore));
         }
-        if args.len() != self.signature.parameters.len() {
-            return Err(Error::from(AbiError {
-                position: AbiPosition::Argument(0),
-                valtype: None,
-                cause: AbiCause::InvalidEncoding {
-                    message: format!(
-                        "expected {} arguments, got {}",
-                        self.signature.parameters.len(),
-                        args.len()
-                    ),
-                },
-            }));
-        }
+        values.check_arity(&self.signature)?;
 
         let (options, instance) = BoundaryInstance::resolve(
             &self.options,
@@ -435,16 +446,11 @@ impl Func {
             Error::internal("an export's lift names a component instance the plan does not hold")
         })?;
 
-        // The caller is not on the stack when the task resolves, so
-        // the task is given a channel to resolve through and the
-        // call watches that rather than the record, which a
-        // synchronous task's own exit takes out of the store.
         let task = store.internal().create_export_task(
             self.signature.clone(),
             self.options.clone(),
             instance_id,
         )?;
-        let channel = store.internal().attach_result_channel(task)?;
         let failure: CallFailure = store.internal().attach_failure_channel(task)?;
 
         // The item is `'static`: it outlives this future, because
@@ -453,9 +459,13 @@ impl Func {
         // options among them.
         let queued = failure.clone();
         let replica = self.replica();
-        let arguments = args.to_vec();
 
         if self.options.async_ {
+            // The caller is not on the stack when `task.return`
+            // resolves the task, so the task is given a channel to
+            // resolve through and the call watches that rather than
+            // the record.
+            let channel = store.internal().attach_result_channel(task)?;
             let callback = options
                 .callback()
                 .cloned()
@@ -465,8 +475,8 @@ impl Func {
             let item = Item::new(
                 ItemKind::TaskStart,
                 move |store: &mut StoreContext<'_, T>| {
-                    let started = replica
-                        .start_async_task(task, &loop_, &instance, store, &arguments, &options);
+                    let started =
+                        replica.start_async_task(task, &loop_, &instance, store, values, &options);
                     if let Err(error) = started {
                         queued.fill(error);
                     }
@@ -486,19 +496,26 @@ impl Func {
             store
                 .internal()
                 .start_export_thread(task, instance_id, true, true, item)?;
-            return Ok((channel, failure));
+            return Ok((Delivery::Resolved(channel), failure));
         }
 
+        // A synchronous export's result is the one its lift produced,
+        // in whatever shape the call carries, and the item leaves it
+        // for the call once the task has ended cleanly. The task
+        // resolves while the item runs, so the result is in the slot
+        // before the turn that ran the item is over.
+        let returned: WakeSlot<C::Output> = WakeSlot::new();
+        let delivered = returned.clone();
         let item = Item::new(
             ItemKind::TaskStart,
             move |store: &mut StoreContext<'_, T>| {
-                let outcome = replica.run_task(task, &instance, store, &arguments, &options);
-                if let Err(error) = outcome {
-                    queued.fill(error);
+                match replica.run_task(task, &instance, store, values, &options) {
+                    Ok(result) => delivered.fill(result),
+                    Err(error) => queued.fill(error),
                 }
-                // What the task returned went through the channel as
-                // it resolved, so the item has nothing left to carry
-                // and nothing left to fail with.
+                // What the task returned is in one slot and what it
+                // failed with in the other, so the item has nothing
+                // left to carry and nothing left to fail with.
                 Ok(())
             },
         )
@@ -513,7 +530,7 @@ impl Func {
         store
             .internal()
             .start_export_thread(task, instance_id, false, true, item)?;
-        Ok((channel, failure))
+        Ok((Delivery::Returned(returned), failure))
     }
 
     /// Invoke an export lifted `canon lift async` with a callback.
@@ -538,15 +555,15 @@ impl Func {
     ///
     /// A turn that finds the task at the gate or waiting, with
     /// nothing else ready, fails the call with the deadlock cause.
-    async fn call_async<T: 'static>(
+    async fn call_async<T: 'static, C: CallValues>(
         &self,
         mut store: StoreContext<'_, T>,
         task: TaskId,
         instance_id: InstanceId,
         instance: BoundaryInstance,
         options: BoundaryOptions,
-        args: &[Val],
-    ) -> Result<Box<[Val]>> {
+        values: C,
+    ) -> Result<C::Output> {
         let callback = options
             .callback()
             .cloned()
@@ -558,12 +575,11 @@ impl Func {
         let failure: CallFailure = store.internal().attach_failure_channel(task)?;
         let queued = failure.clone();
         let replica = self.replica();
-        let arguments = args.to_vec();
         let item = Item::new(
             ItemKind::TaskStart,
             move |store: &mut StoreContext<'_, T>| {
                 let started =
-                    replica.start_async_task(task, &loop_, &instance, store, &arguments, &options);
+                    replica.start_async_task(task, &loop_, &instance, store, values, &options);
                 if let Err(error) = started {
                     queued.fill(error);
                 }
@@ -588,7 +604,7 @@ impl Func {
                 return Some(Err(error));
             }
             let result = channel.take_or_wait(waker)?;
-            Some(Ok(result.into_iter().collect()))
+            Some(C::from_resolution(result))
         })
         .await
     }
@@ -598,17 +614,17 @@ impl Func {
     /// function runs, the scope is popped, and the status word goes
     /// to the callback loop. A failure anywhere in that ends the task
     /// and travels out to the call.
-    fn start_async_task<T: 'static>(
+    fn start_async_task<T: 'static, C: CallValues>(
         &self,
         task: TaskId,
         loop_: &CallbackTask,
         instance: &BoundaryInstance,
         store: &mut StoreContext<'_, T>,
-        args: &[Val],
+        values: C,
         options: &BoundaryOptions,
     ) -> Result<()> {
         store.internal().enter_export_task(task)?;
-        match self.call_async_core(task, instance, store, args, options) {
+        match self.call_async_core(task, instance, store, values, options) {
             Ok(word) => {
                 store.internal().leave_export_task(task)?;
                 loop_.handle_status_word(store, word)
@@ -624,15 +640,15 @@ impl Func {
     /// asynchronous export, and report the status word it returned.
     /// A `cabi_realloc` the lowering calls is a task of its own, as
     /// the reference lifts it.
-    fn call_async_core<T: 'static>(
+    fn call_async_core<T: 'static, C: CallValues>(
         &self,
         task: TaskId,
         instance: &BoundaryInstance,
         store: &mut StoreContext<'_, T>,
-        args: &[Val],
+        values: C,
         options: &BoundaryOptions,
     ) -> Result<i32> {
-        let core_args = self.lower_args(store, args, instance, task, options)?;
+        let core_args = self.lower_args(store, values, instance, task, options)?;
         let mut core_results = vec![RuntimeVal::I32(0); 1];
 
         // The arguments are lowered, so the task's thread runs now.
@@ -685,14 +701,14 @@ impl Func {
     /// pop ends the task's implicit thread whichever way the call
     /// went, so the instance it held exclusively, if it held one,
     /// goes back before this returns.
-    fn run_task<T: 'static>(
+    fn run_task<T: 'static, C: CallValues>(
         &self,
         task: TaskId,
         instance: &BoundaryInstance,
         store: &mut StoreContext<'_, T>,
-        args: &[Val],
+        values: C,
         options: &BoundaryOptions,
-    ) -> Result<Box<[Val]>> {
+    ) -> Result<C::Output> {
         store.internal().enter_export_task(task)?;
         // A host call into a sync-typed export must return before its
         // instance may block, so the flag is held for the length of
@@ -708,14 +724,14 @@ impl Func {
             store.internal().hold_may_not_suspend(task)
         };
         let outcome = match held {
-            Ok(()) => self.call_in_task(task, instance, store, args, options),
+            Ok(()) => self.call_in_task(task, instance, store, values, options),
             Err(err) => Err(err),
         };
         match outcome {
             Ok(result) => {
                 store
                     .internal()
-                    .resolve_export_task(task, result.first().cloned())?;
+                    .resolve_export_task(task, C::resolution(&result))?;
                 match store.internal().exit_export_task(task)? {
                     Ok(()) => Ok(result),
                     // The borrow the export still owes is owed at
@@ -740,15 +756,15 @@ impl Func {
     }
 
     /// The body of [`Self::call`] inside its task.
-    fn call_in_task<T: 'static>(
+    fn call_in_task<T: 'static, C: CallValues>(
         &self,
         task: TaskId,
         instance: &BoundaryInstance,
         store: &mut StoreContext<'_, T>,
-        args: &[Val],
+        values: C,
         options: &BoundaryOptions,
-    ) -> Result<Box<[Val]>> {
-        let core_args = self.lower_args(store, args, instance, task, options)?;
+    ) -> Result<C::Output> {
+        let core_args = self.lower_args(store, values, instance, task, options)?;
         let result_arity = self.core_result_arity();
         let mut core_results = vec![RuntimeVal::I32(0); result_arity];
 
@@ -766,10 +782,7 @@ impl Func {
         // runs after the caller has logically observed it: the
         // lifted value is in hand, so the post-return is safe to run
         // now. Both go through the one context of the crossing.
-        let lifted_result =
-            self.lift_result(store, &core_results, instance, task, options.clone())?;
-
-        Ok(lifted_result.into_iter().collect())
+        self.lift_result::<T, C>(store, &core_results, instance, task, options.clone())
     }
 
     /// The number of core-Wasm result slots the underlying core
@@ -784,10 +797,10 @@ impl Func {
         }
     }
 
-    fn lower_args<T: 'static>(
+    fn lower_args<T: 'static, C: CallValues>(
         &self,
         store: &mut StoreContext<'_, T>,
-        args: &[Val],
+        values: C,
         instance: &BoundaryInstance,
         task: TaskId,
         options: &BoundaryOptions,
@@ -799,74 +812,17 @@ impl Func {
             instance.clone(),
             Some(Scope::Task(task)),
         );
-
-        if params_spill(&self.signature) {
-            // The whole parameter tuple is written into guest
-            // memory at the canonical ABI's record layout, and the
-            // core function receives its address.
-            let types: Vec<ValueType> = self
-                .signature
-                .parameters
-                .iter()
-                .map(|p| p.ty.clone())
-                .collect();
-            let layout = spill_layout(&types);
-            let spill_ty = ValueType::Primitive(PrimitiveType::U32);
-            let base = if layout.size == 0 {
-                0
-            } else {
-                lower_ctx.allocate_aligned(
-                    layout.size,
-                    layout.alignment,
-                    &spill_ty,
-                    AbiPosition::Argument(0),
-                )?
-            };
-            for (i, ((ty, val), offset)) in types
-                .iter()
-                .zip(args.iter())
-                .zip(layout.offsets.iter())
-                .enumerate()
-            {
-                lower(
-                    &mut lower_ctx,
-                    base + offset,
-                    val,
-                    ty,
-                    AbiPosition::Argument(i),
-                )?;
-            }
-            return Ok(vec![RuntimeVal::I32(base as i32)]);
-        }
-
-        let mut out: Vec<RuntimeVal> = Vec::new();
-        for (i, (param, val)) in self
-            .signature
-            .parameters
-            .iter()
-            .zip(args.iter())
-            .enumerate()
-        {
-            lower_into_flat_slots(
-                &mut lower_ctx,
-                val,
-                &param.ty,
-                &mut out,
-                AbiPosition::Argument(i),
-            )?;
-        }
-        Ok(out)
+        values.lower(&mut lower_ctx, &self.signature)
     }
 
-    fn lift_result<T: 'static>(
+    fn lift_result<T: 'static, C: CallValues>(
         &self,
         store: &mut StoreContext<'_, T>,
         core_results: &[RuntimeVal],
         instance: &BoundaryInstance,
         task: TaskId,
         options: BoundaryOptions,
-    ) -> Result<Option<Val>> {
-        let position = AbiPosition::Result;
+    ) -> Result<C::Output> {
         let store_ctx = store.internal().runtime_mut().as_context_mut();
         let mut lift_ctx = BoundaryContext::new(
             store_ctx,
@@ -874,59 +830,11 @@ impl Func {
             instance.clone(),
             Some(Scope::Task(task)),
         );
-        let Some(result_ty) = &self.signature.result else {
-            lift_ctx.post_return(core_results)?;
-            return Ok(None);
-        };
-        let lifted = if result_spills(&self.signature) {
-            // Wide result: read from the pointer the core function
-            // returned.
-            let ptr = match core_results.first() {
-                Some(RuntimeVal::I32(p)) => *p as u32 as usize,
-                _ => {
-                    return Err(Error::from(AbiError {
-                        position,
-                        valtype: Some(result_ty.clone()),
-                        cause: AbiCause::InvalidEncoding {
-                            message: "missing or non-i32 result-pointer slot".to_owned(),
-                        },
-                    }));
-                }
-            };
-            // The pointer is the guest's, so it is gated before the
-            // result is read: aligned as the result type's layout
-            // demands, and addressing a region of the result's size
-            // that the memory owns.
-            let fail = |message: &str| {
-                Error::from(AbiError {
-                    position,
-                    valtype: Some(result_ty.clone()),
-                    cause: AbiCause::InvalidEncoding {
-                        message: message.to_owned(),
-                    },
-                })
-            };
-            if !ptr.is_multiple_of(alignment_of(result_ty)) {
-                return Err(fail("return pointer not aligned"));
-            }
-            if !lift_ctx.in_bounds(ptr, size_of(result_ty)) {
-                return Err(fail("pointer out of bounds of memory"));
-            }
-            lift(&mut lift_ctx, ptr, result_ty, position)?
-        } else {
-            let mut cursor = 0usize;
-            lift_from_flat_slots(
-                &mut lift_ctx,
-                core_results,
-                &mut cursor,
-                result_ty,
-                position,
-            )?
-        };
+        let lifted = C::lift(&mut lift_ctx, core_results, &self.signature)?;
         // The post-return's arguments are the core results: the flat
         // result slots, or the return-area pointer when the result
         // spilled to memory.
         lift_ctx.post_return(core_results)?;
-        Ok(Some(lifted))
+        Ok(lifted)
     }
 }

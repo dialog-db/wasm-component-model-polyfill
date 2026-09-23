@@ -41,6 +41,7 @@
 //!     https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md
 
 pub mod boundary_call;
+pub mod call_values;
 pub mod context;
 pub mod flatten;
 pub mod instance;
@@ -55,8 +56,8 @@ pub mod strategy;
 pub mod strings;
 pub mod transcode;
 
-pub use lift::{lift, lift_handle, lift_list};
-pub use lower::{lower, lower_list};
+pub use lift::{gate_list, lift, lift_handle, lift_list, lift_string, read_pointer_pair};
+pub use lower::{lower, lower_list, lower_list_bytes, lower_str, write_pointer_pair};
 
 /// The list-of-entries type a map is laid out as.
 pub fn map_entries_type(map: &crate::types::MapType) -> crate::types::ValueType {

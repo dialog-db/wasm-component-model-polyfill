@@ -22,7 +22,9 @@ pub fn benchmarks() -> Vec<Benchmark> {
         u32_call(),
         u32_call_typed(),
         string_roundtrip(),
+        string_roundtrip_typed(),
         list_u8_roundtrip(),
+        list_u8_roundtrip_typed(),
         list_u32_roundtrip(),
         list_record_roundtrip(),
         resource_handle(),
@@ -101,6 +103,23 @@ async fn string_roundtrip(run: &mut Run) -> Result<()> {
 }
 
 #[wcmp_macros::bench(
+    guest = "the inline `echo` component: `echo-string: func(s: string) -> string`, which returns the pointer and length it was given",
+    payload = "the same UTF-8 string through `TypedFunc<(String,), String>`, cloned into each call because the call takes it by value",
+    cases = [64, 4096, 65536]
+)]
+async fn string_roundtrip_typed(run: &mut Run) -> Result<()> {
+    let size = usize::try_from(run.case().number()).unwrap_or(usize::MAX);
+    let (_engine, mut store, instance) = instantiate(guests::ECHO).await?;
+    let echo = export(&instance, "echo-string")?.typed::<(String,), String>()?;
+    let payload = "a".repeat(size);
+    run.moves_bytes(run.case().number());
+    while run.iterate() {
+        echo.call(&mut store, (payload.clone(),)).await?;
+    }
+    Ok(())
+}
+
+#[wcmp_macros::bench(
     guest = "the inline `echo` component: `echo-list-u8: func(xs: list<u8>) -> list<u8>`, which returns the pointer and length it was given",
     payload = "the case's number of u8 elements, the untyped counterpart of a string of the same bytes",
     cases = [64, 4096, 65536]
@@ -114,6 +133,23 @@ async fn list_u8_roundtrip(run: &mut Run) -> Result<()> {
     run.moves_bytes(count);
     while run.iterate() {
         echo.call(&mut store, &arguments).await?;
+    }
+    Ok(())
+}
+
+#[wcmp_macros::bench(
+    guest = "the inline `echo` component: `echo-list-u8: func(xs: list<u8>) -> list<u8>`, which returns the pointer and length it was given",
+    payload = "the case's number of u8 elements through `TypedFunc<(Vec<u8>,), Vec<u8>>`, cloned into each call because the call takes them by value",
+    cases = [64, 4096, 65536]
+)]
+async fn list_u8_roundtrip_typed(run: &mut Run) -> Result<()> {
+    let count = run.case().number();
+    let (_engine, mut store, instance) = instantiate(guests::ECHO).await?;
+    let echo = export(&instance, "echo-list-u8")?.typed::<(Vec<u8>,), Vec<u8>>()?;
+    let payload: Vec<u8> = (0..count).map(|index| index as u8).collect();
+    run.moves_bytes(count);
+    while run.iterate() {
+        echo.call(&mut store, (payload.clone(),)).await?;
     }
     Ok(())
 }

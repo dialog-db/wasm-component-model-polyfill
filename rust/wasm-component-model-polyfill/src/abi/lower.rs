@@ -236,6 +236,26 @@ pub fn lower_list<T: 'static>(
     Ok(ptr)
 }
 
+/// Allocate the list whose elements of `element_ty` are already
+/// encoded as `bytes` and write them there in one access, answering
+/// the list's pointer. This is a list of numbers lowered straight from
+/// host memory: the one copy is the write into the guest.
+pub fn lower_list_bytes<T: 'static>(
+    ctx: &mut BoundaryContext<'_, T>,
+    bytes: &[u8],
+    element_ty: &ValueType,
+    ty: &ValueType,
+    position: AbiPosition,
+) -> Result<usize> {
+    // `cabi_realloc` runs even for an empty list, as the canonical
+    // ABI prescribes, so a guest allocator that misbehaves traps.
+    let ptr = ctx.allocate_aligned(bytes.len(), alignment_of(element_ty), ty, position)?;
+    if !bytes.is_empty() {
+        ctx.write_bytes(ptr, bytes, position, ty)?;
+    }
+    Ok(ptr)
+}
+
 /// Append the little-endian bytes of `value` as a `prim` to `out`,
 /// for every primitive but `string`. Answers `false`, appending
 /// nothing, when `value` is not a `prim`.
@@ -260,7 +280,7 @@ fn encode_numeric(prim: PrimitiveType, value: &Val, out: &mut Vec<u8>) -> bool {
 
 /// Write the pointer and the length of a string or a list side by
 /// side at `offset`, in one write.
-fn write_pointer_pair<T: 'static>(
+pub fn write_pointer_pair<T: 'static>(
     ctx: &mut BoundaryContext<'_, T>,
     offset: usize,
     ptr: usize,
@@ -327,13 +347,34 @@ fn lower_string<T: 'static>(
     position: AbiPosition,
     ty: &ValueType,
 ) -> Result<()> {
+    let (ptr, units) = lower_str(ctx, s, position, ty)?;
+    write_pointer_pair(ctx, offset, ptr, units as usize, position, ty)
+}
+
+/// Allocate `s` in the guest under the crossing's encoding and write
+/// it there, answering its pointer and the length word that goes with
+/// it. A UTF-8 string is written straight from its own bytes, so it
+/// reaches the guest in the one copy the write makes.
+pub fn lower_str<T: 'static>(
+    ctx: &mut BoundaryContext<'_, T>,
+    s: &str,
+    position: AbiPosition,
+    ty: &ValueType,
+) -> Result<(usize, u32)> {
     let encoding = ctx.string_encoding();
-    let (bytes, units) = strings::encode(encoding, s);
+    let encoded;
+    let (bytes, units) = match strings::utf8_view(encoding, s) {
+        Some(view) => view,
+        None => {
+            encoded = strings::encode(encoding, s);
+            (encoded.0.as_slice(), encoded.1)
+        }
+    };
     // `cabi_realloc` runs even for an empty string, as the canonical
     // ABI prescribes, so a guest allocator that misbehaves traps.
     let ptr = ctx.allocate_aligned(bytes.len(), strings::alignment(encoding), ty, position)?;
-    ctx.write_bytes(ptr, &bytes, position, ty)?;
-    write_pointer_pair(ctx, offset, ptr, units as usize, position, ty)
+    ctx.write_bytes(ptr, bytes, position, ty)?;
+    Ok((ptr, units))
 }
 
 fn write_discriminant<T: 'static>(

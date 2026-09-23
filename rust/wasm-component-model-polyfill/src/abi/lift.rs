@@ -226,29 +226,7 @@ pub fn lift_list<T: 'static>(
     position: AbiPosition,
 ) -> Result<Val> {
     let element_size = size_of(element_ty);
-    let byte_len = len
-        .checked_mul(element_size)
-        .ok_or_else(|| invalid_encoding(ty, position, "list length overflow"))?;
-    let alignment = alignment_of(element_ty);
-    if !ptr.is_multiple_of(alignment) {
-        return Err(invalid_encoding(
-            ty,
-            position,
-            "list pointer is not aligned",
-        ));
-    }
-    let memory_size = ctx.memory_size();
-    let within_memory = match memory_size {
-        Some(size) => ptr.checked_add(byte_len).is_some_and(|end| end <= size) && len <= size,
-        None => ptr.checked_add(byte_len).is_some(),
-    };
-    if !within_memory {
-        return Err(invalid_encoding(
-            ty,
-            position,
-            "list pointer/length out of bounds of memory",
-        ));
-    }
+    let (byte_len, memory_size) = gate_list(ctx, ptr, len, element_ty, ty, position)?;
     ctx.count_list_elements(len, position, ty)?;
     if let ValueType::Primitive(prim) = element_ty
         && let Some(decode) = numeric_decoder(*prim)
@@ -291,6 +269,45 @@ pub fn lift_list<T: 'static>(
         }
         Ok(Val::List(out.into_boxed_slice()))
     })
+}
+
+/// Measure the byte range of the `len` elements of `element_ty` a
+/// list at `ptr` presents against the memory, in the order
+/// [`lift_list`] states, and answer the range's length in bytes with
+/// the size of the memory it was measured against. The element count
+/// is not charged here: what a crossing holds per element is the
+/// caller's to bound.
+pub fn gate_list<T: 'static>(
+    ctx: &mut BoundaryContext<'_, T>,
+    ptr: usize,
+    len: usize,
+    element_ty: &ValueType,
+    ty: &ValueType,
+    position: AbiPosition,
+) -> Result<(usize, Option<usize>)> {
+    let byte_len = len
+        .checked_mul(size_of(element_ty))
+        .ok_or_else(|| invalid_encoding(ty, position, "list length overflow"))?;
+    if !ptr.is_multiple_of(alignment_of(element_ty)) {
+        return Err(invalid_encoding(
+            ty,
+            position,
+            "list pointer is not aligned",
+        ));
+    }
+    let memory_size = ctx.memory_size();
+    let within_memory = match memory_size {
+        Some(size) => ptr.checked_add(byte_len).is_some_and(|end| end <= size) && len <= size,
+        None => ptr.checked_add(byte_len).is_some(),
+    };
+    if !within_memory {
+        return Err(invalid_encoding(
+            ty,
+            position,
+            "list pointer/length out of bounds of memory",
+        ));
+    }
+    Ok((byte_len, memory_size))
 }
 
 /// Decode one list element from its bytes, or answer `None` for bytes
@@ -384,18 +401,23 @@ fn lift_primitive<T: 'static>(
         }
         PrimitiveType::String => {
             let (ptr, len) = read_pointer_pair(ctx, offset, position, &ty)?;
-            lift_string(ctx, ptr, len, position, &ty)
+            lift_string(ctx, ptr, len, position, &ty).map(Val::String)
         }
     }
 }
 
-fn lift_string<T: 'static>(
+/// Lift the string of `units` code units at `ptr` under the
+/// crossing's encoding, after gating its pointer and its byte range
+/// against the memory. The bytes are read in one access and a UTF-8
+/// string keeps the buffer they were read into, so the string costs
+/// the host one copy of its bytes.
+pub fn lift_string<T: 'static>(
     ctx: &mut BoundaryContext<'_, T>,
     ptr: usize,
     units: usize,
     position: AbiPosition,
     ty: &ValueType,
-) -> Result<Val> {
+) -> Result<String> {
     let encoding = ctx.string_encoding();
     let units = u32::try_from(units)
         .map_err(|_| invalid_encoding(ty, position, "string length overflow"))?;
@@ -417,14 +439,13 @@ fn lift_string<T: 'static>(
         ));
     }
     let raw = ctx.read_bytes(ptr, byte_len, position, ty)?;
-    strings::decode(encoding, units, &raw)
-        .map(Val::String)
+    strings::decode_owned(encoding, units, raw)
         .map_err(|message| invalid_encoding(ty, position, message))
 }
 
 /// Read the pointer and the length of a string or a list, which sit
 /// side by side at `offset`.
-fn read_pointer_pair<T: 'static>(
+pub fn read_pointer_pair<T: 'static>(
     ctx: &mut BoundaryContext<'_, T>,
     offset: usize,
     position: AbiPosition,

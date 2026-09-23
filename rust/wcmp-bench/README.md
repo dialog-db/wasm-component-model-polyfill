@@ -86,17 +86,19 @@ named guests. A body states the size of what it moves with `run.moves_bytes` or
 
 ## What is measured
 
-| benchmark                 | what it is for                                                 |
-| ------------------------- | -------------------------------------------------------------- |
-| `u32-call`                | the floor: a call with no memory traffic under it              |
-| `u32-call-typed`          | the same call without the untyped `Val` path's allocation      |
-| `string-roundtrip/N`      | a string lowered into guest memory and lifted back             |
-| `list-u8-roundtrip/N`     | the bytes of a string, as a list of `u8` values                |
-| `list-u32-roundtrip/N`    | a list of numbers, copied straight to and from its bytes       |
-| `list-record-roundtrip/N` | the same, with a two-field record per element                  |
-| `resource-handle`         | one owned handle minted, passed, handed back, and dropped      |
-| `composition-call`        | a call through the adapter `wac plug` wrote between two guests |
-| `component-new/<fixture>` | parsing and translating a component binary                     |
+| benchmark                   | what it is for                                                 |
+| --------------------------- | -------------------------------------------------------------- |
+| `u32-call`                  | the floor: a call with no memory traffic under it              |
+| `u32-call-typed`            | the same call without the untyped `Val` path's allocation      |
+| `string-roundtrip/N`        | a string lowered into guest memory and lifted back             |
+| `string-roundtrip-typed/N`  | the same string through `TypedFunc` rather than `Val`          |
+| `list-u8-roundtrip/N`       | the bytes of a string, as a list of `u8` values                |
+| `list-u8-roundtrip-typed/N` | the same bytes as a `Vec<u8>` through `TypedFunc`              |
+| `list-u32-roundtrip/N`      | a list of numbers, copied straight to and from its bytes       |
+| `list-record-roundtrip/N`   | the same, with a two-field record per element                  |
+| `resource-handle`           | one owned handle minted, passed, handed back, and dropped      |
+| `composition-call`          | a call through the adapter `wac plug` wrote between two guests |
+| `component-new/<fixture>`   | parsing and translating a component binary                     |
 
 Every benchmark names its guest and its payload in the report's second block and
 in the JSON, so the table above is a summary, not the record.

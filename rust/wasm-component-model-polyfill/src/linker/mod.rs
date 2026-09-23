@@ -29,6 +29,7 @@ mod host_resource;
 mod linker;
 mod linker_instance;
 mod module_matching;
+mod numeric_list;
 mod registration;
 mod resolve;
 
