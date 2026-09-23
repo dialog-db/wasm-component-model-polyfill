@@ -296,17 +296,26 @@ impl Runner {
                 message,
                 ..
             } => {
-                let bytes = match module.encode() {
-                    Ok(bytes) => bytes,
-                    // Text that does not encode is rejected before the
-                    // polyfill sees it, which satisfies the assertion.
-                    Err(_) => return Ok(()),
+                // Text that does not encode is rejected before the
+                // polyfill sees it. Either way the rejection must say
+                // what the directive says, as Wasmtime's wast runner
+                // requires: a component rejected for another reason
+                // does not satisfy the assertion.
+                let err = match module.encode() {
+                    Ok(bytes) => match self.component(&bytes).await {
+                        Ok(_) => {
+                            return Err(format!(
+                                "expected rejection `{message}`, but the component parsed"
+                            ));
+                        }
+                        Err(err) => err,
+                    },
+                    Err(err) => format!("encode: {err}"),
                 };
-                match self.component(&bytes).await {
-                    Ok(_) => Err(format!(
-                        "expected rejection `{message}`, but the component parsed"
-                    )),
-                    Err(_) => Ok(()),
+                if err.contains(message) {
+                    Ok(())
+                } else {
+                    Err(format!("expected rejection `{message}`, got `{err}`"))
                 }
             }
             WastDirective::AssertUnlinkable {

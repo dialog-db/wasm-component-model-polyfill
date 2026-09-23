@@ -106,7 +106,7 @@ Wasmtime), so a polyfill gap is recorded once, in the shared list, and
 counts on both targets. `tests regenerate` does not touch it. Its
 reasons are the browser engine's wording, which a native run cannot
 produce and must not invent; the delta holds only substrate
-differences, nine lines today, and each one is written by hand from
+differences, ten lines today, and each one is written by hand from
 the failure a `tests web debug` run prints.
 
 The harness links every file against the host environment Wasmtime's
@@ -177,11 +177,12 @@ conformance` prints the current one):
 | `wasmtime/async` | 387        | 125    | 32.3   | deferred-feature 82, cascade 180                               |
 | total            | 2423       | 1722   | 71.1   | deferred-feature 131, substrate 12, validation 20, cascade 538 |
 
-The browser's summary differs by the nine lines of
-`expected-failures.web.txt`, which move nine passing directives into
-`substrate`: `cm/async` passes 82 (20.9%), `wasmtime` 425 (90.6%),
-`wasmtime/async` 123 (31.8%), and the total is 1713 (70.7%) with
-substrate 21. Every other cell is the same.
+The browser's summary differs by the ten lines of
+`expected-failures.web.txt`, which move ten passing directives into
+`substrate`: `cm` passes 1037 (92.1%) with substrate 5, `cm/async`
+82 (20.9%), `wasmtime` 425 (90.6%), `wasmtime/async` 123 (31.8%), and
+the total is 1712 (70.7%) with substrate 22. Every other cell is the
+same.
 
 The `async` rows still hold the pass rate down, though the asynchronous
 lower and the prepare-and-start protocol it brought moved 117
