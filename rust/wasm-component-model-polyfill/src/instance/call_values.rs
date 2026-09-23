@@ -14,6 +14,7 @@ use wasm_runtime_layer::Val as RuntimeVal;
 
 use crate::abi::call_values::{lift_result_value, lower_arguments};
 use crate::abi::context::BoundaryContext;
+use crate::abi::signature::Signature;
 use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::value::Val;
@@ -32,11 +33,12 @@ pub trait CallValues: Send + 'static {
     fn check_arity(&self, signature: &FunctionType) -> Result<()>;
 
     /// Lower the arguments as the parameters of `signature` and answer
-    /// the core arguments of the call.
+    /// the core arguments of the call. The signature carries the
+    /// layout of a spilled parameter tuple, computed once.
     fn lower<T: 'static>(
         self,
         cx: &mut BoundaryContext<'_, T>,
-        signature: &FunctionType,
+        signature: &Signature,
     ) -> Result<Vec<RuntimeVal>>;
 
     /// Lift the result of `signature` out of the core results the
@@ -84,7 +86,7 @@ impl CallValues for Vec<Val> {
     fn lower<T: 'static>(
         self,
         cx: &mut BoundaryContext<'_, T>,
-        signature: &FunctionType,
+        signature: &Signature,
     ) -> Result<Vec<RuntimeVal>> {
         lower_arguments(cx, signature, &self)
     }

@@ -52,12 +52,7 @@ impl Module {
     /// [`Error::Instantiation`]: crate::Error::Instantiation
     pub async fn new(engine: &Engine, bytes: &[u8]) -> Result<Self> {
         let inner = crate::executor::compile_module(engine, bytes).await?;
-        let shape = read::read_shape(bytes)?;
-        Ok(Self {
-            inner,
-            imports: shape.imports.into(),
-            exports: shape.exports.into(),
-        })
+        Self::from_compiled(inner, bytes)
     }
 
     /// The imports the module declares, in declaration order.
@@ -118,6 +113,15 @@ impl Module {
 }
 
 impl ModuleInternal for Module {
+    fn from_compiled(inner: RuntimeModule, bytes: &[u8]) -> Result<Module> {
+        let shape = read::read_shape(bytes)?;
+        Ok(Self {
+            inner,
+            imports: shape.imports.into(),
+            exports: shape.exports.into(),
+        })
+    }
+
     fn inner(&self) -> &RuntimeModule {
         &self.inner
     }

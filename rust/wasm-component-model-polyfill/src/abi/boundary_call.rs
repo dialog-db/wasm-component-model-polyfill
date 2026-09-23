@@ -285,8 +285,8 @@ mod tests {
 
     /// The declared options of a crossing that names the first
     /// component instance of its instantiation and nothing else.
-    fn declared() -> CanonOptions {
-        CanonOptions {
+    fn declared() -> Arc<CanonOptions> {
+        Arc::new(CanonOptions {
             instance: 0,
             memory: None,
             realloc: None,
@@ -295,7 +295,7 @@ mod tests {
             callback: None,
             string_encoding: StringEncoding::Utf8,
             data_model: DataModel::LinearMemory,
-        }
+        })
     }
 
     /// A store with one component instance in its records, the

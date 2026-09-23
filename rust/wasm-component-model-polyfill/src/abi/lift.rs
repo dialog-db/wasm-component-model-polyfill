@@ -660,7 +660,7 @@ mod tests {
             vec![TableId::fresh()],
         )));
         state.lock().expect("runtime state").memories[0] = Some(memory);
-        let declared = CanonOptions {
+        let declared = Arc::new(CanonOptions {
             instance: 0,
             memory: Some(0),
             realloc: None,
@@ -669,7 +669,7 @@ mod tests {
             callback: None,
             string_encoding: StringEncoding::Utf8,
             data_model: DataModel::LinearMemory,
-        };
+        });
         let tables = store.internal().tables_handle();
         BoundaryInstance::resolve(&declared, &state, &tables).expect("resolve")
     }
@@ -800,7 +800,7 @@ mod tests {
             state.memories[0] = Some(memory.clone());
             state.reallocs[0] = Some(realloc);
         }
-        let declared = CanonOptions {
+        let declared = Arc::new(CanonOptions {
             instance: 0,
             memory: Some(0),
             realloc: Some(0),
@@ -809,7 +809,7 @@ mod tests {
             callback: None,
             string_encoding: StringEncoding::Utf8,
             data_model: DataModel::LinearMemory,
-        };
+        });
         let tables = store.internal().tables_handle();
         let (options, instance) =
             BoundaryInstance::resolve(&declared, &state, &tables).expect("resolve");

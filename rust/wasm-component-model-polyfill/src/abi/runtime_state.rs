@@ -14,6 +14,8 @@
 //! [`BoundaryOptions`](crate::abi::options::BoundaryOptions) the
 //! canon options and gets a resolved crossing back.
 
+use std::sync::Arc;
+
 use wasm_runtime_layer::{Func as RuntimeFunc, Memory};
 
 use crate::abi::instance_flags::InstanceFlags;
@@ -42,7 +44,9 @@ pub struct AbiRuntimeState {
     /// table index: the table created for this instantiation, the
     /// identity of the resource type it holds, and whether the table's
     /// instance defines the resource. `None` for an abstract table.
-    pub resource_tables: Vec<Option<ResourceTableRuntime>>,
+    /// Fixed once the instantiation has built it, so every crossing
+    /// shares it rather than copying it.
+    pub resource_tables: Arc<[Option<ResourceTableRuntime>]>,
     /// The store-wide identity of every component instance of this
     /// instantiation, by the translator's per-instantiation index.
     /// An adapter names its caller and its callee by that index; the
@@ -84,7 +88,7 @@ impl AbiRuntimeState {
             reallocs: vec![None; num_reallocs],
             post_returns: vec![None; num_post_returns],
             callbacks: vec![None; num_callbacks],
-            resource_tables,
+            resource_tables: resource_tables.into(),
             component_instances,
             handle_tables,
             instance_flags: Vec::new(),

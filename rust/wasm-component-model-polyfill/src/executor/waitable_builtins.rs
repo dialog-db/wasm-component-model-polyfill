@@ -90,7 +90,7 @@ pub fn build_waitable_set_wait<T: 'static>(
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
     let tables = store.internal().tables_handle();
-    let options = options.clone();
+    let options = Arc::new(options.clone());
     RuntimeFunc::new(
         store.internal().runtime_mut(),
         core_func_type(signature),
@@ -111,7 +111,7 @@ pub fn build_waitable_set_poll<T: 'static>(
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
     let tables = store.internal().tables_handle();
-    let options = options.clone();
+    let options = Arc::new(options.clone());
     RuntimeFunc::new(
         store.internal().runtime_mut(),
         core_func_type(signature),
@@ -233,7 +233,7 @@ pub fn build_subtask_drop<T: 'static>(
 /// The body of the `waitable-set.wait` built-in.
 fn waitable_set_wait<T: 'static>(
     mut store_ctx: RuntimeContextMut<'_, StoreData<T>, Backend>,
-    options: &CanonOptions,
+    options: &Arc<CanonOptions>,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     tables: &Arc<Mutex<HandleTables>>,
     args: &[RuntimeVal],
@@ -276,7 +276,7 @@ fn waitable_set_wait<T: 'static>(
 /// The body of the `waitable-set.poll` built-in.
 fn waitable_set_poll<T: 'static>(
     mut store_ctx: RuntimeContextMut<'_, StoreData<T>, Backend>,
-    options: &CanonOptions,
+    options: &Arc<CanonOptions>,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     tables: &Arc<Mutex<HandleTables>>,
     args: &[RuntimeVal],
@@ -364,7 +364,7 @@ const EVENT_PAYLOAD_ALIGNMENT: usize = 4;
 /// pair writes nothing.
 fn write_payloads<T: 'static>(
     store_ctx: &mut RuntimeContextMut<'_, StoreData<T>, Backend>,
-    options: &CanonOptions,
+    options: &Arc<CanonOptions>,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     tables: &Arc<Mutex<HandleTables>>,
     pointer: u32,

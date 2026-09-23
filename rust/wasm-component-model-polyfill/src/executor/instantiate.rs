@@ -309,8 +309,24 @@ fn run_plan<T: 'static>(
     // definition teaches, whether that component is instantiated
     // before this one or after it, so no store renders a label that
     // none of its components ever used while one of them did.
-    for (type_id, label) in linker_resource_labels(linker) {
-        reserved.fallback_resource_name(store, type_id, ResourceType::new(label));
+    //
+    // A component that imports no resource skips the sweep. The sweep
+    // visits and sorts every label the linker holds, which is work
+    // proportional to the linker rather than to the component, and a
+    // host that instantiates such a component many times would pay it
+    // on every instantiation for nothing the component uses. A store
+    // learns the fallbacks from the first instantiation of a component
+    // that does import a resource. Until then it renders no label for
+    // a handle the host minted of a linker's resource, exactly as a
+    // store no component has been instantiated into does not.
+    let imports_resource = ir
+        .resources
+        .iter()
+        .any(|spec| matches!(spec, ResourceSpec::Imported { .. }));
+    if imports_resource {
+        for (type_id, label) in linker_resource_labels(linker) {
+            reserved.fallback_resource_name(store, type_id, ResourceType::new(label));
+        }
     }
 
     // One fresh handle table per component instance, shared by every
@@ -1042,7 +1058,7 @@ fn collect_function_exports<T: 'static>(
     ir: &ExecutorIr,
     items: &RuntimeItems,
     store: &mut StoreContext<'_, T>,
-) -> Result<Box<[ExportedFunction]>> {
+) -> Result<Box<[Arc<ExportedFunction>]>> {
     let mut out = Vec::with_capacity(ir.exports.len());
     for ExportSpec {
         name,
@@ -1058,13 +1074,13 @@ fn collect_function_exports<T: 'static>(
                 "lifted-function export resolved to a non-function core item",
             ));
         };
-        out.push(ExportedFunction {
+        out.push(Arc::new(ExportedFunction {
             name: name.clone(),
             path: path.clone(),
             func,
-            signature: signature.clone(),
-            options: options.clone(),
-        });
+            signature: Arc::clone(signature),
+            options: Arc::clone(options),
+        }));
     }
     Ok(out.into_boxed_slice())
 }

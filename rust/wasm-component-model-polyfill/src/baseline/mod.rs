@@ -15,6 +15,7 @@ mod async_start_call;
 mod call_concurrent;
 mod callback_export;
 mod canonical_abi;
+mod compile_modules;
 mod destructor_task;
 mod instantiation;
 mod prepared_call;

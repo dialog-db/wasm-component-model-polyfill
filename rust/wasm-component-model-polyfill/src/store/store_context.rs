@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use wasm_runtime_layer::{AsContextMut, StoreContextMut as RuntimeContextMut, Val as RuntimeVal};
 
 use crate::abi::boundary_call::BoundaryCall;
+use crate::abi::signature::Signature;
 use crate::backend::{Backend, reentrant_refusal};
-use crate::component::FunctionType;
 use crate::concurrency::{
     Accessor, CallStatus, EventSlot, FailureChannel, HostTask, InstanceId, Item, LowerKind,
     Outcome, PollScope, ResultChannel, Scheduler, Scope, SubtaskId, SubtaskState, SuspendSeam,
@@ -935,8 +935,8 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// item that starts it. Workspace-internal.
     fn create_export_task(
         &self,
-        function: FunctionType,
-        options: CanonOptions,
+        function: Arc<Signature>,
+        options: Arc<CanonOptions>,
         instance: InstanceId,
     ) -> Result<TaskId> {
         Ok(self

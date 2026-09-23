@@ -187,6 +187,24 @@ impl Engine {
             .insert(bytes.into(), module);
         Ok(())
     }
+
+    /// PATCH (wcmp): drop the module [`Engine::precompile`] kept for
+    /// `bytes`, if no `Module::new` has taken it yet. Only `Module::new`
+    /// otherwise removes an entry, and it adds a module to the engine
+    /// that is never removed either, so a caller that compiled a batch
+    /// of modules and gives up before building them all discards the
+    /// rest here.
+    pub fn discard_precompiled(&self, bytes: &[u8]) {
+        self.borrow_mut().precompiled.remove(bytes);
+    }
+
+    /// PATCH (wcmp): how many modules [`Engine::precompile`] kept that
+    /// no `Module::new` has taken yet. The count is what says whether
+    /// a caller left an entry behind, which the test of a failed batch
+    /// reads.
+    pub fn precompiled_count(&self) -> usize {
+        self.inner.borrow().precompiled.len()
+    }
 }
 
 /// Holds the inner mutable state of the engine

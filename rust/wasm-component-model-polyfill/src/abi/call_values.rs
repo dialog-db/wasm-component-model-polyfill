@@ -14,7 +14,8 @@ use wasm_runtime_layer::Val as RuntimeVal;
 
 use super::context::BoundaryContext;
 use super::flatten::{lift_from_flat_slots, lower_into_flat_slots};
-use super::layout::{alignment_of, params_spill, result_spills, size_of, spill_layout};
+use super::layout::{alignment_of, result_spills, size_of};
+use super::signature::Signature;
 use super::{lift, lower};
 use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
@@ -25,7 +26,7 @@ use crate::value::Val;
 /// core arguments the export's core function takes.
 pub fn lower_arguments<T: 'static>(
     ctx: &mut BoundaryContext<'_, T>,
-    signature: &FunctionType,
+    signature: &Signature,
     args: &[Val],
 ) -> Result<Vec<RuntimeVal>> {
     if let Some((base, offsets)) = parameter_spill(ctx, signature)? {
@@ -33,6 +34,7 @@ pub fn lower_arguments<T: 'static>(
         // the canonical ABI's record layout, and the core function
         // receives its address.
         for (i, ((param, val), offset)) in signature
+            .ty()
             .parameters
             .iter()
             .zip(args.iter())
@@ -45,7 +47,13 @@ pub fn lower_arguments<T: 'static>(
     }
 
     let mut out: Vec<RuntimeVal> = Vec::new();
-    for (i, (param, val)) in signature.parameters.iter().zip(args.iter()).enumerate() {
+    for (i, (param, val)) in signature
+        .ty()
+        .parameters
+        .iter()
+        .zip(args.iter())
+        .enumerate()
+    {
         lower_into_flat_slots(ctx, val, &param.ty, &mut out, AbiPosition::Argument(i))?;
     }
     Ok(out)
@@ -58,16 +66,16 @@ pub fn lower_arguments<T: 'static>(
 ///
 /// The record is allocated through the guest's `cabi_realloc` at the
 /// tuple's size and alignment. An empty record allocates nothing and
-/// sits at address zero.
-pub fn parameter_spill<T: 'static>(
+/// sits at address zero. The layout is the one the signature computed
+/// when the component was translated, so a call lays nothing out.
+pub fn parameter_spill<'s, T: 'static>(
     ctx: &mut BoundaryContext<'_, T>,
-    signature: &FunctionType,
-) -> Result<Option<(usize, Vec<usize>)>> {
-    if !params_spill(signature) {
+    signature: &'s Signature,
+) -> Result<Option<(usize, &'s [usize])>> {
+    if !signature.params_spill() {
         return Ok(None);
     }
-    let types: Vec<ValueType> = signature.parameters.iter().map(|p| p.ty.clone()).collect();
-    let layout = spill_layout(&types);
+    let layout = signature.parameter_layout();
     let spill_ty = ValueType::Primitive(PrimitiveType::U32);
     let base = if layout.size == 0 {
         0
@@ -79,7 +87,7 @@ pub fn parameter_spill<T: 'static>(
             AbiPosition::Argument(0),
         )?
     };
-    Ok(Some((base, layout.offsets)))
+    Ok(Some((base, &layout.offsets)))
 }
 
 /// Lift the result of `signature` out of the core results the export

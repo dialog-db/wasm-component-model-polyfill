@@ -101,6 +101,7 @@ pub fn spill_layout(types: &[ValueType]) -> SpillLayout {
 }
 
 /// The layout [`spill_layout`] computes.
+#[derive(Debug)]
 pub struct SpillLayout {
     /// The byte offset of each element from the start of the tuple.
     pub offsets: Vec<usize>,

@@ -20,8 +20,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use wasm_runtime_layer::StoreContextMut as RuntimeContextMut;
 
+use crate::abi::signature::Signature;
 use crate::backend::Backend;
-use crate::component::FunctionType;
 use crate::concurrency::{
     Accessor, CallStatus, EventSlot, FailureChannel, HostTask, InstanceId, Item, LowerKind,
     Outcome, ResultChannel, Scheduler, TaskId,
@@ -203,8 +203,8 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
     /// Create the task record for a call of an export.
     pub fn create_export_task(
         self,
-        function: FunctionType,
-        options: CanonOptions,
+        function: Arc<Signature>,
+        options: Arc<CanonOptions>,
         instance: InstanceId,
     ) -> Result<TaskId> {
         self.context.create_export_task(function, options, instance)

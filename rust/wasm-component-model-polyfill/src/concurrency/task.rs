@@ -1,6 +1,8 @@
 //! One call into an export.
 
-use crate::component::FunctionType;
+use std::sync::Arc;
+
+use crate::abi::signature::Signature;
 use crate::executor::ir::CanonOptions;
 use crate::resource::TableId;
 use crate::value::Val;
@@ -33,10 +35,10 @@ pub struct Task {
     /// adapter passes no type, and the task exists only so the
     /// intrinsics the callee reaches have a scope, which is what
     /// Wasmtime's own sync-call task carries.
-    pub function: Option<FunctionType>,
+    pub function: Option<Arc<Signature>>,
     /// The canon options of the export's lift, under the same rule
     /// as `function`.
-    pub options: Option<CanonOptions>,
+    pub options: Option<Arc<CanonOptions>>,
     /// The component instance the export belongs to. `None` for the
     /// one task that belongs to no component instance: the
     /// destructor of a resource the host implements, which the host
@@ -95,8 +97,8 @@ impl Task {
     /// Construct a task in its initial state, running on
     /// `implicit_thread`.
     pub fn new(
-        function: Option<FunctionType>,
-        options: Option<CanonOptions>,
+        function: Option<Arc<Signature>>,
+        options: Option<Arc<CanonOptions>>,
         instance: Option<InstanceId>,
         implicit_thread: ThreadId,
     ) -> Self {

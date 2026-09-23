@@ -43,8 +43,10 @@ pub struct BoundaryInstance {
     tables: Option<Arc<Mutex<HandleTables>>>,
     /// Every resource table of the instantiation, by table index. A
     /// handle's declared type names the index; this maps it to the
-    /// table the instantiation keeps and the resource it holds.
-    resource_tables: Vec<Option<ResourceTableRuntime>>,
+    /// table the instantiation keeps and the resource it holds. The
+    /// vector is the instantiation's own, shared rather than copied;
+    /// `None` for a crossing that names no instantiation.
+    resource_tables: Option<Arc<[Option<ResourceTableRuntime>]>>,
     /// The may-leave flag of the component instance, which is the
     /// core global its adapters compile against. A call the polyfill
     /// makes into the guest clears it for the length of the call.
@@ -60,7 +62,7 @@ impl BoundaryInstance {
     /// tables sit in the same state, and a call site needs both
     /// before it can build a context.
     pub fn resolve(
-        declared: &CanonOptions,
+        declared: &Arc<CanonOptions>,
         abi_state: &Arc<Mutex<AbiRuntimeState>>,
         tables: &Arc<Mutex<HandleTables>>,
     ) -> Result<(BoundaryOptions, Self)> {
@@ -71,7 +73,7 @@ impl BoundaryInstance {
         let instance = Self {
             id: options.instance(),
             tables: Some(tables.clone()),
-            resource_tables: state.resource_tables.clone(),
+            resource_tables: Some(state.resource_tables.clone()),
             flags: state.flags_at(declared.instance).cloned(),
         };
         Ok((options, instance))
@@ -86,7 +88,7 @@ impl BoundaryInstance {
         Self {
             id,
             tables: None,
-            resource_tables: Vec::new(),
+            resource_tables: None,
             flags: None,
         }
     }
@@ -127,11 +129,78 @@ impl BoundaryInstance {
 
     /// Every resource table of the instantiation, by table index.
     pub fn resource_tables(&self) -> &[Option<ResourceTableRuntime>] {
-        &self.resource_tables
+        self.resource_tables.as_deref().unwrap_or(&[])
+    }
+
+    /// The instantiation's resource tables as the shared vector, for
+    /// a host call that keeps them for its length. Empty for a
+    /// crossing that names no instantiation.
+    pub fn shared_resource_tables(&self) -> Arc<[Option<ResourceTableRuntime>]> {
+        self.resource_tables
+            .clone()
+            .unwrap_or_else(|| Arc::from([]))
     }
 
     /// The may-leave flag of the component instance.
     pub fn flags(&self) -> Option<&InstanceFlags> {
         self.flags.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::executor::ir::{DataModel, StringEncoding};
+    use crate::internal::ResourceTypeIdInternal;
+    use crate::resource::{ResourceTypeId, TableId};
+
+    #[wcmp_macros::test]
+    fn it_shares_the_instantiations_resource_tables_with_every_crossing() {
+        // The resource tables are fixed once the instantiation has
+        // built them, and every crossing reads them. Resolving a
+        // crossing hands it the instantiation's own vector, so two
+        // crossings — and the host call one of them serves — read
+        // the same one rather than a copy each.
+        let table = ResourceTableRuntime {
+            table: TableId::fresh(),
+            type_id: ResourceTypeId::fresh(),
+            resource_index: 0,
+            defining: false,
+            guest_defined: false,
+        };
+        let abi_state = Arc::new(Mutex::new(AbiRuntimeState::with_slabs(
+            0,
+            0,
+            0,
+            0,
+            vec![Some(table)],
+            vec![InstanceId::from_index(0)],
+            vec![TableId::fresh()],
+        )));
+        let tables = Arc::new(Mutex::new(HandleTables::new()));
+        let declared = Arc::new(CanonOptions {
+            instance: 0,
+            memory: None,
+            realloc: None,
+            post_return: None,
+            async_: false,
+            callback: None,
+            string_encoding: StringEncoding::Utf8,
+            data_model: DataModel::LinearMemory,
+        });
+
+        let (_, first) =
+            BoundaryInstance::resolve(&declared, &abi_state, &tables).expect("resolve");
+        let (_, second) =
+            BoundaryInstance::resolve(&declared, &abi_state, &tables).expect("resolve");
+        let held = abi_state.lock().expect("state").resource_tables.clone();
+
+        assert_eq!(first.resource_tables().len(), 1);
+        assert!(
+            core::ptr::eq(first.resource_tables(), &*held)
+                && core::ptr::eq(second.resource_tables(), &*held)
+                && Arc::ptr_eq(&first.shared_resource_tables(), &held),
+            "every crossing reads the instantiation's one vector"
+        );
     }
 }

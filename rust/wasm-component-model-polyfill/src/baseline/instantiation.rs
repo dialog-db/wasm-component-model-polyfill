@@ -70,12 +70,18 @@ const TRAPS_IN_START: &[u8] = component!(
     "#
 );
 
-/// A component that imports nothing and keeps no resource. An
-/// instantiation of it still sweeps the linker for the labels of the
-/// host resources it carries.
+/// The interface [`QUIET`] imports its one resource from.
+const GADGETS: &str = "test:host/gadgets@0.1.0";
+
+/// A component that imports one resource, from an interface of its
+/// own, and uses none. An instantiation of it sweeps the linker for
+/// the labels of every host resource the linker carries, and teaches
+/// the store a name for none of them but its own import's.
 const QUIET: &[u8] = component!(
     r#"
     (component
+      (import "test:host/gadgets@0.1.0" (instance $i
+        (export "gadget" (type (sub resource)))))
       (core module $m (func (export "noop")))
       (core instance $c (instantiate $m)))
     "#
@@ -239,6 +245,11 @@ async fn it_puts_back_the_resource_name_a_failed_instantiation_displaced() {
     let type_id = linker
         .root()
         .resource_with("alias", resource)
+        .expect("the registration");
+    let gadgets: InterfaceIdentifier = GADGETS.parse().expect("identifier");
+    linker
+        .instance(&gadgets)
+        .resource_with("gadget", thing())
         .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
 

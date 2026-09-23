@@ -25,14 +25,16 @@
 //!
 //! [`Val`]: crate::value::Val
 
+use std::sync::Arc;
+
 use wasm_runtime_layer::{StoreContextMut, Val as RuntimeVal};
 
 use crate::abi::boundary_call::BoundaryCall;
 use crate::abi::instance::BoundaryInstance;
 use crate::abi::options::BoundaryOptions;
+use crate::abi::signature::Signature;
 use crate::abi::strategy::AbiStrategy;
 use crate::backend::{Backend, reentrant_refusal};
-use crate::component::FunctionType;
 use crate::concurrency::Scope;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::{CanonOptions, StringEncoding};
@@ -203,7 +205,7 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
     /// The canon options of the lift of the task the crossing
     /// counts against. A `task.return` must find its own equal to
     /// these, and reads the task's `async` option off them.
-    pub fn task_lift_options(&self) -> Option<CanonOptions> {
+    pub fn task_lift_options(&self) -> Option<Arc<CanonOptions>> {
         let Some(Scope::Task(task)) = self.scope else {
             return None;
         };
@@ -219,8 +221,8 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
             return None;
         };
         let guard = self.instance.tables()?.lock().ok()?;
-        let function: &FunctionType = guard.tasks.task(task)?.function.as_ref()?;
-        function.result.clone()
+        let function: &Signature = guard.tasks.task(task)?.function.as_deref()?;
+        function.ty().result.clone()
     }
 
     /// The size of the guest's store of values in bytes, when the
@@ -594,8 +596,8 @@ mod tests {
     use wasm_runtime_layer::AsContextMut;
 
     /// Canon options that name no runtime slot, under `data_model`.
-    fn canon(data_model: DataModel) -> CanonOptions {
-        CanonOptions {
+    fn canon(data_model: DataModel) -> Arc<CanonOptions> {
+        Arc::new(CanonOptions {
             instance: 0,
             memory: None,
             realloc: None,
@@ -604,7 +606,7 @@ mod tests {
             callback: None,
             string_encoding: StringEncoding::Utf8,
             data_model,
-        }
+        })
     }
 
     /// An instance runtime state holding one component instance and
@@ -627,15 +629,15 @@ mod tests {
     }
 
     /// The `(result u32)` signature a task is a call into.
-    fn signature() -> FunctionType {
-        FunctionType {
+    fn signature() -> Arc<Signature> {
+        Arc::new(Signature::new(FunctionType {
             parameters: vec![FunctionParameter {
                 name: "x".to_owned(),
                 ty: ValueType::Primitive(PrimitiveType::U32),
             }],
             result: Some(ValueType::Primitive(PrimitiveType::U32)),
             async_: false,
-        }
+        }))
     }
 
     #[wcmp_macros::test]
@@ -668,7 +670,7 @@ mod tests {
 
         assert_eq!(
             ctx.options().declared(),
-            Some(&declared),
+            Some(&*declared),
             "the crossing carries its canon options as a value"
         );
         assert_eq!(

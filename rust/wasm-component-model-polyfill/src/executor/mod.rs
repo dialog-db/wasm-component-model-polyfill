@@ -42,7 +42,7 @@ pub mod waitable_builtins;
 
 pub use async_start_call::build_async_start_call;
 pub use callback_task::{CallbackTask, status_word};
-pub use compile_module::compile_module;
+pub use compile_module::{compile_module, compile_modules};
 pub use instantiate::instantiate;
 pub use prepare_call::build_prepare_call;
 pub use resource_destructor::ResourceDestructor;

@@ -9,7 +9,6 @@ use wasm_runtime_layer::{AsContextMut, Val as RuntimeVal};
 
 use crate::abi::context::BoundaryContext;
 use crate::abi::instance::BoundaryInstance;
-use crate::abi::layout::{flat_types, result_spills};
 use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::backend::substrate_failure;
@@ -23,6 +22,7 @@ use crate::error::{
 };
 use crate::executor::ir::CanonOptions;
 use crate::executor::{CallbackTask, status_word};
+use crate::instance::ExportedFunction;
 use crate::internal::{ErrorInternal, FuncInternal, FuncParts};
 use crate::resource::TableId;
 use crate::store::{Store, StoreContext, StoreId};
@@ -82,21 +82,12 @@ enum Delivery<O> {
 /// [`Instance`]: super::Instance
 /// [`Instance::get_func`]: super::Instance::get_func
 pub struct Func {
-    /// The leaf name this export was declared under. Carried so
-    /// the typed-conversion entry point can name the export in
-    /// type-mismatch diagnostics; `Func::call` does not consult it.
-    name: String,
-    /// The runtime-layer core-Wasm function handle this export
-    /// resolves to.
-    inner: wasm_runtime_layer::Func,
-    /// The component-level signature the polyfill uses to lower
-    /// arguments and lift results across the canonical-ABI
-    /// boundary.
-    signature: FunctionType,
-    /// The canonical-ABI options the export's lift declared. Held
-    /// here so [`Self::call`] can resolve memory/realloc/post-
-    /// return at call time.
-    options: CanonOptions,
+    /// The export this handle calls: its leaf name, the runtime-layer
+    /// core function it resolves to, its component-level signature
+    /// with the canonical-ABI layout, and the canon options its lift
+    /// declared. The instance and every other handle for the export
+    /// share it, so neither a lookup nor a call copies any of it.
+    export: Arc<ExportedFunction>,
     /// The instance's canonical-ABI runtime state. Shared with
     /// every host trampoline the same instance carries; the lock
     /// is taken briefly at the boundaries.
@@ -110,10 +101,7 @@ pub struct Func {
 impl From<FuncParts> for Func {
     fn from(parts: FuncParts) -> Self {
         Self {
-            name: parts.name,
-            inner: parts.inner,
-            signature: parts.signature,
-            options: parts.options,
+            export: parts.export,
             abi_state: parts.abi_state,
             store_id: parts.store_id,
         }
@@ -122,15 +110,15 @@ impl From<FuncParts> for Func {
 
 impl FuncInternal for Func {
     fn name(&self) -> &str {
-        &self.name
+        &self.export.name
     }
 
     fn signature(&self) -> &FunctionType {
-        &self.signature
+        self.export.signature.ty()
     }
 
     fn options(&self) -> &CanonOptions {
-        &self.options
+        &self.export.options
     }
 
     fn abi_state(&self) -> &Arc<Mutex<AbiRuntimeState>> {
@@ -142,7 +130,7 @@ impl Func {
     /// The component-level signature of the export: its parameters
     /// and its result, as the component declares them.
     pub fn ty(&self) -> &FunctionType {
-        &self.signature
+        self.export.signature.ty()
     }
 
     /// Invoke the function with the given polyfill-typed arguments.
@@ -221,7 +209,7 @@ impl Func {
         if store.internal().id() != self.store_id {
             return Err(Error::from(InstantiationError::WrongStore));
         }
-        values.check_arity(&self.signature)?;
+        values.check_arity(self.ty())?;
 
         // A driver entered while another driver of the same store is
         // inside a turn fails before it has created a task or queued
@@ -236,7 +224,7 @@ impl Func {
         // boundary context from the two, and the instance is where
         // the handle tables of the crossing come from.
         let (options, instance) = BoundaryInstance::resolve(
-            &self.options,
+            &self.export.options,
             &self.abi_state,
             &store.internal().tables_handle(),
         )?;
@@ -255,8 +243,8 @@ impl Func {
         // callback export that resolves and keeps running therefore
         // holds no host handle past its `task.return`.
         let task = store.internal().create_export_task(
-            self.signature.clone(),
-            self.options.clone(),
+            Arc::clone(&self.export.signature),
+            Arc::clone(&self.export.options),
             instance_id,
         )?;
 
@@ -264,7 +252,7 @@ impl Func {
         // a status word and produces its result through
         // `task.return`. The task outlives the call, so the call
         // watches the task's channel rather than a slot of its own.
-        if self.options.async_ {
+        if self.export.options.async_ {
             return self
                 .call_async(store, task, instance_id, instance, options, values)
                 .await;
@@ -299,13 +287,9 @@ impl Func {
         // lift can carry. The exclusive flag is the reference's
         // `not opts.async or opts.callback`, which is true here; the
         // gate reads it only for a task that does wait at it.
-        store.internal().start_export_thread(
-            task,
-            instance_id,
-            self.signature.async_,
-            true,
-            item,
-        )?;
+        store
+            .internal()
+            .start_export_thread(task, instance_id, self.ty().async_, true, item)?;
 
         Driver::new(store, Some(task), move |_store, _waker| {
             outcome.lock().ok().and_then(|mut slot| slot.take())
@@ -435,10 +419,10 @@ impl Func {
         if store.internal().id() != self.store_id {
             return Err(Error::from(InstantiationError::WrongStore));
         }
-        values.check_arity(&self.signature)?;
+        values.check_arity(self.ty())?;
 
         let (options, instance) = BoundaryInstance::resolve(
-            &self.options,
+            &self.export.options,
             &self.abi_state,
             &store.internal().tables_handle(),
         )?;
@@ -447,8 +431,8 @@ impl Func {
         })?;
 
         let task = store.internal().create_export_task(
-            self.signature.clone(),
-            self.options.clone(),
+            Arc::clone(&self.export.signature),
+            Arc::clone(&self.export.options),
             instance_id,
         )?;
         let failure: CallFailure = store.internal().attach_failure_channel(task)?;
@@ -460,7 +444,7 @@ impl Func {
         let queued = failure.clone();
         let replica = self.replica();
 
-        if self.options.async_ {
+        if self.export.options.async_ {
             // The caller is not on the stack when `task.return`
             // resolves the task, so the task is given a channel to
             // resolve through and the call watches that rather than
@@ -653,7 +637,8 @@ impl Func {
 
         // The arguments are lowered, so the task's thread runs now.
         store.internal().start_export_task(task)?;
-        self.inner
+        self.export
+            .func
             .call(
                 store.internal().runtime_mut(),
                 &core_args,
@@ -674,7 +659,7 @@ impl Func {
             .map_err(|_| Error::internal("ABI runtime state lock poisoned"))?;
         state
             .handle_tables
-            .get(self.options.instance)
+            .get(self.export.options.instance)
             .copied()
             .ok_or_else(|| {
                 Error::internal("an export's lift names a component instance with no handle table")
@@ -686,10 +671,7 @@ impl Func {
     /// the copy drives the same export as the original.
     fn replica(&self) -> Self {
         Self {
-            name: self.name.clone(),
-            inner: self.inner.clone(),
-            signature: self.signature.clone(),
-            options: self.options.clone(),
+            export: Arc::clone(&self.export),
             abi_state: self.abi_state.clone(),
             store_id: self.store_id,
         }
@@ -718,7 +700,7 @@ impl Func {
         // lifted synchronously is allowed to block, and the flag
         // stays as it was: the reference lets such a callee give way
         // while its own caller waits.
-        let held = if self.signature.async_ {
+        let held = if self.ty().async_ {
             Ok(())
         } else {
             store.internal().hold_may_not_suspend(task)
@@ -741,7 +723,7 @@ impl Func {
                     // type at all when it does not.
                     Err(count) => Err(Error::from(AbiError {
                         position: AbiPosition::Result,
-                        valtype: self.signature.result.clone(),
+                        valtype: self.ty().result.clone(),
                         cause: AbiCause::OutstandingBorrows {
                             count: count as usize,
                         },
@@ -765,12 +747,13 @@ impl Func {
         options: &BoundaryOptions,
     ) -> Result<C::Output> {
         let core_args = self.lower_args(store, values, instance, task, options)?;
-        let result_arity = self.core_result_arity();
+        let result_arity = self.export.signature.core_result_arity();
         let mut core_results = vec![RuntimeVal::I32(0); result_arity];
 
         // The arguments are lowered, so the task's thread runs now.
         store.internal().start_export_task(task)?;
-        self.inner
+        self.export
+            .func
             .call(
                 store.internal().runtime_mut(),
                 &core_args,
@@ -783,18 +766,6 @@ impl Func {
         // lifted value is in hand, so the post-return is safe to run
         // now. Both go through the one context of the crossing.
         self.lift_result::<T, C>(store, &core_results, instance, task, options.clone())
-    }
-
-    /// The number of core-Wasm result slots the underlying core
-    /// function returns. Mirrors the rule
-    /// [`crate::executor::trampoline`] uses to derive the core
-    /// function type from the polyfill's signature.
-    fn core_result_arity(&self) -> usize {
-        match &self.signature.result {
-            None => 0,
-            Some(_) if result_spills(&self.signature) => 1,
-            Some(result_ty) => flat_types(result_ty).len(),
-        }
     }
 
     fn lower_args<T: 'static, C: CallValues>(
@@ -812,7 +783,7 @@ impl Func {
             instance.clone(),
             Some(Scope::Task(task)),
         );
-        values.lower(&mut lower_ctx, &self.signature)
+        values.lower(&mut lower_ctx, &self.export.signature)
     }
 
     fn lift_result<T: 'static, C: CallValues>(
@@ -830,7 +801,7 @@ impl Func {
             instance.clone(),
             Some(Scope::Task(task)),
         );
-        let lifted = C::lift(&mut lift_ctx, core_results, &self.signature)?;
+        let lifted = C::lift(&mut lift_ctx, core_results, self.ty())?;
         // The post-return's arguments are the core results: the flat
         // result slots, or the return-area pointer when the result
         // spilled to memory.

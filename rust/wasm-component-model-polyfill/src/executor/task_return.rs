@@ -91,7 +91,7 @@ pub fn build_task_return<T: 'static>(
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
     let tables = store.internal().tables_handle();
-    let declared = options.clone();
+    let declared = Arc::new(options.clone());
     RuntimeFunc::new(
         store.internal().runtime_mut(),
         core_func_type(signature),
@@ -114,7 +114,7 @@ pub fn build_task_return<T: 'static>(
 /// states the order of the traps.
 fn task_return<T: 'static>(
     mut store_ctx: RuntimeContextMut<'_, StoreData<T>, Backend>,
-    declared: &CanonOptions,
+    declared: &Arc<CanonOptions>,
     result: Option<&ValueType>,
     result_tuple: usize,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
@@ -497,6 +497,7 @@ mod tests {
     use super::*;
     use crate::abi::instance_flags::InstanceFlags;
     use crate::abi::layout::{FlatType, flat_types};
+    use crate::abi::signature::Signature;
     use crate::component::FunctionType;
     use crate::concurrency::{InstanceId, TaskResult};
     use crate::engine::Engine;
@@ -558,12 +559,12 @@ mod tests {
         /// push it as the current scope.
         fn push_task(&self, result: Option<ValueType>, lift: CanonOptions) -> TaskId {
             self.tables.lock().expect("records").tasks.push_task(
-                Some(FunctionType {
+                Some(Arc::new(Signature::new(FunctionType {
                     parameters: Vec::new(),
                     result,
                     async_: true,
-                }),
-                Some(lift),
+                }))),
+                Some(Arc::new(lift)),
                 self.instance,
             )
         }

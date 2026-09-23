@@ -133,7 +133,7 @@ fn sync_start_call<T: 'static>(
         if let Some(options) = guard
             .tasks
             .task_mut(prepared.task())
-            .and_then(|record| record.options.as_mut())
+            .and_then(|record| record.options.as_mut().map(Arc::make_mut))
         {
             options.async_ = true;
             options.callback = Some(callback);

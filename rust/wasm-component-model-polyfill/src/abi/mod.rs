@@ -52,6 +52,7 @@ mod lower;
 pub mod options;
 pub mod runtime_state;
 pub mod shape;
+pub mod signature;
 pub mod strategy;
 pub mod strings;
 pub mod transcode;

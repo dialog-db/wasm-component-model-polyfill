@@ -1,5 +1,7 @@
 //! The host's view of one guest call into a registered host function.
 
+use std::sync::Arc;
+
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::internal::HostCallInternal;
 use crate::resource::{ResourceHandle, ResourceHandleParts, ResourceTableRuntime, ResourceTypeId};
@@ -66,11 +68,14 @@ pub struct HostCall<'a, T: 'static> {
     /// The resource tables of the instance whose import is being
     /// served. A mint against a resource type none of them holds is
     /// refused.
-    resource_tables: Vec<Option<ResourceTableRuntime>>,
+    resource_tables: Arc<[Option<ResourceTableRuntime>]>,
 }
 
 impl<'a, T: 'static> HostCallInternal<'a, T> for HostCall<'a, T> {
-    fn new(store: StoreContext<'a, T>, resource_tables: Vec<Option<ResourceTableRuntime>>) -> Self {
+    fn new(
+        store: StoreContext<'a, T>,
+        resource_tables: Arc<[Option<ResourceTableRuntime>]>,
+    ) -> Self {
         HostCall {
             store,
             resource_tables,

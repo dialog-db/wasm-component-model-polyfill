@@ -3,7 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use crate::abi::runtime_state::AbiRuntimeState;
-use crate::component::{ExternalName, FunctionType};
+use crate::abi::signature::Signature;
+use crate::component::ExternalName;
 use crate::executor::ir::CanonOptions;
 use crate::internal::{FuncParts, InstanceExportsInternal, InstanceInternal, InstanceParts};
 use crate::module::Module;
@@ -13,10 +14,13 @@ use super::exports::InstanceExports;
 use super::func::Func;
 
 /// One exported function of an instantiated component, paired with
-/// the component-level [`FunctionType`] the polyfill's parsed-
-/// component value declared for it. The signature is what
-/// [`Func::call`] consults when lowering arguments and lifting
-/// results across the canonical-ABI boundary.
+/// the component-level signature the polyfill's parsed-component
+/// value declared for it. The signature is what [`Func::call`]
+/// consults when lowering arguments and lifting results across the
+/// canonical-ABI boundary.
+///
+/// Every [`Func`] handle for the export shares this record, so
+/// looking the export up and calling it copies none of it.
 ///
 /// Workspace-internal; never re-exported through `lib.rs`.
 ///
@@ -34,14 +38,15 @@ pub struct ExportedFunction {
     pub path: Box<[ExternalName]>,
     /// The runtime-layer core-Wasm function that backs this export.
     pub func: wasm_runtime_layer::Func,
-    /// The polyfill's component-level signature for this export.
-    pub signature: FunctionType,
+    /// The polyfill's component-level signature for this export,
+    /// with its canonical-ABI layout. Shared with the translation.
+    pub signature: Arc<Signature>,
     /// The canonical-ABI options the export's lift declared. Used
     /// by [`Func::call`] to look up memory/realloc/post-return at
     /// call time.
     ///
     /// [`Func::call`]: crate::Func::call
-    pub options: CanonOptions,
+    pub options: Arc<CanonOptions>,
 }
 
 /// One exported core module of an instantiated component.
@@ -81,7 +86,7 @@ pub struct Instance {
     core_instances: Box<[wasm_runtime_layer::Instance]>,
     /// The component-level function exports the executor produced
     /// when wiring the component.
-    function_exports: Box<[ExportedFunction]>,
+    function_exports: Box<[Arc<ExportedFunction>]>,
     /// The path of every instance-typed export, at any depth, in
     /// declaration order. An instance export is listed whether or
     /// not it holds a function, so the navigator can reach an empty
@@ -140,12 +145,9 @@ impl InstanceInternal for Instance {
             .any(|export| export.as_ref() == path)
     }
 
-    fn func_for(&self, export: &ExportedFunction) -> Func {
+    fn func_for(&self, export: &Arc<ExportedFunction>) -> Func {
         FuncParts {
-            name: export.name.clone(),
-            inner: export.func.clone(),
-            signature: export.signature.clone(),
-            options: export.options.clone(),
+            export: Arc::clone(export),
             abi_state: self.abi_state.clone(),
             store_id: self.store_id,
         }

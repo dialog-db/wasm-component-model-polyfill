@@ -12,6 +12,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::executor::ir::CanonOptions;
+use crate::internal::FuncInternal;
 use crate::store::StoreInternalExt;
 use crate::{
     Component, Engine, FunctionParameter, FunctionType, HostCall, InterfaceIdentifier, Linker,
@@ -202,6 +204,70 @@ async fn it_pushes_a_task_for_the_export_and_a_subtask_for_the_host_call() {
         after,
         Seen::default(),
         "both scopes are popped and their records are gone"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_shares_the_exports_signature_and_options_with_the_task_of_every_call() {
+    // Nothing about an export's signature or canon options changes
+    // from one call to the next, so the translation's one copy of
+    // each is what every handle for the export holds and what the
+    // task record of every call points at. The host reads the task
+    // on the stack from inside two calls, through two handles.
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, CALLS_THE_HOST)
+        .await
+        .expect("component parses");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let tables = store.internal().tables_handle();
+    let seen: Arc<Mutex<Vec<(usize, usize)>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = seen.clone();
+
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker
+        .root()
+        .func_wrap(
+            "probe",
+            move |_: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
+                let guard = tables.lock().expect("handle tables");
+                let task = guard
+                    .tasks
+                    .current_task()
+                    .and_then(|task| guard.tasks.task(task))
+                    .expect("the export's task is on the stack");
+                let function = task.function.as_deref().expect("the task's signature");
+                let options = task.options.as_deref().expect("the task's options");
+                recorded.lock().expect("record").push((
+                    function.ty() as *const FunctionType as usize,
+                    options as *const CanonOptions as usize,
+                ));
+                Ok(x)
+            },
+        )
+        .expect("the registration");
+
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    let first = instance.get_func("run").expect("run export");
+    let second = instance.get_func("run").expect("run export");
+    assert!(
+        core::ptr::eq(first.ty(), second.ty()),
+        "two lookups of one export hand out handles over one signature"
+    );
+    for run in [&first, &second] {
+        run.call(&mut store, &[Val::U32(1)])
+            .await
+            .expect("call run");
+    }
+
+    let signature = first.ty() as *const FunctionType as usize;
+    let options = first.options() as *const CanonOptions as usize;
+    assert_eq!(
+        *seen.lock().expect("record"),
+        vec![(signature, options); 2],
+        "the task of each call holds the handle's signature and options, not copies"
     );
 }
 

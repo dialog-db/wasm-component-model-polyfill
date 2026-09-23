@@ -226,7 +226,7 @@ fn callback_loop(
     if let Some(options) = lock(tables)?
         .tasks
         .task_mut(prepared.task())
-        .and_then(|record| record.options.as_mut())
+        .and_then(|record| record.options.as_mut().map(Arc::make_mut))
     {
         options.async_ = true;
         options.callback = Some(callback);

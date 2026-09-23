@@ -2066,15 +2066,54 @@ async fn it_names_a_host_resource_no_component_imported() {
 }
 
 #[wcmp_macros::test]
+async fn it_sweeps_no_label_for_a_component_that_imports_no_resource() {
+    // The sweep is work proportional to the linker, so an
+    // instantiation whose component imports no resource skips it.
+    // What shows it skipped is the one thing the sweep teaches a
+    // store: after such an instantiation, a handle of a resource the
+    // linker holds renders no label, as it does in a store no
+    // component has been instantiated into.
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, LOCAL_RESOURCE)
+        .await
+        .expect("component parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let gadget = linker
+        .root()
+        .resource("gadget", |_: &mut (), _: u32| -> crate::Result<()> {
+            Ok(())
+        })
+        .expect("the registration");
+
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let _instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate the component that imports nothing");
+    let handle = store.resource_new(gadget, 1).expect("mint");
+    store.resource_drop(handle).expect("first release");
+    let err = store
+        .resource_drop(handle)
+        .expect_err("a released handle is not live");
+
+    assert_eq!(
+        owned_label(&err),
+        None,
+        "an instantiation of a component that imports no resource teaches \
+         the store no label of the linker's, got {err}"
+    );
+}
+
+#[wcmp_macros::test]
 async fn it_names_a_shared_resource_by_the_importer_after_an_earlier_instantiation() {
     // The same identity under two labels as the test above, but the
     // store takes two components: one that imports nothing, then
-    // `BORROWER`. The first instantiation sweeps the linker for
-    // labels and meets this identity as `alias`, a label no
-    // component in the store ever uses; the second brings it in as
-    // `thing`. A swept label is only ever a fallback, so the
-    // importer's label takes over and the error still reads
-    // `thing`.
+    // `BORROWER`. The first instantiation sweeps nothing, because
+    // its component imports no resource; the second sweeps the
+    // linker and meets this identity as `alias`, a label no
+    // component in the store ever uses, and brings it in as `thing`.
+    // A swept label is only ever a fallback, so the importer's label
+    // takes over and the error still reads `thing`.
     let engine = Engine::new().expect("engine");
     let quiet = Component::new(&engine, LOCAL_RESOURCE)
         .await

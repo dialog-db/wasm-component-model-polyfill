@@ -121,7 +121,9 @@ fn prepare_call(
         .tasks
         .current_thread()
         .ok_or_else(|| Error::internal("an adapter prepared a call with no task on the stack"))?;
-    let task = guard.tasks.create_task(None, Some(options), callee);
+    let task = guard
+        .tasks
+        .create_task(None, Some(Arc::new(options)), callee);
     if let Some(record) = guard.tasks.task_mut(task) {
         record.result_tuple = Some(result_tuple);
     }

@@ -113,14 +113,9 @@ pub trait TypedFuncInternal<P, R> {
 
 /// The parts a [`Func`](crate::Func) is built from.
 pub struct FuncParts {
-    /// The export's leaf name.
-    pub name: String,
-    /// The runtime-layer core function the export resolves to.
-    pub inner: wasm_runtime_layer::Func,
-    /// The component-level signature of the export.
-    pub signature: FunctionType,
-    /// The canonical-ABI options the export's lift declared.
-    pub options: CanonOptions,
+    /// The export the handle calls: its name, its core function, its
+    /// signature, and its canon options, shared with the instance.
+    pub export: Arc<ExportedFunction>,
     /// The instance's canonical-ABI runtime state.
     pub abi_state: Arc<Mutex<AbiRuntimeState>>,
     /// The identity of the store the owning instance was created in.
@@ -148,7 +143,7 @@ pub struct InstanceParts {
     /// instance, in component-section order.
     pub core_instances: Box<[RuntimeInstance]>,
     /// The component-level function exports.
-    pub function_exports: Box<[ExportedFunction]>,
+    pub function_exports: Box<[Arc<ExportedFunction>]>,
     /// The path of every instance-typed export, at any depth.
     pub instance_exports: Box<[Box<[ExternalName]>]>,
     /// The module-typed exports, at any depth.
@@ -174,13 +169,16 @@ pub trait InstanceInternal {
     fn has_instance_export(&self, path: &[ExternalName]) -> bool;
 
     /// The public handle for one of this instance's exports.
-    fn func_for(&self, export: &ExportedFunction) -> Func;
+    fn func_for(&self, export: &Arc<ExportedFunction>) -> Func;
 }
 
 /// The crate-internal face of [`HostCall`](crate::HostCall).
 pub trait HostCallInternal<'a, T: 'static> {
     /// The context for one call of a host function.
-    fn new(store: StoreContext<'a, T>, resource_tables: Vec<Option<ResourceTableRuntime>>) -> Self;
+    fn new(
+        store: StoreContext<'a, T>,
+        resource_tables: Arc<[Option<ResourceTableRuntime>]>,
+    ) -> Self;
 }
 
 /// The crate-internal face of
@@ -222,6 +220,10 @@ pub trait LinkerInternal<T: 'static> {
 
 /// The crate-internal face of [`Module`](crate::Module).
 pub trait ModuleInternal {
+    /// Wrap a runtime-layer module already compiled from `bytes`,
+    /// reading its imports and exports from the binary.
+    fn from_compiled(inner: RuntimeModule, bytes: &[u8]) -> Result<Module>;
+
     /// Borrow the wrapped runtime-layer module.
     fn inner(&self) -> &RuntimeModule;
 }

@@ -5,6 +5,7 @@ use core::marker::PhantomData;
 use wasm_runtime_layer::Val as RuntimeVal;
 
 use crate::abi::context::BoundaryContext;
+use crate::abi::signature::Signature;
 use crate::component::FunctionType;
 use crate::error::Result;
 use crate::linker::{ComponentParameters, ComponentResult};
@@ -46,7 +47,7 @@ impl<P: ComponentParameters, R: ComponentResult> CallValues for TypedCall<P, R> 
     fn lower<T: 'static>(
         self,
         cx: &mut BoundaryContext<'_, T>,
-        signature: &FunctionType,
+        signature: &Signature,
     ) -> Result<Vec<RuntimeVal>> {
         self.arguments.lower_arguments(cx, signature)
     }

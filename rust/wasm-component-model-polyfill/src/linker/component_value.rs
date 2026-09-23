@@ -37,6 +37,7 @@ use crate::abi::call_values::{
 use crate::abi::context::BoundaryContext;
 use crate::abi::flatten::{lift_from_flat_slots, lower_into_flat_slots, take_i32};
 use crate::abi::layout::result_spills;
+use crate::abi::signature::Signature;
 use crate::abi::{
     gate_list, lift, lift_string, lower, lower_list_bytes, lower_str, read_pointer_pair,
     write_pointer_pair,
@@ -145,7 +146,7 @@ pub trait ComponentParameters: Sized + Send + Sync + 'static {
     fn lower_arguments<D: 'static>(
         self,
         cx: &mut BoundaryContext<'_, D>,
-        signature: &FunctionType,
+        signature: &Signature,
     ) -> Result<Vec<RuntimeVal>> {
         lower_arguments(cx, signature, &self.into_vals())
     }
@@ -547,9 +548,9 @@ macro_rules! impl_component_parameters {
             fn lower_arguments<Data: 'static>(
                 self,
                 cx: &mut BoundaryContext<'_, Data>,
-                signature: &FunctionType,
+                signature: &Signature,
             ) -> Result<Vec<RuntimeVal>> {
-                let parameters = &signature.parameters;
+                let parameters = &signature.ty().parameters;
                 if parameters.len() != $count {
                     return Err(arity_mismatch($count, parameters.len()));
                 }

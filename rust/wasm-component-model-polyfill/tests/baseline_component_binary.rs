@@ -157,6 +157,99 @@ async fn it_loads_a_component_larger_than_the_synchronous_compile_limit() {
     );
 }
 
+/// Nine mebibytes of data in a core module: beyond the 8 MB above
+/// which Chrome refuses a synchronous `WebAssembly.Module` on the
+/// main thread. Chrome refuses a synchronous `WebAssembly.Instance`
+/// above the same size, so a module this large compiles in the
+/// browser but does not instantiate there.
+const DUPLICATE_PAYLOAD: usize = 9 << 20;
+
+/// A component with two byte-identical core modules of `payload`
+/// bytes of data each, each instantiated once and exported through
+/// its own function. The modules carry no identifier, which the text
+/// format would record in a name section and so tell them apart. Each
+/// holds a counter, so a call shows which instance it reached.
+fn duplicate_module_component(payload: usize) -> Vec<u8> {
+    let pages = payload.div_ceil(1 << 16).max(1);
+    let payload = "A".repeat(payload);
+    let module = format!(
+        r#"(core module
+            (memory {pages})
+            (data (i32.const 0) "{payload}")
+            (global $count (mut i32) (i32.const 0))
+            (func (export "bump") (result i32)
+              global.get $count
+              i32.const 1
+              i32.add
+              global.set $count
+              global.get $count))"#
+    );
+    let wat = format!(
+        r#"(component
+          {module}
+          {module}
+          (core instance $first (instantiate 0))
+          (core instance $second (instantiate 1))
+          (func (export "first") (result u32) (canon lift (core func $first "bump")))
+          (func (export "second") (result u32) (canon lift (core func $second "bump"))))"#
+    );
+    let buffer = wast::parser::ParseBuffer::new(&wat).expect("lex the component");
+    let mut wat = wast::parser::parse::<wast::Wat>(&buffer).expect("parse the component");
+    wat.encode().expect("encode the component")
+}
+
+#[wcmp_macros::test]
+async fn it_compiles_byte_identical_core_modules_above_the_synchronous_limit() {
+    // The browser's asynchronous compile leaves one entry per byte
+    // string on the engine, and a module built without one compiles
+    // synchronously, which the browser refuses at this size. The
+    // component compiling is what shows neither module did.
+    let engine = Engine::new().expect("engine");
+    let bytes = duplicate_module_component(DUPLICATE_PAYLOAD);
+    assert!(
+        bytes.len() > 2 * DUPLICATE_PAYLOAD,
+        "the binary carries both payloads"
+    );
+    Component::new(&engine, &bytes)
+        .await
+        .expect("compile the component");
+}
+
+#[wcmp_macros::test]
+async fn it_instantiates_each_of_two_byte_identical_core_modules() {
+    // The two modules share one compile, and each instantiation of it
+    // is its own: calls through one export leave the other's counter
+    // where it was.
+    let engine = Engine::new().expect("engine");
+    let bytes = duplicate_module_component(64);
+    let component = Component::new(&engine, &bytes)
+        .await
+        .expect("compile the component");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate the component");
+    let first = instance
+        .get_func("first")
+        .expect("first export")
+        .typed::<(), u32>()
+        .expect("typed first");
+    let second = instance
+        .get_func("second")
+        .expect("second export")
+        .typed::<(), u32>()
+        .expect("typed second");
+    assert_eq!(first.call(&mut store, ()).await.expect("call first"), 1);
+    assert_eq!(first.call(&mut store, ()).await.expect("call first"), 2);
+    assert_eq!(
+        second.call(&mut store, ()).await.expect("call second"),
+        1,
+        "the second module's instance keeps its own counter"
+    );
+}
+
 /// The futures the entry points return are `Send` on native, so a
 /// host can drive them from a multi-threaded runtime. The browser
 /// has no threads to send them to, so the check is native-only.

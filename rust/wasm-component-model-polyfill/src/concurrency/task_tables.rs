@@ -1,7 +1,9 @@
 //! The store's tables of task, subtask, thread, waitable set, and
 //! instance records, with the stack of current scopes.
 
-use crate::component::FunctionType;
+use std::sync::Arc;
+
+use crate::abi::signature::Signature;
 use crate::error::{Error, Result, WaitableCause};
 use crate::executor::ir::CanonOptions;
 use crate::internal::ErrorInternal;
@@ -177,8 +179,8 @@ impl TaskTables {
     /// one real stack and a queued task is not on it.
     pub fn create_task(
         &mut self,
-        function: Option<FunctionType>,
-        options: Option<CanonOptions>,
+        function: Option<Arc<Signature>>,
+        options: Option<Arc<CanonOptions>>,
         instance: InstanceId,
     ) -> TaskId {
         self.create(function, options, Some(instance))
@@ -188,8 +190,8 @@ impl TaskTables {
     /// instance, with its implicit thread.
     fn create(
         &mut self,
-        function: Option<FunctionType>,
-        options: Option<CanonOptions>,
+        function: Option<Arc<Signature>>,
+        options: Option<Arc<CanonOptions>>,
         instance: Option<InstanceId>,
     ) -> TaskId {
         let index = self.tasks.next_index();
@@ -254,8 +256,8 @@ impl TaskTables {
     /// the callee's task from inside the caller's turn.
     pub fn push_task(
         &mut self,
-        function: Option<FunctionType>,
-        options: Option<CanonOptions>,
+        function: Option<Arc<Signature>>,
+        options: Option<Arc<CanonOptions>>,
         instance: InstanceId,
     ) -> TaskId {
         let task = self.create_task(function, options, instance);

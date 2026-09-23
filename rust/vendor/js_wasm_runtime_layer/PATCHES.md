@@ -70,7 +70,18 @@ The runtime layer's `WasmModule::new` is synchronous, so the patch adds
 The next `Module::new` on that engine with the same bytes takes the compiled
 module instead of compiling again. The polyfill awaits `precompile` for every
 core module of a component before it constructs the runtime layer's `Module`.
-The patch adds `wasm-bindgen-futures` for the promise-to-future bridge. The
+The patch adds `wasm-bindgen-futures` for the promise-to-future bridge.
+
+`Module::new` takes the entry for its bytes, and nothing else removed one, so
+a caller that compiled several modules and then gave up — one compile failed,
+or the caller was dropped — left the finished ones on the engine for its
+lifetime. Taking them through `Module::new` would only move the leak, since
+the engine never removes a module either. The patch adds
+`Engine::discard_precompiled`, which drops the entry for some bytes, and
+`Engine::precompiled_count`, which is what a test of a failed batch reads. The
+polyfill discards every entry of a batch that it did not build. It also
+compiles byte-identical modules of one component once and shares the result,
+since the entry for those bytes serves one `Module::new` only. The
 proposal for upstream is an asynchronous constructor on `WasmModule` itself, so
 the handoff through the engine becomes unnecessary.
 

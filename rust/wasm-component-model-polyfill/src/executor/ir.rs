@@ -7,9 +7,11 @@
 //! and is projected into [`ExecutorIr`].
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::abi::layout::FlatType;
-use crate::component::{ExternalName, FunctionType};
+use crate::abi::signature::Signature;
+use crate::component::ExternalName;
 use crate::concurrency::LowerKind;
 use crate::module::Module;
 use crate::types::{ResourceType, ValueType};
@@ -328,10 +330,13 @@ pub struct ExportSpec {
     pub path: Box<[ExternalName]>,
     /// Where the underlying core-Wasm function lives.
     pub source: ImportSource,
-    /// The component-level signature the lift produced.
-    pub signature: FunctionType,
-    /// The canonical-ABI options the lift declared.
-    pub options: CanonOptions,
+    /// The component-level signature the lift produced, with its
+    /// canonical-ABI layout. Shared with every instance's handle for
+    /// the export and with the task record of every call through it.
+    pub signature: Arc<Signature>,
+    /// The canonical-ABI options the lift declared, shared the same
+    /// way.
+    pub options: Arc<CanonOptions>,
 }
 
 /// Canonical-ABI options associated with a single lifted or lowered
@@ -435,12 +440,14 @@ pub struct LoweringSpec {
     /// the lowering targets, one per nesting level. Empty when the
     /// import itself is the target (a plain-named function import).
     pub path: Box<[String]>,
-    /// The host-side function type the registration must declare.
-    pub signature: FunctionType,
+    /// The host-side function type the registration must declare,
+    /// with its canonical-ABI layout. Every trampoline built from the
+    /// spec shares it, so a call never lays the parameters out again.
+    pub signature: Arc<Signature>,
     /// The canon options the lower uses to translate between the
     /// host's `Val` shape and the core-wasm flat values the
     /// trampoline shuttles.
-    pub options: CanonOptions,
+    pub options: Arc<CanonOptions>,
     /// Which lowering the `canon lower` declared, read from the
     /// `async` option of `options` at translation. The two kinds
     /// present different core signatures to the guest, so the

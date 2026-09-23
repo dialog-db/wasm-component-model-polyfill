@@ -96,10 +96,10 @@ use crate::abi::instance::BoundaryInstance;
 use crate::abi::instance_flags::InstanceFlags;
 use crate::abi::layout::{
     FlatType, MAX_FLAT_ASYNC_PARAMS, flat_param_count, flat_types, params_spill, result_spills,
-    spill_layout,
 };
 use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
+use crate::abi::signature::Signature;
 use crate::abi::{lift, lower};
 use crate::backend::Backend;
 use crate::component::FunctionType;
@@ -455,9 +455,12 @@ pub fn build_trampoline<T: 'static>(
     abi_state: Arc<Mutex<AbiRuntimeState>>,
     host_func: HostFuncKind<T>,
 ) -> RuntimeFunc {
-    let func_type = derive_runtime_func_type(&spec.signature, spec.kind);
-    let signature = spec.signature.clone();
-    let options = spec.options.clone();
+    let func_type = derive_runtime_func_type(spec.signature.ty(), spec.kind);
+    // The signature, with its parameter layout, and the options are the
+    // translation's own, shared rather than copied: every instantiation
+    // builds a trampoline from the same spec, and every call reads them.
+    let signature = Arc::clone(&spec.signature);
+    let options = Arc::clone(&spec.options);
     let kind = spec.kind;
     let tables = store.internal().tables_handle();
 
@@ -593,8 +596,8 @@ enum HostOutcome {
 #[allow(clippy::too_many_arguments)]
 fn invoke_trampoline<T: 'static>(
     mut store_ctx: wasm_runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
-    signature: &FunctionType,
-    declared: &CanonOptions,
+    signature: &Arc<Signature>,
+    declared: &Arc<CanonOptions>,
     kind: LowerKind,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     tables: &Arc<Mutex<HandleTables>>,
@@ -645,8 +648,8 @@ fn invoke_trampoline<T: 'static>(
         let lifted = if parameters_spill(signature, kind) {
             lift_spilled_arguments(&mut lift_ctx, signature, args, &mut cursor)?
         } else {
-            let mut lifted: Vec<Val> = Vec::with_capacity(signature.parameters.len());
-            for (i, param) in signature.parameters.iter().enumerate() {
+            let mut lifted: Vec<Val> = Vec::with_capacity(signature.ty().parameters.len());
+            for (i, param) in signature.ty().parameters.iter().enumerate() {
                 let position = AbiPosition::Argument(i);
                 lifted.push(lift_from_flat_slots(
                     &mut lift_ctx,
@@ -663,7 +666,7 @@ fn invoke_trampoline<T: 'static>(
         // final argument only when the result is too wide for flat
         // slots; an asynchronous lower always passes one, because it
         // never returns the result at all.
-        let return_area_ptr = match &signature.result {
+        let return_area_ptr = match &signature.ty().result {
             Some(result_ty) if result_travels_through_memory(signature, kind) => Some(
                 pointer_argument(args, &mut cursor, result_ty, AbiPosition::Result)?,
             ),
@@ -678,7 +681,7 @@ fn invoke_trampoline<T: 'static>(
 
         let outcome = match host_func {
             HostFuncKind::Synchronous(body) => {
-                let host_arity = usize::from(signature.result.is_some());
+                let host_arity = usize::from(signature.ty().result.is_some());
                 let mut host_results: Vec<Val> = vec![Val::Bool(false); host_arity];
                 // The host function runs against the whole store: the
                 // polyfill's own state rides in the core store's data,
@@ -688,7 +691,7 @@ fn invoke_trampoline<T: 'static>(
                 // nothing captured.
                 let call = HostCall::new(
                     StoreContext::new(store_ctx.as_context_mut()),
-                    instance.resource_tables().to_vec(),
+                    instance.shared_resource_tables(),
                 );
                 body(call, &lifted, &mut host_results)?;
                 HostOutcome::Values(host_results)
@@ -743,7 +746,7 @@ fn invoke_trampoline<T: 'static>(
     match outcome {
         HostOutcome::Values(host_results) => return_host_values(
             &mut store_ctx,
-            signature,
+            signature.ty(),
             tables,
             options,
             instance,
@@ -771,7 +774,7 @@ fn invoke_trampoline<T: 'static>(
             ),
             LowerKind::Sync => block_on_host_call(
                 &mut store_ctx,
-                signature,
+                signature.ty(),
                 declared,
                 abi_state,
                 tables,
@@ -924,7 +927,7 @@ fn write_host_result<T: 'static>(
 #[allow(clippy::too_many_arguments)]
 fn start_host_call<T: 'static>(
     store_ctx: &mut wasm_runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
-    signature: &FunctionType,
+    signature: &Arc<Signature>,
     declared: &CanonOptions,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     options: BoundaryOptions,
@@ -935,14 +938,14 @@ fn start_host_call<T: 'static>(
     results: &mut [RuntimeVal],
 ) -> Result<()> {
     let caller_table = caller_handle_table(abi_state, declared.instance)?;
-    let result_ty = signature.result.clone();
+    let signature = Arc::clone(signature);
     // The lowering carries what the crossing of the result needs,
     // because it runs in a turn of its own: the call the guest made
     // has returned by then, so there is no frame left to read the
     // options, the instance, or the return area back from.
     let lowering = move |store: &mut StoreContext<'_, T>, produced: Result<Vec<Val>>| {
         let values = produced?;
-        let Some(result_ty) = result_ty else {
+        let Some(result_ty) = &signature.ty().result else {
             return Ok(());
         };
         let ptr = return_area_ptr.ok_or_else(|| {
@@ -972,7 +975,7 @@ fn start_host_call<T: 'static>(
             &mut lower_ctx,
             ptr,
             &host_val,
-            &result_ty,
+            result_ty,
             AbiPosition::Result,
         )
     };
@@ -1095,10 +1098,10 @@ fn write_status(results: &mut [RuntimeVal], status: CallStatus) -> Result<()> {
 /// Whether the parameter tuple travels through one pointer into
 /// linear memory rather than in flat slots. The two lowerings measure
 /// the same tuple against different limits.
-fn parameters_spill(signature: &FunctionType, kind: LowerKind) -> bool {
+fn parameters_spill(signature: &Signature, kind: LowerKind) -> bool {
     match kind {
-        LowerKind::Sync => params_spill(signature),
-        LowerKind::Async => async_params_spill(signature),
+        LowerKind::Sync => signature.params_spill(),
+        LowerKind::Async => signature.async_params_spill(),
     }
 }
 
@@ -1106,9 +1109,9 @@ fn parameters_spill(signature: &FunctionType, kind: LowerKind) -> bool {
 /// passes. A synchronous lower passes one only for a result too wide
 /// for flat slots; an asynchronous lower never returns the result, so
 /// it always passes one.
-fn result_travels_through_memory(signature: &FunctionType, kind: LowerKind) -> bool {
+fn result_travels_through_memory(signature: &Signature, kind: LowerKind) -> bool {
     match kind {
-        LowerKind::Sync => result_spills(signature),
+        LowerKind::Sync => signature.result_spills(),
         LowerKind::Async => true,
     }
 }
@@ -1124,26 +1127,29 @@ fn result_travels_through_memory(signature: &FunctionType, kind: LowerKind) -> b
 /// owns. Gating parameter by parameter would let a tuple whose
 /// first parameter is in bounds and whose last is not be lifted
 /// half-way.
+///
+/// The layout is the one the signature computed when the component
+/// was translated, so a call lays the tuple out no more than a call
+/// that passes it flat does.
 fn lift_spilled_arguments<T: 'static>(
     ctx: &mut BoundaryContext<'_, T>,
-    signature: &FunctionType,
+    signature: &Signature,
     args: &[RuntimeVal],
     cursor: &mut usize,
 ) -> Result<Vec<Val>> {
-    let types: Vec<ValueType> = signature.parameters.iter().map(|p| p.ty.clone()).collect();
-    let layout = spill_layout(&types);
-    let first = types
-        .first()
-        .cloned()
-        .unwrap_or(ValueType::Primitive(PrimitiveType::U32));
-    let base = pointer_argument(args, cursor, &first, AbiPosition::Argument(0))?;
+    let parameters = &signature.ty().parameters;
+    let layout = signature.parameter_layout();
+    let u32_ty = ValueType::Primitive(PrimitiveType::U32);
+    let first = parameters.first().map(|p| &p.ty).unwrap_or(&u32_ty);
+    let base = pointer_argument(args, cursor, first, AbiPosition::Argument(0))?;
     // The tuple type labels a refusal and nothing else, so it is
     // built where the refusal is raised rather than on every call
     // that passes the gate.
     let fail = |message: &str| {
+        let types = parameters.iter().map(|p| p.ty.clone());
         Error::from(AbiError {
             position: AbiPosition::Argument(0),
-            valtype: Some(ValueType::Tuple(TupleType::new(types.clone()))),
+            valtype: Some(ValueType::Tuple(TupleType::new(types))),
             cause: AbiCause::InvalidEncoding {
                 message: message.to_owned(),
             },
@@ -1158,9 +1164,14 @@ fn lift_spilled_arguments<T: 'static>(
     if !ctx.in_bounds(base, layout.size) {
         return Err(fail("pointer out of bounds"));
     }
-    let mut lifted = Vec::with_capacity(types.len());
-    for (i, (ty, offset)) in types.iter().zip(layout.offsets.iter()).enumerate() {
-        lifted.push(lift(ctx, base + offset, ty, AbiPosition::Argument(i))?);
+    let mut lifted = Vec::with_capacity(parameters.len());
+    for (i, (param, offset)) in parameters.iter().zip(layout.offsets.iter()).enumerate() {
+        lifted.push(lift(
+            ctx,
+            base + offset,
+            &param.ty,
+            AbiPosition::Argument(i),
+        )?);
     }
     Ok(lifted)
 }

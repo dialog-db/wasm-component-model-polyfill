@@ -35,7 +35,7 @@ pub struct BoundaryOptions {
     /// Nothing reads them back yet. A `task.return` compares its own
     /// against the lift options of its task, and both are these.
     #[allow(dead_code)]
-    declared: Option<CanonOptions>,
+    declared: Option<Arc<CanonOptions>>,
     /// The store-wide identity of the component instance the
     /// declared options belong to.
     instance: Option<InstanceId>,
@@ -73,9 +73,9 @@ impl BoundaryOptions {
     ///
     /// [`BoundaryInstance::resolve`]:
     ///     crate::abi::instance::BoundaryInstance::resolve
-    pub fn from_state(declared: &CanonOptions, state: &AbiRuntimeState) -> Self {
+    pub fn from_state(declared: &Arc<CanonOptions>, state: &AbiRuntimeState) -> Self {
         Self {
-            declared: Some(declared.clone()),
+            declared: Some(Arc::clone(declared)),
             instance: state.component_instances.get(declared.instance).copied(),
             memory: declared
                 .memory
@@ -129,7 +129,7 @@ impl BoundaryOptions {
     /// compares its own against these; nothing else reads them.
     #[allow(dead_code)]
     pub fn declared(&self) -> Option<&CanonOptions> {
-        self.declared.as_ref()
+        self.declared.as_deref()
     }
 
     /// The component instance the declared options belong to.

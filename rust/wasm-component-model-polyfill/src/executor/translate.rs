@@ -11,6 +11,7 @@
 //! `wasm32-unknown-unknown`.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use wasmtime_environ::component::{
     CanonicalOptions as EnvironCanonOptions, CanonicalOptionsDataModel, ComponentTranslation,
@@ -28,7 +29,8 @@ use wasmtime_environ::{
 };
 
 use crate::abi::layout::FlatType;
-use crate::internal::{EngineConfigInternal, ErrorInternal};
+use crate::abi::signature::Signature;
+use crate::internal::{EngineConfigInternal, ErrorInternal, ModuleInternal};
 
 use crate::component::{ComponentExport, ComponentImport, ExternType, ExternalName, TypeProjector};
 use crate::concurrency::LowerKind;
@@ -37,6 +39,7 @@ use crate::error::{Error, Result};
 
 use crate::module::Module;
 
+use super::compile_modules;
 use super::ir::{
     CanonOptions, CoreInstanceExport, CoreParameter, CoreSignature, CoreSourceItem, DataModel,
     EntityIndex, ExecutorIr, ExportSpec, ImportSource, Initializer, LoweringSpec, ModuleEntry,
@@ -98,8 +101,13 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
     let mut module_entries: Vec<ModuleEntry> = Vec::with_capacity(modules.len());
     let mut module_index_for_static: HashMap<StaticModuleIndex, usize> =
         HashMap::with_capacity(modules.len());
-    for (static_idx, module) in modules {
-        let compiled = Module::new(engine, module.wasm).await?;
+    // Every module is compiled before any is wrapped, so the browser
+    // is handed all of its asynchronous compiles at once rather than
+    // one after the other finishes.
+    let binaries: Vec<&[u8]> = modules.values().map(|module| module.wasm).collect();
+    let compiled_modules = compile_modules(engine, &binaries).await?;
+    for ((static_idx, module), compiled) in modules.into_iter().zip(compiled_modules) {
+        let compiled = Module::from_compiled(compiled, module.wasm)?;
         let entity_to_name = module
             .module
             .exports
@@ -196,8 +204,8 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 TrampolineSpec::LowerImport(LoweringSpec {
                     import_index,
                     path,
-                    signature,
-                    options,
+                    signature: Arc::new(Signature::new(signature)),
+                    options: Arc::new(options),
                     kind,
                 })
             }
@@ -730,8 +738,8 @@ fn collect_export_spec(
                 name: name.to_owned(),
                 path: path.into(),
                 source,
-                signature: projector.function(*ty)?,
-                options,
+                signature: Arc::new(Signature::new(projector.function(*ty)?)),
+                options: Arc::new(options),
             });
             Ok(())
         }
