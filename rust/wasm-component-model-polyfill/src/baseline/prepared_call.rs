@@ -284,31 +284,6 @@ const TRAPS: &[u8] = component!(
     "#
 );
 
-/// A component that declares `canon task.cancel`, which stays
-/// refused: cancellation is one mechanism with two ends and one
-/// design owns both.
-const TASK_CANCEL: &[u8] = component!(
-    r#"
-    (component
-      (core func $task-cancel (canon task.cancel))
-      (core module $m (import "" "task.cancel" (func $task-cancel)))
-      (core instance $i (instantiate $m
-        (with "" (instance (export "task.cancel" (func $task-cancel)))))))
-    "#
-);
-
-/// A component that declares `canon subtask.cancel`, which stays
-/// refused for the same reason.
-const SUBTASK_CANCEL: &[u8] = component!(
-    r#"
-    (component
-      (core func $subtask-cancel (canon subtask.cancel))
-      (core module $m (import "" "subtask.cancel" (func $subtask-cancel (param i32) (result i32))))
-      (core instance $i (instantiate $m
-        (with "" (instance (export "subtask.cancel" (func $subtask-cancel)))))))
-    "#
-);
-
 /// A component that declares `canon thread.index`, one of the thread
 /// built-ins other than `thread.yield`, which stay refused.
 const THREAD_INDEX: &[u8] = component!(
@@ -333,11 +308,6 @@ async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
         .await
         .expect("instantiate");
     (store, instance)
-}
-
-async fn parse(bytes: &[u8]) -> Result<Component, Error> {
-    let engine = Engine::new().expect("engine");
-    Component::new(&engine, bytes).await
 }
 
 /// Parse with the thread built-ins allowed past validation, so that
@@ -755,21 +725,10 @@ async fn it_fails_the_callers_call_when_the_callee_traps() {
 
 #[wcmp_macros::test]
 async fn it_still_refuses_the_built_ins_this_design_does_not_own() {
-    // Cancellation and the thread built-ins other than
-    // `thread.yield` stay refused at translation, under the name the
-    // translator gives each. The stream, future, and error-context
-    // built-ins are refused the same way, which the conformance
-    // corpus records file by file.
-    for (bytes, name) in [
-        (TASK_CANCEL, "task-cancel"),
-        (SUBTASK_CANCEL, "subtask-cancel"),
-    ] {
-        let err = parse(bytes).await.expect_err("the built-in is refused");
-        assert!(
-            matches!(&err, Error::Unsupported { feature } if feature.contains(name)),
-            "expected `{name}` to be refused, got {err:?}"
-        );
-    }
+    // The thread built-ins other than `thread.yield` stay refused at
+    // translation, under the name the translator gives each. The
+    // stream, future, and error-context built-ins are refused the
+    // same way, which the conformance corpus records file by file.
     // The thread built-ins are behind a validator gate of their own,
     // so the refusal a component that opts into them reads is the
     // polyfill's rather than the validator's.

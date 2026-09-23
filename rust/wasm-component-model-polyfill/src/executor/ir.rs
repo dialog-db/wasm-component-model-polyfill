@@ -704,6 +704,27 @@ pub enum TrampolineSpec {
         /// one `i32` result.
         signature: CoreSignature,
     },
+    /// The `task.cancel` built-in. Cancellation is not built, so a
+    /// call fails with [`Error::Unsupported`](crate::Error) once the
+    /// may-leave check has passed. The built-in is accepted so that
+    /// a guest whose binding layer links it runs every path that
+    /// does not cancel.
+    TaskCancel {
+        /// The component instance that calls the built-in.
+        instance: usize,
+        /// The core signature the guest imports: no parameters and
+        /// no results.
+        signature: CoreSignature,
+    },
+    /// The `subtask.cancel` built-in, accepted and failing at the
+    /// call as [`TrampolineSpec::TaskCancel`] does.
+    SubtaskCancel {
+        /// The component instance that calls the built-in.
+        instance: usize,
+        /// The core signature the guest imports: the subtask index
+        /// in and the subtask's state out.
+        signature: CoreSignature,
+    },
 }
 
 /// The core-Wasm signature of an intrinsic an adapter module

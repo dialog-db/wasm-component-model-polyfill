@@ -180,23 +180,23 @@ alike.
 
 ## Baseline
 
-The progress summary on the native target, as of 2026-09-22 (`tests
+The progress summary on the native target, as of 2026-09-23 (`tests
 conformance` prints the current one):
 
 | Corpus           | Directives | Passed | Pass % | Expected failures by category                                  |
 | ---------------- | ---------- | ------ | ------ | -------------------------------------------------------------- |
 | `cm`             | 1126       | 1038   | 92.2   | deferred-feature 2, substrate 4, validation 20, cascade 62     |
-| `cm/async`       | 393        | 83     | 21.1   | deferred-feature 44, cascade 266                               |
+| `cm/async`       | 393        | 85     | 21.6   | deferred-feature 44, cascade 264                               |
 | `fixtures`       | 48         | 45     | 93.8   | deferred-feature 1, cascade 2                                  |
 | `wasmtime`       | 469        | 431    | 91.9   | deferred-feature 2, substrate 8, cascade 28                    |
-| `wasmtime/async` | 387        | 125    | 32.3   | deferred-feature 82, cascade 180                               |
-| total            | 2423       | 1722   | 71.1   | deferred-feature 131, substrate 12, validation 20, cascade 538 |
+| `wasmtime/async` | 387        | 133    | 34.4   | deferred-feature 81, cascade 173                               |
+| total            | 2423       | 1732   | 71.5   | deferred-feature 130, substrate 12, validation 20, cascade 529 |
 
 The browser's summary differs by the ten lines of
 `expected-failures.web.txt`, which move ten passing directives into
 `substrate`: `cm` passes 1037 (92.1%) with substrate 5, `cm/async`
-82 (20.9%), `wasmtime` 425 (90.6%), `wasmtime/async` 123 (31.8%), and
-the total is 1712 (70.7%) with substrate 22. Every other cell is the
+84 (21.4%), `wasmtime` 425 (90.6%), `wasmtime/async` 131 (33.9%), and
+the total is 1722 (71.1%) with substrate 22. Every other cell is the
 same.
 
 The `async` rows still hold the pass rate down, though the asynchronous
@@ -209,7 +209,7 @@ the seven reasons above cover most of what those directories still
 exercise. Each component those directories define that the polyfill
 rejects is a `deferred-feature` failure, and every later directive in
 the same file that names it is a `cascade` one, which is why the two
-async rows together hold 446 of the 538 cascade lines, while `cm` and
+async rows together hold 437 of the 529 cascade lines, while `cm` and
 `wasmtime` alone pass at 92.2% and 91.9%. Seventeen files that held
 expected failures now pass whole: `cm/async/cross-abi-calls.wast`,
 `cm/async/deadlock.wast`, `cm/async/dont-block-start.wast`,

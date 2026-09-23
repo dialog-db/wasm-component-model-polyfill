@@ -23,6 +23,7 @@
 
 mod async_start_call;
 mod callback_task;
+mod cancel;
 mod compile_module;
 mod instantiate;
 mod prepare_call;
@@ -42,6 +43,7 @@ pub mod waitable_builtins;
 
 pub use async_start_call::build_async_start_call;
 pub use callback_task::{CallbackTask, status_word};
+pub use cancel::{build_subtask_cancel, build_task_cancel};
 pub use compile_module::{compile_module, compile_modules};
 pub use instantiate::instantiate;
 pub use prepare_call::build_prepare_call;

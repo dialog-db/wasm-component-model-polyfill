@@ -35,7 +35,9 @@ use crate::types::ResourceType;
 use super::ResourceDestructor;
 use super::build_async_start_call;
 use super::build_prepare_call;
+use super::build_subtask_cancel;
 use super::build_sync_start_call;
+use super::build_task_cancel;
 use super::build_task_return;
 use super::build_thread_yield;
 use super::intrinsics::{
@@ -782,6 +784,24 @@ fn build_runtime_trampoline<T: 'static>(
             instance,
             signature,
         } => Ok(build_thread_yield(
+            store,
+            *instance,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::TaskCancel {
+            instance,
+            signature,
+        } => Ok(build_task_cancel(
+            store,
+            *instance,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::SubtaskCancel {
+            instance,
+            signature,
+        } => Ok(build_subtask_cancel(
             store,
             *instance,
             signature,
