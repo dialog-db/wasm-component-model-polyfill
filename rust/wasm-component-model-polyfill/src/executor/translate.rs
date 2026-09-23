@@ -20,7 +20,8 @@ use wasmtime_environ::component::{
     ExtractPostReturn, ExtractRealloc, FixedEncoding, GlobalInitializer, InstantiateModule,
     InterfaceType, LoweredIndex, OptionsIndex, RuntimeImportIndex, StaticModuleIndex,
     StringEncoding as EnvironStringEncoding, Trampoline, TrampolineIndex, Transcode, Translator,
-    TypeResourceTable, TypeResourceTableIndex, UnsafeIntrinsic,
+    TypeFutureTableIndex, TypeResourceTable, TypeResourceTableIndex, TypeStreamTableIndex,
+    UnsafeIntrinsic,
 };
 use wasmtime_environ::prelude::Error as TranslatorError;
 use wasmtime_environ::wasmparser::Validator;
@@ -43,9 +44,9 @@ use crate::types::ValueType;
 use super::compile_modules;
 use super::ir::{
     CanonOptions, CoreInstanceExport, CoreParameter, CoreSignature, CoreSourceItem, DataModel,
-    EntityIndex, ExecutorIr, ExportSpec, ImportSource, Initializer, LoweringSpec, ModuleEntry,
-    ModuleExportSpec, ModuleSource, NamedImportSource, ResourceSpec, ResourceTableSpec,
-    StringEncoding, TrampolineSpec, TranscodeOp,
+    EndTableSpec, EntityIndex, ExecutorIr, ExportSpec, ImportSource, Initializer, LoweringSpec,
+    ModuleEntry, ModuleExportSpec, ModuleSource, NamedImportSource, ResourceSpec,
+    ResourceTableSpec, StringEncoding, TrampolineSpec, TranscodeOp,
 };
 
 /// What the trampoline pre-walk decided about one trampoline.
@@ -90,9 +91,12 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
         .translate(bytes)
         .map_err(translation_error)?;
 
-    // The builder knows how many resource tables the component has;
-    // the finished types index them but do not count them.
+    // The builder knows how many resource, stream, and future tables
+    // the component has; the finished types index them but do not
+    // count them.
     let num_resource_tables = types.num_resource_tables();
+    let num_stream_tables = types.num_stream_tables();
+    let num_future_tables = types.num_future_tables();
     let (component_types, _) = types.finish(&translation.component);
     let projector = TypeProjector::new(&component_types, &translation.component);
 
@@ -186,6 +190,8 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
     // which built-in it is.
     let mut trampoline_specs: Vec<TrampolineSpec> = Vec::new();
     let mut trampolines: TrampolineOutcomes = HashMap::new();
+    let mut stream_tables: Option<Arc<[EndTableSpec]>> = None;
+    let mut future_tables: Option<Arc<[EndTableSpec]>> = None;
     for (trampoline_idx, trampoline) in translation.trampolines.iter() {
         let spec = match trampoline {
             Trampoline::LowerImport {
@@ -232,6 +238,42 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
             Trampoline::ResourceTransferBorrow => TrampolineSpec::ResourceTransferBorrow {
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            // The two transfer intrinsics of a readable end. Each
+            // names its source and destination by the translator's
+            // stream or future table index, so the trampoline carries
+            // every table of its kind. The tables are projected the
+            // first time a component needs them, so a component that
+            // transfers no end never projects a stream or future type.
+            Trampoline::StreamTransfer => TrampolineSpec::EndTransfer {
+                tables: match &stream_tables {
+                    Some(tables) => tables.clone(),
+                    None => stream_tables
+                        .insert(end_tables(num_stream_tables, |i| {
+                            let index = TypeStreamTableIndex::from_u32(i);
+                            Ok(EndTableSpec {
+                                instance: component_types[index].instance.as_u32() as usize,
+                                ty: projector.value_type(&InterfaceType::Stream(index))?,
+                            })
+                        })?)
+                        .clone(),
+                },
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::FutureTransfer => TrampolineSpec::EndTransfer {
+                tables: match &future_tables {
+                    Some(tables) => tables.clone(),
+                    None => future_tables
+                        .insert(end_tables(num_future_tables, |i| {
+                            let index = TypeFutureTableIndex::from_u32(i);
+                            Ok(EndTableSpec {
+                                instance: component_types[index].instance.as_u32() as usize,
+                                ty: projector.value_type(&InterfaceType::Future(index))?,
+                            })
+                        })?)
+                        .clone(),
+                },
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
             Trampoline::Trap(trap) => TrampolineSpec::Trap {
@@ -871,6 +913,15 @@ fn resolve_table_index(
 /// The payload type of the stream or future type `ty`, which a
 /// built-in that works on the type's ends was declared with, or
 /// `None` for one that carries no values.
+/// The `count` stream or future tables of a component, each built by
+/// `table` from its index.
+fn end_tables(
+    count: usize,
+    table: impl Fn(u32) -> Result<EndTableSpec>,
+) -> Result<Arc<[EndTableSpec]>> {
+    (0..count as u32).map(table).collect()
+}
+
 fn payload_of(projector: &TypeProjector<'_>, ty: InterfaceType) -> Result<Option<ValueType>> {
     match projector.value_type(&ty)? {
         ValueType::Stream(stream) => Ok(stream.payload().cloned()),

@@ -19,6 +19,9 @@
 //!   which allocates its own index for it; a borrow transfer inserts
 //!   a borrow entry into the destination table for the duration of
 //!   the call.
+//! - Stream and future transfer, which moves the readable end of a
+//!   stream or a future from one component instance's handle table
+//!   to another's, as an owned resource transfer moves a resource.
 //! - A trap intrinsic per Wasmtime trap code an adapter can raise.
 //! - Enter and exit intrinsics around a synchronous call between two
 //!   components. The enter intrinsic pushes the callee's task on the
@@ -53,11 +56,12 @@ use crate::abi::layout::FlatType;
 use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::transcode::transcode;
+use crate::abi::{lift_readable_end, lower_readable_end};
 use crate::concurrency::{InstanceId, Scope, ThreadId};
 use crate::error::{Error, Result, TaskCause};
-use crate::executor::ir::{CoreParameter, CoreSignature, TranscodeOp};
+use crate::executor::ir::{CoreParameter, CoreSignature, EndTableSpec, TranscodeOp};
 use crate::internal::ErrorInternal;
-use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime};
+use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime, TableId};
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 
@@ -477,6 +481,64 @@ fn transfer_borrow(
             .insert_borrow(dst.table, dst.type_id, dst.guest_defined, rep)
             .ok_or_else(|| anyhow!("wasm trap: a borrow can only be transferred during a call"))
     }
+}
+
+/// Build the `StreamTransfer` or the `FutureTransfer` intrinsic over
+/// `end_tables`, the stream or future tables of the component. The
+/// adapter calls it once per readable end in a parameter or a result,
+/// with the end's index in the sender's table, the sender's table,
+/// and the receiver's table. The end is lifted out of the sender's
+/// handle table and lowered into the receiver's, as an `own<T>`
+/// transfer moves a resource: the receiver's index is its own, and
+/// the end record and the writable end it pairs with stay where they
+/// are.
+pub fn build_end_transfer<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    end_tables: Arc<[EndTableSpec]>,
+    signature: &CoreSignature,
+    abi_state: Arc<Mutex<AbiRuntimeState>>,
+) -> RuntimeFunc {
+    let tables = store.internal().tables_handle();
+    RuntimeFunc::new(
+        store.internal().runtime_mut(),
+        core_func_type(signature),
+        move |_store_ctx, args, results| {
+            let index = arg_u32(args, 0)?;
+            let (src, src_table) = end_table_at(&end_tables, &abi_state, arg_u32(args, 1)?)?;
+            let (dst, dst_table) = end_table_at(&end_tables, &abi_state, arg_u32(args, 2)?)?;
+            let mut guard = tables
+                .lock()
+                .map_err(|_| anyhow!("resource handle tables lock poisoned"))?;
+            let end = lift_readable_end(&mut guard, src_table, index, &src.ty, |err| {
+                anyhow!("{err}")
+            })?;
+            let out = lower_readable_end(&mut guard, dst_table, end, &dst.ty)?;
+            results[0] = RuntimeVal::I32(out as i32);
+            Ok(())
+        },
+    )
+}
+
+/// The stream or future table at `table_index`, with the handle table
+/// of the component instance that keeps its ends.
+fn end_table_at<'a>(
+    end_tables: &'a [EndTableSpec],
+    abi_state: &Arc<Mutex<AbiRuntimeState>>,
+    table_index: u32,
+) -> anyhow::Result<(&'a EndTableSpec, TableId)> {
+    let spec = end_tables.get(table_index as usize).ok_or_else(|| {
+        anyhow!("adapter named stream or future table {table_index}, which the component does not declare")
+    })?;
+    let state = abi_state
+        .lock()
+        .map_err(|_| anyhow!("ABI state poisoned"))?;
+    let table = state.handle_tables.get(spec.instance).copied().ok_or_else(|| {
+        anyhow!(
+            "stream or future table {table_index} names component instance {}, which this instantiation does not hold",
+            spec.instance
+        )
+    })?;
+    Ok((spec, table))
 }
 
 /// Build a string transcoder. The transcode is a crossing between

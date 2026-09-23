@@ -8,9 +8,10 @@
 use crate::abi::context::BoundaryContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
 use crate::abi::strings;
-use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
+use crate::concurrency::{CopyState, EndId, EndKind};
+use crate::error::{AbiCause, AbiError, AbiPosition, CopyCause, Error, Result};
 use crate::internal::ErrorInternal;
-use crate::resource::{HandleKind, ResourceHandleParts};
+use crate::resource::{HandleKind, HandleLookupError, HandleTables, ResourceHandleParts, TableId};
 use crate::types::{MapType, PrimitiveType, ValueType};
 use crate::value::{Val, ValField};
 
@@ -180,24 +181,134 @@ pub fn lift<T: 'static>(
             let index = u32::from_le_bytes(ctx.read_array(offset, position, ty)?);
             lift_handle(ctx, index, ty, position, matches!(ty, ValueType::Own(_)))
         }
-        ValueType::Stream(_) | ValueType::Future(_) => Err(end_transfer_unsupported(ty)),
+        ValueType::Stream(_) | ValueType::Future(_) => {
+            let index = u32::from_le_bytes(ctx.read_array(offset, position, ty)?);
+            lift_end_for_host(ctx, index, ty, position)
+        }
     }
 }
 
-/// The refusal of a lift or a lower that reaches a `stream<T>` or a
-/// `future<T>`. Such a value names a readable end in the handle table
-/// of the instance that holds it, and an end cannot cross a boundary
-/// yet. The type that carries it translates; the crossing fails at
-/// the call.
+/// The refusal of a crossing that carries a `stream<T>` or a
+/// `future<T>` between a guest and the host. Such a value names a
+/// readable end, and the host has no value to hold one in yet, so
+/// the type translates and the crossing fails at the call. Between
+/// two components the end crosses through the transfer intrinsics
+/// of the adapter instead, which never reach this.
+pub fn end_transfer_unsupported(ty: &ValueType) -> Error {
+    Error::unsupported(match ty {
+        ValueType::Future(_) => "the transfer of a `future<T>` readable end to or from the host",
+        _ => "the transfer of a `stream<T>` readable end to or from the host",
+    })
+}
+
+/// Lift the readable end at `index` of the guest's handle table
+/// toward the host. The lift makes every check a crossing makes, so
+/// the guest learns of an end that cannot cross before it learns
+/// that the host cannot take one: an end in a waitable set traps as
+/// it would on its way into another component. An end that passes
+/// stays where it was, and the crossing fails with
+/// [`end_transfer_unsupported`].
+pub fn lift_end_for_host<T: 'static>(
+    ctx: &mut BoundaryContext<'_, T>,
+    index: u32,
+    ty: &ValueType,
+    position: AbiPosition,
+) -> Result<Val> {
+    let invalid = |reason: String| {
+        Error::from(AbiError {
+            position,
+            valtype: Some(ty.clone()),
+            cause: AbiCause::InvalidHandle { reason },
+        })
+    };
+    let (Some(tables), Some(table)) = (ctx.instance().tables(), ctx.instance().handle_table())
+    else {
+        return Err(invalid(
+            "no handle table of the instance is available to the lift context".to_owned(),
+        ));
+    };
+    let guard = tables
+        .lock()
+        .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
+    readable_end_at(&guard, table, index, ty, |err| invalid(err.to_string()))?;
+    Err(end_transfer_unsupported(ty))
+}
+
+/// Lift the readable end at `index` of `table` for a crossing of
+/// type `ty`, a `stream<T>` or a `future<T>`: the entry leaves the
+/// sender's table and the end it named is returned, to be lowered
+/// into the receiver's table. The reference's `lift_async_value`
+/// makes the same checks, in the order [`readable_end_at`] states,
+/// and a lift that fails leaves the entry where it was. Only the
+/// readable end ever crosses: the writable end stays in the instance
+/// that created the pair.
 ///
 /// An end is an index, as a resource handle is, so its lift charges
 /// the crossing's copy budget nothing, as Wasmtime charges its
 /// hostcall fuel nothing for one.
-pub fn end_transfer_unsupported(ty: &ValueType) -> Error {
-    Error::unsupported(match ty {
-        ValueType::Future(_) => "the transfer of a `future<T>` readable end",
-        _ => "the transfer of a `stream<T>` readable end",
-    })
+///
+/// A lookup that fails reaches the caller through `invalid`, which
+/// says how the failure reads at that caller. Every other failure is
+/// an [`Error`].
+pub fn lift_readable_end<E: From<Error>>(
+    tables: &mut HandleTables,
+    table: TableId,
+    index: u32,
+    ty: &ValueType,
+    invalid: impl FnOnce(HandleLookupError) -> E,
+) -> core::result::Result<EndId, E> {
+    let end = readable_end_at(tables, table, index, ty, invalid)?;
+    tables.remove(table, index);
+    Ok(end)
+}
+
+/// The readable end at `index` of `table`, when it may cross as a
+/// value of type `ty`. The checks run in the reference's order, and
+/// each trap carries Wasmtime's message:
+///
+/// 1. The entry must be a readable end of the kind `ty` names.
+/// 2. The end's stream or future must carry the payload `ty` names.
+/// 3. The end must not be done.
+/// 4. The end must not be in a waitable set.
+/// 5. No copy may be in progress on the end.
+pub fn readable_end_at<E: From<Error>>(
+    tables: &HandleTables,
+    table: TableId,
+    index: u32,
+    ty: &ValueType,
+    invalid: impl FnOnce(HandleLookupError) -> E,
+) -> core::result::Result<EndId, E> {
+    let (kind, payload) = match ty {
+        ValueType::Stream(stream) => (EndKind::StreamReadable, stream.payload()),
+        ValueType::Future(future) => (EndKind::FutureReadable, future.payload()),
+        _ => {
+            return Err(Error::internal("a readable end crossed as a type that is neither").into());
+        }
+    };
+    let end = tables
+        .end_from_handle(table, index, kind)
+        .map_err(invalid)?;
+    let record = tables
+        .tasks
+        .end(end)
+        .ok_or_else(|| Error::internal("an end's entry names an end that is not in the store"))?;
+    let shared = tables
+        .tasks
+        .shared_record(end)
+        .ok_or_else(|| Error::internal("an end's entry names an end with no shared record"))?;
+    if shared.payload.as_ref() != payload {
+        return Err(Error::Copy(CopyCause::PayloadMismatch { kind }).into());
+    }
+    if record.state == CopyState::Done {
+        return Err(Error::Copy(CopyCause::LiftAfterDone { kind }).into());
+    }
+    if record.waitable.set.is_some() {
+        return Err(Error::Copy(CopyCause::LiftInWaitableSet { kind }).into());
+    }
+    if record.state.busy() {
+        return Err(Error::Copy(CopyCause::LiftDuringCopy { kind }).into());
+    }
+    Ok(end)
 }
 
 /// Lift the `len` elements of a list that starts at `ptr`, after

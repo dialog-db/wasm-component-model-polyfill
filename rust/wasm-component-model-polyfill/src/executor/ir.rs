@@ -512,6 +512,20 @@ pub enum TrampolineSpec {
         /// The core signature the adapter imports.
         signature: CoreSignature,
     },
+    /// An adapter transfers the readable end of a stream or a future
+    /// from one component instance's table to another's. The
+    /// `StreamTransfer` and `FutureTransfer` intrinsics take the same
+    /// three arguments — the source index and the source and
+    /// destination tables — so both are this one variant, over the
+    /// tables of their own kind.
+    EndTransfer {
+        /// Every stream table of the component for a
+        /// `StreamTransfer`, or every future table for a
+        /// `FutureTransfer`, at the translator's table index.
+        tables: Arc<[EndTableSpec]>,
+        /// The core signature the adapter imports.
+        signature: CoreSignature,
+    },
     /// An adapter raises a trap with a Wasmtime trap code.
     Trap {
         /// The core signature the adapter imports.
@@ -843,6 +857,21 @@ pub struct ResourceTableSpec {
     /// imports it by, because that label is what the resolver
     /// matched the registration on.
     pub resource_type: ResourceType,
+}
+
+/// One stream or future table of the component: the type of the ends
+/// it holds and the component instance that keeps them. The
+/// translator gives each component instance one table per stream or
+/// future type it uses, and a transfer intrinsic names a table by its
+/// index to say both whose handle table the end is in and which type
+/// it crosses as.
+#[derive(Clone, Debug)]
+pub struct EndTableSpec {
+    /// The component instance (by runtime index) that keeps the
+    /// table's ends in its handle table.
+    pub instance: usize,
+    /// The `stream<T>` or `future<T>` type of the table's ends.
+    pub ty: ValueType,
 }
 
 /// Per-resource metadata captured during translation, indexed by the

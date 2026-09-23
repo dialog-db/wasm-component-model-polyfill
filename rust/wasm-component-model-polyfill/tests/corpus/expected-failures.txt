@@ -312,8 +312,6 @@ cm/async/trap-if-sync-and-waitable-set.wast:324 cascade no definition named `Tes
 cm/async/trap-if-sync-and-waitable-set.wast:325 cascade expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
 cm/async/trap-if-sync-and-waitable-set.wast:326 cascade no definition named `Tester`
 cm/async/trap-if-sync-and-waitable-set.wast:327 cascade expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
-cm/async/trap-if-transfer-in-waitable-set.wast:49 deferred-feature expected a trap `cannot lift future while it's in a waitable set`, got `unsupported component feature: the transfer of a `future<T>` readable end`
-cm/async/trap-if-transfer-in-waitable-set.wast:51 deferred-feature expected a trap `cannot lift stream while it's in a waitable set`, got `unsupported component feature: the transfer of a `stream<T>` readable end`
 cm/async/wait-during-callback.wast:2 deferred-feature component rejected: unsupported component feature: the `future-read` trampoline
 cm/async/wait-during-callback.wast:77 cascade no instance to invoke
 cm/async/zero-length.wast:7 deferred-feature component rejected: unsupported component feature: the `stream-write` trampoline
@@ -654,10 +652,8 @@ wasmtime/async/trap-if-done.wast:659 cascade no definition named `Tester`
 wasmtime/async/trap-if-done.wast:660 cascade expected a trap `cannot read after being notified that the writable end dropped`, got `no instance to invoke`
 wasmtime/async/trap-if-done.wast:661 cascade no definition named `Tester`
 wasmtime/async/trap-if-done.wast:662 cascade expected a trap `cannot lift stream after being notified that the writable end dropped`, got `no instance to invoke`
-wasmtime/async/trap-if-done.wast:664 deferred-feature component rejected: unsupported component feature: the `future-transfer` trampoline
+wasmtime/async/trap-if-done.wast:664 deferred-feature component rejected: unsupported component feature: the `future-read` trampoline
 wasmtime/async/trap-if-done.wast:722 cascade expected a trap `cannot lift future after previous read succeeded`, got `no instance to invoke`
-wasmtime/async/trap-if-transfer-in-waitable-set.wast:49 deferred-feature expected a trap `cannot lift future while it's in a waitable set`, got `unsupported component feature: the transfer of a `future<T>` readable end`
-wasmtime/async/trap-if-transfer-in-waitable-set.wast:51 deferred-feature expected a trap `cannot lift stream while it's in a waitable set`, got `unsupported component feature: the transfer of a `stream<T>` readable end`
 wasmtime/async/yield-when-cancelled.wast:97 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x62 - m!<wasm function 2>: unsupported component feature: subtask cancellation (`subtask.cancel`)
 wasmtime/error-context-trap-in-post-return.wast:3 deferred-feature component rejected: unsupported component feature: the `error-context-new` trampoline
 wasmtime/error-context-trap-in-post-return.wast:45 cascade no definition named `Tester`

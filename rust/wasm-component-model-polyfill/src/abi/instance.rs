@@ -26,7 +26,7 @@ use crate::concurrency::InstanceId;
 use crate::error::{Error, Result};
 use crate::executor::ir::CanonOptions;
 use crate::internal::ErrorInternal;
-use crate::resource::{HandleTables, ResourceTableRuntime};
+use crate::resource::{HandleTables, ResourceTableRuntime, TableId};
 
 /// The component instance one crossing belongs to, with the tables
 /// the crossing resolves its handles against.
@@ -41,6 +41,12 @@ pub struct BoundaryInstance {
     /// carries `own<T>` or `borrow<T>` valtypes; `None` is rejected
     /// at first contact.
     tables: Option<Arc<Mutex<HandleTables>>>,
+    /// The handle table the component instance keeps among `tables`,
+    /// shared by every handle kind the instance uses. A stream or
+    /// future end that crosses is an entry of it. `None` for a
+    /// crossing that names no component instance of an
+    /// instantiation.
+    handle_table: Option<TableId>,
     /// Every resource table of the instantiation, by table index. A
     /// handle's declared type names the index; this maps it to the
     /// table the instantiation keeps and the resource it holds. The
@@ -73,6 +79,7 @@ impl BoundaryInstance {
         let instance = Self {
             id: options.instance(),
             tables: Some(tables.clone()),
+            handle_table: state.handle_tables.get(declared.instance).copied(),
             resource_tables: Some(state.resource_tables.clone()),
             flags: state.flags_at(declared.instance).cloned(),
         };
@@ -88,6 +95,7 @@ impl BoundaryInstance {
         Self {
             id,
             tables: None,
+            handle_table: None,
             resource_tables: None,
             flags: None,
         }
@@ -127,6 +135,11 @@ impl BoundaryInstance {
         self.tables.as_ref()
     }
 
+    /// The handle table the component instance keeps.
+    pub fn handle_table(&self) -> Option<TableId> {
+        self.handle_table
+    }
+
     /// Every resource table of the instantiation, by table index.
     pub fn resource_tables(&self) -> &[Option<ResourceTableRuntime>] {
         self.resource_tables.as_deref().unwrap_or(&[])
@@ -152,7 +165,7 @@ mod tests {
     use super::*;
     use crate::executor::ir::{DataModel, StringEncoding};
     use crate::internal::ResourceTypeIdInternal;
-    use crate::resource::{ResourceTypeId, TableId};
+    use crate::resource::ResourceTypeId;
 
     #[wcmp_macros::test]
     fn it_shares_the_instantiations_resource_tables_with_every_crossing() {

@@ -42,8 +42,8 @@ use super::build_task_return;
 use super::build_thread_yield;
 use super::intrinsics::{
     build_backpressure_dec, build_backpressure_inc, build_context_get, build_context_set,
-    build_enter_sync_call, build_exit_sync_call, build_resource_transfer, build_transcoder,
-    build_trap,
+    build_end_transfer, build_enter_sync_call, build_exit_sync_call, build_resource_transfer,
+    build_transcoder, build_trap,
 };
 use super::start_task::StartTask;
 use super::waitable_builtins::{
@@ -663,6 +663,12 @@ fn build_runtime_trampoline<T: 'static>(
             signature,
             abi_state.clone(),
             false,
+        )),
+        TrampolineSpec::EndTransfer { tables, signature } => Ok(build_end_transfer(
+            store,
+            tables.clone(),
+            signature,
+            abi_state.clone(),
         )),
         TrampolineSpec::Trap { signature, code } => build_trap(store, signature, *code),
         TrampolineSpec::EnterSyncCall { signature } => {

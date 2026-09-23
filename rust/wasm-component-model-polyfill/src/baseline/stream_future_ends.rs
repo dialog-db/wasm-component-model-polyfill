@@ -639,7 +639,7 @@ async fn it_traps_a_drop_of_an_end_of_another_payload_type() {
 
     assert!(
         message.contains(
-            "the readable end of a stream carries another payload type than the built-in declares"
+            "the readable end of a stream carries another payload type than the built-in or crossing declares"
         ),
         "a `stream<u32>` end is not a `stream<u8>` one: {message}"
     );

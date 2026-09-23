@@ -9,8 +9,10 @@ use crate::abi::context::BoundaryContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
 use crate::abi::lift::{declared_resource_index, end_transfer_unsupported};
 use crate::abi::strings;
+use crate::concurrency::{EndId, EndKind};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
-use crate::resource::{HandleKind, HandleLookupError, ResourceHandle};
+use crate::internal::ErrorInternal;
+use crate::resource::{HandleKind, HandleLookupError, HandleTables, ResourceHandle, TableId};
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
 
@@ -187,6 +189,31 @@ pub fn lower<T: 'static>(
         (ValueType::Stream(_) | ValueType::Future(_), _) => Err(end_transfer_unsupported(ty)),
         _ => Err(host_value_mismatch(ty, position)),
     }
+}
+
+/// Lower the readable end `end` into `table` for a crossing of type
+/// `ty`, a `stream<T>` or a `future<T>`: a readable entry of the kind
+/// `ty` names enters the receiver's table, and its index is
+/// returned. The reference's `lower_stream` and `lower_future` do the
+/// same. The index is the receiver's own, and the end record the
+/// entry names is the one the sender's entry named, so both ends of
+/// the pair go on sharing their record.
+pub fn lower_readable_end(
+    tables: &mut HandleTables,
+    table: TableId,
+    end: EndId,
+    ty: &ValueType,
+) -> Result<u32> {
+    let kind = match ty {
+        ValueType::Stream(_) => EndKind::StreamReadable,
+        ValueType::Future(_) => EndKind::FutureReadable,
+        _ => {
+            return Err(Error::internal(
+                "a readable end was lowered as a type that is neither",
+            ));
+        }
+    };
+    Ok(tables.insert_end(table, kind, end))
 }
 
 /// Lower the elements of a list into memory the guest's

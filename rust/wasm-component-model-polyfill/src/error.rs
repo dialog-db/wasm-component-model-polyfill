@@ -1124,18 +1124,68 @@ pub enum CopyCause {
         kind: EndKind,
     },
 
-    /// A built-in named an end whose stream or future carries another
-    /// payload type than the one the built-in was declared with.
-    /// Wasmtime checks the same thing through the types of its handle
-    /// tables, so the message is the polyfill's own.
-    #[error("the {kind} carries another payload type than the built-in declares")]
+    /// A built-in or a crossing named an end whose stream or future
+    /// carries another payload type than the one the built-in was
+    /// declared with, or the one the crossing's type names. Wasmtime
+    /// checks the same thing through the types of its handle tables,
+    /// so the message is the polyfill's own.
+    #[error("the {kind} carries another payload type than the built-in or crossing declares")]
     PayloadMismatch {
-        /// The kind of end the built-in works on.
+        /// The kind of end the built-in or the crossing works on.
+        kind: EndKind,
+    },
+
+    /// A readable end crossed a boundary after it could make no
+    /// further copy. The message is Wasmtime's for the kind: a stream
+    /// end was notified that its writable end dropped, and a future
+    /// end already read its one value.
+    #[error("{}", CopyCause::lift_after_done_message(*kind))]
+    LiftAfterDone {
+        /// The kind of end that crossed.
+        kind: EndKind,
+    },
+
+    /// A readable end crossed a boundary while it was in a waitable
+    /// set. The message is Wasmtime's for the kind.
+    #[error("cannot lift {} while it's in a waitable set", CopyCause::noun(*kind))]
+    LiftInWaitableSet {
+        /// The kind of end that crossed.
+        kind: EndKind,
+    },
+
+    /// A readable end crossed a boundary while a copy on it was in
+    /// progress, being either copied or cancelled. The message is the
+    /// one Wasmtime's handle table raises when it removes a busy
+    /// readable end, which is the same removal a drop makes.
+    #[error("cannot remove busy {}", CopyCause::noun(*kind))]
+    LiftDuringCopy {
+        /// The kind of end that crossed.
         kind: EndKind,
     },
 }
 
 impl CopyCause {
+    /// The word Wasmtime's messages name an end of `kind` by.
+    fn noun(kind: EndKind) -> &'static str {
+        match kind {
+            EndKind::StreamReadable | EndKind::StreamWritable => "stream",
+            EndKind::FutureReadable | EndKind::FutureWritable => "future",
+        }
+    }
+
+    /// Wasmtime's message for a lift of a readable end of `kind` that
+    /// is done.
+    fn lift_after_done_message(kind: EndKind) -> &'static str {
+        match kind {
+            EndKind::StreamReadable | EndKind::StreamWritable => {
+                "cannot lift stream after being notified that the writable end dropped"
+            }
+            EndKind::FutureReadable | EndKind::FutureWritable => {
+                "cannot lift future after previous read succeeded"
+            }
+        }
+    }
+
     /// Wasmtime's message for a drop of a busy end of `kind`.
     fn busy_message(kind: EndKind) -> &'static str {
         match kind {
@@ -1536,7 +1586,44 @@ mod tests {
                     kind: EndKind::FutureWritable,
                 },
                 "copy error: the writable end of a future carries another payload type than \
-                 the built-in declares",
+                 the built-in or crossing declares",
+            ),
+            (
+                CopyCause::LiftAfterDone {
+                    kind: EndKind::StreamReadable,
+                },
+                "copy error: cannot lift stream after being notified that the writable end \
+                 dropped",
+            ),
+            (
+                CopyCause::LiftAfterDone {
+                    kind: EndKind::FutureReadable,
+                },
+                "copy error: cannot lift future after previous read succeeded",
+            ),
+            (
+                CopyCause::LiftInWaitableSet {
+                    kind: EndKind::StreamReadable,
+                },
+                "copy error: cannot lift stream while it's in a waitable set",
+            ),
+            (
+                CopyCause::LiftInWaitableSet {
+                    kind: EndKind::FutureReadable,
+                },
+                "copy error: cannot lift future while it's in a waitable set",
+            ),
+            (
+                CopyCause::LiftDuringCopy {
+                    kind: EndKind::StreamReadable,
+                },
+                "copy error: cannot remove busy stream",
+            ),
+            (
+                CopyCause::LiftDuringCopy {
+                    kind: EndKind::FutureReadable,
+                },
+                "copy error: cannot remove busy future",
             ),
         ] {
             assert_eq!(Error::Copy(cause).to_string(), rendered);

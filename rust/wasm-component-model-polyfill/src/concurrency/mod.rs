@@ -142,10 +142,6 @@ pub use accessor::Accessor;
 pub use call_bridge::CallBridge;
 pub use call_status::CallStatus;
 pub use caller_kind::CallerKind;
-// A copy state is spelled outside this module only by the tests that
-// arrange the state a copy would leave an end in; the built-ins that
-// start and cancel a copy move it from inside.
-#[cfg(test)]
 pub use copy_state::CopyState;
 pub use driver::Driver;
 pub use end_id::EndId;

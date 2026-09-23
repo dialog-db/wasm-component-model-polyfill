@@ -17,7 +17,8 @@ built-ins that come with it, and both lowers of a call out through an
 import, so part of `cm/async/` and `wasmtime/async/` passes: a host
 call into such an export, `task.return`, backpressure, the waitable set
 built-ins, `thread.yield`, and the context slots. A call between two
-components crosses in all four combinations of lift and lower. The
+components crosses in all four combinations of lift and lower, and the
+readable end of a stream or a future crosses with it. The
 asynchronous lower answers with the status word, the subtask enters the
 caller's handle table when the call does not resolve at once, and the
 callee's start and resolution reach the caller as subtask events; the
@@ -41,8 +42,7 @@ trap the synchronous baseline gives it.
 The directive that first meets what is missing is an expected failure
 of category `deferred-feature`, for one of seven reasons: a call whose
 callee can be released only by a caller that is on the stack, which
-needs a stack switch, a future or stream built-in or the transfer of
-an end, the stackful lift,
+needs a stack switch, a future or stream built-in, the stackful lift,
 a thread built-in other than `thread.yield`, cancellation, an error
 context, or the rules that decide which trap poisons an instance. Most
 of the rest is `cascade`: a component definition that fails leaves its
@@ -187,17 +187,17 @@ conformance` prints the current one):
 | Corpus           | Directives | Passed | Pass % | Expected failures by category                                  |
 | ---------------- | ---------- | ------ | ------ | -------------------------------------------------------------- |
 | `cm`             | 1126       | 1038   | 92.2   | deferred-feature 2, substrate 4, validation 20, cascade 62     |
-| `cm/async`       | 393        | 88     | 22.4   | deferred-feature 45, cascade 260                               |
+| `cm/async`       | 393        | 90     | 22.9   | deferred-feature 43, cascade 260                               |
 | `fixtures`       | 48         | 45     | 93.8   | deferred-feature 1, cascade 2                                  |
 | `wasmtime`       | 469        | 431    | 91.9   | deferred-feature 2, substrate 8, cascade 28                    |
-| `wasmtime/async` | 387        | 160    | 41.3   | deferred-feature 75, cascade 152                               |
-| total            | 2423       | 1762   | 72.7   | deferred-feature 125, substrate 12, validation 20, cascade 504 |
+| `wasmtime/async` | 387        | 162    | 41.9   | deferred-feature 73, cascade 152                               |
+| total            | 2423       | 1766   | 72.9   | deferred-feature 121, substrate 12, validation 20, cascade 504 |
 
 The browser's summary differs by the ten lines of
 `expected-failures.web.txt`, which move ten passing directives into
 `substrate`: `cm` passes 1037 (92.1%) with substrate 5, `cm/async`
-87 (22.1%), `wasmtime` 425 (90.6%), `wasmtime/async` 158 (40.8%), and
-the total is 1752 (72.3%) with substrate 22. Every other cell is the
+89 (22.6%), `wasmtime` 425 (90.6%), `wasmtime/async` 160 (41.3%), and
+the total is 1756 (72.5%) with substrate 22. Every other cell is the
 same.
 
 The `async` rows still hold the pass rate down, though the asynchronous
@@ -211,10 +211,11 @@ exercise. Each component those directories define that the polyfill
 rejects is a `deferred-feature` failure, and every later directive in
 the same file that names it is a `cascade` one, which is why the two
 async rows together hold 412 of the 504 cascade lines, while `cm` and
-`wasmtime` alone pass at 92.2% and 91.9%. Nineteen files that held
+`wasmtime` alone pass at 92.2% and 91.9%. Twenty-one files that held
 expected failures now pass whole: `cm/async/cross-abi-calls.wast`,
 `cm/async/deadlock.wast`, `cm/async/dont-block-start.wast`,
 `cm/async/drop-subtask.wast`, `cm/async/drop-waitable-set.wast`,
+`cm/async/trap-if-transfer-in-waitable-set.wast`,
 `wasmtime/async/backpressure-deadlock.wast`,
 `wasmtime/async/callback-yield-then-exit.wast`,
 `wasmtime/async/context-in-compositions.wast`,
@@ -223,6 +224,7 @@ expected failures now pass whole: `cm/async/cross-abi-calls.wast`,
 `wasmtime/async/lower.wast`,
 `wasmtime/async/many-params-with-retptr.wast`,
 `wasmtime/async/reentrance.wast`, `wasmtime/async/subtask-wait.wast`,
+`wasmtime/async/trap-if-transfer-in-waitable-set.wast`,
 `wasmtime/async/wait-forever.wast`,
 `wasmtime/async/waitable-set-stale-entry.wast`, and
 `wasmtime/async/wait-forever2.wast`. Eight of the twelve cases of

@@ -8,10 +8,13 @@
 //! synchronous export, a synchronous host function, an `async` export,
 //! and an `async` import can each carry one.
 //!
-//! A readable end cannot cross a boundary yet. A component whose
-//! function type carries a stream or a future translates, links, and
-//! instantiates, and a call that lifts or lowers such a value fails
-//! with `Error::Unsupported` at the call.
+//! A readable end cannot cross between a guest and the host yet. A
+//! component whose function type carries a stream or a future
+//! translates, links, and instantiates, and a call that lifts or
+//! lowers such a value between the guest and the host fails with
+//! `Error::Unsupported` at the call. A lift makes the checks every
+//! crossing makes first, so the guests below hand over an end they
+//! really hold.
 
 #![cfg(test)]
 
@@ -49,30 +52,41 @@ const STREAMS_AND_FUTURES: &[u8] = component!(
 );
 
 /// A component whose one export returns a future, and whose guest
-/// hands back an index the host would have to lift.
+/// hands back the readable end of a future it made, which the host
+/// would have to lift.
 const RETURNS_A_FUTURE: &[u8] = component!(
     r#"
     (component
+      (type $f (future u32))
+      (core func $future-new (canon future.new $f))
       (core module $m
-        (func (export "make") (result i32) i32.const 1))
-      (core instance $i (instantiate $m))
-      (func (export "make") (result (future u32))
+        (import "" "future.new" (func $future-new (result i64)))
+        (func (export "make") (result i32) (i32.wrap_i64 (call $future-new))))
+      (core instance $i (instantiate $m
+        (with "" (instance (export "future.new" (func $future-new))))))
+      (func (export "make") (result $f)
         (canon lift (core func $i "make"))))
     "#
 );
 
 /// A component whose export calls a synchronous host function that
-/// takes a stream, so the host would have to lift the guest's end.
+/// takes a stream, passing the readable end of a stream it made, so
+/// the host would have to lift the guest's end.
 const PASSES_A_STREAM_TO_THE_HOST: &[u8] = component!(
     r#"
     (component
-      (import "pull" (func $pull (param "s" (stream u8))))
+      (type $s (stream u8))
+      (import "pull" (func $pull (param "s" $s)))
       (core func $pull (canon lower (func $pull)))
+      (core func $stream-new (canon stream.new $s))
       (core module $m
         (import "" "pull" (func $pull (param i32)))
-        (func (export "run") (call $pull (i32.const 1))))
+        (import "" "stream.new" (func $stream-new (result i64)))
+        (func (export "run") (call $pull (i32.wrap_i64 (call $stream-new)))))
       (core instance $i (instantiate $m
-        (with "" (instance (export "pull" (func $pull))))))
+        (with "" (instance
+          (export "pull" (func $pull))
+          (export "stream.new" (func $stream-new))))))
       (func (export "run") (canon lift (core func $i "run"))))
     "#
 );
@@ -301,7 +315,7 @@ async fn it_refuses_to_lower_a_stream_into_a_synchronous_export_at_the_call() {
         .expect_err("a stream cannot cross the boundary yet");
     assert_eq!(
         unsupported_feature(err),
-        "the transfer of a `stream<T>` readable end"
+        "the transfer of a `stream<T>` readable end to or from the host"
     );
 }
 
@@ -319,7 +333,7 @@ async fn it_refuses_to_lower_a_future_into_an_async_export_at_the_call() {
         .expect_err("a future cannot cross the boundary yet");
     assert_eq!(
         unsupported_feature(err),
-        "the transfer of a `future<T>` readable end"
+        "the transfer of a `future<T>` readable end to or from the host"
     );
 }
 
@@ -339,7 +353,7 @@ async fn it_refuses_to_lift_a_future_from_an_export_result_at_the_call() {
         .expect_err("a future cannot cross the boundary yet");
     assert_eq!(
         unsupported_feature(err),
-        "the transfer of a `future<T>` readable end"
+        "the transfer of a `future<T>` readable end to or from the host"
     );
 }
 
@@ -382,7 +396,10 @@ async fn it_refuses_to_lift_a_stream_into_a_host_function_at_the_call() {
     // a substrate failure whose chain holds the polyfill's message.
     let chain = chain(&err);
     assert!(
-        chain.contains("unsupported component feature: the transfer of a `stream<T>` readable end"),
+        chain.contains(
+            "unsupported component feature: the transfer of a `stream<T>` readable end to or \
+             from the host"
+        ),
         "expected the unsupported transfer, got {chain}"
     );
     assert!(!ran.load(Ordering::SeqCst), "the host body never ran");

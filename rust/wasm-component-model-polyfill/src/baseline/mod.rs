@@ -23,6 +23,7 @@ mod realloc_task;
 mod resources;
 mod run_concurrent;
 mod stream_future_ends;
+mod stream_future_transfer;
 mod subtask_drop;
 mod suspend;
 mod sync_lower;
