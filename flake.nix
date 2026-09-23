@@ -410,6 +410,7 @@
             chromedriver
             rustToolchain
             wasm-bindgen-cli
+            wasm-tools
           ])
           ++ [
             markdown.prettier
