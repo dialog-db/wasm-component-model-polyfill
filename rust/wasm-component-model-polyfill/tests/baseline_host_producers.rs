@@ -72,6 +72,9 @@ const CALLS_UNTIL_AN_EVENT: usize = 8;
 /// `read-strings`, and `future-read` start an asynchronous read; a
 /// read of strings allocates each string's bytes through the
 /// component's `cabi_realloc`, a bump allocator that starts at 4096.
+/// `read-sync` reads synchronously from a synchronous export, and
+/// `read-sync-async` does the same from an `async` export with a
+/// callback and returns the packed result through `task.return`.
 /// `poll` polls a set and writes the event it delivers at address 0:
 /// the end's index there and the packed result at address 4. `peek`
 /// reads a word of memory. `open` calls the imported host function
@@ -108,6 +111,7 @@ const READS_HOST_ENDS: &[u8] = component!(
       (core instance $libc (instantiate $libc))
 
       (core func $read (canon stream.read $s async (memory (core memory $libc "memory"))))
+      (core func $read-sync (canon stream.read $s (memory (core memory $libc "memory"))))
       (core func $read-strings
         (canon stream.read $t async (memory (core memory $libc "memory"))
           (realloc (core func $libc "cabi_realloc"))))
@@ -126,6 +130,7 @@ const READS_HOST_ENDS: &[u8] = component!(
 
       (core module $m
         (import "" "stream.read" (func $read (param i32 i32 i32) (result i32)))
+        (import "" "stream.read-sync" (func $read-sync (param i32 i32 i32) (result i32)))
         (import "" "stream.read-strings" (func $read-strings (param i32 i32 i32) (result i32)))
         (import "" "future.read" (func $future-read (param i32 i32) (result i32)))
         (import "" "stream.drop-readable" (func $drop-readable (param i32)))
@@ -147,6 +152,11 @@ const READS_HOST_ENDS: &[u8] = component!(
           (unreachable))
         (func (export "read") (param i32 i32 i32) (result i32)
           (call $read (local.get 0) (local.get 1) (local.get 2)))
+        (func (export "read-sync") (param i32 i32 i32) (result i32)
+          (call $read-sync (local.get 0) (local.get 1) (local.get 2)))
+        (func (export "read-sync-async") (param i32 i32 i32) (result i32)
+          (call $task-return (call $read-sync (local.get 0) (local.get 1) (local.get 2)))
+          (i32.const 0))
         (func (export "read-strings") (param i32 i32 i32) (result i32)
           (call $read-strings (local.get 0) (local.get 1) (local.get 2)))
         (func (export "future-read") (param i32 i32) (result i32)
@@ -167,6 +177,7 @@ const READS_HOST_ENDS: &[u8] = component!(
         (func (export "join") (param i32 i32) (call $join (local.get 0) (local.get 1))))
       (core instance $m (instantiate $m (with "" (instance
         (export "stream.read" (func $read))
+        (export "stream.read-sync" (func $read-sync))
         (export "stream.read-strings" (func $read-strings))
         (export "future.read" (func $future-read))
         (export "stream.drop-readable" (func $drop-readable))
@@ -194,6 +205,12 @@ const READS_HOST_ENDS: &[u8] = component!(
           (callback (core func $m "take-list-async-callback"))))
       (func (export "read") (param "e" u32) (param "p" u32) (param "n" u32) (result u32)
         (canon lift (core func $m "read")))
+      (func (export "read-sync") (param "e" u32) (param "p" u32) (param "n" u32) (result u32)
+        (canon lift (core func $m "read-sync")))
+      (func (export "read-sync-async") async (param "e" u32) (param "p" u32) (param "n" u32)
+        (result u32)
+        (canon lift (core func $m "read-sync-async") async
+          (callback (core func $m "take-list-async-callback"))))
       (func (export "read-strings") (param "e" u32) (param "p" u32) (param "n" u32) (result u32)
         (canon lift (core func $m "read-strings")))
       (func (export "future-read") (param "e" u32) (param "p" u32) (result u32)
@@ -1521,4 +1538,52 @@ async fn it_polls_a_future_producer_again_after_it_answered_a_cancel_with_nothin
         "the next read polled the producer again and took its value"
     );
     assert_eq!(call_u32(&mut store, &instance, "peek", &[200]).await, 7);
+}
+
+#[wcmp_macros::test]
+async fn it_fails_a_synchronous_read_against_a_pending_producer_with_the_stack_switch_cause() {
+    // The read blocks an `async` task, so the nested turn may run any
+    // work of the store. There is none, but the producer's end is a
+    // host task that stays pending, and only a real suspension can
+    // wait for the executor to wake it. The store is not idle, so the
+    // cause is not the deadlock.
+    let (mut store, instance) = instantiate(READS_HOST_ENDS).await;
+    let (producer, finishes) = AwaitsCancel::new(b"", b"");
+    let reader = StreamReader::new(&mut store.as_context_mut(), producer).expect("a stream");
+    let end = take(&mut store, &instance, reader).await;
+
+    let failure = call(&mut store, &instance, "read-sync-async", &[end, 100, 8])
+        .await
+        .expect_err("a read the producer never answers cannot return");
+    assert!(
+        failure.contains(
+            "blocking here requires a stack switch, but the target has no suspend provider"
+        ),
+        "the pending producer is a pending host task, got {failure}"
+    );
+    let finishes = finishes.lock().expect("the record of the polls");
+    assert!(
+        !finishes.is_empty() && finishes.iter().all(|&finish| !finish),
+        "the read polled the producer and never asked it to finish, got {finishes:?}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_fails_a_synchronous_read_against_a_pending_producer_in_a_synchronous_export_as_unable_to_block()
+ {
+    // The same read from a sync-typed export. That call is in
+    // progress and must not block, which turns the stack-switch cause
+    // into the cannot-block cause.
+    let (mut store, instance) = instantiate(READS_HOST_ENDS).await;
+    let (producer, _) = AwaitsCancel::new(b"", b"");
+    let reader = StreamReader::new(&mut store.as_context_mut(), producer).expect("a stream");
+    let end = take(&mut store, &instance, reader).await;
+
+    let failure = call(&mut store, &instance, "read-sync", &[end, 100, 8])
+        .await
+        .expect_err("a synchronous export cannot block on the producer");
+    assert!(
+        failure.contains("cannot block a synchronous task before returning"),
+        "a sync-typed call is in progress, got {failure}"
+    );
 }

@@ -17,7 +17,9 @@
 //! not a number runs between two instances. A synchronous read that
 //! blocks is proved on two more, whose asynchronous exports the host
 //! calls together, so that the write which releases the read is work
-//! the suspend seam's nested turn can run.
+//! the suspend seam's nested turn can run. A second such pair has a
+//! writer that parks in its event loop after the write, and a read no
+//! writer serves fails with the deadlock cause.
 
 #![cfg(test)]
 
@@ -337,6 +339,120 @@ const SEAM_RELEASE: &[u8] = component!(
       (instance $w (instantiate $writer (with "take" (func $r "take"))))
       (export "setup" (func $w "setup"))
       (export "fill" (func $w "fill"))
+      (export "poke" (func $w "poke"))
+      (export "drain" (func $r "drain"))
+      (export "peek" (func $r "peek")))
+    "#
+);
+
+/// A reader and a writer, composed, whose writer parks in its event
+/// loop after the write that releases a synchronous read.
+///
+/// The writer's `setup` creates a `stream<u8>`, keeps the writable
+/// end, and hands the readable end to the reader's `take`, which keeps
+/// it. The reader's `drain` reads four values synchronously into its
+/// memory at the address it is given and returns the packed result
+/// through `task.return`. The writer's `fill-then-park` writes four
+/// values asynchronously from its memory at 200 and traps unless the
+/// write completed all four at once. It then writes four more from
+/// 204, traps unless that write blocked, joins the end to a set, and
+/// returns to its event loop waiting on the set. Its callback traps
+/// unless the event is the write's, and returns the event's packed
+/// result through `task.return`. Both exports are lifted with a
+/// callback, so a host call of either may block.
+const PARKED_WRITER: &[u8] = component!(
+    r#"
+    (component
+      (component $reader
+        (type $s (stream u8))
+        (core module $libc (memory (export "memory") 1))
+        (core instance $libc (instantiate $libc))
+        (core func $read-sync (canon stream.read $s (memory (core memory $libc "memory"))))
+        (core func $task-return (canon task.return (result u32)))
+        (core module $m
+          (import "libc" "memory" (memory 1))
+          (import "" "stream.read" (func $read (param i32 i32 i32) (result i32)))
+          (import "" "task.return" (func $task-return (param i32)))
+          (global $end (mut i32) (i32.const 0))
+          (func (export "take") (param i32) (global.set $end (local.get 0)))
+          (func (export "drain") (param $at i32) (result i32)
+            (call $task-return (call $read (global.get $end) (local.get $at) (i32.const 4)))
+            (i32.const 0))
+          (func (export "cb") (param i32 i32 i32) (result i32) unreachable)
+          (func (export "peek") (param i32) (result i32) (i32.load (local.get 0))))
+        (core instance $i (instantiate $m
+          (with "libc" (instance $libc))
+          (with "" (instance
+            (export "stream.read" (func $read-sync))
+            (export "task.return" (func $task-return))))))
+        (func (export "take") (param "s" $s) (canon lift (core func $i "take")))
+        (func (export "drain") async (param "at" u32) (result u32)
+          (canon lift (core func $i "drain") async (callback (core func $i "cb"))))
+        (func (export "peek") (param "p" u32) (result u32) (canon lift (core func $i "peek"))))
+
+      (component $writer
+        (type $s (stream u8))
+        (import "take" (func $take (param "s" $s)))
+        (core module $libc (memory (export "memory") 1))
+        (core instance $libc (instantiate $libc))
+        (core func $stream-new (canon stream.new $s))
+        (core func $write (canon stream.write $s async (memory (core memory $libc "memory"))))
+        (core func $take (canon lower (func $take)))
+        (core func $task-return (canon task.return (result u32)))
+        (core func $set-new (canon waitable-set.new))
+        (core func $join (canon waitable.join))
+        (core module $m
+          (import "libc" "memory" (memory 1))
+          (import "" "stream.new" (func $stream-new (result i64)))
+          (import "" "stream.write" (func $write (param i32 i32 i32) (result i32)))
+          (import "" "take" (func $take (param i32)))
+          (import "" "task.return" (func $task-return (param i32)))
+          (import "" "waitable-set.new" (func $set-new (result i32)))
+          (import "" "waitable.join" (func $join (param i32 i32)))
+          (global $end (mut i32) (i32.const 0))
+          (func (export "setup")
+            (local $s i64)
+            (local.set $s (call $stream-new))
+            (global.set $end (i32.wrap_i64 (i64.shr_u (local.get $s) (i64.const 32))))
+            (call $take (i32.wrap_i64 (local.get $s))))
+          (func (export "fill-then-park") (result i32)
+            (local $set i32)
+            ;; COMPLETED | (4 << 4): the read was pending and took all four.
+            (if (i32.ne (call $write (global.get $end) (i32.const 200) (i32.const 4))
+                        (i32.const 0x40))
+              (then unreachable))
+            ;; BLOCKED: the read is full, so this write waits for the next.
+            (if (i32.ne (call $write (global.get $end) (i32.const 204) (i32.const 4))
+                        (i32.const -1))
+              (then unreachable))
+            (local.set $set (call $set-new))
+            (call $join (global.get $end) (local.get $set))
+            ;; WAIT on the set, with no frame left on the stack.
+            (i32.or (i32.shl (local.get $set) (i32.const 4)) (i32.const 2)))
+          (func (export "cb") (param $code i32) (param $index i32) (param $payload i32) (result i32)
+            ;; The stream write event.
+            (if (i32.ne (local.get $code) (i32.const 3)) (then unreachable))
+            (call $task-return (local.get $payload))
+            (i32.const 0))
+          (func (export "poke") (param i32 i32) (i32.store (local.get 0) (local.get 1))))
+        (core instance $i (instantiate $m
+          (with "libc" (instance $libc))
+          (with "" (instance
+            (export "stream.new" (func $stream-new))
+            (export "stream.write" (func $write))
+            (export "take" (func $take))
+            (export "task.return" (func $task-return))
+            (export "waitable-set.new" (func $set-new))
+            (export "waitable.join" (func $join))))))
+        (func (export "setup") (canon lift (core func $i "setup")))
+        (func (export "fill-then-park") async (result u32)
+          (canon lift (core func $i "fill-then-park") async (callback (core func $i "cb"))))
+        (func (export "poke") (param "p" u32) (param "v" u32) (canon lift (core func $i "poke"))))
+
+      (instance $r (instantiate $reader))
+      (instance $w (instantiate $writer (with "take" (func $r "take"))))
+      (export "setup" (func $w "setup"))
+      (export "fill-then-park" (func $w "fill-then-park"))
       (export "poke" (func $w "poke"))
       (export "drain" (func $r "drain"))
       (export "peek" (func $r "peek")))
@@ -885,5 +1001,123 @@ async fn it_blocks_a_synchronous_read_until_a_write_the_nested_turn_runs_release
     assert_eq!(
         call_u32(&mut store, &instance, "peek", &[100]).await,
         0x0403_0201
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_releases_a_synchronous_read_through_a_callback_task_of_another_instance_that_writes_and_parks()
+ {
+    // The driver's turn starts the first `drain`, whose synchronous
+    // read finds nothing pending and blocks through the suspend seam.
+    // The `drain` task is async-typed, so the nested turn may run
+    // ready work of any instance, and it starts `fill-then-park` in
+    // the writer. Its first write finds the read pending and fills it,
+    // and its second write blocks. The writer then returns to its
+    // event loop to wait, leaving no frame of its own on the stack,
+    // and the read it filled returns. The second `drain` takes the
+    // parked write, whose event resumes the writer.
+    let (mut store, instance) = instantiate(PARKED_WRITER).await;
+    call_ok(&mut store, &instance, "setup", &[]).await;
+    call_ok(&mut store, &instance, "poke", &[200, 0x0403_0201]).await;
+    call_ok(&mut store, &instance, "poke", &[204, 0x0807_0605]).await;
+    let drain = instance.get_func("drain").expect("the drain export");
+    let fill = instance
+        .get_func("fill-then-park")
+        .expect("the fill-then-park export");
+    let into_100 = [Val::U32(100)];
+    let into_104 = [Val::U32(104)];
+
+    let (first, parked, second, filled) = store
+        .run_concurrent(async |accessor| {
+            let mut first = Box::pin(drain.call_concurrent(accessor, &into_100));
+            let mut filled = Box::pin(fill.call_concurrent(accessor, &[]));
+            let mut filled_done: Option<Result<Box<[Val]>, Error>> = None;
+            let first_done = poll_fn(|context| {
+                let first_done = first.as_mut().poll(context);
+                if filled_done.is_none()
+                    && let Poll::Ready(value) = filled.as_mut().poll(context)
+                {
+                    filled_done = Some(value);
+                }
+                first_done
+            })
+            .await;
+            let parked = filled_done.is_none();
+
+            let mut second = Box::pin(drain.call_concurrent(accessor, &into_104));
+            let mut second_done: Option<Result<Box<[Val]>, Error>> = None;
+            poll_fn(|context| {
+                if second_done.is_none()
+                    && let Poll::Ready(value) = second.as_mut().poll(context)
+                {
+                    second_done = Some(value);
+                }
+                if filled_done.is_none()
+                    && let Poll::Ready(value) = filled.as_mut().poll(context)
+                {
+                    filled_done = Some(value);
+                }
+                if second_done.is_some() && filled_done.is_some() {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
+            (
+                first_done,
+                parked,
+                second_done.expect("the second drain resolved"),
+                filled_done.expect("fill-then-park resolved"),
+            )
+        })
+        .await
+        .expect("the driver returns");
+
+    let first = first.unwrap_or_else(|error| panic!("the first drain failed: {}", chain(&error)));
+    assert_eq!(
+        first.as_ref(),
+        &[Val::U32(packed(0, 4))],
+        "the write the nested turn ran filled the blocked read"
+    );
+    assert!(
+        parked,
+        "the writer was parked in its event loop when the read returned"
+    );
+    let second =
+        second.unwrap_or_else(|error| panic!("the second drain failed: {}", chain(&error)));
+    assert_eq!(
+        second.as_ref(),
+        &[Val::U32(packed(0, 4))],
+        "the second read took the parked write at once"
+    );
+    let filled = filled.unwrap_or_else(|error| panic!("fill-then-park failed: {}", chain(&error)));
+    assert_eq!(
+        filled.as_ref(),
+        &[Val::U32(packed(0, 4))],
+        "the parked write's event resumed the writer with its progress"
+    );
+    assert_eq!(
+        call_u32(&mut store, &instance, "peek", &[100]).await,
+        0x0403_0201
+    );
+    assert_eq!(
+        call_u32(&mut store, &instance, "peek", &[104]).await,
+        0x0807_0605
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_fails_a_synchronous_read_no_writer_ever_serves_with_the_deadlock_cause() {
+    // The `drain` task is async-typed and nothing else in the store is
+    // ready or pending, so the store is idle and a stack switch would
+    // not help.
+    let (mut store, instance) = instantiate(PARKED_WRITER).await;
+    call_ok(&mut store, &instance, "setup", &[]).await;
+
+    let message = call_trap(&mut store, &instance, "drain", &[100]).await;
+    assert!(
+        message.contains("deadlock detected: event loop cannot make further progress"),
+        "{message}"
     );
 }
