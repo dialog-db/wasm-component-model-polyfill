@@ -152,6 +152,7 @@ finishes, and runs nothing else in between.
 ## The Switch Module
 
 The polyfill generates one small core module for each store, the switch module.
+It builds the module's bytes in memory, so the switch module is never fetched.
 It stands between the scheduler and the guests. It has two parts, and both
 providers use both:
 
@@ -283,12 +284,13 @@ keeps the answer for the life of the engine. The order is:
    exist as functions. The probe runs in the browser only.
 3. No provider.
 
-The switch probe compiles and instantiates a switch module of a few dozen bytes.
-It starts one thread, suspends it, resumes it, and makes sure that it finished.
-An engine that rejects the module, or that runs it with any other outcome, fails
-the probe. The probe proves that the feature works, not only that the engine
-validates it. The two probes are small and synchronous, so `Engine::new` stays
-synchronous.
+The switch probe compiles and instantiates a module of about 130 bytes. The
+polyfill carries the module as a constant in its own binary, so the probe never
+fetches anything. The probe starts one thread, suspends it, resumes it, and
+makes sure that it finished. An engine that rejects the module, or that runs it
+with any other outcome, fails the probe. The probe proves that the feature
+works, not only that the engine validates it. The two probes are small and
+synchronous, so `Engine::new` stays synchronous.
 
 The stack-switching provider comes first because it resumes a thread
 synchronously. Its scheduling order then matches the native order with no
