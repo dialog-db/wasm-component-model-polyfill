@@ -66,24 +66,26 @@ When an upstream source changes, this inventory is the document to revisit.
 The polyfill assumes a Wasm Core host that ships the Wasm 2.0 specification and
 the post-2.0 proposals that every evergreen browser ships. That baseline is:
 
-| Capability                                                                                          | Browsers                                                            | Wasmtime       |
-| --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | -------------- |
-| Wasm 2.0 (multi-value, reference types, bulk memory, sign extension, saturating float-to-int, SIMD) | All                                                                 | Yes            |
-| Garbage collection                                                                                  | All                                                                 | Yes            |
-| Threads and atomics                                                                                 | All                                                                 | Yes            |
-| Tail calls                                                                                          | All                                                                 | Yes            |
-| Exception handling (`exnref`)                                                                       | All                                                                 | Yes            |
-| Multiple memories                                                                                   | All                                                                 | Yes            |
-| Memory64                                                                                            | All                                                                 | Yes            |
-| Relaxed SIMD                                                                                        | All                                                                 | Yes            |
-| Type reflection (JavaScript API)                                                                    | All                                                                 | Not applicable |
-| JavaScript Promise Integration ([JSPI])                                                             | Chrome and Edge shipped. Firefox behind a flag. Safari in progress. | Not applicable |
-| Stack switching (`cont`, `resume`)                                                                  | Not shipped                                                         | Experimental   |
+| Capability                                                                                          | Browsers                                      | Wasmtime                        |
+| --------------------------------------------------------------------------------------------------- | --------------------------------------------- | ------------------------------- |
+| Wasm 2.0 (multi-value, reference types, bulk memory, sign extension, saturating float-to-int, SIMD) | All                                           | Yes                             |
+| Garbage collection                                                                                  | All                                           | Yes                             |
+| Threads and atomics                                                                                 | All                                           | Yes                             |
+| Tail calls                                                                                          | All                                           | Yes                             |
+| Exception handling (`exnref`)                                                                       | All                                           | Yes                             |
+| Multiple memories                                                                                   | All                                           | Yes                             |
+| Memory64                                                                                            | All                                           | Yes                             |
+| Relaxed SIMD                                                                                        | All                                           | Yes                             |
+| Type reflection (JavaScript API)                                                                    | All                                           | Not applicable                  |
+| JavaScript Promise Integration ([JSPI])                                                             | Chrome and Edge 137, Firefox 153, Safari 27.0 | Not applicable                  |
+| Stack switching (`cont`, `resume`)                                                                  | Not shipped                                   | Experimental, x86_64 Linux only |
 
-Two rows shape the strategy. [JSPI] is the only bridge for a stackful
-asynchronous lift in a browser. Stack switching is absent in browsers, so the
-polyfill cannot offer a stackful lift on every platform without JSPI. The
-polyfill does not implement any Wasm Core proposal.
+Two rows shape the strategy. [JSPI] is the bridge for a stackful asynchronous
+lift in a browser, and every current browser ships it. Stack switching is absent
+in browsers. Where an engine implements it, the polyfill uses it for a stackful
+lift outside the browser. A browser without JSPI, and an engine without stack
+switching, run the stackful lift with no stack switch. The polyfill does not
+implement any Wasm Core proposal.
 
 The polyfill also assumes the `WebAssembly` JavaScript API for module
 compilation, instantiation, memories, tables, globals, and tags. On the web,
@@ -104,7 +106,7 @@ must do, the status in Wasmtime (✅ implemented, ⚠️ gated behind a feature 
 | Component preamble, sections, nested components, and aliases                                                                    | Implement through the translator | ✅       | [Binary – component definitions] |
 | Type-encoding bytes `0x63` (`map`), `0x64` (`error-context`), `0x65` (`future`), `0x66` (`stream`)                              | Implement                        | ✅       | [Binary – type definitions]      |
 | `canon` built-ins for tasks, waitable sets, streams, futures, `error-context`, context locals, backpressure, and `thread.yield` | Implement parsing and dispatch   | ✅       | [Binary – canonical definitions] |
-| `canon thread.*` built-ins other than `thread.yield`                                                                            | Deferred (🧵 in development)     | ⚠️       | [Binary – canonical definitions] |
+| `canon thread.*` built-ins other than `thread.yield`                                                                            | Implement                        | ⚠️       | [Binary – canonical definitions] |
 | Binary format warts scheduled for removal in 1.0                                                                                | Tolerate                         | ✅       | [Binary – warts]                 |
 
 ### Component Type System
@@ -126,17 +128,17 @@ must do, the status in Wasmtime (✅ implemented, ⚠️ gated behind a feature 
 
 ### Canonical ABI
 
-| Concern                                                                                              | Polyfill target                                                       | Wasmtime | Reference                         |
-| ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | -------- | --------------------------------- |
-| Lift and lower for every value type, `cabi_realloc`, parameter and result spill to memory            | Implement                                                             | ✅       | [CanonicalABI – flattening]       |
-| String encodings UTF-8, UTF-16, and Latin-1 with UTF-16 fallback, and transcoding between components | Implement                                                             | ✅       | [CanonicalABI – storing]          |
-| `post-return` for synchronous lifts                                                                  | Implement                                                             | ✅       | [CanonicalABI – `canon lift`]     |
-| Asynchronous `canon lift`, stackless (callback) form                                                 | Implement                                                             | ✅       | [Concurrency – stackless exports] |
-| Asynchronous `canon lift`, stackful form                                                             | Best effort: JSPI in browsers, native stack switching where available | ✅       | [Concurrency – stackful exports]  |
-| Asynchronous `canon lower`                                                                           | Implement                                                             | ✅       | [Concurrency – async import ABI]  |
-| Per-task lift and lower context                                                                      | Implement                                                             | ✅       | [CanonicalABI – runtime state]    |
-| One handle table per component instance for resources, waitables, streams, and futures               | Implement                                                             | ✅       | [CanonicalABI – runtime state]    |
-| Component instance flags (`may_leave`, `may_enter`, backpressure)                                    | Implement                                                             | ✅       | [CanonicalABI – runtime state]    |
+| Concern                                                                                              | Polyfill target                                                                            | Wasmtime | Reference                         |
+| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | -------- | --------------------------------- |
+| Lift and lower for every value type, `cabi_realloc`, parameter and result spill to memory            | Implement                                                                                  | ✅       | [CanonicalABI – flattening]       |
+| String encodings UTF-8, UTF-16, and Latin-1 with UTF-16 fallback, and transcoding between components | Implement                                                                                  | ✅       | [CanonicalABI – storing]          |
+| `post-return` for synchronous lifts                                                                  | Implement                                                                                  | ✅       | [CanonicalABI – `canon lift`]     |
+| Asynchronous `canon lift`, stackless (callback) form                                                 | Implement                                                                                  | ✅       | [Concurrency – stackless exports] |
+| Asynchronous `canon lift`, stackful form                                                             | JSPI in browsers, stack switching where an engine implements it, no stack switch elsewhere | ✅       | [Concurrency – stackful exports]  |
+| Asynchronous `canon lower`                                                                           | Implement                                                                                  | ✅       | [Concurrency – async import ABI]  |
+| Per-task lift and lower context                                                                      | Implement                                                                                  | ✅       | [CanonicalABI – runtime state]    |
+| One handle table per component instance for resources, waitables, streams, and futures               | Implement                                                                                  | ✅       | [CanonicalABI – runtime state]    |
+| Component instance flags (`may_leave`, `may_enter`, backpressure)                                    | Implement                                                                                  | ✅       | [CanonicalABI – runtime state]    |
 
 ### Concurrency Runtime
 
@@ -218,9 +220,11 @@ These items are bounds on the scope, not gaps:
   concurrency, `stream<T>`, `future<T>`, `error-context`, the value types) are
   all in the matrix. `wasi:io` no longer exists in WASI 0.3. Its role is
   absorbed by `stream<T>` and `future<T>`.
-- Wasm Core proposals that browsers do not ship, including stack switching.
-- The thread built-ins other than `thread.yield`. The Concurrency explainer
-  marks them 🧵 and in development.
+- An implementation of a Wasm Core proposal. The polyfill uses stack switching
+  where an engine implements it, and implements no Core instruction.
+- The shared-everything thread built-ins, `thread.spawn-ref`,
+  `thread.spawn-indirect`, and `thread.available-parallelism`. The Explainer
+  marks them 🧵② and in development.
 - Value imports, value exports, and `start`. The Explainer marks them 🪙 and in
   development.
 - A generic payloaded error type. The Explainer tracks it as future work.
