@@ -412,6 +412,13 @@ impl<T: 'static> Scheduler<T> {
         self.host_writers.remove(&end)
     }
 
+    /// Whether the scheduler holds the producer of the writable end
+    /// `end` the host serves. It does not once a pipe of the host's
+    /// own took the producer over, or while a poll has it out.
+    pub fn holds_host_writer(&self, end: EndId) -> bool {
+        self.host_writers.contains_key(&end)
+    }
+
     /// Let go of the writable end `end` the host serves, for good:
     /// take out its producer, if the scheduler still holds it, and
     /// forget the waker kept for it. The caller drops the producer

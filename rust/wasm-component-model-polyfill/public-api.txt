@@ -401,6 +401,12 @@ pub struct wasm_component_model_polyfill::FutureReader<T>
 impl<T: wasm_component_model_polyfill::ComponentValue> wasm_component_model_polyfill::FutureReader<T>
 pub fn wasm_component_model_polyfill::FutureReader<T>::new<D: 'static>(store: &mut wasm_component_model_polyfill::StoreContext<'_, D>, producer: impl wasm_component_model_polyfill::FutureProducer<D, Item = T>) -> wasm_component_model_polyfill::Result<Self>
 pub fn wasm_component_model_polyfill::FutureReader<T>::pipe<D: 'static>(self, store: &mut wasm_component_model_polyfill::StoreContext<'_, D>, consumer: impl wasm_component_model_polyfill::FutureConsumer<D, Item = T>) -> wasm_component_model_polyfill::Result<()>
+impl<T> wasm_component_model_polyfill::FutureReader<T>
+pub fn wasm_component_model_polyfill::FutureReader<T>::close<D: 'static>(&mut self, store: &mut wasm_component_model_polyfill::StoreContext<'_, D>) -> wasm_component_model_polyfill::Result<()>
+pub fn wasm_component_model_polyfill::FutureReader<T>::close_with<D: 'static>(&mut self, accessor: &wasm_component_model_polyfill::Accessor<D>) -> wasm_component_model_polyfill::Result<()>
+pub fn wasm_component_model_polyfill::FutureReader<T>::guard<D: 'static>(self, accessor: wasm_component_model_polyfill::Accessor<D>) -> wasm_component_model_polyfill::GuardedFutureReader<T, D>
+impl<T, D: 'static> core::convert::From<wasm_component_model_polyfill::GuardedFutureReader<T, D>> for wasm_component_model_polyfill::FutureReader<T>
+pub fn wasm_component_model_polyfill::FutureReader<T>::from(guard: wasm_component_model_polyfill::GuardedFutureReader<T, D>) -> Self
 impl<T: wasm_component_model_polyfill::ComponentValue> wasm_component_model_polyfill::ComponentValue for wasm_component_model_polyfill::FutureReader<T>
 pub fn wasm_component_model_polyfill::FutureReader<T>::from_val(val: &wasm_component_model_polyfill::Val) -> wasm_component_model_polyfill::Result<Self>
 pub fn wasm_component_model_polyfill::FutureReader<T>::to_val(self) -> wasm_component_model_polyfill::Val
@@ -409,6 +415,22 @@ pub struct wasm_component_model_polyfill::FutureType
 impl wasm_component_model_polyfill::FutureType
 pub fn wasm_component_model_polyfill::FutureType::new(payload: core::option::Option<wasm_component_model_polyfill::ValueType>) -> Self
 pub fn wasm_component_model_polyfill::FutureType::payload(&self) -> core::option::Option<&wasm_component_model_polyfill::ValueType>
+pub struct wasm_component_model_polyfill::GuardedFutureReader<T, D: 'static>
+impl<T, D: 'static> wasm_component_model_polyfill::GuardedFutureReader<T, D>
+pub fn wasm_component_model_polyfill::GuardedFutureReader<T, D>::into_future(self) -> wasm_component_model_polyfill::FutureReader<T>
+pub fn wasm_component_model_polyfill::GuardedFutureReader<T, D>::new(accessor: wasm_component_model_polyfill::Accessor<D>, reader: wasm_component_model_polyfill::FutureReader<T>) -> Self
+impl<T, D: 'static> core::convert::From<wasm_component_model_polyfill::GuardedFutureReader<T, D>> for wasm_component_model_polyfill::FutureReader<T>
+pub fn wasm_component_model_polyfill::FutureReader<T>::from(guard: wasm_component_model_polyfill::GuardedFutureReader<T, D>) -> Self
+impl<T, D: 'static> core::ops::drop::Drop for wasm_component_model_polyfill::GuardedFutureReader<T, D>
+pub fn wasm_component_model_polyfill::GuardedFutureReader<T, D>::drop(&mut self)
+pub struct wasm_component_model_polyfill::GuardedStreamReader<T, D: 'static>
+impl<T, D: 'static> wasm_component_model_polyfill::GuardedStreamReader<T, D>
+pub fn wasm_component_model_polyfill::GuardedStreamReader<T, D>::into_stream(self) -> wasm_component_model_polyfill::StreamReader<T>
+pub fn wasm_component_model_polyfill::GuardedStreamReader<T, D>::new(accessor: wasm_component_model_polyfill::Accessor<D>, reader: wasm_component_model_polyfill::StreamReader<T>) -> Self
+impl<T, D: 'static> core::convert::From<wasm_component_model_polyfill::GuardedStreamReader<T, D>> for wasm_component_model_polyfill::StreamReader<T>
+pub fn wasm_component_model_polyfill::StreamReader<T>::from(guard: wasm_component_model_polyfill::GuardedStreamReader<T, D>) -> Self
+impl<T, D: 'static> core::ops::drop::Drop for wasm_component_model_polyfill::GuardedStreamReader<T, D>
+pub fn wasm_component_model_polyfill::GuardedStreamReader<T, D>::drop(&mut self)
 pub struct wasm_component_model_polyfill::HostCall<'a, T: 'static>
 impl<'a, T: 'static> wasm_component_model_polyfill::HostCall<'a, T>
 pub fn wasm_component_model_polyfill::HostCall<'a, T>::data(&self) -> &T
@@ -573,6 +595,12 @@ pub struct wasm_component_model_polyfill::StreamReader<T>
 impl<T: wasm_component_model_polyfill::ComponentValue> wasm_component_model_polyfill::StreamReader<T>
 pub fn wasm_component_model_polyfill::StreamReader<T>::new<D: 'static>(store: &mut wasm_component_model_polyfill::StoreContext<'_, D>, producer: impl wasm_component_model_polyfill::StreamProducer<D, Item = T>) -> wasm_component_model_polyfill::Result<Self>
 pub fn wasm_component_model_polyfill::StreamReader<T>::pipe<D: 'static>(self, store: &mut wasm_component_model_polyfill::StoreContext<'_, D>, consumer: impl wasm_component_model_polyfill::StreamConsumer<D, Item = T>) -> wasm_component_model_polyfill::Result<()>
+impl<T> wasm_component_model_polyfill::StreamReader<T>
+pub fn wasm_component_model_polyfill::StreamReader<T>::close<D: 'static>(&mut self, store: &mut wasm_component_model_polyfill::StoreContext<'_, D>) -> wasm_component_model_polyfill::Result<()>
+pub fn wasm_component_model_polyfill::StreamReader<T>::close_with<D: 'static>(&mut self, accessor: &wasm_component_model_polyfill::Accessor<D>) -> wasm_component_model_polyfill::Result<()>
+pub fn wasm_component_model_polyfill::StreamReader<T>::guard<D: 'static>(self, accessor: wasm_component_model_polyfill::Accessor<D>) -> wasm_component_model_polyfill::GuardedStreamReader<T, D>
+impl<T, D: 'static> core::convert::From<wasm_component_model_polyfill::GuardedStreamReader<T, D>> for wasm_component_model_polyfill::StreamReader<T>
+pub fn wasm_component_model_polyfill::StreamReader<T>::from(guard: wasm_component_model_polyfill::GuardedStreamReader<T, D>) -> Self
 impl<T: wasm_component_model_polyfill::ComponentValue> wasm_component_model_polyfill::ComponentValue for wasm_component_model_polyfill::StreamReader<T>
 pub fn wasm_component_model_polyfill::StreamReader<T>::from_val(val: &wasm_component_model_polyfill::Val) -> wasm_component_model_polyfill::Result<Self>
 pub fn wasm_component_model_polyfill::StreamReader<T>::to_val(self) -> wasm_component_model_polyfill::Val

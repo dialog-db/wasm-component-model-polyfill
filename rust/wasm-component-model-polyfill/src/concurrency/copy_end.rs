@@ -47,12 +47,18 @@ pub struct CopyEnd {
     /// became done, and only this flag tells a writable future end
     /// that wrote its value from one whose reader dropped first.
     pub notified_dropped: bool,
+    /// Whether this end itself was dropped while the other end lives
+    /// on: its entry left a guest's table, or the host let go of it.
+    /// The record stays in the store until the other end drops too,
+    /// and nothing may drop, lower, pipe, or close it again.
+    pub dropped: bool,
 }
 
 impl CopyEnd {
     /// Construct an idle end with the given direction, sharing the
     /// record at `shared`: no pending event, no set, no waiter, and
-    /// no copy in progress, with no dropped result delivered.
+    /// no copy in progress, with no dropped result delivered and
+    /// nothing dropped.
     pub fn new(direction: EndDirection, shared: u32) -> Self {
         Self {
             waitable: WaitableState::new(),
@@ -62,6 +68,7 @@ impl CopyEnd {
             buffer: None,
             handle: None,
             notified_dropped: false,
+            dropped: false,
         }
     }
 }

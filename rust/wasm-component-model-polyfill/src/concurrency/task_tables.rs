@@ -1018,22 +1018,61 @@ impl TaskTables {
     ///
     /// Fails with the not-held cause when `reader` is no readable end
     /// the host holds: the end is gone, a guest's table holds it, or
-    /// it was piped already.
+    /// it was piped or closed already.
     pub fn serve_reader(&mut self, reader: EndId, kind: EndKind) -> Result<()> {
-        let not_held = Error::Copy(CopyCause::NotHeldByHost { kind });
-        let Some(record) = self.end(reader) else {
-            return Err(not_held);
+        if !self.held_by_host(reader) {
+            return Err(Error::Copy(CopyCause::NotHeldByHost { kind }));
+        }
+        if let Some(shared) = self.end(reader).map(|record| record.shared)
+            && let Some(record) = self.shared_records.get_mut(shared)
+        {
+            record.host = Some(kind);
+        }
+        Ok(())
+    }
+
+    /// Whether `end` is a readable end the host holds: a reader can
+    /// still lower it into a guest, pipe it, or close it. It is in no
+    /// guest's table, it has not been dropped, and the host does not
+    /// already serve it through a consumer it was piped to.
+    pub fn held_by_host(&self, end: EndId) -> bool {
+        let Some(record) = self.end(end) else {
+            return false;
         };
-        if record.direction != EndDirection::Readable || record.handle.is_some() {
-            return Err(not_held);
+        let piped = self
+            .shared_records
+            .get(record.shared)
+            .and_then(|shared| shared.host)
+            .is_some_and(|host| direction_of(host) == EndDirection::Readable);
+        record.direction == EndDirection::Readable
+            && record.handle.is_none()
+            && !record.dropped
+            && !piped
+    }
+
+    /// Drop `reader`, a readable end of kind `kind` the host holds,
+    /// because the host closed it. The rules of
+    /// [`drop_end`](Self::drop_end) tell the writable end: a write in
+    /// progress completes with the dropped result, and a later write
+    /// sees it at once.
+    ///
+    /// A stream or future the host created takes its writable end
+    /// with it, as a guest's drop of such a readable end does: nobody
+    /// is left to read what the producer would produce. Answers that
+    /// writable end, whose producer the caller lets go of.
+    ///
+    /// Fails with the not-held cause when `reader` is no readable end
+    /// the host holds.
+    pub fn close_host_reader(&mut self, reader: EndId, kind: EndKind) -> Result<Option<EndId>> {
+        if !self.held_by_host(reader) {
+            return Err(Error::Copy(CopyCause::NotHeldByHost { kind }));
         }
-        match self.shared_records.get_mut(record.shared) {
-            Some(shared) if shared.host != Some(kind) => {
-                shared.host = Some(kind);
-                Ok(())
-            }
-            _ => Err(not_held),
+        let writer = self.host_counterpart(reader);
+        self.drop_end(kind, reader)?;
+        if let Some(writer) = writer {
+            self.release_host_end(writer)?;
         }
+        Ok(writer)
     }
 
     /// The host moved `count` values through `host`, the end it
@@ -1160,9 +1199,9 @@ impl TaskTables {
     ///
     /// The end leaves the set it joined, as the reference's drop of a
     /// waitable does. Dropping the first end of a pair marks the
-    /// shared record dropped and leaves both end records in the
-    /// store; dropping the second removes the shared record and both
-    /// end records.
+    /// shared record and the end itself dropped and leaves both end
+    /// records in the store; dropping the second removes the shared
+    /// record and both end records.
     ///
     /// The first drop also tells the other end. A copy of it that is
     /// the pending side completes with the dropped result and the
@@ -1198,11 +1237,13 @@ impl TaskTables {
         let shared = record.shared;
         let direction = record.direction;
         self.leave_waitable_set(WaitableId::from_end(kind, end));
-        let record = self
-            .shared_records
-            .get_mut(shared)
-            .ok_or_else(|| Error::internal("shared record is not in the store"))?;
-        if !record.dropped {
+        let first = !self.shared_record_at(shared)?.dropped;
+        if first {
+            self.end_record_mut(end)?.dropped = true;
+            let record = self
+                .shared_records
+                .get_mut(shared)
+                .ok_or_else(|| Error::internal("shared record is not in the store"))?;
             record.dropped = true;
             let other = match direction {
                 EndDirection::Readable => record.writable,

@@ -101,6 +101,15 @@
 //! itself is one host task that copies from the producer to the
 //! consumer, with no guest involved.
 //!
+//! A reader the host holds and will not read ends through
+//! [`StreamReader::close`] or [`FutureReader::close`], which drop the
+//! readable end and tell the writer. [`GuardedStreamReader`] and
+//! [`GuardedFutureReader`] pair a reader with an accessor and close
+//! it when they drop inside a poll of the store. A reader that ends
+//! no other way leaks its end until the store drops, and dropping the
+//! store drops every shared record, every end, and every producer and
+//! consumer without polling them.
+//!
 //! A synchronous call is a task with one thread, so the synchronous
 //! baseline is the case of one task per instance at a time.
 
@@ -125,6 +134,8 @@ mod future_any;
 mod future_consumer;
 mod future_producer;
 mod future_reader;
+mod guarded_future_reader;
+mod guarded_stream_reader;
 mod host_consumer;
 mod host_future;
 mod host_reader;
@@ -185,7 +196,6 @@ pub use copy_buffer::CopyBuffer;
 pub use copy_state::CopyState;
 pub use destination::Destination;
 pub use driver::Driver;
-pub use end_direction::EndDirection;
 pub use end_id::EndId;
 pub use end_kind::EndKind;
 pub use event::Event;
@@ -200,6 +210,8 @@ pub use future_any::FutureAny;
 pub use future_consumer::FutureConsumer;
 pub use future_producer::FutureProducer;
 pub use future_reader::FutureReader;
+pub use guarded_future_reader::GuardedFutureReader;
+pub use guarded_stream_reader::GuardedStreamReader;
 pub use host_consumer::HostConsumer;
 pub use host_future::HostFuture;
 pub use host_task::HostTask;

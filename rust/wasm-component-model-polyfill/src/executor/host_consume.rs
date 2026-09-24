@@ -51,8 +51,8 @@
 use core::task::{Context, Poll};
 
 use crate::concurrency::{
-    Accessor, CopyBuffer, CopyState, EndDirection, EndId, EndKind, HostConsumer, HostTask,
-    HostTaskBody, TaskId, TaskTables,
+    Accessor, CopyBuffer, CopyState, EndId, EndKind, HostConsumer, HostTask, HostTaskBody, TaskId,
+    TaskTables,
 };
 use crate::error::{CopyCause, Error, Result};
 use crate::internal::ErrorInternal;
@@ -77,10 +77,7 @@ pub fn pipe_readable_end<T: 'static, H: HostConsumer<T>>(
     let route = {
         let mut guard = store.internal().lock_tables()?;
         let tasks = &mut guard.tasks;
-        let held = tasks.end(reader).is_some_and(|record| {
-            record.direction == EndDirection::Readable && record.handle.is_none()
-        });
-        if !held {
+        if !tasks.held_by_host(reader) {
             return Err(not_held());
         }
         let dropped = tasks

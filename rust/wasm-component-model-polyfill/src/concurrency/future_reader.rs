@@ -6,17 +6,19 @@ use core::task::{Context, Poll};
 
 use crate::abi::context::BoundaryContext;
 use crate::error::{AbiPosition, CopyCause, Error, Result};
-use crate::executor::pipe_readable_end;
+use crate::executor::{close_readable_end, pipe_readable_end};
 use crate::internal::FutureReaderInternal;
 use crate::linker::ComponentValue;
 use crate::store::{StoreContext, StoreContextInternalExt, StoreData};
 use crate::types::ValueType;
 use crate::value::Val;
 
+use super::accessor::Accessor;
 use super::end_id::EndId;
 use super::end_kind::EndKind;
 use super::future_consumer::FutureConsumer;
 use super::future_producer::FutureProducer;
+use super::guarded_future_reader::GuardedFutureReader;
 use super::host_consumer::HostConsumer;
 use super::host_writer::HostWriter;
 use super::source::Source;
@@ -46,20 +48,25 @@ use super::source::Source;
 /// `future.write` polls the consumer inside a turn of the store.
 ///
 /// The lifecycle rule is Wasmtime's: a reader the host holds must be
-/// lowered into a guest or piped. A reader dropped otherwise leaks
-/// its end until the store drops, and a guest that writes to the
-/// future waits for good.
+/// lowered into a guest, piped, or closed with [`close`](Self::close).
+/// A reader dropped otherwise leaks its end until the store drops,
+/// and a guest that writes to the future waits for good.
+/// [`guard`](Self::guard) pairs a reader with an accessor into a
+/// [`GuardedFutureReader`], which closes the future when it drops
+/// inside a poll of its store.
 ///
 /// A reader belongs to the store it was created or lifted in, and is
-/// lowered or piped only in that store. It names its end by an index
-/// and a generation and carries no identity of the store, so the
-/// lower and the pipe cannot tell a reader from another store. Using
-/// a reader with a store other than the one that made it is a host
-/// error the polyfill does not detect, as with a
+/// lowered, piped, or closed only in that store. It names its end by
+/// an index and a generation and carries no identity of the store, so
+/// the lower, the pipe, and the close cannot tell a reader from
+/// another store. Using a reader with a store other than the one that
+/// made it is a host error the polyfill does not detect, as with a
 /// [`ResourceHandle`](crate::ResourceHandle): when the other store
 /// holds a readable end for the host under the same index and
-/// generation, that end is the one lowered or piped, and the guest
-/// reads, or the consumer takes, the other store's future. Wasmtime's
+/// generation, that end is the one lowered, piped, or closed, and the
+/// guest reads, the consumer takes, or the close ends the other
+/// store's future. The close needs no identity of the store to keep
+/// its own contract, so none is added. Wasmtime's
 /// reader carries no store identity either. The reader is moved when
 /// it is lowered or piped, so an end crosses into a guest, or reaches
 /// a consumer, once.
@@ -140,6 +147,53 @@ impl<T: ComponentValue> FutureReader<T> {
             data: PhantomData,
         };
         pipe_readable_end(store, self.end, EndKind::FutureReadable, consumer)
+    }
+}
+
+impl<T> FutureReader<T> {
+    /// Close this future in the store `store` reaches: drop its
+    /// readable end. The name and the contract are Wasmtime's.
+    ///
+    /// A write in progress on the writable end completes with the
+    /// dropped result, and a later write sees that result at once. A
+    /// future the host created with [`new`](Self::new) takes its
+    /// producer with it, dropped unpolled, because nobody is left to
+    /// read the value it would produce.
+    ///
+    /// `D` is the store's host data. [`Store::as_context_mut`] reaches
+    /// the context from a store the host holds.
+    /// [`close_with`](Self::close_with) closes the future from inside
+    /// a poll, through an accessor.
+    ///
+    /// Fails with the not-held cause of [`CopyCause`] when the store
+    /// holds no readable end for the host under this reader, as
+    /// [`StreamReader::close`](super::StreamReader::close) states.
+    ///
+    /// [`Store::as_context_mut`]: crate::Store::as_context_mut
+    pub fn close<D: 'static>(&mut self, store: &mut StoreContext<'_, D>) -> Result<()> {
+        close_readable_end(store, self.end, EndKind::FutureReadable)
+    }
+
+    /// Close this future through `accessor`, as
+    /// [`close`](Self::close) closes it through a store context. The
+    /// name is Wasmtime's.
+    ///
+    /// Fails with the store-not-in-poll cause when no poll of the
+    /// accessor's store is running, and with the recursive-driver
+    /// cause from inside another reach of the same store, as
+    /// [`Accessor::with`] states.
+    pub fn close_with<D: 'static>(&mut self, accessor: &Accessor<D>) -> Result<()> {
+        accessor.with(|store| self.close(store))?
+    }
+
+    /// Pair this reader with `accessor`, into a guard that closes the
+    /// future when it drops. The name is Wasmtime's.
+    ///
+    /// The guard closes through the accessor, so it reaches the store
+    /// only when it drops inside a poll of that store, as
+    /// [`GuardedFutureReader`] states.
+    pub fn guard<D: 'static>(self, accessor: Accessor<D>) -> GuardedFutureReader<T, D> {
+        GuardedFutureReader::new(accessor, self)
     }
 }
 

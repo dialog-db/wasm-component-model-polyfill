@@ -9,7 +9,7 @@ use crate::abi::context::BoundaryContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
 use crate::abi::lift::declared_resource_index;
 use crate::abi::strings;
-use crate::concurrency::{EndDirection, EndId, EndKind};
+use crate::concurrency::{EndId, EndKind};
 use crate::error::{AbiCause, AbiError, AbiPosition, CopyCause, Error, Result};
 use crate::internal::{ErrorInternal, FutureAnyInternal, StreamAnyInternal};
 use crate::resource::{HandleKind, HandleLookupError, HandleTables, ResourceHandle, TableId};
@@ -270,10 +270,7 @@ pub fn lower_host_end<T: 'static>(
     let mut guard = tables
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
-    let held_by_host = guard.tasks.end(end).is_some_and(|record| {
-        record.direction == EndDirection::Readable && record.handle.is_none()
-    });
-    if !held_by_host {
+    if !guard.tasks.held_by_host(end) {
         return Err(invalid("the readable end is not one the host holds"));
     }
     let carried = guard
