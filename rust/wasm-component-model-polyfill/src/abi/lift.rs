@@ -189,9 +189,10 @@ pub fn lift<T: 'static>(
 }
 
 /// The refusal of a crossing that carries a `stream<T>` or a
-/// `future<T>` between a guest and the host. Such a value names a
-/// readable end, and the host has no value to hold one in yet, so
-/// the type translates and the crossing fails at the call. Between
+/// `future<T>` out of a guest to the host. Such a value names a
+/// readable end, and the host has no value to lift one into yet, so
+/// the type translates and the crossing fails at the call. The other
+/// way, a readable end the host holds lowers into a guest. Between
 /// two components the end crosses through the transfer intrinsics
 /// of the adapter instead, which never reach this.
 pub fn end_transfer_unsupported(ty: &ValueType) -> Error {

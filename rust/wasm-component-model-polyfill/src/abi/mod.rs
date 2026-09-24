@@ -58,8 +58,8 @@ pub mod strings;
 pub mod transcode;
 
 pub use lift::{
-    LIST_ELEMENT_COST, end_transfer_unsupported, gate_list, lift, lift_end_for_host, lift_handle,
-    lift_list, lift_map, lift_readable_end, lift_string, read_pointer_pair,
+    LIST_ELEMENT_COST, gate_list, lift, lift_end_for_host, lift_handle, lift_list, lift_map,
+    lift_readable_end, lift_string, read_pointer_pair,
 };
 pub use lower::{
     lower, lower_list, lower_list_bytes, lower_readable_end, lower_str, write_pointer_pair,

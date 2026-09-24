@@ -4,6 +4,7 @@ use crate::types::ValueType;
 
 use super::end_direction::EndDirection;
 use super::end_id::EndId;
+use super::end_kind::EndKind;
 
 /// The state the two ends of one stream or future share.
 ///
@@ -39,6 +40,11 @@ pub struct SharedRecord {
     pub readable: EndId,
     /// The writable end.
     pub writable: EndId,
+    /// The end the host serves, when the stream or future was created
+    /// by the host: the writable end of a host producer. Such an end
+    /// is in no guest's handle table, and a copy on the other end
+    /// polls the host's side rather than waiting for a guest to copy.
+    pub host: Option<EndKind>,
 }
 
 impl SharedRecord {
@@ -52,6 +58,7 @@ impl SharedRecord {
             pending: None,
             readable,
             writable,
+            host: None,
         }
     }
 

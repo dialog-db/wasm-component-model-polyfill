@@ -189,6 +189,20 @@ impl<T: 'static> Store<T> {
         self.store_data_mut().set_hostcall_fuel(fuel);
     }
 
+    /// Borrow the store as a [`StoreContext`], which is what a host
+    /// hands [`StreamReader::new`] and [`FutureReader::new`] to create
+    /// a stream or a future in this store. The name is Wasmtime's.
+    ///
+    /// The context lends what the store itself lends — the host data
+    /// — and the entries that take a context; the store's own
+    /// bookkeeping stays out of reach, as it does through the store.
+    ///
+    /// [`StreamReader::new`]: crate::StreamReader::new
+    /// [`FutureReader::new`]: crate::FutureReader::new
+    pub fn as_context_mut(&mut self) -> StoreContext<'_, T> {
+        self.context()
+    }
+
     /// The store as a turn, an item, or a trampoline reaches it: a
     /// borrow of the core store, which carries everything else the
     /// store holds. Every entry that touches guest state lives

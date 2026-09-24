@@ -43,11 +43,18 @@ use crate::abi::{
     write_pointer_pair,
 };
 use crate::component::{FunctionParameter, FunctionType};
+use crate::concurrency::{FutureAny, FutureReader, StreamAny, StreamReader};
 use crate::error::{
     AbiCause, AbiError, AbiPosition, Error, Result, TypeMismatch, TypeMismatchPosition,
     TypeRendering,
 };
-use crate::types::{FixedLengthListType, ListType, MapType, OptionType, PrimitiveType, ValueType};
+use crate::internal::{
+    FutureAnyInternal, FutureReaderInternal, StreamAnyInternal, StreamReaderInternal,
+};
+use crate::types::{
+    FixedLengthListType, FutureType, ListType, MapType, OptionType, PrimitiveType, StreamType,
+    ValueType,
+};
 use crate::value::Val;
 
 /// A Rust type that maps to a single component-level value type.
@@ -502,6 +509,48 @@ impl<T: ComponentValue> ComponentValue for Option<T> {
     }
     fn to_val(self) -> Val {
         Val::Option(self.map(|inner| Box::new(inner.to_val())))
+    }
+}
+
+/// The readable end of a stream the host holds, as Wasmtime maps
+/// `stream<T>`. It crosses as a [`Val::Stream`], and lowering it into
+/// a guest enters its end in the guest's handle table. A value of
+/// another payload type than the projection of `T` does not decode.
+impl<T: ComponentValue> ComponentValue for StreamReader<T> {
+    fn value_type() -> ValueType {
+        ValueType::Stream(StreamType::new(Some(T::value_type())))
+    }
+    fn from_val(val: &Val) -> Result<Self> {
+        match val {
+            Val::Stream(stream) if stream.payload() == Some(&T::value_type()) => {
+                Ok(StreamReader::from_end(stream.end()))
+            }
+            _ => Err(value_mismatch(val)),
+        }
+    }
+    fn to_val(self) -> Val {
+        Val::Stream(StreamAny::new(self.end(), Some(T::value_type())))
+    }
+}
+
+/// The readable end of a future the host holds, as Wasmtime maps
+/// `future<T>`. It crosses as a [`Val::Future`], and lowering it into
+/// a guest enters its end in the guest's handle table. A value of
+/// another payload type than the projection of `T` does not decode.
+impl<T: ComponentValue> ComponentValue for FutureReader<T> {
+    fn value_type() -> ValueType {
+        ValueType::Future(FutureType::new(Some(T::value_type())))
+    }
+    fn from_val(val: &Val) -> Result<Self> {
+        match val {
+            Val::Future(future) if future.payload() == Some(&T::value_type()) => {
+                Ok(FutureReader::from_end(future.end()))
+            }
+            _ => Err(value_mismatch(val)),
+        }
+    }
+    fn to_val(self) -> Val {
+        Val::Future(FutureAny::new(self.end(), Some(T::value_type())))
     }
 }
 

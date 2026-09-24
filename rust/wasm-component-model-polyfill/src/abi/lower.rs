@@ -7,11 +7,11 @@
 
 use crate::abi::context::BoundaryContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
-use crate::abi::lift::{declared_resource_index, end_transfer_unsupported};
+use crate::abi::lift::declared_resource_index;
 use crate::abi::strings;
-use crate::concurrency::{EndId, EndKind};
-use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
-use crate::internal::ErrorInternal;
+use crate::concurrency::{EndDirection, EndId, EndKind};
+use crate::error::{AbiCause, AbiError, AbiPosition, CopyCause, Error, Result};
+use crate::internal::{ErrorInternal, FutureAnyInternal, StreamAnyInternal};
 use crate::resource::{HandleKind, HandleLookupError, HandleTables, ResourceHandle, TableId};
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
@@ -186,7 +186,14 @@ pub fn lower<T: 'static>(
             let index = lower_handle(ctx, handle, ty, position)?;
             ctx.write_bytes(offset, &index.to_le_bytes(), position, ty)
         }
-        (ValueType::Stream(_) | ValueType::Future(_), _) => Err(end_transfer_unsupported(ty)),
+        (ValueType::Stream(_), Val::Stream(stream)) => {
+            let index = lower_host_end(ctx, stream.end(), ty, position)?;
+            ctx.write_bytes(offset, &index.to_le_bytes(), position, ty)
+        }
+        (ValueType::Future(_), Val::Future(future)) => {
+            let index = lower_host_end(ctx, future.end(), ty, position)?;
+            ctx.write_bytes(offset, &index.to_le_bytes(), position, ty)
+        }
         _ => Err(host_value_mismatch(ty, position)),
     }
 }
@@ -214,6 +221,70 @@ pub fn lower_readable_end(
         }
     };
     Ok(tables.insert_end(table, kind, end))
+}
+
+/// Lower `end`, a readable end the host holds, into the guest's
+/// handle table for a crossing of type `ty`, a `stream<T>` or a
+/// `future<T>`, and return the index it takes there. The guest's end
+/// shares its stream or future with the host's writable end, which
+/// is how a producer the host created the stream with comes to serve
+/// the guest's reads.
+///
+/// The checks:
+///
+/// 1. The end must be a readable end the store holds and no guest
+///    holds: an end the host already lowered, or one the host never
+///    had, fails as an invalid handle.
+/// 2. Its stream or future must carry the payload `ty` names, or the
+///    crossing fails with the payload-mismatch cause.
+pub fn lower_host_end<T: 'static>(
+    ctx: &BoundaryContext<'_, T>,
+    end: EndId,
+    ty: &ValueType,
+    position: AbiPosition,
+) -> Result<u32> {
+    let (kind, declared) = match ty {
+        ValueType::Stream(stream) => (EndKind::StreamReadable, stream.payload()),
+        ValueType::Future(future) => (EndKind::FutureReadable, future.payload()),
+        _ => {
+            return Err(Error::internal(
+                "a readable end was lowered as a type that is neither",
+            ));
+        }
+    };
+    let invalid = |reason: &str| {
+        Error::from(AbiError {
+            position,
+            valtype: Some(ty.clone()),
+            cause: AbiCause::InvalidHandle {
+                reason: reason.to_owned(),
+            },
+        })
+    };
+    let (Some(tables), Some(table)) = (ctx.instance().tables(), ctx.instance().handle_table())
+    else {
+        return Err(invalid(
+            "no handle table of the instance is available to the lower context",
+        ));
+    };
+    let mut guard = tables
+        .lock()
+        .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
+    let held_by_host = guard.tasks.end(end).is_some_and(|record| {
+        record.direction == EndDirection::Readable && record.handle.is_none()
+    });
+    if !held_by_host {
+        return Err(invalid("the readable end is not one the host holds"));
+    }
+    let carried = guard
+        .tasks
+        .shared_record(end)
+        .map(|record| record.payload.as_ref())
+        .ok_or_else(|| Error::internal("a readable end has no shared record"))?;
+    if carried != declared {
+        return Err(Error::Copy(CopyCause::PayloadMismatch { kind }));
+    }
+    lower_readable_end(&mut guard, table, end, ty)
 }
 
 /// Lower the elements of a list into memory the guest's

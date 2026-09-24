@@ -55,6 +55,12 @@
 //! context's copy budget, so a copy cannot make the host build values
 //! without bound.
 //!
+//! A read whose stream or future the host created meets no guest
+//! writer. Its writable end is a producer the host serves, and the
+//! read polls it once before the built-in returns, as a host task:
+//! see `host_copy`. A poll that is ready completes the read here, and
+//! a pending one leaves the read to a later turn.
+//!
 //! A copy that finished has an event on its end, and the built-in
 //! takes it and returns its packed result. A copy that did not
 //! finish returns the blocked sentinel when the built-in is `async`,
@@ -79,14 +85,22 @@
 //! the completed result on a future, whose one value moved. That is
 //! what Wasmtime's cancel returns. A copy that found the other end
 //! dropped returns the dropped result. A copy that is still the
-//! pending side of its stream or future stops being it and takes the
-//! cancelled result, with the progress made so far. Either way the
-//! cancel takes the event as a copy does, and the end is idle
-//! afterwards unless the event reported the other end dropped. An end
-//! that holds no event even then waits on a party that has to answer
-//! the cancel first: an `async` cancel returns the blocked sentinel,
-//! and a synchronous one blocks through the suspend seam, as a copy
-//! does.
+//! pending side of a stream or future between guests stops being it
+//! and takes the cancelled result, with the progress made so far.
+//! Either way the cancel takes the event as a copy does, and the end
+//! is idle afterwards unless the event reported the other end
+//! dropped.
+//!
+//! A read that waits on a producer the host serves holds no event
+//! yet, and the producer has to answer the cancel first, as in
+//! Wasmtime's `cancel_read` against a host writer. The cancel wakes
+//! the host task that polls the producer, whose next poll is asked to
+//! finish, and the delivery that follows completes the read with the
+//! progress made (see `host_copy`). Meanwhile an `async` cancel
+//! returns the blocked sentinel, and a synchronous one blocks through
+//! the suspend seam, as a copy does. A second cancel while the first
+//! waits traps with the no-copy-pending cause, as the reference's
+//! `cancel_copy` does; Wasmtime allows it.
 
 use std::sync::{Arc, Mutex};
 
@@ -113,6 +127,8 @@ use crate::store::StoreContextInternalExt;
 use crate::store::{StoreContext, StoreData};
 use crate::types::{ListType, ValueType};
 use crate::value::Val;
+
+use super::host_copy::serve_host_read;
 
 /// The word a copy returns when it has not finished: the reference's
 /// `BLOCKED`. No packed result equals it, because a count never
@@ -183,12 +199,25 @@ pub fn build_cancel_copy<T: 'static>(
             let index = arg_u32(args, 0)?;
             let (id, table) = calling_instance(&abi_state, instance)?;
             trap_if_cannot_leave(&abi_state, id, &mut store_ctx)?;
-            let waitable = {
+            let (waitable, host_writer) = {
                 let mut guard = lock_tables(&tables)?;
                 let end = copying_end(&guard, kind, &payload, async_, table, index)?;
-                guard.tasks.cancel_copy(kind, end).map_err(trap)?;
-                WaitableId::from_end(kind, end)
+                let host_writer = guard.tasks.cancel_copy(kind, end).map_err(trap)?;
+                (WaitableId::from_end(kind, end), host_writer)
             };
+            // A copy that waits on a host producer ends when the
+            // producer answers a poll asked to finish: wake the host
+            // task that polls it, as Wasmtime wakes the producer's
+            // cancel waker.
+            if let Some(writer) = host_writer {
+                let waker = StoreContext::new(store_ctx.as_context_mut())
+                    .internal()
+                    .scheduler_mut()
+                    .take_host_writer_waker(writer);
+                if let Some(waker) = waker {
+                    waker.wake();
+                }
+            }
             let word = finish(&mut store_ctx, &tables, waitable, async_)?;
             results[0] = RuntimeVal::I32(word as i32);
             Ok(())
@@ -330,6 +359,20 @@ impl Builtin {
         }
 
         let waitable = WaitableId::from_end(self.kind, end);
+        let host_read = {
+            let guard = lock_tables(&self.tables)?;
+            match guard.tasks.host_writer_of(end) {
+                Some(writer) if !guard.tasks.has_pending_event(waitable).map_err(trap)? => {
+                    Some((writer, guard.tasks.current_task()))
+                }
+                _ => None,
+            }
+        };
+        if let Some((writer, caller_task)) = host_read {
+            let mut store = StoreContext::new(store_ctx.as_context_mut());
+            serve_host_read(&mut store, writer, caller_task).map_err(trap)?;
+        }
+
         finish(&mut store_ctx, &self.tables, waitable, self.options.async_)
     }
 

@@ -18,9 +18,11 @@
 //! arranged by writing the end's record directly, as the baselines of
 //! the ends themselves do.
 //!
-//! Between a guest and the host the same crossing has no host value
-//! to carry the end in yet, so it fails with `Error::Unsupported`
-//! after the lift's checks, in the flat and in the memory form.
+//! Out of a guest to the host the same crossing has no host value to
+//! lift the end into yet, so it fails with `Error::Unsupported` after
+//! the lift's checks. Into a guest the host passes a readable end it
+//! holds, and a value that is not one fails as a host value mismatch,
+//! in the flat and in the memory form.
 
 #![cfg(test)]
 
@@ -28,7 +30,7 @@ use crate::concurrency::{CopyState, EndId, EndKind};
 use crate::internal::FuncInternal;
 use crate::resource::{HandleKind, TableId};
 use crate::store::StoreInternalExt;
-use crate::{Component, Engine, Error, Func, Instance, Linker, Store, Val};
+use crate::{AbiCause, Component, Engine, Error, Func, Instance, Linker, Store, Val};
 use wcmp_macros::component;
 
 /// A creator and a reader, composed. The outer component exports
@@ -711,22 +713,22 @@ async fn it_fails_a_readable_end_the_host_would_receive_through_memory_as_unsupp
 }
 
 #[wcmp_macros::test]
-async fn it_fails_a_readable_end_the_host_would_pass_flat_as_unsupported() {
+async fn it_refuses_a_host_value_that_is_not_a_readable_end_in_the_flat_form() {
     let (mut store, instance) = instantiate(COMPOSED).await;
 
     let error = call(&mut store, &instance, "take-stream", &[Val::U32(1)])
         .await
-        .expect_err("the host has no end to pass");
+        .expect_err("a number is not a readable end");
 
     assert!(
-        matches!(error, Error::Unsupported { .. }),
+        matches!(&error, Error::Abi(abi) if matches!(abi.cause, AbiCause::HostValueMismatch)),
         "{}",
         chain(&error)
     );
 }
 
 #[wcmp_macros::test]
-async fn it_fails_a_readable_end_the_host_would_pass_through_memory_as_unsupported() {
+async fn it_refuses_a_host_value_that_is_not_a_readable_end_in_the_memory_form() {
     let (mut store, instance) = instantiate(COMPOSED).await;
 
     let error = call(
@@ -736,10 +738,10 @@ async fn it_fails_a_readable_end_the_host_would_pass_through_memory_as_unsupport
         &[Val::List(vec![Val::U32(1)].into_boxed_slice())],
     )
     .await
-    .expect_err("the host has no end to pass");
+    .expect_err("a number is not a readable end");
 
     assert!(
-        matches!(error, Error::Unsupported { .. }),
+        matches!(&error, Error::Abi(abi) if matches!(abi.cause, AbiCause::HostValueMismatch)),
         "{}",
         chain(&error)
     );

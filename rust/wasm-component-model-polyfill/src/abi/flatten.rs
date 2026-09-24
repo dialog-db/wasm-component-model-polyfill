@@ -23,11 +23,11 @@ use wasm_runtime_layer::Val as RuntimeVal;
 use super::context::BoundaryContext;
 use super::layout::{FlatType, flags_chunk_count, flat_types};
 use super::{
-    LIST_ELEMENT_COST, end_transfer_unsupported, lift_end_for_host, lift_list, lift_map,
-    lift_string, lower, lower_list, lower_str,
+    LIST_ELEMENT_COST, lift_end_for_host, lift_list, lift_map, lift_string, lower, lower_list,
+    lower_str,
 };
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
-use crate::internal::ErrorInternal;
+use crate::internal::{ErrorInternal, FutureAnyInternal, StreamAnyInternal};
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::{Val, ValField};
 
@@ -192,7 +192,16 @@ pub fn lower_into_flat_slots<T: 'static>(
             out.push(RuntimeVal::I32(index as i32));
             Ok(())
         }
-        (ValueType::Stream(_) | ValueType::Future(_), _) => Err(end_transfer_unsupported(ty)),
+        (ValueType::Stream(_), Val::Stream(stream)) => {
+            let index = lower::lower_host_end(ctx, stream.end(), ty, position)?;
+            out.push(RuntimeVal::I32(index as i32));
+            Ok(())
+        }
+        (ValueType::Future(_), Val::Future(future)) => {
+            let index = lower::lower_host_end(ctx, future.end(), ty, position)?;
+            out.push(RuntimeVal::I32(index as i32));
+            Ok(())
+        }
         _ => Err(host_value_mismatch(ty, position)),
     }
 }

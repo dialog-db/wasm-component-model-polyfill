@@ -39,12 +39,22 @@ type BoxedLowering<T> =
 /// itself. It gives the task to the store and returns to the guest,
 /// and the store polls it in the turn after each wake, with a waker
 /// of its own that passes the wake on to the driver's, so a wake the
-/// executor delivers reaches the driver that is running the store. When the body completes, the turn queues the lowering
-/// of the result into the subtask that awaits it.
+/// executor delivers reaches the driver that is running the store.
+/// When the body completes, the turn queues the lowering of the
+/// result into the subtask that awaits it.
+///
+/// A guest's copy against an end the host serves runs as a host task
+/// too. Its body polls the host's producer, and what the turn queues
+/// when the body completes is the delivery of what the producer
+/// produced into the guest's buffer, which completes the copy. Such a
+/// task resolves no subtask: its failure is the trap of the guest
+/// task that started the copy, as a host call's failure is the trap
+/// of the task that made the call.
 pub struct HostTask<T: 'static> {
     body: Box<dyn HostTaskBody<T>>,
     lowering: BoxedLowering<T>,
-    subtask: SubtaskId,
+    /// The subtask the task resolves, or `None` for a copy.
+    subtask: Option<SubtaskId>,
     caller_task: Option<TaskId>,
     caller_table: Option<TableId>,
     handle_index: u32,
@@ -61,7 +71,7 @@ impl<T: 'static> HostTask<T> {
         Self {
             body: Box::new(body),
             lowering: Box::new(lowering),
-            subtask,
+            subtask: Some(subtask),
             caller_task: None,
             caller_table: None,
             handle_index: 0,
@@ -78,8 +88,30 @@ impl<T: 'static> HostTask<T> {
         Self::new(subtask, lowering, FutureBody(Box::pin(future)))
     }
 
-    /// The subtask this host task resolves.
-    pub fn subtask(&self) -> SubtaskId {
+    /// The host task of a guest's copy against an end the host
+    /// serves, started by `caller_task`: `body` polls the host's side
+    /// of the copy, and `delivery` carries what it produced into the
+    /// guest's buffer once it is ready. The vector the body produces
+    /// is empty, because what the producer produced stays with the
+    /// end until the delivery takes it.
+    pub fn copy(
+        caller_task: Option<TaskId>,
+        delivery: impl HostResultLowering<T>,
+        body: impl HostTaskBody<T>,
+    ) -> Self {
+        Self {
+            body: Box::new(body),
+            lowering: Box::new(delivery),
+            subtask: None,
+            caller_task,
+            caller_table: None,
+            handle_index: 0,
+        }
+    }
+
+    /// The subtask this host task resolves, or `None` for the task of
+    /// a copy, which resolves none.
+    pub fn subtask(&self) -> Option<SubtaskId> {
         self.subtask
     }
 
@@ -151,6 +183,11 @@ impl<T: 'static> HostTask<T> {
     /// item ran, or the call that started it left no channel — ends
     /// the turn and reaches whichever driver was polling, which is
     /// the rule `Func::call` and `Store::run_concurrent` state.
+    ///
+    /// The task of a copy queues the delivery instead. A body and a
+    /// delivery that succeed have completed the copy, and a failure
+    /// of either is the trap of the task that started the copy, by
+    /// the same rule.
     pub fn lowering_item(self, outcome: Result<Vec<Val>>) -> Item<T> {
         let Self {
             lowering,
@@ -160,6 +197,15 @@ impl<T: 'static> HostTask<T> {
             handle_index,
             ..
         } = self;
+        let Some(subtask) = subtask else {
+            return Item::new(
+                ItemKind::HostCopyDelivery,
+                move |store: &mut StoreContext<'_, T>| match lowering(store, outcome) {
+                    Ok(()) => Ok(()),
+                    Err(error) => store.internal().fail_export_task(caller_task, error),
+                },
+            );
+        };
         Item::new(
             ItemKind::HostResultLowering,
             move |store: &mut StoreContext<'_, T>| {

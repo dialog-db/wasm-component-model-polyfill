@@ -78,6 +78,17 @@
 //!   [`SharedRecord`](shared_record::SharedRecord) is the state its
 //!   two ends share. The store keeps one table of each.
 //!
+//! A host writes a stream or a future through a producer: a
+//! [`StreamProducer`] or a [`FutureProducer`], handed to
+//! [`StreamReader::new`] or [`FutureReader::new`], which create the
+//! shared record with the producer as its writable end and return the
+//! readable end. The scheduler holds the producer, erased to the host
+//! end the store polls, and a guest's read on the other end is a host
+//! task while the producer is pending. [`Destination`] is the buffer
+//! of the read a stream's producer serves, and [`StreamResult`] what
+//! one of its polls answers. [`StreamAny`] and [`FutureAny`] carry a
+//! readable end the host holds as a [`Val`](crate::Val).
+//!
 //! A synchronous call is a task with one thread, so the synchronous
 //! baseline is the case of one task per instance at a time.
 
@@ -89,6 +100,7 @@ mod copy_buffer;
 mod copy_end;
 mod copy_result;
 mod copy_state;
+mod destination;
 mod driver;
 mod end_direction;
 mod end_id;
@@ -97,11 +109,15 @@ mod event;
 mod event_code;
 mod event_slot;
 mod failure_channel;
+mod future_any;
+mod future_producer;
+mod future_reader;
 mod host_future;
 mod host_result_lowering;
 mod host_task;
 mod host_task_body;
 mod host_task_set;
+mod host_writer;
 mod instance_id;
 mod instance_record;
 mod item;
@@ -117,6 +133,10 @@ mod scheduler;
 mod scheduler_state;
 mod scope;
 mod shared_record;
+mod stream_any;
+mod stream_producer;
+mod stream_reader;
+mod stream_result;
 mod subtask;
 mod subtask_id;
 mod subtask_state;
@@ -146,7 +166,9 @@ pub use call_status::CallStatus;
 pub use caller_kind::CallerKind;
 pub use copy_buffer::CopyBuffer;
 pub use copy_state::CopyState;
+pub use destination::Destination;
 pub use driver::Driver;
+pub use end_direction::EndDirection;
 pub use end_id::EndId;
 pub use end_kind::EndKind;
 pub use event::Event;
@@ -157,8 +179,12 @@ pub use event::Event;
 pub use event_code::EventCode;
 pub use event_slot::EventSlot;
 pub use failure_channel::FailureChannel;
+pub use future_any::FutureAny;
+pub use future_producer::FutureProducer;
+pub use future_reader::FutureReader;
 pub use host_future::HostFuture;
 pub use host_task::HostTask;
+pub use host_task_body::HostTaskBody;
 pub use instance_id::InstanceId;
 pub use item::Item;
 pub use item_kind::ItemKind;
@@ -169,6 +195,10 @@ pub use poll_scope::PollScope;
 pub use scheduler::Scheduler;
 pub use scheduler_state::SchedulerState;
 pub use scope::Scope;
+pub use stream_any::StreamAny;
+pub use stream_producer::StreamProducer;
+pub use stream_reader::StreamReader;
+pub use stream_result::StreamResult;
 pub use subtask_id::SubtaskId;
 pub use subtask_state::SubtaskState;
 pub use suspend_provider::SuspendProvider;

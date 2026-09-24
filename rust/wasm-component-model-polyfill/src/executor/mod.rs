@@ -27,6 +27,7 @@ mod cancel;
 mod compile_module;
 mod copy;
 mod end_builtins;
+mod host_copy;
 mod instantiate;
 mod prepare_call;
 mod resource_destructor;

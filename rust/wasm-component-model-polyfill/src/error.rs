@@ -1226,6 +1226,34 @@ pub enum CopyCause {
     #[error("cannot read from future after previous read succeeded")]
     FutureReadAfterDone,
 
+    /// A host producer answered pending after it had stored items in
+    /// the destination of its poll. The items would reach the reader
+    /// of a read the producer said it had not served. The message is
+    /// the one Wasmtime raises for the same answer.
+    #[error(
+        "StreamProducer::poll_produce returned Poll::Pending after producing at least one item"
+    )]
+    ProducerPendingAfterItems,
+
+    /// A host producer answered that its poll completed without
+    /// storing an item, for a read that asked for some. The reader
+    /// would be told of a read that moved nothing. The message is the
+    /// one Wasmtime raises for the same answer.
+    #[error(
+        "StreamProducer::poll_produce returned StreamResult::Completed without producing any items"
+    )]
+    ProducerCompletedWithoutItems,
+
+    /// A host producer answered that its poll was cancelled, or a
+    /// future's producer answered with no value, when the poll had
+    /// not been asked to finish. The message is the one Wasmtime
+    /// raises for the same answer, which it gives a future's producer
+    /// too.
+    #[error(
+        "StreamProducer::poll_produce returned StreamResult::Cancelled without being given a `finish` parameter value of true"
+    )]
+    ProducerCancelledWithoutFinish,
+
     /// A guest cancelled a copy on an end that has none to cancel:
     /// the end is not copying, or a cancel of its copy is already in
     /// progress, or a thread waits on the copy synchronously. The

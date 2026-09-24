@@ -23,4 +23,7 @@ pub enum ItemKind {
     /// The lowering of a completed host task's result into the
     /// subtask that awaits it.
     HostResultLowering,
+    /// The delivery of what a host end produced into the guest copy
+    /// that awaits it.
+    HostCopyDelivery,
 }

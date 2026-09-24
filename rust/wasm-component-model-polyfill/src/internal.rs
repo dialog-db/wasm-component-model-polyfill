@@ -35,6 +35,7 @@ use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::shape::AbiShape;
 use crate::backend::Backend;
 use crate::component::{Component, ExternalName, FunctionType};
+use crate::concurrency::EndId;
 use crate::error::{Error, Result};
 use crate::executor::ir::{CanonOptions, ExecutorIr};
 use crate::identifier::InterfaceIdentifier;
@@ -43,6 +44,7 @@ use crate::linker::{DestructorBody, InstanceRegistration, Resolution};
 use crate::module::{CoreExternType, CoreValueType, Module};
 use crate::resource::ResourceTableRuntime;
 use crate::store::{StoreContext, StoreId};
+use crate::types::ValueType;
 
 /// The crate-internal face of [`Component`](crate::Component).
 pub trait ComponentInternal {
@@ -85,6 +87,51 @@ pub trait ErrorInternal {
 pub trait AccessorInternal<T: 'static> {
     /// A token for the store `store` names.
     fn new(store: StoreId) -> Self;
+}
+
+/// The crate-internal face of [`Destination`](crate::Destination).
+pub trait DestinationInternal<'a, T> {
+    /// The destination of a read that can take `remaining` items,
+    /// over the vector the end keeps its waiting items in.
+    fn new(buffer: &'a mut Vec<T>, remaining: Option<usize>) -> Self;
+}
+
+/// The crate-internal face of [`StreamReader`](crate::StreamReader).
+pub trait StreamReaderInternal {
+    /// The reader of the readable end `end`.
+    fn from_end(end: EndId) -> Self;
+    /// The readable end the reader holds.
+    fn end(&self) -> EndId;
+}
+
+/// The crate-internal face of [`FutureReader`](crate::FutureReader).
+pub trait FutureReaderInternal {
+    /// The reader of the readable end `end`.
+    fn from_end(end: EndId) -> Self;
+    /// The readable end the reader holds.
+    fn end(&self) -> EndId;
+}
+
+/// The crate-internal face of [`StreamAny`](crate::StreamAny).
+pub trait StreamAnyInternal {
+    /// The untyped value of the readable end `end`, whose stream
+    /// carries `payload`.
+    fn new(end: EndId, payload: Option<ValueType>) -> Self;
+    /// The readable end the value holds.
+    fn end(&self) -> EndId;
+    /// The type of the values the stream carries.
+    fn payload(&self) -> Option<&ValueType>;
+}
+
+/// The crate-internal face of [`FutureAny`](crate::FutureAny).
+pub trait FutureAnyInternal {
+    /// The untyped value of the readable end `end`, whose future
+    /// carries `payload`.
+    fn new(end: EndId, payload: Option<ValueType>) -> Self;
+    /// The readable end the value holds.
+    fn end(&self) -> EndId;
+    /// The type of the value the future carries.
+    fn payload(&self) -> Option<&ValueType>;
 }
 
 /// The crate-internal face of

@@ -976,6 +976,84 @@ impl TaskTables {
         (readable, writable)
     }
 
+    /// Create one stream or future whose writable end the host serves,
+    /// of kind `host`: the records [`insert_ends`](Self::insert_ends)
+    /// creates, with the shared record marking the writable end as
+    /// the host's. Answers the readable end and then the writable
+    /// end.
+    ///
+    /// Neither end enters a handle table here. The readable end
+    /// enters a guest's when the host lowers it into a call, and the
+    /// writable end never enters one: the scheduler holds the
+    /// producer that serves it.
+    pub fn insert_host_ends(
+        &mut self,
+        payload: Option<ValueType>,
+        host: EndKind,
+    ) -> (EndId, EndId) {
+        let (readable, writable) = self.insert_ends(payload);
+        if let Some(shared) = self.end(readable).map(|record| record.shared)
+            && let Some(record) = self.shared_records.get_mut(shared)
+        {
+            record.host = Some(host);
+        }
+        (readable, writable)
+    }
+
+    /// The writable end the host serves for the stream or future
+    /// `reader` belongs to, while the host can still deliver through
+    /// it: the host created the stream or future, and its writable
+    /// end has not been dropped.
+    pub fn host_writer_of(&self, reader: EndId) -> Option<EndId> {
+        let record = self.shared_record(reader)?;
+        let serves_writer = record
+            .host
+            .is_some_and(|kind| direction_of(kind) == EndDirection::Writable);
+        (serves_writer && !record.dropped).then_some(record.writable)
+    }
+
+    /// The host moved `count` values out of `writer`, the writable
+    /// end it serves, and into the buffer of the copy on the readable
+    /// end: that buffer records `count` more values of progress, and
+    /// the copy completes. The completion's event reports the whole
+    /// progress when it is delivered, as a guest's pending copy does.
+    ///
+    /// A copy being cancelled that moved nothing completes with the
+    /// cancelled result instead, which a future's delivery reports as
+    /// it is: the producer answered the cancel without a value, and
+    /// the future can be read again. A stream's completion is reported
+    /// as cancelled at delivery anyway.
+    pub fn finish_host_copy(&mut self, writer: EndId, count: u32) -> Result<()> {
+        let record = self.shared_record_at(self.end_record(writer)?.shared)?;
+        let (kind, reader) = (host_kind(record)?, record.readable);
+        let record = self.end_record_mut(reader)?;
+        let cancelling = record.state == CopyState::Cancelling;
+        let buffer = record
+            .buffer
+            .as_mut()
+            .ok_or_else(|| Error::internal("a host end delivered to a reader with no copy"))?;
+        buffer.progress += count;
+        let result = if cancelling && buffer.progress == 0 {
+            CopyResult::Cancelled
+        } else {
+            CopyResult::Completed
+        };
+        self.notify_copy(counterpart(kind), reader, result)
+    }
+
+    /// Let go of `writer`, the writable end the host serves, once its
+    /// producer will deliver nothing more: the stream ended, or the
+    /// future's value was delivered. The end drops as a guest's
+    /// writable end drops, and the rules of
+    /// [`drop_end`](Self::drop_end) tell the readable end. A future's
+    /// writable end is done first, because the host wrote its value,
+    /// or the reader dropped and it never will.
+    pub fn release_host_end(&mut self, writer: EndId) -> Result<()> {
+        let kind = host_kind(self.shared_record_at(self.end_record(writer)?.shared)?)?;
+        self.end_record_mut(writer)?.state = CopyState::Done;
+        self.drop_end(kind, writer)
+    }
+
     /// The index `end` names, under the rule
     /// [`task_index`](Self::task_index) states: `None` once the end
     /// the identity was minted for is gone, so an entry left naming
@@ -1263,29 +1341,51 @@ impl TaskTables {
     /// other end dropped, before the cancel, and the event reports the
     /// progress the copy made. A stream's completion is reported as
     /// cancelled once the end is `cancelling`, as delivery states, and
-    /// a future's as completed. An end that holds no
-    /// event and is the pending side of its stream or future stops
-    /// being it and is given the cancelled result, which is the
-    /// reference's `cancel` of its shared record. Its buffer is given
-    /// back when the event is delivered, and the event then reports
-    /// the progress made so far.
+    /// a future's as completed.
     ///
-    /// Afterwards the end holds an event unless its copy waits on a
-    /// party that has to answer the cancel first. The caller then
-    /// waits for the event or reports the copy blocked.
-    pub fn cancel_copy(&mut self, kind: EndKind, end: EndId) -> Result<()> {
+    /// An end that holds no event and whose other end the host serves
+    /// through a producer waits on the host to answer the cancel.
+    /// That is the reference's `End.cancel` when the other end has no
+    /// owner, which may leave the event to the host, and Wasmtime's
+    /// `cancel_read` against a host writer, which tells the producer to
+    /// finish and wakes it. The end stays the pending side, and the
+    /// writable end the host serves is answered, for the caller to
+    /// wake: its next poll is asked to finish, and its delivery
+    /// completes the copy with the progress made, as cancelled on a
+    /// stream, and as cancelled on a future that moved no value.
+    ///
+    /// Any other end that holds no event is the pending side of its
+    /// stream or future. It stops being it and is given the cancelled
+    /// result, which is the reference's `cancel` of its shared record.
+    /// Its buffer is given back when the event is delivered, and the
+    /// event then reports the progress made so far.
+    ///
+    /// Afterwards the end holds an event unless its copy waits on the
+    /// host. The caller then waits for the event or reports the copy
+    /// blocked. A second cancel while the first waits finds the end
+    /// `cancelling` and traps, as the reference's `cancel_copy` does.
+    /// Wasmtime allows it and waits again; the polyfill keeps the
+    /// reference's trap.
+    pub fn cancel_copy(&mut self, kind: EndKind, end: EndId) -> Result<Option<EndId>> {
+        let host_writer = self.host_writer_of(end);
         let record = self.end_record_mut(end)?;
         record.state = CopyState::Cancelling;
         if record.waitable.pending_event.is_some() {
-            return Ok(());
+            return Ok(None);
+        }
+        if host_writer.is_some() {
+            return Ok(host_writer);
         }
         let (shared, direction) = (record.shared, record.direction);
         let record = self.shared_record_at_mut(shared)?;
         if record.pending != Some(direction) {
-            return Ok(());
+            return Err(Error::internal(
+                "a copying end with no event is neither the pending side nor a host end's reader",
+            ));
         }
         record.pending = None;
         self.notify_copy(kind, end, CopyResult::Cancelled)
+            .map(|()| None)
     }
 
     /// Give `end`, an end of kind `kind`, the event of a finished
@@ -1444,6 +1544,14 @@ fn counterpart(kind: EndKind) -> EndKind {
         EndKind::FutureReadable => EndKind::FutureWritable,
         EndKind::FutureWritable => EndKind::FutureReadable,
     }
+}
+
+/// The kind of the end the host serves on `record`, or the internal
+/// error when the host serves neither.
+fn host_kind(record: &SharedRecord) -> Result<EndKind> {
+    record
+        .host
+        .ok_or_else(|| Error::internal("a host end's stream or future was not made by the host"))
 }
 
 /// Which way the values move through an end of `kind`.

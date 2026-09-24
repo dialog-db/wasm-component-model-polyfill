@@ -28,6 +28,11 @@
 //! completed copy has not been delivered, and the second takes the
 //! shared record and both end records out of the store.
 //!
+//! A readable end whose stream or future the host created, with a
+//! producer as its writable end, takes that end with it: the host's
+//! end drops as the second of the pair, and the producer is dropped
+//! unpolled, because nobody is left to read what it would produce.
+//!
 //! Every one of the six traps with the cannot-leave cause when the
 //! instance's may-leave flag is clear, which is the case while a
 //! `realloc` or a `post-return` of that instance runs.
@@ -116,6 +121,10 @@ pub fn build_drop_end<T: 'static>(
             if *carried != payload {
                 return Err(trap(Error::Copy(CopyCause::PayloadMismatch { kind })));
             }
+            // A readable end whose writable end the host serves takes
+            // the host's end with it: nobody is left to read what the
+            // producer would produce.
+            let host_writer = guard.tasks.host_writer_of(end);
             // The record's own checks come first: a busy end, and a
             // writable future end that has not written, trap and
             // keep their entry.
@@ -124,6 +133,18 @@ pub fn build_drop_end<T: 'static>(
                 .drop_waitable(WaitableId::from_end(kind, end))
                 .map_err(trap)?;
             guard.remove(table, index);
+            let Some(writer) = host_writer else {
+                return Ok(());
+            };
+            guard.tasks.release_host_end(writer).map_err(trap)?;
+            drop(guard);
+            // The producer is dropped with no lock held, because its
+            // own drop runs host code.
+            let producer = StoreContext::new(store_ctx.as_context_mut())
+                .internal()
+                .scheduler_mut()
+                .take_host_writer(writer);
+            drop(producer);
             Ok(())
         },
     )

@@ -1,5 +1,6 @@
 //! The polyfill's component-level value enum.
 
+use crate::concurrency::{FutureAny, StreamAny};
 use crate::resource::ResourceHandle;
 
 /// A single component-level value passed to or returned from an
@@ -109,6 +110,20 @@ pub enum Val {
     Own(ResourceHandle),
     /// A borrow handle to a resource (`borrow<T>`).
     Borrow(ResourceHandle),
+    /// The readable end of a stream (`stream<T>`) the host holds.
+    ///
+    /// Lowering one into a guest enters the end in the guest's handle
+    /// table, after checking that the guest's type carries the
+    /// stream's payload type. A typed
+    /// [`StreamReader`](crate::StreamReader) crosses as one of these.
+    Stream(StreamAny),
+    /// The readable end of a future (`future<T>`) the host holds.
+    ///
+    /// Lowering one into a guest enters the end in the guest's handle
+    /// table, after checking that the guest's type carries the
+    /// future's payload type. A typed
+    /// [`FutureReader`](crate::FutureReader) crosses as one of these.
+    Future(FutureAny),
 }
 
 /// One field of a [`Val::Record`].

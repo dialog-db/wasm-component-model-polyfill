@@ -8,13 +8,14 @@
 //! synchronous export, a synchronous host function, an `async` export,
 //! and an `async` import can each carry one.
 //!
-//! A readable end cannot cross between a guest and the host yet. A
+//! A readable end cannot cross out of a guest to the host yet. A
 //! component whose function type carries a stream or a future
-//! translates, links, and instantiates, and a call that lifts or
-//! lowers such a value between the guest and the host fails with
-//! `Error::Unsupported` at the call. A lift makes the checks every
-//! crossing makes first, so the guests below hand over an end they
-//! really hold.
+//! translates, links, and instantiates, and a call that lifts such a
+//! value from the guest fails with `Error::Unsupported` at the call.
+//! A lift makes the checks every crossing makes first, so the guests
+//! below hand over an end they really hold. The other way, the host
+//! lowers a readable end it holds, and a value that is not one fails
+//! the lower as a host value mismatch.
 
 #![cfg(test)]
 
@@ -22,7 +23,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use wasm_component_model_polyfill::{
-    Component, Engine, Error, ExternType, ExternalName, FunctionParameter, FunctionType,
+    AbiCause, Component, Engine, Error, ExternType, ExternalName, FunctionParameter, FunctionType,
     FutureType, Instance, Linker, ListType, PrimitiveType, Store, StreamType, Val, ValueType,
 };
 use wcmp_macros::component;
@@ -299,10 +300,9 @@ async fn it_links_host_functions_that_carry_streams_and_futures() {
 }
 
 #[wcmp_macros::test]
-async fn it_refuses_to_lower_a_stream_into_a_synchronous_export_at_the_call() {
-    // The host has no readable end to pass, so whatever value it
-    // hands over, the lower that reaches the stream fails before the
-    // guest runs.
+async fn it_refuses_to_lower_a_value_that_is_not_a_stream_into_a_synchronous_export() {
+    // The host passes a stream as the readable end it holds, so any
+    // other value fails the lower before the guest runs.
     let engine = Engine::new().expect("engine");
     let linker = linker_for_every_kind(&engine, Arc::new(AtomicBool::new(false)));
     let (mut store, instance) = instantiate(&engine, &linker, STREAMS_AND_FUTURES).await;
@@ -312,15 +312,12 @@ async fn it_refuses_to_lower_a_stream_into_a_synchronous_export_at_the_call() {
         .expect("the component exports `take`")
         .call(&mut store, &[Val::U32(0)])
         .await
-        .expect_err("a stream cannot cross the boundary yet");
-    assert_eq!(
-        unsupported_feature(err),
-        "the transfer of a `stream<T>` readable end to or from the host"
-    );
+        .expect_err("a number is not a readable end");
+    assert_host_value_mismatch(err);
 }
 
 #[wcmp_macros::test]
-async fn it_refuses_to_lower_a_future_into_an_async_export_at_the_call() {
+async fn it_refuses_to_lower_a_value_that_is_not_a_future_into_an_async_export() {
     let engine = Engine::new().expect("engine");
     let linker = linker_for_every_kind(&engine, Arc::new(AtomicBool::new(false)));
     let (mut store, instance) = instantiate(&engine, &linker, STREAMS_AND_FUTURES).await;
@@ -330,10 +327,16 @@ async fn it_refuses_to_lower_a_future_into_an_async_export_at_the_call() {
         .expect("the component exports `take-async`")
         .call(&mut store, &[Val::U32(0)])
         .await
-        .expect_err("a future cannot cross the boundary yet");
-    assert_eq!(
-        unsupported_feature(err),
-        "the transfer of a `future<T>` readable end to or from the host"
+        .expect_err("a number is not a readable end");
+    assert_host_value_mismatch(err);
+}
+
+/// Assert that `err` is the failure of a lower handed a host value of
+/// another shape than the declared type.
+fn assert_host_value_mismatch(err: Error) {
+    assert!(
+        matches!(&err, Error::Abi(abi) if matches!(abi.cause, AbiCause::HostValueMismatch)),
+        "expected a host value mismatch, got {err:?}"
     );
 }
 

@@ -541,7 +541,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         caller: TableId,
         lower: LowerKind,
     ) -> Result<CallStatus> {
-        let subtask = task.subtask();
+        let subtask = task
+            .subtask()
+            .ok_or_else(|| Error::internal("a copy's host task was started as a call"))?;
         let waker = self.active_waker();
         // The body reaches the host data through the accessor this
         // poll hands it and through nothing else, for the length of

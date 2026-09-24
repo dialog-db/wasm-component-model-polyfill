@@ -4,9 +4,11 @@ use core::task::Waker;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use super::SuspendSeam;
+use super::end_id::EndId;
 use super::event_slot::EventSlot;
 use super::host_task::HostTask;
 use super::host_task_set::HostTaskSet;
+use super::host_writer::HostWriter;
 use super::instance_id::InstanceId;
 use super::item::Item;
 use super::task_id::TaskId;
@@ -236,6 +238,11 @@ impl<T: 'static> HeldCallbacks<T> {
 /// entry, and the task it names ended — and was swept — back when
 /// its implicit thread exited.
 ///
+/// Beside the host tasks sit the writable ends the host serves
+/// through producers, keyed by the end's identity. A guest's read on
+/// such an end's stream or future is a host task while the producer
+/// is pending, and the producer itself stays here between reads.
+///
 /// The suspend capability is named here too. It is the seam a
 /// blocking built-in asks to suspend the current guest thread, and
 /// the slot a target fills to serve that block by switching stacks.
@@ -251,6 +258,10 @@ pub struct Scheduler<T: 'static> {
     entry_gate: VecDeque<GateEntry<T>>,
     held_callbacks: HeldCallbacks<T>,
     host_tasks: HostTaskSet<T>,
+    host_writers: HashMap<EndId, Box<dyn HostWriter<T>>>,
+    /// The waker of the last poll of each host writer that answered
+    /// pending, which a cancel of the read wakes.
+    host_writer_wakers: HashMap<EndId, Waker>,
     suspend_seam: SuspendSeam<T>,
     resumptions: u64,
     items_run: u64,
@@ -288,6 +299,8 @@ impl<T: 'static> Scheduler<T> {
             entry_gate: VecDeque::new(),
             held_callbacks: HeldCallbacks::new(),
             host_tasks: HostTaskSet::new(),
+            host_writers: HashMap::new(),
+            host_writer_wakers: HashMap::new(),
             suspend_seam: SuspendSeam::new(),
             resumptions: 0,
             items_run: 0,
@@ -377,6 +390,36 @@ impl<T: 'static> Scheduler<T> {
     /// How many host tasks the store holds.
     pub fn host_task_count(&self) -> usize {
         self.host_tasks.len()
+    }
+
+    /// Hold `writer` as the writable end `end` the host serves. The
+    /// end records cannot hold it, because it is polled with the
+    /// store's context and they know nothing of the host data.
+    pub fn insert_host_writer(&mut self, end: EndId, writer: Box<dyn HostWriter<T>>) {
+        self.host_writers.insert(end, writer);
+    }
+
+    /// Take out the writable end `end` the host serves, so that it can
+    /// be polled with the store lent to its producer. One that is
+    /// still serving goes back through
+    /// [`insert_host_writer`](Self::insert_host_writer).
+    pub fn take_host_writer(&mut self, end: EndId) -> Option<Box<dyn HostWriter<T>>> {
+        self.host_writers.remove(&end)
+    }
+
+    /// Keep `waker`, the waker of a poll of the writable end `end`
+    /// that answered pending, in place of any kept before. It is the
+    /// one Wasmtime calls the cancel waker: a cancel of the read wakes
+    /// it, so that the host task polls the producer again, asked to
+    /// finish.
+    pub fn set_host_writer_waker(&mut self, end: EndId, waker: Waker) {
+        self.host_writer_wakers.insert(end, waker);
+    }
+
+    /// Take the waker kept for the writable end `end`, if a poll of it
+    /// answered pending since the last one was taken.
+    pub fn take_host_writer_waker(&mut self, end: EndId) -> Option<Waker> {
+        self.host_writer_wakers.remove(&end)
     }
 
     /// Put `item` in the switch slot: the scheduler runs it before
