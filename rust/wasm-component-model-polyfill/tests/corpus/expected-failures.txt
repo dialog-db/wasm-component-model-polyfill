@@ -15,67 +15,19 @@
 
 cm/async/async-calls-sync.wast:250 deferred-feature the callee spin-waits in its event loop until the outer caller unblocks it, so only that caller can release it, which needs a stack switch: the call fails with `blocking here requires a stack switch, but the target has no suspend provider`
 cm/async/async-calls-sync.wast:251 deferred-feature the callee spin-waits in its event loop until the outer caller unblocks it, so only that caller can release it, which needs a stack switch: the call fails with `blocking here requires a stack switch, but the target has no suspend provider`
-cm/async/big-interleaving-test.wast:14 deferred-feature component rejected: unsupported component feature: the `stream-cancel-read` trampoline
-cm/async/big-interleaving-test.wast:862 cascade no definition named `Tester`
-cm/async/big-interleaving-test.wast:864 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:866 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:875 cascade expected a trap `unreachable`, got `no instance to invoke`
-cm/async/big-interleaving-test.wast:881 cascade no definition named `Tester`
-cm/async/big-interleaving-test.wast:883 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:895 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:902 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:912 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:923 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:935 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:945 cascade expected a trap `cannot drop future write end without first writing a value`, got `no instance to invoke`
-cm/async/big-interleaving-test.wast:951 cascade no definition named `Tester`
-cm/async/big-interleaving-test.wast:953 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:973 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:985 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1003 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1063 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1097 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1143 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1171 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1199 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1245 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1295 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1327 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1383 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1431 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1445 cascade no definition named `Tester`
-cm/async/big-interleaving-test.wast:1446 cascade expected a trap `cannot have concurrent operations active on a future/stream`, got `no instance to invoke`
-cm/async/big-interleaving-test.wast:1454 cascade no definition named `Tester`
-cm/async/big-interleaving-test.wast:1456 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1466 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1476 cascade no definition named `Tester`
-cm/async/big-interleaving-test.wast:1477 cascade expected a trap `cannot drop busy stream`, got `no instance to invoke`
-cm/async/big-interleaving-test.wast:1485 cascade no definition named `Tester`
-cm/async/big-interleaving-test.wast:1487 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1496 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1508 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1520 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1530 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1543 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1559 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1572 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1583 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1594 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1607 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1623 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1630 cascade no definition named `Tester`
-cm/async/big-interleaving-test.wast:1631 cascade expected a trap `cannot drop a subtask which has not yet resolved`, got `no instance to invoke`
-cm/async/big-interleaving-test.wast:1638 cascade no definition named `Tester`
-cm/async/big-interleaving-test.wast:1640 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1651 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1664 cascade no instance to invoke
-cm/async/big-interleaving-test.wast:1675 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:912 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0xa69 - <unknown>!<wasm function 52> 1: 0x46e - DM!<wasm function 29>: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
+cm/async/big-interleaving-test.wast:973 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0xa69 - <unknown>!<wasm function 52> 1: 0x46e - DM!<wasm function 29>: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
+cm/async/big-interleaving-test.wast:1295 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0xa69 - <unknown>!<wasm function 52> 1: 0x46e - DM!<wasm function 29>: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
+cm/async/big-interleaving-test.wast:1508 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0xb0e - <unknown>!<wasm function 56> 1: 0x4a6 - DM!<wasm function 29>: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
+cm/async/big-interleaving-test.wast:1623 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0xe12 - <unknown>!<wasm function 70> 1: 0x561 - DM!<wasm function 29>: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
+cm/async/big-interleaving-test.wast:1640 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0xdc1 - <unknown>!<wasm function 67> 1: 0x54b - DM!<wasm function 29>: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
+cm/async/big-interleaving-test.wast:1651 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0xe12 - <unknown>!<wasm function 70> 1: 0x561 - DM!<wasm function 29>: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
+cm/async/big-interleaving-test.wast:1664 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x4dd - TM!<wasm function 35> 1: 0xd12 - <unknown>!<wasm function 63> 2: 0x522 - DM!<wasm function 29>: unsupported component feature: subtask cancellation (`subtask.cancel`)
+cm/async/big-interleaving-test.wast:1675 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x4dd - TM!<wasm function 35> 1: 0xd12 - <unknown>!<wasm function 63> 2: 0x522 - DM!<wasm function 29>: unsupported component feature: subtask cancellation (`subtask.cancel`)
 cm/async/builtin-trap-poisons-instance.wast:10 deferred-feature expected a trap `cannot enter component instance`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x1e - M!<wasm function 0>: wasm trap: wasm `unreachable` instruction executed` (the rules that decide which trap poisons an instance are not implemented, so the instance the first directive trapped in is not refused on the second entry)
 cm/async/builtin-trap-poisons-instance.wast:39 deferred-feature expected a trap `cannot enter component instance`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x83 - M!<wasm function 3>: copy error: cannot drop busy stream: cannot drop busy stream` (the rules that decide which trap poisons an instance are not implemented, so the instance the first directive trapped in is not refused on the second entry)
 cm/async/cancel-and-exclusive-lock.wast:196 deferred-feature the callee blocks in `waitable-set.wait` inside its first core function until its caller writes the future, so only that caller, below it on the stack, can release it, which needs a stack switch, and the suspend capability that serves one has no provider on either target until the stackful design fills it: the call fails with `deadlock detected: event loop cannot make further progress`
 cm/async/cancel-delivery.wast:278 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x155 - DM!run: unsupported component feature: subtask cancellation (`subtask.cancel`)
-cm/async/cancel-stream.wast:7 deferred-feature component rejected: unsupported component feature: the `stream-cancel-write` trampoline
-cm/async/cancel-stream.wast:202 cascade no instance to invoke
 cm/async/cancel-subtask.wast:217 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0xfb - DM!run: unsupported component feature: subtask cancellation (`subtask.cancel`)
 cm/async/during-sync-call-exclusive-resume.wast:9 deferred-feature component rejected: unsupported component feature: the `thread-index` trampoline
 cm/async/during-sync-call-exclusive-resume.wast:59 cascade no instance to invoke
@@ -129,9 +81,6 @@ cm/async/during-sync-scheduling-candidates.wast:414 deferred-feature component r
 cm/async/during-sync-scheduling-candidates.wast:482 cascade no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:483 cascade no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:484 cascade no instance to invoke
-cm/async/passing-resources.wast:7 deferred-feature component rejected: unsupported component feature: the `stream-cancel-write` trampoline
-cm/async/passing-resources.wast:175 cascade no instance to invoke
-cm/async/passing-resources.wast:176 cascade expected a trap `unknown handle index 3`, got `no instance to invoke`
 cm/async/reentrance.wast:548 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x66 - Canceller!<wasm function 1> 1: 0xe7 - <unknown>!<wasm function 5> 2: 0xa7 - CalleeModule!<wasm function 6> 3: 0x1f8 - <unknown>!<wasm function 12> 4: 0xc4 - Main!<wasm function 6>: unsupported component feature: subtask cancellation (`subtask.cancel`)
 cm/async/reentrance.wast:557 deferred-feature component rejected: unsupported component feature: the `thread-index` trampoline
 cm/async/reentrance.wast:685 cascade no instance to invoke
@@ -333,7 +282,7 @@ cm/values/post-return.wast:254 cascade expected a trap `cannot leave component i
 cm/values/post-return.wast:255 cascade no definition named `Tester`
 cm/values/post-return.wast:256 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
 cm/values/variants.wast:186 deferred-feature the invoked export is lifted stackfully: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
-fixtures/wasi-http.wast:4 deferred-feature component rejected: unsupported component feature: the `future-cancel-read` trampoline
+fixtures/wasi-http.wast:4 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `wasi:http/types@0.3.0`: no registered linker instance satisfies import `wasi:http/types@0.3.0`
 fixtures/wasi-http.wast:2121 cascade no instance to invoke
 fixtures/wasi-http.wast:2124 cascade no instance to invoke
 wasmtime/alias-region-known-imported-entities.wast:13 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref i31) is not supported in the wasm_runtime_layer
@@ -359,10 +308,6 @@ wasmtime/alias-region-reexported-known-entities.wast:14 substrate component reje
 wasmtime/alias-region-reexported-known-entities.wast:89 cascade no instance to invoke
 wasmtime/alias-region-reexported-known-entities.wast:90 cascade no instance to invoke
 wasmtime/alias-region-reexported-known-entities.wast:91 cascade no instance to invoke
-wasmtime/async/async-builtins.wast:5 deferred-feature component rejected: unsupported component feature: the `stream-cancel-read` trampoline
-wasmtime/async/async-builtins.wast:15 deferred-feature component rejected: unsupported component feature: the `stream-cancel-write` trampoline
-wasmtime/async/async-builtins.wast:25 deferred-feature component rejected: unsupported component feature: the `future-cancel-read` trampoline
-wasmtime/async/async-builtins.wast:35 deferred-feature component rejected: unsupported component feature: the `future-cancel-write` trampoline
 wasmtime/async/cancel-host.wast:80 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x85 - m!<wasm function 5>: unsupported component feature: subtask cancellation (`subtask.cancel`)
 wasmtime/async/cancel-host.wast:167 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0xd3 - m!<wasm function 7>: unsupported component feature: subtask cancellation (`subtask.cancel`)
 wasmtime/async/cancel-host.wast:256 deferred-feature expected a trap ``subtask.cancel` called after terminal status delivered`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0xce - m!<wasm function 7>: unsupported component feature: subtask cancellation (`subtask.cancel`)`
@@ -372,14 +317,6 @@ wasmtime/async/cancel-sibling-subtask.wast:146 deferred-feature instantiation er
 wasmtime/async/cancel-sibling-subtask.wast:150 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x8d - m!call-cancel 1: 0x85 - m!<wasm function 4> 2: 0x10d - <unknown>!<wasm function 6> 3: 0x47 - m!<wasm function 3>: unsupported component feature: subtask cancellation (`subtask.cancel`)
 wasmtime/async/cancel-starting-subtask-does-not-leak.wast:9 deferred-feature instantiation failed: link error: import `wasmtime`: instance export `set-max-table-capacity` has the wrong type: no registered linker instance satisfies import `wasmtime`: import `wasmtime`: instance export `set-max-table-capacity` has the wrong type: no registered linker instance satisfies import `wasmtime` (the harness registers only `gc` in the `wasmtime` instance, so the file stops at link before its `subtask.cancel` call)
 wasmtime/async/cancel-starting-subtask-does-not-leak.wast:103 cascade no instance to invoke
-wasmtime/async/cancel-sync-and-waitable.wast:18 deferred-feature component rejected: unsupported component feature: the `future-cancel-write` trampoline
-wasmtime/async/cancel-sync-and-waitable.wast:68 cascade expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
-wasmtime/async/cancel-sync-and-waitable.wast:71 deferred-feature component rejected: unsupported component feature: the `future-cancel-read` trampoline
-wasmtime/async/cancel-sync-and-waitable.wast:121 cascade expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
-wasmtime/async/cancel-sync-and-waitable.wast:124 deferred-feature component rejected: unsupported component feature: the `stream-cancel-write` trampoline
-wasmtime/async/cancel-sync-and-waitable.wast:174 cascade expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
-wasmtime/async/cancel-sync-and-waitable.wast:177 deferred-feature component rejected: unsupported component feature: the `stream-cancel-read` trampoline
-wasmtime/async/cancel-sync-and-waitable.wast:227 cascade expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
 wasmtime/async/cancel-sync-and-waitable.wast:301 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x7f - m!<wasm function 5>: unsupported component feature: subtask cancellation (`subtask.cancel`)`
 wasmtime/async/drop-waitable-set-stackful.wast:13 deferred-feature component rejected: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
 wasmtime/async/drop-waitable-set-stackful.wast:105 cascade expected a trap `cannot drop waitable set with waiters`, got `no instance to invoke`
@@ -390,14 +327,6 @@ wasmtime/async/error-context.wast:39 deferred-feature component rejected: unsupp
 wasmtime/async/error-context.wast:84 cascade no definition named `A`
 wasmtime/async/error-context.wast:85 cascade no instance to invoke
 wasmtime/async/error-context.wast:86 cascade expected a trap `invalid debug message pointer`, got `no instance to invoke`
-wasmtime/async/future-cancel-read-dropped.wast:4 deferred-feature component rejected: unsupported component feature: the `future-cancel-read` trampoline
-wasmtime/async/future-cancel-read-dropped.wast:66 cascade no instance to invoke
-wasmtime/async/future-cancel-write-completed.wast:5 deferred-feature component rejected: unsupported component feature: the `future-cancel-write` trampoline
-wasmtime/async/future-cancel-write-completed.wast:105 cascade no instance to invoke
-wasmtime/async/future-cancel-write-dropped.wast:4 deferred-feature component rejected: unsupported component feature: the `future-cancel-write` trampoline
-wasmtime/async/future-cancel-write-dropped.wast:57 cascade no instance to invoke
-wasmtime/async/futures.wast:54 deferred-feature component rejected: unsupported component feature: the `future-cancel-read` trampoline
-wasmtime/async/futures.wast:64 deferred-feature component rejected: unsupported component feature: the `future-cancel-write` trampoline
 wasmtime/async/intra-futures.wast:55 deferred-feature the rule that traps a read and a write from one instance on a payload that is not a number is not implemented, so the copy lowers the string and calls the reader's `realloc`, which is `unreachable`: the call fails with `wasm `unreachable` instruction executed`
 wasmtime/async/intra-streams.wast:56 deferred-feature the rule that traps a read and a write from one instance on a payload that is not a number is not implemented, so the copy succeeds: expected a trap `cannot read from and write to intra-component future/stream with non-numeric payload`, got []
 wasmtime/async/join-during-sync-read.wast:8 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
@@ -407,30 +336,9 @@ wasmtime/async/stackful.wast:7 deferred-feature component rejected: unsupported 
 wasmtime/async/stackful.wast:64 deferred-feature the invoked export lowers a stackfully lifted callee: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
 wasmtime/async/stackful.wast:67 deferred-feature component rejected: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
 wasmtime/async/stackful.wast:107 cascade no instance to invoke
-wasmtime/async/stream-cancel-finished-op.wast:3 deferred-feature component rejected: unsupported component feature: the `stream-cancel-read` trampoline
-wasmtime/async/stream-cancel-finished-op.wast:231 cascade no definition named `A`
-wasmtime/async/stream-cancel-finished-op.wast:232 cascade expected a trap `cannot read after being notified that the writable end dropped`, got `no instance to invoke`
-wasmtime/async/stream-cancel-finished-op.wast:233 cascade no definition named `A`
-wasmtime/async/stream-cancel-finished-op.wast:234 cascade expected a trap `cannot read after being notified that the writable end dropped`, got `no instance to invoke`
-wasmtime/async/stream-cancel-finished-op.wast:235 cascade no definition named `A`
-wasmtime/async/stream-cancel-finished-op.wast:236 cascade expected a trap `cannot read after being notified that the writable end dropped`, got `no instance to invoke`
-wasmtime/async/stream-cancel-finished-op.wast:238 cascade no definition named `A`
-wasmtime/async/stream-cancel-finished-op.wast:239 cascade expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
-wasmtime/async/stream-cancel-finished-op.wast:240 cascade no definition named `A`
-wasmtime/async/stream-cancel-finished-op.wast:241 cascade expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
-wasmtime/async/stream-cancel-finished-op.wast:242 cascade no definition named `A`
-wasmtime/async/stream-cancel-finished-op.wast:243 cascade expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
-wasmtime/async/stream-cancel-finished-op.wast:246 cascade no definition named `A`
-wasmtime/async/stream-cancel-finished-op.wast:247 cascade expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
-wasmtime/async/stream-cancel-finished-op.wast:248 cascade no definition named `A`
-wasmtime/async/stream-cancel-finished-op.wast:249 cascade expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
-wasmtime/async/stream-cancel-finished-op.wast:250 cascade no definition named `A`
-wasmtime/async/stream-cancel-finished-op.wast:251 cascade expected a trap `cannot write after being notified that the readable end dropped`, got `no instance to invoke`
 wasmtime/async/stream-zero-ops.wast:201 deferred-feature the callee is a synchronous lift the caller reached through an asynchronous lower, and it blocks in `waitable-set.wait` until the caller writes, so only that caller, below it on the stack, can release it, which needs a stack switch, and the suspend capability that serves one has no provider on either target until the stackful design fills it: the call fails with `deadlock detected: event loop cannot make further progress`
 wasmtime/async/streams-massive-send.wast:238 deferred-feature the callee writes its stream synchronously after `task.return` for its caller, below it on the stack, to read, which needs a stack switch, and the suspend capability that serves one has no provider on either target until the stackful design fills it: the call fails with `deadlock detected: event loop cannot make further progress`
 wasmtime/async/streams-massive-send.wast:240 deferred-feature the callee writes its future synchronously after `task.return` for its caller, below it on the stack, to read, which needs a stack switch, and the suspend capability that serves one has no provider on either target until the stackful design fills it: the call fails with `deadlock detected: event loop cannot make further progress`
-wasmtime/async/streams.wast:73 deferred-feature component rejected: unsupported component feature: the `stream-cancel-read` trampoline
-wasmtime/async/streams.wast:83 deferred-feature component rejected: unsupported component feature: the `stream-cancel-write` trampoline
 wasmtime/async/sync-streams.wast:186 deferred-feature the callee writes its stream synchronously after `task.return`, and only its caller, below it on the stack, reads it, which needs a stack switch, and the suspend capability that serves one has no provider on either target until the stackful design fills it: the call fails with `deadlock detected: event loop cannot make further progress`
 wasmtime/async/task-builtins.wast:723 deferred-feature the callee reads the future synchronously in its first core function, and only its caller, below it on the stack, writes it, which needs a stack switch, and the suspend capability that serves one has no provider on either target until the stackful design fills it: the call fails with `deadlock detected: event loop cannot make further progress`
 wasmtime/async/task-deletion.wast:11 deferred-feature component rejected: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)

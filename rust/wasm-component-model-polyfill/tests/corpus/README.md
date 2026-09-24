@@ -23,7 +23,8 @@ write on the two ends of a stream pair up as the reference's stream
 state pairs them, with partial and zero-length copies, and a copy
 that does not finish at once completes through an event on its end.
 A future's read and write are the same copy of one value, and each
-end of a future copies once.
+end of a future copies once. A cancel ends the copy in progress on
+one end and reports the progress it made, as Wasmtime reports it.
 The asynchronous lower answers with the status word, the subtask enters
 the caller's handle table when the call does not resolve at once, and the
 callee's start and resolution reach the caller as subtask events; the

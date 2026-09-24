@@ -1256,6 +1256,38 @@ impl TaskTables {
         self.notify_copy(kind, end, CopyResult::Completed)
     }
 
+    /// Cancel the copy in progress on `end`, an end of kind `kind`,
+    /// which the reference's `cancel_copy` does once its checks pass.
+    /// The end moves to `cancelling`. An end that already holds the
+    /// event of its copy keeps it: the copy completed, or found the
+    /// other end dropped, before the cancel, and the event reports the
+    /// progress the copy made. A stream's completion is reported as
+    /// cancelled once the end is `cancelling`, as delivery states, and
+    /// a future's as completed. An end that holds no
+    /// event and is the pending side of its stream or future stops
+    /// being it and is given the cancelled result, which is the
+    /// reference's `cancel` of its shared record. Its buffer is given
+    /// back when the event is delivered, and the event then reports
+    /// the progress made so far.
+    ///
+    /// Afterwards the end holds an event unless its copy waits on a
+    /// party that has to answer the cancel first. The caller then
+    /// waits for the event or reports the copy blocked.
+    pub fn cancel_copy(&mut self, kind: EndKind, end: EndId) -> Result<()> {
+        let record = self.end_record_mut(end)?;
+        record.state = CopyState::Cancelling;
+        if record.waitable.pending_event.is_some() {
+            return Ok(());
+        }
+        let (shared, direction) = (record.shared, record.direction);
+        let record = self.shared_record_at_mut(shared)?;
+        if record.pending != Some(direction) {
+            return Ok(());
+        }
+        record.pending = None;
+        self.notify_copy(kind, end, CopyResult::Cancelled)
+    }
+
     /// Give `end`, an end of kind `kind`, the event of a finished
     /// copy with `result`. The event carries the end's index; the
     /// count the copy moved is read when the event is delivered,
@@ -1279,10 +1311,24 @@ impl TaskTables {
     /// `idle` otherwise. An end still the pending side of its stream
     /// or future stops being it, which is the reclaim of its buffer.
     /// The index is the one the end has now.
+    ///
+    /// A stream end whose copy is being cancelled reports a completed
+    /// copy as cancelled, with the same progress: the cancel ended the
+    /// copy, whatever it moved first. A future end reports its
+    /// completion as it is, because its one value moved. Both are what
+    /// Wasmtime's cancel returns and what the reference's current
+    /// `stream_event` and `future_event` deliver.
     fn deliver_copy_event(&mut self, kind: EndKind, end: EndId, event: Event) -> Result<Event> {
         let [index, packed] = event.payloads();
-        let result = CopyResult::from_packed(packed);
         let record = self.end_record_mut(end)?;
+        let result = match CopyResult::from_packed(packed) {
+            Some(CopyResult::Completed)
+                if !is_future(kind) && record.state == CopyState::Cancelling =>
+            {
+                Some(CopyResult::Cancelled)
+            }
+            result => result,
+        };
         let packed = match (record.buffer.take(), result) {
             (Some(_), Some(result)) if is_future(kind) => result.pack(0),
             (Some(buffer), Some(result)) => result.pack(buffer.progress),

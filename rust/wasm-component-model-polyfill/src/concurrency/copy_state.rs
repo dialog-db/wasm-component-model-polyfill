@@ -16,11 +16,8 @@ pub enum CopyState {
     /// A read or write on the end has started, and the event that
     /// reports it has not been delivered.
     Copying,
-    /// A cancel of the end's copy has started and not completed.
-    ///
-    /// Nothing moves an end here yet: the built-ins that cancel a copy
-    /// do.
-    #[allow(dead_code)]
+    /// A cancel of the end's copy has started, and the event that
+    /// reports the copy has not been delivered.
     Cancelling,
     /// The end can make no further copy, and accepts only a drop.
     /// The delivery of a dropped result moves an end here, and so does

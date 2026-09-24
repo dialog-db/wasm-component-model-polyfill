@@ -408,6 +408,55 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 payload: payload_of(&projector, InterfaceType::Future(*ty))?,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
+            // The cancels of a copy on a stream and on a future. Each
+            // names the calling instance and the type it was declared
+            // with, and carries its `async` flag, which decides whether
+            // a cancel that has not finished waits or reports the
+            // copy blocked.
+            Trampoline::StreamCancelRead {
+                instance,
+                ty,
+                async_,
+            } => TrampolineSpec::CancelCopy {
+                kind: EndKind::StreamReadable,
+                instance: instance.as_u32() as usize,
+                async_: *async_,
+                payload: payload_of(&projector, InterfaceType::Stream(*ty))?,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::StreamCancelWrite {
+                instance,
+                ty,
+                async_,
+            } => TrampolineSpec::CancelCopy {
+                kind: EndKind::StreamWritable,
+                instance: instance.as_u32() as usize,
+                async_: *async_,
+                payload: payload_of(&projector, InterfaceType::Stream(*ty))?,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::FutureCancelRead {
+                instance,
+                ty,
+                async_,
+            } => TrampolineSpec::CancelCopy {
+                kind: EndKind::FutureReadable,
+                instance: instance.as_u32() as usize,
+                async_: *async_,
+                payload: payload_of(&projector, InterfaceType::Future(*ty))?,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::FutureCancelWrite {
+                instance,
+                ty,
+                async_,
+            } => TrampolineSpec::CancelCopy {
+                kind: EndKind::FutureWritable,
+                instance: instance.as_u32() as usize,
+                async_: *async_,
+                payload: payload_of(&projector, InterfaceType::Future(*ty))?,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
             // The prepare-and-start pair of a fused adapter whose
             // lower or lift is asynchronous. Prepare names the
             // memory the callee's lift declared, which the callee's

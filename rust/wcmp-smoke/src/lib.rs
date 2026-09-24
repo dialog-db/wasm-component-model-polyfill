@@ -6,8 +6,8 @@
 //! and a core module, moves maps, fixed-length lists, and a
 //! wit-bindgen world of records, variants, and resources across the
 //! boundary, crosses into a 64-bit memory, walks exports by name,
-//! opts into a gated feature, awaits outside the store, and meets a
-//! clear refusal for a WASI 0.3 HTTP handler. It runs as a native
+//! opts into a gated feature, awaits outside the store, and learns
+//! which host a WASI 0.3 HTTP handler needs. It runs as a native
 //! binary (`tests smoke native`) and as a page in the browser
 //! (`tests smoke web`) from the same source, so a reader can check the
 //! polyfill by reading this file and by running it on both targets.
@@ -34,8 +34,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use wasm_component_model_polyfill::{
-    Component, CoreExternType, Engine, EngineConfig, Error, HostCall, InterfaceIdentifier, Linker,
-    Store, Val, ValField, ValueType,
+    Component, CoreExternType, Engine, EngineConfig, Error, HostCall, InterfaceIdentifier,
+    LinkError, Linker, Store, Val, ValField, ValueType,
 };
 use wcmp_macros::component;
 
@@ -79,7 +79,7 @@ const RICH: &[u8] =
 /// The `wasi-http` fixture: a WASI 0.3 HTTP handler the same
 /// toolchain built. Its export is an `async func` whose request and
 /// response carry a `stream<u8>` body and a `future` of trailers,
-/// none of which the polyfill lifts yet.
+/// whose types it imports from `wasi:http/types`.
 const WASI_HTTP: &[u8] = include_bytes!(
     "../../wasm-component-model-polyfill/tests/corpus/fixtures/wasi-http/handler.wasm"
 );
@@ -436,10 +436,10 @@ pub static RUN_CONCURRENT: Story = Story {
 
 pub static WASI_HTTP_STORY: Story = Story {
     chapter: "Known limits",
-    title: "Get a clear refusal for a WASI 0.3 HTTP handler",
+    title: "Learn which host a WASI 0.3 HTTP handler needs",
     goal: "You try a `wasi:http` 0.3 handler whose request and response carry streams and \
-           futures. The polyfill cannot run it yet, and says which feature it lacks instead \
-           of failing somewhere inside.",
+           futures. The polyfill translates it, and without a host for `wasi:http/types` \
+           it stops at link and names that import instead of failing somewhere inside.",
 };
 
 /// Every story in the order the report tells them, each with its
@@ -1262,41 +1262,48 @@ async fn rich_world(engine: &Engine) -> Result<String, String> {
         .to_owned())
 }
 
-/// The feature the polyfill names when it refuses the `wasi-http`
-/// handler. The handler's request and response carry streams and
-/// futures, which the type projection accepts. The binding layer of
-/// the Rust toolchain links `task.cancel` into every `async` export,
-/// which the translator accepts and which fails only when called.
-/// `future.new` and the drops of an end are built too. The next
-/// built-in the translator meets is `future.cancel-read`, which it
-/// lacks, so that is the first of the several refusals a WASI 0.3
-/// handler would collect. `tests/corpus/expected-failures.txt`
-/// records the same text for the fixture's definition directive.
-const WASI_HTTP_REFUSAL: &str = "the `future-cancel-read` trampoline";
+/// The interface the `wasi-http` handler imports its request and
+/// response types from, which only a host supplies.
+const WASI_HTTP_TYPES: &str = "wasi:http/types@0.3.0";
 
 /// The `wasi-http` fixture holds a target rather than a result: the
-/// polyfill refuses the component today, so the step asserts that
-/// exact refusal, as `tests/corpus/expected-failures.txt` does for the
-/// fixture's directives. Matching the feature rather than any error
-/// keeps an unrelated decode bug from passing as the expected
-/// rejection. When the async lift, the stream and future built-ins,
-/// `error-context`, and the task built-ins land, the component
-/// translates and this step fails until someone gives it the call the
-/// fixture's assertions describe.
+/// polyfill translates the handler, whose request and response carry
+/// streams and futures and whose binding layer links the cancel
+/// built-ins, but this step supplies no host for `wasi:http/types`.
+/// So the step asserts that instantiation stops at link and names
+/// that import, as `tests/corpus/expected-failures.txt` does for the
+/// fixture's directives. Matching the import rather than any error
+/// keeps an unrelated decode or translation bug from passing as the
+/// expected failure. Once a host supplies the import through the
+/// host surface, this step takes the call the fixture's assertions
+/// describe.
 async fn wasi_http(engine: &Engine) -> Result<String, String> {
-    match Component::new(engine, WASI_HTTP).await {
-        Ok(_) => Err("the polyfill now translates the handler: give this step \
-                      the call `fixtures/wasi-http/assertions.wast` describes, \
-                      and take the fixture off the expected-failure list"
-            .to_owned()),
-        Err(Error::Unsupported { feature }) if feature == WASI_HTTP_REFUSAL => Ok(format!(
-            "the polyfill refuses the component for {WASI_HTTP_REFUSAL}, as the \
-             fixture's expected failure records; a WASI 0.3 handler needs the \
-             async lift, the stream and future built-ins, `error-context`, and \
-             the task built-ins before it translates"
+    let component = Component::new(engine, WASI_HTTP)
+        .await
+        .map_err(|error| format!("the polyfill no longer translates the handler: {error}"))?;
+    let linker: Linker<HostState> = Linker::new(engine);
+    let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
+    match linker.instantiate(&mut store, &component).await {
+        Ok(_) => Err(format!(
+            "the handler instantiated without a host for {WASI_HTTP_TYPES}: give this \
+             step the call `fixtures/wasi-http/assertions.wast` describes, and take the \
+             fixture off the expected-failure list"
         )),
+        Err(Error::Link(link))
+            if matches!(
+                &*link,
+                LinkError::UnresolvedImport { import, item: None }
+                    if import.to_string() == WASI_HTTP_TYPES
+            ) =>
+        {
+            Ok(format!(
+                "the polyfill translates the handler, and instantiating it with no \
+                 host for {WASI_HTTP_TYPES} stops at link and names that import, as \
+                 the fixture's expected failure records"
+            ))
+        }
         Err(other) => Err(format!(
-            "the polyfill refused the handler, but not for {WASI_HTTP_REFUSAL} \
+            "instantiating the handler failed, but not at link for {WASI_HTTP_TYPES} \
              as `tests/corpus/expected-failures.txt` records: {other}"
         )),
     }

@@ -1225,6 +1225,17 @@ pub enum CopyCause {
     /// raises.
     #[error("cannot read from future after previous read succeeded")]
     FutureReadAfterDone,
+
+    /// A guest cancelled a copy on an end that has none to cancel:
+    /// the end is not copying, or a cancel of its copy is already in
+    /// progress, or a thread waits on the copy synchronously. The
+    /// message is the one Wasmtime's cancel raises for the direction,
+    /// which names a stream and a future alike.
+    #[error("{}", CopyCause::no_copy_pending_message(*kind))]
+    NoCopyPending {
+        /// The kind of end the cancel named.
+        kind: EndKind,
+    },
 }
 
 impl CopyCause {
@@ -1256,6 +1267,19 @@ impl CopyCause {
         match kind {
             EndKind::StreamReadable | EndKind::FutureReadable => "read",
             EndKind::StreamWritable | EndKind::FutureWritable => "write",
+        }
+    }
+
+    /// Wasmtime's message for a cancel on an end of `kind` with no
+    /// copy to cancel.
+    fn no_copy_pending_message(kind: EndKind) -> &'static str {
+        match kind {
+            EndKind::StreamReadable | EndKind::FutureReadable => {
+                "stream or future read cancelled when no read is pending"
+            }
+            EndKind::StreamWritable | EndKind::FutureWritable => {
+                "stream or future write cancelled when no write is pending"
+            }
         }
     }
 
@@ -1738,6 +1762,18 @@ mod tests {
             (
                 CopyCause::FutureReadAfterDone,
                 "copy error: cannot read from future after previous read succeeded",
+            ),
+            (
+                CopyCause::NoCopyPending {
+                    kind: EndKind::StreamReadable,
+                },
+                "copy error: stream or future read cancelled when no read is pending",
+            ),
+            (
+                CopyCause::NoCopyPending {
+                    kind: EndKind::FutureWritable,
+                },
+                "copy error: stream or future write cancelled when no write is pending",
             ),
         ] {
             assert_eq!(Error::Copy(cause).to_string(), rendered);

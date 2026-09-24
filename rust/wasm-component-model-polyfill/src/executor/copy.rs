@@ -1,5 +1,8 @@
-//! The built-ins that copy values through a stream or a future:
-//! `stream.read`, `stream.write`, `future.read`, and `future.write`.
+//! The built-ins that copy values through a stream or a future,
+//! `stream.read`, `stream.write`, `future.read`, and `future.write`,
+//! and the four that cancel a copy, `stream.cancel-read`,
+//! `stream.cancel-write`, `future.cancel-read`, and
+//! `future.cancel-write`.
 //!
 //! The stream built-ins are the reference's `stream_copy` and the
 //! future built-ins its `future_copy`, which is the same copy with a
@@ -59,6 +62,31 @@
 //! later cancel. Otherwise the thread blocks through the suspend seam
 //! until the end holds an event, under the rules the seam states for
 //! every blocking built-in, and then takes it.
+//!
+//! The cancels are the reference's `cancel_copy`. Each takes the index
+//! of an end and returns the packed result of the copy it ends, or
+//! the blocked sentinel. Its checks run in the reference's order: the
+//! may-leave flag, the kind of the entry, and the payload, as a copy
+//! checks them; then the end must be copying, with no thread waiting
+//! on the copy synchronously, or the cancel fails with the
+//! no-copy-pending cause; and a synchronous cancel on an end in a
+//! waitable set fails with the waitable cause.
+//!
+//! The end then moves to `cancelling`. A copy that already completed
+//! left its event on the end, and the cancel returns it with the
+//! progress the copy made: as the cancelled result on a stream,
+//! because the cancel ended the copy whatever it moved first, and as
+//! the completed result on a future, whose one value moved. That is
+//! what Wasmtime's cancel returns. A copy that found the other end
+//! dropped returns the dropped result. A copy that is still the
+//! pending side of its stream or future stops being it and takes the
+//! cancelled result, with the progress made so far. Either way the
+//! cancel takes the event as a copy does, and the end is idle
+//! afterwards unless the event reported the other end dropped. An end
+//! that holds no event even then waits on a party that has to answer
+//! the cancel first: an `async` cancel returns the blocked sentinel,
+//! and a synchronous one blocks through the suspend seam, as a copy
+//! does.
 
 use std::sync::{Arc, Mutex};
 
@@ -132,6 +160,122 @@ pub fn build_copy<T: 'static>(
     )
 }
 
+/// Build the cancel built-in on an end of `kind` for `instance`,
+/// declared `async` when `async_` is set, for a stream or future of
+/// `payload`: `stream.cancel-read` for [`EndKind::StreamReadable`],
+/// `stream.cancel-write` for [`EndKind::StreamWritable`],
+/// `future.cancel-read` for [`EndKind::FutureReadable`], and
+/// `future.cancel-write` for [`EndKind::FutureWritable`].
+pub fn build_cancel_copy<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    kind: EndKind,
+    instance: usize,
+    async_: bool,
+    payload: Option<ValueType>,
+    signature: &CoreSignature,
+    abi_state: Arc<Mutex<AbiRuntimeState>>,
+) -> RuntimeFunc {
+    let tables = store.internal().tables_handle();
+    RuntimeFunc::new(
+        store.internal().runtime_mut(),
+        core_func_type(signature),
+        move |mut store_ctx, args, results| {
+            let index = arg_u32(args, 0)?;
+            let (id, table) = calling_instance(&abi_state, instance)?;
+            trap_if_cannot_leave(&abi_state, id, &mut store_ctx)?;
+            let waitable = {
+                let mut guard = lock_tables(&tables)?;
+                let end = copying_end(&guard, kind, &payload, async_, table, index)?;
+                guard.tasks.cancel_copy(kind, end).map_err(trap)?;
+                WaitableId::from_end(kind, end)
+            };
+            let word = finish(&mut store_ctx, &tables, waitable, async_)?;
+            results[0] = RuntimeVal::I32(word as i32);
+            Ok(())
+        },
+    )
+}
+
+/// The end the entry at `index` of `table` names, when a cancel of
+/// kind `kind`, declared with `payload` and `async_`, may run on it.
+/// The checks run in the reference's order: the entry must name an
+/// end of the kind, the end must carry the payload, the end must be
+/// copying with no thread waiting on it synchronously, and a
+/// synchronous cancel must not name an end in a waitable set.
+fn copying_end(
+    tables: &HandleTables,
+    kind: EndKind,
+    payload: &Option<ValueType>,
+    async_: bool,
+    table: TableId,
+    index: u32,
+) -> anyhow::Result<EndId> {
+    let end = tables
+        .end_from_handle(table, index, kind)
+        .map_err(|err| anyhow!("{err}"))?;
+    let carried = tables
+        .tasks
+        .shared_record(end)
+        .map(|record| &record.payload)
+        .ok_or_else(|| anyhow!("an end's entry names an end with no shared record"))?;
+    if carried != payload {
+        return Err(trap(Error::Copy(CopyCause::PayloadMismatch { kind })));
+    }
+    let record = tables
+        .tasks
+        .end(end)
+        .ok_or_else(|| anyhow!("an end's entry names an end that is not in the store"))?;
+    if record.state != CopyState::Copying || record.waitable.synchronous_waiter {
+        return Err(trap(Error::Copy(CopyCause::NoCopyPending { kind })));
+    }
+    if record.waitable.set.is_some() && !async_ {
+        return Err(trap(Error::Waitable(WaitableCause::SyncAndAsync)));
+    }
+    Ok(end)
+}
+
+/// The word a copy or a cancel on `waitable` returns once the store's
+/// records have done their part. An end that holds the event of its
+/// copy gives it up, and the word is the packed result it carries.
+/// Otherwise an `async` built-in returns the blocked sentinel and
+/// leaves the event to come to the waitable set the end joins or to
+/// a later cancel, and any other blocks the thread through the
+/// suspend seam until the end holds an event, under the rules the
+/// seam states for every blocking built-in, and then takes it.
+fn finish<T: 'static>(
+    store_ctx: &mut RuntimeContextMut<'_, StoreData<T>, Backend>,
+    tables: &Arc<Mutex<HandleTables>>,
+    waitable: WaitableId,
+    async_: bool,
+) -> anyhow::Result<u32> {
+    {
+        let mut guard = lock_tables(tables)?;
+        if guard.tasks.has_pending_event(waitable).map_err(trap)? {
+            return take_result(&mut guard, waitable);
+        }
+        if async_ {
+            return Ok(BLOCKED);
+        }
+        guard.tasks.begin_synchronous_wait(waitable).map_err(trap)?;
+    }
+    let suspended = {
+        let mut store = StoreContext::new(store_ctx.as_context_mut());
+        SuspendSeam::suspend(&mut store, |store| {
+            store
+                .internal()
+                .lock_tables()
+                .ok()
+                .and_then(|guard| guard.tasks.has_pending_event(waitable).ok())
+                .unwrap_or(false)
+        })
+    };
+    let mut guard = lock_tables(tables)?;
+    let ended = guard.tasks.end_synchronous_wait(waitable);
+    suspended.map_err(trap)?;
+    ended.map_err(trap)?;
+    take_result(&mut guard, waitable)
+}
+
 /// What one declaration of a copy built-in carries into every call
 /// of it.
 struct Builtin {
@@ -186,32 +330,7 @@ impl Builtin {
         }
 
         let waitable = WaitableId::from_end(self.kind, end);
-        {
-            let mut guard = lock_tables(&self.tables)?;
-            if guard.tasks.has_pending_event(waitable).map_err(trap)? {
-                return take_result(&mut guard, waitable);
-            }
-            if self.options.async_ {
-                return Ok(BLOCKED);
-            }
-            guard.tasks.begin_synchronous_wait(waitable).map_err(trap)?;
-        }
-        let suspended = {
-            let mut store = StoreContext::new(store_ctx.as_context_mut());
-            SuspendSeam::suspend(&mut store, |store| {
-                store
-                    .internal()
-                    .lock_tables()
-                    .ok()
-                    .and_then(|guard| guard.tasks.has_pending_event(waitable).ok())
-                    .unwrap_or(false)
-            })
-        };
-        let mut guard = lock_tables(&self.tables)?;
-        let ended = guard.tasks.end_synchronous_wait(waitable);
-        suspended.map_err(trap)?;
-        ended.map_err(trap)?;
-        take_result(&mut guard, waitable)
+        finish(&mut store_ctx, &self.tables, waitable, self.options.async_)
     }
 
     /// The end the entry at `index` of `table` names, when a copy of

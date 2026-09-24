@@ -42,6 +42,8 @@ pub wasm_component_model_polyfill::CopyCause::LiftDuringCopy
 pub wasm_component_model_polyfill::CopyCause::LiftDuringCopy::kind: wasm_component_model_polyfill::EndKind
 pub wasm_component_model_polyfill::CopyCause::LiftInWaitableSet
 pub wasm_component_model_polyfill::CopyCause::LiftInWaitableSet::kind: wasm_component_model_polyfill::EndKind
+pub wasm_component_model_polyfill::CopyCause::NoCopyPending
+pub wasm_component_model_polyfill::CopyCause::NoCopyPending::kind: wasm_component_model_polyfill::EndKind
 pub wasm_component_model_polyfill::CopyCause::PayloadMismatch
 pub wasm_component_model_polyfill::CopyCause::PayloadMismatch::kind: wasm_component_model_polyfill::EndKind
 pub wasm_component_model_polyfill::CopyCause::ReadAfterDropped

@@ -718,6 +718,27 @@ pub enum TrampolineSpec {
         /// The core signature the guest imports.
         signature: CoreSignature,
     },
+    /// `stream.cancel-read`, `stream.cancel-write`,
+    /// `future.cancel-read`, or `future.cancel-write`: a cancel of the
+    /// copy in progress on the named end, which returns the packed
+    /// result that reports the copy.
+    CancelCopy {
+        /// The kind of end the built-in cancels a copy on: the
+        /// readable end for a read, the writable end for a write.
+        kind: EndKind,
+        /// The component instance that calls the built-in.
+        instance: usize,
+        /// Whether the built-in was declared `async`, and so returns
+        /// the blocked sentinel rather than wait when the cancel has
+        /// not finished.
+        async_: bool,
+        /// The payload type the built-in was declared with, which the
+        /// end's stream or future must carry.
+        payload: Option<ValueType>,
+        /// The core signature the guest imports: the end's index in
+        /// and the packed result out.
+        signature: CoreSignature,
+    },
     /// The `prepare-call` intrinsic of a fused adapter whose lower
     /// or lift is asynchronous: it creates the callee's task and the
     /// caller's subtask, and records on the subtask the two
