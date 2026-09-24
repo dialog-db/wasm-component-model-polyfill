@@ -6,6 +6,8 @@ use crate::abi::runtime_state::AbiRuntimeState;
 use crate::executor::ir::CanonOptions;
 use crate::types::ValueType;
 
+use super::instance_id::InstanceId;
+
 /// The buffer of one copy in progress on a guest end: where in the
 /// guest's memory the values are read from or written to, how many
 /// the copy asked for, and how many it has moved so far. The
@@ -30,6 +32,13 @@ pub struct CopyBuffer {
     pub options: Arc<CanonOptions>,
     /// The runtime state of the instantiation the options index.
     pub abi_state: Arc<Mutex<AbiRuntimeState>>,
+    /// The component instance whose built-in started the copy, the
+    /// reference's `pending_inst` while the copy is the pending side.
+    pub instance: InstanceId,
+    /// Whether the payload is a number type or absent, the
+    /// reference's `none_or_number_type`: the one case in which a
+    /// read and a write from one instance may meet.
+    pub number_or_none: bool,
     /// The guest's pointer to the first value of the copy.
     pub pointer: u32,
     /// The count of values the copy asked for.

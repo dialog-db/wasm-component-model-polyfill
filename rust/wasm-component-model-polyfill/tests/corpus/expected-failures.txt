@@ -87,8 +87,6 @@ cm/async/reentrance.wast:685 cascade no instance to invoke
 cm/async/reentrance.wast:701 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
 cm/async/reentrance.wast:813 cascade no instance to invoke
 cm/async/reentrance.wast:891 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x96 - MC!<wasm function 4>: wasm trap: wasm `unreachable` instruction executed` (the deadlocked call of line 429 leaves its callee waiting, and a trap does not poison its instances yet, so that callee resumes here and traps before `subtask.cancel` is reached)
-cm/async/same-component-stream-future.wast:257 deferred-feature the rule that traps a read and a write from one instance on a payload that is not a number is not implemented, so the copy goes ahead and the guest reaches the `unreachable` after it: the call fails with `wasm `unreachable` instruction executed`
-cm/async/same-component-stream-future.wast:259 deferred-feature the rule that traps a read and a write from one instance on a payload that is not a number is not implemented, so the copy goes ahead and the guest reaches the `unreachable` after it: the call fails with `wasm `unreachable` instruction executed`
 cm/async/self-switch-traps.wast:3 deferred-feature component rejected: unsupported component feature: the `thread-index` trampoline
 cm/async/self-switch-traps.wast:45 cascade no definition named `Tester`
 cm/async/self-switch-traps.wast:46 cascade expected a trap `cannot resume thread which is not suspended`, got `no instance to invoke`
@@ -327,8 +325,6 @@ wasmtime/async/error-context.wast:39 deferred-feature component rejected: unsupp
 wasmtime/async/error-context.wast:84 cascade no definition named `A`
 wasmtime/async/error-context.wast:85 cascade no instance to invoke
 wasmtime/async/error-context.wast:86 cascade expected a trap `invalid debug message pointer`, got `no instance to invoke`
-wasmtime/async/intra-futures.wast:55 deferred-feature the rule that traps a read and a write from one instance on a payload that is not a number is not implemented, so the copy lowers the string and calls the reader's `realloc`, which is `unreachable`: the call fails with `wasm `unreachable` instruction executed`
-wasmtime/async/intra-streams.wast:56 deferred-feature the rule that traps a read and a write from one instance on a payload that is not a number is not implemented, so the copy succeeds: expected a trap `cannot read from and write to intra-component future/stream with non-numeric payload`, got []
 wasmtime/async/join-during-sync-read.wast:8 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
 wasmtime/async/join-during-sync-read.wast:66 cascade expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
 wasmtime/async/reenter-during-yield.wast:81 deferred-feature the callee's core function yields for ever and only its caller can release it, which needs a stack switch: the call fails with `blocking here requires a stack switch, but the target has no suspend provider`

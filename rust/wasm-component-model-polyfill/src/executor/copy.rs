@@ -47,19 +47,49 @@
 //!
 //! The store's records then pair the copy with the other end, as the
 //! reference's shared stream and shared future do. When the other end
-//! is pending with room left, values move at once: the writer's
-//! context lifts them out of the writer's memory and the reader's
-//! context lowers them into the reader's, one value at a time, and an
-//! owned handle in a value moves from the writer's table to the
-//! reader's as a call moves one. The lift charges the writer's
-//! context's copy budget, so a copy cannot make the host build values
-//! without bound.
+//! is pending with room left, values move at once, along the path the
+//! translator selected from the payload type:
+//!
+//! - A payload of a number type, `s8` to `u64`, `f32`, or `f64`, moves
+//!   as bytes: one runtime-layer read of the writer's memory and one
+//!   write of the reader's, with no value built. Every bit pattern of
+//!   those types is a valid value, so the bytes are the same as a
+//!   value copy would give. `bool` and `char` are left out because not
+//!   every bit pattern is valid for them, which is the set Wasmtime's
+//!   compiler copies in one step. A copy that builds no value charges
+//!   no copy budget, as Wasmtime's charges none.
+//! - Any other payload moves one value at a time: the writer's context
+//!   lifts them out of the writer's memory and the reader's context
+//!   lowers them into the reader's, and an owned handle in a value
+//!   moves from the writer's table to the reader's as a call moves
+//!   one. The lift charges the writer's context's copy budget, so a
+//!   copy cannot make the host build values without bound.
+//!
+//! The same set gates a read and a write from one instance. The
+//! reference traps, as a temporary rule, when a read or a write finds
+//! the other end pending with a copy its own instance started and the
+//! payload is not a number type. The store's records check it as soon
+//! as they find the pending side, before any count is looked at, so a
+//! copy that asks for nothing, or that finds the pending side full,
+//! fails too. Wasmtime does the same: its copy compares the two
+//! instances whatever the count, and the failure carries its message.
+//! A payload of a number type, or none, copies within an instance.
 //!
 //! A read whose stream or future the host created meets no guest
 //! writer. Its writable end is a producer the host serves, and the
 //! read polls it once before the built-in returns, as a host task:
 //! see `host_copy`. A poll that is ready completes the read here, and
 //! a pending one leaves the read to a later turn.
+//!
+//! Such a read is never paired with a copy. The host's end starts
+//! none and holds no buffer, so the read finds no pending side and
+//! waits as one. Neither path above moves its values: the producer's
+//! delivery lowers them into the reader's memory, whatever the
+//! payload. And the same-instance rule, which compares the instances
+//! of two copies, never meets it. Wasmtime does the same: a guest's
+//! read against a host writer polls the producer and lowers what it
+//! gives, and never reaches the copy that compares instances and
+//! moves a number payload's bytes.
 //!
 //! A copy that finished has an event on its end, and the built-in
 //! takes it and returns its packed result. A copy that did not
@@ -154,6 +184,7 @@ pub fn build_copy<T: 'static>(
     kind: EndKind,
     options: &CanonOptions,
     payload: Option<ValueType>,
+    copies_bytes: bool,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
@@ -162,6 +193,7 @@ pub fn build_copy<T: 'static>(
         kind,
         options: Arc::new(options.clone()),
         payload,
+        copies_bytes,
         abi_state,
         tables,
     };
@@ -314,6 +346,10 @@ struct Builtin {
     options: Arc<CanonOptions>,
     /// The payload type the built-in was declared with.
     payload: Option<ValueType>,
+    /// Whether the payload is a number type or absent, which the
+    /// translator decided from it: a copy then moves bytes, and a
+    /// read and a write from one instance may meet.
+    copies_bytes: bool,
     /// The runtime state of the instantiation the options index.
     abi_state: Arc<Mutex<AbiRuntimeState>>,
     /// The store's handle tables and records.
@@ -339,7 +375,7 @@ impl Builtin {
         let (id, table) = calling_instance(&self.abi_state, self.options.instance)?;
         trap_if_cannot_leave(&self.abi_state, id, &mut store_ctx)?;
         let end = self.idle_end(table, index, count)?;
-        let buffer = self.guest_buffer(&mut store_ctx, pointer, count)?;
+        let buffer = self.guest_buffer(&mut store_ctx, id, pointer, count)?;
 
         let pairing = lock_tables(&self.tables)?
             .tasks
@@ -351,7 +387,14 @@ impl Builtin {
             count,
         } = pairing
         {
-            move_values(&mut store_ctx, &self.tables, writer, reader, count)?;
+            move_values(
+                &mut store_ctx,
+                &self.tables,
+                writer,
+                reader,
+                count,
+                self.copies_bytes,
+            )?;
             lock_tables(&self.tables)?
                 .tasks
                 .finish_move(self.kind, end, count)
@@ -427,10 +470,13 @@ impl Builtin {
     /// reference's `BufferGuestImpl`. When the payload is present and
     /// the count is above zero, the pointer must be aligned for the
     /// payload and the range must lie inside the memory, which a
-    /// boundary context over that memory measures.
+    /// boundary context over that memory measures. The buffer records
+    /// `caller`, the calling instance, for the store's records to
+    /// compare with the other end's.
     fn guest_buffer<T: 'static>(
         &self,
         store_ctx: &mut RuntimeContextMut<'_, StoreData<T>, Backend>,
+        caller: InstanceId,
         pointer: u32,
         count: u32,
     ) -> anyhow::Result<CopyBuffer> {
@@ -454,6 +500,8 @@ impl Builtin {
             payload: self.payload.clone(),
             options: self.options.clone(),
             abi_state: self.abi_state.clone(),
+            instance: caller,
+            number_or_none: self.copies_bytes,
             pointer,
             length: count,
             progress: 0,
@@ -507,17 +555,26 @@ impl MoveSide {
 }
 
 /// Move `count` values out of `writer`'s buffer and into `reader`'s,
-/// each from where its copy has got to. The writer's context lifts
-/// them, charging its copy budget as a list of the same values
-/// would, and the reader's context lowers them one at a time. A
-/// stream or future that carries no values moves nothing but the
-/// count.
+/// each from where its copy has got to. A stream or future that
+/// carries no values moves nothing but the count.
+///
+/// A read and a write from one instance never reach here with a
+/// payload that is not a number type: the store's records refuse the
+/// copy when they find the pending side, whatever the counts.
+///
+/// A payload of a number type moves as bytes, see [`move_bytes`].
+/// Any other moves as values: the writer's context lifts them,
+/// charging its copy budget as a list of the same values would, and
+/// the reader's context lowers them one at a time, which moves an
+/// owned handle from the writer's table to the reader's as a call
+/// moves one.
 fn move_values<T: 'static>(
     store_ctx: &mut RuntimeContextMut<'_, StoreData<T>, Backend>,
     tables: &Arc<Mutex<HandleTables>>,
     writer: EndId,
     reader: EndId,
     count: u32,
+    copies_bytes: bool,
 ) -> anyhow::Result<()> {
     let (source, destination) = {
         let guard = lock_tables(tables)?;
@@ -527,6 +584,15 @@ fn move_values<T: 'static>(
         return Ok(());
     };
     let count = count as usize;
+    if copies_bytes {
+        return move_bytes(
+            store_ctx,
+            tables,
+            &source,
+            &destination,
+            count * size_of(source_ty),
+        );
+    }
     let values = {
         let mut ctx = source.context(store_ctx.as_context_mut(), tables)?;
         let list = ValueType::List(ListType::new(source_ty.clone()));
@@ -565,6 +631,51 @@ fn move_values<T: 'static>(
         },
     )
     .map_err(trap)
+}
+
+/// Move the `length` bytes at `source`'s offset to `destination`'s,
+/// which is how values of a number type move: every bit pattern of
+/// those types is a valid value, so the bytes are the values, and no
+/// value is built. One context over the two memories reads the whole
+/// range out of the writer's memory in one runtime-layer read and
+/// writes it into the reader's in one write. The copy builds no host
+/// value, so it charges no copy budget, as Wasmtime's copy of a flat
+/// payload charges none. Both ranges were checked to lie inside their
+/// memories when their copies started, and a memory never shrinks.
+/// When the two sides share a memory the ranges can overlap, and the
+/// whole range is read before any of it is written, so the reader
+/// sees the bytes the writer offered.
+///
+/// The read lands in a transient host buffer the size of the copy,
+/// which the eager strategy allocates for every load, and the write
+/// takes it from there. The runtime layer offers no view of a guest
+/// memory, only reads into and writes out of host bytes, so the bytes
+/// cannot move from memory to memory in place, as Wasmtime moves
+/// them. The buffer is bounded: its length is the count, below 2^28,
+/// times the size of a number type, and both ranges it spans were
+/// checked against their memories when their copies started.
+fn move_bytes<T: 'static>(
+    store_ctx: &mut RuntimeContextMut<'_, StoreData<T>, Backend>,
+    tables: &Arc<Mutex<HandleTables>>,
+    source: &MoveSide,
+    destination: &MoveSide,
+    length: usize,
+) -> anyhow::Result<()> {
+    let (source_options, _) =
+        BoundaryInstance::resolve(&source.options, &source.abi_state, tables).map_err(trap)?;
+    let (destination_options, instance) =
+        BoundaryInstance::resolve(&destination.options, &destination.abi_state, tables)
+            .map_err(trap)?;
+    let mut ctx = BoundaryContext::for_copy(
+        store_ctx.as_context_mut(),
+        destination_options,
+        source_options,
+        instance,
+        None,
+    );
+    let bytes = ctx.read_source_bytes(source.offset, length).map_err(trap)?;
+    ctx.write_own_bytes(destination.offset, &bytes)
+        .map_err(trap)
 }
 
 /// Take the event of the finished copy on `waitable` and answer the

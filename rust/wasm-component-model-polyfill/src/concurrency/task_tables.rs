@@ -1238,6 +1238,14 @@ impl TaskTables {
     /// - A copy whose other end was dropped completes at once with the
     ///   dropped result.
     /// - The first copy with no pending side becomes the pending side.
+    /// - A copy that finds the other end pending, started by the same
+    ///   component instance, fails with the intra-instance cause
+    ///   unless the payload is a number type or absent. That is the
+    ///   reference's temporary rule, and it comes before any count is
+    ///   looked at, so a copy that asks for nothing, or that finds
+    ///   the pending side full, fails too. The end is left as it was.
+    ///   A writable end the host serves starts no copy and holds no
+    ///   buffer, so it is never the pending side this compares.
     /// - A copy that finds the other end pending with room left moves
     ///   the smaller of the two remaining counts at once, which the
     ///   caller does with the [`Pairing::Move`] it is handed. A copy
@@ -1257,6 +1265,16 @@ impl TaskTables {
     /// that reports its copy is delivered.
     pub fn start_copy(&mut self, kind: EndKind, end: EndId, buffer: CopyBuffer) -> Result<Pairing> {
         let (remain, zero_length) = (buffer.remain(), buffer.is_zero_length());
+        let shared = self.end_record(end)?.shared;
+        let record = self.shared_record_at(shared)?;
+        if !record.dropped
+            && !buffer.number_or_none
+            && let Some(pending) = record.pending
+            && let Some(other_buffer) = &self.end_record(record.end_of(pending))?.buffer
+            && other_buffer.instance == buffer.instance
+        {
+            return Err(Error::Copy(CopyCause::IntraInstanceNonNumber));
+        }
         let record = self.end_record_mut(end)?;
         record.state = CopyState::Copying;
         record.buffer = Some(buffer);
@@ -1906,9 +1924,124 @@ mod tests {
                 Vec::new(),
                 Vec::new(),
             ))),
+            instance: InstanceId::from_index(0),
+            number_or_none: true,
             pointer: 0,
             length,
             progress: 0,
+        }
+    }
+
+    /// The buffer of a copy of `length` values of a payload that is
+    /// not a number, started by the instance at `instance`.
+    fn text_buffer(instance: u32, length: u32) -> CopyBuffer {
+        CopyBuffer {
+            payload: Some(ValueType::Primitive(crate::types::PrimitiveType::String)),
+            instance: InstanceId::from_index(instance),
+            number_or_none: false,
+            ..empty_buffer(length)
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_refuses_a_same_instance_copy_of_a_non_number_payload_whatever_the_counts() {
+        for (pending, pending_length, arriving, arriving_length) in [
+            (EndKind::StreamReadable, 1, EndKind::StreamWritable, 0),
+            (EndKind::StreamWritable, 1, EndKind::StreamReadable, 0),
+            (EndKind::StreamReadable, 0, EndKind::StreamWritable, 1),
+            (EndKind::StreamReadable, 2, EndKind::StreamWritable, 2),
+        ] {
+            let mut tables = TaskTables::new();
+            let (readable, writable) = tables.insert_ends(None);
+            let end_of = |kind| match kind {
+                EndKind::StreamReadable => readable,
+                _ => writable,
+            };
+            assert_eq!(
+                tables
+                    .start_copy(pending, end_of(pending), text_buffer(3, pending_length))
+                    .expect("the first copy starts"),
+                Pairing::Settled
+            );
+            let refused = tables
+                .start_copy(arriving, end_of(arriving), text_buffer(3, arriving_length))
+                .expect_err("a copy from the pending side's instance is refused");
+            assert!(
+                matches!(refused, Error::Copy(CopyCause::IntraInstanceNonNumber)),
+                "{arriving:?} of {arriving_length} against {pending:?} of {pending_length}: \
+                 {refused:?}"
+            );
+            let record = tables.end(end_of(arriving)).expect("the arriving end");
+            assert!(
+                record.state == CopyState::Idle && record.buffer.is_none(),
+                "the refused copy left its end as it was"
+            );
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_lets_a_zero_length_copy_of_a_non_number_payload_probe_another_instance() {
+        let mut tables = TaskTables::new();
+        let (readable, writable) = tables.insert_ends(None);
+        tables
+            .start_copy(EndKind::StreamReadable, readable, text_buffer(3, 1))
+            .expect("the read starts");
+        assert_eq!(
+            tables
+                .start_copy(EndKind::StreamWritable, writable, text_buffer(4, 0))
+                .expect("a write from another instance probes"),
+            Pairing::Settled
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_lets_a_same_instance_copy_of_a_number_payload_meet_a_pending_one() {
+        let mut tables = TaskTables::new();
+        let (readable, writable) = tables.insert_ends(None);
+        tables
+            .start_copy(EndKind::StreamReadable, readable, empty_buffer(1))
+            .expect("the read starts");
+        assert_eq!(
+            tables
+                .start_copy(EndKind::StreamWritable, writable, empty_buffer(0))
+                .expect("a zero-length write of the same instance probes"),
+            Pairing::Settled
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_leaves_a_guest_read_of_a_host_served_stream_to_the_host_whatever_the_payload() {
+        // The host's writable end never starts a copy, so it is never
+        // the pending side and never holds a buffer. A guest's read
+        // therefore finds no pending side: it is not paired, so it
+        // takes neither the byte path nor the path through values, and
+        // the same-instance rule, which compares two buffers, has
+        // nothing to compare. The host's delivery serves it instead.
+        for buffer in [empty_buffer(4), text_buffer(3, 0), text_buffer(3, 4)] {
+            let mut tables = TaskTables::new();
+            let (readable, writable) =
+                tables.insert_host_ends(buffer.payload.clone(), EndKind::StreamWritable);
+            assert_eq!(
+                tables
+                    .start_copy(EndKind::StreamReadable, readable, buffer)
+                    .expect("the guest's read starts"),
+                Pairing::Settled
+            );
+            assert_eq!(tables.host_writer_of(readable), Some(writable));
+            assert!(
+                tables.end(writable).is_some_and(|end| end.buffer.is_none()),
+                "the host's end holds no buffer"
+            );
+            let shared = tables.end(readable).expect("the readable end").shared;
+            assert_eq!(
+                tables
+                    .shared_records
+                    .get(shared)
+                    .expect("the record")
+                    .pending,
+                Some(EndDirection::Readable),
+                "the guest's read is the pending side"
+            );
         }
     }
 

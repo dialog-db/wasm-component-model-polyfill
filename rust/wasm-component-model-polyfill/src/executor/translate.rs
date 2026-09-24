@@ -39,7 +39,7 @@ use crate::engine::Engine;
 use crate::error::{Error, Result};
 
 use crate::module::Module;
-use crate::types::ValueType;
+use crate::types::{PrimitiveType, ValueType};
 
 use super::compile_modules;
 use super::ir::{
@@ -383,31 +383,32 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
             // The copies of a stream and of a future. Each carries its
             // canon options, which name the calling instance, the
             // `async` flag, and the memory the guest's buffer lives
-            // in.
-            Trampoline::StreamRead { ty, options, .. } => TrampolineSpec::Copy {
-                kind: EndKind::StreamReadable,
-                options: trampoline_options(&translation, *options)?,
-                payload: payload_of(&projector, InterfaceType::Stream(*ty))?,
-                signature: core_signature(&component_types, &translation, trampoline_idx)?,
-            },
-            Trampoline::StreamWrite { ty, options, .. } => TrampolineSpec::Copy {
-                kind: EndKind::StreamWritable,
-                options: trampoline_options(&translation, *options)?,
-                payload: payload_of(&projector, InterfaceType::Stream(*ty))?,
-                signature: core_signature(&component_types, &translation, trampoline_idx)?,
-            },
-            Trampoline::FutureRead { ty, options, .. } => TrampolineSpec::Copy {
-                kind: EndKind::FutureReadable,
-                options: trampoline_options(&translation, *options)?,
-                payload: payload_of(&projector, InterfaceType::Future(*ty))?,
-                signature: core_signature(&component_types, &translation, trampoline_idx)?,
-            },
-            Trampoline::FutureWrite { ty, options, .. } => TrampolineSpec::Copy {
-                kind: EndKind::FutureWritable,
-                options: trampoline_options(&translation, *options)?,
-                payload: payload_of(&projector, InterfaceType::Future(*ty))?,
-                signature: core_signature(&component_types, &translation, trampoline_idx)?,
-            },
+            // in, and the path its copies take, which the payload
+            // type selects.
+            Trampoline::StreamRead { ty, options, .. } => copy_spec(
+                EndKind::StreamReadable,
+                trampoline_options(&translation, *options)?,
+                payload_of(&projector, InterfaceType::Stream(*ty))?,
+                core_signature(&component_types, &translation, trampoline_idx)?,
+            ),
+            Trampoline::StreamWrite { ty, options, .. } => copy_spec(
+                EndKind::StreamWritable,
+                trampoline_options(&translation, *options)?,
+                payload_of(&projector, InterfaceType::Stream(*ty))?,
+                core_signature(&component_types, &translation, trampoline_idx)?,
+            ),
+            Trampoline::FutureRead { ty, options, .. } => copy_spec(
+                EndKind::FutureReadable,
+                trampoline_options(&translation, *options)?,
+                payload_of(&projector, InterfaceType::Future(*ty))?,
+                core_signature(&component_types, &translation, trampoline_idx)?,
+            ),
+            Trampoline::FutureWrite { ty, options, .. } => copy_spec(
+                EndKind::FutureWritable,
+                trampoline_options(&translation, *options)?,
+                payload_of(&projector, InterfaceType::Future(*ty))?,
+                core_signature(&component_types, &translation, trampoline_idx)?,
+            ),
             // The cancels of a copy on a stream and on a future. Each
             // names the calling instance and the type it was declared
             // with, and carries its `async` flag, which decides whether
@@ -1009,6 +1010,49 @@ fn payload_of(projector: &TypeProjector<'_>, ty: InterfaceType) -> Result<Option
     }
 }
 
+/// The copy built-in on an end of `kind`, declared with `options` for
+/// a stream or future of `payload`, with the path its copies take
+/// selected from the payload.
+fn copy_spec(
+    kind: EndKind,
+    options: CanonOptions,
+    payload: Option<ValueType>,
+    signature: CoreSignature,
+) -> TrampolineSpec {
+    TrampolineSpec::Copy {
+        kind,
+        options,
+        copies_bytes: copies_bytes(payload.as_ref()),
+        payload,
+        signature,
+    }
+}
+
+/// Whether a copy of `payload` moves bytes rather than values: the
+/// payload is absent, or a number type, every bit pattern of which is
+/// a valid value, so a byte copy and a value copy give the same bytes.
+/// `bool` and `char` are left out because not every bit pattern is
+/// valid for them. That is the set Wasmtime's compiler copies in one
+/// step, and the set the reference lets one instance both read and
+/// write.
+fn copies_bytes(payload: Option<&ValueType>) -> bool {
+    matches!(
+        payload,
+        None | Some(ValueType::Primitive(
+            PrimitiveType::S8
+                | PrimitiveType::U8
+                | PrimitiveType::S16
+                | PrimitiveType::U16
+                | PrimitiveType::S32
+                | PrimitiveType::U32
+                | PrimitiveType::S64
+                | PrimitiveType::U64
+                | PrimitiveType::F32
+                | PrimitiveType::F64
+        ))
+    )
+}
+
 /// Resolve a runtime import to the polyfill import index and the
 /// item path inside it: one name per nesting level from the imported
 /// instance down to the item, or empty when the import is the item.
@@ -1226,5 +1270,41 @@ fn translation_error(err: TranslatorError) -> Error {
             message: format!("{other:#}"),
             offset: 0,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{ListType, RecordField, RecordType};
+
+    #[wcmp_macros::test]
+    fn it_selects_the_byte_path_for_the_number_types_and_no_payload_alone() {
+        use PrimitiveType::*;
+        for number in [S8, U8, S16, U16, S32, U32, S64, U64, F32, F64] {
+            assert!(
+                copies_bytes(Some(&ValueType::Primitive(number))),
+                "every bit pattern of {number:?} is a valid value"
+            );
+        }
+        assert!(
+            copies_bytes(None),
+            "a payload that is absent moves no bytes at all"
+        );
+        for other in [
+            ValueType::Primitive(Bool),
+            ValueType::Primitive(Char),
+            ValueType::Primitive(String),
+            ValueType::List(ListType::new(ValueType::Primitive(U8))),
+            ValueType::Record(RecordType::new([RecordField::new(
+                "a",
+                ValueType::Primitive(U32),
+            )])),
+        ] {
+            assert!(
+                !copies_bytes(Some(&other)),
+                "{other:?} keeps the path through values"
+            );
+        }
     }
 }

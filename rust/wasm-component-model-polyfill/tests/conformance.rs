@@ -1005,8 +1005,8 @@ fn boxed_equal(a: Option<&Val>, b: Option<&Val>) -> bool {
 
 /// Whether a trap raised with `actual` satisfies an `assert_trap`
 /// that expects `message`: `actual` contains `message`, or, in a file
-/// of the Component Model's own suite, both name the same refused
-/// copy direction.
+/// of the Component Model's own suite, both contain "cannot write" or
+/// both contain "cannot read".
 ///
 /// The second arm mirrors Wasmtime's wast runner
 /// (`crates/wast/src/wast.rs`, `assert_trap`, lines 551-554 at the
@@ -1018,6 +1018,13 @@ fn boxed_equal(a: Option<&Val>, b: Option<&Val>) -> bool {
 /// Wasmtime's, so the Component Model suite is held to the rule that
 /// Wasmtime passes it by. Wasmtime's own suite expects Wasmtime's
 /// wording and gets no relaxation.
+///
+/// The rule is not confined to a copy on a done end: it reaches every
+/// expected text with either phrase. The refusal of a read and a write
+/// from one instance is one such text ("cannot read from and write to
+/// intra-component future"), and any trap that says "cannot read"
+/// would satisfy it. The polyfill's refusal contains that text as
+/// written, so it passes on the first arm.
 fn trap_matches(cm_corpus: bool, message: &str, actual: &str) -> bool {
     actual.contains(message)
         || (cm_corpus
@@ -1256,6 +1263,19 @@ mod tests {
             "cannot read from future after previous read succeeded",
             "cannot read after being notified that the writable end dropped"
         ));
+    }
+
+    #[wcmp_macros::test]
+    async fn it_matches_the_intra_instance_refusal_without_the_cm_relaxation() {
+        // The text `same-component-stream-future.wast` expects, which
+        // the relaxation would also grant any "cannot read" trap.
+        let expected = "cannot read from and write to intra-component future";
+        let actual = Error::Copy(wasm_component_model_polyfill::CopyCause::IntraInstanceNonNumber)
+            .to_string();
+        assert!(
+            trap_matches(false, expected, &actual),
+            "the polyfill's refusal contains the text as written: {actual}"
+        );
     }
 
     #[wcmp_macros::test]

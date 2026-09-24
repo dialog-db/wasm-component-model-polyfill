@@ -1188,6 +1188,36 @@ async fn it_delivers_strings_through_the_readers_realloc() {
 }
 
 #[wcmp_macros::test]
+async fn it_serves_a_zero_length_read_of_strings_without_the_same_instance_trap() {
+    // A guest's zero-length read of a `stream<string>` against another
+    // copy of its own instance traps. The host's end is no copy of any
+    // instance, as in Wasmtime, whose host writer never reaches the
+    // copy that compares instances, so the probe reaches the producer.
+    let (mut store, instance) = instantiate(READS_HOST_ENDS).await;
+    let words = vec!["one".to_owned(), "three".to_owned()];
+    let reader = StreamReader::new(&mut store.as_context_mut(), words).expect("a stream");
+    let end = instance
+        .get_func("take-strings")
+        .expect("the component exports `take-strings`")
+        .typed::<(StreamReader<String>,), u32>()
+        .expect("`take-strings` takes a `stream<string>`")
+        .call(&mut store, (reader,))
+        .await
+        .expect("the reader crosses into the guest");
+
+    assert_eq!(
+        call_u32(&mut store, &instance, "read-strings", &[end, 100, 0]).await,
+        packed(COMPLETED, 0),
+        "the probe completed with nothing moved"
+    );
+    assert_eq!(
+        call_u32(&mut store, &instance, "read-strings", &[end, 100, 4]).await,
+        packed(DROPPED, 2),
+        "the read that followed took both strings the producer left waiting"
+    );
+}
+
+#[wcmp_macros::test]
 async fn it_reads_a_stream_a_host_async_function_created_through_its_accessor() {
     let (mut store, instance) = instantiate(READS_HOST_ENDS).await;
     let end = call_u32(&mut store, &instance, "open-later", &[]).await;

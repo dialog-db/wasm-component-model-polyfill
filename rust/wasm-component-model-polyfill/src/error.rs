@@ -1226,6 +1226,15 @@ pub enum CopyCause {
     #[error("cannot read from future after previous read succeeded")]
     FutureReadAfterDone,
 
+    /// A read and a write on the two ends of one stream or future met
+    /// in one component instance, and the payload is not a number
+    /// type. The reference traps on such a copy as a temporary rule;
+    /// a payload of a number type, or none, copies. The message is the
+    /// one Wasmtime's copy raises, which names a stream and a future
+    /// alike.
+    #[error("cannot read from and write to intra-component future/stream with non-numeric payload")]
+    IntraInstanceNonNumber,
+
     /// A host producer answered pending after it had stored items in
     /// the destination of its poll. The items would reach the reader
     /// of a read the producer said it had not served. The message is
@@ -1790,6 +1799,11 @@ mod tests {
             (
                 CopyCause::FutureReadAfterDone,
                 "copy error: cannot read from future after previous read succeeded",
+            ),
+            (
+                CopyCause::IntraInstanceNonNumber,
+                "copy error: cannot read from and write to intra-component future/stream with \
+                 non-numeric payload",
             ),
             (
                 CopyCause::NoCopyPending {

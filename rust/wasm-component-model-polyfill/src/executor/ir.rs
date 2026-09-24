@@ -715,6 +715,10 @@ pub enum TrampolineSpec {
         /// The payload type the built-in was declared with, which the
         /// end's stream or future must carry.
         payload: Option<ValueType>,
+        /// Whether the payload is a number type or absent, so that the
+        /// copy moves bytes rather than values and a read and a write
+        /// from one instance may meet.
+        copies_bytes: bool,
         /// The core signature the guest imports.
         signature: CoreSignature,
     },

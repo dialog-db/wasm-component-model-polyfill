@@ -164,7 +164,13 @@ file (`crates/wast/src/wast.rs:551-554` at `cb091c33cece`), because the
 Component Model's suite words the traps of a copy on a done end
 differently from Wasmtime, and the spec fixes no wording for them. The
 polyfill raises Wasmtime's wording, which the `wasmtime` corpus
-expects as written, so the harness relaxes only `cm/`.
+expects as written, so the harness relaxes only `cm/`. The rule reaches
+every expected text with either phrase, not only a copy on a done end:
+the refusal of a read and a write from one instance in
+`same-component-stream-future.wast` expects `cannot read from and write
+to intra-component future`, which any `cannot read` trap would satisfy.
+The polyfill's refusal contains that text as written, so those lines
+pass without the relaxation.
 
 The test `it_reports_conformance_progress` runs every file in one
 process and prints a summary per corpus directory: directives, passes,
@@ -299,3 +305,11 @@ asynchronous lower, that writes its future synchronously for its
 caller below it to read, so they wait on the stack switch, as do `cm/async/cancel-and-exclusive-lock.wast`
 and the stream and future case of `wasmtime/async/task-builtins.wast`,
 whose callees block on a future only their caller writes.
+
+A payload of a number type now copies as bytes, and a read and a write
+from one instance on any other payload trap with Wasmtime's refusal.
+That moved three more files into the passing column whole:
+`cm/async/same-component-stream-future.wast`,
+`wasmtime/async/intra-futures.wast`, and
+`wasmtime/async/intra-streams.wast`. Each traps for a payload that is
+not a number and copies one that is.

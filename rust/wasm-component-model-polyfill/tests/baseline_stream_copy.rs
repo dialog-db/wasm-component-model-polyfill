@@ -12,7 +12,10 @@
 //! Most tests drive one component whose synchronous exports each call
 //! one built-in on a `stream<u8>`, so a test starts copies, joins
 //! ends to a set, and waits, one call at a time, and reads what
-//! arrived in the component's memory. The copy budget is proved on
+//! arrived in the component's memory. A `stream<string>` in one
+//! component proves that a read and a write of a payload that is not
+//! a number trap when they meet in one instance, whatever their
+//! counts. The copy budget is proved on
 //! two composed components, because the copy of a payload that is
 //! not a number runs between two instances. A synchronous read that
 //! blocks is proved on two more, whose asynchronous exports the host
@@ -153,6 +156,47 @@ const STREAM_COPIES: &[u8] = component!(
       (func (export "peek") (param "p" u32) (result u32) (canon lift (core func $libc "peek")))
       (func (export "poke") (param "p" u32) (param "v" u32)
         (canon lift (core func $libc "poke"))))
+    "#
+);
+
+/// A component whose synchronous exports are the `async` copy
+/// built-ins of a `stream<string>`, so that a read and a write of a
+/// payload that is not a number meet in one instance.
+const TEXT_COPIES: &[u8] = component!(
+    r#"
+    (component
+      (core module $libc
+        (memory (export "memory") 1)
+        (func (export "realloc") (param i32 i32 i32 i32) (result i32) (i32.const 64)))
+      (core instance $libc (instantiate $libc))
+
+      (type $text (stream string))
+      (core func $text-new (canon stream.new $text))
+      (core func $text-read
+        (canon stream.read $text async (memory (core memory $libc "memory"))
+          (realloc (core func $libc "realloc"))))
+      (core func $text-write
+        (canon stream.write $text async (memory (core memory $libc "memory"))))
+
+      (core module $m
+        (import "" "text.new" (func $text-new (result i64)))
+        (import "" "text.read" (func $text-read (param i32 i32 i32) (result i32)))
+        (import "" "text.write" (func $text-write (param i32 i32 i32) (result i32)))
+        (func (export "new-text") (result i64) (call $text-new))
+        (func (export "text-read") (param i32 i32 i32) (result i32)
+          (call $text-read (local.get 0) (local.get 1) (local.get 2)))
+        (func (export "text-write") (param i32 i32 i32) (result i32)
+          (call $text-write (local.get 0) (local.get 1) (local.get 2))))
+      (core instance $m (instantiate $m (with "" (instance
+        (export "text.new" (func $text-new))
+        (export "text.read" (func $text-read))
+        (export "text.write" (func $text-write))))))
+
+      (func (export "new-text") (result u64) (canon lift (core func $m "new-text")))
+      (func (export "text-read") (param "e" u32) (param "p" u32) (param "n" u32) (result u32)
+        (canon lift (core func $m "text-read")))
+      (func (export "text-write") (param "e" u32) (param "p" u32) (param "n" u32) (result u32)
+        (canon lift (core func $m "text-write"))))
     "#
 );
 
@@ -1001,6 +1045,45 @@ async fn it_blocks_a_synchronous_read_until_a_write_the_nested_turn_runs_release
     assert_eq!(
         call_u32(&mut store, &instance, "peek", &[100]).await,
         0x0403_0201
+    );
+}
+
+/// The message both references trap with when a read and a write of a
+/// payload that is not a number meet in one instance.
+const INTRA_INSTANCE: &str =
+    "cannot read from and write to intra-component future/stream with non-numeric payload";
+
+#[wcmp_macros::test]
+async fn it_traps_a_zero_length_write_that_meets_a_pending_read_of_its_own_instance() {
+    // The reference traps as soon as the write finds the read pending
+    // from the same instance, before it asks how many values either
+    // side wants, so the zero-length write that would otherwise be a
+    // readiness probe traps too.
+    let (mut store, instance) = instantiate(TEXT_COPIES).await;
+    let (readable, writable) = new_ends(&mut store, &instance, "new-text").await;
+    assert_eq!(
+        call_u32(&mut store, &instance, "text-read", &[readable, 16, 1]).await,
+        BLOCKED
+    );
+    let message = call_trap(&mut store, &instance, "text-write", &[writable, 16, 0]).await;
+    assert!(
+        message.contains(INTRA_INSTANCE),
+        "expected the intra-instance trap, got {message}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_traps_a_zero_length_read_that_meets_a_pending_write_of_its_own_instance() {
+    let (mut store, instance) = instantiate(TEXT_COPIES).await;
+    let (readable, writable) = new_ends(&mut store, &instance, "new-text").await;
+    assert_eq!(
+        call_u32(&mut store, &instance, "text-write", &[writable, 16, 1]).await,
+        BLOCKED
+    );
+    let message = call_trap(&mut store, &instance, "text-read", &[readable, 16, 0]).await;
+    assert!(
+        message.contains(INTRA_INSTANCE),
+        "expected the intra-instance trap, got {message}"
     );
 }
 

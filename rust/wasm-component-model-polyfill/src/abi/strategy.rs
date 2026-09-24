@@ -60,6 +60,8 @@ impl AbiStrategy {
                     .memory()
                     .ok_or(AbiCause::OutOfBoundsMemory { offset, length })?;
                 let mut buffer = vec![0u8; length];
+                #[cfg(test)]
+                count_access(|(reads, writes)| (reads + 1, writes));
                 memory
                     .read(&mut *store, offset, &mut buffer)
                     .map_err(AbiCause::SubstrateFailure)?;
@@ -83,6 +85,8 @@ impl AbiStrategy {
                     offset,
                     length: bytes.len(),
                 })?;
+                #[cfg(test)]
+                count_access(|(reads, writes)| (reads, writes + 1));
                 memory
                     .write(&mut *store, offset, bytes)
                     .map_err(AbiCause::SubstrateFailure)
@@ -170,4 +174,31 @@ impl AbiStrategy {
             Self::Lazy => None,
         }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many runtime-layer reads and writes of a guest memory the
+    /// eager strategy has made on this thread, which a test reads
+    /// around one crossing to count that crossing's accesses. A
+    /// boundary context counts its own accesses too, but a built-in
+    /// builds and drops its context inside one call of it, so a test
+    /// that drives the built-in through a component cannot read that
+    /// count; this one outlives the call and keeps reads apart from
+    /// writes.
+    static MEMORY_ACCESSES: std::cell::Cell<(usize, usize)> =
+        const { std::cell::Cell::new((0, 0)) };
+}
+
+/// Count one runtime-layer access of a guest memory.
+#[cfg(test)]
+fn count_access(step: impl FnOnce((usize, usize)) -> (usize, usize)) {
+    MEMORY_ACCESSES.with(|accesses| accesses.set(step(accesses.get())));
+}
+
+/// How many runtime-layer reads and writes of a guest memory the
+/// eager strategy has made on this thread so far, reads first.
+#[cfg(test)]
+pub fn memory_accesses() -> (usize, usize) {
+    MEMORY_ACCESSES.with(std::cell::Cell::get)
 }
