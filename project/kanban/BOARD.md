@@ -58,7 +58,6 @@ kanban-plugin: basic
 ## Needs Review
 
 - [ ] [[c723cc]]
-- [ ] [[b07a9c]]
 - [ ] [[34e611]]
 
 ## Ready
@@ -71,6 +70,7 @@ kanban-plugin: basic
 - [ ] [[ad5dd3]]
 - [ ] [[a31891]]
 - [ ] [[9d86f4]]
+- [ ] [[b07a9c]]
 - [ ] [[bd6ee3]]
 - [ ] [[88e273]]
 
