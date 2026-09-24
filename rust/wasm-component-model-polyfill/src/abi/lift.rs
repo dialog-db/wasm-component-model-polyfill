@@ -9,8 +9,9 @@ use crate::abi::context::BoundaryContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
 use crate::abi::strings;
 use crate::concurrency::{CopyState, EndId, EndKind};
+use crate::concurrency::{FutureAny, StreamAny};
 use crate::error::{AbiCause, AbiError, AbiPosition, CopyCause, Error, Result};
-use crate::internal::ErrorInternal;
+use crate::internal::{ErrorInternal, FutureAnyInternal, StreamAnyInternal};
 use crate::resource::{HandleKind, HandleLookupError, HandleTables, ResourceHandleParts, TableId};
 use crate::types::{MapType, PrimitiveType, ValueType};
 use crate::value::{Val, ValField};
@@ -188,27 +189,22 @@ pub fn lift<T: 'static>(
     }
 }
 
-/// The refusal of a crossing that carries a `stream<T>` or a
-/// `future<T>` out of a guest to the host. Such a value names a
-/// readable end, and the host has no value to lift one into yet, so
-/// the type translates and the crossing fails at the call. The other
-/// way, a readable end the host holds lowers into a guest. Between
-/// two components the end crosses through the transfer intrinsics
-/// of the adapter instead, which never reach this.
-pub fn end_transfer_unsupported(ty: &ValueType) -> Error {
-    Error::unsupported(match ty {
-        ValueType::Future(_) => "the transfer of a `future<T>` readable end to or from the host",
-        _ => "the transfer of a `stream<T>` readable end to or from the host",
-    })
-}
-
 /// Lift the readable end at `index` of the guest's handle table
-/// toward the host. The lift makes every check a crossing makes, so
-/// the guest learns of an end that cannot cross before it learns
-/// that the host cannot take one: an end in a waitable set traps as
-/// it would on its way into another component. An end that passes
-/// stays where it was, and the crossing fails with
-/// [`end_transfer_unsupported`].
+/// toward the host, and answer the value the host holds it as: a
+/// [`Val::Stream`] or a [`Val::Future`] that names the end and the
+/// payload the crossing declares. The entry leaves the guest's table,
+/// after every check a crossing makes, in the order
+/// [`readable_end_at`] states, so an end in a waitable set or in the
+/// middle of a copy traps as it would on its way into another
+/// component. The end record stays in the store, held by the host,
+/// until the host lowers it into a guest again or pipes it to a
+/// consumer. That is the reference's `lift_async_value` with the host
+/// as the receiver, and Wasmtime's lift of a stream or future into
+/// its host types.
+///
+/// A crossing between two guests that lifts through this, such as a
+/// copy of a stream whose payload is itself a stream, lowers the
+/// value again into the receiver's table at once.
 pub fn lift_end_for_host<T: 'static>(
     ctx: &mut BoundaryContext<'_, T>,
     index: u32,
@@ -228,11 +224,23 @@ pub fn lift_end_for_host<T: 'static>(
             "no handle table of the instance is available to the lift context".to_owned(),
         ));
     };
-    let guard = tables
+    let mut guard = tables
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
-    readable_end_at(&guard, table, index, ty, |err| invalid(err.to_string()))?;
-    Err(end_transfer_unsupported(ty))
+    let end = lift_readable_end(&mut guard, table, index, ty, |err| invalid(err.to_string()))?;
+    // The end is in no guest's table now: the host holds it.
+    if let Some(record) = guard.tasks.end_mut(end) {
+        record.handle = None;
+    }
+    Ok(match ty {
+        ValueType::Future(future) => Val::Future(FutureAny::new(end, future.payload().cloned())),
+        ValueType::Stream(stream) => Val::Stream(StreamAny::new(end, stream.payload().cloned())),
+        _ => {
+            return Err(Error::internal(
+                "a readable end was lifted as a type that is neither",
+            ));
+        }
+    })
 }
 
 /// Lift the readable end at `index` of `table` for a crossing of
@@ -249,8 +257,8 @@ pub fn lift_end_for_host<T: 'static>(
 /// removed it. Every such failure is a trap, so the difference shows
 /// only after the trap, to a later call into the same instance, which
 /// finds the entry still there. The polyfill checks before it removes
-/// because its lift of a readable end toward the host makes the same
-/// checks and must keep the entry when that crossing is refused.
+/// so that the table is never left short of an entry the checks
+/// refused.
 ///
 /// An end is an index, as a resource handle is, so its lift charges
 /// the crossing's copy budget nothing, as Wasmtime charges its

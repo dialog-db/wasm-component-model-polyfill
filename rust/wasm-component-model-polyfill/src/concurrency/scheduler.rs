@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use super::SuspendSeam;
 use super::end_id::EndId;
 use super::event_slot::EventSlot;
+use super::host_reader::HostReader;
 use super::host_task::HostTask;
 use super::host_task_set::HostTaskSet;
 use super::host_writer::HostWriter;
@@ -238,10 +239,12 @@ impl<T: 'static> HeldCallbacks<T> {
 /// entry, and the task it names ended — and was swept — back when
 /// its implicit thread exited.
 ///
-/// Beside the host tasks sit the writable ends the host serves
-/// through producers, keyed by the end's identity. A guest's read on
-/// such an end's stream or future is a host task while the producer
-/// is pending, and the producer itself stays here between reads.
+/// Beside the host tasks sit the ends the host serves, keyed by the
+/// end's identity: the writable ends it serves through producers and
+/// the readable ends it serves through consumers. A guest's read or
+/// write on such an end's stream or future is a host task while the
+/// producer or consumer is pending, and the producer or consumer
+/// itself stays here between copies.
 ///
 /// The suspend capability is named here too. It is the seam a
 /// blocking built-in asks to suspend the current guest thread, and
@@ -259,9 +262,10 @@ pub struct Scheduler<T: 'static> {
     held_callbacks: HeldCallbacks<T>,
     host_tasks: HostTaskSet<T>,
     host_writers: HashMap<EndId, Box<dyn HostWriter<T>>>,
-    /// The waker of the last poll of each host writer that answered
-    /// pending, which a cancel of the read wakes.
-    host_writer_wakers: HashMap<EndId, Waker>,
+    host_readers: HashMap<EndId, Box<dyn HostReader<T>>>,
+    /// The waker of the last poll of each host end that answered
+    /// pending, which a cancel of the guest's copy wakes.
+    host_end_wakers: HashMap<EndId, Waker>,
     suspend_seam: SuspendSeam<T>,
     resumptions: u64,
     items_run: u64,
@@ -300,7 +304,8 @@ impl<T: 'static> Scheduler<T> {
             held_callbacks: HeldCallbacks::new(),
             host_tasks: HostTaskSet::new(),
             host_writers: HashMap::new(),
-            host_writer_wakers: HashMap::new(),
+            host_readers: HashMap::new(),
+            host_end_wakers: HashMap::new(),
             suspend_seam: SuspendSeam::new(),
             resumptions: 0,
             items_run: 0,
@@ -407,19 +412,51 @@ impl<T: 'static> Scheduler<T> {
         self.host_writers.remove(&end)
     }
 
-    /// Keep `waker`, the waker of a poll of the writable end `end`
-    /// that answered pending, in place of any kept before. It is the
-    /// one Wasmtime calls the cancel waker: a cancel of the read wakes
-    /// it, so that the host task polls the producer again, asked to
-    /// finish.
-    pub fn set_host_writer_waker(&mut self, end: EndId, waker: Waker) {
-        self.host_writer_wakers.insert(end, waker);
+    /// Let go of the writable end `end` the host serves, for good:
+    /// take out its producer, if the scheduler still holds it, and
+    /// forget the waker kept for it. The caller drops the producer
+    /// once it holds no lock, because the drop runs host code.
+    pub fn release_host_writer(&mut self, end: EndId) -> Option<Box<dyn HostWriter<T>>> {
+        self.host_end_wakers.remove(&end);
+        self.host_writers.remove(&end)
     }
 
-    /// Take the waker kept for the writable end `end`, if a poll of it
+    /// Hold `reader` as the readable end `end` the host serves. The
+    /// end records cannot hold it, for the reason
+    /// [`insert_host_writer`](Self::insert_host_writer) states.
+    pub fn insert_host_reader(&mut self, end: EndId, reader: Box<dyn HostReader<T>>) {
+        self.host_readers.insert(end, reader);
+    }
+
+    /// Take out the readable end `end` the host serves, so that it can
+    /// be polled with the store lent to its consumer. One that is
+    /// still serving goes back through
+    /// [`insert_host_reader`](Self::insert_host_reader).
+    pub fn take_host_reader(&mut self, end: EndId) -> Option<Box<dyn HostReader<T>>> {
+        self.host_readers.remove(&end)
+    }
+
+    /// Let go of the readable end `end` the host serves, for good, as
+    /// [`release_host_writer`](Self::release_host_writer) lets go of a
+    /// writable one.
+    pub fn release_host_reader(&mut self, end: EndId) -> Option<Box<dyn HostReader<T>>> {
+        self.host_end_wakers.remove(&end);
+        self.host_readers.remove(&end)
+    }
+
+    /// Keep `waker`, the waker of a poll of the host end `end` that
+    /// answered pending, in place of any kept before. It is the one
+    /// Wasmtime calls the cancel waker: a cancel of the guest's copy
+    /// wakes it, so that the host task polls the producer or consumer
+    /// again, asked to finish.
+    pub fn set_host_end_waker(&mut self, end: EndId, waker: Waker) {
+        self.host_end_wakers.insert(end, waker);
+    }
+
+    /// Take the waker kept for the host end `end`, if a poll of it
     /// answered pending since the last one was taken.
-    pub fn take_host_writer_waker(&mut self, end: EndId) -> Option<Waker> {
-        self.host_writer_wakers.remove(&end)
+    pub fn take_host_end_waker(&mut self, end: EndId) -> Option<Waker> {
+        self.host_end_wakers.remove(&end)
     }
 
     /// Put `item` in the switch slot: the scheduler runs it before
@@ -1097,6 +1134,7 @@ mod tests {
     use crate::value::Val;
 
     use super::super::SuspendSeam;
+    use super::super::end_id::EndId;
     use super::super::event::Event;
     use super::super::event_slot::EventSlot;
     use super::super::host_task::HostTask;
@@ -2627,6 +2665,23 @@ mod tests {
             !store.internal().scheduler().host_future_pending(),
             "a resumption after a yield is guest work, and a turn that runs \
              it is what moves the store, not an executor's poll"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_forgets_the_waker_of_a_host_end_it_lets_go_of() {
+        let mut store = store();
+        let scheduler = store.internal().scheduler_mut();
+        let (writer, reader) = (EndId::new(1, 0), EndId::new(2, 0));
+        scheduler.set_host_end_waker(writer, Waker::noop().clone());
+        scheduler.set_host_end_waker(reader, Waker::noop().clone());
+
+        assert!(scheduler.release_host_writer(writer).is_none());
+        assert!(scheduler.release_host_reader(reader).is_none());
+        assert!(
+            scheduler.take_host_end_waker(writer).is_none()
+                && scheduler.take_host_end_waker(reader).is_none(),
+            "an end let go of keeps no waker for a cancel to wake"
         );
     }
 }

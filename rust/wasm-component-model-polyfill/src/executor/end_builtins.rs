@@ -31,7 +31,10 @@
 //! A readable end whose stream or future the host created, with a
 //! producer as its writable end, takes that end with it: the host's
 //! end drops as the second of the pair, and the producer is dropped
-//! unpolled, because nobody is left to read what it would produce.
+//! unpolled, because nobody is left to read what it would produce. A
+//! writable end whose readable end the host piped to a consumer does
+//! the same with the consumer, which is how a consumer learns that
+//! the stream ended, as in Wasmtime.
 //!
 //! Every one of the six traps with the cannot-leave cause when the
 //! instance's may-leave flag is clear, which is the case while a
@@ -121,10 +124,10 @@ pub fn build_drop_end<T: 'static>(
             if *carried != payload {
                 return Err(trap(Error::Copy(CopyCause::PayloadMismatch { kind })));
             }
-            // A readable end whose writable end the host serves takes
-            // the host's end with it: nobody is left to read what the
-            // producer would produce.
-            let host_writer = guard.tasks.host_writer_of(end);
+            // An end whose other end the host serves takes the host's
+            // end with it: nobody is left to read what a producer would
+            // produce, or to write what a consumer would take.
+            let host_end = guard.tasks.host_counterpart(end);
             // The record's own checks come first: a busy end, and a
             // writable future end that has not written, trap and
             // keep their entry.
@@ -133,18 +136,24 @@ pub fn build_drop_end<T: 'static>(
                 .drop_waitable(WaitableId::from_end(kind, end))
                 .map_err(trap)?;
             guard.remove(table, index);
-            let Some(writer) = host_writer else {
+            let Some(host_end) = host_end else {
                 return Ok(());
             };
-            guard.tasks.release_host_end(writer).map_err(trap)?;
+            guard.tasks.release_host_end(host_end).map_err(trap)?;
             drop(guard);
-            // The producer is dropped with no lock held, because its
-            // own drop runs host code.
-            let producer = StoreContext::new(store_ctx.as_context_mut())
-                .internal()
-                .scheduler_mut()
-                .take_host_writer(writer);
-            drop(producer);
+            // The producer or consumer is dropped with no lock held,
+            // because its own drop runs host code. Letting it go
+            // forgets the waker kept for it too.
+            let mut store = StoreContext::new(store_ctx.as_context_mut());
+            let scheduler = store.internal().scheduler_mut();
+            match kind {
+                EndKind::StreamReadable | EndKind::FutureReadable => {
+                    drop(scheduler.release_host_writer(host_end));
+                }
+                EndKind::StreamWritable | EndKind::FutureWritable => {
+                    drop(scheduler.release_host_reader(host_end));
+                }
+            }
             Ok(())
         },
     )

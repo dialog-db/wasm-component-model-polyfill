@@ -67,6 +67,9 @@ pub fn serve_host_read<T: 'static>(
     let mut task = HostTask::copy(
         caller_task,
         move |store: &mut StoreContext<'_, T>, outcome: Result<Vec<Val>>| {
+            // A poll that failed before it reached the store could not
+            // forget the waker a pending poll kept; this forgets it.
+            drop(store.internal().scheduler_mut().take_host_end_waker(writer));
             outcome?;
             deliver(store, writer)
         },
@@ -123,14 +126,14 @@ fn poll_writer<T: 'static>(
     let Some(mut end) = store.internal().scheduler_mut().take_host_writer(writer) else {
         return Poll::Ready(Ok(()));
     };
-    let poll = end.poll(context, store, remaining as usize, finish);
+    let poll = end.poll(context, store, Some(remaining as usize), finish);
     let scheduler = store.internal().scheduler_mut();
     scheduler.insert_host_writer(writer, end);
     // A pending poll leaves its waker for a cancel of the read to
     // wake; a ready one leaves nothing to wake.
     match poll {
-        Poll::Pending => scheduler.set_host_writer_waker(writer, context.waker().clone()),
-        Poll::Ready(_) => drop(scheduler.take_host_writer_waker(writer)),
+        Poll::Pending => scheduler.set_host_end_waker(writer, context.waker().clone()),
+        Poll::Ready(_) => drop(scheduler.take_host_end_waker(writer)),
     }
     poll
 }
@@ -227,11 +230,14 @@ fn deliver<T: 'static>(store: &mut StoreContext<'_, T>, writer: EndId) -> Result
             guard.tasks.release_host_end(writer)?;
         }
     }
-    if !over {
-        store
-            .internal()
-            .scheduler_mut()
-            .insert_host_writer(writer, end);
+    let scheduler = store.internal().scheduler_mut();
+    if over {
+        // The end is let go of for good, and no waker is left kept
+        // for it. The producer is dropped with no lock held.
+        drop(scheduler.release_host_writer(writer));
+        drop(end);
+    } else {
+        scheduler.insert_host_writer(writer, end);
     }
     Ok(())
 }

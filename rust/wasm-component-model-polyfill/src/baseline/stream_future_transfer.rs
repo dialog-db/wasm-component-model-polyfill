@@ -18,9 +18,9 @@
 //! arranged by writing the end's record directly, as the baselines of
 //! the ends themselves do.
 //!
-//! Out of a guest to the host the same crossing has no host value to
-//! lift the end into yet, so it fails with `Error::Unsupported` after
-//! the lift's checks. Into a guest the host passes a readable end it
+//! Out of a guest to the host the same crossing takes the entry out
+//! of the sender's table after the lift's checks, and hands the host
+//! the end as a value. Into a guest the host passes a readable end it
 //! holds, and a value that is not one fails as a host value mismatch,
 //! in the flat and in the memory form.
 
@@ -691,24 +691,25 @@ async fn it_misses_an_old_end_identity_once_its_slot_is_reused_after_a_crossing(
 }
 
 #[wcmp_macros::test]
-async fn it_fails_a_readable_end_the_host_would_receive_through_memory_as_unsupported() {
+async fn it_hands_the_host_a_readable_end_through_memory() {
     let (mut store, instance) = instantiate(COMPOSED).await;
 
-    let error = call(&mut store, &instance, "return-pair", &[])
+    let result = call(&mut store, &instance, "return-pair", &[])
         .await
-        .expect_err("the host has no value to hold an end in");
+        .expect("the end crosses to the host");
 
     assert!(
-        matches!(error, Error::Unsupported { .. }),
-        "the lift fails after its checks: {}",
-        chain(&error)
-    );
-    assert!(
         matches!(
-            entry(&store, reader(&instance), 1),
-            Some(HandleKind::StreamReadable { .. })
+            result.as_ref(),
+            Some(Val::Tuple(values))
+                if matches!(values.as_ref(), [Val::Stream(_), Val::U32(7)])
         ),
-        "the end stays in the table it was lifted from"
+        "the host holds the end the tuple carried: {result:?}"
+    );
+    assert_eq!(
+        entry(&store, reader(&instance), 1),
+        None,
+        "the end left the table it was lifted from"
     );
 }
 

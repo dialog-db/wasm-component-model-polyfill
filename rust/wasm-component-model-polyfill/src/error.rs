@@ -1263,6 +1263,37 @@ pub enum CopyCause {
     )]
     ProducerCancelledWithoutFinish,
 
+    /// A host consumer answered that its poll completed without
+    /// taking an item, for a write that offered some. The writer would
+    /// be told of a write that moved nothing. The message is the one
+    /// Wasmtime raises for the same answer.
+    #[error(
+        "StreamConsumer::poll_consume returned StreamResult::Completed without consuming any items"
+    )]
+    ConsumerCompletedWithoutItems,
+
+    /// A host consumer answered that its poll was cancelled, or a
+    /// future's consumer answered without taking the value, when the
+    /// poll had not been asked to finish. The message is the one
+    /// Wasmtime raises for the same answer, which it gives a future's
+    /// consumer too.
+    #[error(
+        "StreamConsumer::poll_consume returned StreamResult::Cancelled without being given a `finish` parameter value of true"
+    )]
+    ConsumerCancelledWithoutFinish,
+
+    /// A host piped a reader whose end the store does not hold for
+    /// the host: the end is gone, or it sits in a guest's handle
+    /// table. A reader is moved when it is lowered or piped, so this
+    /// takes a reader made by another store, whose end names nothing
+    /// here or names an end of this store's own. Wasmtime fails the
+    /// same pipe with the failed lookup of the end in its table.
+    #[error("the {kind} is not one the host holds")]
+    NotHeldByHost {
+        /// The kind of end the reader names.
+        kind: EndKind,
+    },
+
     /// A guest cancelled a copy on an end that has none to cancel:
     /// the end is not copying, or a cancel of its copy is already in
     /// progress, or a thread waits on the copy synchronously. The

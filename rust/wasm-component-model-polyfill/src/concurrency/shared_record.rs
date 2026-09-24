@@ -40,10 +40,14 @@ pub struct SharedRecord {
     pub readable: EndId,
     /// The writable end.
     pub writable: EndId,
-    /// The end the host serves, when the stream or future was created
-    /// by the host: the writable end of a host producer. Such an end
-    /// is in no guest's handle table, and a copy on the other end
-    /// polls the host's side rather than waiting for a guest to copy.
+    /// The end the host serves, if any: the writable end of a host
+    /// producer, when the host created the stream or future, or the
+    /// readable end of a host consumer, when the host piped a readable
+    /// end it lifted out of a guest. Such an end is in no guest's
+    /// handle table, and a copy on the other end polls the host's side
+    /// rather than waiting for a guest to copy. A stream or future the
+    /// host created and piped to itself keeps its writable end here:
+    /// no guest copies on it, and the pipe drives both ends.
     pub host: Option<EndKind>,
 }
 

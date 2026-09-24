@@ -79,17 +79,24 @@
 //! writer. Its writable end is a producer the host serves, and the
 //! read polls it once before the built-in returns, as a host task:
 //! see `host_copy`. A poll that is ready completes the read here, and
-//! a pending one leaves the read to a later turn.
+//! a pending one leaves the read to a later turn. A write whose
+//! readable end the host piped to a consumer meets no guest reader in
+//! the same way, and polls the consumer: see `host_consume`.
 //!
-//! Such a read is never paired with a copy. The host's end starts
-//! none and holds no buffer, so the read finds no pending side and
-//! waits as one. Neither path above moves its values: the producer's
-//! delivery lowers them into the reader's memory, whatever the
-//! payload. And the same-instance rule, which compares the instances
-//! of two copies, never meets it. Wasmtime does the same: a guest's
-//! read against a host writer polls the producer and lowers what it
-//! gives, and never reaches the copy that compares instances and
-//! moves a number payload's bytes.
+//! Such a read or write is never paired with a copy. The host's end
+//! starts none and holds no buffer, so the guest's copy finds no
+//! pending side and waits as one. Neither path above moves its
+//! values, whatever the payload: the producer's delivery lowers them
+//! into the reader's memory, and the consumer's source lifts them out
+//! of the writer's, one value at a time, a number type included. And
+//! the same-instance rule, which compares the instances of two
+//! copies, never meets it: the host is no instance, even when the
+//! guest that copies created the stream or future. Wasmtime does the
+//! same: a guest's read against a host writer polls the producer and
+//! lowers what it gives, a guest's write against a host reader hands
+//! the consumer a source whose read lifts typed values, and neither
+//! reaches the copy that compares instances and moves a number
+//! payload's bytes.
 //!
 //! A copy that finished has an event on its end, and the built-in
 //! takes it and returns its packed result. A copy that did not
@@ -126,7 +133,10 @@
 //! Wasmtime's `cancel_read` against a host writer. The cancel wakes
 //! the host task that polls the producer, whose next poll is asked to
 //! finish, and the delivery that follows completes the read with the
-//! progress made (see `host_copy`). Meanwhile an `async` cancel
+//! progress made (see `host_copy`). A write that waits on a consumer
+//! the host serves is cancelled the same way, as Wasmtime's
+//! `cancel_write` against a host reader, and completes with what the
+//! consumer took (see `host_consume`). Meanwhile an `async` cancel
 //! returns the blocked sentinel, and a synchronous one blocks through
 //! the suspend seam, as a copy does. A second cancel while the first
 //! waits traps with the no-copy-pending cause, as the reference's
@@ -158,6 +168,7 @@ use crate::store::{StoreContext, StoreData};
 use crate::types::{ListType, ValueType};
 use crate::value::Val;
 
+use super::host_consume::serve_host_write;
 use super::host_copy::serve_host_read;
 
 /// The word a copy returns when it has not finished: the reference's
@@ -231,21 +242,20 @@ pub fn build_cancel_copy<T: 'static>(
             let index = arg_u32(args, 0)?;
             let (id, table) = calling_instance(&abi_state, instance)?;
             trap_if_cannot_leave(&abi_state, id, &mut store_ctx)?;
-            let (waitable, host_writer) = {
+            let (waitable, host_end) = {
                 let mut guard = lock_tables(&tables)?;
                 let end = copying_end(&guard, kind, &payload, async_, table, index)?;
-                let host_writer = guard.tasks.cancel_copy(kind, end).map_err(trap)?;
-                (WaitableId::from_end(kind, end), host_writer)
+                let host_end = guard.tasks.cancel_copy(kind, end).map_err(trap)?;
+                (WaitableId::from_end(kind, end), host_end)
             };
-            // A copy that waits on a host producer ends when the
-            // producer answers a poll asked to finish: wake the host
-            // task that polls it, as Wasmtime wakes the producer's
-            // cancel waker.
-            if let Some(writer) = host_writer {
+            // A copy that waits on a host producer or consumer ends
+            // when it answers a poll asked to finish: wake the host
+            // task that polls it, as Wasmtime wakes the cancel waker.
+            if let Some(host_end) = host_end {
                 let waker = StoreContext::new(store_ctx.as_context_mut())
                     .internal()
                     .scheduler_mut()
-                    .take_host_writer_waker(writer);
+                    .take_host_end_waker(host_end);
                 if let Some(waker) = waker {
                     waker.wake();
                 }
@@ -402,18 +412,26 @@ impl Builtin {
         }
 
         let waitable = WaitableId::from_end(self.kind, end);
-        let host_read = {
+        let host_copy = {
             let guard = lock_tables(&self.tables)?;
-            match guard.tasks.host_writer_of(end) {
-                Some(writer) if !guard.tasks.has_pending_event(waitable).map_err(trap)? => {
-                    Some((writer, guard.tasks.current_task()))
+            match guard.tasks.host_counterpart(end) {
+                Some(host) if !guard.tasks.has_pending_event(waitable).map_err(trap)? => {
+                    Some((host, guard.tasks.current_task()))
                 }
                 _ => None,
             }
         };
-        if let Some((writer, caller_task)) = host_read {
+        if let Some((host, caller_task)) = host_copy {
             let mut store = StoreContext::new(store_ctx.as_context_mut());
-            serve_host_read(&mut store, writer, caller_task).map_err(trap)?;
+            match self.kind {
+                EndKind::StreamReadable | EndKind::FutureReadable => {
+                    serve_host_read(&mut store, host, caller_task)
+                }
+                EndKind::StreamWritable | EndKind::FutureWritable => {
+                    serve_host_write(&mut store, host, caller_task, true)
+                }
+            }
+            .map_err(trap)?;
         }
 
         finish(&mut store_ctx, &self.tables, waitable, self.options.async_)

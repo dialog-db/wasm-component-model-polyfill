@@ -89,6 +89,18 @@
 //! one of its polls answers. [`StreamAny`] and [`FutureAny`] carry a
 //! readable end the host holds as a [`Val`](crate::Val).
 //!
+//! A host reads a stream or a future through a consumer: a
+//! [`StreamConsumer`] or a [`FutureConsumer`], handed to
+//! [`StreamReader::pipe`] or [`FutureReader::pipe`] with a readable
+//! end the host holds, which a guest handed over through a typed
+//! call or a typed host function. The scheduler holds the consumer,
+//! erased to the host end the store polls, keyed by the readable
+//! end, and a guest's write on the other end is a host task while the
+//! consumer is pending. [`Source`] is the buffer of the write a
+//! consumer serves. A stream or future the host created and piped to
+//! itself is one host task that copies from the producer to the
+//! consumer, with no guest involved.
+//!
 //! A synchronous call is a task with one thread, so the synchronous
 //! baseline is the case of one task per instance at a time.
 
@@ -110,9 +122,12 @@ mod event_code;
 mod event_slot;
 mod failure_channel;
 mod future_any;
+mod future_consumer;
 mod future_producer;
 mod future_reader;
+mod host_consumer;
 mod host_future;
+mod host_reader;
 mod host_result_lowering;
 mod host_task;
 mod host_task_body;
@@ -133,7 +148,9 @@ mod scheduler;
 mod scheduler_state;
 mod scope;
 mod shared_record;
+mod source;
 mod stream_any;
+mod stream_consumer;
 mod stream_producer;
 mod stream_reader;
 mod stream_result;
@@ -180,11 +197,14 @@ pub use event_code::EventCode;
 pub use event_slot::EventSlot;
 pub use failure_channel::FailureChannel;
 pub use future_any::FutureAny;
+pub use future_consumer::FutureConsumer;
 pub use future_producer::FutureProducer;
 pub use future_reader::FutureReader;
+pub use host_consumer::HostConsumer;
 pub use host_future::HostFuture;
 pub use host_task::HostTask;
 pub use host_task_body::HostTaskBody;
+pub use host_writer::HostWriter;
 pub use instance_id::InstanceId;
 pub use item::Item;
 pub use item_kind::ItemKind;
@@ -195,7 +215,9 @@ pub use poll_scope::PollScope;
 pub use scheduler::Scheduler;
 pub use scheduler_state::SchedulerState;
 pub use scope::Scope;
+pub use source::Source;
 pub use stream_any::StreamAny;
+pub use stream_consumer::StreamConsumer;
 pub use stream_producer::StreamProducer;
 pub use stream_reader::StreamReader;
 pub use stream_result::StreamResult;

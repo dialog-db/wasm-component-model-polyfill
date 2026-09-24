@@ -21,6 +21,7 @@ use super::instance_id::InstanceId;
 /// instantiation they index — because the copy that pairs with this
 /// one can run in a later call of another built-in, and that call
 /// builds this side's context as well as its own.
+#[derive(Clone)]
 pub struct CopyBuffer {
     /// The type of each value the copy moves, as the built-in that
     /// started it declared it, or `None` for a stream that carries

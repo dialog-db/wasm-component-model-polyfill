@@ -6,15 +6,20 @@ use core::task::{Context, Poll};
 
 use crate::abi::context::BoundaryContext;
 use crate::error::{AbiPosition, CopyCause, Error, Result};
+use crate::executor::pipe_readable_end;
 use crate::internal::FutureReaderInternal;
 use crate::linker::ComponentValue;
 use crate::store::{StoreContext, StoreContextInternalExt, StoreData};
 use crate::types::ValueType;
+use crate::value::Val;
 
 use super::end_id::EndId;
 use super::end_kind::EndKind;
+use super::future_consumer::FutureConsumer;
 use super::future_producer::FutureProducer;
+use super::host_consumer::HostConsumer;
 use super::host_writer::HostWriter;
+use super::source::Source;
 
 /// The readable end of a `future<T>` the host holds. The name is
 /// Wasmtime's.
@@ -32,18 +37,32 @@ use super::host_writer::HostWriter;
 /// [`FutureProducer`], so a host writes a future with an `async`
 /// block.
 ///
-/// A reader belongs to the store it was created in, and is lowered
-/// only into a guest of that store. It names its end by an index and
-/// a generation and carries no identity of the store, so the lower
-/// cannot tell a reader from another store. Using a reader with a
-/// store other than the one that made it is a host error the
-/// polyfill does not detect, as with a
+/// A host receives a reader the other way: a future in the result of
+/// a typed call, or in a parameter of a typed host function, arrives
+/// as one, and the guest's entry for the end is gone. The lift checks
+/// that the guest's future carries the type `T` projects to. The host
+/// then reads the value with [`pipe`](Self::pipe), which makes a
+/// [`FutureConsumer`] its reading side, and the guest's
+/// `future.write` polls the consumer inside a turn of the store.
+///
+/// The lifecycle rule is Wasmtime's: a reader the host holds must be
+/// lowered into a guest or piped. A reader dropped otherwise leaks
+/// its end until the store drops, and a guest that writes to the
+/// future waits for good.
+///
+/// A reader belongs to the store it was created or lifted in, and is
+/// lowered or piped only in that store. It names its end by an index
+/// and a generation and carries no identity of the store, so the
+/// lower and the pipe cannot tell a reader from another store. Using
+/// a reader with a store other than the one that made it is a host
+/// error the polyfill does not detect, as with a
 /// [`ResourceHandle`](crate::ResourceHandle): when the other store
-/// holds an unlowered readable end under the same index and
-/// generation, that end is the one lowered, and the guest reads the
-/// other store's future. Wasmtime's reader carries no store identity
-/// either. The reader is moved when it is lowered, so an end crosses
-/// into a guest once.
+/// holds a readable end for the host under the same index and
+/// generation, that end is the one lowered or piped, and the guest
+/// reads, or the consumer takes, the other store's future. Wasmtime's
+/// reader carries no store identity either. The reader is moved when
+/// it is lowered or piped, so an end crosses into a guest, or reaches
+/// a consumer, once.
 pub struct FutureReader<T> {
     end: EndId,
     item: PhantomData<fn() -> T>,
@@ -79,6 +98,48 @@ impl<T: ComponentValue> FutureReader<T> {
             }),
         );
         Ok(Self::from_end(readable))
+    }
+
+    /// Make `consumer` the reading side of this future, in the store
+    /// `store` reaches, and give the reader up. The name and the
+    /// contract are Wasmtime's.
+    ///
+    /// From then on the writer's write polls the consumer inside a
+    /// turn of the store, as [`FutureConsumer`] states. A guest's
+    /// write that started before the pipe is served in the next turn.
+    /// A future whose writer already dropped its end ends here: the
+    /// readable end drops, and the consumer is dropped without a poll.
+    ///
+    /// A future the host created with [`new`](Self::new) and pipes to
+    /// itself involves no guest: a host task of the store polls the
+    /// producer and hands its value to the consumer inside turns, and
+    /// then drops both.
+    ///
+    /// Wasmtime asks the consumer to be `Unpin`, because it wraps the
+    /// consumer as a stream's; the polyfill pins the consumer in a
+    /// box of its own and asks nothing more.
+    ///
+    /// `D` is the store's host data. [`Store::as_context_mut`] reaches
+    /// the context from a store the host holds, and a host `async`
+    /// function reaches it through [`Accessor::with`].
+    ///
+    /// Fails with the not-held cause of [`CopyCause`] when the store
+    /// holds no readable end for the host under this reader, as
+    /// [`StreamReader::pipe`](super::StreamReader::pipe) states.
+    ///
+    /// [`Store::as_context_mut`]: crate::Store::as_context_mut
+    /// [`Accessor::with`]: crate::Accessor::with
+    pub fn pipe<D: 'static>(
+        self,
+        store: &mut StoreContext<'_, D>,
+        consumer: impl FutureConsumer<D, Item = T>,
+    ) -> Result<()> {
+        let consumer = ConsumerEnd {
+            consumer: Box::pin(consumer),
+            received: false,
+            data: PhantomData,
+        };
+        pipe_readable_end(store, self.end, EndKind::FutureReadable, consumer)
     }
 }
 
@@ -122,7 +183,7 @@ where
         &mut self,
         cx: &mut Context<'_>,
         store: &mut StoreContext<'_, D>,
-        _remaining: usize,
+        _remaining: Option<usize>,
         finish: bool,
     ) -> Poll<Result<()>> {
         if self.produced {
@@ -169,5 +230,70 @@ where
                 Ok(())
             }
         }
+    }
+
+    fn take_items(&mut self) -> Vec<Val> {
+        self.value
+            .take()
+            .map(ComponentValue::to_val)
+            .into_iter()
+            .collect()
+    }
+}
+
+/// The readable end of a future the host serves through `C`.
+struct ConsumerEnd<D: 'static, C: FutureConsumer<D>> {
+    consumer: Pin<Box<C>>,
+    /// Whether the consumer has taken the value. A future is read
+    /// once, so the consumer is never polled again after that.
+    received: bool,
+    data: PhantomData<fn() -> D>,
+}
+
+impl<D: 'static, C> HostConsumer<D> for ConsumerEnd<D, C>
+where
+    C: FutureConsumer<D>,
+    C::Item: ComponentValue,
+{
+    type Item = C::Item;
+
+    fn consume(
+        &mut self,
+        cx: &mut Context<'_>,
+        store: &mut StoreContext<'_, D>,
+        mut source: Source<'_, C::Item>,
+        finish: bool,
+        earlier: usize,
+    ) -> Poll<Result<()>> {
+        if self.received {
+            return Poll::Ready(Ok(()));
+        }
+        let offered = source.remaining();
+        let poll = self
+            .consumer
+            .as_mut()
+            .poll_consume(cx, store, source.reborrow(), finish);
+        // A consumer may take the value and answer pending, which
+        // delays the write's completion until a later poll is ready.
+        let Poll::Ready(answer) = poll else {
+            return Poll::Pending;
+        };
+        answer?;
+        let taken = earlier + (offered - source.remaining());
+        Poll::Ready(if taken > 0 {
+            self.received = true;
+            Ok(())
+        } else if finish {
+            // The write was cancelled before the consumer took the
+            // value, which stays with the writer: the write ends
+            // cancelled, and the next write polls the consumer again.
+            Ok(())
+        } else {
+            Err(Error::Copy(CopyCause::ConsumerCancelledWithoutFinish))
+        })
+    }
+
+    fn finished(&self) -> bool {
+        self.received
     }
 }

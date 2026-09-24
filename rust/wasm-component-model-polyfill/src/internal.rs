@@ -35,7 +35,7 @@ use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::shape::AbiShape;
 use crate::backend::Backend;
 use crate::component::{Component, ExternalName, FunctionType};
-use crate::concurrency::EndId;
+use crate::concurrency::{CopyBuffer, EndId};
 use crate::error::{Error, Result};
 use crate::executor::ir::{CanonOptions, ExecutorIr};
 use crate::identifier::InterfaceIdentifier;
@@ -94,6 +94,17 @@ pub trait DestinationInternal<'a, T> {
     /// The destination of a read that can take `remaining` items,
     /// over the vector the end keeps its waiting items in.
     fn new(buffer: &'a mut Vec<T>, remaining: Option<usize>) -> Self;
+}
+
+/// The crate-internal face of [`Source`](crate::Source).
+pub trait SourceInternal<'a, T> {
+    /// The source of a write whose items a host producer delivered,
+    /// taken from the front of `items`.
+    fn host(items: &'a mut Vec<T>) -> Self;
+    /// The source of a guest's write over `write`, its buffer as it
+    /// stood when the poll began, counting the items the poll takes
+    /// in `taken`.
+    fn guest(write: &'a CopyBuffer, taken: &'a mut u32) -> Self;
 }
 
 /// The crate-internal face of [`StreamReader`](crate::StreamReader).

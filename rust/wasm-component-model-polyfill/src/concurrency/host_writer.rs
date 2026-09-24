@@ -6,6 +6,7 @@ use crate::abi::context::BoundaryContext;
 use crate::error::Result;
 use crate::store::{StoreContext, StoreData};
 use crate::types::ValueType;
+use crate::value::Val;
 
 /// The writable end of a stream or a future the host serves through a
 /// producer, as the store holds it.
@@ -26,6 +27,11 @@ use crate::types::ValueType;
 /// followed by a delivery, which moves what the reader can take into
 /// the reader's buffer through the boundary context of the read.
 ///
+/// When the host pipes the readable end of such a stream or future to
+/// a consumer of its own, the pipe takes the end out of the scheduler
+/// and polls it with no remaining count, and takes what it delivered
+/// as values instead of lowering them into a guest.
+///
 /// The `Send` half of the bound is the one per-target line, as it is
 /// for the producer the end wraps.
 #[cfg(not(target_arch = "wasm32"))]
@@ -33,12 +39,14 @@ pub trait HostWriter<D: 'static>: Send + 'static {
     /// Poll the producer for a read that can take `remaining` items,
     /// unless items or the end of the stream are already waiting, in
     /// which case the poll is ready at once. A poll that comes out
-    /// ready has left what it produced with the end.
+    /// ready has left what it produced with the end. `remaining` is
+    /// `None` when the reader is a consumer of the host, which takes
+    /// whatever the producer delivers.
     fn poll(
         &mut self,
         cx: &mut Context<'_>,
         store: &mut StoreContext<'_, D>,
-        remaining: usize,
+        remaining: Option<usize>,
         finish: bool,
     ) -> Poll<Result<()>>;
 
@@ -58,6 +66,10 @@ pub trait HostWriter<D: 'static>: Send + 'static {
         ty: &ValueType,
         count: usize,
     ) -> Result<()>;
+
+    /// Take every waiting item, each as the value it crosses as, for a
+    /// reader that is a consumer of the host rather than a guest.
+    fn take_items(&mut self) -> Vec<Val>;
 }
 
 /// The writable end of a stream or a future the host serves. See the
@@ -70,7 +82,7 @@ pub trait HostWriter<D: 'static>: 'static {
         &mut self,
         cx: &mut Context<'_>,
         store: &mut StoreContext<'_, D>,
-        remaining: usize,
+        remaining: Option<usize>,
         finish: bool,
     ) -> Poll<Result<()>>;
 
@@ -89,4 +101,7 @@ pub trait HostWriter<D: 'static>: 'static {
         ty: &ValueType,
         count: usize,
     ) -> Result<()>;
+
+    /// Take every waiting item. See the native definition.
+    fn take_items(&mut self) -> Vec<Val>;
 }

@@ -8,14 +8,12 @@
 //! synchronous export, a synchronous host function, an `async` export,
 //! and an `async` import can each carry one.
 //!
-//! A readable end cannot cross out of a guest to the host yet. A
-//! component whose function type carries a stream or a future
-//! translates, links, and instantiates, and a call that lifts such a
-//! value from the guest fails with `Error::Unsupported` at the call.
-//! A lift makes the checks every crossing makes first, so the guests
-//! below hand over an end they really hold. The other way, the host
-//! lowers a readable end it holds, and a value that is not one fails
-//! the lower as a host value mismatch.
+//! A readable end crosses out of a guest to the host too. A call that
+//! lifts such a value from the guest takes the guest's entry away and
+//! hands the host the end, as a `Val::Stream` or a `Val::Future`. The
+//! guests below hand over an end they really hold. The other way, the
+//! host lowers a readable end it holds, and a value that is not one
+//! fails the lower as a host value mismatch.
 
 #![cfg(test)]
 
@@ -54,7 +52,7 @@ const STREAMS_AND_FUTURES: &[u8] = component!(
 
 /// A component whose one export returns a future, and whose guest
 /// hands back the readable end of a future it made, which the host
-/// would have to lift.
+/// lifts.
 const RETURNS_A_FUTURE: &[u8] = component!(
     r#"
     (component
@@ -72,7 +70,7 @@ const RETURNS_A_FUTURE: &[u8] = component!(
 
 /// A component whose export calls a synchronous host function that
 /// takes a stream, passing the readable end of a stream it made, so
-/// the host would have to lift the guest's end.
+/// the host lifts the guest's end.
 const PASSES_A_STREAM_TO_THE_HOST: &[u8] = component!(
     r#"
     (component
@@ -130,15 +128,6 @@ async fn function_type(wire_name: &str, import: bool) -> FunctionType {
     match ty {
         Some(ExternType::Function(ty)) => ty,
         other => panic!("`{wire_name}` is not a function: {other:?}"),
-    }
-}
-
-/// The feature an `Error::Unsupported` names, or a panic naming what
-/// the error turned out to be.
-fn unsupported_feature(err: Error) -> String {
-    match err {
-        Error::Unsupported { feature } => feature,
-        other => panic!("expected an unsupported feature, got {other:?}"),
     }
 }
 
@@ -341,32 +330,32 @@ fn assert_host_value_mismatch(err: Error) {
 }
 
 #[wcmp_macros::test]
-async fn it_refuses_to_lift_a_future_from_an_export_result_at_the_call() {
-    // The guest returns an index; the lift that would take the end it
-    // names out of the guest's table fails instead.
+async fn it_hands_the_host_a_future_from_an_export_result() {
+    // The guest returns an index; the lift takes the end it names out
+    // of the guest's table and hands the host the end.
     let engine = Engine::new().expect("engine");
     let linker: Linker<()> = Linker::new(&engine);
     let (mut store, instance) = instantiate(&engine, &linker, RETURNS_A_FUTURE).await;
 
-    let err = instance
+    let results = instance
         .get_func("make")
         .expect("the component exports `make`")
         .call(&mut store, &[])
         .await
-        .expect_err("a future cannot cross the boundary yet");
-    assert_eq!(
-        unsupported_feature(err),
-        "the transfer of a `future<T>` readable end to or from the host"
+        .expect("a future crosses to the host");
+    assert!(
+        matches!(results.as_ref(), [Val::Future(_)]),
+        "expected a future the host holds, got {results:?}"
     );
 }
 
 #[wcmp_macros::test]
-async fn it_refuses_to_lift_a_stream_into_a_host_function_at_the_call() {
-    // The guest passes an index to the host; the lift of the
-    // parameter fails before the host body runs.
+async fn it_hands_a_host_function_a_stream_for_its_parameter() {
+    // The guest passes an index to the host; the lift of the parameter
+    // takes the end out of the guest's table before the body runs.
     let engine = Engine::new().expect("engine");
-    let ran = Arc::new(AtomicBool::new(false));
-    let body_ran = ran.clone();
+    let received = Arc::new(AtomicBool::new(false));
+    let body_received = received.clone();
     let mut linker: Linker<()> = Linker::new(&engine);
     linker
         .root()
@@ -380,44 +369,22 @@ async fn it_refuses_to_lift_a_stream_into_a_host_function_at_the_call() {
                 result: None,
                 async_: false,
             },
-            move |_call, _args, _results| {
-                body_ran.store(true, Ordering::SeqCst);
+            move |_call, args, _results| {
+                body_received.store(matches!(args, [Val::Stream(_)]), Ordering::SeqCst);
                 Ok(())
             },
         )
         .expect("the registration");
     let (mut store, instance) = instantiate(&engine, &linker, PASSES_A_STREAM_TO_THE_HOST).await;
 
-    let err = instance
+    instance
         .get_func("run")
         .expect("the component exports `run`")
         .call(&mut store, &[])
         .await
-        .expect_err("a stream cannot cross the boundary yet");
-    // The lift runs inside the trampoline the guest called, and the
-    // runtime layer carries a trampoline's failure back to the host as
-    // a substrate failure whose chain holds the polyfill's message.
-    let chain = chain(&err);
+        .expect("a stream crosses to the host");
     assert!(
-        chain.contains(
-            "unsupported component feature: the transfer of a `stream<T>` readable end to or \
-             from the host"
-        ),
-        "expected the unsupported transfer, got {chain}"
+        received.load(Ordering::SeqCst),
+        "the host body received the stream"
     );
-    assert!(!ran.load(Ordering::SeqCst), "the host body never ran");
-}
-
-/// Every message in the source chain of `error`, joined.
-fn chain(error: &Error) -> String {
-    let mut out = String::new();
-    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
-    while let Some(link) = current {
-        if !out.is_empty() {
-            out.push_str(": ");
-        }
-        out.push_str(&link.to_string());
-        current = link.source();
-    }
-    out
 }

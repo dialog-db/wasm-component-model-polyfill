@@ -1000,58 +1000,116 @@ impl TaskTables {
         (readable, writable)
     }
 
-    /// The writable end the host serves for the stream or future
-    /// `reader` belongs to, while the host can still deliver through
-    /// it: the host created the stream or future, and its writable
-    /// end has not been dropped.
-    pub fn host_writer_of(&self, reader: EndId) -> Option<EndId> {
-        let record = self.shared_record(reader)?;
-        let serves_writer = record
-            .host
-            .is_some_and(|kind| direction_of(kind) == EndDirection::Writable);
-        (serves_writer && !record.dropped).then_some(record.writable)
+    /// The other end of `end`'s stream or future when the host serves
+    /// it, while the host can still copy through it: the writable end
+    /// of a stream or future the host created, whose producer serves
+    /// reads, or the readable end of one the host piped to a consumer,
+    /// which serves writes. Neither end has been dropped.
+    pub fn host_counterpart(&self, end: EndId) -> Option<EndId> {
+        let record = self.shared_record(end)?;
+        let host = record.end_of(direction_of(record.host?));
+        (host != end && !record.dropped).then_some(host)
     }
 
-    /// The host moved `count` values out of `writer`, the writable
-    /// end it serves, and into the buffer of the copy on the readable
+    /// Make the host the server of `reader`, a readable end of kind
+    /// `kind` the host holds, as the reading side of a consumer the
+    /// host piped it to. Afterwards a copy on the writable end polls
+    /// the host's consumer rather than waiting for a guest to read.
+    ///
+    /// Fails with the not-held cause when `reader` is no readable end
+    /// the host holds: the end is gone, a guest's table holds it, or
+    /// it was piped already.
+    pub fn serve_reader(&mut self, reader: EndId, kind: EndKind) -> Result<()> {
+        let not_held = Error::Copy(CopyCause::NotHeldByHost { kind });
+        let Some(record) = self.end(reader) else {
+            return Err(not_held);
+        };
+        if record.direction != EndDirection::Readable || record.handle.is_some() {
+            return Err(not_held);
+        }
+        match self.shared_records.get_mut(record.shared) {
+            Some(shared) if shared.host != Some(kind) => {
+                shared.host = Some(kind);
+                Ok(())
+            }
+            _ => Err(not_held),
+        }
+    }
+
+    /// The host moved `count` values through `host`, the end it
+    /// serves, to or from the buffer of the guest's copy on the other
     /// end: that buffer records `count` more values of progress, and
     /// the copy completes. The completion's event reports the whole
     /// progress when it is delivered, as a guest's pending copy does.
+    /// A consumer's poll records the items it takes as it takes them,
+    /// so the write it serves completes with `count` zero.
     ///
     /// A copy being cancelled that moved nothing completes with the
     /// cancelled result instead, which a future's delivery reports as
-    /// it is: the producer answered the cancel without a value, and
-    /// the future can be read again. A stream's completion is reported
-    /// as cancelled at delivery anyway.
-    pub fn finish_host_copy(&mut self, writer: EndId, count: u32) -> Result<()> {
-        let record = self.shared_record_at(self.end_record(writer)?.shared)?;
-        let (kind, reader) = (host_kind(record)?, record.readable);
-        let record = self.end_record_mut(reader)?;
+    /// it is: the producer or consumer answered the cancel without the
+    /// value, and the future can be copied again. A stream's
+    /// completion is reported as cancelled at delivery anyway.
+    pub fn finish_host_copy(&mut self, host: EndId, count: u32) -> Result<()> {
+        let record = self.shared_record_at(self.end_record(host)?.shared)?;
+        let kind = host_kind(record)?;
+        let other = record.end_of(direction_of(counterpart(kind)));
+        let record = self.end_record_mut(other)?;
         let cancelling = record.state == CopyState::Cancelling;
         let buffer = record
             .buffer
             .as_mut()
-            .ok_or_else(|| Error::internal("a host end delivered to a reader with no copy"))?;
+            .ok_or_else(|| Error::internal("a host end finished a copy that is not in progress"))?;
         buffer.progress += count;
         let result = if cancelling && buffer.progress == 0 {
             CopyResult::Cancelled
         } else {
             CopyResult::Completed
         };
-        self.notify_copy(counterpart(kind), reader, result)
+        self.notify_copy(counterpart(kind), other, result)
     }
 
-    /// Let go of `writer`, the writable end the host serves, once its
-    /// producer will deliver nothing more: the stream ended, or the
-    /// future's value was delivered. The end drops as a guest's
-    /// writable end drops, and the rules of
-    /// [`drop_end`](Self::drop_end) tell the readable end. A future's
-    /// writable end is done first, because the host wrote its value,
-    /// or the reader dropped and it never will.
-    pub fn release_host_end(&mut self, writer: EndId) -> Result<()> {
-        let kind = host_kind(self.shared_record_at(self.end_record(writer)?.shared)?)?;
-        self.end_record_mut(writer)?.state = CopyState::Done;
-        self.drop_end(kind, writer)
+    /// Record that a poll of `reader`, the readable end the host
+    /// serves through a consumer, took `count` more values out of the
+    /// buffer of the guest's write on the writable end. The write goes
+    /// on until the consumer answers ready, and the next poll's source
+    /// starts after these values.
+    pub fn record_host_take(&mut self, reader: EndId, count: u32) -> Result<()> {
+        let writer = self
+            .shared_record_at(self.end_record(reader)?.shared)?
+            .writable;
+        let buffer = self
+            .end_record_mut(writer)?
+            .buffer
+            .as_mut()
+            .ok_or_else(|| Error::internal("a host consumer took values from no write"))?;
+        buffer.progress += count;
+        Ok(())
+    }
+
+    /// Let go of `end`, an end the host serves or holds, once it will
+    /// copy nothing more: a producer's stream ended or its future's
+    /// value was delivered, a consumer's stream is over or its future's
+    /// value was taken, the guest dropped the other end, or a pipe
+    /// between two of the host's own ends finished. The end drops as a
+    /// guest's end drops, and the rules of [`drop_end`](Self::drop_end)
+    /// tell the other end. The end is done first, because a future's
+    /// writable end that has not written would otherwise refuse to
+    /// drop, and one the host lets go of never will write.
+    ///
+    /// The kind of the end follows from the kind of the end the host
+    /// serves: `end` is that end, or the other end of the same stream
+    /// or future.
+    pub fn release_host_end(&mut self, end: EndId) -> Result<()> {
+        let record = self.end_record(end)?;
+        let direction = record.direction;
+        let host = host_kind(self.shared_record_at(record.shared)?)?;
+        let kind = if direction_of(host) == direction {
+            host
+        } else {
+            counterpart(host)
+        };
+        self.end_record_mut(end)?.state = CopyState::Done;
+        self.drop_end(kind, end)
     }
 
     /// The index `end` names, under the rule
@@ -1244,8 +1302,9 @@ impl TaskTables {
     ///   reference's temporary rule, and it comes before any count is
     ///   looked at, so a copy that asks for nothing, or that finds
     ///   the pending side full, fails too. The end is left as it was.
-    ///   A writable end the host serves starts no copy and holds no
-    ///   buffer, so it is never the pending side this compares.
+    ///   An end the host serves, a producer's writable end or a
+    ///   consumer's readable end, starts no copy and holds no buffer,
+    ///   so it is never the pending side this compares.
     /// - A copy that finds the other end pending with room left moves
     ///   the smaller of the two remaining counts at once, which the
     ///   caller does with the [`Pairing::Move`] it is handed. A copy
@@ -1362,15 +1421,16 @@ impl TaskTables {
     /// a future's as completed.
     ///
     /// An end that holds no event and whose other end the host serves
-    /// through a producer waits on the host to answer the cancel.
-    /// That is the reference's `End.cancel` when the other end has no
-    /// owner, which may leave the event to the host, and Wasmtime's
-    /// `cancel_read` against a host writer, which tells the producer to
-    /// finish and wakes it. The end stays the pending side, and the
-    /// writable end the host serves is answered, for the caller to
-    /// wake: its next poll is asked to finish, and its delivery
-    /// completes the copy with the progress made, as cancelled on a
-    /// stream, and as cancelled on a future that moved no value.
+    /// through a producer or a consumer waits on the host to answer
+    /// the cancel. That is the reference's `End.cancel` when the other
+    /// end has no owner, which may leave the event to the host, and
+    /// Wasmtime's `cancel_read` against a host writer and
+    /// `cancel_write` against a host reader, which tell the producer
+    /// or consumer to finish and wake it. The end stays the pending
+    /// side, and the end the host serves is answered, for the caller
+    /// to wake: its next poll is asked to finish, and the copy then
+    /// completes with the progress made, as cancelled on a stream, and
+    /// as cancelled on a future that moved no value.
     ///
     /// Any other end that holds no event is the pending side of its
     /// stream or future. It stops being it and is given the cancelled
@@ -1385,14 +1445,14 @@ impl TaskTables {
     /// Wasmtime allows it and waits again; the polyfill keeps the
     /// reference's trap.
     pub fn cancel_copy(&mut self, kind: EndKind, end: EndId) -> Result<Option<EndId>> {
-        let host_writer = self.host_writer_of(end);
+        let host_end = self.host_counterpart(end);
         let record = self.end_record_mut(end)?;
         record.state = CopyState::Cancelling;
         if record.waitable.pending_event.is_some() {
             return Ok(None);
         }
-        if host_writer.is_some() {
-            return Ok(host_writer);
+        if host_end.is_some() {
+            return Ok(host_end);
         }
         let (shared, direction) = (record.shared, record.direction);
         let record = self.shared_record_at_mut(shared)?;
@@ -2010,38 +2070,48 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    fn it_leaves_a_guest_read_of_a_host_served_stream_to_the_host_whatever_the_payload() {
-        // The host's writable end never starts a copy, so it is never
-        // the pending side and never holds a buffer. A guest's read
-        // therefore finds no pending side: it is not paired, so it
-        // takes neither the byte path nor the path through values, and
-        // the same-instance rule, which compares two buffers, has
-        // nothing to compare. The host's delivery serves it instead.
-        for buffer in [empty_buffer(4), text_buffer(3, 0), text_buffer(3, 4)] {
-            let mut tables = TaskTables::new();
-            let (readable, writable) =
-                tables.insert_host_ends(buffer.payload.clone(), EndKind::StreamWritable);
-            assert_eq!(
-                tables
-                    .start_copy(EndKind::StreamReadable, readable, buffer)
-                    .expect("the guest's read starts"),
-                Pairing::Settled
-            );
-            assert_eq!(tables.host_writer_of(readable), Some(writable));
-            assert!(
-                tables.end(writable).is_some_and(|end| end.buffer.is_none()),
-                "the host's end holds no buffer"
-            );
-            let shared = tables.end(readable).expect("the readable end").shared;
-            assert_eq!(
-                tables
-                    .shared_records
-                    .get(shared)
-                    .expect("the record")
-                    .pending,
-                Some(EndDirection::Readable),
-                "the guest's read is the pending side"
-            );
+    fn it_leaves_a_guest_copy_against_a_host_served_end_to_the_host_whatever_the_payload() {
+        // The end the host serves, a producer's writable end or a
+        // consumer's readable end, never starts a copy, so it is never
+        // the pending side and never holds a buffer. A guest's copy
+        // against it therefore finds no pending side: it is not
+        // paired, so it takes neither the byte path nor the path
+        // through values, and the same-instance rule, which compares
+        // two buffers, has nothing to compare. The host's producer or
+        // consumer serves it instead.
+        for (host, guest) in [
+            (EndKind::StreamWritable, EndKind::StreamReadable),
+            (EndKind::StreamReadable, EndKind::StreamWritable),
+        ] {
+            for buffer in [empty_buffer(4), text_buffer(3, 0), text_buffer(3, 4)] {
+                let mut tables = TaskTables::new();
+                let (readable, writable) = tables.insert_host_ends(buffer.payload.clone(), host);
+                let (host_end, guest_end) = match host {
+                    EndKind::StreamWritable => (writable, readable),
+                    _ => (readable, writable),
+                };
+                assert_eq!(
+                    tables
+                        .start_copy(guest, guest_end, buffer)
+                        .expect("the guest's copy starts"),
+                    Pairing::Settled
+                );
+                assert_eq!(tables.host_counterpart(guest_end), Some(host_end));
+                assert!(
+                    tables.end(host_end).is_some_and(|end| end.buffer.is_none()),
+                    "the host's end holds no buffer"
+                );
+                let shared = tables.end(guest_end).expect("the guest's end").shared;
+                assert_eq!(
+                    tables
+                        .shared_records
+                        .get(shared)
+                        .expect("the record")
+                        .pending,
+                    Some(direction_of(guest)),
+                    "the guest's copy is the pending side"
+                );
+            }
         }
     }
 

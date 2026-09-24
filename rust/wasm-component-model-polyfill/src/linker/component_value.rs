@@ -514,8 +514,12 @@ impl<T: ComponentValue> ComponentValue for Option<T> {
 
 /// The readable end of a stream the host holds, as Wasmtime maps
 /// `stream<T>`. It crosses as a [`Val::Stream`], and lowering it into
-/// a guest enters its end in the guest's handle table. A value of
-/// another payload type than the projection of `T` does not decode.
+/// a guest enters its end in the guest's handle table. Lifting one out
+/// of a guest takes the guest's entry away and hands the host the
+/// end. A declared type or a value of another payload type than the
+/// projection of `T` does not cross: a direct lift checks the
+/// declared type before it takes the entry, so a refused lift leaves
+/// the guest's entry where it was.
 impl<T: ComponentValue> ComponentValue for StreamReader<T> {
     fn value_type() -> ValueType {
         ValueType::Stream(StreamType::new(Some(T::value_type())))
@@ -531,12 +535,34 @@ impl<T: ComponentValue> ComponentValue for StreamReader<T> {
     fn to_val(self) -> Val {
         Val::Stream(StreamAny::new(self.end(), Some(T::value_type())))
     }
+    fn lift_flat<D: 'static>(
+        cx: &mut BoundaryContext<'_, D>,
+        slots: &[RuntimeVal],
+        cursor: &mut usize,
+        ty: &ValueType,
+        position: AbiPosition,
+    ) -> Result<Self> {
+        expect_declared::<Self>(ty, position)?;
+        let val = lift_from_flat_slots(cx, slots, cursor, ty, position)?;
+        <Self as ComponentValue>::from_val(&val).map_err(|error| at_position(error, position))
+    }
+    fn load<D: 'static>(
+        cx: &mut BoundaryContext<'_, D>,
+        offset: usize,
+        ty: &ValueType,
+        position: AbiPosition,
+    ) -> Result<Self> {
+        expect_declared::<Self>(ty, position)?;
+        let val = lift(cx, offset, ty, position)?;
+        <Self as ComponentValue>::from_val(&val).map_err(|error| at_position(error, position))
+    }
 }
 
 /// The readable end of a future the host holds, as Wasmtime maps
 /// `future<T>`. It crosses as a [`Val::Future`], and lowering it into
-/// a guest enters its end in the guest's handle table. A value of
-/// another payload type than the projection of `T` does not decode.
+/// a guest enters its end in the guest's handle table. Lifting one out
+/// of a guest takes the guest's entry away and hands the host the
+/// end, with the check the stream's reader states.
 impl<T: ComponentValue> ComponentValue for FutureReader<T> {
     fn value_type() -> ValueType {
         ValueType::Future(FutureType::new(Some(T::value_type())))
@@ -551,6 +577,27 @@ impl<T: ComponentValue> ComponentValue for FutureReader<T> {
     }
     fn to_val(self) -> Val {
         Val::Future(FutureAny::new(self.end(), Some(T::value_type())))
+    }
+    fn lift_flat<D: 'static>(
+        cx: &mut BoundaryContext<'_, D>,
+        slots: &[RuntimeVal],
+        cursor: &mut usize,
+        ty: &ValueType,
+        position: AbiPosition,
+    ) -> Result<Self> {
+        expect_declared::<Self>(ty, position)?;
+        let val = lift_from_flat_slots(cx, slots, cursor, ty, position)?;
+        <Self as ComponentValue>::from_val(&val).map_err(|error| at_position(error, position))
+    }
+    fn load<D: 'static>(
+        cx: &mut BoundaryContext<'_, D>,
+        offset: usize,
+        ty: &ValueType,
+        position: AbiPosition,
+    ) -> Result<Self> {
+        expect_declared::<Self>(ty, position)?;
+        let val = lift(cx, offset, ty, position)?;
+        <Self as ComponentValue>::from_val(&val).map_err(|error| at_position(error, position))
     }
 }
 

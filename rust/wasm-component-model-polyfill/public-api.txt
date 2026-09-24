@@ -32,6 +32,8 @@ pub wasm_component_model_polyfill::CopyCause::BufferOutOfBounds::kind: wasm_comp
 pub wasm_component_model_polyfill::CopyCause::BusyEnd
 pub wasm_component_model_polyfill::CopyCause::BusyEnd::kind: wasm_component_model_polyfill::EndKind
 pub wasm_component_model_polyfill::CopyCause::ConcurrentOperation
+pub wasm_component_model_polyfill::CopyCause::ConsumerCancelledWithoutFinish
+pub wasm_component_model_polyfill::CopyCause::ConsumerCompletedWithoutItems
 pub wasm_component_model_polyfill::CopyCause::CountTooLarge
 pub wasm_component_model_polyfill::CopyCause::FutureReadAfterDone
 pub wasm_component_model_polyfill::CopyCause::FutureWriteAfterDone
@@ -45,6 +47,8 @@ pub wasm_component_model_polyfill::CopyCause::LiftInWaitableSet
 pub wasm_component_model_polyfill::CopyCause::LiftInWaitableSet::kind: wasm_component_model_polyfill::EndKind
 pub wasm_component_model_polyfill::CopyCause::NoCopyPending
 pub wasm_component_model_polyfill::CopyCause::NoCopyPending::kind: wasm_component_model_polyfill::EndKind
+pub wasm_component_model_polyfill::CopyCause::NotHeldByHost
+pub wasm_component_model_polyfill::CopyCause::NotHeldByHost::kind: wasm_component_model_polyfill::EndKind
 pub wasm_component_model_polyfill::CopyCause::PayloadMismatch
 pub wasm_component_model_polyfill::CopyCause::PayloadMismatch::kind: wasm_component_model_polyfill::EndKind
 pub wasm_component_model_polyfill::CopyCause::ProducerCancelledWithoutFinish
@@ -396,6 +400,7 @@ pub struct wasm_component_model_polyfill::FutureAny
 pub struct wasm_component_model_polyfill::FutureReader<T>
 impl<T: wasm_component_model_polyfill::ComponentValue> wasm_component_model_polyfill::FutureReader<T>
 pub fn wasm_component_model_polyfill::FutureReader<T>::new<D: 'static>(store: &mut wasm_component_model_polyfill::StoreContext<'_, D>, producer: impl wasm_component_model_polyfill::FutureProducer<D, Item = T>) -> wasm_component_model_polyfill::Result<Self>
+pub fn wasm_component_model_polyfill::FutureReader<T>::pipe<D: 'static>(self, store: &mut wasm_component_model_polyfill::StoreContext<'_, D>, consumer: impl wasm_component_model_polyfill::FutureConsumer<D, Item = T>) -> wasm_component_model_polyfill::Result<()>
 impl<T: wasm_component_model_polyfill::ComponentValue> wasm_component_model_polyfill::ComponentValue for wasm_component_model_polyfill::FutureReader<T>
 pub fn wasm_component_model_polyfill::FutureReader<T>::from_val(val: &wasm_component_model_polyfill::Val) -> wasm_component_model_polyfill::Result<Self>
 pub fn wasm_component_model_polyfill::FutureReader<T>::to_val(self) -> wasm_component_model_polyfill::Val
@@ -541,6 +546,11 @@ pub fn wasm_component_model_polyfill::ResultType::new(ok: core::option::Option<w
 pub fn wasm_component_model_polyfill::ResultType::ok(&self) -> core::option::Option<&wasm_component_model_polyfill::ValueType>
 impl core::fmt::Debug for wasm_component_model_polyfill::ResultType
 pub fn wasm_component_model_polyfill::ResultType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct wasm_component_model_polyfill::Source<'a, T>
+impl<T> wasm_component_model_polyfill::Source<'_, T>
+pub fn wasm_component_model_polyfill::Source<'_, T>::read<D: 'static>(&mut self, store: &mut wasm_component_model_polyfill::StoreContext<'_, D>, buffer: &mut alloc::vec::Vec<T>, count: usize) -> wasm_component_model_polyfill::Result<()> where T: wasm_component_model_polyfill::ComponentValue
+pub fn wasm_component_model_polyfill::Source<'_, T>::reborrow(&mut self) -> wasm_component_model_polyfill::Source<'_, T>
+pub fn wasm_component_model_polyfill::Source<'_, T>::remaining(&self) -> usize
 pub struct wasm_component_model_polyfill::Store<T: 'static>
 impl<T: 'static> wasm_component_model_polyfill::Store<T>
 pub fn wasm_component_model_polyfill::Store<T>::as_context_mut(&mut self) -> wasm_component_model_polyfill::StoreContext<'_, T>
@@ -562,6 +572,7 @@ pub struct wasm_component_model_polyfill::StreamAny
 pub struct wasm_component_model_polyfill::StreamReader<T>
 impl<T: wasm_component_model_polyfill::ComponentValue> wasm_component_model_polyfill::StreamReader<T>
 pub fn wasm_component_model_polyfill::StreamReader<T>::new<D: 'static>(store: &mut wasm_component_model_polyfill::StoreContext<'_, D>, producer: impl wasm_component_model_polyfill::StreamProducer<D, Item = T>) -> wasm_component_model_polyfill::Result<Self>
+pub fn wasm_component_model_polyfill::StreamReader<T>::pipe<D: 'static>(self, store: &mut wasm_component_model_polyfill::StoreContext<'_, D>, consumer: impl wasm_component_model_polyfill::StreamConsumer<D, Item = T>) -> wasm_component_model_polyfill::Result<()>
 impl<T: wasm_component_model_polyfill::ComponentValue> wasm_component_model_polyfill::ComponentValue for wasm_component_model_polyfill::StreamReader<T>
 pub fn wasm_component_model_polyfill::StreamReader<T>::from_val(val: &wasm_component_model_polyfill::Val) -> wasm_component_model_polyfill::Result<Self>
 pub fn wasm_component_model_polyfill::StreamReader<T>::to_val(self) -> wasm_component_model_polyfill::Val
@@ -730,6 +741,9 @@ impl wasm_component_model_polyfill::ExportLookup for wasm_component_model_polyfi
 pub fn wasm_component_model_polyfill::InterfaceIdentifier::external_name(&self) -> wasm_component_model_polyfill::ExternalName
 impl<T: wasm_component_model_polyfill::ExportLookup + ?core::marker::Sized> wasm_component_model_polyfill::ExportLookup for &T
 pub fn &T::external_name(&self) -> wasm_component_model_polyfill::ExternalName
+pub trait wasm_component_model_polyfill::FutureConsumer<D: 'static>: core::marker::Send + 'static
+pub type wasm_component_model_polyfill::FutureConsumer::Item
+pub fn wasm_component_model_polyfill::FutureConsumer::poll_consume(self: core::pin::Pin<&mut Self>, cx: &mut core::task::wake::Context<'_>, store: &mut wasm_component_model_polyfill::StoreContext<'_, D>, source: wasm_component_model_polyfill::Source<'_, Self::Item>, finish: bool) -> core::task::poll::Poll<wasm_component_model_polyfill::Result<()>>
 pub trait wasm_component_model_polyfill::FutureProducer<D: 'static>: core::marker::Send + 'static
 pub type wasm_component_model_polyfill::FutureProducer::Item
 pub fn wasm_component_model_polyfill::FutureProducer::poll_produce(self: core::pin::Pin<&mut Self>, cx: &mut core::task::wake::Context<'_>, store: &mut wasm_component_model_polyfill::StoreContext<'_, D>, finish: bool) -> core::task::poll::Poll<wasm_component_model_polyfill::Result<core::option::Option<Self::Item>>>
@@ -738,6 +752,9 @@ pub type F::Item = Item
 pub fn F::poll_produce(self: core::pin::Pin<&mut Self>, cx: &mut core::task::wake::Context<'_>, _store: &mut wasm_component_model_polyfill::StoreContext<'_, D>, finish: bool) -> core::task::poll::Poll<wasm_component_model_polyfill::Result<core::option::Option<Item>>>
 pub trait wasm_component_model_polyfill::HostFuture<Out>: core::future::future::Future<Output = Out> + core::marker::Send + 'static
 impl<Out, F> wasm_component_model_polyfill::HostFuture<Out> for F where F: core::future::future::Future<Output = Out> + core::marker::Send + 'static
+pub trait wasm_component_model_polyfill::StreamConsumer<D: 'static>: core::marker::Send + 'static
+pub type wasm_component_model_polyfill::StreamConsumer::Item
+pub fn wasm_component_model_polyfill::StreamConsumer::poll_consume(self: core::pin::Pin<&mut Self>, cx: &mut core::task::wake::Context<'_>, store: &mut wasm_component_model_polyfill::StoreContext<'_, D>, source: wasm_component_model_polyfill::Source<'_, Self::Item>, finish: bool) -> core::task::poll::Poll<wasm_component_model_polyfill::Result<wasm_component_model_polyfill::StreamResult>>
 pub trait wasm_component_model_polyfill::StreamProducer<D: 'static>: core::marker::Send + 'static
 pub type wasm_component_model_polyfill::StreamProducer::Item
 pub fn wasm_component_model_polyfill::StreamProducer::poll_produce(self: core::pin::Pin<&mut Self>, cx: &mut core::task::wake::Context<'_>, store: &mut wasm_component_model_polyfill::StoreContext<'_, D>, destination: wasm_component_model_polyfill::Destination<'_, Self::Item>, finish: bool) -> core::task::poll::Poll<wasm_component_model_polyfill::Result<wasm_component_model_polyfill::StreamResult>>

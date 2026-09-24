@@ -247,8 +247,8 @@ pub use crate::component::{
     FunctionType, InstanceItem, InstanceType, ModuleType,
 };
 pub use crate::concurrency::{
-    Accessor, Destination, EndKind, FutureAny, FutureProducer, FutureReader, HostFuture, StreamAny,
-    StreamProducer, StreamReader, StreamResult,
+    Accessor, Destination, EndKind, FutureAny, FutureConsumer, FutureProducer, FutureReader,
+    HostFuture, Source, StreamAny, StreamConsumer, StreamProducer, StreamReader, StreamResult,
 };
 pub use crate::engine::Engine;
 pub use crate::engine_config::EngineConfig;
