@@ -22,6 +22,8 @@ readable end of a stream or a future crosses with it. A read and a
 write on the two ends of a stream pair up as the reference's stream
 state pairs them, with partial and zero-length copies, and a copy
 that does not finish at once completes through an event on its end.
+A future's read and write are the same copy of one value, and each
+end of a future copies once.
 The asynchronous lower answers with the status word, the subtask enters
 the caller's handle table when the call does not resolve at once, and the
 callee's start and resolution reach the caller as subtask events; the
@@ -153,6 +155,16 @@ beside the spectest for its own misc tests, with the one item a file
 of the corpus imports: `gc`, whose function does nothing, because the
 polyfill's substrate collects its own garbage.
 
+An `assert_trap` passes when the trap's message contains the expected
+text, as in Wasmtime's runner. In a file of `cm/` it also passes when
+the expected text and the message both contain `cannot write`, or both
+contain `cannot read`. Wasmtime's runner accepts those pairs in every
+file (`crates/wast/src/wast.rs:551-554` at `cb091c33cece`), because the
+Component Model's suite words the traps of a copy on a done end
+differently from Wasmtime, and the spec fixes no wording for them. The
+polyfill raises Wasmtime's wording, which the `wasmtime` corpus
+expects as written, so the harness relaxes only `cm/`.
+
 The test `it_reports_conformance_progress` runs every file in one
 process and prints a summary per corpus directory: directives, passes,
 the pass percentage, and the expected failures per category. The
@@ -188,20 +200,20 @@ alike.
 The progress summary on the native target, as of 2026-09-23 (`tests
 conformance` prints the current one):
 
-| Corpus           | Directives | Passed | Pass % | Expected failures by category                                  |
-| ---------------- | ---------- | ------ | ------ | -------------------------------------------------------------- |
-| `cm`             | 1126       | 1038   | 92.2   | deferred-feature 2, substrate 4, validation 20, cascade 62     |
-| `cm/async`       | 393        | 106    | 27.0   | deferred-feature 39, cascade 248                               |
-| `fixtures`       | 48         | 45     | 93.8   | deferred-feature 1, cascade 2                                  |
-| `wasmtime`       | 469        | 431    | 91.9   | deferred-feature 2, substrate 8, cascade 28                    |
-| `wasmtime/async` | 387        | 188    | 48.6   | deferred-feature 61, cascade 138                               |
-| total            | 2423       | 1808   | 74.6   | deferred-feature 105, substrate 12, validation 20, cascade 478 |
+| Corpus           | Directives | Passed | Pass % | Expected failures by category                                                   |
+| ---------------- | ---------- | ------ | ------ | ------------------------------------------------------------------------------- |
+| `cm`             | 1126       | 1038   | 92.2   | deferred-feature 2, substrate 4, validation 20, cascade 62                      |
+| `cm/async`       | 393        | 161    | 41.0   | deferred-feature 34, cascade 198                                                |
+| `fixtures`       | 48         | 45     | 93.8   | deferred-feature 1, cascade 2                                                   |
+| `wasmtime`       | 469        | 431    | 91.9   | deferred-feature 2, substrate 8, cascade 28                                     |
+| `wasmtime/async` | 387        | 283    | 73.1   | deferred-feature 57, cascade 47                                                 |
+| total            | 2423       | 1958   | 80.8   | deferred-feature 96, substrate 12, validation 20, cascade 337                   |
 
 The browser's summary differs by the ten lines of
 `expected-failures.web.txt`, which move ten passing directives into
 `substrate`: `cm` passes 1037 (92.1%) with substrate 5, `cm/async`
-105 (26.7%), `wasmtime` 425 (90.6%), `wasmtime/async` 186 (48.1%), and
-the total is 1798 (74.2%) with substrate 22. Every other cell is the
+160 (40.7%), `wasmtime` 425 (90.6%), `wasmtime/async` 281 (72.6%), and
+the total is 1948 (80.4%) with substrate 22. Every other cell is the
 same.
 
 The `async` rows still hold the pass rate down, though the asynchronous
@@ -214,7 +226,7 @@ the seven reasons above cover most of what those directories still
 exercise. Each component those directories define that the polyfill
 rejects is a `deferred-feature` failure, and every later directive in
 the same file that names it is a `cascade` one, which is why the two
-async rows together hold 386 of the 478 cascade lines, while `cm` and
+async rows together hold 245 of the 337 cascade lines, while `cm` and
 `wasmtime` alone pass at 92.2% and 91.9%. Twenty-one files that held
 expected failures now pass whole: `cm/async/cross-abi-calls.wast`,
 `cm/async/deadlock.wast`, `cm/async/dont-block-start.wast`,
@@ -261,8 +273,28 @@ which has no provider on either target until the stackful design
 fills it. Both `sync-streams.wast` and
 `wasmtime/async/streams-massive-send.wast` have a callee that writes
 synchronously after `task.return` for its caller below it to read,
-and the massive send first waits on the `future-write` built-in.
+the massive send once with a stream and once with a future.
 `wasmtime/async/stream-zero-ops.wast` has a synchronously lifted
 callee that blocks in `waitable-set.wait` until its caller, below it
-on the stack, writes. The repository's test of the copy budget stands
-in for the massive send's stream write.
+on the stack, writes. The repository's tests of the copy budget stand
+in for the massive send's stream write and future write.
+
+The copies of a future moved ten more files into the passing column
+whole: `cm/async/cross-task-future.wast`,
+`cm/async/drop-cross-task-borrow.wast`, `cm/async/empty-wait.wast`,
+`cm/async/futures-must-write.wast`, `cm/async/trap-if-done.wast`,
+`cm/async/wait-during-callback.wast`,
+`wasmtime/async/future-drop-writable-after-notified-drop.wast`,
+`wasmtime/async/future-read.wast`,
+`wasmtime/async/futures-must-write.wast`, and
+`wasmtime/async/sync-and-async-waitable.wast`. They also pass the three
+components of `wasmtime/async/futures.wast` that declare no cancel and
+the two cases of `cm/async/same-component-stream-future.wast` whose
+payload is a number. The `cm` file passes five of its directives by
+the wording rule the harness takes from Wasmtime's runner.
+`wasmtime/async/trap-if-done.wast` passes every directive but seven,
+which have a synchronously lifted callee, reached through an
+asynchronous lower, that writes its future synchronously for its
+caller below it to read, so they wait on the stack switch, as do `cm/async/cancel-and-exclusive-lock.wast`
+and the stream and future case of `wasmtime/async/task-builtins.wast`,
+whose callees block on a future only their caller writes.

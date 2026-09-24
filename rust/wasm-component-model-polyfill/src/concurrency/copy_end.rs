@@ -40,12 +40,19 @@ pub struct CopyEnd {
     /// a new index in the receiver's table, and the entry that
     /// receives it records the new one here.
     pub handle: Option<u32>,
+    /// Whether the end has delivered a dropped result: it was told
+    /// that the other end dropped, and so is done. Wasmtime keeps the
+    /// same flag on the end's handle-table entry. A later copy on a
+    /// future end traps with a message that says which way the end
+    /// became done, and only this flag tells a writable future end
+    /// that wrote its value from one whose reader dropped first.
+    pub notified_dropped: bool,
 }
 
 impl CopyEnd {
     /// Construct an idle end with the given direction, sharing the
     /// record at `shared`: no pending event, no set, no waiter, and
-    /// no copy in progress.
+    /// no copy in progress, with no dropped result delivered.
     pub fn new(direction: EndDirection, shared: u32) -> Self {
         Self {
             waitable: WaitableState::new(),
@@ -54,6 +61,7 @@ impl CopyEnd {
             shared,
             buffer: None,
             handle: None,
+            notified_dropped: false,
         }
     }
 }

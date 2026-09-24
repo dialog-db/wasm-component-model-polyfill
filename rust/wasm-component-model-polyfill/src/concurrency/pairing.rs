@@ -1,17 +1,20 @@
-//! What a copy that just started on a stream end asks of the caller.
+//! What a copy that just started on a stream or future end asks of
+//! the caller.
 
 use super::end_id::EndId;
 
-/// What a copy that just started on a stream end asks of the caller,
-/// once the store's records have paired it with the other end.
+/// What a copy that just started on a stream or future end asks of
+/// the caller, once the store's records have paired it with the other
+/// end.
 ///
 /// The records decide how a read and a write meet, which is the
-/// reference's `SharedStreamImpl.read` and `write`. Moving the values
-/// is not theirs to do: it reads one guest's memory and writes
-/// another's through two boundary contexts, and those need the store,
-/// which the records sit inside. So the pairing answers which values
-/// move, the caller moves them, and the caller then reports the move
-/// back to the records.
+/// reference's `SharedStreamImpl.read` and `write`, and its
+/// `SharedFutureImpl`'s for one value. Moving the values is not
+/// theirs to do: it reads one guest's memory and writes another's
+/// through two boundary contexts, and those need the store, which the
+/// records sit inside. So the pairing answers which values move, the
+/// caller moves them, and the caller then reports the move back to
+/// the records.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Pairing {
     /// No value moves. The copy became the pending side, or completed

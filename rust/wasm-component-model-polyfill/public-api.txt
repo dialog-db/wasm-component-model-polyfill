@@ -33,6 +33,8 @@ pub wasm_component_model_polyfill::CopyCause::BusyEnd
 pub wasm_component_model_polyfill::CopyCause::BusyEnd::kind: wasm_component_model_polyfill::EndKind
 pub wasm_component_model_polyfill::CopyCause::ConcurrentOperation
 pub wasm_component_model_polyfill::CopyCause::CountTooLarge
+pub wasm_component_model_polyfill::CopyCause::FutureReadAfterDone
+pub wasm_component_model_polyfill::CopyCause::FutureWriteAfterDone
 pub wasm_component_model_polyfill::CopyCause::FutureWriteEndNotWritten
 pub wasm_component_model_polyfill::CopyCause::LiftAfterDone
 pub wasm_component_model_polyfill::CopyCause::LiftAfterDone::kind: wasm_component_model_polyfill::EndKind

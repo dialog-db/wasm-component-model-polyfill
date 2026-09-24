@@ -105,10 +105,13 @@ struct Runner {
     reflected: HashMap<String, (Component, usize)>,
     /// The instance an unqualified `invoke` targets.
     current: Option<usize>,
+    /// Whether the file is from the Component Model's own suite
+    /// (`cm/`), whose trap wording `trap_matches` relaxes.
+    cm_corpus: bool,
 }
 
 impl Runner {
-    async fn new(config: &EngineConfig) -> Self {
+    async fn new(config: &EngineConfig, cm_corpus: bool) -> Self {
         let engine = Engine::with_config(config).expect("engine");
         let store = Store::new(&engine, ()).expect("store");
         let mut linker = Linker::new(&engine);
@@ -123,6 +126,7 @@ impl Runner {
             named: HashMap::new(),
             reflected: HashMap::new(),
             current: None,
+            cm_corpus,
         }
     }
 
@@ -269,7 +273,7 @@ impl Runner {
             WastDirective::AssertTrap { exec, message, .. } => match self.execute(exec).await {
                 Ok((values, _)) => Err(format!("expected a trap `{message}`, got {values:?}")),
                 Err(err) => {
-                    if err.contains(message) {
+                    if trap_matches(self.cm_corpus, message, &err) {
                         Ok(())
                     } else {
                         Err(format!("expected a trap `{message}`, got `{err}`"))
@@ -999,6 +1003,28 @@ fn boxed_equal(a: Option<&Val>, b: Option<&Val>) -> bool {
     }
 }
 
+/// Whether a trap raised with `actual` satisfies an `assert_trap`
+/// that expects `message`: `actual` contains `message`, or, in a file
+/// of the Component Model's own suite, both name the same refused
+/// copy direction.
+///
+/// The second arm mirrors Wasmtime's wast runner
+/// (`crates/wast/src/wast.rs`, `assert_trap`, lines 551-554 at the
+/// commit the corpora are drawn from). It accepts any trap containing
+/// "cannot write" when the expected text contains it, and the same
+/// for "cannot read", because "upstream component model tests expect
+/// slightly different error messages than we generate". The spec
+/// fixes no wording for these traps, and the polyfill raises
+/// Wasmtime's, so the Component Model suite is held to the rule that
+/// Wasmtime passes it by. Wasmtime's own suite expects Wasmtime's
+/// wording and gets no relaxation.
+fn trap_matches(cm_corpus: bool, message: &str, actual: &str) -> bool {
+    actual.contains(message)
+        || (cm_corpus
+            && ((message.contains("cannot write") && actual.contains("cannot write"))
+                || (message.contains("cannot read") && actual.contains("cannot read"))))
+}
+
 /// The engine configuration a corpus file runs with, as Wasmtime's
 /// wast runner configures it (`crates/test-util/src/wast.rs`
 /// upstream). A file of the Component Model's own suite (`cm/`) gets
@@ -1050,7 +1076,7 @@ fn engine_config(path: &str, text: &str) -> EngineConfig {
 
 /// Run one corpus file against the expectations that name it.
 async fn report_file(path: &str, text: &str, expectations: &[Expectation]) -> FileReport {
-    let mut runner = Runner::new(&engine_config(path, text)).await;
+    let mut runner = Runner::new(&engine_config(path, text), path.starts_with("cm/")).await;
     let (directives, failures) = runner.run(text).await;
     let expected = expectations
         .iter()
@@ -1188,7 +1214,7 @@ mod tests {
     /// `None` where the directive passed, the failure's reason where
     /// it did not.
     async fn outcomes(text: &str) -> Vec<Option<String>> {
-        let mut runner = Runner::new(&EngineConfig::new()).await;
+        let mut runner = Runner::new(&EngineConfig::new(), false).await;
         let (directives, failures) = runner.run(text).await;
         let mut lines: Vec<Option<String>> = vec![None; directives];
         let numbers: Vec<usize> = text
@@ -1218,6 +1244,33 @@ mod tests {
     )
     (core instance (instantiate $m))
   ))";
+
+    #[wcmp_macros::test]
+    async fn it_accepts_another_copy_wording_only_in_the_cm_corpus() {
+        let expected = "cannot write to stream after being notified that the readable end dropped";
+        let actual = "cannot write after being notified that the readable end dropped";
+        assert!(trap_matches(true, expected, actual));
+        assert!(!trap_matches(false, expected, actual));
+        assert!(trap_matches(
+            true,
+            "cannot read from future after previous read succeeded",
+            "cannot read after being notified that the writable end dropped"
+        ));
+    }
+
+    #[wcmp_macros::test]
+    async fn it_keeps_the_copy_direction_in_the_cm_corpus() {
+        assert!(!trap_matches(
+            true,
+            "cannot write to stream after being notified that the readable end dropped",
+            "cannot read after being notified that the writable end dropped"
+        ));
+        assert!(!trap_matches(
+            true,
+            "unreachable",
+            "cannot write after being notified that the readable end dropped"
+        ));
+    }
 
     #[wcmp_macros::test]
     async fn it_binds_a_definition_that_succeeds() {

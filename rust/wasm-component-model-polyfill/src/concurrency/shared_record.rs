@@ -19,8 +19,9 @@ use super::end_id::EndId;
 /// an idle end is given the dropped result with nothing moved, and a
 /// stream end whose completed copy has not been delivered has its
 /// event turned into the dropped result with the same progress. A
-/// later copy on the end that is left sees the mark and completes
-/// with the dropped result at once.
+/// future end keeps the event of its completed copy. A later copy on
+/// the end that is left sees the mark and completes with the dropped
+/// result at once.
 pub struct SharedRecord {
     /// The type of each value the stream or future carries, or `None`
     /// for one that carries no values. A built-in that names an end

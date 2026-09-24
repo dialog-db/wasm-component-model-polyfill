@@ -792,11 +792,14 @@ pub enum AbiCause {
         reason: String,
     },
 
-    /// A host call returned with `borrow<T>` handles still
-    /// outstanding. The canonical-ABI runtime-state rules forbid
-    /// this; the count is the number of borrows the lift recorded
-    /// without an offsetting drop at return.
-    #[error("{count} borrow handles outstanding at host-call return")]
+    /// A call returned with `borrow<T>` handles still outstanding: a
+    /// host call, or a guest task that returned or exited. The
+    /// canonical-ABI runtime-state rules forbid this; the count is the
+    /// number of borrows the lift recorded without an offsetting drop
+    /// at return. The message opens with the one Wasmtime's exit of a
+    /// call raises, so the conformance corpora can match it by
+    /// substring.
+    #[error("borrow handles still remain at the end of the call: {count} outstanding")]
     OutstandingBorrows {
         /// The number of unreleased borrows.
         count: usize,
@@ -1198,17 +1201,30 @@ pub enum CopyCause {
         kind: EndKind,
     },
 
-    /// A guest read from a readable stream end after the end reported
-    /// that the writable end dropped. The message is the one
-    /// Wasmtime's read of a stream raises.
+    /// A guest read from a readable end after the end reported that
+    /// the writable end dropped. The message is the one Wasmtime's
+    /// read raises for a stream or a future.
     #[error("cannot read after being notified that the writable end dropped")]
     ReadAfterDropped,
 
-    /// A guest wrote to a writable stream end after the end reported
-    /// that the readable end dropped. The message is the one
-    /// Wasmtime's write to a stream raises.
+    /// A guest wrote to a writable end after the end reported that
+    /// the readable end dropped. The message is the one Wasmtime's
+    /// write raises for a stream or a future.
     #[error("cannot write after being notified that the readable end dropped")]
     WriteAfterDropped,
+
+    /// A guest wrote to a writable future end that already wrote its
+    /// one value. The message is the one Wasmtime's write to a future
+    /// raises, which also names the readable end's drop because
+    /// Wasmtime marks a future done that way too.
+    #[error("cannot write to future after previous write succeeded or readable end dropped")]
+    FutureWriteAfterDone,
+
+    /// A guest read from a readable future end that already read its
+    /// one value. The message is the one Wasmtime's read of a future
+    /// raises.
+    #[error("cannot read from future after previous read succeeded")]
+    FutureReadAfterDone,
 }
 
 impl CopyCause {
@@ -1386,8 +1402,8 @@ mod tests {
                     valtype: None,
                     cause: AbiCause::OutstandingBorrows { count: 1 },
                 },
-                "canonical ABI error: at result: 1 borrow handles outstanding at \
-                 host-call return",
+                "canonical ABI error: at result: borrow handles still remain at the end of \
+                 the call: 1 outstanding",
             ),
         ] {
             assert_eq!(Error::from(error).to_string(), rendered);
@@ -1713,6 +1729,15 @@ mod tests {
             (
                 CopyCause::WriteAfterDropped,
                 "copy error: cannot write after being notified that the readable end dropped",
+            ),
+            (
+                CopyCause::FutureWriteAfterDone,
+                "copy error: cannot write to future after previous write succeeded or readable \
+                 end dropped",
+            ),
+            (
+                CopyCause::FutureReadAfterDone,
+                "copy error: cannot read from future after previous read succeeded",
             ),
         ] {
             assert_eq!(Error::Copy(cause).to_string(), rendered);

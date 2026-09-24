@@ -1,11 +1,15 @@
-//! The built-ins that copy values through a stream: `stream.read`
-//! and `stream.write`.
+//! The built-ins that copy values through a stream or a future:
+//! `stream.read`, `stream.write`, `future.read`, and `future.write`.
 //!
-//! Both are the reference's `stream_copy`. Each takes the index of an
-//! end, a pointer into the memory its canon options name, and a
-//! count, and returns one word: the packed result of the copy, or the
-//! blocked sentinel `0xffffffff` when the copy has not finished and
-//! the built-in was declared `async`.
+//! The stream built-ins are the reference's `stream_copy` and the
+//! future built-ins its `future_copy`, which is the same copy with a
+//! count of one and no partial step. A stream built-in takes the index
+//! of an end, a pointer into the memory its canon options name, and a
+//! count; a future built-in takes the index and the pointer. Each
+//! returns one word: the packed result of the copy, or the blocked
+//! sentinel `0xffffffff` when the copy has not finished and the
+//! built-in was declared `async`. A future's packed result always
+//! counts zero values.
 //!
 //! The checks run in the reference's order, and each trap carries
 //! Wasmtime's message:
@@ -13,13 +17,24 @@
 //! 1. The instance's may-leave flag must be set, or the built-in
 //!    fails with the cannot-leave cause.
 //! 2. The index must name an end of the built-in's kind.
-//! 3. The end's stream must carry the payload the built-in declares.
+//! 3. The end's stream or future must carry the payload the built-in
+//!    declares.
 //! 4. The end must be idle: a copy whose event has not been delivered
 //!    fails the built-in with the concurrent-operation cause.
-//! 5. A synchronous copy on an end in a waitable set fails with the
+//! 5. An end that is done can copy no more. An end that reported the
+//!    other end dropped fails with the message for its direction. A
+//!    future end that is done because its one copy completed fails
+//!    with the future's message for its direction, which for a write
+//!    names both ways a future's writable end becomes done.
+//! 6. A synchronous copy on an end in a waitable set fails with the
 //!    waitable cause of a synchronous use of a waitable in a set.
-//! 6. The count must be below 2^28.
-//! 7. An end that reported the other end dropped can copy no more.
+//! 7. The count must be below 2^28.
+//!
+//! The reference checks the end's state, which is not idle when the
+//! end is busy or done, before it checks the set, and Wasmtime asks
+//! about the set only once a synchronous copy would block, which is
+//! after it asks whether the end is done. So a done end in a set
+//! fails as done here, as in both.
 //!
 //! The guest's buffer is then built eagerly, through a boundary
 //! context over the memory with no borrow scope, because a payload
@@ -28,13 +43,14 @@
 //! whole range must lie inside the memory.
 //!
 //! The store's records then pair the copy with the other end, as the
-//! reference's shared stream does. When the other end is pending with
-//! room left, values move at once: the writer's context lifts them
-//! out of the writer's memory and the reader's context lowers them
-//! into the reader's, one value at a time, and an owned handle in a
-//! value moves from the writer's table to the reader's as a call
-//! moves one. The lift charges the writer's context's copy budget,
-//! so a copy cannot make the host build values without bound.
+//! reference's shared stream and shared future do. When the other end
+//! is pending with room left, values move at once: the writer's
+//! context lifts them out of the writer's memory and the reader's
+//! context lowers them into the reader's, one value at a time, and an
+//! owned handle in a value moves from the writer's table to the
+//! reader's as a call moves one. The lift charges the writer's
+//! context's copy budget, so a copy cannot make the host build values
+//! without bound.
 //!
 //! A copy that finished has an event on its end, and the built-in
 //! takes it and returns its packed result. A copy that did not
@@ -83,11 +99,13 @@ const COUNT_LIMIT: u32 = 1 << 28;
 /// of the values that move through it.
 const POINTER_ARGUMENT: AbiPosition = AbiPosition::Argument(1);
 
-/// Build `stream.read`, for an end of kind
-/// [`EndKind::StreamReadable`], or `stream.write`, for one of kind
-/// [`EndKind::StreamWritable`], declared with `options` for a stream
-/// of `payload`.
-pub fn build_stream_copy<T: 'static>(
+/// Build the copy built-in on an end of `kind`, declared with
+/// `options` for a stream or future of `payload`: `stream.read` for
+/// [`EndKind::StreamReadable`], `stream.write` for
+/// [`EndKind::StreamWritable`], `future.read` for
+/// [`EndKind::FutureReadable`], and `future.write` for
+/// [`EndKind::FutureWritable`].
+pub fn build_copy<T: 'static>(
     store: &mut StoreContext<'_, T>,
     kind: EndKind,
     options: &CanonOptions,
@@ -114,8 +132,8 @@ pub fn build_stream_copy<T: 'static>(
     )
 }
 
-/// What one declaration of `stream.read` or `stream.write` carries
-/// into every call of it.
+/// What one declaration of a copy built-in carries into every call
+/// of it.
 struct Builtin {
     /// The kind of end the built-in copies on.
     kind: EndKind,
@@ -139,7 +157,12 @@ impl Builtin {
     ) -> anyhow::Result<u32> {
         let index = arg_u32(args, 0)?;
         let pointer = arg_u32(args, 1)?;
-        let count = arg_u32(args, 2)?;
+        // A future carries one value, so its built-ins take no count.
+        let count = if matches!(self.kind, EndKind::FutureReadable | EndKind::FutureWritable) {
+            1
+        } else {
+            arg_u32(args, 2)?
+        };
         let (id, table) = calling_instance(&self.abi_state, self.options.instance)?;
         trap_if_cannot_leave(&self.abi_state, id, &mut store_ctx)?;
         let end = self.idle_end(table, index, count)?;
@@ -215,17 +238,25 @@ impl Builtin {
         if record.state.busy() {
             return Err(trap(Error::Copy(CopyCause::ConcurrentOperation)));
         }
+        if record.state == CopyState::Done {
+            // Wasmtime asks first whether the end was told the other
+            // end dropped, and only then whether a future's one copy
+            // is over, so a future end that learned of the drop gets
+            // the stream's wording too.
+            return Err(trap(Error::Copy(match kind {
+                EndKind::StreamWritable => CopyCause::WriteAfterDropped,
+                EndKind::StreamReadable => CopyCause::ReadAfterDropped,
+                EndKind::FutureWritable if record.notified_dropped => CopyCause::WriteAfterDropped,
+                EndKind::FutureReadable if record.notified_dropped => CopyCause::ReadAfterDropped,
+                EndKind::FutureWritable => CopyCause::FutureWriteAfterDone,
+                EndKind::FutureReadable => CopyCause::FutureReadAfterDone,
+            })));
+        }
         if record.waitable.set.is_some() && !self.options.async_ {
             return Err(trap(Error::Waitable(WaitableCause::SyncAndAsync)));
         }
         if count >= COUNT_LIMIT {
             return Err(trap(Error::Copy(CopyCause::CountTooLarge)));
-        }
-        if record.state == CopyState::Done {
-            return Err(trap(Error::Copy(match kind {
-                EndKind::StreamWritable | EndKind::FutureWritable => CopyCause::WriteAfterDropped,
-                EndKind::StreamReadable | EndKind::FutureReadable => CopyCause::ReadAfterDropped,
-            })));
         }
         Ok(end)
     }
@@ -317,7 +348,8 @@ impl MoveSide {
 /// each from where its copy has got to. The writer's context lifts
 /// them, charging its copy budget as a list of the same values
 /// would, and the reader's context lowers them one at a time. A
-/// stream that carries no values moves nothing but the count.
+/// stream or future that carries no values moves nothing but the
+/// count.
 fn move_values<T: 'static>(
     store_ctx: &mut RuntimeContextMut<'_, StoreData<T>, Backend>,
     tables: &Arc<Mutex<HandleTables>>,
@@ -462,6 +494,6 @@ fn trap(error: Error) -> anyhow::Error {
 fn arg_u32(args: &[RuntimeVal], index: usize) -> anyhow::Result<u32> {
     match args.get(index) {
         Some(RuntimeVal::I32(value)) => Ok(*value as u32),
-        _ => Err(anyhow!("a stream built-in expected an i32 argument")),
+        _ => Err(anyhow!("a copy built-in expected an i32 argument")),
     }
 }

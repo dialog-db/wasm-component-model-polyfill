@@ -380,19 +380,32 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 payload: payload_of(&projector, InterfaceType::Future(*ty))?,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
-            // The two copies of a stream. Each carries its canon
-            // options, which name the calling instance, the `async`
-            // flag, and the memory the guest's buffer lives in.
-            Trampoline::StreamRead { ty, options, .. } => TrampolineSpec::StreamCopy {
+            // The copies of a stream and of a future. Each carries its
+            // canon options, which name the calling instance, the
+            // `async` flag, and the memory the guest's buffer lives
+            // in.
+            Trampoline::StreamRead { ty, options, .. } => TrampolineSpec::Copy {
                 kind: EndKind::StreamReadable,
                 options: trampoline_options(&translation, *options)?,
                 payload: payload_of(&projector, InterfaceType::Stream(*ty))?,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
-            Trampoline::StreamWrite { ty, options, .. } => TrampolineSpec::StreamCopy {
+            Trampoline::StreamWrite { ty, options, .. } => TrampolineSpec::Copy {
                 kind: EndKind::StreamWritable,
                 options: trampoline_options(&translation, *options)?,
                 payload: payload_of(&projector, InterfaceType::Stream(*ty))?,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::FutureRead { ty, options, .. } => TrampolineSpec::Copy {
+                kind: EndKind::FutureReadable,
+                options: trampoline_options(&translation, *options)?,
+                payload: payload_of(&projector, InterfaceType::Future(*ty))?,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::FutureWrite { ty, options, .. } => TrampolineSpec::Copy {
+                kind: EndKind::FutureWritable,
+                options: trampoline_options(&translation, *options)?,
+                payload: payload_of(&projector, InterfaceType::Future(*ty))?,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
             // The prepare-and-start pair of a fused adapter whose

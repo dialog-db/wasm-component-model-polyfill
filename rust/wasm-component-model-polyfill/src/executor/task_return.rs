@@ -969,7 +969,7 @@ mod tests {
 
         let rendered = format!("{err:?}");
         assert!(
-            rendered.contains("borrow handles outstanding"),
+            rendered.contains("borrow handles still remain at the end of the call"),
             "the outstanding-borrows cause, but the failure rendered as {rendered:?}"
         );
         assert!(
