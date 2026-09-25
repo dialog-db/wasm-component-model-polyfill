@@ -25,12 +25,18 @@ that does not finish at once completes through an event on its end.
 A future's read and write are the same copy of one value, and each
 end of a future copies once. A cancel ends the copy in progress on
 one end and reports the progress it made, as Wasmtime reports it.
-The asynchronous lower answers with the status word, the subtask enters
-the caller's handle table when the call does not resolve at once, and the
-callee's start and resolution reach the caller as subtask events; the
-synchronous lower returns at the callee's `task.return` and leaves the
-callee's late exit to the next turn. A guest that lowers a host `async`
-function asynchronously reaches it too: the call answers with the
+Owned handles cross a stream as its payload. A payload of a number
+type copies between two ends one instance holds, and any other payload
+traps there with Wasmtime's refusal. The translator accepts
+`task.cancel` and `subtask.cancel`, so a component that links either
+instantiates, but a call to either fails as unsupported, because the
+cancellation of a task is not built. The asynchronous lower answers
+with the status word, the subtask enters the caller's handle table
+when the call does not resolve at once, and the callee's start and
+resolution reach the caller as subtask events; the synchronous lower
+returns at the callee's `task.return` and leaves the callee's late
+exit to the next turn. A guest that lowers a host `async` function
+asynchronously reaches it too: the call answers with the
 status word, a future that is still running becomes a subtask the guest
 waits on, the result crosses back when the future completes, and
 `subtask.drop` takes the subtask's entry away once the guest has taken
@@ -46,18 +52,23 @@ could wait. An exception thrown in a callee reaches the host as the
 trap the synchronous baseline gives it.
 
 The directive that first meets what is missing is an expected failure
-of category `deferred-feature`, for one of seven reasons: a call whose
+of category `deferred-feature`, for one of six reasons: a call whose
 callee can be released only by a caller that is on the stack, which
-needs a stack switch, a future or stream built-in or rule, the
-stackful lift, a thread built-in other than `thread.yield`,
-cancellation, an error context, or the rules that decide which trap
-poisons an instance. Most
-of the rest is `cascade`: a component definition that fails leaves its
-name unbound and no instance current, so every later directive in the
-file that names the definition or invokes the instance fails as
-bookkeeping rather than on its own merits. The async files define a
-component once and then drive it over dozens of directives, so those
-rows carry far more `cascade` lines than `deferred-feature` ones.
+needs a stack switch, the stackful lift, a thread built-in other than
+`thread.yield`, the cancellation of a task or a subtask, an error
+context, or the rules that decide which trap poisons an instance.
+Three definitions in the same category fail at link instead, on a
+host item the harness does not provide: the two WASI 0.3 handler
+fixtures import `wasi:http/types`, and
+`wasmtime/async/cancel-starting-subtask-does-not-leak.wast` imports
+`set-max-table-capacity` from the `wasmtime` instance. Most of the rest
+is `cascade`: a component definition that fails leaves its name
+unbound and no instance current, so every later directive in the file
+that names the definition or invokes the instance fails as
+bookkeeping rather than on its own merits. Several files of
+`cm/async` define a component once and then drive it over dozens of
+directives, so that row carries far more `cascade` lines than
+`deferred-feature` ones.
 
 `expected-failures.txt` lists every directive the polyfill does not pass
 yet, one per line, as `<path>:<line> <category> <reason>`. The harness
@@ -92,7 +103,7 @@ same group, which is how the runtime's own wording — `unsupported
 component feature: thread built-ins (table extraction)` — is told
 apart from a note. A reason that ends in the run's cause behind other
 leading text is a sentence a person wrote over that cause, and it is
-kept whole: the nine such lines say in one clause what the substrate
+kept whole: the nineteen such lines say in one clause what the substrate
 says in a nested error and a backtrace. A line refreshes when the
 cause at the end of the run's reason changes, which is what a change
 to the failure text means. A line the rule reads the other way is
@@ -152,9 +163,11 @@ same reason the synchronous methods of that resource are registered
 untyped.
 
 The harness also registers the `wasmtime` instance the runner provides
-beside the spectest for its own misc tests, with the one item a file
-of the corpus imports: `gc`, whose function does nothing, because the
-polyfill's substrate collects its own garbage.
+beside the spectest for its own misc tests, with one item: `gc`, whose
+function does nothing, because the polyfill's substrate collects its
+own garbage. A file of the corpus also imports
+`set-max-table-capacity` from it, which the harness does not register,
+so that file stops at link.
 
 An `assert_trap` passes when the trap's message contains the expected
 text, as in Wasmtime's runner. In a file of `cm/` it also passes when
@@ -191,13 +204,13 @@ one a real guest carries. `wasi-http-same-instance` is the WASI 0.3
 handler as first written. Its `drain` copies a non-number payload
 between two ends one instance holds, which the spec traps under a
 rule it marks as temporary. The fixture is kept so that lifting the
-rule shows up in the tests. The `fixtures` menu command runs `fixtures/build.sh` with the
-flake's pinned tools and regenerates every output byte for byte,
-including the harness manifest. Each fixture directory holds the
-sources; the `.wast` next to it is generated and runs under the
-harness like the vendored corpora. `fixtures/README.md` documents each
-fixture, the pinned tools, and why both WASI 0.3 handlers stop at
-link under the harness.
+rule shows up in the tests. The `fixtures` menu command runs
+`fixtures/build.sh` with the flake's pinned tools and regenerates every
+output byte for byte, including the harness manifest. Each fixture
+directory holds the sources; the `.wast` next to it is generated and
+runs under the harness like the vendored corpora. `fixtures/README.md`
+documents each fixture, the pinned tools, and why both WASI 0.3
+handlers stop at link under the harness.
 
 `wast` has no syntax for a `map` value or a fixed-length list value.
 A directive spells a map as a list of two-element tuples, the map's
@@ -208,112 +221,132 @@ alike.
 
 ## Baseline
 
-The progress summary on the native target, as of 2026-09-23 (`tests
+The progress summary on the native target, as of 2026-09-25 (`tests
 conformance` prints the current one):
 
-| Corpus           | Directives | Passed | Pass % | Expected failures by category                                                   |
-| ---------------- | ---------- | ------ | ------ | ------------------------------------------------------------------------------- |
-| `cm`             | 1126       | 1038   | 92.2   | deferred-feature 2, substrate 4, validation 20, cascade 62                      |
-| `cm/async`       | 393        | 161    | 41.0   | deferred-feature 34, cascade 198                                                |
-| `fixtures`       | 48         | 45     | 93.8   | deferred-feature 1, cascade 2                                                   |
-| `wasmtime`       | 469        | 431    | 91.9   | deferred-feature 2, substrate 8, cascade 28                                     |
-| `wasmtime/async` | 387        | 283    | 73.1   | deferred-feature 57, cascade 47                                                 |
-| total            | 2423       | 1958   | 80.8   | deferred-feature 96, substrate 12, validation 20, cascade 337                   |
+| Corpus           | Directives | Passed | Pass % | Expected failures by category                                 |
+| ---------------- | ---------- | ------ | ------ | ------------------------------------------------------------- |
+| `cm`             | 1126       | 1038   | 92.2   | deferred-feature 2, substrate 4, validation 20, cascade 62    |
+| `cm/async`       | 393        | 214    | 54.5   | deferred-feature 38, cascade 141                              |
+| `fixtures`       | 51         | 45     | 88.2   | deferred-feature 2, cascade 4                                 |
+| `wasmtime`       | 469        | 431    | 91.9   | deferred-feature 2, substrate 8, cascade 28                   |
+| `wasmtime/async` | 387        | 326    | 84.2   | deferred-feature 39, cascade 22                               |
+| total            | 2426       | 2054   | 84.7   | deferred-feature 83, substrate 12, validation 20, cascade 257 |
 
 The browser's summary differs by the ten lines of
 `expected-failures.web.txt`, which move ten passing directives into
-`substrate`: `cm` passes 1037 (92.1%) with substrate 5, `cm/async`
-160 (40.7%), `wasmtime` 425 (90.6%), `wasmtime/async` 281 (72.6%), and
-the total is 1948 (80.4%) with substrate 22. Every other cell is the
-same.
+`substrate`: `cm` passes 1037 (92.1%) with substrate 5, `cm/async` 213
+(54.2%) with substrate 1, `wasmtime` 425 (90.6%) with substrate 14,
+`wasmtime/async` 324 (83.7%) with substrate 2, and the total is 2044
+(84.3%) with substrate 22. Every other cell is the same. Five of the
+ten lines, among them the three in the `async` rows, are the browser
+engine's wording for a trap or a validation error that Wasmtime words
+differently. Two in `wasmtime/big-strings.wast` trap in the adapter
+before the bounds check Wasmtime reaches, and three in
+`wasmtime/memory64.wast` need allocations past 4 GiB that 32-bit code
+in the browser cannot address. No line of the delta is a difference
+of the polyfill.
 
-The `async` rows still hold the pass rate down, though the asynchronous
-lower and the prepare-and-start protocol it brought moved 117
-directives into the passing column. The polyfill runs a host call into
-a callback export, the task built-ins that export uses, all four
-combinations of lift and lower between two components, either lower of
-a host `async` function, and the reentrance the reference allows, but
-the seven reasons above cover most of what those directories still
-exercise. Each component those directories define that the polyfill
-rejects is a `deferred-feature` failure, and every later directive in
-the same file that names it is a `cascade` one, which is why the two
-async rows together hold 245 of the 337 cascade lines, while `cm` and
-`wasmtime` alone pass at 92.2% and 91.9%. Twenty-one files that held
-expected failures now pass whole: `cm/async/cross-abi-calls.wast`,
-`cm/async/deadlock.wast`, `cm/async/dont-block-start.wast`,
-`cm/async/drop-subtask.wast`, `cm/async/drop-waitable-set.wast`,
-`cm/async/trap-if-transfer-in-waitable-set.wast`,
-`wasmtime/async/backpressure-deadlock.wast`,
-`wasmtime/async/callback-yield-then-exit.wast`,
-`wasmtime/async/context-in-compositions.wast`,
-`wasmtime/async/drop-host.wast`, `wasmtime/async/exceptions.wast`,
-`wasmtime/async/fused.wast`, `wasmtime/async/futures-must-write2.wast`,
-`wasmtime/async/lower.wast`,
-`wasmtime/async/many-params-with-retptr.wast`,
-`wasmtime/async/reentrance.wast`, `wasmtime/async/subtask-wait.wast`,
-`wasmtime/async/trap-if-transfer-in-waitable-set.wast`,
-`wasmtime/async/wait-forever.wast`,
-`wasmtime/async/waitable-set-stale-entry.wast`, and
-`wasmtime/async/wait-forever2.wast`. Eight of the twelve cases of
-`cm/async/reentrance.wast` pass, and the four that remain need a thread
-built-in or cancellation. The `subtask.drop` component of
-`wasmtime/async/task-builtins.wast` and its four directives that
-permute the combinations pass as well. The start-call trampolines also
-moved a directive of four files that stay deferred for their own
-reason: `cm/values/variants.wast`, `cm/async/async-calls-sync.wast`,
-`wasmtime/async/reenter-during-yield.wast`, and
-`wasmtime/async/stackful.wast`, whose components now translate while
-their remaining directives fail on the stackful lift or on a stack
-switch. Of the three corpus files that exercise a host `async` item,
-`wasmtime/async/lower.wast` and `wasmtime/async/drop-host.wast` pass
-whole, and `wasmtime/async/cancel-host.wast` is held up by
-cancellation.
+The `async` rows still hold the pass rate down, `cm/async` far more
+than `wasmtime/async`, and the six reasons above cover what those
+directories still exercise. Each component those directories define
+that the polyfill rejects is a `deferred-feature` failure, and every
+later directive in the same file that names it is a `cascade` one, so
+the two async rows together hold 163 of the 257 cascade lines. Four
+files of `cm/async` whose components need a thread built-in hold 116
+of them: `trap-if-block-and-sync.wast` 47,
+`trap-if-sync-and-waitable-set.wast` 28,
+`during-sync-scheduling-candidates.wast` 25, and
+`switch-to-ready-callback.wast` 16.
 
-The copies of a stream moved six more files into the passing column
-whole: `cm/async/closed-stream.wast`, `cm/async/drop-stream.wast`,
-`cm/async/partial-stream-copies.wast`, `cm/async/zero-length.wast`,
-`wasmtime/async/partial-stream-copies.wast`, and
-`wasmtime/async/stream-big-read-and-writes.wast`. They also pass
-every directive of `wasmtime/async/streams.wast` but the two
-components that declare `stream.cancel-read` and `stream.cancel-write`,
-which wait for cancellation, three of the four components of
-`wasmtime/async/intra-streams.wast`, and the busy-drop directive of
-`cm/async/builtin-trap-poisons-instance.wast`. Four files stay
-deferred on a stack switch, which the suspend capability serves and
-which has no provider on either target until the stackful design
-fills it. Both `sync-streams.wast` and
-`wasmtime/async/streams-massive-send.wast` have a callee that writes
-synchronously after `task.return` for its caller below it to read,
-the massive send once with a stream and once with a future.
-`wasmtime/async/stream-zero-ops.wast` has a synchronously lifted
-callee that blocks in `waitable-set.wait` until its caller, below it
-on the stack, writes. The repository's tests of the copy budget stand
-in for the massive send's stream write and future write.
+Of the 38 files of `cm/async`, 21 pass whole on both targets. Of the
+54 files of `wasmtime/async`, 37 pass whole natively and 35 in the
+browser, where `subtask-wait.wast` and `sync-call-context-trap.wast`
+each hold one line of the browser's delta. Five of the seven fixtures
+pass whole.
 
-The copies of a future moved ten more files into the passing column
-whole: `cm/async/cross-task-future.wast`,
-`cm/async/drop-cross-task-borrow.wast`, `cm/async/empty-wait.wast`,
-`cm/async/futures-must-write.wast`, `cm/async/trap-if-done.wast`,
-`cm/async/wait-during-callback.wast`,
-`wasmtime/async/future-drop-writable-after-notified-drop.wast`,
-`wasmtime/async/future-read.wast`,
-`wasmtime/async/futures-must-write.wast`, and
-`wasmtime/async/sync-and-async-waitable.wast`. They also pass the three
-components of `wasmtime/async/futures.wast` that declare no cancel and
-the two cases of `cm/async/same-component-stream-future.wast` whose
-payload is a number. The `cm` file passes five of its directives by
-the wording rule the harness takes from Wasmtime's runner.
-`wasmtime/async/trap-if-done.wast` passes every directive but seven,
-which have a synchronously lifted callee, reached through an
-asynchronous lower, that writes its future synchronously for its
-caller below it to read, so they wait on the stack switch, as do `cm/async/cancel-and-exclusive-lock.wast`
-and the stream and future case of `wasmtime/async/task-builtins.wast`,
-whose callees block on a future only their caller writes.
+The streams and futures account for 33 of the files that pass whole.
+In `cm/async`: `cancel-stream.wast`, `closed-stream.wast`,
+`cross-task-future.wast`, `drop-cross-task-borrow.wast`,
+`drop-stream.wast`, `empty-wait.wast`, `futures-must-write.wast`,
+`partial-stream-copies.wast`, `passing-resources.wast`,
+`same-component-stream-future.wast`, `trap-if-done.wast`,
+`trap-if-transfer-in-waitable-set.wast`, `validate-no-stream-char.wast`,
+`wait-during-callback.wast`, and `zero-length.wast`. In
+`wasmtime/async`: `async-builtins.wast`,
+`future-cancel-read-dropped.wast`,
+`future-cancel-write-completed.wast`,
+`future-cancel-write-dropped.wast`,
+`future-drop-writable-after-notified-drop.wast`, `future-read.wast`,
+`futures-must-write.wast`, `futures-must-write2.wast`, `futures.wast`,
+`intra-futures.wast`, `intra-streams.wast`,
+`partial-stream-copies.wast`, `stream-big-read-and-writes.wast`,
+`stream-cancel-finished-op.wast`, `streams.wast`,
+`sync-and-async-waitable.wast`, `trap-if-transfer-in-waitable-set.wast`,
+and `waitable-set-stale-entry.wast`. `cm/async/trap-if-done.wast`
+passes five of its directives by the wording rule the harness takes
+from Wasmtime's runner. The busy-drop directive of
+`cm/async/builtin-trap-poisons-instance.wast` passes too, and its two
+directives that expect the poisoning trap stay deferred on the trap
+rules. The first four components of
+`wasmtime/async/cancel-sync-and-waitable.wast` pass, and its fifth
+fails at its call to `subtask.cancel`. The `subtask.cancel` component
+of `wasmtime/async/task-builtins.wast` instantiates.
 
-A payload of a number type now copies as bytes, and a read and a write
-from one instance on any other payload trap with Wasmtime's refusal.
-That moved three more files into the passing column whole:
-`cm/async/same-component-stream-future.wast`,
-`wasmtime/async/intra-futures.wast`, and
-`wasmtime/async/intra-streams.wast`. Each traps for a payload that is
-not a number and copies one that is.
+Seven files that exercise a stream or a future keep lines deferred on
+a stack switch, which the suspend capability serves and which has no
+provider on either target until the stackful design fills it. Both
+`sync-streams.wast` and `wasmtime/async/streams-massive-send.wast`
+have a callee that writes synchronously after `task.return` for its
+caller below it to read, the massive send once with a stream and once
+with a future. The repository's tests of the copy budget stand in for
+the massive send's stream write and future write.
+`wasmtime/async/stream-zero-ops.wast` passes every directive but one,
+whose synchronously lifted callee, reached through an asynchronous
+lower, blocks in `waitable-set.wait` until its caller, below it on the
+stack, writes. `wasmtime/async/trap-if-done.wast` passes every
+directive but seven, which have a synchronously lifted callee, reached
+through an asynchronous lower, that writes its future synchronously
+for its caller below it to read. The stream and future case of
+`wasmtime/async/task-builtins.wast` has a callee that reads
+synchronously in its first core function what only its caller writes,
+and the one directive of `cm/async/cancel-and-exclusive-lock.wast`
+that fails has a callee that blocks in `waitable-set.wait` until its
+caller writes a future. `cm/async/async-calls-sync.wast` and
+`wasmtime/async/reenter-during-yield.wast` wait on a stack switch as
+well, for a callee that only an outer caller can release.
+
+The rest of the async rows wait on the other reasons. The stackful
+lift holds `cm/async/sync-barges-in.wast`,
+`wasmtime/async/stackful.wast`,
+`wasmtime/async/drop-waitable-set-stackful.wast`,
+`wasmtime/async/task-deletion.wast`, four components of
+`wasmtime/async/task-return-traps.wast`, and the directives of
+`cm/async/big-interleaving-test.wast` that do not reach a cancel, as
+well as one directive of `cm/values/variants.wast`. A thread built-in
+holds the four `cm/async/during-sync-*.wast` files,
+`cm/async/self-switch-traps.wast`,
+`cm/async/switch-to-ready-callback.wast`,
+`cm/async/trap-if-block-and-sync.wast`,
+`cm/async/trap-if-sync-and-waitable-set.wast`,
+`wasmtime/async/join-during-sync-read.wast`, the other two components
+of `wasmtime/async/task-return-traps.wast`, and
+`cm/values/post-return.wast`.
+Cancellation holds `cm/async/cancel-delivery.wast`,
+`cm/async/cancel-subtask.wast`, `wasmtime/async/cancel-host.wast`,
+`wasmtime/async/cancel-sibling-subtask.wast`,
+`wasmtime/async/yield-when-cancelled.wast`, and two directives of
+`cm/async/big-interleaving-test.wast`, each of which instantiates and
+fails at its call to `subtask.cancel`.
+`wasmtime/async/cancel-starting-subtask-does-not-leak.wast` stops at
+link, before its cancel, on the host item the harness does not
+provide. Eight of the twelve cases of `cm/async/reentrance.wast` pass.
+Of the four that remain, two need a thread built-in, one fails at its
+call to `subtask.cancel`, and one traps before its cancel because the
+deadlocked call of an earlier case leaves its callee waiting and a trap
+does not poison that callee's instance yet. Error contexts hold
+`wasmtime/async/error-context.wast` and
+`wasmtime/error-context-trap-in-post-return.wast`. Of the three corpus
+files that exercise a host `async` item, `wasmtime/async/lower.wast`
+and `wasmtime/async/drop-host.wast` pass whole, and
+`wasmtime/async/cancel-host.wast` is held up by cancellation.

@@ -138,7 +138,8 @@ the first version's, and its `drain` resolves a
 `future<result<_, error-code>>` whose two ends the one instance holds.
 The Component Model traps that copy because the payload is not a
 number type. The spec marks that rule as temporary, so the fixture
-records the day the rule is lifted: its `drain` then returns.
+records the day the rule is lifted: its `drain` then returns, given a
+host for `wasi:http/types`.
 
 Its `handler.wasm` is byte for byte the first version of the
 `wasi-http` fixture's. A panic location in the handler names its

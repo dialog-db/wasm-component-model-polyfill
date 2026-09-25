@@ -956,7 +956,8 @@ async fn it_traps_the_same_instance_drain_on_a_non_number_payload() {
         .expect_err(
             "`drain` copied a `result<_, error-code>` between two ends its own \
              instance holds; if the spec has lifted its temporary rule against \
-             that copy, take this fixture's lines off the expected-failure list \
+             that copy, reword the hand notes on this fixture's lines of the \
+             expected-failure list, which still cascade from the link failure, \
              and turn this test around",
         );
     assert!(
