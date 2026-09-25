@@ -1,0 +1,22 @@
+package wcmp:stream-composition@0.1.0;
+
+interface numbers {
+  /// Answers at once with a `stream<u32>` and then writes the numbers
+  /// from 1 to `count` into it, in order, and ends the stream.
+  count-up: async func(count: u32) -> stream<u32>;
+}
+
+/// The component that writes the stream.
+world counter {
+  export numbers;
+}
+
+/// The component that reads it. `total` calls `count-up`, reads the
+/// stream to its end, and returns the sum of what it read. It traps
+/// when a number arrives out of order or one is missing, so a sum can
+/// only come back from a stream that carried every number once.
+world summer {
+  import numbers;
+
+  export total: async func(count: u32) -> u64;
+}

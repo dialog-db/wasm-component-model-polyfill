@@ -169,6 +169,24 @@ rust_components wasi-http-same-instance handler
 cp "$work/wasi-http-same-instance-handler.wasm" wasi-http-same-instance/handler.wasm
 emit_wast wasi-http-same-instance handler wasi-http-same-instance/handler.wasm
 
+# streams: one component built by `cargo` and wit-bindgen's async
+# support. `words` answers with a `stream<string>` it writes a word at
+# a time, and `checksum` reads a `stream<u32>` and resolves a
+# `future<u64>` with its position-weighted checksum, both after the
+# export has returned.
+rust_components streams streams
+cp "$work/streams-streams.wasm" streams/streams.wasm
+emit_wast streams streams streams/streams.wasm
+
+# stream-composition: two components built the same way. `counter`
+# exports `count-up`, which streams the numbers from 1 to a count;
+# `summer` imports it and exports `total`, which reads the stream to
+# its end and returns the sum. `wac plug` joins them, so the stream
+# crosses from one component's memory into the other's.
+rust_components stream-composition counter summer
+wac plug --plug "$work/stream-composition-counter.wasm" "$work/stream-composition-summer.wasm" -o stream-composition/composed.wasm
+emit_wast stream-composition composed stream-composition/composed.wasm
+
 # The harness manifest: one `corpus_test!` per `.wast` under the corpus
 # and the table the progress summary reads. A fixture's own directory
 # holds only sources (its `assertions.wast` is not a runnable script), so

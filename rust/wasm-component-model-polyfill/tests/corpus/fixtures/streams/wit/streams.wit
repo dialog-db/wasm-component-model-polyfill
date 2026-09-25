@@ -1,0 +1,15 @@
+package wcmp:streams@0.1.0;
+
+world streams {
+  /// Answers at once with a `stream<string>` and then writes each
+  /// whitespace-separated word of `sentence` into it, one write per
+  /// word, in order, and ends the stream after the last.
+  export words: async func(sentence: string) -> stream<string>;
+
+  /// Answers at once with a `future<u64>`, then reads every number
+  /// `numbers` carries until the stream ends and resolves the future
+  /// with their position-weighted checksum: the sum of each number
+  /// times its one-based position in the stream. A reordered,
+  /// dropped, or repeated number changes it.
+  export checksum: async func(numbers: stream<u32>) -> future<u64>;
+}

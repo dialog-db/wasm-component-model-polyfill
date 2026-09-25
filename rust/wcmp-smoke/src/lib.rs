@@ -6,11 +6,14 @@
 //! and a core module, moves maps, fixed-length lists, and a
 //! wit-bindgen world of records, variants, and resources across the
 //! boundary, crosses into a 64-bit memory, walks exports by name,
-//! opts into a gated feature, awaits outside the store, and learns
-//! which host a WASI 0.3 HTTP handler needs. It runs as a native
-//! binary (`tests smoke native`) and as a page in the browser
-//! (`tests smoke web`) from the same source, so a reader can check the
-//! polyfill by reading this file and by running it on both targets.
+//! opts into a gated feature, awaits outside the store, reads a
+//! stream a guest returns, feeds a guest a stream and awaits the
+//! future it answers with, streams numbers between two composed
+//! components, and learns which host a WASI 0.3 HTTP handler needs.
+//! It runs as a native binary (`tests smoke native`) and as a page in
+//! the browser (`tests smoke web`) from the same source, so a reader
+//! can check the polyfill by reading this file and by running it on
+//! both targets.
 //!
 //! Each story is self-contained: it builds its own store, runs a
 //! component, and returns the evidence it observed. A failure in one
@@ -30,12 +33,14 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use wasm_component_model_polyfill::{
-    Component, CoreExternType, Engine, EngineConfig, Error, HostCall, InterfaceIdentifier,
-    LinkError, Linker, Store, Val, ValField, ValueType,
+    Accessor, Component, ComponentValue, CoreExternType, Destination, Engine, EngineConfig, Error,
+    FutureConsumer, FutureReader, HostCall, Instance, InterfaceIdentifier, LinkError, Linker,
+    Source, Store, StoreContext, StreamConsumer, StreamProducer, StreamReader, StreamResult, Val,
+    ValField, ValueType,
 };
 use wcmp_macros::component;
 
@@ -82,6 +87,24 @@ const RICH: &[u8] =
 /// whose types it imports from `wasi:http/types`.
 const WASI_HTTP: &[u8] = include_bytes!(
     "../../wasm-component-model-polyfill/tests/corpus/fixtures/wasi-http/handler.wasm"
+);
+
+/// The `streams` fixture: a component `cargo` and wit-bindgen's
+/// async support built. `words` answers with a `stream<string>` and
+/// then writes a word at a time into it; `checksum` takes a
+/// `stream<u32>`, answers with a `future<u64>`, and resolves it with
+/// the sum of each number it read times its one-based position. Both
+/// write after the export has returned.
+const STREAMS: &[u8] = include_bytes!(
+    "../../wasm-component-model-polyfill/tests/corpus/fixtures/streams/streams.wasm"
+);
+
+/// The `stream-composition` fixture: two components the same
+/// toolchain built, joined by `wac plug`. `total` calls the other
+/// component's `count-up`, reads the `stream<u32>` it answers with to
+/// its end, and returns the sum.
+const STREAM_COMPOSITION: &[u8] = include_bytes!(
+    "../../wasm-component-model-polyfill/tests/corpus/fixtures/stream-composition/composed.wasm"
 );
 
 /// A component that exports a core module for the host to take: one
@@ -434,6 +457,33 @@ pub static RUN_CONCURRENT: Story = Story {
            idle in between rather than reporting a deadlock.",
 };
 
+pub static READ_A_GUEST_STREAM: Story = Story {
+    chapter: "Streams and futures",
+    title: "Read a stream a guest returns",
+    goal: "A component that `cargo` and wit-bindgen built answers your call with a \
+           `stream<string>` and keeps writing words into it after the call has returned. \
+           You read it through a consumer of your own, and every word arrives in order \
+           before the stream ends.",
+};
+
+pub static STREAM_IN_FUTURE_OUT: Story = Story {
+    chapter: "Streams and futures",
+    title: "Feed a guest a stream and await its future",
+    goal: "You hand the same component a `stream<u32>` that your own producer writes a batch \
+           at a time. It answers with a `future<u64>` at once, reads your numbers, and \
+           resolves the future, once your stream has ended, with a checksum that weights each \
+           number by its position, which comes out right only if every number arrived once \
+           and in order.",
+};
+
+pub static STREAM_BETWEEN_COMPONENTS: Story = Story {
+    chapter: "Streams and futures",
+    title: "Stream numbers from one component to another",
+    goal: "You joined two such components with `wac plug`: one streams the numbers 1 to \
+           1000, the other adds them up. The numbers cross from one component's memory into \
+           the other's through the adapter the polyfill supplies, and you see only the sum.",
+};
+
 pub static WASI_HTTP_STORY: Story = Story {
     chapter: "Known limits",
     title: "Learn which host a WASI 0.3 HTTP handler needs",
@@ -462,6 +512,15 @@ fn stories(engine: &Engine) -> Vec<(&'static Story, Body<'_>)> {
         (&NAVIGATION, Box::pin(navigation(engine))),
         (&ENGINE_CONFIGURATION, Box::pin(engine_configuration())),
         (&RUN_CONCURRENT, Box::pin(run_concurrent_outside(engine))),
+        (&READ_A_GUEST_STREAM, Box::pin(read_a_guest_stream(engine))),
+        (
+            &STREAM_IN_FUTURE_OUT,
+            Box::pin(stream_in_future_out(engine)),
+        ),
+        (
+            &STREAM_BETWEEN_COMPONENTS,
+            Box::pin(stream_between_components(engine)),
+        ),
         (&WASI_HTTP_STORY, Box::pin(wasi_http(engine))),
     ]
 }
@@ -1260,6 +1319,360 @@ async fn rich_world(engine: &Engine) -> Result<String, String> {
     Ok("every shape crossed three component boundaries; both \
         destructors ran twice"
         .to_owned())
+}
+
+/// The sentence the `words` story hands the guest.
+const SENTENCE: &str = "streams carry values between a host and its guests";
+
+/// How many numbers the host streams to `checksum`, and how many the
+/// composed counter streams to its reader.
+const NUMBERS: u32 = 1000;
+
+/// How many numbers the host's producer delivers per poll.
+const BATCH: u32 = 100;
+
+/// How long a stream story waits for the stream or future it reads to
+/// finish before it gives up, in milliseconds. A story that meets a
+/// stuck stream fails with what it saw rather than hang the report.
+const STREAM_DEADLINE_MILLIS: u32 = 10_000;
+
+/// The waker of the `run_concurrent` entry a stream story waits in,
+/// which the story's consumer wakes when it takes something.
+type Signal = Arc<Mutex<Option<Waker>>>;
+
+/// Wake the entry waiting on `signal`, if one is.
+fn wake(signal: &Signal) {
+    if let Some(waker) = signal.lock().ok().and_then(|mut slot| slot.take()) {
+        waker.wake();
+    }
+}
+
+/// What a consumer took, shared with the story.
+struct Taken<T> {
+    items: Vec<T>,
+    /// How many polls handed the consumer items.
+    copies: usize,
+    /// Whether the stream ended, which drops the consumer.
+    ended: bool,
+}
+
+/// A stream consumer that takes every item it is offered, in order,
+/// and records when the pipe drops it because the stream ended.
+struct Collects<T> {
+    taken: Arc<Mutex<Taken<T>>>,
+    signal: Signal,
+}
+
+impl<T> Collects<T> {
+    /// A consumer, and what it will have taken.
+    fn new(signal: &Signal) -> (Self, Arc<Mutex<Taken<T>>>) {
+        let taken = Arc::new(Mutex::new(Taken {
+            items: Vec::new(),
+            copies: 0,
+            ended: false,
+        }));
+        let consumer = Self {
+            taken: taken.clone(),
+            signal: signal.clone(),
+        };
+        (consumer, taken)
+    }
+}
+
+impl<T: ComponentValue + Send + 'static> StreamConsumer<HostState> for Collects<T> {
+    type Item = T;
+
+    fn poll_consume(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        store: &mut StoreContext<'_, HostState>,
+        mut source: Source<'_, T>,
+        _finish: bool,
+    ) -> Poll<Result<StreamResult, Error>> {
+        let count = source.remaining();
+        if count > 0 {
+            let mut items = Vec::with_capacity(count);
+            source.read(store, &mut items, count)?;
+            let mut taken = self.taken.lock().expect("what the consumer took");
+            taken.items.extend(items);
+            taken.copies += 1;
+        }
+        wake(&self.signal);
+        Poll::Ready(Ok(StreamResult::Completed))
+    }
+}
+
+impl<T> Drop for Collects<T> {
+    fn drop(&mut self) {
+        if let Ok(mut taken) = self.taken.lock() {
+            taken.ended = true;
+        }
+        wake(&self.signal);
+    }
+}
+
+/// A future consumer that keeps the one value it is given.
+struct Keeps {
+    value: Arc<Mutex<Option<u64>>>,
+    signal: Signal,
+}
+
+impl FutureConsumer<HostState> for Keeps {
+    type Item = u64;
+
+    fn poll_consume(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        store: &mut StoreContext<'_, HostState>,
+        mut source: Source<'_, u64>,
+        _finish: bool,
+    ) -> Poll<Result<(), Error>> {
+        let mut value = Vec::with_capacity(1);
+        source.read(store, &mut value, 1)?;
+        *self.value.lock().expect("the future's value") = value.pop();
+        wake(&self.signal);
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// A stream producer that writes the numbers from 1 to `last`,
+/// [`BATCH`] per poll, and answers pending once before each batch, so
+/// the numbers reach the guest over several turns of the store.
+struct Batches {
+    next: u32,
+    last: u32,
+    parked: bool,
+    /// How many batches it delivered.
+    delivered: Arc<AtomicUsize>,
+}
+
+impl StreamProducer<HostState> for Batches {
+    type Item = u32;
+
+    fn poll_produce(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        _store: &mut StoreContext<'_, HostState>,
+        mut destination: Destination<'_, u32>,
+        _finish: bool,
+    ) -> Poll<Result<StreamResult, Error>> {
+        let this = self.get_mut();
+        // A read of nothing asks only whether the stream is ready.
+        if destination.remaining() == Some(0) {
+            return Poll::Ready(Ok(StreamResult::Completed));
+        }
+        if !this.parked {
+            this.parked = true;
+            cx.waker().wake_by_ref();
+            return Poll::Pending;
+        }
+        this.parked = false;
+        if this.next > this.last {
+            return Poll::Ready(Ok(StreamResult::Dropped));
+        }
+        let end = this.last.min(this.next + BATCH - 1);
+        destination.set_buffer((this.next..=end).collect());
+        this.next = end + 1;
+        this.delivered.fetch_add(1, Ordering::Relaxed);
+        Poll::Ready(Ok(if this.next > this.last {
+            StreamResult::Dropped
+        } else {
+            StreamResult::Completed
+        }))
+    }
+}
+
+/// Run turns of `store` until `done` holds, parking on `signal`
+/// between checks, or fail once [`STREAM_DEADLINE_MILLIS`] have
+/// passed. The deadline is a timer outside the store, which the
+/// `run_concurrent` entry is free to wait on.
+async fn run_until(
+    store: &mut Store<HostState>,
+    signal: &Signal,
+    what: &str,
+    mut done: impl FnMut() -> bool,
+) -> Result<(), String> {
+    let finished = store
+        .run_concurrent(async |_accessor: &Accessor<HostState>| {
+            let mut deadline = Box::pin(Outside::pause(STREAM_DEADLINE_MILLIS));
+            core::future::poll_fn(|cx| {
+                *signal.lock().expect("the signal") = Some(cx.waker().clone());
+                if done() {
+                    Poll::Ready(true)
+                } else if deadline.as_mut().poll(cx).is_ready() {
+                    Poll::Ready(false)
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await
+        })
+        .await
+        .map_err(fail)?;
+    if finished {
+        Ok(())
+    } else {
+        Err(format!(
+            "{what} did not finish within {STREAM_DEADLINE_MILLIS} ms"
+        ))
+    }
+}
+
+/// Instantiate `bytes` into a store of its own.
+async fn instantiate_alone(
+    engine: &Engine,
+    bytes: &[u8],
+) -> Result<(Store<HostState>, Instance), String> {
+    let component = Component::new(engine, bytes).await.map_err(fail)?;
+    let linker: Linker<HostState> = Linker::new(engine);
+    let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .map_err(fail)?;
+    Ok((store, instance))
+}
+
+/// The guest's `words` answers with the readable end of a
+/// `stream<string>` and writes into it from a task it spawned, after
+/// the call has returned. The host pipes the end to a consumer and
+/// runs turns until the guest ends the stream, which drops the
+/// consumer. Each word is a write of its own, so each reaches the
+/// consumer as a copy of its own, lifted out of the guest's memory.
+async fn read_a_guest_stream(engine: &Engine) -> Result<String, String> {
+    let (mut store, instance) = instantiate_alone(engine, STREAMS).await?;
+    let words = instance
+        .get_func("words")
+        .ok_or("no `words` export")?
+        .typed::<(String,), StreamReader<String>>()
+        .map_err(fail)?;
+    let reader = store
+        .run_concurrent(async |accessor: &Accessor<HostState>| {
+            words
+                .call_concurrent(accessor, (SENTENCE.to_owned(),))
+                .await
+        })
+        .await
+        .map_err(fail)?
+        .map_err(fail)?;
+
+    let signal = Signal::default();
+    let (consumer, taken) = Collects::<String>::new(&signal);
+    reader
+        .pipe(&mut store.as_context_mut(), consumer)
+        .map_err(fail)?;
+    run_until(&mut store, &signal, "the stream of words", || {
+        taken.lock().expect("the words").ended
+    })
+    .await?;
+
+    let taken = taken.lock().expect("the words");
+    let wanted: Vec<&str> = SENTENCE.split_whitespace().collect();
+    let got: Vec<&str> = taken.items.iter().map(String::as_str).collect();
+    expect("the words, in order", got, wanted.clone())?;
+    expect("one copy per word", taken.copies, wanted.len())?;
+    Ok(format!(
+        "`words` returned a `stream<string>` and wrote into it after returning; all {} \
+         words arrived in order, one copy each, and the stream ended",
+        taken.items.len()
+    ))
+}
+
+/// The host creates a `stream<u32>` over its own producer and hands
+/// it to the guest's `checksum`, which answers at once with a
+/// `future<u64>` and reads the stream from a task it spawned. The
+/// producer delivers a batch per poll and is pending before each, so
+/// the numbers cross over several turns. The host pipes the future
+/// to a consumer and runs turns until the guest writes the checksum,
+/// the sum of each number times its one-based position, which a
+/// reordered, lost, or repeated number would change.
+async fn stream_in_future_out(engine: &Engine) -> Result<String, String> {
+    let (mut store, instance) = instantiate_alone(engine, STREAMS).await?;
+    let checksum = instance
+        .get_func("checksum")
+        .ok_or("no `checksum` export")?
+        .typed::<(StreamReader<u32>,), FutureReader<u64>>()
+        .map_err(fail)?;
+    let delivered = Arc::new(AtomicUsize::new(0));
+    let numbers = StreamReader::new(
+        &mut store.as_context_mut(),
+        Batches {
+            next: 1,
+            last: NUMBERS,
+            parked: false,
+            delivered: delivered.clone(),
+        },
+    )
+    .map_err(fail)?;
+    let future = store
+        .run_concurrent(async |accessor: &Accessor<HostState>| {
+            checksum.call_concurrent(accessor, (numbers,)).await
+        })
+        .await
+        .map_err(fail)?
+        .map_err(fail)?;
+
+    let signal = Signal::default();
+    let value = Arc::new(Mutex::new(None));
+    future
+        .pipe(
+            &mut store.as_context_mut(),
+            Keeps {
+                value: value.clone(),
+                signal: signal.clone(),
+            },
+        )
+        .map_err(fail)?;
+    run_until(&mut store, &signal, "the future of the checksum", || {
+        value.lock().expect("the checksum").is_some()
+    })
+    .await?;
+
+    let total = value.lock().expect("the checksum").take();
+    // The producer writes n at position n, so the checksum is the sum
+    // of the squares of 1..=NUMBERS.
+    let n = u64::from(NUMBERS);
+    let wanted = n * (n + 1) * (2 * n + 1) / 6;
+    expect("the future's value", total, Some(wanted))?;
+    let batches = delivered.load(Ordering::Relaxed);
+    expect(
+        "batches the producer delivered",
+        batches,
+        NUMBERS.div_ceil(BATCH) as usize,
+    )?;
+    Ok(format!(
+        "the host's producer wrote 1..={NUMBERS} into a `stream<u32>` in {batches} batches, \
+         a turn apart; `checksum` answered with a `future<u64>` and resolved it with \
+         {wanted}, the sum of each number times its position"
+    ))
+}
+
+/// The composed component's `total` calls `count-up` in the other
+/// component, which answers with a `stream<u32>` and writes the
+/// numbers into it after returning. The stream's readable end crosses
+/// the adapter between the two, and each copy moves the numbers'
+/// bytes from the writer's memory straight into the reader's, which
+/// is how a stream of a number type crosses between guests. The
+/// reader traps on a number out of order or missing, so the sum comes
+/// back only when every number arrived once.
+async fn stream_between_components(engine: &Engine) -> Result<String, String> {
+    let (mut store, instance) = instantiate_alone(engine, STREAM_COMPOSITION).await?;
+    let total = instance
+        .get_func("total")
+        .ok_or("no `total` export")?
+        .typed::<(u32,), u64>()
+        .map_err(fail)?;
+    let sum = total.call(&mut store, (NUMBERS,)).await.map_err(fail)?;
+    let wanted = u64::from(NUMBERS) * (u64::from(NUMBERS) + 1) / 2;
+    expect("total(1000)", sum, wanted)?;
+    let empty = total.call(&mut store, (0,)).await.map_err(fail)?;
+    expect("total(0)", empty, 0)?;
+    Ok(format!(
+        "{} bytes of `wac plug` output; 1..={NUMBERS} crossed from one component to the \
+         other as a `stream<u32>`, and total({NUMBERS}) = {sum}; an empty stream summed to \
+         {empty}",
+        STREAM_COMPOSITION.len()
+    ))
 }
 
 /// The interface the `wasi-http` handler imports its request and

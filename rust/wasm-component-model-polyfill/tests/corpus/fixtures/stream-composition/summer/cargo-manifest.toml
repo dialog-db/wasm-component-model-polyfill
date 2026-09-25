@@ -1,0 +1,15 @@
+# Copied to `Cargo.toml` by `build.sh`. See `../cargo-workspace.toml`
+# for why the file is not named `Cargo.toml` in the tree.
+[package]
+name = "wcmp-stream-composition-summer"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "summer"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { workspace = true, features = ["async", "async-spawn"] }

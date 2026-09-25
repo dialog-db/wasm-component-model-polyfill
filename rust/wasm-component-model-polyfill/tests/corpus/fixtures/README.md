@@ -23,17 +23,20 @@ A `.wast` here is the final component as a `(component $name binary
 | `rich`                    | `rich/wit/rich.wit`, three Rust crates                                  | `cargo build`, `wasm-tools component new`, then two `wac plug` steps           |
 | `wasi-http`               | `wasi-http/wit/` (WASI 0.3 packages), one Rust crate                    | `cargo build`, then `wasm-tools component new`                                 |
 | `wasi-http-same-instance` | as `wasi-http`, as first written                                        | as `wasi-http`                                                                 |
+| `streams`                 | `streams/wit/streams.wit`, one Rust crate                               | as `wasi-http`                                                                 |
+| `stream-composition`      | `stream-composition/wit/stream-composition.wit`, two Rust crates        | `cargo build`, `wasm-tools component new`, then `wac plug`                     |
 
 `build.sh` records the exact commands. The final `.wasm` of each
 fixture is checked in next to its sources.
 
 ## The Rust fixtures
 
-`rich`, `wasi-http`, and `wasi-http-same-instance` are built by a
-language toolchain, so the binding layer is the one a real guest
-carries: `cabi_realloc` from the allocator, wit-bindgen's lift and
-lower code, and — for the two `wasi-http` fixtures — a `wasi:` world's
-imports.
+`rich`, `wasi-http`, `wasi-http-same-instance`, `streams`, and
+`stream-composition` are built by a language toolchain, so the binding
+layer is the one a real guest carries: `cabi_realloc` from the
+allocator, wit-bindgen's lift and lower code, wit-bindgen's async
+runtime for every fixture but `rich`, and — for the two `wasi-http`
+fixtures — a `wasi:` world's imports.
 
 Their cargo metadata is spelled `cargo-workspace.toml`,
 `cargo-lock.toml`, and `<component>/cargo-manifest.toml` rather than
@@ -154,6 +157,47 @@ interface. The repository test `tests/baseline_wasi_http_handler.rs`
 supplies it, calls `drain`, and asserts the trap, so that test fails
 when the polyfill stops trapping the copy.
 
+### `streams`
+
+One component whose two exports are `async func`s that hand a stream
+or a future across the boundary and keep working after they return,
+which wit-bindgen lifts in the callback form:
+
+- `words` answers with a `stream<string>` and then, from a task it
+  spawned, writes each word of its argument into it as a write of its
+  own and ends the stream.
+- `checksum` takes a `stream<u32>`, answers with a `future<u64>`, reads
+  the stream to its end from a task it spawned, and resolves the future
+  with the sum of each number times its one-based position, so a
+  number out of order, missing, or repeated changes the result.
+
+Neither export holds both ends of a stream or a future, so the
+Component Model's temporary rule against a same-instance copy of a
+non-number payload does not reach `words`.
+
+Both exports take or return a stream or a future, and `wast` has no
+syntax for either, so `assertions.wast` holds no directive and the
+harness checks only that the component translates and instantiates.
+The smoke test (`rust/wcmp-smoke`) calls both exports from a host that
+reads and writes the streams.
+
+### `stream-composition`
+
+Two components against one package, joined by `wac plug`:
+
+- `counter` exports `wcmp:stream-composition/numbers@0.1.0`, whose
+  `count-up` answers with a `stream<u32>` and then writes the numbers
+  from 1 to its argument into it, 64 to a write, from a task it
+  spawned.
+- `summer` imports that interface and exports `total`, which calls
+  `count-up`, reads the stream to its end, and returns the sum. It
+  traps on a number out of order and on a stream that ends early, so
+  a sum comes back only when every number arrived once.
+
+The stream crosses between the two components' memories, so each copy
+is a guest-to-guest copy of a number payload. The composed component
+imports nothing, and `assertions.wast` calls `total`.
+
 ## What the byte-stability claim covers
 
 Two runs of `fixtures` on the same machine produce identical bytes,
@@ -177,8 +221,9 @@ fixture carries all four:
   sources the toolchain ships, caught by the sysroot remap.
 - `/cargo/registry/src/index.crates.io-<hash>/<crate>-<version>/...`,
   caught by the registry remap: `wit-bindgen-0.62.0` in every binary,
-  and `futures-core-0.3.34` and `futures-util-0.3.34` in both
-  `handler.wasm` files as well.
+  and `futures-core-0.3.34` and `futures-util-0.3.34` in every binary
+  built with wit-bindgen's async support as well: both `handler.wasm`
+  files, `streams.wasm`, and `stream-composition/composed.wasm`.
 - `/rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/...`, which
   no remap here touches. The precompiled standard library the
   toolchain ships was built with that remap already applied upstream,
