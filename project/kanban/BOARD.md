@@ -62,14 +62,14 @@ kanban-plugin: basic
 - [ ] [[35f796]]
 - [ ] [[d43a9d]]
 - [ ] [[32a5f9]]
+- [ ] [[9e16cd]]
 
 ## In Progress
-
-- [ ] [[79456d]]
 
 ## Needs Review
 
 - [ ] [[c723cc]]
+- [ ] [[79456d]]
 
 ## Ready
 
