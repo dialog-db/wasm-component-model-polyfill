@@ -5,7 +5,7 @@ use core::task::Waker;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::concurrency::{InstanceId, Scheduler, TaskId, TurnGuard};
+use crate::concurrency::{InstanceId, Scheduler, StackSwitchingProvider, TaskId, TurnGuard};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
 use crate::internal::ErrorInternal;
@@ -53,6 +53,11 @@ pub struct StoreData<T: 'static> {
     destructors: HashMap<ResourceTypeId, ResourceDestructor<T>>,
     resource_types: HashMap<ResourceTypeId, LearnedName>,
     scheduler: Scheduler<T>,
+    /// The provider that fills the store's suspend capability, when
+    /// the engine selected one. It is installed as the store is
+    /// constructed and stays for the store's whole life: nothing
+    /// takes it out, a suspension included.
+    provider: Option<StackSwitchingProvider>,
     /// The copy budget each crossing starts with, in bytes of host
     /// values: what Wasmtime calls the store's hostcall fuel.
     hostcall_fuel: usize,
@@ -98,6 +103,7 @@ impl<T: 'static> StoreData<T> {
             destructors: HashMap::new(),
             resource_types: HashMap::new(),
             scheduler: Scheduler::new(),
+            provider: None,
             hostcall_fuel: DEFAULT_HOSTCALL_FUEL,
         }
     }
@@ -162,6 +168,17 @@ impl<T: 'static> StoreData<T> {
     /// Workspace-internal.
     pub fn scheduler_mut(&mut self) -> &mut Scheduler<T> {
         &mut self.scheduler
+    }
+
+    /// Install the provider the engine selected. Workspace-internal.
+    pub fn install_provider(&mut self, provider: StackSwitchingProvider) {
+        self.provider = Some(provider);
+    }
+
+    /// The provider that fills the store's suspend capability, or
+    /// `None` when the engine selected none. Workspace-internal.
+    pub fn provider(&self) -> Option<&StackSwitchingProvider> {
+        self.provider.as_ref()
     }
 
     /// Record what the store knows about a resource type an
@@ -422,17 +439,20 @@ impl<T: 'static> StoreData<T> {
     /// when the task it waits on is one that must not block, and the
     /// deadlock cause otherwise.
     ///
-    /// While no suspend provider is installed — the seam's slot is
-    /// empty on both targets today — the task the driver waits on is
-    /// the only call that can be in flight here. A synchronous call
-    /// between two components holds a native frame for its whole
-    /// length, and a driver is polled with no such frame under it,
-    /// so no other instance can be inside a call that must return.
-    /// The nested turn of the suspend seam is the path that runs
-    /// under one, and [`suspend_cause`](Self::suspend_cause) is what
-    /// answers there. A provider that switched stacks would lift
-    /// that frame off the driver's, and the driver would then have
-    /// to serve the same rules `suspend_cause` does.
+    /// The task the driver waits on is the only call that can be in
+    /// flight here. A synchronous call between two components holds a
+    /// native frame for its whole length, and a driver is polled with
+    /// no such frame under it, so no other instance can be inside a
+    /// call that must return. A thread suspended in the provider
+    /// holds none either: the callee of such a call runs on its
+    /// caller's stack and must not block, so it waits in a nested turn
+    /// and never suspends the stack it runs on. The nested turn of the
+    /// suspend seam is the path that runs under such a call, and
+    /// [`suspend_cause`](Self::suspend_cause) is what answers there.
+    ///
+    /// A store that goes idle while a thread is suspended in the
+    /// provider fails the driver with the deadlock cause: nothing left
+    /// in the store can resume the thread.
     /// Workspace-internal.
     pub fn idle_cause(&self, task: Option<TaskId>) -> SchedulerCause {
         if self.must_not_block(task) {

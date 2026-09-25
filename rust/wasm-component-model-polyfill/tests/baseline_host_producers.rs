@@ -382,9 +382,16 @@ fn polls(seen: &Arc<Mutex<Vec<Option<usize>>>>) -> usize {
 /// one poll, then creates a stream over a producer delivering `later`
 /// through its accessor, and returns its reader.
 async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
+    instantiate_with(bytes, true).await
+}
+
+/// Instantiate `bytes` as [`instantiate`] does, with the suspend
+/// provider allowed or turned off.
+async fn instantiate_with(bytes: &[u8], provider: bool) -> (Store<()>, Instance) {
     // The `async` cancels need the more-async-builtins feature.
     let mut config = EngineConfig::new();
     config.wasm_component_model_more_async_builtins(true);
+    config.suspend_provider(provider);
     let engine = Engine::with_config(&config).expect("engine");
     let component = Component::new(&engine, bytes)
         .await
@@ -1576,8 +1583,10 @@ async fn it_fails_a_synchronous_read_against_a_pending_producer_with_the_stack_s
     // work of the store. There is none, but the producer's end is a
     // host task that stays pending, and only a real suspension can
     // wait for the executor to wake it. The store is not idle, so the
-    // cause is not the deadlock.
-    let (mut store, instance) = instantiate(READS_HOST_ENDS).await;
+    // cause is not the deadlock. The suspend provider is off: under a
+    // provider the thread suspends and waits for the producer, as long
+    // as it takes.
+    let (mut store, instance) = instantiate_with(READS_HOST_ENDS, false).await;
     let (producer, finishes) = AwaitsCancel::new(b"", b"");
     let reader = StreamReader::new(&mut store.as_context_mut(), producer).expect("a stream");
     let end = take(&mut store, &instance, reader).await;
@@ -1587,7 +1596,7 @@ async fn it_fails_a_synchronous_read_against_a_pending_producer_with_the_stack_s
         .expect_err("a read the producer never answers cannot return");
     assert!(
         failure.contains(
-            "blocking here requires a stack switch, but the target has no suspend provider"
+            "blocking here requires a stack switch, but this thread cannot switch its stack"
         ),
         "the pending producer is a pending host task, got {failure}"
     );

@@ -49,11 +49,27 @@ Inlining is off by default in Wasmtime 49, so the default engine compiles the
 same code as before, but a later patch that wants inlining cannot have both.
 Nothing else in the engine's configuration changes.
 
+The cost in memory: each `cont.new` allocates a continuation with a stack of
+its own, of the engine's `async_stack_size` (2 MiB by default), and Wasmtime
+never frees a continuation before its store drops
+(`StoreOpaque::allocate_continuation`: "we currently don't support deallocating
+them"). A store that made one continuation per guest thread would grow without
+bound. The polyfill's switch module therefore makes a continuation only when no
+idle one is at hand: a thread runs on a worker, a continuation that never
+returns. A worker whose thread finished suspends and waits in a pool, and the
+next thread to start resumes it. A store holds as many stacks as it ever had
+threads alive at once, so its memory is bounded by its peak of live threads
+rather than by the number of threads it ran. A thread that traps loses its
+worker, and a thread the store gives up on while it is suspended keeps its
+worker until the store drops. The polyfill's repository test
+`it_reuses_the_workers_of_finished_threads` runs fifty calls of two threads
+each on two workers.
+
 The runtime layer passes the continuation types of the polyfill's switch module
 through its module parsing unchanged: `Module::new` hands the bytes to
 `wasmtime::Module::from_binary` and then checks only the types of imports and
 exports, and the switch module imports and exports only functions over number types
-and `funcref`. Its tag, its continuation types, and its table of continuations
-stay inside the module.
+and `funcref`. Its tags, its continuation types, and its tables of
+continuations stay inside the base module.
 
 Upstream: https://github.com/DouglasDwyer/wasm_runtime_layer/blob/d4c702c/backends/wasmtime_runtime_layer/src/lib.rs

@@ -5,15 +5,19 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use wasm_runtime_layer::{AsContextMut, StoreContextMut as RuntimeContextMut, Val as RuntimeVal};
+use wasm_runtime_layer::{
+    AsContextMut, Func as RuntimeFunc, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
+};
 
 use crate::abi::boundary_call::BoundaryCall;
 use crate::abi::signature::Signature;
-use crate::backend::Backend;
+use crate::backend::{Backend, substrate_failure};
 use crate::concurrency::{
-    Accessor, CallStatus, EventSlot, FailureChannel, HostTask, InstanceId, Item, LowerKind,
-    Outcome, PollScope, Readiness, ResultChannel, Scheduler, Scope, SubtaskId, SubtaskState,
-    SuspendSeam, TaskId, TaskState, TurnGuard, WaitableSetId, YieldWake,
+    Accessor, CallStatus, EntryFinish, EntryStatus, EventSlot, FailureChannel, HostTask,
+    InstanceId, Item, ItemKind, LowerKind, Outcome, ParkedThread, PendingBlock, PollScope,
+    Readiness, ResultChannel, Scheduler, Scope, StackSwitchingProvider, SubtaskId, SubtaskState,
+    SuspendProvider, SuspendSeam, TaskId, TaskState, ThreadId, ThreadStart, TurnGuard,
+    WaitableSetId, YieldWake,
 };
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
@@ -460,6 +464,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// a nested turn runs may block and open a nested turn of its
     /// own. Workspace-internal.
     fn nested_turn(&mut self, waker: &Waker, only: Option<InstanceId>) -> Result<Outcome> {
+        self.scheduler_mut().note_nested_turn();
         self.run_turn(waker, true, only)
     }
 
@@ -525,9 +530,27 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Workspace-internal; not re-exported by `lib.rs`.
     fn start_host_task(
         &mut self,
-        mut task: HostTask<T>,
+        task: HostTask<T>,
         caller: TableId,
         lower: LowerKind,
+    ) -> Result<CallStatus> {
+        match lower {
+            LowerKind::Sync => {
+                self.block_on_host_task(task)?;
+                Ok(CallStatus::returned())
+            }
+            LowerKind::Async => self.start_async_host_task(task, caller),
+        }
+    }
+
+    /// Start the host task of one call made through an asynchronous
+    /// lower, and report what the guest is told: the returned status
+    /// when its first poll resolved it, and the started status with
+    /// the subtask's index in `caller` otherwise.
+    fn start_async_host_task(
+        &mut self,
+        mut task: HostTask<T>,
+        caller: TableId,
     ) -> Result<CallStatus> {
         let subtask = task
             .subtask()
@@ -558,101 +581,102 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 self.lock_tables()?.abandon_subtask(subtask);
                 Err(error)
             }
-            Poll::Pending => match lower {
-                LowerKind::Sync => self.block_on_host_task(task, subtask),
-                LowerKind::Async => {
-                    let (task_id, index) = {
-                        let mut guard = self.lock_tables()?;
-                        // The guest task that made the call, read
-                        // while its subtask is still the current
-                        // scope. A body that fails after this poll
-                        // is the trap of that task, so the host task
-                        // carries its identity out of here.
-                        let task_id = guard.tasks.current_task();
-                        // The subtask starts before its entry is
-                        // made, because the status word this call
-                        // returns is what tells the caller it
-                        // started. A subtask that started while the
-                        // caller already held an entry would take on
-                        // the start event instead, which is the
-                        // callee the entry gate held and not this
-                        // call.
-                        guard.tasks.start_subtask(subtask);
-                        let index = guard.insert_subtask(caller, subtask);
-                        // The guest runs on while the host side does,
-                        // so the subtask is no longer the scope the
-                        // guest's work counts against. Its record
-                        // stays, and with it the handles the call
-                        // borrowed, until its resolution is
-                        // delivered.
-                        if guard.tasks.current_subtask() == Some(subtask) {
-                            guard.tasks.pop_scope();
-                        }
-                        (task_id, index)
-                    };
-                    task.started_in(task_id, caller, index);
-                    self.push_host_task(task);
-                    Ok(CallStatus::started(index))
-                }
-            },
+            Poll::Pending => {
+                let (task_id, index) = {
+                    let mut guard = self.lock_tables()?;
+                    // The guest task that made the call, read while
+                    // its subtask is still the current scope. A body
+                    // that fails after this poll is the trap of that
+                    // task, so the host task carries its identity out
+                    // of here.
+                    let task_id = guard.tasks.current_task();
+                    // The subtask starts before its entry is made,
+                    // because the status word this call returns is
+                    // what tells the caller it started. A subtask
+                    // that started while the caller already held an
+                    // entry would take on the start event instead,
+                    // which is the callee the entry gate held and not
+                    // this call.
+                    guard.tasks.start_subtask(subtask);
+                    let index = guard.insert_subtask(caller, subtask);
+                    // The guest runs on while the host side does, so
+                    // the subtask is no longer the scope the guest's
+                    // work counts against. Its record stays, and with
+                    // it the handles the call borrowed, until its
+                    // resolution is delivered.
+                    if guard.tasks.current_subtask() == Some(subtask) {
+                        guard.tasks.pop_scope();
+                    }
+                    (task_id, index)
+                };
+                task.started_in(task_id, caller, index);
+                self.push_host_task(task);
+                Ok(CallStatus::started(index))
+            }
         }
     }
 
-    /// Block the guest thread on a host task whose body is still
-    /// running, which is what a synchronous lower of a host `async`
-    /// function comes to: the guest expects the result when the call
-    /// returns, so the call cannot return until the body does.
+    /// The first part of a synchronous lower of a host `async`
+    /// function: poll the call's body once, and park it when it is
+    /// still running.
     ///
-    /// The block has the two parts of every blocking built-in. The
-    /// try part parks the task among the store's host tasks, in every
-    /// case, and waits through the suspend seam until the call's
-    /// subtask resolves. Turns poll the parked task with the driver's
-    /// waker, as they poll every host task, and the poll that
-    /// completes it settles it: the subtask resolves, which makes the
-    /// waiting thread ready, and what the body produced stays in the
-    /// store. The store therefore always knows about the pending
-    /// future, and the cause a block that gives up fails with reads
-    /// it there. The seam's fallback also polls the parked task
-    /// before each nested turn it runs, which is what serves a body
-    /// that stays pending once or twice and a caller that must not
-    /// block.
+    /// A body that resolves at once has its result lowered here, and
+    /// the call is over: the answer is `None`. A body that fails is a
+    /// call that never returned: its subtask resolves as a
+    /// cancellation, the handles the guest lent for it go back, and
+    /// the failure travels out to the guest's call.
     ///
-    /// The finish part runs once the thread resumes. It delivers the
-    /// subtask's resolution, which gives back the handles the guest
-    /// lent for the call, exactly as a call whose first poll resolved
-    /// the body delivers it, and it lowers what the body produced.
-    /// A body that failed and a block that failed are each a call that
-    /// never returned: the subtask resolves as a cancellation, the
-    /// parked task leaves the store, and the failure travels out to
-    /// the guest's call.
-    ///
-    /// A wait that unwinds takes the parked task out of the store as
-    /// well, pending or settled, before the panic carries on. An item
-    /// a nested turn runs and a host task it polls can each panic,
-    /// and a task left parked after the frame that parked it was gone
-    /// would keep the store holding a host future nothing waits on:
-    /// every later block would read it as one that can still resolve,
-    /// and a later turn would settle it into a call that no longer
-    /// exists. The task sits in the store's own data
-    /// rather than behind a handle a guard could hold, so the unwind
-    /// is caught here and resumed once the task is out.
-    fn block_on_host_task(&mut self, task: HostTask<T>, subtask: SubtaskId) -> Result<CallStatus> {
-        self.scheduler_mut().park_call(task);
-        let waited = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            SuspendSeam::wait_until(&mut *self, Readiness::Subtask { subtask })
-        }))
-        .unwrap_or_else(|panic| {
-            self.scheduler_mut().withdraw_call(subtask);
-            std::panic::resume_unwind(panic)
-        });
-        let settled = self.scheduler_mut().take_settled_call(subtask);
+    /// A body that is still running is parked among the store's host
+    /// tasks, in every case, and the answer is the subtask of its
+    /// call, whose resolution is what the guest thread waits for.
+    /// Turns poll the parked task with the driver's waker, as they
+    /// poll every host task, and the poll that completes it settles
+    /// it: the subtask resolves, which makes the waiting thread ready,
+    /// and what the body produced stays in the store for
+    /// [`finish_blocking_host_task`](Self::finish_blocking_host_task).
+    /// The store therefore always knows about the pending future, and
+    /// the cause a block that gives up fails with reads it there.
+    fn begin_blocking_host_task(&mut self, mut task: HostTask<T>) -> Result<Option<SubtaskId>> {
+        let subtask = task
+            .subtask()
+            .ok_or_else(|| Error::internal("a copy's host task was started as a call"))?;
+        let waker = self.active_waker();
+        match task.poll(self, &waker) {
+            Poll::Ready(Ok(values)) => {
+                self.lock_tables()?
+                    .exit_subtask(subtask, SubtaskState::Returned);
+                task.lower(self, Ok(values))?;
+                Ok(None)
+            }
+            Poll::Ready(Err(error)) => {
+                self.lock_tables()?.abandon_subtask(subtask);
+                Err(error)
+            }
+            Poll::Pending => {
+                self.scheduler_mut().park_call(task);
+                Ok(Some(subtask))
+            }
+        }
+    }
 
+    /// The finish part of a synchronous lower of a host `async`
+    /// function whose body was still running, once the wait on the
+    /// call's subtask went as `waited` says.
+    ///
+    /// It delivers the subtask's resolution, which gives back the
+    /// handles the guest lent for the call, exactly as a call whose
+    /// first poll resolved the body delivers it, and it lowers what
+    /// the body produced. A body that failed and a wait that failed
+    /// are each a call that never returned: the subtask resolves as a
+    /// cancellation, the parked task leaves the store, and the
+    /// failure travels out to the guest's call.
+    fn finish_blocking_host_task(&mut self, subtask: SubtaskId, waited: Result<()>) -> Result<()> {
+        let settled = self.scheduler_mut().take_settled_call(subtask);
         match (waited, settled) {
             (Ok(()), Some((task, Ok(values)))) => {
                 self.lock_tables()?
                     .exit_subtask(subtask, SubtaskState::Returned);
-                task.lower(self, Ok(values))?;
-                Ok(CallStatus::returned())
+                task.lower(self, Ok(values))
             }
             // The body failed, so the poll that saw it resolved the
             // subtask as a cancellation already, and the failure
@@ -680,6 +704,45 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 Err(Error::Scheduler(cause))
             }
         }
+    }
+
+    /// Block the guest thread on a host task, where it stands, which
+    /// is what a synchronous lower of a host `async` function comes
+    /// to when its thread cannot suspend its stack: the guest expects
+    /// the result when the call returns, so the call cannot return
+    /// until the body does.
+    ///
+    /// The block has the two parts of every blocking built-in:
+    /// [`begin_blocking_host_task`](Self::begin_blocking_host_task),
+    /// a wait through the suspend seam until the call's subtask
+    /// resolves, and
+    /// [`finish_blocking_host_task`](Self::finish_blocking_host_task).
+    /// The seam's fallback polls the parked task before each nested
+    /// turn it runs, which is what serves a body that stays pending
+    /// once or twice and a caller that must not block.
+    ///
+    /// A wait that unwinds takes the parked task out of the store as
+    /// well, pending or settled, before the panic carries on. An item
+    /// a nested turn runs and a host task it polls can each panic,
+    /// and a task left parked after the frame that parked it was gone
+    /// would keep the store holding a host future nothing waits on:
+    /// every later block would read it as one that can still resolve,
+    /// and a later turn would settle it into a call that no longer
+    /// exists. The task sits in the store's own data rather than
+    /// behind a handle a guard could hold, so the unwind is caught
+    /// here and resumed once the task is out.
+    fn block_on_host_task(&mut self, task: HostTask<T>) -> Result<()> {
+        let Some(subtask) = self.begin_blocking_host_task(task)? else {
+            return Ok(());
+        };
+        let waited = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            SuspendSeam::wait_until(&mut *self, Readiness::Subtask { subtask })
+        }))
+        .unwrap_or_else(|panic| {
+            self.scheduler_mut().withdraw_call(subtask);
+            std::panic::resume_unwind(panic)
+        });
+        self.finish_blocking_host_task(subtask, waited)
     }
 
     /// Give a host task to the store. It counts as woken, so the next
@@ -1003,7 +1066,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// two items. The evaluation only reads the tables.
     fn note_ready_threads(&mut self) -> Result<()> {
         self.lock_tables()?.tasks.note_ready_threads();
-        Ok(())
+        self.queue_resumptions()
     }
 
     /// Run one item of a turn, and evaluate the conditions of the
@@ -1086,6 +1149,422 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             return Ok(());
         };
         self.run_item(item)
+    }
+
+    /// The provider that fills the store's suspend capability, or
+    /// `None` when the engine selected none. The store keeps the
+    /// provider for its whole life; this hands out a handle to it.
+    /// Workspace-internal.
+    fn provider(&self) -> Option<StackSwitchingProvider> {
+        self.store_data().provider().cloned()
+    }
+
+    /// How deep the stack of current scopes is, which is where the
+    /// scopes of a thread entry about to start begin.
+    /// Workspace-internal.
+    fn scope_depth(&self) -> Result<usize> {
+        Ok(self.lock_tables()?.tasks.scopes().len())
+    }
+
+    /// The implicit thread of `task`. Workspace-internal.
+    fn implicit_thread(&self, task: TaskId) -> Result<ThreadId> {
+        self.lock_tables()?
+            .tasks
+            .task(task)
+            .map(|record| record.implicit_thread)
+            .ok_or_else(|| Error::internal("a task's thread started with no task in the store"))
+    }
+
+    /// Run `entry`, a thread entry of `thread`, with `args`, and hand
+    /// what it produced to `finish`: its core results, or the trap it
+    /// raised. `results` are the slots a direct call fills.
+    ///
+    /// A thread entry is a guest function that starts a thread: a
+    /// task's core function, a callback, or a thread's start
+    /// function. The caller is an item of a turn or a trampoline,
+    /// and `finish` is the part of it that runs once the entry
+    /// returns. `base` is how deep the stack of current scopes was
+    /// before the caller pushed the scopes of the thread.
+    ///
+    /// Without a provider the entry is a direct call on the real
+    /// stack, and `finish` runs as it returns.
+    ///
+    /// With a provider the entry starts through the provider's start,
+    /// on a stack of its own, and the thread is marked as running on
+    /// one, so that a blocking built-in it reaches suspends it. The
+    /// start returns when the entry finishes or first suspends. An
+    /// entry that finished hands its results to `finish` at once, as
+    /// the switch module's entry wrapper handed them to the host
+    /// whether or not the entry suspended on the way. An entry that
+    /// suspended leaves the real stack with the scopes it pushed from
+    /// `base` up, and waits among the parked threads with `finish`
+    /// until the scheduler resumes it. The caller goes on either way:
+    /// a trampoline that made a nested start continues once the new
+    /// thread suspends or finishes, as the reference's `canon_lower`
+    /// continues once the `thread.resume` it made returns.
+    /// Workspace-internal.
+    fn run_thread_entry(
+        &mut self,
+        thread: ThreadId,
+        base: usize,
+        entry: &RuntimeFunc,
+        args: &[RuntimeVal],
+        results: Vec<RuntimeVal>,
+        finish: impl EntryFinish<T>,
+    ) -> Result<()> {
+        self.start_thread_entry(thread, base, entry, args, results, finish)?;
+        self.follow_switches()
+    }
+
+    /// Run `entry` as [`run_thread_entry`](Self::run_thread_entry)
+    /// does, up to the moment it finishes or first suspends, and leave
+    /// a switch the thread made as it suspended for the caller.
+    fn start_thread_entry(
+        &mut self,
+        thread: ThreadId,
+        base: usize,
+        entry: &RuntimeFunc,
+        args: &[RuntimeVal],
+        results: Vec<RuntimeVal>,
+        finish: impl EntryFinish<T>,
+    ) -> Result<()> {
+        let Some(provider) = self.provider() else {
+            let mut results = results;
+            let called = entry
+                .call(self.runtime_mut(), args, &mut results)
+                .map_err(substrate_failure)
+                .map(|()| results);
+            return finish(self, called);
+        };
+        let task = {
+            let mut guard = self.lock_tables()?;
+            guard.tasks.set_own_stack(thread, true);
+            guard
+                .tasks
+                .thread(thread)
+                .map(|record| record.task)
+                .ok_or_else(|| Error::internal("a thread entry started for no thread"))?
+        };
+        match provider.start(self, thread, entry, args) {
+            Ok(EntryStatus::Suspended) => {
+                let (scopes, running) = self.lock_tables()?.tasks.cut_scopes(base);
+                self.scheduler_mut()
+                    .park_thread(thread, ParkedThread::new(task, scopes, running, finish));
+                Ok(())
+            }
+            Ok(EntryStatus::Finished(values)) => {
+                self.lock_tables()?.tasks.set_own_stack(thread, false);
+                finish(self, Ok(values))
+            }
+            Err(error) => {
+                if let Ok(mut guard) = self.lock_tables() {
+                    guard.tasks.set_own_stack(thread, false);
+                }
+                finish(self, Err(error))
+            }
+        }
+    }
+
+    /// Resume `thread`, which is suspended in the provider, and run
+    /// it until it suspends again or its entry finishes. A thread
+    /// that is not parked, which is one whose task ended while it
+    /// waited, is not resumed.
+    ///
+    /// The scopes the thread left the real stack with go back on top
+    /// of it, so the thread finds the stack as it left it, whatever
+    /// runs below. A thread that suspends again takes them off again.
+    /// A thread whose entry finishes runs the finish its starter left
+    /// with it. A thread that suspends in a switch has the thread it
+    /// named run next, from here, as
+    /// [`follow_switches`](Self::follow_switches) states.
+    /// Workspace-internal.
+    fn resume_parked_thread(&mut self, thread: ThreadId) -> Result<()> {
+        self.resume_thread_once(thread)?;
+        self.follow_switches()
+    }
+
+    /// Run the resumption a turn queued for `thread`, which resumes
+    /// the suspension numbered `number`. A thread that has resumed
+    /// since, through a switch that named it, and suspended again is
+    /// in a later suspension, which its own condition resumes: the
+    /// queued resumption is spent, and does nothing.
+    fn run_queued_resumption(&mut self, thread: ThreadId, number: u64) -> Result<()> {
+        if self.scheduler().parked_number(thread) != Some(number) {
+            return Ok(());
+        }
+        self.resume_parked_thread(thread)
+    }
+
+    /// Resume `thread` as
+    /// [`resume_parked_thread`](Self::resume_parked_thread) does, up
+    /// to the moment it suspends again or finishes, and leave a switch
+    /// it made as it suspended for the caller.
+    fn resume_thread_once(&mut self, thread: ThreadId) -> Result<()> {
+        let Some(provider) = self.provider() else {
+            return Ok(());
+        };
+        let Some(mut parked) = self.scheduler_mut().take_parked_thread(thread) else {
+            return Ok(());
+        };
+        parked.queued = false;
+        let base = {
+            let mut guard = self.lock_tables()?;
+            let base = guard.tasks.scopes().len();
+            let scopes = core::mem::take(&mut parked.scopes);
+            let running = core::mem::take(&mut parked.running);
+            guard.tasks.restore_scopes(scopes, running);
+            base
+        };
+        match provider.resume(self, thread) {
+            Ok(EntryStatus::Suspended) => {
+                let (scopes, running) = self.lock_tables()?.tasks.cut_scopes(base);
+                parked.scopes = scopes;
+                parked.running = running;
+                self.scheduler_mut().park_thread(thread, parked);
+                Ok(())
+            }
+            Ok(EntryStatus::Finished(values)) => {
+                self.lock_tables()?.tasks.set_own_stack(thread, false);
+                parked.finish(self, Ok(values))
+            }
+            Err(error) => {
+                if let Ok(mut guard) = self.lock_tables() {
+                    guard.tasks.set_own_stack(thread, false);
+                }
+                parked.finish(self, Err(error))
+            }
+        }
+    }
+
+    /// Run the threads that switches named, one after another, which
+    /// is the reference's `Thread.resume` loop.
+    ///
+    /// A thread that suspends in `thread.suspend-then-resume`, or in
+    /// one of the three other built-ins that switch, names the thread
+    /// to run next, and the frame that started or resumed it runs that
+    /// thread before anything else, once the switching thread has left
+    /// the real stack. That frame is a turn's item, or a trampoline
+    /// that made a nested start. The named thread may switch again as
+    /// it suspends, and the loop goes on until a thread suspends
+    /// without naming one, or finishes. Each thread runs from this one
+    /// frame, so a chain of switches of any length adds no depth to
+    /// the real stack.
+    fn follow_switches(&mut self) -> Result<()> {
+        while let Some(next) = self.scheduler_mut().take_next_thread() {
+            self.enter_switched_thread(next)?;
+        }
+        Ok(())
+    }
+
+    /// Run `thread`, which a switch named, up to the moment it
+    /// suspends or finishes, and leave a switch it made as it
+    /// suspended for the caller. A thread that has never run starts;
+    /// one suspended in the provider resumes, and is suspended no
+    /// more, since the switch is the resume that names it.
+    fn enter_switched_thread(&mut self, thread: ThreadId) -> Result<()> {
+        let start = self.lock_tables()?.tasks.take_thread_start(thread);
+        if let Some((task, start)) = start {
+            return self.start_explicit_thread(thread, task, start);
+        }
+        if let Some(record) = self.lock_tables()?.tasks.thread_mut(thread) {
+            record.suspended = false;
+        }
+        self.resume_thread_once(thread)
+    }
+
+    /// Run `thread`, which a switch named from a built-in that runs on
+    /// the real stack, from inside that built-in: start it when it has
+    /// never run, and resume it when it is suspended in the provider,
+    /// then run whatever it switches to in turn. It returns once the
+    /// chain of threads suspends or finishes. Workspace-internal.
+    fn run_switched_thread(&mut self, thread: ThreadId) -> Result<()> {
+        self.enter_switched_thread(thread)?;
+        self.follow_switches()
+    }
+
+    /// Start the explicit thread `thread`, which `thread.resume-later`
+    /// made ready before it ever ran, and run it until it suspends or
+    /// finishes, then run whatever it switches to. A thread a switch
+    /// started first has nothing left to start, and this does
+    /// nothing. Workspace-internal.
+    fn start_ready_thread(&mut self, thread: ThreadId) -> Result<()> {
+        let Some((task, start)) = self.lock_tables()?.tasks.take_thread_start(thread) else {
+            return Ok(());
+        };
+        self.start_explicit_thread(thread, task, start)?;
+        self.follow_switches()
+    }
+
+    /// Start the explicit thread `thread` of `task`, whose start
+    /// `start` is, as a thread entry, up to the moment it suspends or
+    /// finishes.
+    ///
+    /// The thread runs in its task's scope. Its end is the same
+    /// whether its start function returned or trapped: it leaves its
+    /// instance's table and its task. A trap is the failure of the
+    /// thread's task, which reaches the call that started the task
+    /// when that call is waiting on it, and fails whatever is running
+    /// the task when its scope is on the stack: a switch made in the
+    /// same task fails with it.
+    fn start_explicit_thread(
+        &mut self,
+        thread: ThreadId,
+        task: TaskId,
+        start: ThreadStart,
+    ) -> Result<()> {
+        let base = self.scope_depth()?;
+        self.lock_tables()?
+            .tasks
+            .enter_thread(thread)
+            .ok_or_else(|| Error::internal("a thread started whose record is not in the store"))?;
+        let finish = move |store: &mut StoreContext<'_, T>, called: Result<Vec<RuntimeVal>>| {
+            {
+                let mut guard = store.lock_tables()?;
+                guard.leave_thread(thread);
+                guard.tasks.end_thread(thread);
+            }
+            match called {
+                Ok(_) => Ok(()),
+                Err(error) => store.fail_export_task(Some(task), error),
+            }
+        };
+        self.start_thread_entry(
+            thread,
+            base,
+            &start.function,
+            &[start.context],
+            Vec::new(),
+            finish,
+        )
+    }
+
+    /// Fail every thread suspended in the provider with the cause an
+    /// idle store gives for `task`, the task the driver waits on, as
+    /// though the wait of each had failed there, and answer whether
+    /// any was suspended. A driver does this when its store goes idle:
+    /// nothing left in the store can resume those threads.
+    ///
+    /// The threads fail in the order they last suspended, so a thread
+    /// a nested start began fails before the thread that began it, as
+    /// a trap unwinds the innermost frame first: the starter was still
+    /// running above the start when the started thread suspended, and
+    /// it suspended after that, however often either had suspended
+    /// before. Each thread's scopes
+    /// go back on the stack, and the built-in it waits in finishes
+    /// with the failed wait, which gives back what the built-in took
+    /// and answers the trap the guest sees. The thread's own finish
+    /// then runs with that trap, which is what ends its task and
+    /// hands the failure to whoever waits on the call: the caller of
+    /// the export, or the thread that started it. That is the failure
+    /// the same block raises with no provider, where the wait traps
+    /// inside the built-in and the trap unwinds every frame of the
+    /// thread. The thread's continuation stays in the switch module's
+    /// table, never resumed, until the store drops.
+    ///
+    /// A finish that fails itself fails the driver: the first such
+    /// failure is the answer. Workspace-internal.
+    fn fail_parked_threads(&mut self, task: Option<TaskId>) -> Result<bool> {
+        let threads = self.scheduler().parked_in_order();
+        if threads.is_empty() {
+            return Ok(false);
+        }
+        let mut failed = None;
+        for thread in threads {
+            let Some(mut parked) = self.scheduler_mut().take_parked_thread(thread) else {
+                continue;
+            };
+            let block = self.scheduler_mut().end_block(thread);
+            let base = {
+                let mut guard = self.lock_tables()?;
+                guard.tasks.set_own_stack(thread, false);
+                let base = guard.tasks.scopes().len();
+                let scopes = core::mem::take(&mut parked.scopes);
+                let running = core::mem::take(&mut parked.running);
+                guard.tasks.restore_scopes(scopes, running);
+                base
+            };
+            // The built-in the thread waits in fails first, with the
+            // cause, which gives back what its first part took and
+            // answers the trap the guest sees. A thread that waits in
+            // none traps with the cause itself.
+            let cause = self.idle_cause(task);
+            let trap = match block {
+                Some(block) => {
+                    self.lock_tables()?
+                        .tasks
+                        .stop_waiting(thread, block.previous);
+                    match block.step.finish(self, Err(Error::Scheduler(cause))) {
+                        Err(trap) => trap,
+                        Ok(_) => anyhow::anyhow!("wasm trap: {}", self.idle_cause(task)),
+                    }
+                }
+                None => anyhow::anyhow!("wasm trap: {cause}"),
+            };
+            let finished = parked.finish(self, Err(substrate_failure(trap)));
+            // Whatever the finish left above the thread's scopes goes
+            // with it, as a trap's unwind takes it.
+            self.lock_tables()?.tasks.cut_scopes(base);
+            if let Err(error) = finished {
+                failed.get_or_insert(error);
+            }
+        }
+        match failed {
+            Some(error) => Err(error),
+            None => Ok(true),
+        }
+    }
+
+    /// Queue the resumption of every thread suspended in the provider
+    /// whose condition now holds and whose resumption is not queued
+    /// yet, in the order the threads became ready.
+    ///
+    /// A thread that yielded resumes after every other ready item,
+    /// behind the low-priority queue, and only once a driver has
+    /// returned control to the host executor, as every resumption
+    /// after a yield does. Any other thread resumes as fresh
+    /// readiness. The resumption belongs to the thread's instance, so
+    /// a turn held to that instance runs it, and to its task, so it
+    /// goes with the task's record.
+    fn queue_resumptions(&mut self) -> Result<()> {
+        if self.scheduler().parked_threads() == 0 {
+            return Ok(());
+        }
+        let ready = {
+            let guard = self.lock_tables()?;
+            guard
+                .tasks
+                .ready_threads()
+                .into_iter()
+                .map(|thread| {
+                    let record = guard.tasks.thread(thread);
+                    let yielded =
+                        record.and_then(|record| record.readiness) == Some(Readiness::Yielded);
+                    let instance = record
+                        .and_then(|record| guard.tasks.task(record.task))
+                        .and_then(|task| task.instance);
+                    (thread, yielded, instance)
+                })
+                .collect::<Vec<_>>()
+        };
+        for (thread, yielded, instance) in ready {
+            let Some((task, number)) = self.scheduler_mut().queue_resumption(thread) else {
+                continue;
+            };
+            let mut item = Item::new(
+                ItemKind::ThreadResumption,
+                move |store: &mut StoreContext<'_, T>| store.run_queued_resumption(thread, number),
+            )
+            .for_task(task);
+            if let Some(instance) = instance {
+                item = item.in_instance(instance);
+            }
+            if yielded {
+                self.scheduler_mut().push_low_priority(item);
+            } else {
+                self.scheduler_mut().push_high_priority(item);
+            }
+        }
+        Ok(())
     }
 
     /// Give an export's task a channel to resolve through and hand
@@ -1360,10 +1839,14 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         self.scheduler_mut()
             .exit_implicit_thread(&mut guard.tasks, task);
         let end = guard.exit_task(task);
-        if end.ended() {
+        let discarded = if end.ended() {
             self.scheduler_mut()
-                .discard_task_items(&mut guard.tasks, task);
-        }
+                .discard_task_items(&mut guard.tasks, task)
+        } else {
+            Vec::new()
+        };
+        drop(guard);
+        self.release_discarded_threads(discarded);
         Ok(end.borrows())
     }
 
@@ -1396,10 +1879,14 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         self.scheduler()
             .exit_implicit_thread(&mut guard.tasks, task);
         let end = guard.end_task(task);
-        if end.ended() {
+        let discarded = if end.ended() {
             self.scheduler_mut()
-                .discard_task_items(&mut guard.tasks, task);
-        }
+                .discard_task_items(&mut guard.tasks, task)
+        } else {
+            Vec::new()
+        };
+        drop(guard);
+        self.release_discarded_threads(discarded);
         Ok(end.borrows())
     }
 
@@ -1421,11 +1908,66 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         let mut guard = Self::lock(&tables)?;
         self.scheduler_mut()
             .exit_implicit_thread(&mut guard.tasks, task);
-        if guard.abandon_task(task) {
+        let discarded = if guard.abandon_task(task) {
             self.scheduler_mut()
-                .discard_task_items(&mut guard.tasks, task);
-        }
+                .discard_task_items(&mut guard.tasks, task)
+        } else {
+            Vec::new()
+        };
+        drop(guard);
+        self.release_discarded_threads(discarded);
         Ok(())
+    }
+
+    /// Give back what the built-ins of the threads a task's end
+    /// discarded were holding, now that the tables are unlocked.
+    ///
+    /// Each thread was suspended in the provider inside a blocking
+    /// built-in whose first part had run: it had raised a set's tally
+    /// of waiters, marked an end as waited on synchronously, parked a
+    /// host task for a synchronous lower, or started a callee. The
+    /// thread will never resume, so the built-in's finish part runs
+    /// here with a failed wait, which gives all of that back, as it
+    /// does for a wait that fails where the thread stands. The trap it
+    /// answers reaches nobody: the task it would end has ended.
+    ///
+    /// The finish runs with the thread's scopes back on the stack, as
+    /// they were when it suspended, because some of what it gives back
+    /// is on them: a synchronous lower's subtask gives back the
+    /// handles the guest lent for the call only while its scope is on
+    /// the stack. Whatever the thread left there goes once the finish
+    /// has run, as a trap's unwind would take it. The thread's own
+    /// finish, the part its starter left to run once its entry
+    /// returned, does not run: it belongs to the task that ended.
+    fn release_discarded_threads(
+        &mut self,
+        discarded: Vec<(ThreadId, ParkedThread<T>, Option<PendingBlock<T>>)>,
+    ) {
+        for (thread, mut parked, block) in discarded {
+            let Ok(base) = self.lock_tables().map(|mut guard| {
+                let base = guard.tasks.scopes().len();
+                let scopes = core::mem::take(&mut parked.scopes);
+                let running = core::mem::take(&mut parked.running);
+                guard.tasks.restore_scopes(scopes, running);
+                base
+            }) else {
+                continue;
+            };
+            if let Some(block) = block {
+                if let Ok(mut guard) = self.lock_tables() {
+                    guard.tasks.stop_waiting(thread, block.previous);
+                }
+                let _ = block.step.finish(
+                    self,
+                    Err(Error::internal(
+                        "the task of a thread suspended in a blocking built-in ended",
+                    )),
+                );
+            }
+            if let Ok(mut guard) = self.lock_tables() {
+                guard.tasks.cut_scopes(base);
+            }
+        }
     }
 
     /// Run `body` with an accessor to this store, driving the

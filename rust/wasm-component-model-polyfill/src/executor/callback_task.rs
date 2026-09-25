@@ -48,7 +48,6 @@
 
 use wasm_runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
 
-use crate::backend::substrate_failure;
 use crate::concurrency::{Event, EventSlot, InstanceId, Item, ItemKind, TaskId};
 use crate::error::{Error, Result, TaskCause};
 use crate::internal::ErrorInternal;
@@ -208,17 +207,40 @@ impl CallbackTask {
             .internal()
             .take_exclusive_thread(self.task, self.instance)?;
         let event = slot.take();
+        let base = store.internal().scope_depth()?;
         store.internal().enter_export_task(self.task)?;
-        match self.call_callback(store, event) {
-            Ok(word) => {
-                store.internal().leave_export_task(self.task)?;
-                self.handle_status_word(store, word)
-            }
-            Err(error) => {
-                self.abandon(store)?;
-                Err(error)
-            }
-        }
+        // The callback is an entry of the task's implicit thread, so
+        // it starts through the store's provider when there is one,
+        // and the word it returns is acted on when the entry finishes.
+        let thread = store.internal().implicit_thread(self.task)?;
+        let (code, first, second) = event.triple();
+        let arguments = [
+            RuntimeVal::I32(code as i32),
+            RuntimeVal::I32(first as i32),
+            RuntimeVal::I32(second as i32),
+        ];
+        let resumed = self.clone();
+        let finish =
+            move |store: &mut StoreContext<'_, T>, called: Result<Vec<RuntimeVal>>| match called
+                .and_then(|results| status_word(&results))
+            {
+                Ok(word) => {
+                    store.internal().leave_export_task(resumed.task)?;
+                    resumed.handle_status_word(store, word)
+                }
+                Err(error) => {
+                    resumed.abandon(store)?;
+                    Err(error)
+                }
+            };
+        store.internal().run_thread_entry(
+            thread,
+            base,
+            &self.callback,
+            &arguments,
+            vec![RuntimeVal::I32(0)],
+            finish,
+        )
     }
 
     /// Give back what a callee whose callback failed still holds.
@@ -256,26 +278,6 @@ impl CallbackTask {
             release_subtask(store, subtask);
         }
         Ok(())
-    }
-
-    /// Call the export's callback with the event's three numbers and
-    /// report the status word it returned.
-    fn call_callback<T: 'static>(
-        &self,
-        store: &mut StoreContext<'_, T>,
-        event: Event,
-    ) -> Result<i32> {
-        let (code, first, second) = event.triple();
-        let arguments = [
-            RuntimeVal::I32(code as i32),
-            RuntimeVal::I32(first as i32),
-            RuntimeVal::I32(second as i32),
-        ];
-        let mut results = [RuntimeVal::I32(0)];
-        self.callback
-            .call(store.internal().runtime_mut(), &arguments, &mut results)
-            .map_err(substrate_failure)?;
-        status_word(&results)
     }
 
     /// Take the task's record out of the store on a failure that

@@ -55,6 +55,11 @@ pub struct Thread {
     /// `None` for an implicit thread and for an explicit thread that
     /// has started.
     pub start: Option<ThreadStart>,
+    /// Whether the thread runs on a stack of its own, under the
+    /// provider. Its entry started through the provider, so a blocking
+    /// built-in it reaches suspends its stack in the switch module's
+    /// shim rather than waiting in a nested turn.
+    pub own_stack: bool,
 }
 
 impl Thread {
@@ -69,6 +74,7 @@ impl Thread {
             index: None,
             suspended: false,
             start: None,
+            own_stack: false,
         }
     }
 

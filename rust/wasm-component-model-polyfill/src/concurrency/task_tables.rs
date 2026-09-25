@@ -749,6 +749,56 @@ impl TaskTables {
         }
     }
 
+    /// Take the top of the stack of current scopes off it, from
+    /// position `base` up, with the explicit threads running among
+    /// those scopes. Each thread's position is counted from `base`.
+    ///
+    /// This is what a thread that suspends in the provider leaves the
+    /// real stack with: the scopes it pushed after its entry began,
+    /// which [`restore_scopes`](Self::restore_scopes) puts back on
+    /// top of the stack when it resumes.
+    pub fn cut_scopes(&mut self, base: usize) -> (Vec<Scope>, Vec<(usize, ThreadId)>) {
+        let base = base.min(self.scopes.len());
+        let scopes = self.scopes.split_off(base);
+        let mut running = Vec::new();
+        self.running_threads.retain(|(position, thread)| {
+            if *position < base {
+                return true;
+            }
+            running.push((position - base, *thread));
+            false
+        });
+        (scopes, running)
+    }
+
+    /// Put `scopes` back on top of the stack of current scopes, with
+    /// the explicit threads `running` among them, which is what a
+    /// thread that resumes from the provider does. The positions of
+    /// the threads are counted from the first of `scopes`.
+    pub fn restore_scopes(&mut self, scopes: Vec<Scope>, running: Vec<(usize, ThreadId)>) {
+        let base = self.scopes.len();
+        self.scopes.extend(scopes);
+        self.running_threads.extend(
+            running
+                .into_iter()
+                .map(|(position, thread)| (base + position, thread)),
+        );
+    }
+
+    /// Record whether `thread` runs on a stack of its own, under the
+    /// provider. A thread that does can suspend in a shim.
+    pub fn set_own_stack(&mut self, thread: ThreadId, own: bool) {
+        if let Some(record) = self.thread_mut(thread) {
+            record.own_stack = own;
+        }
+    }
+
+    /// Whether `thread` runs on a stack of its own, under the
+    /// provider.
+    pub fn on_own_stack(&self, thread: ThreadId) -> bool {
+        self.thread(thread).is_some_and(|record| record.own_stack)
+    }
+
     /// The whole stack of current scopes, outermost first.
     pub fn scopes(&self) -> &[Scope] {
         &self.scopes
@@ -1257,6 +1307,7 @@ impl TaskTables {
                 .is_none_or(|record| record.state.resolved()),
             Readiness::EntryGate => false,
             Readiness::Yielded => true,
+            Readiness::Resumed { thread } => !self.thread_suspended(thread),
         }
     }
 

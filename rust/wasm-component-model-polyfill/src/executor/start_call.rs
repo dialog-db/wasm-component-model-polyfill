@@ -258,18 +258,20 @@ impl Prepared {
     ///
     /// An `async`-typed callee that runs here is a nested start. The
     /// reference runs it on a stack of its own and returns to this
-    /// frame when it blocks. Without a stack switch it runs on the
-    /// real stack above this frame, and the frames below stay where
-    /// they are until it returns. The stack of current scopes carries
-    /// a mark with the call's subtask and `lower` for as long as it
-    /// runs. A block that fails above the mark names the stack-switch
-    /// cause when the caller would go on once a provider returned
-    /// control to it, and could release the block: always after an
-    /// asynchronous lower, and after a synchronous lower once the
-    /// callee has resolved. A
-    /// sync-typed callee is not a nested start. Its task must not
-    /// block, so it never suspends, and the reference runs it on the
-    /// caller's stack.
+    /// frame when it blocks, and so does the store's provider: the
+    /// callee's thread starts through it, and the start returns here
+    /// once the thread suspends or finishes. Without a provider the
+    /// callee runs on the real stack above this frame, and the frames
+    /// below stay where they are until it returns. The stack of
+    /// current scopes carries a mark with the call's subtask and
+    /// `lower` for as long as the start runs. A block that fails above
+    /// the mark names the stack-switch cause when the caller would go
+    /// on once a provider returned control to it, and could release
+    /// the block: always after an asynchronous lower, and after a
+    /// synchronous lower once the callee has resolved. A sync-typed
+    /// callee is not a nested start. Its task must not block, so it
+    /// never suspends, and the reference runs it on the caller's
+    /// stack.
     ///
     /// The callee's task takes the exclusive thread of its instance
     /// unless it is stackful, which is the reference's
@@ -331,51 +333,86 @@ impl Prepared {
             .clone();
         let subtask = self.subtask;
         let task = self.task;
+        let nested = self.callee_async_typed;
         Ok(Item::new(
             ItemKind::TaskStart,
             move |store: &mut StoreContext<'_, T>| {
-                let started = start_call(store, subtask, task, &callee);
-                let Err(error) = started else {
-                    return Ok(());
-                };
-                abandon(store, subtask);
-                let Some(failure) = failure else {
-                    return Err(error);
-                };
-                if let Ok(mut slot) = failure.lock() {
-                    *slot = Some(error);
-                }
-                Ok(())
+                let report = StartReport { subtask, failure };
+                start_call(store, subtask, task, callee, nested, report)
             },
         )
         .for_task(task))
     }
 }
 
+/// Where the failure of a prepared call goes: the slot a synchronous
+/// lower reads, or, with no slot, the turn that ran the start.
+struct StartReport {
+    /// The caller's record of the call.
+    subtask: SubtaskId,
+    /// The slot a synchronous lower reads, or `None` for an
+    /// asynchronous lower.
+    failure: Option<StartFailure>,
+}
+
+impl StartReport {
+    /// End the call with `error`: its subtask resolves as a
+    /// cancellation, and the failure goes to the slot, or fails the
+    /// turn when there is none.
+    fn fail<T: 'static>(self, store: &mut StoreContext<'_, T>, error: Error) -> Result<()> {
+        abandon(store, self.subtask);
+        let Some(failure) = self.failure else {
+            return Err(error);
+        };
+        if let Ok(mut slot) = failure.lock() {
+            *slot = Some(error);
+        }
+        Ok(())
+    }
+}
+
 /// Run the callee: lower the arguments through the start function,
-/// call the core function, and act on what it produced.
+/// call the core function, and act on what it produced. A failure
+/// anywhere in that goes to `report`.
+///
+/// The core function of an `async`-typed callee is the entry of the
+/// callee's implicit thread, which starts through the store's
+/// provider when there is one: from inside the start intrinsic, that
+/// is the nested start the reference makes, on a stack of its own,
+/// and the intrinsic goes on once the thread suspends or finishes.
+/// What the start does once the core function returns runs when the
+/// entry finishes. A sync-typed callee's task must not block, so its
+/// thread never suspends, and its core function is a direct call on
+/// the caller's stack.
 fn start_call<T: 'static>(
     store: &mut StoreContext<'_, T>,
     subtask: SubtaskId,
     task: TaskId,
-    callee: &Callee,
+    callee: Callee,
+    nested: bool,
+    report: StartReport,
 ) -> Result<()> {
+    let base = store.internal().scope_depth()?;
     // The callee's task is the current scope for the whole of the
     // start: the arguments the start function lowers are the
     // callee's, and a borrow the adapter transfers in is owed to it.
-    store.internal().enter_export_task(task)?;
+    if let Err(error) = store.internal().enter_export_task(task) {
+        return report.fail(store, error);
+    }
     let core_arguments = match call_start_function(store, subtask, callee.param_count) {
         Ok(arguments) => arguments,
         Err(error) => {
-            store.internal().abandon_export_task(task)?;
-            return Err(error);
+            let error = abandoned(store, task, error);
+            return report.fail(store, error);
         }
     };
     {
         let tables = store.internal().tables_handle();
         lock(&tables)?.tasks.start_subtask(subtask);
     }
-    store.internal().start_export_task(task)?;
+    if let Err(error) = store.internal().start_export_task(task) {
+        return report.fail(store, error);
+    }
 
     // The callee's flat result types are the adapter's own, and the
     // adapter names only how many there are. A status word is an
@@ -388,31 +425,49 @@ fn start_call<T: 'static>(
         Some(_) => RuntimeVal::I32(0),
         None => RuntimeVal::F64(0.0),
     };
-    let mut core_results = vec![placeholder; callee.result_count];
-    let called = callee
-        .function
-        .call(
-            store.internal().runtime_mut(),
-            &core_arguments,
-            &mut core_results,
-        )
-        .map_err(substrate_failure);
-    let Ok(()) = called else {
-        store.internal().abandon_export_task(task)?;
-        return called;
-    };
-    match &callee.lift {
-        Some(lift) => {
-            store.internal().leave_export_task(task)?;
-            lift.returned(store, &core_results)
-        }
-        None => match resolve_sync_lift(store, subtask, task, callee, &core_results) {
+    let slots = vec![placeholder; callee.result_count];
+    let function = callee.function.clone();
+    let finish = move |store: &mut StoreContext<'_, T>, called: Result<Vec<RuntimeVal>>| {
+        let outcome = match called {
+            Err(error) => Err(abandoned(store, task, error)),
+            Ok(core_results) => match &callee.lift {
+                Some(lift) => store
+                    .internal()
+                    .leave_export_task(task)
+                    .and_then(|()| lift.returned(store, &core_results)),
+                None => resolve_sync_lift(store, subtask, task, &callee, &core_results)
+                    .map_err(|error| abandoned(store, task, error)),
+            },
+        };
+        match outcome {
             Ok(()) => Ok(()),
-            Err(error) => {
-                store.internal().abandon_export_task(task)?;
-                Err(error)
-            }
-        },
+            Err(error) => report.fail(store, error),
+        }
+    };
+    if !nested {
+        let mut core_results = slots;
+        let called = function
+            .call(
+                store.internal().runtime_mut(),
+                &core_arguments,
+                &mut core_results,
+            )
+            .map_err(substrate_failure)
+            .map(|()| core_results);
+        return finish(store, called);
+    }
+    let thread = store.internal().implicit_thread(task)?;
+    store
+        .internal()
+        .run_thread_entry(thread, base, &function, &core_arguments, slots, finish)
+}
+
+/// End `task` on its failure path, and answer the failure the call
+/// reports: `error`, or the failure the end itself met.
+fn abandoned<T: 'static>(store: &mut StoreContext<'_, T>, task: TaskId, error: Error) -> Error {
+    match store.internal().abandon_export_task(task) {
+        Ok(()) => error,
+        Err(failure) => failure,
     }
 }
 

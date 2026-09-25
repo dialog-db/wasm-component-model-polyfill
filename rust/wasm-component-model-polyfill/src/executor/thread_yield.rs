@@ -9,11 +9,14 @@
 //!
 //! Giving way is one call into the suspend seam. The built-in asks
 //! it for one chance to be given back control, which is what a
-//! yield waits for and no more. On a target with no provider the
-//! seam runs one nested turn — the ready work of the store, or of
-//! the calling task's own instance alone when that task must not
-//! block — and the built-in returns. A task that must not block
-//! with no ready work of its own instance therefore yields to
+//! yield waits for and no more. Under a provider a thread that runs
+//! on a stack of its own suspends in the built-in's shim, and it
+//! resumes as a resumption after a yield: after every other ready
+//! item, and once a driver has given the host executor its turn.
+//! Otherwise the seam runs one nested turn — the ready work of the
+//! store, or of the calling task's own instance alone when that task
+//! must not block — and the built-in returns. A task that must not
+//! block with no ready work of its own instance therefore yields to
 //! nothing, as Wasmtime runs it.
 //!
 //! The built-in has no rule of its own that fails, which is what
@@ -62,18 +65,15 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
-use wasm_runtime_layer::{
-    AsContextMut, Func as RuntimeFunc, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
-};
+use wasm_runtime_layer::{AsContextMut, Val as RuntimeVal};
 
 use crate::abi::runtime_state::AbiRuntimeState;
-use crate::backend::Backend;
-use crate::concurrency::{InstanceId, SuspendSeam};
+use crate::concurrency::{BlockStep, BlockingBuiltin, InstanceId, Readiness};
 use crate::error::{Error, TaskCause};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::CoreSignature;
+use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
-use crate::store::{StoreContext, StoreData};
 
 /// The value `thread.yield` returns. `canon_thread_yield` answers
 /// `[0]` and the Explainer says the word is always zero, so the
@@ -86,41 +86,43 @@ const ALWAYS_ZERO: i32 = 0;
 /// instance comes from the trampoline rather than from an argument,
 /// and the built-in takes nothing and returns one word.
 pub fn build_thread_yield<T: 'static>(
-    store: &mut StoreContext<'_, T>,
+    _store: &mut StoreContext<'_, T>,
     instance: usize,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
-    RuntimeFunc::new(
-        store.internal().runtime_mut(),
+) -> BlockingBuiltin<T> {
+    BlockingBuiltin::new(
         core_func_type(signature),
-        move |store_ctx, _args, results| {
-            thread_yield(store_ctx, &abi_state, instance)?;
-            results[0] = RuntimeVal::I32(ALWAYS_ZERO);
-            Ok(())
+        move |store: &mut StoreContext<'_, T>, _args: &[RuntimeVal]| {
+            begin_thread_yield(store, &abi_state, instance)
         },
     )
 }
 
-/// The body of the built-in: refuse the call the instance may not be
-/// left for, then give way once.
-fn thread_yield<T: 'static>(
-    mut store_ctx: RuntimeContextMut<'_, StoreData<T>, Backend>,
+/// The first part of the built-in: refuse the call the instance may
+/// not be left for, then give way once.
+///
+/// One chance to be given back control is the whole of what a yield
+/// waits for, so it waits on a condition that always holds. With no
+/// provider the seam runs exactly one nested turn, and a provider
+/// that switches stacks suspends the thread exactly once and resumes
+/// it after every other ready item. What the wait can fail with is
+/// the failure of an item the turn ran, or the seam's budget ending
+/// the call this thread is inside; see the module documentation.
+fn begin_thread_yield<T: 'static>(
+    store: &mut StoreContext<'_, T>,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     instance: usize,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<BlockStep<T>> {
     let id = calling_instance(abi_state, instance)?;
-    trap_if_cannot_leave(abi_state, id, &mut store_ctx)?;
-
-    // One chance to be given back control, which is the whole of
-    // what a yield waits for. The seam runs exactly one nested turn
-    // on a target with no provider, and a provider that switches
-    // stacks suspends the thread exactly once. What comes back is
-    // the failure of an item the turn ran, or the seam's budget
-    // ending the call this thread is inside; see the module
-    // documentation.
-    let mut store = StoreContext::new(store_ctx.as_context_mut());
-    SuspendSeam::give_way(&mut store).map_err(trap)
+    trap_if_cannot_leave(abi_state, id, store.internal().runtime_mut())?;
+    Ok(BlockStep::wait(
+        Readiness::Yielded,
+        |_store: &mut StoreContext<'_, T>, waited| {
+            waited.map_err(trap)?;
+            Ok(vec![RuntimeVal::I32(ALWAYS_ZERO)])
+        },
+    ))
 }
 
 /// The store-wide identity of the component instance the translator

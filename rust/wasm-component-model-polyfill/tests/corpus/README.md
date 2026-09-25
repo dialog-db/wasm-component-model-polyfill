@@ -18,14 +18,18 @@ both lowers of a call out through an import, so part of `cm/async/` and
 `wasmtime/async/` passes: a host call into such an export,
 `task.return`, backpressure, the waitable set built-ins, `thread.yield`,
 the other eight thread built-ins, and the context slots. A stackful
-export's core function runs on the real stack as its task's implicit
-thread, so a block inside it waits in a nested turn, and it does not
-take its instance exclusively. The five thread built-ins that suspend
-or switch run on the nested turn too: a suspension waits in turns run
-from inside the built-in, a switch to a thread that never ran starts
-that thread there, on the real stack above the built-in, and a switch
-to a thread suspended below the current frame fails with the
-stack-switch message. A call between two components crosses in all
+export's core function runs as its task's implicit thread, and it does
+not take its instance exclusively. Natively on x86_64 Linux every
+thread entry runs on a stack of its own through the stack-switching
+provider: a blocking built-in suspends the thread, the five thread
+built-ins that suspend or switch suspend it the same way, and a switch
+starts or resumes the thread it names there. A thread of a sync-typed
+call cannot suspend its stack, and without a provider, in the browser
+and in the `no-provider` lanes, no thread can. Such a thread waits in a
+nested turn: a suspension waits in turns run from inside the built-in,
+a switch to a thread that never ran starts that thread above the
+built-in, and a switch to a thread suspended below the current frame
+fails with the stack-switch message. A call between two components crosses in all
 four combinations of lift and lower, and the readable end of a stream
 or a future crosses with it. A read and a
 write on the two ends of a stream pair up as the reference's stream
@@ -83,8 +87,9 @@ unbound and no instance current, so every later directive in the file
 that names the definition or invokes the instance fails as
 bookkeeping rather than on its own merits. Several files of
 `cm/async` define a component once and then drive it over dozens of
-directives, so that row carries far more `cascade` lines than
-`deferred-feature` ones.
+directives, so a failure early in one of them cascades over the rest;
+natively that row has no `cascade` line today, and without a provider
+it has seven.
 
 `expected-failures.txt` lists every directive the polyfill does not pass
 yet, one per line, as `<path>:<line> <category> <reason>`. The harness
@@ -149,10 +154,12 @@ the failure a `tests web debug` run prints.
 The shared list records the best case: the failures under a suspend
 provider. `expected-failures.no-provider.txt` is the overlay of the
 directives that fail beyond it without one. The harness applies it
-whenever the engine's provider query answers none, on either target,
-because the nested turn is one code path on both: a lane that turns
-the provider off, a native build on a platform without the
-stack-switching proposal, and a browser without JSPI. In such a
+whenever the store runs no guest thread through a provider, on either
+target, because the nested turn is one code path on both: a lane that
+turns the provider off, a native build on a platform without the
+stack-switching proposal, and a browser. A browser that ships JSPI
+answers the JSPI provider, but the scheduler does not run guest
+threads through it yet, so the overlay applies there too. In a
 browser the web delta applies beside it. Every line of the overlay
 carries the stack-switch reason, the text of the scheduler's
 stack-switch cause, and no line may name a directive the shared list
@@ -164,17 +171,24 @@ runs it with the provider turned off through `EngineConfig`. The
 nextest profiles in `.config/nextest.toml` at the workspace root split
 them: the ordinary lanes run the first, and `tests native no-provider`
 and `tests web no-provider` run only the second, from the debug
-archives. `tests all` runs the corpus in all four states. No provider
-exists yet, so both states of a target measure the same thing and the
-overlay is empty.
+archives. `tests all` runs the corpus in all four states. The native
+lanes run the stack-switching provider on the x86_64 Linux host, and
+the overlay holds the directives only a stack switch passes. No browser
+runs guest threads through a provider yet, so both states of the web target measure the same
+thing, and the web lane applies the overlay in both.
 
 `tests regenerate` writes both lists from the native debug archive: the
 shared list from the progress run with the provider allowed, then the
 overlay from `it_reports_conformance_progress_without_a_provider`, which
 keeps only the failures the regenerated shared list does not name
 (`WCMP_REGENERATE_BASE` names that list). A directive that fails with
-a provider and passes without one has no place in either list; the
-lane without a provider reports it as a stale expectation.
+a provider and passes without one has no place in either list, so the
+shared list names it, and `expected-passes.no-provider.txt` names it
+again: the harness drops the directive from the expectations of a run
+in which no provider runs the store's threads, and fails a run whose
+list names a directive the shared list does not. That list is written
+by hand, with the reason the directive passes without a provider, and
+`tests regenerate` neither reads nor writes it.
 
 The harness links every file against the host environment Wasmtime's
 wast runner provides: the `host` instance, `host-return-two`, and
@@ -261,18 +275,22 @@ conformance` prints the current one):
 | Corpus           | Directives | Passed | Pass % | Expected failures by category                                          |
 | ---------------- | ---------- | ------ | ------ | ---------------------------------------------------------------------- |
 | `cm`             | 1126       | 1096   | 97.3   | substrate 4, validation 20, cascade 6                                  |
-| `cm/async`       | 393        | 351    | 89.3   | deferred-feature 28, defect 2, cascade 12                              |
+| `cm/async`       | 393        | 371    | 94.4   | deferred-feature 20, defect 2                                          |
 | `fixtures`       | 56         | 50     | 89.3   | deferred-feature 2, cascade 4                                          |
 | `wasmtime`       | 469        | 434    | 92.5   | deferred-feature 1, substrate 8, cascade 26                            |
-| `wasmtime/async` | 387        | 351    | 90.7   | deferred-feature 29, defect 3, cascade 4                               |
-| total            | 2431       | 2282   | 93.9   | deferred-feature 60, substrate 12, validation 20, defect 5, cascade 52 |
+| `wasmtime/async` | 387        | 366    | 94.6   | deferred-feature 14, defect 3, cascade 4                               |
+| total            | 2431       | 2317   | 95.3   | deferred-feature 37, substrate 12, validation 20, defect 5, cascade 40 |
 
-The browser's summary differs by the eleven lines of
-`expected-failures.web.txt`, which move eleven passing directives into
-`substrate`: `cm` passes 1095 (97.2%) with substrate 5, `cm/async` 350
-(89.1%) with substrate 1, `wasmtime` 427 (91.0%) with substrate 15,
-`wasmtime/async` 349 (90.2%) with substrate 2, and the total is 2271
-(93.4%) with substrate 23. Every other cell is the same. Six of the
+The browser runs no guest thread through a provider, so its summary is
+the native one with the provider turned off, which applies
+`expected-failures.no-provider.txt`, and the eleven lines of
+`expected-failures.web.txt` move eleven passing directives into
+`substrate` on top of that: `cm` passes 1095 (97.2%) with substrate 5,
+`cm/async` 351 (89.3%) with deferred-feature 32, substrate 1, defect 2,
+and cascade 7, `wasmtime` 427 (91.0%) with substrate 15,
+`wasmtime/async` 349 (90.2%) with deferred-feature 29 and substrate 2,
+and the total is 2272 (93.5%) with deferred-feature 64, substrate 23,
+and cascade 47. Six of the
 eleven lines, among them the three in the `async` rows, are the browser
 engine's wording for a trap or a validation error that Wasmtime words
 differently. Two in `wasmtime/big-strings.wast` trap in the adapter
@@ -285,14 +303,20 @@ The `async` rows still hold the pass rate down, and the four reasons
 above cover what those directories still exercise. A directive that
 fails on one of them can leave a later directive of the same file
 without its instance, or with a thread or a callee the failure left
-behind, and each such later directive is a `cascade` line. The two
-async rows together hold 16 of the 52 cascade lines, 9 of them in
+behind in the same instance, and each such later directive is a
+`cascade` line. Each component instance runs in a store of its own,
+as under Wasmtime's wast runner, so what an earlier instance left
+behind never runs during a later instance's call. The two async rows
+hold 4 of the 40 cascade lines natively, all in `wasmtime/async`, and
+without a provider `cm/async` adds 7, all in
 `cm/async/during-sync-scheduling-candidates.wast`.
 
-Of the 38 files of `cm/async`, 23 pass whole on both targets. Of the
-54 files of `wasmtime/async`, 39 pass whole natively and 37 in the
-browser, where `subtask-wait.wast` and `sync-call-context-trap.wast`
-each hold one line of the browser's delta. Seven of the nine fixtures
+Of the 38 files of `cm/async`, 27 pass whole natively and 23 in the
+browser, where four more hold lines that only the provider serves. Of
+the 54 files of `wasmtime/async`, 47 pass whole natively and 37 in the
+browser, where eight more hold such lines, and `subtask-wait.wast` and
+`sync-call-context-trap.wast` each hold one line of the browser's
+delta. Seven of the nine fixtures
 pass whole.
 
 The streams and futures account for 33 of the files that pass whole.
@@ -323,9 +347,10 @@ rules. The first four components of
 fails at its call to `subtask.cancel`. The `subtask.cancel` component
 of `wasmtime/async/task-builtins.wast` instantiates.
 
-Seven files that exercise a stream or a future keep lines deferred on
-a stack switch, which the suspend capability serves and which has no
-provider on either target until the stackful design fills it. Both
+Seven files that exercise a stream or a future keep lines that pass
+natively under the stack-switching provider and fail without one, in
+the browser and the `no-provider` lanes, where they wait on a stack
+switch. Both
 `sync-streams.wast` and `wasmtime/async/streams-massive-send.wast`
 have a callee that writes synchronously after `task.return` for its
 caller below it to read, the massive send once with a stream and once
@@ -341,8 +366,9 @@ for its caller below it to read. The stream and future case of
 `wasmtime/async/task-builtins.wast` has a callee that reads
 synchronously in its first core function what only its caller writes,
 and the one directive of `cm/async/cancel-and-exclusive-lock.wast`
-that fails has a callee that blocks in `waitable-set.wait` until its
-caller writes a future. `cm/async/async-calls-sync.wast` and
+that fails without a provider has a callee that blocks in
+`waitable-set.wait` until its caller writes a future; under the
+provider it reaches `subtask.cancel` and fails there. `cm/async/async-calls-sync.wast` and
 `wasmtime/async/reenter-during-yield.wast` wait on a stack switch as
 well, for a callee that only an outer caller can release. So do
 `cm/async/sync-barges-in.wast` and
@@ -359,23 +385,34 @@ whole, and so do the four stackful components of
 `wasmtime/async/task-return-traps.wast` pass and that file passes
 whole, as do `cm/values/post-return.wast` and, natively,
 `wasmtime/thread-transparency/reentrancy.wast`. The five thread
-built-ins that suspend or switch run on the nested turn, so
+built-ins that suspend or switch run too, so
 `cm/async/self-switch-traps.wast` and
 `cm/async/during-sync-call-exclusive-resume.wast` pass whole, and most
 of `cm/async/trap-if-block-and-sync.wast`,
 `cm/async/switch-to-ready-callback.wast`, and
-`cm/async/during-sync-scheduling-candidates.wast` passes. Their other
-lines, and the thread lines of
-`cm/async/trap-if-sync-and-waitable-set.wast` and
-`wasmtime/async/join-during-sync-read.wast`, wait on a stack switch: a
-switch back to a thread suspended below the current frame, a thread
-that blocks above a thread that yielded to it, a thread that suspends
-above the asynchronous lower that started it, or a thread that
-suspends or yields for ever after its task resolved, whose host call
-cannot return while the thread's frame is on the stack. Two directives
-of `cm/async/switch-to-ready-callback.wast` meet a callback that an
-earlier trapped call left parked, because a trap does not poison its
-instances yet. One directive each of
+`cm/async/during-sync-scheduling-candidates.wast` passes. Natively the
+thread lines of `cm/async/trap-if-sync-and-waitable-set.wast` and
+`wasmtime/async/join-during-sync-read.wast` pass too, and so do the
+lines of `during-sync-scheduling-candidates.wast` whose thread
+suspends or yields after its task resolved, because each of those
+threads suspends in the provider. Five lines still wait on a stack
+switch there, each for a thread of a sync-typed call, which cannot
+suspend its stack even under a provider: two of
+`trap-if-block-and-sync.wast` and one of `cm/async/reentrance.wast`
+switch back to such a thread while it waits in a switch below the
+current frame, and two of `during-sync-scheduling-candidates.wast`
+yield in such a thread, whose nested turn, held to its instance, does
+not queue the resumption of a thread that `thread.resume-later` made
+ready in the provider. Without a provider the other lines named here
+wait on a stack switch as well: a switch back to a thread suspended
+below the current frame, a thread that blocks above a thread that
+yielded to it, a thread that suspends above the asynchronous lower
+that started it, or a thread that suspends or yields for ever after
+its task resolved, whose host call cannot return while the thread's
+frame is on the stack. `cm/async/switch-to-ready-callback.wast` passes
+whole natively; without a provider two of its directives fail, whose
+test function suspends above the asynchronous lower of its caller
+where the reference deadlocks. One directive each of
 `cm/async/during-sync-call-may-block-if-other-ready-threads.wast` and
 `cm/async/during-sync-call-no-sibling-resume.wast`, which switch to an
 explicit thread a finished callback task left suspended, and three
@@ -389,15 +426,22 @@ Cancellation holds `cm/async/cancel-delivery.wast`,
 `wasmtime/async/cancel-sibling-subtask.wast`,
 `wasmtime/async/yield-when-cancelled.wast`, and four directives of
 `cm/async/big-interleaving-test.wast`, each of which instantiates and
-fails at its call to `subtask.cancel`.
+fails at its call to `subtask.cancel`. Under the provider so does
+`cm/async/trap-if-block-and-sync.wast:352`: the callee its sync-typed
+export lowers asynchronously suspends, the lower answers `STARTED`, and
+the export reaches `subtask.cancel`. Without a provider that callee
+blocks on the real stack while the export's call is in progress, and
+the block traps with the cannot-block message the directive expects
+before the cancel, so `expected-passes.no-provider.txt` names the line.
 `wasmtime/async/cancel-starting-subtask-does-not-leak.wast` stops at
 link, before its cancel, on the host item the harness does not
 provide. Eight of the twelve cases of `cm/async/reentrance.wast` pass.
 Of the four that remain, two fail at their call to `subtask.cancel`,
 one needs a stack switch to go back to a thread suspended below it,
-and one meets the callee that the deadlocked call of an earlier case
-left waiting, because a trap does not poison that callee's instance
-yet. Error contexts hold
+and one suspends in a sync-typed call while the synchronous calls
+below it are in progress, where the reference runs the ready threads
+of the call's own instance from inside the block and the polyfill does
+not yet, so it fails with the cannot-block message. Error contexts hold
 `wasmtime/async/error-context.wast` and
 `wasmtime/error-context-trap-in-post-return.wast`. Of the three corpus
 files that exercise a host `async` item, `wasmtime/async/lower.wast`

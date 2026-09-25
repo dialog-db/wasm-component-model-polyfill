@@ -74,10 +74,10 @@
 //! separately: the link rule holds a concurrent registration to an
 //! async-typed import, and a guest may lower an async-typed import
 //! without the `async` option. The guest expects the result when the
-//! call returns, so the trampoline blocks the guest thread on the
-//! future where it stands, through the suspend seam, and writes the
-//! result exactly where a synchronous registration's crossing writes
-//! it.
+//! call returns, so the lowered import is a blocking built-in: it
+//! blocks the guest thread on the future through the suspend seam,
+//! suspended in its shim under a provider, and writes the result
+//! exactly where a synchronous registration's crossing writes it.
 //!
 //! [`Func`]: wasm_runtime_layer::Func
 //! [`HostFunc<T>`]: crate::linker::HostFunc
@@ -113,8 +113,8 @@ use crate::store::StoreContextInternalExt;
 
 use super::ResourceDestructor;
 use crate::concurrency::{
-    Accessor, CallStatus, HostTask, InstanceId, LowerKind, PollScope, Scope, SubtaskId,
-    SubtaskState,
+    Accessor, BlockStep, BlockingBuiltin, CallStatus, HostTask, InstanceId, LowerKind, PollScope,
+    Readiness, Scope, SubtaskId, SubtaskState,
 };
 use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime, ResourceTypeId, TableId};
 use crate::store::{StoreContext, StoreData};
@@ -448,8 +448,9 @@ pub fn build_trampoline<T: 'static>(
     spec: &LoweringSpec,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
     host_func: HostFuncKind<T>,
-) -> RuntimeFunc {
+) -> BlockingBuiltin<T> {
     let func_type = derive_runtime_func_type(spec.signature.ty(), spec.kind);
+    let result_count = func_type.results().len();
     // The signature, with its parameter layout, and the options are the
     // translation's own, shared rather than copied: every instantiation
     // builds a trampoline from the same spec, and every call reads them.
@@ -458,17 +459,38 @@ pub fn build_trampoline<T: 'static>(
     let kind = spec.kind;
     let tables = store.internal().tables_handle();
 
-    RuntimeFunc::new(
-        store.internal().runtime_mut(),
+    // A lowered import blocks only when a synchronous lower meets a
+    // host function whose future is still running, so it is a
+    // blocking built-in, and every other call of it is done at once.
+    BlockingBuiltin::new(
         func_type,
-        move |store_ctx, args, results| {
+        move |store: &mut StoreContext<'_, T>, args: &[RuntimeVal]| {
             invoke_trampoline(
-                store_ctx, &signature, &options, kind, &abi_state, &tables, &host_func, args,
-                results,
+                store.internal().runtime_mut().as_context_mut(),
+                &signature,
+                &options,
+                kind,
+                &abi_state,
+                &tables,
+                &host_func,
+                args,
+                result_count,
             )
-            .map_err(|err| anyhow!("trampoline invocation failed: {err}"))
+            .map_err(invocation_failed)
         },
     )
+}
+
+/// What a lowered import that failed traps with.
+fn invocation_failed(err: Error) -> anyhow::Error {
+    anyhow!("trampoline invocation failed: {err}")
+}
+
+/// Whether a lowered import can block: a synchronous lower of a host
+/// function registered to run concurrently, whose future the guest
+/// waits on where it stands.
+pub fn lowering_blocks<T: 'static>(spec: &LoweringSpec, host_func: &HostFuncKind<T>) -> bool {
+    spec.kind == LowerKind::Sync && matches!(host_func, HostFuncKind::Concurrent(_))
 }
 
 /// Derive the core-Wasm function type the lowered import presents
@@ -597,8 +619,12 @@ fn invoke_trampoline<T: 'static>(
     tables: &Arc<Mutex<HandleTables>>,
     host_func: &HostFuncKind<T>,
     args: &[RuntimeVal],
-    results: &mut [RuntimeVal],
-) -> Result<()> {
+    result_count: usize,
+) -> Result<BlockStep<T>> {
+    // The core results, which every path but the block below writes
+    // here: the placeholders are overwritten with values of the
+    // types the lowering produces.
+    let mut results = vec![RuntimeVal::I32(0); result_count];
     // The canon options of the lowering and the instance they name,
     // read out of the instance's runtime state under one lock of it.
     // Each crossing of the call builds its boundary context from the
@@ -738,37 +764,43 @@ fn invoke_trampoline<T: 'static>(
     };
 
     match outcome {
-        HostOutcome::Values(host_results) => return_host_values(
-            &mut store_ctx,
-            signature.ty(),
-            tables,
-            options,
-            instance,
-            subtask,
-            host_results,
-            return_area_ptr,
-            results,
-        ),
+        HostOutcome::Values(host_results) => {
+            return_host_values(
+                &mut store_ctx,
+                signature.ty(),
+                tables,
+                options,
+                instance,
+                subtask,
+                host_results,
+                return_area_ptr,
+                &mut results,
+            )?;
+            Ok(BlockStep::Ready(results))
+        }
         // Which lower the guest called through decides what becomes
         // of the future: an asynchronous lower hands the call back as
         // a subtask, and a synchronous one blocks the guest thread on
         // it until it resolves.
         HostOutcome::Future(future) => match kind {
-            LowerKind::Async => start_host_call(
-                &mut store_ctx,
-                signature,
-                declared,
-                abi_state,
-                options,
-                instance,
-                subtask,
-                future,
-                return_area_ptr,
-                results,
-            ),
+            LowerKind::Async => {
+                start_host_call(
+                    &mut store_ctx,
+                    signature,
+                    declared,
+                    abi_state,
+                    options,
+                    instance,
+                    subtask,
+                    future,
+                    return_area_ptr,
+                    &mut results,
+                )?;
+                Ok(BlockStep::Ready(results))
+            }
             LowerKind::Sync => block_on_host_call(
                 &mut store_ctx,
-                signature.ty(),
+                signature,
                 declared,
                 abi_state,
                 tables,
@@ -985,24 +1017,27 @@ fn start_host_call<T: 'static>(
 /// Block on a call whose host side answered with a future: a
 /// concurrent registration reached through a synchronous lower.
 ///
-/// The guest expects the result when the call returns, so the store
-/// blocks the guest thread on the future where it stands. The store
-/// parks the future among its host tasks and blocks through the
-/// suspend seam until a poll of it resolves the call, so a future
-/// that resolves after a few polls resolves inside the block; a
-/// future that stays pending fails the call with the cause the seam
-/// selects, and the failure travels out to the guest's call.
+/// The guest expects the result when the call returns, so the guest
+/// thread waits on the future where it stands. The store polls the
+/// future once. A future that is ready lowers its result there and
+/// then, and the call is done. A future that is not is parked among
+/// the store's host tasks, and the call waits until a poll of it
+/// resolves the call's subtask: through the suspend seam's nested
+/// turn on the real stack, or, under a provider, suspended in the
+/// switch module's shim until a turn resumes it. A future that stays
+/// pending fails the call with the cause the seam selects, and the
+/// failure travels out to the guest's call.
 ///
-/// The whole of the call is therefore over by the time the block
-/// returns: the subtask has resolved, which gave back the handles the
-/// guest lent for it, and the lowering has carried what the body
-/// produced back to this frame. What is left is the crossing of the
-/// result, which runs exactly where a synchronous registration's
+/// The whole of the call is therefore over by the time the wait ends:
+/// the subtask has resolved, which gave back the handles the guest
+/// lent for it, and the lowering has carried what the body produced
+/// into a slot the finish part reads. What is left is the crossing of
+/// the result, which runs exactly where a synchronous registration's
 /// crossing runs.
 #[allow(clippy::too_many_arguments)]
 fn block_on_host_call<T: 'static>(
     store_ctx: &mut wasm_runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
-    signature: &FunctionType,
+    signature: &Arc<Signature>,
     declared: &CanonOptions,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     tables: &Arc<Mutex<HandleTables>>,
@@ -1011,12 +1046,15 @@ fn block_on_host_call<T: 'static>(
     subtask: SubtaskId,
     future: HostFuncFuture,
     return_area_ptr: Option<usize>,
-    results: &mut [RuntimeVal],
-) -> Result<()> {
-    let caller_table = caller_handle_table(abi_state, declared.instance)?;
-    // The call resolves in this frame, so its lowering has nothing to
-    // carry but the values themselves: the options, the instance and
-    // the return area are all still here to cross with.
+    mut results: Vec<RuntimeVal>,
+) -> Result<BlockStep<T>> {
+    // The caller's handle table is looked up for its check alone: a
+    // synchronous lower gives the guest no entry to wait on.
+    caller_handle_table(abi_state, declared.instance)?;
+    // The call resolves before the lower returns, so its lowering has
+    // nothing to carry but the values themselves: the options, the
+    // instance and the return area are all still at hand to cross
+    // with.
     let produced: Arc<Mutex<Option<Vec<Val>>>> = Arc::new(Mutex::new(None));
     let slot = produced.clone();
     let lowering = move |_store: &mut StoreContext<'_, T>, outcome: Result<Vec<Val>>| {
@@ -1025,18 +1063,63 @@ fn block_on_host_call<T: 'static>(
     };
 
     let task = HostTask::from_future(subtask, lowering, future);
-    {
-        let mut store = StoreContext::new(store_ctx.as_context_mut());
-        // The status a synchronous lower comes back with is always
-        // the returned state, since the call is over: what the guest
-        // is told is the result itself, written below.
-        store
-            .internal()
-            .start_host_task(task, caller_table, LowerKind::Sync)?;
-    }
+    let parked = StoreContext::new(store_ctx.as_context_mut())
+        .internal()
+        .begin_blocking_host_task(task)?;
+    let Some(subtask) = parked else {
+        write_produced(
+            store_ctx,
+            signature.ty(),
+            tables,
+            options,
+            instance,
+            &produced,
+            return_area_ptr,
+            &mut results,
+        )?;
+        return Ok(BlockStep::Ready(results));
+    };
 
+    let (signature, tables) = (Arc::clone(signature), Arc::clone(tables));
+    Ok(BlockStep::wait(
+        Readiness::Subtask { subtask },
+        move |store: &mut StoreContext<'_, T>, waited| {
+            store
+                .internal()
+                .finish_blocking_host_task(subtask, waited)
+                .map_err(invocation_failed)?;
+            write_produced(
+                store.internal().runtime_mut(),
+                signature.ty(),
+                &tables,
+                options,
+                instance,
+                &produced,
+                return_area_ptr,
+                &mut results,
+            )
+            .map_err(invocation_failed)?;
+            Ok(results)
+        },
+    ))
+}
+
+/// Cross what the host side of a blocked call produced into the
+/// guest, against the scope the call's subtask uncovered as it left
+/// the stack.
+#[allow(clippy::too_many_arguments)]
+fn write_produced<T: 'static>(
+    store_ctx: &mut wasm_runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
+    signature: &FunctionType,
+    tables: &Arc<Mutex<HandleTables>>,
+    options: BoundaryOptions,
+    instance: BoundaryInstance,
+    produced: &Arc<Mutex<Option<Vec<Val>>>>,
+    return_area_ptr: Option<usize>,
+    results: &mut [RuntimeVal],
+) -> Result<()> {
     let caller = lock_tables(tables)?.tasks.current_scope();
-    let host_results = lock_produced(&produced)?.take().ok_or_else(|| {
+    let host_results = lock_produced(produced)?.take().ok_or_else(|| {
         Error::internal("a synchronous lower's block returned without the call's result")
     })?;
     write_host_result(

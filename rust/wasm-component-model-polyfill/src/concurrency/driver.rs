@@ -136,9 +136,22 @@ where
                     if let Some(done) = (this.condition)(&mut this.store, waker) {
                         return Poll::Ready(done);
                     }
-                    return Poll::Ready(Err(Error::Scheduler(
-                        this.store.internal().idle_cause(this.task),
-                    )));
+                    let cause = this.store.internal().idle_cause(this.task);
+                    // A thread suspended in the provider can never
+                    // resume in an idle store, so it traps with the
+                    // cause, and its failure reaches the call it
+                    // belongs to as the same trap would with no
+                    // provider.
+                    match this.store.internal().fail_parked_threads(this.task) {
+                        Ok(true) => {
+                            if let Some(done) = (this.condition)(&mut this.store, waker) {
+                                return Poll::Ready(done);
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(error) => return Poll::Ready(Err(error)),
+                    }
+                    return Poll::Ready(Err(Error::Scheduler(cause)));
                 }
             }
         }

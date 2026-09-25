@@ -27,7 +27,7 @@ use core::task::{Context, Poll};
 use std::sync::{Arc, Mutex};
 
 use wasm_component_model_polyfill::{
-    Accessor, Component, Engine, HostCall, Linker, Result, Store, Val,
+    Accessor, Component, Engine, HostCall, Linker, Result, Store, SuspendProviderKind, Val,
 };
 use wcmp_macros::component;
 
@@ -265,8 +265,16 @@ async fn two_callers() -> Outcome {
 /// What the two calls answer: the second call's `sync-start-call`
 /// opens a nested turn of its own, which completes its callee's host
 /// call, and both calls return.
+///
+/// Under a suspend provider neither call opens a nested turn. Each
+/// caller's thread runs on a stack of its own and suspends in its
+/// `sync-start-call` until its callee returns, so the second call
+/// starts while the first is suspended, and each caller logs its
+/// second entry once its own callee has answered.
 #[wcmp_macros::test]
 async fn it_runs_two_callers_that_synchronously_lower_one_async_export() {
+    let provider =
+        Engine::new().expect("engine").suspend_provider() == SuspendProviderKind::StackSwitching;
     let (first, second, log) = two_callers().await;
 
     assert_eq!(
@@ -280,9 +288,18 @@ async fn it_runs_two_callers_that_synchronously_lower_one_async_export() {
         "both backends call `sync-start-call` while a call of it is \
          still on the stack, so the second caller's lower returned as well"
     );
-    assert_eq!(
-        log,
-        vec![1, 10, 11, 2],
-        "the second call started and returned inside the first call's block"
-    );
+    if provider {
+        assert_eq!(
+            log,
+            vec![1, 10, 2, 11],
+            "the second call started while the first was suspended, and each \
+             returned once its callee answered"
+        );
+    } else {
+        assert_eq!(
+            log,
+            vec![1, 10, 11, 2],
+            "the second call started and returned inside the first call's block"
+        );
+    }
 }

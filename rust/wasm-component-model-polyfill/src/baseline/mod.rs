@@ -22,6 +22,7 @@ mod instantiation;
 mod jspi_switch_module;
 mod nested_start;
 mod prepared_call;
+mod provider_threads;
 mod realloc_task;
 mod resources;
 mod run_concurrent;

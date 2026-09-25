@@ -145,9 +145,7 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
-use wasm_runtime_layer::{
-    AsContextMut, Func as RuntimeFunc, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
-};
+use wasm_runtime_layer::{AsContextMut, StoreContextMut as RuntimeContextMut, Val as RuntimeVal};
 
 use crate::abi::context::BoundaryContext;
 use crate::abi::instance::BoundaryInstance;
@@ -156,7 +154,8 @@ use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::{lift_list, lower};
 use crate::backend::Backend;
 use crate::concurrency::{
-    CopyBuffer, CopyState, EndId, EndKind, InstanceId, Pairing, Readiness, SuspendSeam, WaitableId,
+    BlockStep, BlockingBuiltin, CopyBuffer, CopyState, EndId, EndKind, InstanceId, Pairing,
+    Readiness, WaitableId,
 };
 use crate::error::{AbiPosition, CopyCause, Error, TaskCause, WaitableCause};
 use crate::executor::intrinsics::core_func_type;
@@ -198,7 +197,7 @@ pub fn build_copy<T: 'static>(
     copies_bytes: bool,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
+) -> BlockingBuiltin<T> {
     let tables = store.internal().tables_handle();
     let builtin = Builtin {
         kind,
@@ -208,15 +207,9 @@ pub fn build_copy<T: 'static>(
         abi_state,
         tables,
     };
-    RuntimeFunc::new(
-        store.internal().runtime_mut(),
-        core_func_type(signature),
-        move |store_ctx, args, results| {
-            let word = builtin.copy(store_ctx, args)?;
-            results[0] = RuntimeVal::I32(word as i32);
-            Ok(())
-        },
-    )
+    BlockingBuiltin::new(core_func_type(signature), move |store, args| {
+        builtin.copy(store, args)
+    })
 }
 
 /// Build the cancel built-in on an end of `kind` for `instance`,
@@ -233,15 +226,14 @@ pub fn build_cancel_copy<T: 'static>(
     payload: Option<ValueType>,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
+) -> BlockingBuiltin<T> {
     let tables = store.internal().tables_handle();
-    RuntimeFunc::new(
-        store.internal().runtime_mut(),
+    BlockingBuiltin::new(
         core_func_type(signature),
-        move |mut store_ctx, args, results| {
+        move |store: &mut StoreContext<'_, T>, args: &[RuntimeVal]| {
             let index = arg_u32(args, 0)?;
             let (id, table) = calling_instance(&abi_state, instance)?;
-            trap_if_cannot_leave(&abi_state, id, &mut store_ctx)?;
+            trap_if_cannot_leave(&abi_state, id, store.internal().runtime_mut())?;
             let (waitable, host_end) = {
                 let mut guard = lock_tables(&tables)?;
                 let end = copying_end(&guard, kind, &payload, async_, table, index)?;
@@ -252,7 +244,7 @@ pub fn build_cancel_copy<T: 'static>(
             // when it answers a poll asked to finish: wake the host
             // task that polls it, as Wasmtime wakes the cancel waker.
             if let Some(host_end) = host_end {
-                let waker = StoreContext::new(store_ctx.as_context_mut())
+                let waker = store
                     .internal()
                     .scheduler_mut()
                     .take_host_end_waker(host_end);
@@ -260,9 +252,7 @@ pub fn build_cancel_copy<T: 'static>(
                     waker.wake();
                 }
             }
-            let word = finish(&mut store_ctx, &tables, waitable, async_)?;
-            results[0] = RuntimeVal::I32(word as i32);
-            Ok(())
+            settle(&tables, waitable, async_)
         },
     )
 }
@@ -305,39 +295,45 @@ fn copying_end(
     Ok(end)
 }
 
-/// The word a copy or a cancel on `waitable` returns once the store's
+/// What a copy or a cancel on `waitable` comes to once the store's
 /// records have done their part. An end that holds the event of its
-/// copy gives it up, and the word is the packed result it carries.
-/// Otherwise an `async` built-in returns the blocked sentinel and
-/// leaves the event to come to the waitable set the end joins or to
-/// a later cancel, and any other blocks the thread through the
-/// suspend seam until the end holds an event, under the rules the
-/// seam states for every blocking built-in, and then takes it.
-fn finish<T: 'static>(
-    store_ctx: &mut RuntimeContextMut<'_, StoreData<T>, Backend>,
+/// copy gives it up, and the built-in is done with the packed result
+/// it carries. Otherwise an `async` built-in is done with the blocked
+/// sentinel and leaves the event to come to the waitable set the end
+/// joins or to a later cancel, and any other waits until the end
+/// holds an event, under the rules the suspend seam states for every
+/// blocking built-in, and then takes it.
+fn settle<T: 'static>(
     tables: &Arc<Mutex<HandleTables>>,
     waitable: WaitableId,
     async_: bool,
-) -> anyhow::Result<u32> {
+) -> anyhow::Result<BlockStep<T>> {
     {
         let mut guard = lock_tables(tables)?;
         if guard.tasks.has_pending_event(waitable).map_err(trap)? {
-            return take_result(&mut guard, waitable);
+            return Ok(BlockStep::Ready(word(take_result(&mut guard, waitable)?)));
         }
         if async_ {
-            return Ok(BLOCKED);
+            return Ok(BlockStep::Ready(word(BLOCKED)));
         }
         guard.tasks.begin_synchronous_wait(waitable).map_err(trap)?;
     }
-    let suspended = {
-        let mut store = StoreContext::new(store_ctx.as_context_mut());
-        SuspendSeam::wait_until(&mut store, Readiness::Waitable { waitable })
-    };
-    let mut guard = lock_tables(tables)?;
-    let ended = guard.tasks.end_synchronous_wait(waitable);
-    suspended.map_err(trap)?;
-    ended.map_err(trap)?;
-    take_result(&mut guard, waitable)
+    let tables = tables.clone();
+    Ok(BlockStep::wait(
+        Readiness::Waitable { waitable },
+        move |_store: &mut StoreContext<'_, T>, waited| {
+            let mut guard = lock_tables(&tables)?;
+            let ended = guard.tasks.end_synchronous_wait(waitable);
+            waited.map_err(trap)?;
+            ended.map_err(trap)?;
+            Ok(word(take_result(&mut guard, waitable)?))
+        },
+    ))
+}
+
+/// The one result of a copy or a cancel: the word the guest receives.
+fn word(value: u32) -> Vec<RuntimeVal> {
+    vec![RuntimeVal::I32(value as i32)]
 }
 
 /// What one declaration of a copy built-in carries into every call
@@ -364,9 +360,9 @@ impl Builtin {
     /// and the word the guest receives.
     fn copy<T: 'static>(
         &self,
-        mut store_ctx: RuntimeContextMut<'_, StoreData<T>, Backend>,
+        store: &mut StoreContext<'_, T>,
         args: &[RuntimeVal],
-    ) -> anyhow::Result<u32> {
+    ) -> anyhow::Result<BlockStep<T>> {
         let index = arg_u32(args, 0)?;
         let pointer = arg_u32(args, 1)?;
         // A future carries one value, so its built-ins take no count.
@@ -376,9 +372,9 @@ impl Builtin {
             arg_u32(args, 2)?
         };
         let (id, table) = calling_instance(&self.abi_state, self.options.instance)?;
-        trap_if_cannot_leave(&self.abi_state, id, &mut store_ctx)?;
+        trap_if_cannot_leave(&self.abi_state, id, store.internal().runtime_mut())?;
         let end = self.idle_end(table, index, count)?;
-        let buffer = self.guest_buffer(&mut store_ctx, id, pointer, count)?;
+        let buffer = self.guest_buffer(store.internal().runtime_mut(), id, pointer, count)?;
 
         let pairing = lock_tables(&self.tables)?
             .tasks
@@ -391,7 +387,7 @@ impl Builtin {
         } = pairing
         {
             move_values(
-                &mut store_ctx,
+                store.internal().runtime_mut(),
                 &self.tables,
                 writer,
                 reader,
@@ -415,19 +411,18 @@ impl Builtin {
             }
         };
         if let Some((host, caller_task)) = host_copy {
-            let mut store = StoreContext::new(store_ctx.as_context_mut());
             match self.kind {
                 EndKind::StreamReadable | EndKind::FutureReadable => {
-                    serve_host_read(&mut store, host, caller_task)
+                    serve_host_read(store, host, caller_task)
                 }
                 EndKind::StreamWritable | EndKind::FutureWritable => {
-                    serve_host_write(&mut store, host, caller_task, true)
+                    serve_host_write(store, host, caller_task, true)
                 }
             }
             .map_err(trap)?;
         }
 
-        finish(&mut store_ctx, &self.tables, waitable, self.options.async_)
+        settle(&self.tables, waitable, self.options.async_)
     }
 
     /// The end the entry at `index` of `table` names, when a copy of

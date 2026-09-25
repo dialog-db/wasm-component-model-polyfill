@@ -30,7 +30,7 @@
 #![cfg(test)]
 
 use crate::store::StoreInternalExt;
-use crate::{Component, Engine, EngineConfig, Instance, Linker, Store};
+use crate::{Component, Engine, EngineConfig, Instance, Linker, Store, SuspendProviderKind};
 use wcmp_macros::component;
 
 /// A callee that reads the future it is handed synchronously, which
@@ -142,15 +142,25 @@ const READS_WHAT_ONLY_THE_CALLER_WRITES: &[u8] = component!(
 );
 
 const STACK_SWITCH: &str =
-    "blocking here requires a stack switch, but the target has no suspend provider";
+    "blocking here requires a stack switch, but this thread cannot switch its stack";
 
 /// Instantiate `bytes` into a store of its own, with no imports. The
 /// engine accepts the built-ins the Component Model gates behind its
 /// "more async built-ins" feature, of which a synchronous
-/// `future.read` is one.
+/// `future.read` is one. The cause of a failed block is the
+/// fallback's, so the engine turns the suspend provider off: under a
+/// provider the callee runs on a stack of its own and suspends, and
+/// the caller below it goes on.
 async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
+    instantiate_with(bytes, false).await
+}
+
+/// Instantiate `bytes` as [`instantiate`] does, with the suspend
+/// provider allowed or turned off.
+async fn instantiate_with(bytes: &[u8], provider: bool) -> (Store<()>, Instance) {
     let mut config = EngineConfig::new();
     config.wasm_component_model_more_async_builtins(true);
+    config.suspend_provider(provider);
     let engine = Engine::with_config(&config).expect("engine");
     let component = Component::new(&engine, bytes)
         .await
@@ -268,4 +278,43 @@ async fn it_fails_a_callee_that_returned_to_a_sync_lower_and_waits_on_its_caller
         0,
         "the nested-start mark left the stack with the failure"
     );
+}
+
+/// Whether the native engine runs guest threads through a provider
+/// on this target.
+fn has_provider() -> bool {
+    Engine::new().expect("engine").suspend_provider() == SuspendProviderKind::StackSwitching
+}
+
+#[wcmp_macros::test]
+async fn it_returns_from_callees_that_wait_on_their_caller_under_the_provider() {
+    // Under a provider each callee runs on a stack of its own, so its
+    // read suspends it and the start returns to the lower. After the
+    // asynchronous lower, and after the synchronous lower of the
+    // callee that returned first, the caller's own code goes on and
+    // writes the future, and the callee resumes and reads it. Only
+    // the synchronous lower of the callee that has not returned waits
+    // on a callee that waits on it, which is a deadlock under a
+    // provider too.
+    if !has_provider() {
+        return;
+    }
+    for name in ["run-async", "run-sync-returned"] {
+        let (mut store, instance) = instantiate_with(READS_WHAT_ONLY_THE_CALLER_WRITES, true).await;
+        let values = instance
+            .get_func(name)
+            .expect("the caller's export")
+            .call(&mut store, &[])
+            .await
+            .unwrap_or_else(|error| panic!("`{name}` returns under a provider: {error:?}"));
+        assert_eq!(values.as_ref(), [crate::Val::U32(7)], "`{name}`");
+        assert_eq!(scope_depth(&store), 0, "`{name}` left no scope behind");
+    }
+    let (mut store, instance) = instantiate_with(READS_WHAT_ONLY_THE_CALLER_WRITES, true).await;
+    let message = call_trap(&mut store, &instance, "run-sync").await;
+    assert!(
+        message.contains("deadlock detected: event loop cannot make further progress"),
+        "expected the deadlock cause, got {message}"
+    );
+    assert_eq!(scope_depth(&store), 0);
 }

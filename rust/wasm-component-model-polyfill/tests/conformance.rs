@@ -16,8 +16,10 @@
 //! differently and applies on `wasm32-unknown-unknown`. The
 //! no-provider overlay, `expected-failures.no-provider.txt`, holds
 //! what fails beyond the shared list in a nested turn, and applies
-//! whenever the engine's provider query answers none, on either
-//! target. Every line of it carries the stack-switch reason, or the
+//! whenever the store runs no guest thread through a provider, on
+//! either target: the engine's provider query answers none, or the
+//! JSPI provider, which the scheduler does not run threads through
+//! yet. Every line of it carries the stack-switch reason, or the
 //! run fails. Each file runs twice, with the provider allowed and
 //! with it turned off through `EngineConfig`, and the nextest profiles
 //! in `.config/nextest.toml` split the two into their own lanes.
@@ -81,14 +83,22 @@ const EXPECTED_FAILURES: &str = include_str!("corpus/expected-failures.txt");
 const EXPECTED_FAILURES_WEB: &str = include_str!("corpus/expected-failures.web.txt");
 
 /// The overlay of directives that fail only without a suspend
-/// provider, applied on top of the shared list whenever the engine
-/// answers that it has none, on either target: a lane that turns the
-/// provider off, a native build on a platform without the
-/// stack-switching proposal, and a browser without JSPI. A nested turn
+/// provider, applied on top of the shared list whenever the store runs
+/// no guest thread through a provider, on either target: a lane that
+/// turns the provider off, a native build on a platform without the
+/// stack-switching proposal, and a browser, whose JSPI provider the
+/// scheduler does not run threads through yet. A nested turn
 /// is one code path on both targets, so one overlay serves both. Every
 /// line carries the stack-switch reason.
 const EXPECTED_FAILURES_NO_PROVIDER: &str =
     include_str!("corpus/expected-failures.no-provider.txt");
+
+/// The directives of the shared list that pass when no provider runs
+/// the store's threads, and fail only under one. The harness drops
+/// them from the expectations of such a run. Each names a directive
+/// the shared list names. The list is written by hand: `tests
+/// regenerate` neither reads nor writes it.
+const EXPECTED_PASSES_NO_PROVIDER: &str = include_str!("corpus/expected-passes.no-provider.txt");
 
 /// The expected-failure lists, parsed.
 struct Lists {
@@ -98,6 +108,9 @@ struct Lists {
     web: Vec<Expectation>,
     /// What fails beyond `shared` without a provider.
     no_provider: Vec<Expectation>,
+    /// The directives of `shared` that pass without a provider, by
+    /// file and line.
+    passes_without_provider: Vec<(String, usize)>,
 }
 
 impl Lists {
@@ -109,7 +122,44 @@ impl Lists {
             EXPECTED_FAILURES_WEB,
             EXPECTED_FAILURES_NO_PROVIDER,
         )
+        .and_then(|lists| lists.with_passes(EXPECTED_PASSES_NO_PROVIDER))
         .unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    /// Add the directives of the shared list that pass without a
+    /// provider, one `<path>:<line> <reason>` per line. A line that
+    /// names no directive of the shared list is refused, so the list
+    /// cannot outlive the failure it excuses.
+    fn with_passes(mut self, text: &str) -> Result<Self, String> {
+        for (index, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let number = index + 1;
+            let location = line.split_whitespace().next().unwrap_or_default();
+            let parsed = location
+                .rsplit_once(':')
+                .and_then(|(file, directive)| Some((file.to_owned(), directive.parse().ok()?)));
+            let Some((file, directive)) = parsed else {
+                return Err(format!(
+                    "expected-passes.no-provider.txt:{number}: `{line}` does not start with \
+                     `<path>:<line>`"
+                ));
+            };
+            if !self
+                .shared
+                .iter()
+                .any(|expectation| expectation.file == file && expectation.line == directive)
+            {
+                return Err(format!(
+                    "expected-passes.no-provider.txt:{number}: `{file}:{directive}` is not in \
+                     expected-failures.txt: the list excuses only a failure the shared list names"
+                ));
+            }
+            self.passes_without_provider.push((file, directive));
+        }
+        Ok(self)
     }
 
     /// Parse the three lists. Every line of the overlay must carry the
@@ -136,23 +186,44 @@ impl Lists {
             shared,
             web,
             no_provider,
+            passes_without_provider: Vec::new(),
         })
     }
 
     /// The expectations a run on this target judges a file by, for an
     /// engine whose provider query answered `provider`: the shared
-    /// list, the web delta in a browser, and the overlay when the
-    /// engine has no provider.
+    /// list, the web delta in a browser, and, when the store runs no
+    /// guest thread through a provider, the overlay in place of the
+    /// shared directives that pass without one.
     fn applying(&self, provider: SuspendProviderKind) -> Vec<Expectation> {
         let mut all = self.shared.clone();
         if cfg!(target_arch = "wasm32") {
             all.extend(self.web.iter().cloned());
         }
-        if provider == SuspendProviderKind::None {
+        if !runs_threads_through(provider) {
+            all.retain(|expectation| {
+                !self
+                    .passes_without_provider
+                    .iter()
+                    .any(|(file, line)| *file == expectation.file && *line == expectation.line)
+            });
             all.extend(self.no_provider.iter().cloned());
         }
         all
     }
+}
+
+/// Whether a store of an engine that answered `provider` runs its
+/// guest threads through that provider, so that a block suspends
+/// rather than waiting in a nested turn.
+///
+/// The stack-switching provider does. The JSPI provider is selected in
+/// a browser that ships JSPI, but the scheduler does not run guest
+/// threads through it yet, so a store there serves every block with
+/// the nested turn, as a store with no provider does, and the overlay
+/// applies.
+fn runs_threads_through(provider: SuspendProviderKind) -> bool {
+    provider == SuspendProviderKind::StackSwitching
 }
 
 /// The reason every line of the overlay carries: the text of the
@@ -165,17 +236,39 @@ fn stack_switch_reason() -> String {
 /// The 4-byte version word after `\0asm` in a core module.
 const CORE_MODULE_VERSION: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
 
-/// The host state a `.wast` file runs against: one engine, one
-/// store, the components defined so far, and the instances created
-/// so far.
+/// The host state a `.wast` file runs against: one engine, the
+/// components defined so far, and the instances created so far, each
+/// in a store of its own.
+///
+/// Every component instantiation gets a fresh store, as Wasmtime's wast
+/// runner gives one (`instantiate_component` in its `crates/wast`),
+/// and the instance lives in that store alone. What a later directive
+/// shares with an earlier one is what that runner shares: the engine,
+/// the linker with the spectest items and the core modules a named
+/// component exports, and the component definitions. A task, a thread,
+/// or a callback an earlier call left behind stays in the earlier
+/// instance's store, so it never runs during a later directive's call,
+/// as it never does under Wasmtime, where a trap leaves a store that
+/// can only be dropped.
+///
+/// A store lives as long as its instance can still be reached: while
+/// the instance is current, which is the instance an unqualified
+/// `invoke` targets, or bound to a name. Wasmtime's runner keeps only
+/// the current instance's store, and drops it when the next
+/// instantiation replaces it. This harness also invokes a named
+/// instance, so it keeps the store of every instance a name still
+/// binds, and drops the others the moment they become unreachable.
+/// Dropping a store drops whatever its guest threads left suspended,
+/// with no destructor run.
 struct Runner {
     engine: Engine,
-    store: Store<()>,
     linker: Linker<()>,
     definitions: HashMap<String, Component>,
     last_definition: Option<Component>,
-    /// Every instance created so far, in creation order.
-    instances: Vec<Instance>,
+    /// Every instance created so far, in creation order, with the
+    /// store it lives in, until the instance can no longer be reached
+    /// and its store is dropped.
+    instances: Vec<Option<(Store<()>, Instance)>>,
     /// Named instances, as indices into `instances`.
     named: HashMap<String, usize>,
     /// Every name whose module exports are reflected into the linker,
@@ -192,12 +285,10 @@ struct Runner {
 impl Runner {
     async fn new(config: &EngineConfig, cm_corpus: bool) -> Self {
         let engine = Engine::with_config(config).expect("engine");
-        let store = Store::new(&engine, ()).expect("store");
         let mut linker = Linker::new(&engine);
         link_spectest(&engine, &mut linker).await;
         Self {
             engine,
-            store,
             linker,
             definitions: HashMap::new(),
             last_definition: None,
@@ -256,7 +347,7 @@ impl Runner {
                 // A directive that fails leaves no current instance, so
                 // a later `invoke` reports the cascade rather than
                 // running against whatever was current before.
-                self.current = None;
+                self.make_current(None);
                 let name = quote.name().map(|id| id.name().to_owned());
                 // A directive that fails leaves neither a named
                 // instance nor a linker registration under its name,
@@ -272,9 +363,9 @@ impl Runner {
                 let index = self.instantiate(&component).await?;
                 if let Some(name) = name {
                     self.register_named(&name, &component, index);
-                    self.named.insert(name, index);
+                    self.bind(name, index);
                 }
-                self.current = Some(index);
+                self.make_current(Some(index));
                 Ok(())
             }
             WastDirective::ModuleDefinition(mut quote) => {
@@ -298,7 +389,7 @@ impl Runner {
             WastDirective::ModuleInstance {
                 instance, module, ..
             } => {
-                self.current = None;
+                self.make_current(None);
                 let component = match module {
                     Some(id) => self
                         .definitions
@@ -312,9 +403,9 @@ impl Runner {
                 };
                 let index = self.instantiate(&component).await?;
                 if let Some(id) = instance {
-                    self.named.insert(id.name().to_owned(), index);
+                    self.bind(id.name().to_owned(), index);
                 }
-                self.current = Some(index);
+                self.make_current(Some(index));
                 Ok(())
             }
             WastDirective::Register { .. } => {
@@ -412,7 +503,10 @@ impl Runner {
                     Err(_) => return Ok(()),
                 };
                 match self.instantiate(&component).await {
-                    Ok(_) => Err(format!("expected link failure `{message}`, but it linked")),
+                    Ok(index) => {
+                        self.release(index);
+                        Err(format!("expected link failure `{message}`, but it linked"))
+                    }
                     Err(_) => Ok(()),
                 }
             }
@@ -440,15 +534,56 @@ impl Runner {
             .map_err(|err| format!("component rejected: {}", chain(&err)))
     }
 
-    /// Instantiate `component` and return its index in `instances`.
+    /// Instantiate `component` in a store of its own and return its
+    /// index in `instances`. A store whose instantiation fails is
+    /// dropped with the failure.
     async fn instantiate(&mut self, component: &Component) -> Result<usize, String> {
+        let mut store = Store::new(&self.engine, ()).expect("store");
         let instance = self
             .linker
-            .instantiate(&mut self.store, component)
+            .instantiate(&mut store, component)
             .await
             .map_err(|err| format!("instantiation failed: {}", chain(&err)))?;
-        self.instances.push(instance);
+        self.instances.push(Some((store, instance)));
         Ok(self.instances.len() - 1)
+    }
+
+    /// Make the instance at `index`, or none, the one an unqualified
+    /// `invoke` targets, and drop the store of the instance that was
+    /// current when nothing else reaches it.
+    fn make_current(&mut self, index: Option<usize>) {
+        let previous = core::mem::replace(&mut self.current, index);
+        if let Some(previous) = previous
+            && Some(previous) != index
+        {
+            self.release(previous);
+        }
+    }
+
+    /// Bind `name` to the instance at `index`, and drop the store of
+    /// the instance the name bound before when nothing else reaches
+    /// it.
+    fn bind(&mut self, name: String, index: usize) {
+        if let Some(previous) = self.named.insert(name, index)
+            && previous != index
+        {
+            self.release(previous);
+        }
+    }
+
+    /// Drop the store of the instance at `index` unless it is current,
+    /// a name binds it, or a name reflects its module exports into the
+    /// linker: nothing can reach the instance any more.
+    fn release(&mut self, index: usize) {
+        let reachable = self.current == Some(index)
+            || self.named.values().any(|named| *named == index)
+            || self
+                .reflected
+                .values()
+                .any(|(_, reflected)| *reflected == index);
+        if !reachable && let Some(slot) = self.instances.get_mut(index) {
+            *slot = None;
+        }
     }
 
     /// Undo `register_named` for a name: drop the named instance and
@@ -459,8 +594,12 @@ impl Runner {
     /// nothing costs nothing: the rebuild runs only when the name
     /// being unbound had a registration of its own.
     async fn unbind(&mut self, name: &str) {
-        self.named.remove(name);
-        if self.reflected.remove(name).is_none() {
+        let previous = self.named.remove(name);
+        let reflected = self.reflected.remove(name);
+        if let Some(previous) = previous {
+            self.release(previous);
+        }
+        if reflected.is_none() {
             return;
         }
         let mut linker = Linker::new(&self.engine);
@@ -483,7 +622,9 @@ impl Runner {
     fn register_named(&mut self, name: &str, component: &Component, index: usize) {
         self.reflected
             .insert(name.to_owned(), (component.clone(), index));
-        let instance = &self.instances[index];
+        let Some((_, instance)) = &self.instances[index] else {
+            return;
+        };
         let mut root = self.linker.root();
         let mut registration = root.instance(name);
         for export in component.exports.iter() {
@@ -513,7 +654,8 @@ impl Runner {
             WastExecute::Wat(mut wat) => {
                 let bytes = wat.encode().map_err(|err| format!("encode: {err}"))?;
                 let component = self.component(&bytes).await?;
-                self.instantiate(&component).await?;
+                let index = self.instantiate(&component).await?;
+                self.release(index);
                 Ok((Box::new([]), None))
             }
             WastExecute::Get { .. } => Err("the `get` directive is not supported".into()),
@@ -535,7 +677,9 @@ impl Runner {
                 .current
                 .ok_or_else(|| "no instance to invoke".to_owned())?,
         };
-        let instance = &self.instances[index];
+        let (store, instance) = self.instances[index]
+            .as_mut()
+            .ok_or_else(|| "the instance's store was dropped".to_owned())?;
         let func = instance
             .get_func(name)
             .ok_or_else(|| format!("no function export named `{name}`"))?;
@@ -553,10 +697,7 @@ impl Runner {
                 _ => return Err("core-Wasm argument in a component directive".into()),
             }
         }
-        let results = func
-            .call(&mut self.store, &values)
-            .await
-            .map_err(|err| chain(&err))?;
+        let results = func.call(store, &values).await.map_err(|err| chain(&err))?;
         Ok((results, signature.result))
     }
 }
@@ -1383,15 +1524,46 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    async fn it_applies_the_overlay_exactly_when_the_engine_answers_no_provider() {
+    async fn it_drops_a_shared_directive_that_passes_without_a_provider_only_in_such_a_run() {
+        let lists = Lists::parse(SHARED, "", &overlay(3))
+            .and_then(|lists| lists.with_passes("cm/x.wast:1 passes by another route\n"))
+            .expect("parses");
+        assert_eq!(
+            lines(&lists.applying(SuspendProviderKind::StackSwitching)),
+            [1],
+            "under a provider the shared directive is still expected to fail"
+        );
+        assert_eq!(
+            lines(&lists.applying(SuspendProviderKind::None)),
+            [3],
+            "without one it is expected to pass, and the overlay applies"
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_refuses_a_pass_without_a_provider_the_shared_list_does_not_name() {
+        let err = Lists::parse(SHARED, "", "")
+            .and_then(|lists| lists.with_passes("cm/x.wast:7 not a failure of the shared list\n"))
+            .err()
+            .expect("rejected");
+        assert!(
+            err.starts_with("expected-passes.no-provider.txt:1:"),
+            "{err}"
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_applies_the_overlay_exactly_when_no_provider_runs_the_threads() {
         let lists = Lists::parse(SHARED, "", &overlay(3)).expect("parses");
-        for provider in [
-            SuspendProviderKind::StackSwitching,
-            SuspendProviderKind::Jspi,
-        ] {
-            assert_eq!(lines(&lists.applying(provider)), [1], "{provider:?}");
+        assert_eq!(
+            lines(&lists.applying(SuspendProviderKind::StackSwitching)),
+            [1]
+        );
+        // The JSPI provider does not run guest threads yet, so a store
+        // of an engine that selected it blocks as one with none does.
+        for provider in [SuspendProviderKind::Jspi, SuspendProviderKind::None] {
+            assert_eq!(lines(&lists.applying(provider)), [1, 3], "{provider:?}");
         }
-        assert_eq!(lines(&lists.applying(SuspendProviderKind::None)), [1, 3]);
     }
 
     #[wcmp_macros::test]
@@ -1418,14 +1590,15 @@ mod tests {
         assert_eq!(off.stale().count(), 0);
 
         // Allowed, the overlay applies only if the engine found no
-        // provider, which is what a target without one answers.
+        // provider that runs the store's threads, which is what a
+        // target without one answers.
         let answer = Engine::with_config(&engine_config(PATH, TEXT))
             .expect("engine")
             .suspend_provider();
         let on = report_file(PATH, TEXT, &lists, true).await;
         assert_eq!(
             on.expected.len() == 1,
-            answer == SuspendProviderKind::None,
+            !runs_threads_through(answer),
             "the engine answered {answer:?}"
         );
     }

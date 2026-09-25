@@ -3,12 +3,16 @@
 //! `thread.yield-then-resume`, `thread.suspend-then-promote`, and
 //! `thread.yield-then-promote`.
 //!
-//! Each built-in reaches the suspend seam through a host trampoline,
-//! and a host frame cannot suspend a guest stack, so each runs on the
+//! Most exports here are synchronous, and a task that must not block
+//! never suspends its stack, so each of their built-ins runs on the
 //! nested turn whatever provider the engine selected: a suspension
-//! waits in turns run from inside the built-in, and a switch to a
-//! thread that has never run starts that thread from inside the
-//! built-in, on the real stack above it.
+//! waits in turns run from inside the built-in, and a switch starts
+//! the thread it names from inside the built-in. With no provider
+//! that thread runs on the real stack above the built-in. Under the
+//! stack-switching provider it runs on a stack of its own, and the
+//! outcomes the tests read are the same. The two callback exports
+//! run on a stack of their own under that provider, and the one whose
+//! outcome differs says how.
 //!
 //! The component keeps a log in a core global: each step of an export
 //! and of the threads it starts appends one digit, so the number an
@@ -19,7 +23,9 @@
 
 #![cfg(test)]
 
-use crate::{Component, Engine, EngineConfig, Error, Func, Instance, Linker, Store, Val};
+use crate::{
+    Component, Engine, EngineConfig, Error, Func, Instance, Linker, Store, SuspendProviderKind, Val,
+};
 use wcmp_macros::component;
 
 /// One component instance whose table holds a thread start function
@@ -314,14 +320,25 @@ const NOT_SUSPENDED: &str = "cannot resume thread which is not suspended";
 
 /// The stack-switch cause's message.
 const STACK_SWITCH: &str =
-    "blocking here requires a stack switch, but the target has no suspend provider";
+    "blocking here requires a stack switch, but this thread cannot switch its stack";
+
+/// An engine with the thread built-ins allowed.
+fn engine() -> Engine {
+    let mut config = EngineConfig::new();
+    config.wasm_component_model_threading(true);
+    Engine::with_config(&config).expect("engine")
+}
+
+/// Whether the engine runs guest threads through the stack-switching
+/// provider, which the native engine selects on x86_64 Linux.
+fn has_provider() -> bool {
+    engine().suspend_provider() == SuspendProviderKind::StackSwitching
+}
 
 /// Instantiate `bytes` in a fresh store of an engine with the thread
 /// built-ins allowed.
 async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
-    let mut config = EngineConfig::new();
-    config.wasm_component_model_threading(true);
-    let engine = Engine::with_config(&config).expect("engine");
+    let engine = engine();
     let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");
@@ -507,6 +524,20 @@ async fn it_fails_a_switch_to_a_thread_suspended_below_the_current_frame_with_th
 
 #[wcmp_macros::test]
 async fn it_reads_the_mark_of_a_switch_that_yielded_as_a_frame_below_that_would_go_on() {
+    if has_provider() {
+        // The callback export's thread runs on a stack of its own, so
+        // its yield suspends it in the provider and the started thread
+        // runs on a stack of its own too. That thread suspends in its
+        // wait, the export's thread resumes in a later turn and
+        // returns, and the waiting thread leaves with the task.
+        let (mut store, instance) = instantiate(THREADS).await;
+        let result = func(&instance, "yield-then-block")
+            .call(&mut store, &[])
+            .await
+            .expect("the yielding thread goes on while the started thread waits");
+        assert_eq!(result.as_ref(), [Val::U32(0)]);
+        return;
+    }
     let message = failure_of(THREADS, "yield-then-block").await;
     assert!(
         message.contains(STACK_SWITCH),

@@ -9,6 +9,9 @@
 //! runtime-layer's generic abstractions in later modules and is not
 //! delegated to a backend's component runtime.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use crate::backend::Backend;
 use crate::concurrency::{JspiProbe, SwitchProbe};
 use crate::engine_config::EngineConfig;
@@ -31,6 +34,9 @@ pub struct Engine {
     inner: wasm_runtime_layer::Engine<Backend>,
     config: EngineConfig,
     suspend_provider: SuspendProviderKind,
+    /// The switch modules the stores of this engine instantiate,
+    /// compiled once each, by their bytes.
+    switch_modules: Arc<Mutex<HashMap<Vec<u8>, wasm_runtime_layer::Module>>>,
 }
 
 impl Engine {
@@ -63,6 +69,7 @@ impl Engine {
             inner,
             config: config.clone(),
             suspend_provider,
+            switch_modules: Arc::default(),
         })
     }
 
@@ -94,9 +101,14 @@ impl Engine {
     /// [`SuspendProviderKind::None`] on every other native platform
     /// and in an older browser.
     ///
-    /// The scheduler does not run guest threads through the selected
-    /// provider yet: today a blocking built-in runs the waiting work in
-    /// a nested turn whatever the answer is.
+    /// Each store of an engine that selected the stack-switching
+    /// provider instantiates it as it is constructed, and runs its
+    /// guest threads through it: each thread entry starts on a stack of
+    /// its own, and a blocking built-in suspends that stack until the
+    /// scheduler resumes it. The scheduler does not run guest threads
+    /// through the JSPI provider yet, so a store of an engine that
+    /// selected it serves every block with the nested turn, as a store
+    /// of an engine with no provider does.
     ///
     /// Wasmtime has no counterpart, because its fibers always exist.
     ///
@@ -109,6 +121,10 @@ impl Engine {
 impl EngineInternal for Engine {
     fn inner(&self) -> &wasm_runtime_layer::Engine<Backend> {
         &self.inner
+    }
+
+    fn switch_modules(&self) -> &Arc<Mutex<HashMap<Vec<u8>, wasm_runtime_layer::Module>>> {
+        &self.switch_modules
     }
 }
 

@@ -18,13 +18,16 @@
 use core::task::Waker;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use wasm_runtime_layer::StoreContextMut as RuntimeContextMut;
+use wasm_runtime_layer::{
+    Func as RuntimeFunc, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
+};
 
 use crate::abi::signature::Signature;
 use crate::backend::Backend;
 use crate::concurrency::{
-    Accessor, CallStatus, EventSlot, FailureChannel, HostTask, InstanceId, Item, LowerKind,
-    Outcome, ResultChannel, Scheduler, SubtaskId, TaskId,
+    Accessor, CallStatus, EntryFinish, EventSlot, FailureChannel, HostTask, InstanceId, Item,
+    LowerKind, Outcome, ResultChannel, Scheduler, StackSwitchingProvider, SubtaskId, TaskId,
+    ThreadId,
 };
 use crate::error::{Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
@@ -242,9 +245,69 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
             .start_switched_export_thread(task, instance, async_function, needs_exclusive)
     }
 
+    /// Poll the body of a synchronously lowered host call once, and
+    /// park it when it is still running.
+    pub fn begin_blocking_host_task(self, task: HostTask<T>) -> Result<Option<SubtaskId>> {
+        self.context.begin_blocking_host_task(task)
+    }
+
+    /// Finish a synchronously lowered host call whose body was
+    /// parked.
+    pub fn finish_blocking_host_task(self, subtask: SubtaskId, waited: Result<()>) -> Result<()> {
+        self.context.finish_blocking_host_task(subtask, waited)
+    }
+
     /// Run whatever the switch slot holds.
     pub fn run_switch_slot(self) -> Result<()> {
         self.context.run_switch_slot()
+    }
+
+    /// How deep the stack of current scopes is.
+    pub fn scope_depth(self) -> Result<usize> {
+        self.context.scope_depth()
+    }
+
+    /// The implicit thread of `task`.
+    pub fn implicit_thread(self, task: TaskId) -> Result<ThreadId> {
+        self.context.implicit_thread(task)
+    }
+
+    /// Fail every thread suspended in the provider with the cause an
+    /// idle store gives for `task`.
+    pub fn fail_parked_threads(self, task: Option<TaskId>) -> Result<bool> {
+        self.context.fail_parked_threads(task)
+    }
+
+    /// The provider the store keeps, when the engine selected one.
+    pub fn provider(self) -> Option<StackSwitchingProvider> {
+        self.context.provider()
+    }
+
+    /// Run a thread entry, through the provider when the store has
+    /// one, and hand what it produced to `finish`.
+    pub fn run_thread_entry(
+        self,
+        thread: ThreadId,
+        base: usize,
+        entry: &RuntimeFunc,
+        args: &[RuntimeVal],
+        results: Vec<RuntimeVal>,
+        finish: impl EntryFinish<T>,
+    ) -> Result<()> {
+        self.context
+            .run_thread_entry(thread, base, entry, args, results, finish)
+    }
+
+    /// Start an explicit thread `thread.resume-later` made ready
+    /// before it ever ran.
+    pub fn start_ready_thread(self, thread: ThreadId) -> Result<()> {
+        self.context.start_ready_thread(thread)
+    }
+
+    /// Run a thread a switch named from a built-in on the real stack,
+    /// through the provider.
+    pub fn run_switched_thread(self, thread: ThreadId) -> Result<()> {
+        self.context.run_switched_thread(thread)
     }
 
     /// Attach a result channel to `task`.

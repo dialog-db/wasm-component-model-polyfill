@@ -1,6 +1,7 @@
 //! What a suspended guest thread is waiting for.
 
 use super::subtask_id::SubtaskId;
+use super::thread_id::ThreadId;
 use super::waitable_id::WaitableId;
 use super::waitable_set_id::WaitableSetId;
 
@@ -70,4 +71,19 @@ pub enum Readiness {
     /// slot, for its turn. That wait is held by the queued item, not
     /// by a thread.
     Yielded,
+    /// The thread suspended itself, with `thread.suspend` or a
+    /// built-in that suspends and switches, and waits until a resume
+    /// names it: `thread.resume-later`, or a switch of another
+    /// thread. The condition holds once the thread is no longer
+    /// suspended.
+    ///
+    /// No thread's record holds it. A suspended thread waits on
+    /// nothing, as the reference's `Thread.suspended` states, and
+    /// `thread.resume-later` makes it wait on [`Yielded`](Self::Yielded).
+    /// It is the condition of the built-in the thread suspended in,
+    /// which the built-in's shim asks each time the thread resumes.
+    Resumed {
+        /// The thread that suspended itself.
+        thread: ThreadId,
+    },
 }

@@ -16,12 +16,12 @@
 //!   `canon_lift`.
 //!
 //! A task ends when its implicit thread does. A stackful task can hold
-//! explicit threads beside its implicit one, but none of them is
-//! running when its core function returns: an explicit thread runs
-//! from its start to its end inside one turn, and one whose start
-//! has not run yet is the task's pending work, which leaves with the
-//! task. So the return of a stackful task's core function ends the
-//! task. A task that has not resolved by then fails with the
+//! explicit threads beside its implicit one, and none of them runs
+//! when its core function returns: an explicit thread whose start has
+//! not run yet, and one suspended in the provider, is the task's
+//! pending work, which leaves with the task. So the return of a
+//! stackful task's core function ends the task. A task that has not
+//! resolved by then fails with the
 //! no-result cause, which is Wasmtime's message "async-lifted export
 //! failed to produce a result". The callback loop's exit code ends
 //! a callback task the same way, through the same function.
@@ -31,12 +31,14 @@
 //! opts.callback`. A stackful task passes the entry gate and runs
 //! beside any other task of the instance.
 //!
-//! No suspend provider exists yet, so the implicit thread of a
-//! stackful task starts as a direct call on the real stack. A block
-//! inside it takes the nested turn of the suspend seam. A stackful
-//! export that never blocks therefore behaves the same on every
-//! target, and a block that only a frame below can release fails
-//! with the stack-switch cause.
+//! The implicit thread of a stackful task starts through the store's
+//! suspend provider when there is one, on a stack of its own, and a
+//! block inside it suspends that stack until the block's condition
+//! holds. With no provider it starts as a direct call on the real
+//! stack, and a block inside it takes the nested turn of the suspend
+//! seam, so a block that only a frame below can release fails with
+//! the stack-switch cause. A stackful export that never blocks
+//! behaves the same on every target.
 
 use wasm_runtime_layer::Val as RuntimeVal;
 

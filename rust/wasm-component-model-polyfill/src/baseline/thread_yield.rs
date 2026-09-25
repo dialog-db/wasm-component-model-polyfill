@@ -13,6 +13,11 @@
 //!   With none ready the yield is a no-op, and an item another
 //!   instance queued stays queued.
 //!
+//! The nested turn is what a yield takes where its thread cannot
+//! switch its stack, so these tests turn the suspend provider off.
+//! Under a provider a callback task's yield suspends its thread
+//! instead, and the last test measures that.
+//!
 //! The components here are two component instances behind one
 //! import: a host `log` function both call, which records the order
 //! the guests ran in. Two instances are what the exclusive thread
@@ -45,7 +50,8 @@ use crate::internal::AccessorInternal;
 use crate::internal::FuncInternal;
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
-    Accessor, Component, Engine, Error, Func, HostCall, Instance, Linker, Result, Store, Val,
+    Accessor, Component, Engine, EngineConfig, Error, Func, HostCall, Instance, Linker, Result,
+    Store, SuspendProviderKind, Val,
 };
 use wcmp_macros::component;
 
@@ -215,10 +221,25 @@ const POST_RETURN_CALLS_YIELD: &[u8] = component!(
 /// What the guests logged, in the order they logged it.
 type Log = Arc<Mutex<Vec<u32>>>;
 
+/// An engine with the suspend provider turned off. The tests here
+/// measure the nested turn a yield takes where its thread cannot
+/// switch its stack; under a provider a yield suspends the thread
+/// instead, which the last test here measures.
+fn fallback_engine() -> Engine {
+    let mut config = EngineConfig::new();
+    config.suspend_provider(false);
+    Engine::with_config(&config).expect("engine")
+}
+
 /// Instantiate `binary` in a fresh store with the host `log`
 /// function registered, and hand back the list it appends to.
 async fn instantiate(binary: &[u8]) -> (Store<()>, Instance, Log) {
-    let engine = Engine::new().expect("engine");
+    instantiate_on(fallback_engine(), binary).await
+}
+
+/// Instantiate `binary` as [`instantiate`] does, into a store of
+/// `engine`.
+async fn instantiate_on(engine: Engine, binary: &[u8]) -> (Store<()>, Instance, Log) {
     let component = Component::new(&engine, binary)
         .await
         .expect("component parses");
@@ -245,7 +266,7 @@ async fn instantiate(binary: &[u8]) -> (Store<()>, Instance, Log) {
 
 /// Instantiate `binary` in a fresh store with nothing registered.
 async fn instantiate_bare(binary: &[u8]) -> (Store<()>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = fallback_engine();
     let component = Component::new(&engine, binary)
         .await
         .expect("component parses");
@@ -763,7 +784,7 @@ const REFUSED_AT: u32 = 5;
 /// asked a turn to avoid, and it belongs to the item the nested turn
 /// ran rather than to the yield.
 async fn instantiate_with_a_refusal(binary: &[u8]) -> (Store<()>, Instance, Log) {
-    let engine = Engine::new().expect("engine");
+    let engine = fallback_engine();
     let component = Component::new(&engine, binary)
         .await
         .expect("component parses");
@@ -860,5 +881,48 @@ async fn it_runs_the_callback_of_its_nested_turn_through_a_second_yield() {
         "the queued callback of the same instance ran inside the yield, gave \
          way to nothing, and ran to its end before the yielding export logged \
          its way out"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_suspends_a_callback_tasks_yield_behind_another_tasks_item_under_the_provider() {
+    // Under a provider the yield of the callback task suspends its
+    // thread rather than running a nested turn. The other instance's
+    // queued callback runs in the turn, logs 2, and yields in its turn,
+    // which suspends that thread too. The first yield's resumption is
+    // the older of the two, so the first task logs 3 and returns, and
+    // the call's result is in before the second resumption runs. The
+    // second callback logs 4 in the turn of the driver that comes
+    // next.
+    let engine = Engine::new().expect("engine");
+    if engine.suspend_provider() != SuspendProviderKind::StackSwitching {
+        return;
+    }
+    let (mut store, instance, log) = instantiate_on(engine, TWO_INSTANCES).await;
+    queue_the_other_instance(&mut store, &instance, &log).await;
+
+    let answer = call_u32(&mut store, &instance, "give-way", &[Val::U32(7)]).await;
+
+    assert_eq!(answer, 7, "the callback task returned its own result");
+    assert_eq!(
+        entries(&log),
+        vec![1, 2, 3],
+        "the other task's item ran while the yield was suspended"
+    );
+    assert_eq!(
+        call_u32(&mut store, &instance, "nested-word", &[]).await,
+        0,
+        "the other callback's yield returned zero once it resumed"
+    );
+    assert_eq!(entries(&log), vec![1, 2, 3, 4]);
+    assert_eq!(
+        store
+            .internal()
+            .context()
+            .internal()
+            .scheduler()
+            .nested_turns(),
+        0,
+        "no yield ran a nested turn"
     );
 }

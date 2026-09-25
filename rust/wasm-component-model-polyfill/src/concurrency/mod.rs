@@ -39,31 +39,36 @@
 //! blocking built-in asks it to suspend the current guest thread
 //! until a readiness condition holds. A [`Readiness`] is that
 //! condition as data: the thread's record holds it while the thread
-//! waits, and evaluating it only reads the store. A blocking
-//! built-in reaches the seam through a host trampoline, and a host
-//! frame cannot suspend a guest stack, so the seam runs a nested turn
-//! from inside the guest call. That nested turn is not the nesting
-//! [`SchedulerState`] counts: a host task's body that reaches the
-//! store through its accessor enters a turn of its own and raises
-//! that count, while the seam's fallback deliberately does not,
-//! because a nested turn is not a driver and polls with the waker
-//! the outer turn recorded.
+//! waits, and evaluating it only reads the store. A
+//! [`BlockingBuiltin`] is such a built-in, split into a first part
+//! that answers a [`BlockStep`] and a finish part. Under a provider
+//! it reaches the guest as the switch module's shim, which suspends
+//! a thread that runs on a stack of its own; the scheduler keeps the
+//! thread as a [`ParkedThread`] and resumes it once its condition
+//! holds. Every other block runs a nested turn from inside the guest
+//! call. That nested turn is not the nesting [`SchedulerState`]
+//! counts: a host task's body that reaches the store through its
+//! accessor enters a turn of its own and raises that count, while
+//! the seam's fallback deliberately does not, because a nested turn
+//! is not a driver and polls with the waker the outer turn recorded.
 //!
 //! [`SuspendProvider`] is the contract a mechanism that switches
 //! guest stacks meets, and [`EntryStatus`] is where a thread entry
-//! stopped when the provider handed control back. The switch module,
-//! [`SwitchModule`], is the core module the providers switch stacks
-//! with: shims that suspend in WebAssembly in place of a blocking
-//! built-in's trampoline, and wrappers that hand a thread entry's
-//! results to the host. It takes one form per provider, a
-//! [`SwitchForm`]. [`StackSwitchingProvider`] fills the contract with
-//! the instructions of the WebAssembly stack-switching proposal, over
-//! an instance of the switch module, and [`SwitchProbe`] is what an
-//! engine runs when it is constructed to learn whether it can. In the
-//! browser, `JspiProvider` fills it through JavaScript Promise
-//! Integration, over an instance of the other form, and [`JspiProbe`]
-//! is what an engine runs next to learn whether the browser offers
-//! that.
+//! stopped when the provider handed control back. [`EntryFinish`] is
+//! what the frame that started a thread entry runs once the entry
+//! finishes, which under a provider can be after the thread
+//! suspended and resumed. The switch module is the core module the
+//! providers switch stacks with: shims that suspend in WebAssembly in
+//! place of a blocking built-in's trampoline, and wrappers that hand
+//! a thread entry's results to the host. It takes one form per
+//! provider, a [`SwitchForm`]. [`StackSwitchingProvider`] fills the
+//! contract with the instructions of the WebAssembly stack-switching
+//! proposal, over instances of the switch module the store keeps for
+//! its whole life, and [`SwitchProbe`] is what an engine runs when it
+//! is constructed to learn whether it can. In the browser,
+//! `JspiProvider` fills it through JavaScript Promise Integration,
+//! over an instance of the other form, and [`JspiProbe`] is what an
+//! engine runs next to learn whether the browser offers that.
 //!
 //! A task is the record of one call into an export; a subtask is the
 //! record of one call out through an import; a thread is one guest
@@ -143,6 +148,8 @@
 //! baseline is the case of one task per instance at a time.
 
 mod accessor;
+mod block_step;
+mod blocking_builtin;
 mod call_bridge;
 mod call_status;
 mod caller_kind;
@@ -155,6 +162,7 @@ mod driver;
 mod end_direction;
 mod end_id;
 mod end_kind;
+mod entry_finish;
 mod entry_status;
 mod event;
 mod event_code;
@@ -185,6 +193,8 @@ mod jspi_provider;
 mod lower_kind;
 mod outcome;
 mod pairing;
+mod parked_thread;
+mod pending_block;
 mod poll_scope;
 mod readiness;
 mod record_table;
@@ -228,6 +238,8 @@ mod yield_wake;
 // `TaskTables`, so only the names other modules spell are
 // re-exported here.
 pub use accessor::Accessor;
+pub use block_step::BlockStep;
+pub use blocking_builtin::BlockingBuiltin;
 pub use call_bridge::CallBridge;
 pub use call_status::CallStatus;
 pub use caller_kind::CallerKind;
@@ -237,11 +249,7 @@ pub use destination::Destination;
 pub use driver::Driver;
 pub use end_id::EndId;
 pub use end_kind::EndKind;
-// The provider contract, its status, the switch module and its form,
-// and the two providers are spelled outside this module only by their
-// tests: the scheduler does not run guest threads through a provider
-// yet, and the engine runs only the probes.
-#[cfg(test)]
+pub use entry_finish::EntryFinish;
 pub use entry_status::EntryStatus;
 pub use event::Event;
 // An event code is spelled outside this module only by the tests that
@@ -271,13 +279,14 @@ pub use jspi_provider::JspiProvider;
 pub use lower_kind::LowerKind;
 pub use outcome::Outcome;
 pub use pairing::Pairing;
+pub use parked_thread::ParkedThread;
+pub use pending_block::PendingBlock;
 pub use poll_scope::PollScope;
 pub use readiness::Readiness;
 pub use scheduler::Scheduler;
 pub use scheduler_state::SchedulerState;
 pub use scope::Scope;
 pub use source::Source;
-#[cfg(test)]
 pub use stack_switching_provider::StackSwitchingProvider;
 pub use stream_any::StreamAny;
 pub use stream_consumer::StreamConsumer;
@@ -286,9 +295,10 @@ pub use stream_reader::StreamReader;
 pub use stream_result::StreamResult;
 pub use subtask_id::SubtaskId;
 pub use subtask_state::SubtaskState;
-#[cfg(test)]
 pub use suspend_provider::SuspendProvider;
 pub use suspend_seam::SuspendSeam;
+// The switch module and its form are spelled outside this module only
+// by their tests: each provider builds its modules itself.
 #[cfg(test)]
 pub use switch_form::SwitchForm;
 #[cfg(test)]

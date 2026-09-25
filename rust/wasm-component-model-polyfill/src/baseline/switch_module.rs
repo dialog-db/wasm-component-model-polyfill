@@ -134,23 +134,16 @@ fn setup() -> Scenario {
         },
     );
 
-    let mut module = SwitchModule::new(SwitchForm::StackSwitching);
-    let block = module.shim(i32_to_i32());
-    module.entry(i32_to_i32());
-    let provider = StackSwitchingProvider::instantiate(
-        &mut context,
-        engine.inner(),
-        &module,
-        &[(try_part, finish_part)],
-    )
-    .expect("the engine instantiates the switch module");
+    let provider =
+        StackSwitchingProvider::instantiate(&mut context, engine.inner(), engine.switch_modules())
+            .expect("the engine instantiates the base switch module");
+    let shim = provider
+        .shims(&mut context, &[(i32_to_i32(), try_part, finish_part)])
+        .expect("the engine instantiates the extension with the shim")
+        .remove(0);
 
     let mut imports = Imports::default();
-    imports.define(
-        "switch",
-        "block",
-        RuntimeExtern::Func(provider.shim(block).expect("the shim").clone()),
-    );
+    imports.define("switch", "block", RuntimeExtern::Func(shim));
     let middle = RuntimeInstance::new(
         context.internal().runtime_mut(),
         &RuntimeModule::new(engine.inner(), MIDDLE).expect("the module compiles"),
@@ -331,4 +324,180 @@ fn it_drops_a_store_with_suspended_threads() {
     again.make_ready(1);
     again.make_ready(2);
     assert_eq!(again.start_first(1), "finished with [I32(11)]");
+}
+
+/// Thread entries of three types: one with no parameters and no
+/// results, one with several of each, which calls the blocking
+/// built-in, and one over floats. The second shim, over an `i64` and
+/// an `f32`, answers two results.
+const ENTRY_TYPES: &[u8] = wasm!(
+    r#"
+    (module
+      (import "switch" "block" (func $block (param i32) (result i32)))
+      (import "switch" "pair" (func $pair (param i64 f32) (result i64 f64)))
+      (func (export "none"))
+      (func (export "several") (param i32 i64) (result i32 i64 f64)
+        (i32.add (call $block (local.get 0)) (i32.const 1))
+        (call $pair (local.get 1) (f32.const 0.5)))
+      (func (export "floats") (param f32 f64) (result f32)
+        (f32.add (local.get 0) (f32.demote_f64 (local.get 1)))))
+    "#
+);
+
+#[wcmp_macros::test]
+fn it_encodes_an_extension_with_several_shims_and_entry_types() {
+    // One extension module with two shims and two entry types, one
+    // of which has no results and one several, compiles against the
+    // engine that runs the provider.
+    let engine = Engine::new().expect("engine");
+    let mut module = SwitchModule::new(SwitchForm::StackSwitching);
+    module.shim(i32_to_i32());
+    module.shim(FuncType::new(
+        [RuntimeValType::I64, RuntimeValType::F32],
+        [RuntimeValType::I64, RuntimeValType::F64],
+    ));
+    module.entry(FuncType::new([], []));
+    module.entry(FuncType::new(
+        [RuntimeValType::I32, RuntimeValType::I64],
+        [
+            RuntimeValType::I32,
+            RuntimeValType::I64,
+            RuntimeValType::F64,
+        ],
+    ));
+    RuntimeModule::new(engine.inner(), &module.encode()).expect("the extension compiles");
+    RuntimeModule::new(engine.inner(), &SwitchModule::base()).expect("the base compiles");
+}
+
+#[wcmp_macros::test]
+fn it_runs_entries_with_no_results_and_with_several() {
+    // Each entry type gets an extension of its own the first time a
+    // thread of that type starts, and every one of them runs on the
+    // base module's workers: a finished entry hands its results over
+    // whatever their number and types, and one that suspended hands
+    // them over when it finishes after a resume.
+    let engine = Engine::new().expect("engine");
+    let mut store = Store::new(&engine, ()).expect("store");
+    let mut context = store.internal().context();
+    let ready: Ready = Arc::default();
+
+    let tried = ready.clone();
+    let try_block = RuntimeFunc::new(
+        context.internal().runtime_mut(),
+        i32_to_i32(),
+        move |_store, args, results| {
+            let [RuntimeVal::I32(key)] = args else {
+                anyhow::bail!("the try part takes one key");
+            };
+            let here = tried.lock().expect("ready keys").contains(key);
+            results[0] = RuntimeVal::I32(i32::from(here));
+            Ok(())
+        },
+    );
+    let finish_block = RuntimeFunc::new(
+        context.internal().runtime_mut(),
+        i32_to_i32(),
+        move |_store, args, results| {
+            let [RuntimeVal::I32(key)] = args else {
+                anyhow::bail!("the finish part takes one key");
+            };
+            results[0] = RuntimeVal::I32(key * 10);
+            Ok(())
+        },
+    );
+    let pair_type = FuncType::new(
+        [RuntimeValType::I64, RuntimeValType::F32],
+        [RuntimeValType::I64, RuntimeValType::F64],
+    );
+    let try_pair = RuntimeFunc::new(
+        context.internal().runtime_mut(),
+        FuncType::new(
+            [RuntimeValType::I64, RuntimeValType::F32],
+            [RuntimeValType::I32],
+        ),
+        |_store, _args, results| {
+            results[0] = RuntimeVal::I32(1);
+            Ok(())
+        },
+    );
+    let finish_pair = RuntimeFunc::new(
+        context.internal().runtime_mut(),
+        pair_type.clone(),
+        |_store, args, results| {
+            let [RuntimeVal::I64(whole), RuntimeVal::F32(part)] = args else {
+                anyhow::bail!("the pair takes an i64 and an f32");
+            };
+            results[0] = RuntimeVal::I64(whole + 1);
+            results[1] = RuntimeVal::F64(f64::from(*part) * 2.0);
+            Ok(())
+        },
+    );
+
+    let provider =
+        StackSwitchingProvider::instantiate(&mut context, engine.inner(), engine.switch_modules())
+            .expect("the engine instantiates the base switch module");
+    let shims = provider
+        .shims(
+            &mut context,
+            &[
+                (i32_to_i32(), try_block, finish_block),
+                (pair_type, try_pair, finish_pair),
+            ],
+        )
+        .expect("the engine instantiates the extension with both shims");
+    let mut imports = Imports::default();
+    imports.define("switch", "block", RuntimeExtern::Func(shims[0].clone()));
+    imports.define("switch", "pair", RuntimeExtern::Func(shims[1].clone()));
+    let entries = RuntimeInstance::new(
+        context.internal().runtime_mut(),
+        &RuntimeModule::new(engine.inner(), ENTRY_TYPES).expect("the module compiles"),
+        &imports,
+    )
+    .expect("the entries instance");
+    let mut entry = |name: &str| {
+        entries
+            .get_export(context.internal().runtime(), name)
+            .and_then(RuntimeExtern::into_func)
+            .expect("an entry export")
+    };
+    let (none, several, floats) = (entry("none"), entry("several"), entry("floats"));
+
+    let status = provider
+        .start(&mut context, FIRST, &none, &[])
+        .expect("the entry with nothing starts");
+    assert_eq!(describe(&status), "finished with []");
+
+    let status = provider
+        .start(
+            &mut context,
+            SECOND,
+            &several,
+            &[RuntimeVal::I32(4), RuntimeVal::I64(7)],
+        )
+        .expect("the entry with several starts");
+    assert_eq!(describe(&status), "suspended");
+    ready.lock().expect("ready keys").insert(4);
+    let status = provider
+        .resume(&mut context, SECOND)
+        .expect("the entry with several resumes");
+    assert_eq!(
+        describe(&status),
+        "finished with [I32(41), I64(8), F64(1.0)]",
+        "the three results crossed, after the thread suspended once"
+    );
+
+    let status = provider
+        .start(
+            &mut context,
+            FIRST,
+            &floats,
+            &[RuntimeVal::F32(1.5), RuntimeVal::F64(2.0)],
+        )
+        .expect("the entry over floats starts");
+    assert_eq!(describe(&status), "finished with [F32(3.5)]");
+    assert_eq!(
+        provider.workers(&mut context).expect("the worker count"),
+        1,
+        "the three threads ran one after another on one worker"
+    );
 }

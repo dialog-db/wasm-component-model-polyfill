@@ -19,7 +19,7 @@ use wasm_runtime_layer::{
 };
 
 use crate::component::{Component, ExternType};
-use crate::concurrency::InstanceId;
+use crate::concurrency::{BlockingBuiltin, InstanceId};
 use crate::error::{Error, InstantiationError, LinkError, Result};
 use crate::instance::{ExportedFunction, ExportedModule, Instance};
 use crate::internal::{ComponentInternal, ErrorInternal, LinkerInternal};
@@ -65,7 +65,7 @@ use super::ir::{
 };
 use super::trampoline::{
     ResourceRuntime, build_resource_drop_trampoline, build_resource_new_trampoline,
-    build_resource_rep_trampoline, build_trampoline,
+    build_resource_rep_trampoline, build_trampoline, lowering_blocks,
 };
 
 /// The runtime items the executor has produced so far while walking
@@ -396,9 +396,20 @@ fn run_plan<T: 'static>(
     // the resulting runtime-layer `Func`s can be slotted into the
     // import table for any module that references them via
     // `CoreDef::Trampoline`.
-    let mut trampolines: Vec<RuntimeFunc> = Vec::with_capacity(ir.trampoline_specs.len());
-    for spec in ir.trampoline_specs.iter() {
-        let func = build_runtime_trampoline(
+    //
+    // A blocking built-in reaches the guest in one of two forms. With
+    // no provider it is a host trampoline that waits where it stands.
+    // Under a provider it is the switch module's shim for it, which
+    // suspends the thread's own stack in WebAssembly: a suspension
+    // must have only WebAssembly frames between it and the start of
+    // the thread's stack, and a host trampoline is not WebAssembly.
+    // The shims of one instantiation come from one extension of the
+    // store's switch module, and each takes the trampoline's place.
+    let provider = store.internal().provider();
+    let mut trampolines: Vec<Option<RuntimeFunc>> = Vec::with_capacity(ir.trampoline_specs.len());
+    let mut blocking: Vec<(usize, BlockingBuiltin<T>)> = Vec::new();
+    for (index, spec) in ir.trampoline_specs.iter().enumerate() {
+        let trampoline = build_runtime_trampoline(
             spec,
             component,
             linker,
@@ -408,8 +419,34 @@ fn run_plan<T: 'static>(
             &resource_runtimes,
             &flags,
         )?;
-        trampolines.push(func);
+        match (trampoline, &provider) {
+            (Trampoline::Plain(func), _) => trampolines.push(Some(func)),
+            (Trampoline::Blocking(builtin), Some(_)) => {
+                trampolines.push(None);
+                blocking.push((index, builtin));
+            }
+            (Trampoline::Blocking(builtin), None) => {
+                trampolines.push(Some(builtin.trampoline(store)));
+            }
+        }
     }
+    if let Some(provider) = &provider {
+        let hosts = blocking
+            .iter()
+            .map(|(_, builtin)| {
+                let (try_part, finish_part) = builtin.parts(store);
+                (builtin.ty().clone(), try_part, finish_part)
+            })
+            .collect::<Vec<_>>();
+        let shims = provider.shims(store, &hosts)?;
+        for ((index, _), shim) in blocking.iter().zip(shims) {
+            trampolines[*index] = Some(shim);
+        }
+    }
+    let trampolines = trampolines
+        .into_iter()
+        .map(|func| func.ok_or_else(|| internal("a blocking built-in was given no shim")))
+        .collect::<Result<Vec<_>>>()?;
 
     let mut items = RuntimeItems {
         core_instances: Vec::new(),
@@ -630,16 +667,17 @@ fn build_runtime_trampoline<T: 'static>(
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     resource_runtimes: &[ResourceRuntime<T>],
     flags: &[InstanceFlags],
-) -> Result<RuntimeFunc> {
-    match spec {
+) -> Result<Trampoline<T>> {
+    let plain = match spec {
         TrampolineSpec::LowerImport(lowering) => {
             let host_func = lookup_host_func(linker, component, resolution, lowering)?;
-            Ok(build_trampoline(
-                store,
-                lowering,
-                abi_state.clone(),
-                host_func,
-            ))
+            let blocks = lowering_blocks(lowering, &host_func);
+            let builtin = build_trampoline(store, lowering, abi_state.clone(), host_func);
+            return Ok(if blocks {
+                Trampoline::Blocking(builtin)
+            } else {
+                Trampoline::Plain(builtin.trampoline(store))
+            });
         }
         TrampolineSpec::ResourceDrop { table_index } => {
             let table = resource_table(abi_state, *table_index)?;
@@ -749,12 +787,14 @@ fn build_runtime_trampoline<T: 'static>(
             signature,
             abi_state.clone(),
         )),
-        TrampolineSpec::WaitableSetWait { options, signature } => Ok(build_waitable_set_wait(
-            store,
-            options,
-            signature,
-            abi_state.clone(),
-        )),
+        TrampolineSpec::WaitableSetWait { options, signature } => {
+            return Ok(Trampoline::Blocking(build_waitable_set_wait(
+                store,
+                options,
+                signature,
+                abi_state.clone(),
+            )));
+        }
         TrampolineSpec::WaitableSetPoll { options, signature } => Ok(build_waitable_set_poll(
             store,
             options,
@@ -829,30 +869,36 @@ fn build_runtime_trampoline<T: 'static>(
             payload,
             copies_bytes,
             signature,
-        } => Ok(build_copy(
-            store,
-            *kind,
-            options,
-            payload.clone(),
-            *copies_bytes,
-            signature,
-            abi_state.clone(),
-        )),
+        } => {
+            let builtin = build_copy(
+                store,
+                *kind,
+                options,
+                payload.clone(),
+                *copies_bytes,
+                signature,
+                abi_state.clone(),
+            );
+            return Ok(blocking_unless(options.async_, builtin, store));
+        }
         TrampolineSpec::CancelCopy {
             kind,
             instance,
             async_,
             payload,
             signature,
-        } => Ok(build_cancel_copy(
-            store,
-            *kind,
-            *instance,
-            *async_,
-            payload.clone(),
-            signature,
-            abi_state.clone(),
-        )),
+        } => {
+            let builtin = build_cancel_copy(
+                store,
+                *kind,
+                *instance,
+                *async_,
+                payload.clone(),
+                signature,
+                abi_state.clone(),
+            );
+            return Ok(blocking_unless(*async_, builtin, store));
+        }
         TrampolineSpec::PrepareCall { memory, signature } => Ok(build_prepare_call(
             store,
             *memory,
@@ -862,12 +908,14 @@ fn build_runtime_trampoline<T: 'static>(
         TrampolineSpec::SyncStartCall {
             callback,
             signature,
-        } => Ok(build_sync_start_call(
-            store,
-            *callback,
-            signature,
-            abi_state.clone(),
-        )),
+        } => {
+            return Ok(Trampoline::Blocking(build_sync_start_call(
+                store,
+                *callback,
+                signature,
+                abi_state.clone(),
+            )));
+        }
         TrampolineSpec::AsyncStartCall {
             callback,
             post_return,
@@ -882,12 +930,14 @@ fn build_runtime_trampoline<T: 'static>(
         TrampolineSpec::ThreadYield {
             instance,
             signature,
-        } => Ok(build_thread_yield(
-            store,
-            *instance,
-            signature,
-            abi_state.clone(),
-        )),
+        } => {
+            return Ok(Trampoline::Blocking(build_thread_yield(
+                store,
+                *instance,
+                signature,
+                abi_state.clone(),
+            )));
+        }
         TrampolineSpec::ThreadIndex {
             instance,
             signature,
@@ -920,48 +970,58 @@ fn build_runtime_trampoline<T: 'static>(
         TrampolineSpec::ThreadSuspend {
             instance,
             signature,
-        } => Ok(build_thread_suspend(
-            store,
-            *instance,
-            signature,
-            abi_state.clone(),
-        )),
+        } => {
+            return Ok(Trampoline::Blocking(build_thread_suspend(
+                store,
+                *instance,
+                signature,
+                abi_state.clone(),
+            )));
+        }
         TrampolineSpec::ThreadSuspendThenResume {
             instance,
             signature,
-        } => Ok(build_thread_suspend_then_resume(
-            store,
-            *instance,
-            signature,
-            abi_state.clone(),
-        )),
+        } => {
+            return Ok(Trampoline::Blocking(build_thread_suspend_then_resume(
+                store,
+                *instance,
+                signature,
+                abi_state.clone(),
+            )));
+        }
         TrampolineSpec::ThreadYieldThenResume {
             instance,
             signature,
-        } => Ok(build_thread_yield_then_resume(
-            store,
-            *instance,
-            signature,
-            abi_state.clone(),
-        )),
+        } => {
+            return Ok(Trampoline::Blocking(build_thread_yield_then_resume(
+                store,
+                *instance,
+                signature,
+                abi_state.clone(),
+            )));
+        }
         TrampolineSpec::ThreadSuspendThenPromote {
             instance,
             signature,
-        } => Ok(build_thread_suspend_then_promote(
-            store,
-            *instance,
-            signature,
-            abi_state.clone(),
-        )),
+        } => {
+            return Ok(Trampoline::Blocking(build_thread_suspend_then_promote(
+                store,
+                *instance,
+                signature,
+                abi_state.clone(),
+            )));
+        }
         TrampolineSpec::ThreadYieldThenPromote {
             instance,
             signature,
-        } => Ok(build_thread_yield_then_promote(
-            store,
-            *instance,
-            signature,
-            abi_state.clone(),
-        )),
+        } => {
+            return Ok(Trampoline::Blocking(build_thread_yield_then_promote(
+                store,
+                *instance,
+                signature,
+                abi_state.clone(),
+            )));
+        }
         TrampolineSpec::TaskCancel {
             instance,
             signature,
@@ -980,6 +1040,30 @@ fn build_runtime_trampoline<T: 'static>(
             signature,
             abi_state.clone(),
         )),
+    };
+    Ok(Trampoline::Plain(plain?))
+}
+
+/// One trampoline of the plan, in the form the guest imports it in.
+enum Trampoline<T: 'static> {
+    /// A host function that never waits.
+    Plain(RuntimeFunc),
+    /// A built-in the reference lets wait inside a guest call, which
+    /// the guest imports as a host trampoline or as the switch
+    /// module's shim for it.
+    Blocking(BlockingBuiltin<T>),
+}
+
+/// A copy or a cancel, which blocks unless it was declared `async`.
+fn blocking_unless<T: 'static>(
+    async_: bool,
+    builtin: BlockingBuiltin<T>,
+    store: &mut StoreContext<'_, T>,
+) -> Trampoline<T> {
+    if async_ {
+        Trampoline::Plain(builtin.trampoline(store))
+    } else {
+        Trampoline::Blocking(builtin)
     }
 }
 

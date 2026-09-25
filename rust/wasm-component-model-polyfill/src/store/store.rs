@@ -6,11 +6,12 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use wasm_runtime_layer::AsContextMut;
 
 use crate::backend::Backend;
-use crate::concurrency::{Accessor, Outcome, Scheduler};
+use crate::concurrency::{Accessor, Outcome, Scheduler, StackSwitchingProvider};
 use crate::engine::Engine;
 use crate::error::Result;
 use crate::internal::EngineInternal;
 use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId};
+use crate::suspend_provider_kind::SuspendProviderKind;
 
 use super::store_context::StoreContext;
 use super::store_context::internal::StoreContextInternalExt;
@@ -129,15 +130,26 @@ impl<T: 'static> Store<T> {
     /// Construct a `Store` against an [`Engine`] and an initial value
     /// for the host-data slot.
     ///
-    /// The return type is [`Result`] for forward compatibility with
-    /// later work that surfaces backend errors at store construction
-    /// time; today, the supported backends construct a store
+    /// When the engine selected a suspend provider, the store
+    /// instantiates it here and keeps it for its whole life, and the
+    /// construction fails when the backend refuses that instantiation.
+    /// A store of an engine with no provider is constructed
     /// infallibly.
-    #[allow(clippy::unnecessary_wraps)]
     pub fn new(engine: &Engine, data: T) -> Result<Self> {
-        Ok(Self {
+        let mut store = Self {
             inner: wasm_runtime_layer::Store::new(engine.inner(), StoreData::new(data)),
-        })
+        };
+        // The provider the engine selected is instantiated in the
+        // store once, here, and stays in it for the store's life.
+        if engine.suspend_provider() == SuspendProviderKind::StackSwitching {
+            let provider = StackSwitchingProvider::instantiate(
+                &mut store.context(),
+                engine.inner(),
+                engine.switch_modules(),
+            )?;
+            store.store_data_mut().install_provider(provider);
+        }
+        Ok(store)
     }
 
     /// Borrow the host data carried by this store.

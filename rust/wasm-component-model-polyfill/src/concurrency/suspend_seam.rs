@@ -4,17 +4,29 @@
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use wasm_runtime_layer::Val as RuntimeVal;
+
 use crate::error::{Error, Result, SchedulerCause};
 use crate::internal::ErrorInternal;
 use crate::resource::HandleTables;
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 
+use super::block_step::BlockStep;
 use super::outcome::Outcome;
+use super::pending_block::PendingBlock;
 use super::readiness::Readiness;
 use super::scheduler::SPIN_BUDGET;
 use super::subtask_id::SubtaskId;
 use super::thread_id::ThreadId;
+
+/// The first part of a blocking built-in, which answers what it
+/// found.
+type Begin<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> anyhow::Result<BlockStep<T>>;
+
+/// The whole of a blocking built-in that brings its own wait for a
+/// thread that cannot suspend its stack.
+type Whole<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> anyhow::Result<Vec<RuntimeVal>>;
 
 /// A thread's wait as the try part recorded it, and its pairing with
 /// the end of the wait.
@@ -144,13 +156,24 @@ impl Drop for Suspended {
 /// [`give_way`](Self::give_way), because a yield waits for nothing
 /// but its turn.
 ///
-/// A blocking built-in reaches the seam through a host trampoline.
 /// A host frame cannot suspend a guest stack: a provider suspends a
-/// thread only in WebAssembly, in a shim of the switch module, with
-/// nothing but WebAssembly frames between the start of the thread's
-/// stack and the suspension. Every block that reaches the seam
-/// therefore takes the fallback below, whatever provider the engine
-/// selected.
+/// thread only in WebAssembly, with nothing but WebAssembly frames
+/// between the start of the thread's stack and the suspension. Under
+/// a provider a blocking built-in therefore reaches the guest as the
+/// switch module's shim for it, and the shim calls
+/// [`try_block`](Self::try_block) and
+/// [`finish_block`](Self::finish_block). A thread that runs on a
+/// stack of its own suspends in the shim, and the scheduler resumes
+/// it once its condition holds. No nested turn runs for it: a
+/// provider never runs turns inside a suspension, and a readiness
+/// condition runs no guest code, so a suspension and a nested turn
+/// never meet.
+///
+/// Every other block takes the fallback below, through
+/// [`block`](Self::block): each block of a store with no provider,
+/// and under a provider a block of a thread that runs on another
+/// thread's stack — the callee of a synchronous call between two
+/// components — or of a task that must not block.
 ///
 /// The fallback is a nested turn, run from inside the guest call
 /// that blocked. It runs the guest work of other tasks that is
@@ -353,6 +376,170 @@ impl<T: 'static> SuspendSeam<T> {
             _ => None,
         };
         Self::run_nested_turns(store, &condition, call)
+    }
+
+    /// Run a blocking built-in whole, where it stands: its first
+    /// part, then, when it waits, the wait through
+    /// [`wait_until`](Self::wait_until) — or [`give_way`](Self::give_way)
+    /// for a yield — and its finish part.
+    ///
+    /// This is the built-in's host trampoline when the engine has no
+    /// provider, and what the try part of its shim runs for a thread
+    /// that cannot suspend its stack. The finish part runs whichever
+    /// way the wait went, so a wait that failed gives back what the
+    /// first part took. A wait that unwinds hands the finish part a
+    /// failure too before the panic carries on: an item a nested turn
+    /// runs and a host task it polls can each panic, and a copy, a
+    /// call, or a host future the first part left in the store would
+    /// otherwise outlive the frame that waited on it.
+    pub fn block(
+        store: &mut StoreContext<'_, T>,
+        begin: &Begin<T>,
+        args: &[RuntimeVal],
+    ) -> anyhow::Result<Vec<RuntimeVal>> {
+        let step = begin(store, args)?;
+        let Some(readiness) = step.readiness() else {
+            return step.finish(store, Ok(()));
+        };
+        let waited = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if readiness == Readiness::Yielded {
+                Self::give_way(store)
+            } else {
+                Self::wait_until(store, readiness)
+            }
+        }));
+        match waited {
+            Ok(waited) => step.finish(store, waited),
+            Err(panic) => {
+                let _ = step.finish(
+                    store,
+                    Err(Error::internal("a blocked built-in's wait unwound")),
+                );
+                std::panic::resume_unwind(panic)
+            }
+        }
+    }
+
+    /// The try part of a blocking built-in's shim: answer whether
+    /// the built-in is ready, which is when the shim calls
+    /// [`finish_block`](Self::finish_block), and otherwise leave the
+    /// thread waiting for the shim to suspend it.
+    ///
+    /// The first try of a built-in runs its first part. A built-in
+    /// that is done is ready, and its results wait for the finish.
+    /// One that waits records its readiness condition on the current
+    /// thread, which is where the scheduler evaluates it between two
+    /// items, and it is ready when the condition already holds. A
+    /// yield is never ready on its first try, because a yield always
+    /// gives way.
+    ///
+    /// The shim suspends a thread that is not ready. The scheduler
+    /// resumes it once its condition holds, in the order the
+    /// threads became ready, and the shim tries again. That try runs
+    /// nothing of the built-in: it only asks whether the condition
+    /// still holds, since another thread may have taken what it
+    /// waited for between the two, and a thread whose condition no
+    /// longer holds suspends again.
+    ///
+    /// Only a thread whose entry started through the provider runs on
+    /// a stack of its own, so only such a thread suspends. A thread
+    /// that runs on the stack of another, which is the callee of a
+    /// synchronous call between two components, and a thread of a
+    /// task that must not block, wait where they stand, through
+    /// [`block`](Self::block). A task that must not block must
+    /// return before it waits on anything but the ready work of its
+    /// own instance, and the nested turn serves exactly that rule. A
+    /// built-in that brings a `fallback` of its own runs that instead.
+    ///
+    /// A thread that suspended itself waits on
+    /// [`Readiness::Resumed`], which no thread's record holds: the
+    /// thread waits on nothing until a resume names it, so it joins
+    /// no list of waiting threads, and only its shim asks the
+    /// condition.
+    pub fn try_block(
+        store: &mut StoreContext<'_, T>,
+        begin: &Begin<T>,
+        fallback: Option<&Whole<T>>,
+        args: &[RuntimeVal],
+    ) -> anyhow::Result<bool> {
+        let (thread, own_stack) = {
+            let guard = store.internal().lock_tables()?;
+            let thread = guard.tasks.current_thread();
+            let own_stack = thread.is_some_and(|thread| guard.tasks.on_own_stack(thread));
+            (thread, own_stack)
+        };
+        if let Some(thread) = thread
+            && let Some(readiness) = store.internal().scheduler().block_readiness(thread)
+        {
+            return Ok(Self::holds(store, readiness));
+        }
+        let suspends = own_stack && store.internal().must_not_block_instance().is_none();
+        let (Some(thread), true) = (thread, suspends) else {
+            let values = match fallback {
+                Some(whole) => whole(store, args)?,
+                None => Self::block(store, begin, args)?,
+            };
+            store.internal().scheduler_mut().keep_ready_block(values);
+            return Ok(true);
+        };
+        let step = begin(store, args)?;
+        let Some(readiness) = step.readiness() else {
+            let values = step.finish(store, Ok(()))?;
+            store.internal().scheduler_mut().keep_ready_block(values);
+            return Ok(true);
+        };
+        let previous = {
+            let mut guard = store.internal().lock_tables()?;
+            match readiness {
+                Readiness::Resumed { .. } => guard
+                    .tasks
+                    .thread(thread)
+                    .and_then(|record| record.readiness),
+                _ => guard.tasks.start_waiting(thread, readiness)?,
+            }
+        };
+        store.internal().scheduler_mut().begin_block(
+            thread,
+            PendingBlock {
+                readiness,
+                previous,
+                step,
+            },
+        );
+        Ok(readiness != Readiness::Yielded && Self::holds(store, readiness))
+    }
+
+    /// The finish part of a blocking built-in's shim: the built-in's
+    /// results, once its try part answered that it is ready.
+    ///
+    /// The results of a built-in that was done at its first try are
+    /// the ones the try kept. A built-in whose thread waited ends the
+    /// wait, which takes the thread off the list of waiting threads,
+    /// and runs its finish part.
+    pub fn finish_block(store: &mut StoreContext<'_, T>) -> anyhow::Result<Vec<RuntimeVal>> {
+        let thread = store.internal().lock_tables()?.tasks.current_thread();
+        let block = thread.and_then(|thread| store.internal().scheduler_mut().end_block(thread));
+        if let (Some(thread), Some(block)) = (thread, block) {
+            store
+                .internal()
+                .lock_tables()?
+                .tasks
+                .stop_waiting(thread, block.previous);
+            return block.step.finish(store, Ok(()));
+        }
+        store
+            .internal()
+            .scheduler_mut()
+            .take_ready_block()
+            .ok_or_else(|| anyhow::anyhow!("a shim finished a built-in its try did not begin"))
+    }
+
+    /// Whether `readiness` holds in the store.
+    fn holds(store: &StoreContext<'_, T>, readiness: Readiness) -> bool {
+        store
+            .internal_ref()
+            .lock_tables()
+            .is_ok_and(|guard| guard.tasks.readiness_holds(readiness))
     }
 
     /// Suspend the current guest thread until `condition` holds.

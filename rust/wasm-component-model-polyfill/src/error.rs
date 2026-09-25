@@ -897,27 +897,36 @@ pub enum SchedulerCause {
 
     /// A guest thread blocked at a point the reference permits
     /// blocking, work the block could not reach could still meet its
-    /// condition, and the target has no suspend provider to switch
-    /// its stack. That work is a host task still pending, or a frame
-    /// below the blocked thread: the thread runs above a nested
-    /// start, where a start intrinsic ran an `async`-typed callee
-    /// from inside its own frame, and a provider would return
-    /// control below that point to the caller that started it,
-    /// whose own code goes on from there. That holds after an
-    /// asynchronous lower, and after a synchronous lower once the
-    /// callee has resolved. Before that, a synchronous lower's
-    /// caller would only wait for its callee, so its nested start
-    /// does not count.
+    /// condition, and the thread could not switch its stack. That
+    /// work is a host task still pending, or a frame below the
+    /// blocked thread: the thread runs above a nested start, where a
+    /// start intrinsic ran an `async`-typed callee from inside its
+    /// own frame, and a stack switch would return control below that
+    /// point to the caller that started it, whose own code goes on
+    /// from there. That holds after an asynchronous lower, and after
+    /// a synchronous lower once the callee has resolved. Before that,
+    /// a synchronous lower's caller would only wait for its callee,
+    /// so its nested start does not count.
+    ///
+    /// A thread switches its stack only when it runs on a stack of
+    /// its own, which is a thread whose entry started through the
+    /// engine's suspend provider. Such a thread suspends at the block
+    /// instead, and waits until the work releases it. This cause
+    /// therefore comes from a store with no provider — a target
+    /// without one, or an engine the host turned it off for — and
+    /// from a thread that waits in a nested turn on another thread's
+    /// stack, past the seam's budget.
+    ///
     /// Unlike [`Error::Unsupported`], the feature itself is
-    /// supported here; only the capability to serve it on this
-    /// target is missing, and a host may want to branch on that
-    /// distinction. A block that the store went idle under with no
-    /// such nested start below it fails with [`SchedulerCause::Deadlock`]
-    /// instead, because nothing left could have met its condition —
-    /// or with [`SchedulerCause::CannotBlock`] when an instance
-    /// still carried may-not-suspend at idle, because a synchronous
-    /// call had yet to return.
-    #[error("blocking here requires a stack switch, but the target has no suspend provider")]
+    /// supported here; only the capability to serve it is missing,
+    /// and a host may want to branch on that distinction. A block
+    /// that the store went idle under with no such nested start
+    /// below it fails with [`SchedulerCause::Deadlock`] instead,
+    /// because nothing left could have met its condition — or with
+    /// [`SchedulerCause::CannotBlock`] when an instance still carried
+    /// may-not-suspend at idle, because a synchronous call had yet to
+    /// return.
+    #[error("blocking here requires a stack switch, but this thread cannot switch its stack")]
     StackSwitchNeeded,
 
     /// An accessor reached for its store where no poll of that store
@@ -1644,7 +1653,7 @@ mod tests {
         let err = Error::Scheduler(SchedulerCause::StackSwitchNeeded);
         assert_eq!(
             err.to_string(),
-            "scheduler error: blocking here requires a stack switch, but the target has no suspend provider"
+            "scheduler error: blocking here requires a stack switch, but this thread cannot switch its stack"
         );
     }
 

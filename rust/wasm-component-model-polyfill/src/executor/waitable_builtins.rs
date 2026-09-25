@@ -27,11 +27,12 @@
 //! `waitable-set.wait` is the one built-in here that can block. A
 //! set that already holds an event delivers it and the thread does
 //! not block; a set that holds none parks the thread on the set and
-//! asks the suspend seam to suspend it until the set holds one. On a
-//! target with no suspend provider the seam runs a nested turn, and
-//! its failure is the cause the seam gives: cannot-block for a task
-//! that must not block, and the deadlock or stack-switch cause for a
-//! task that may. The wait on the set's record ends whichever way
+//! waits until the set holds one. Under a provider the thread
+//! suspends in the built-in's shim and resumes once the set holds an
+//! event. Otherwise the suspend seam runs a nested turn, and its
+//! failure is the cause the seam gives: cannot-block for a task that
+//! must not block, and the deadlock or stack-switch cause for a task
+//! that may. The wait on the set's record ends whichever way
 //! the suspension went, so a set is never left naming a waiter that
 //! is no longer there.
 
@@ -46,7 +47,9 @@ use crate::abi::context::BoundaryContext;
 use crate::abi::instance::BoundaryInstance;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::backend::Backend;
-use crate::concurrency::{Event, InstanceId, Readiness, SuspendSeam, ThreadId, WaitableSetId};
+use crate::concurrency::{
+    BlockStep, BlockingBuiltin, Event, InstanceId, Readiness, ThreadId, WaitableSetId,
+};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, TaskCause};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CanonOptions, CoreSignature};
@@ -88,16 +91,12 @@ pub fn build_waitable_set_wait<T: 'static>(
     options: &CanonOptions,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
+) -> BlockingBuiltin<T> {
     let tables = store.internal().tables_handle();
     let options = Arc::new(options.clone());
-    RuntimeFunc::new(
-        store.internal().runtime_mut(),
-        core_func_type(signature),
-        move |store_ctx, args, results| {
-            waitable_set_wait(store_ctx, &options, &abi_state, &tables, args, results)
-        },
-    )
+    BlockingBuiltin::new(core_func_type(signature), move |store, args| {
+        begin_waitable_set_wait(store, &options, &abi_state, &tables, args)
+    })
 }
 
 /// Build the `waitable-set.poll` built-in. It takes what
@@ -230,19 +229,24 @@ pub fn build_subtask_drop<T: 'static>(
     )
 }
 
-/// The body of the `waitable-set.wait` built-in.
-fn waitable_set_wait<T: 'static>(
-    mut store_ctx: RuntimeContextMut<'_, StoreData<T>, Backend>,
+/// The first part of the `waitable-set.wait` built-in. A set that
+/// already holds an event delivers it, and the built-in is done. A
+/// set that holds none parks the thread on the set, and the built-in
+/// waits until the set holds one: its finish part ends the wait on
+/// the set's record whichever way the wait went, so a set is never
+/// left naming a waiter that is no longer there, and delivers the
+/// event.
+fn begin_waitable_set_wait<T: 'static>(
+    store: &mut StoreContext<'_, T>,
     options: &Arc<CanonOptions>,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     tables: &Arc<Mutex<HandleTables>>,
     args: &[RuntimeVal],
-    results: &mut [RuntimeVal],
-) -> anyhow::Result<()> {
+) -> anyhow::Result<BlockStep<T>> {
     let set_index = arg_u32(args, 0)?;
     let pointer = arg_u32(args, 1)?;
     let (id, table) = calling_instance(abi_state, options.instance)?;
-    trap_if_cannot_leave(abi_state, id, &mut store_ctx)?;
+    trap_if_cannot_leave(abi_state, id, store.internal().runtime_mut())?;
 
     let (set, thread, delivered) = {
         let mut guard = lock_tables(tables)?;
@@ -250,27 +254,48 @@ fn waitable_set_wait<T: 'static>(
         let thread = current_thread(&guard)?;
         // A set that already holds an event delivers it here and the
         // thread does not block; otherwise the thread is parked on
-        // the set and the suspension below is what gives way.
+        // the set and the wait is what gives way.
         let delivered = guard.wait_on_waitable_set(set, thread).map_err(trap)?;
         (set, thread, delivered)
     };
 
-    let event = match delivered {
-        Some(event) => event,
-        None => block_until_ready(&mut store_ctx, tables, set, thread)?,
-    };
+    if let Some(event) = delivered {
+        return Ok(BlockStep::Ready(deliver_event(
+            store, options, abi_state, tables, pointer, event,
+        )?));
+    }
+    let (options, abi_state, tables) = (options.clone(), abi_state.clone(), tables.clone());
+    Ok(BlockStep::wait(
+        Readiness::WaitableSet { set },
+        move |store: &mut StoreContext<'_, T>, waited| {
+            let ended = lock_tables(&tables)?.finish_wait_on_waitable_set(set, thread);
+            waited.map_err(trap)?;
+            let event = ended.map_err(trap)?;
+            deliver_event(store, &options, &abi_state, &tables, pointer, event)
+        },
+    ))
+}
 
+/// Deliver `event` to the guest: its payloads at `pointer`, and its
+/// code as the built-in's result.
+fn deliver_event<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    options: &Arc<CanonOptions>,
+    abi_state: &Arc<Mutex<AbiRuntimeState>>,
+    tables: &Arc<Mutex<HandleTables>>,
+    pointer: u32,
+    event: Event,
+) -> anyhow::Result<Vec<RuntimeVal>> {
     let (code, payloads) = (event.code().value(), event.payloads());
     write_payloads(
-        &mut store_ctx,
+        store.internal().runtime_mut(),
         options,
         abi_state,
         tables,
         pointer,
         payloads,
     )?;
-    results[0] = RuntimeVal::I32(code as i32);
-    Ok(())
+    Ok(vec![RuntimeVal::I32(code as i32)])
 }
 
 /// The body of the `waitable-set.poll` built-in.
@@ -317,28 +342,6 @@ fn waitable_set_poll<T: 'static>(
     )?;
     results[0] = RuntimeVal::I32(code as i32);
     Ok(())
-}
-
-/// Suspend the current thread until `set` holds an event, and take
-/// the event it holds when it does.
-///
-/// The wait the caller began ends whichever way the suspension went.
-/// A set left naming a waiter that is no longer there would trap
-/// every later drop of it, and the thread would keep a readiness
-/// condition it is no longer parked on.
-fn block_until_ready<T: 'static>(
-    store_ctx: &mut RuntimeContextMut<'_, StoreData<T>, Backend>,
-    tables: &Arc<Mutex<HandleTables>>,
-    set: WaitableSetId,
-    thread: ThreadId,
-) -> anyhow::Result<Event> {
-    let suspended = {
-        let mut store = StoreContext::new(store_ctx.as_context_mut());
-        SuspendSeam::wait_until(&mut store, Readiness::WaitableSet { set })
-    };
-    let ended = lock_tables(tables)?.finish_wait_on_waitable_set(set, thread);
-    suspended.map_err(trap)?;
-    ended.map_err(trap)
 }
 
 /// The alignment the pointer of a delivered event must have: the

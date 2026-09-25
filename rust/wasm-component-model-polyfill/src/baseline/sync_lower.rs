@@ -45,8 +45,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
-    Accessor, Component, Engine, Error, Func, FunctionParameter, FunctionType, HostCall,
-    HostResource, Instance, Linker, PrimitiveType, ResourceType, Store, Val, ValueType,
+    Accessor, Component, Engine, EngineConfig, Error, Func, FunctionParameter, FunctionType,
+    HostCall, HostResource, Instance, Linker, PrimitiveType, ResourceType, Store, Val, ValueType,
 };
 use wcmp_macros::component;
 
@@ -263,7 +263,14 @@ async fn caller<F>(bytes: &[u8], register: F) -> (Store<()>, Instance)
 where
     F: FnOnce(&mut Linker<()>),
 {
-    let engine = Engine::new().expect("engine");
+    caller_on(Engine::new().expect("engine"), bytes, register).await
+}
+
+/// Instantiate `bytes` as [`caller`] does, into a store of `engine`.
+async fn caller_on<F>(engine: Engine, bytes: &[u8], register: F) -> (Store<()>, Instance)
+where
+    F: FnOnce(&mut Linker<()>),
+{
     let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");
@@ -603,11 +610,17 @@ async fn it_returns_a_blocked_synchronous_lower_once_a_nested_turn_ran_a_sibling
 #[wcmp_macros::test]
 async fn it_fails_a_future_that_stays_pending_with_the_stack_switch_cause() {
     // The caller is an async-typed task, so no instance of the store
-    // carries may-not-suspend. The nested turns find nothing to run
-    // and the store goes idle with the call's own future still
-    // pending, which is the state the reference permits a block in
-    // and only the target cannot serve.
-    let (mut store, instance) = caller(
+    // carries may-not-suspend. With the suspend provider off, the
+    // nested turns find nothing to run and the store goes idle with
+    // the call's own future still pending, which is the state the
+    // reference permits a block in and only a stack switch can serve.
+    // Under a provider the thread suspends instead and waits for the
+    // future, as long as it takes.
+    let mut config = EngineConfig::new();
+    config.suspend_provider(false);
+    let engine = Engine::with_config(&config).expect("engine");
+    let (mut store, instance) = caller_on(
+        engine,
         AN_ASYNC_TYPED_TASK_CALLS_A_HOST_ASYNC_FUNCTION,
         never_answers,
     )

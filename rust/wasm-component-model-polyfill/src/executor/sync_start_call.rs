@@ -24,9 +24,11 @@
 //!   intrinsic runs it at once. That is the reference resuming the
 //!   callee's thread before the lower returns.
 //! - It then blocks on the subtask's resolution through the suspend
-//!   seam. A callee that parked — a callback export that returned
-//!   the yield or the wait word — leaves its caller free to give
-//!   way to the rest of the store; a callee that resolved as it ran
+//!   seam, so it is a blocking built-in and reaches the guest as the
+//!   switch module's shim under a provider. A callee that parked — a
+//!   callback export that returned the yield or the wait word, or a
+//!   thread suspended in the provider — leaves its caller free to
+//!   give way to the rest of the store; a callee that resolved as it ran
 //!   does not block the caller at all. A caller that must not block
 //!   fails with the cannot-block cause, and only after the callee
 //!   did not resolve at once, which is the lazy rule of the
@@ -60,11 +62,11 @@
 
 use std::sync::{Arc, Mutex};
 
-use wasm_runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
+use wasm_runtime_layer::Val as RuntimeVal;
 
 use crate::abi::layout::FlatType;
 use crate::abi::runtime_state::AbiRuntimeState;
-use crate::concurrency::{LowerKind, Readiness, SubtaskId, SuspendSeam, TaskId};
+use crate::concurrency::{BlockStep, BlockingBuiltin, LowerKind, Readiness, SubtaskId, TaskId};
 use crate::error::{Error, Result};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::CoreSignature;
@@ -80,42 +82,39 @@ use super::start_failure::StartFailure;
 /// `callback` is the runtime callback slot of the callee's lift, and
 /// `None` for a stackful lift.
 pub fn build_sync_start_call<T: 'static>(
-    store: &mut StoreContext<'_, T>,
+    _store: &mut StoreContext<'_, T>,
     callback: Option<usize>,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
+) -> BlockingBuiltin<T> {
     // The caller's flat results are this intrinsic's own results,
     // and they are the return function's too. The types travel with
     // the call, because the function is named by reference and
     // nothing else says what it produces.
     let caller_results = signature.results.clone();
-    RuntimeFunc::new(
-        store.internal().runtime_mut(),
+    BlockingBuiltin::new(
         core_func_type(signature),
-        move |store_ctx, args, results| {
-            let mut store = StoreContext::new(store_ctx);
-            Ok(sync_start_call(
-                &mut store,
+        move |store: &mut StoreContext<'_, T>, args: &[RuntimeVal]| {
+            Ok(begin_sync_start_call(
+                store,
                 callback,
                 &caller_results,
                 &abi_state,
                 args,
-                results,
             )?)
         },
     )
 }
 
-/// The body of one call of the intrinsic.
-fn sync_start_call<T: 'static>(
+/// The first part of one call of the intrinsic: start the callee,
+/// then wait for the call to resolve.
+fn begin_sync_start_call<T: 'static>(
     store: &mut StoreContext<'_, T>,
     callback: Option<usize>,
     caller_results: &[FlatType],
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     args: &[RuntimeVal],
-    results: &mut [RuntimeVal],
-) -> Result<()> {
+) -> Result<BlockStep<T>> {
     let callee_function = funcref_argument(args, 0)?;
     let param_count = u32_argument(args, 1)? as usize;
 
@@ -151,7 +150,9 @@ fn sync_start_call<T: 'static>(
 
     // The callee runs next: the item goes in the switch slot, the
     // gate decides whether it stays there, and the slot is run from
-    // inside this frame.
+    // inside this frame. Under a provider the callee runs on a stack
+    // of its own, and the start returns here once it suspends or
+    // finishes.
     prepared.run_start(store, item, LowerKind::Sync)?;
 
     // The caller waits for the callee's result: its readiness
@@ -161,12 +162,33 @@ fn sync_start_call<T: 'static>(
     // too. A call that resolved while the slot ran does not wait at
     // all, which is what makes the cannot-block failure of a
     // sync-typed caller lazy.
-    let blocked = SuspendSeam::wait_until(store, Readiness::Subtask { subtask });
+    let slots = caller_results.len();
+    Ok(BlockStep::wait(
+        Readiness::Subtask { subtask },
+        move |store: &mut StoreContext<'_, T>, waited| {
+            Ok(finish_sync_start_call(
+                store, &prepared, &failure, waited, slots,
+            )?)
+        },
+    ))
+}
+
+/// The finish part of one call of the intrinsic: the caller's flat
+/// results, once the call resolved.
+fn finish_sync_start_call<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    prepared: &Prepared,
+    failure: &StartFailure,
+    waited: Result<()>,
+    slots: usize,
+) -> Result<Vec<RuntimeVal>> {
+    let tables = store.internal().tables_handle();
+    let subtask = prepared.subtask();
     if let Some(error) = failure.lock().ok().and_then(|mut slot| slot.take()) {
         prepared.remove(&tables);
         return Err(error);
     }
-    if let Err(error) = blocked {
+    if let Err(error) = waited {
         release_wait(store, subtask, prepared.task());
         return Err(error);
     }
@@ -187,17 +209,14 @@ fn sync_start_call<T: 'static>(
         guard.tasks.remove_subtask(subtask);
         results
     };
-    if flat_results.len() != results.len() {
+    if flat_results.len() != slots {
         return Err(Error::internal(format!(
             "the return function of a prepared call produced {} flat results for a caller with {}",
             flat_results.len(),
-            results.len()
+            slots
         )));
     }
-    for (slot, value) in results.iter_mut().zip(flat_results) {
-        *slot = value;
-    }
-    Ok(())
+    Ok(flat_results)
 }
 
 /// Give back what a call whose wait failed still holds.

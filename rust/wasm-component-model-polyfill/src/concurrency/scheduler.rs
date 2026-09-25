@@ -12,6 +12,9 @@ use super::host_task_set::HostTaskSet;
 use super::host_writer::HostWriter;
 use super::instance_id::InstanceId;
 use super::item::Item;
+use super::parked_thread::ParkedThread;
+use super::pending_block::PendingBlock;
+use super::readiness::Readiness;
 use super::subtask_id::SubtaskId;
 use super::task_id::TaskId;
 use super::task_tables::TaskTables;
@@ -20,6 +23,7 @@ use super::waitable_set_id::WaitableSetId;
 use crate::error::Result;
 use crate::resource::HandleTables;
 use crate::value::Val;
+use wasm_runtime_layer::Val as RuntimeVal;
 
 /// One task held at an instance's entry gate.
 ///
@@ -278,6 +282,22 @@ pub struct Scheduler<T: 'static> {
     suspend_seam: SuspendSeam<T>,
     resumptions: u64,
     items_run: u64,
+    nested_turns: u64,
+    /// How many times threads have suspended in the provider, ever,
+    /// which numbers each suspension in that order.
+    parked_count: u64,
+    /// The threads suspended in the provider, until they resume.
+    parked: HashMap<ThreadId, ParkedThread<T>>,
+    /// The blocking built-in each thread suspended in the provider
+    /// waits in.
+    blocks: HashMap<ThreadId, PendingBlock<T>>,
+    /// The results of a blocking built-in whose try part found it
+    /// done, from the try to the finish the shim calls next.
+    ready_block: Option<Vec<RuntimeVal>>,
+    /// The thread a thread that just suspended in the provider named
+    /// to run next, from the try part of its switch to the frame that
+    /// resumed it.
+    next_thread: Option<ThreadId>,
 }
 
 /// How many nested turns in a row the suspend seam runs against a
@@ -320,6 +340,12 @@ impl<T: 'static> Scheduler<T> {
             suspend_seam: SuspendSeam::new(),
             resumptions: 0,
             items_run: 0,
+            nested_turns: 0,
+            parked_count: 0,
+            parked: HashMap::new(),
+            blocks: HashMap::new(),
+            ready_block: None,
+            next_thread: None,
         }
     }
 
@@ -350,6 +376,116 @@ impl<T: 'static> Scheduler<T> {
     /// budget.
     pub fn host_future_pending(&self) -> bool {
         !self.host_tasks.is_empty()
+    }
+
+    /// Count one nested turn the suspend seam ran.
+    pub fn note_nested_turn(&mut self) {
+        self.nested_turns = self.nested_turns.saturating_add(1);
+    }
+
+    /// How many nested turns the suspend seam has run, ever. A
+    /// suspension a provider serves runs none.
+    pub fn nested_turns(&self) -> u64 {
+        self.nested_turns
+    }
+
+    /// Keep `thread`, which suspended in the provider, until it
+    /// resumes. Each suspension takes the next number of the store's
+    /// order of suspension, a thread that suspends again included.
+    pub fn park_thread(&mut self, thread: ThreadId, mut parked: ParkedThread<T>) {
+        self.parked_count = self.parked_count.saturating_add(1);
+        parked.number = self.parked_count;
+        self.parked.insert(thread, parked);
+    }
+
+    /// The threads suspended in the provider, in the order they last
+    /// suspended.
+    pub fn parked_in_order(&self) -> Vec<ThreadId> {
+        let mut parked: Vec<(u64, ThreadId)> = self
+            .parked
+            .iter()
+            .map(|(thread, parked)| (parked.number, *thread))
+            .collect();
+        parked.sort_unstable_by_key(|(number, _)| *number);
+        parked.into_iter().map(|(_, thread)| thread).collect()
+    }
+
+    /// Take `thread` out of the parked threads to resume it. `None`
+    /// when it is not parked, which is the case for a thread whose
+    /// task ended while it waited.
+    pub fn take_parked_thread(&mut self, thread: ThreadId) -> Option<ParkedThread<T>> {
+        self.parked.remove(&thread)
+    }
+
+    /// Whether `thread` is suspended in the provider.
+    pub fn is_parked(&self, thread: ThreadId) -> bool {
+        self.parked.contains_key(&thread)
+    }
+
+    /// How many threads are suspended in the provider.
+    pub fn parked_threads(&self) -> usize {
+        self.parked.len()
+    }
+
+    /// Mark the resumption of the parked `thread` queued, and answer
+    /// its task and the number of the suspension it resumes. `None`
+    /// when the thread is not parked or its resumption is queued
+    /// already.
+    pub fn queue_resumption(&mut self, thread: ThreadId) -> Option<(TaskId, u64)> {
+        let parked = self.parked.get_mut(&thread)?;
+        if parked.queued {
+            return None;
+        }
+        parked.queued = true;
+        Some((parked.task, parked.number))
+    }
+
+    /// The number of the suspension `thread` is parked in, when it is
+    /// parked.
+    pub fn parked_number(&self, thread: ThreadId) -> Option<u64> {
+        self.parked.get(&thread).map(|parked| parked.number)
+    }
+
+    /// Name `thread` as the one to run next, once the thread that is
+    /// suspending now has left the real stack. This is the switch of
+    /// the reference's `Thread.resume` loop: the frame that resumed
+    /// the switching thread runs the named thread before anything
+    /// else.
+    pub fn name_next_thread(&mut self, thread: ThreadId) {
+        self.next_thread = Some(thread);
+    }
+
+    /// Take the thread a switch named to run next.
+    pub fn take_next_thread(&mut self) -> Option<ThreadId> {
+        self.next_thread.take()
+    }
+
+    /// Record the blocking built-in `thread` waits in, from the try
+    /// part that began the wait to the finish part that ends it.
+    pub fn begin_block(&mut self, thread: ThreadId, block: PendingBlock<T>) {
+        self.blocks.insert(thread, block);
+    }
+
+    /// The condition of the blocking built-in `thread` waits in,
+    /// when it waits in one.
+    pub fn block_readiness(&self, thread: ThreadId) -> Option<Readiness> {
+        self.blocks.get(&thread).map(|block| block.readiness)
+    }
+
+    /// Take the blocking built-in `thread` waits in, to finish it.
+    pub fn end_block(&mut self, thread: ThreadId) -> Option<PendingBlock<T>> {
+        self.blocks.remove(&thread)
+    }
+
+    /// Keep the results of a blocking built-in whose try part found
+    /// it done, for the finish part the shim calls next.
+    pub fn keep_ready_block(&mut self, values: Vec<RuntimeVal>) {
+        self.ready_block = Some(values);
+    }
+
+    /// Take the results a try part kept.
+    pub fn take_ready_block(&mut self) -> Option<Vec<RuntimeVal>> {
+        self.ready_block.take()
     }
 
     /// The store's one suspend capability: the seam a blocking
@@ -1098,7 +1234,23 @@ impl<T: 'static> Scheduler<T> {
     /// `waitable-set.drop` traps on a set a thread still waits on,
     /// so a tally left standing would make the set undroppable for
     /// the life of the instance.
-    pub fn discard_task_items(&mut self, tables: &mut TaskTables, task: TaskId) {
+    ///
+    /// A thread of the task that is suspended in the provider is the
+    /// task's pending work too, and it leaves with the task, never
+    /// resumed. The blocking built-in it waits in has done its first
+    /// part, which holds something back in the same way a held
+    /// callback does: a raised tally of waiters, a synchronous
+    /// waiter on an end, a host task parked for a synchronous lower,
+    /// a callee's task. The sweep cannot give that back itself: the
+    /// finish part that does runs with the store, and the tables are
+    /// locked here. It hands each such thread back, with the built-in
+    /// it waits in, and the caller finishes them once the lock is
+    /// released, through `release_discarded_threads` on the store.
+    pub fn discard_task_items(
+        &mut self,
+        tables: &mut TaskTables,
+        task: TaskId,
+    ) -> Vec<(ThreadId, ParkedThread<T>, Option<PendingBlock<T>>)> {
         let names_task = |item: &Item<T>| item.task() == Some(task);
         if self.switch_slot.as_ref().is_some_and(&names_task) {
             self.switch_slot = None;
@@ -1131,6 +1283,25 @@ impl<T: 'static> Scheduler<T> {
                 let _ = tables.end_wait(set, thread);
             }
         }
+        // A thread of the task that is suspended in the provider is
+        // never resumed. Its continuation stays in the switch
+        // module's table unresumed until the store drops or a later
+        // thread takes its slot. The threads go back in the order
+        // they last suspended, as the idle driver fails them.
+        let mut parked: Vec<(u64, ThreadId)> = self
+            .parked
+            .iter()
+            .filter(|(_, parked)| parked.task == task)
+            .map(|(thread, parked)| (parked.number, *thread))
+            .collect();
+        parked.sort_unstable_by_key(|(number, _)| *number);
+        parked
+            .into_iter()
+            .filter_map(|(_, thread)| {
+                let parked = self.parked.remove(&thread)?;
+                Some((thread, parked, self.blocks.remove(&thread)))
+            })
+            .collect()
     }
 
     /// The reference's `has_backpressure`, for one waiting task.
