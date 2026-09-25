@@ -280,9 +280,12 @@ cm/values/post-return.wast:254 cascade expected a trap `cannot leave component i
 cm/values/post-return.wast:255 cascade no definition named `Tester`
 cm/values/post-return.wast:256 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
 cm/values/variants.wast:186 deferred-feature the invoked export is lifted stackfully: unsupported component feature: stackful asynchronous lifts (`canon lift async` without a callback)
+fixtures/wasi-http-same-instance.wast:4 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `wasi:http/types@0.3.0`: no registered linker instance satisfies import `wasi:http/types@0.3.0`
+fixtures/wasi-http-same-instance.wast:2128 cascade no instance to invoke (given a host for `wasi:http/types`, `drain` traps here on the spec's temporary same-instance rule for a non-number payload; it passes once the spec lifts that rule)
+fixtures/wasi-http-same-instance.wast:2131 cascade no instance to invoke (given a host for `wasi:http/types`, `drain` traps here on the spec's temporary same-instance rule for a non-number payload; it passes once the spec lifts that rule)
 fixtures/wasi-http.wast:4 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `wasi:http/types@0.3.0`: no registered linker instance satisfies import `wasi:http/types@0.3.0`
-fixtures/wasi-http.wast:2121 cascade no instance to invoke
-fixtures/wasi-http.wast:2124 cascade no instance to invoke
+fixtures/wasi-http.wast:2246 cascade no instance to invoke
+fixtures/wasi-http.wast:2249 cascade no instance to invoke
 wasmtime/alias-region-known-imported-entities.wast:13 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref i31) is not supported in the wasm_runtime_layer
 wasmtime/alias-region-known-imported-entities.wast:64 cascade no instance to invoke
 wasmtime/alias-region-known-imported-entities.wast:65 cascade no instance to invoke

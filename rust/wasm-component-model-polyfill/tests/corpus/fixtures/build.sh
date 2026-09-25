@@ -160,6 +160,15 @@ rust_components wasi-http handler
 cp "$work/wasi-http-handler.wasm" wasi-http/handler.wasm
 emit_wast wasi-http handler wasi-http/handler.wasm
 
+# wasi-http-same-instance: the `wasi-http` fixture as first written,
+# kept as a tripwire on the spec. Its `drain` resolves a
+# `future<result<_, error-code>>` whose two ends one instance holds,
+# which the Component Model traps, as a temporary rule, for a payload
+# that is not a number type.
+rust_components wasi-http-same-instance handler
+cp "$work/wasi-http-same-instance-handler.wasm" wasi-http-same-instance/handler.wasm
+emit_wast wasi-http-same-instance handler wasi-http-same-instance/handler.wasm
+
 # The harness manifest: one `corpus_test!` per `.wast` under the corpus
 # and the table the progress summary reads. A fixture's own directory
 # holds only sources (its `assertions.wast` is not a runnable script), so

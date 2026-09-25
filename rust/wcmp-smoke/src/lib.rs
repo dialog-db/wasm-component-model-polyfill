@@ -1266,17 +1266,18 @@ async fn rich_world(engine: &Engine) -> Result<String, String> {
 /// response types from, which only a host supplies.
 const WASI_HTTP_TYPES: &str = "wasi:http/types@0.3.0";
 
-/// The `wasi-http` fixture holds a target rather than a result: the
-/// polyfill translates the handler, whose request and response carry
-/// streams and futures and whose binding layer links the cancel
-/// built-ins, but this step supplies no host for `wasi:http/types`.
-/// So the step asserts that instantiation stops at link and names
-/// that import, as `tests/corpus/expected-failures.txt` does for the
-/// fixture's directives. Matching the import rather than any error
-/// keeps an unrelated decode or translation bug from passing as the
-/// expected failure. Once a host supplies the import through the
-/// host surface, this step takes the call the fixture's assertions
-/// describe.
+/// The polyfill runs the `wasi-http` handler, whose request and
+/// response carry streams and futures and whose binding layer links
+/// the cancel built-ins, once a host supplies `wasi:http/types`; the
+/// polyfill's repository test `baseline_wasi_http_handler` does that
+/// and calls both exports. This step supplies no such host, so it
+/// asserts that the polyfill translates the handler and that
+/// instantiation stops at link and names that import, as
+/// `tests/corpus/expected-failures.txt` does for the fixture's
+/// directives. Matching the import rather than any error keeps an
+/// unrelated decode or translation bug from passing as the expected
+/// failure. Once the smoke host supplies the import, this step takes
+/// the call the fixture's assertions describe.
 async fn wasi_http(engine: &Engine) -> Result<String, String> {
     let component = Component::new(engine, WASI_HTTP)
         .await

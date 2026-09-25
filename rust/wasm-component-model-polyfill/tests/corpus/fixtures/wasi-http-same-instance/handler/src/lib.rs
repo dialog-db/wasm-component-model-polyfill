@@ -14,40 +14,33 @@ wit_bindgen::generate!({
 });
 
 use wasi::http::types::{ErrorCode, Fields, Request, Response};
-use wit_bindgen::FutureReader;
 
 struct Handler;
 
 impl Guest for Handler {
     /// Write `bytes` into a `stream<u8>`, read them back out, and
-    /// resolve a `future` with the count written beside them, so the
-    /// call needs the async lift, the stream and future built-ins, and
-    /// the task built-ins and nothing else. The future carries a `u32`
-    /// because this one instance holds both of its ends, and the
-    /// Component Model traps such a copy when the payload is not a
-    /// number. A count other than the bytes read back traps, and so
-    /// does a future dropped unwritten, whose default is no count a
-    /// `list<u8>` can have, so neither passes for an empty input.
+    /// resolve a `future` beside them, so the call needs the async
+    /// lift, the stream and future built-ins, and the task built-ins
+    /// and nothing else.
     async fn drain(bytes: Vec<u8>) -> Vec<u8> {
         let (mut writer, reader) = wit_stream::new::<u8>();
-        let (done, finished) = wit_future::new::<u32>(|| u32::MAX);
+        let (done, finished) = wit_future::new::<Result<(), ErrorCode>>(|| Ok(()));
         wit_bindgen::spawn_local(async move {
-            let total = bytes.len();
             let undelivered = writer.write_all(bytes).await;
             drop(writer);
-            let _ = done.write((total - undelivered.len()) as u32).await;
+            let _ = done
+                .write(if undelivered.is_empty() {
+                    Ok(())
+                } else {
+                    Err(ErrorCode::InternalError(None))
+                })
+                .await;
         });
         let collected = reader.collect().await;
-        assert!(
-            finished.await as usize == collected.len(),
-            "`drain` read back a count other than it wrote"
-        );
-        collected
-    }
-
-    /// Drop the future: the export is there to name its type.
-    fn count(written: FutureReader<u32>) {
-        drop(written);
+        match finished.await {
+            Ok(()) => collected,
+            Err(_) => Vec::new(),
+        }
     }
 }
 

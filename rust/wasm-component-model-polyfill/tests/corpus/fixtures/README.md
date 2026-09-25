@@ -14,24 +14,26 @@ A `.wast` here is the final component as a `(component $name binary
 
 ## The fixtures
 
-| Fixture       | Sources                                                                 | Build                                                                          |
-| ------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `guest`       | `guest/guest.wit` (world `guest`), `guest/guest.wat`                    | `wasm-tools component embed --world guest`, then `wasm-tools component new`     |
-| `composition` | `composition/math.wit` (worlds `plug` and `socket`), two `.wat` modules | each world as above, then `wac plug --plug plug.wasm socket.wasm`              |
-| `maps`        | `maps/maps.wit` (world `maps`), `maps/maps.wat`                         | as `guest`                                                                      |
-| `fixed-lists` | `fixed-lists/fixed-lists.wit`, `fixed-lists/fixed-lists.wat`            | as `guest`                                                                      |
-| `rich`        | `rich/wit/rich.wit`, three Rust crates                                  | `cargo build`, `wasm-tools component new`, then two `wac plug` steps           |
-| `wasi-http`   | `wasi-http/wit/` (WASI 0.3 packages), one Rust crate                    | `cargo build`, then `wasm-tools component new`                                 |
+| Fixture                   | Sources                                                                 | Build                                                                          |
+| ------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `guest`                   | `guest/guest.wit` (world `guest`), `guest/guest.wat`                    | `wasm-tools component embed --world guest`, then `wasm-tools component new`    |
+| `composition`             | `composition/math.wit` (worlds `plug` and `socket`), two `.wat` modules | each world as above, then `wac plug --plug plug.wasm socket.wasm`              |
+| `maps`                    | `maps/maps.wit` (world `maps`), `maps/maps.wat`                         | as `guest`                                                                     |
+| `fixed-lists`             | `fixed-lists/fixed-lists.wit`, `fixed-lists/fixed-lists.wat`            | as `guest`                                                                     |
+| `rich`                    | `rich/wit/rich.wit`, three Rust crates                                  | `cargo build`, `wasm-tools component new`, then two `wac plug` steps           |
+| `wasi-http`               | `wasi-http/wit/` (WASI 0.3 packages), one Rust crate                    | `cargo build`, then `wasm-tools component new`                                 |
+| `wasi-http-same-instance` | as `wasi-http`, as first written                                        | as `wasi-http`                                                                 |
 
 `build.sh` records the exact commands. The final `.wasm` of each
 fixture is checked in next to its sources.
 
 ## The Rust fixtures
 
-`rich` and `wasi-http` are built by a language toolchain, so the
-binding layer is the one a real guest carries: `cabi_realloc` from the
-allocator, wit-bindgen's lift and lower code, and — for `wasi-http` —
-a `wasi:` world's imports.
+`rich`, `wasi-http`, and `wasi-http-same-instance` are built by a
+language toolchain, so the binding layer is the one a real guest
+carries: `cabi_realloc` from the allocator, wit-bindgen's lift and
+lower code, and — for the two `wasi-http` fixtures — a `wasi:` world's
+imports.
 
 Their cargo metadata is spelled `cargo-workspace.toml`,
 `cargo-lock.toml`, and `<component>/cargo-manifest.toml` rather than
@@ -102,24 +104,14 @@ holds the WASI 0.3 packages verbatim, copied from
 commit `358ee7665bff` — the revision this flake's `wasmtime-src` input
 pins.
 
-The polyfill refuses the component today, so the definition directive
-is a `deferred-feature` expectation in
-`tests/corpus/expected-failures.txt` and the assertions behind it are
+The component imports `wasi:http/types@0.3.0`, and the conformance
+harness registers no host for it. The definition directive therefore
+fails at link, a `deferred-feature` expectation in
+`tests/corpus/expected-failures.txt`, and the assertions behind it are
 `cascade` lines, which is how the corpus records a directive that
-fails as bookkeeping after an earlier one. The fixture's job until
-then is to hold the target. A real WASI 0.3 guest needs all of this
-from the polyfill, and the list is the one to work down:
-
-- the asynchronous lift form for an `async func` export, in both its
-  callback and its stackful shapes;
-- the `stream<T>` built-ins: `stream.new`, `stream.read`,
-  `stream.write`, `stream.cancel-read`, `stream.cancel-write`,
-  `stream.drop-readable`, `stream.drop-writable`;
-- the `future<T>` built-ins, the same seven over a single value;
-- `error-context`, which `wasi:http`'s streams report their failures
-  through;
-- the task built-ins an `async` export uses to wait on them:
-  `task.return`, `waitable-set.*`, `subtask.*`, and cancellation.
+fails as bookkeeping after an earlier one. The repository test
+`tests/baseline_wasi_http_handler.rs` supplies the interface through
+the linker and calls both exports.
 
 `wasi:http/handler@0.3.0` lives inside an exported instance, and a
 `request` is a resource. The harness resolves an `invoke` against
@@ -127,8 +119,39 @@ root-level exports, as Wasmtime's wast runner does, and `wast` has no
 syntax for a resource value, so no directive can hand the handler a
 request. The world exports `drain` beside the handler for that reason:
 the same body-and-trailers machinery in a signature a directive can
-call, naming no `wasi:http` type, so its two assertions turn green on
-the async lift and the stream and future built-ins alone.
+call, naming no `wasi:http` type. `drain` resolves a `future<u32>`
+with the count of bytes it wrote, not the handler's
+`future<result<_, error-code>>`. The Component Model traps, as a
+temporary rule, a copy between two ends of a stream or future that one
+instance holds when the payload is not a number type, and `drain`
+holds both ends. A wit-bindgen guest can create only the future types
+a function of its world names, so the world also exports `count`,
+which takes a `future<u32>` and drops it. `drain` traps when the count
+differs from the bytes it read back, and when the future is dropped
+unwritten, so an empty input cannot pass on a missing count.
+
+### `wasi-http-same-instance`
+
+The `wasi-http` fixture as first written, kept as a tripwire on the
+spec. Its `handler.wit`, `lib.rs`, cargo metadata, and `wit/deps/` are
+the first version's, and its `drain` resolves a
+`future<result<_, error-code>>` whose two ends the one instance holds.
+The Component Model traps that copy because the payload is not a
+number type. The spec marks that rule as temporary, so the fixture
+records the day the rule is lifted: its `drain` then returns.
+
+Its `handler.wasm` is byte for byte the first version of the
+`wasi-http` fixture's. A panic location in the handler names its
+source relative to the cargo workspace, as `handler/src/lib.rs`, so
+the fixture's directory name does not reach the binary.
+
+Like `wasi-http`, it imports `wasi:http/types@0.3.0`, so under the
+harness its definition fails at link and its `drain` directives
+cascade. `tests/corpus/expected-failures.txt` notes on those lines
+that `drain` traps on the same-instance rule once a host supplies the
+interface. The repository test `tests/baseline_wasi_http_handler.rs`
+supplies it, calls `drain`, and asserts the trap, so that test fails
+when the polyfill stops trapping the copy.
 
 ## What the byte-stability claim covers
 
@@ -146,15 +169,15 @@ store hash that differs per platform and per nixpkgs revision, so
 without the remap the same sources would build to different bytes on
 a different machine.
 
-Four families of absolute path survive the remaps, and both Rust
-fixtures carry all four:
+Four families of absolute path survive the remaps, and every Rust
+fixture carries all four:
 
 - `/rust/lib/rustlib/src/rust/library/...`, the standard library
   sources the toolchain ships, caught by the sysroot remap.
 - `/cargo/registry/src/index.crates.io-<hash>/<crate>-<version>/...`,
-  caught by the registry remap: `wit-bindgen-0.62.0` in both binaries,
-  and `futures-core-0.3.34` and `futures-util-0.3.34` in
-  `handler.wasm` as well.
+  caught by the registry remap: `wit-bindgen-0.62.0` in every binary,
+  and `futures-core-0.3.34` and `futures-util-0.3.34` in both
+  `handler.wasm` files as well.
 - `/rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/...`, which
   no remap here touches. The precompiled standard library the
   toolchain ships was built with that remap already applied upstream,
@@ -163,8 +186,8 @@ fixtures carry all four:
   upstream: the Rust build remaps the dependencies it vendors to
   `/rust/deps`, which shares a prefix with the sysroot remap's `/rust`
   by coincidence rather than coming from it. `dlmalloc` is the
-  allocator behind `cabi_realloc` on `wasm32-unknown-unknown`, so both
-  fixtures reach it.
+  allocator behind `cabi_realloc` on `wasm32-unknown-unknown`, so every
+  Rust fixture reaches it.
 
 The last two are machine-independent for the same reason as the first
 two: they name a toolchain, not a filesystem. `rust-toolchain.toml`

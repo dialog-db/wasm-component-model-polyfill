@@ -11,14 +11,9 @@ world handler {
   export wasi:http/handler@0.3.0;
 
   /// The same body-and-trailers machinery in a signature a `.wast`
-  /// directive can call: no `wasi:http` type appears in it. Its future
-  /// carries a `u32`, the count of bytes written, because the
-  /// Component Model traps a copy between two ends one instance holds
-  /// when the payload is not a number, and `drain` holds both ends.
+  /// directive can call: no `wasi:http` type appears in it, so the
+  /// assertion beside it turns green on the async lift and the stream
+  /// and future built-ins alone, without a host implementation of
+  /// `wasi:http/types@0.3.0`.
   export drain: async func(bytes: list<u8>) -> list<u8>;
-
-  /// Names the `future<u32>` that `drain` resolves beside its stream.
-  /// A wit-bindgen guest can create only the future types a function
-  /// of its world names. The guest drops the future it is handed.
-  export count: func(written: future<u32>);
 }

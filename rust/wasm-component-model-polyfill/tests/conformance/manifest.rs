@@ -73,6 +73,7 @@ corpus_test!(it_passes_fixtures_fixed_lists, "fixtures/fixed-lists.wast");
 corpus_test!(it_passes_fixtures_guest, "fixtures/guest.wast");
 corpus_test!(it_passes_fixtures_maps, "fixtures/maps.wast");
 corpus_test!(it_passes_fixtures_rich, "fixtures/rich.wast");
+corpus_test!(it_passes_fixtures_wasi_http_same_instance, "fixtures/wasi-http-same-instance.wast");
 corpus_test!(it_passes_fixtures_wasi_http, "fixtures/wasi-http.wast");
 corpus_test!(it_passes_wasmtime_adapter, "wasmtime/adapter.wast");
 corpus_test!(it_passes_wasmtime_alias_region_known_imported_adapter_memory, "wasmtime/alias-region-known-imported-adapter-memory.wast");
@@ -239,6 +240,7 @@ const CORPUS_FILES: &[(&str, &str)] = &[
     ("fixtures/guest.wast", include_str!("../corpus/fixtures/guest.wast")),
     ("fixtures/maps.wast", include_str!("../corpus/fixtures/maps.wast")),
     ("fixtures/rich.wast", include_str!("../corpus/fixtures/rich.wast")),
+    ("fixtures/wasi-http-same-instance.wast", include_str!("../corpus/fixtures/wasi-http-same-instance.wast")),
     ("fixtures/wasi-http.wast", include_str!("../corpus/fixtures/wasi-http.wast")),
     ("wasmtime/adapter.wast", include_str!("../corpus/wasmtime/adapter.wast")),
     ("wasmtime/alias-region-known-imported-adapter-memory.wast", include_str!("../corpus/wasmtime/alias-region-known-imported-adapter-memory.wast")),

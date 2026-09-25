@@ -185,15 +185,19 @@ test), and writes both as JSON to `$CARGO_TARGET_DIR/conformance/`.
 
 `fixtures/` holds components built with the component toolchain rather
 than written as `.wast` by hand: four from a core module in WAT, and
-two — `rich` and `wasi-http` — from Rust crates that `cargo` and
-wit-bindgen build, so the binding layer is the one a real guest
-carries. The `fixtures` menu command runs `fixtures/build.sh` with the
+three — `rich`, `wasi-http`, and `wasi-http-same-instance` — from Rust
+crates that `cargo` and wit-bindgen build, so the binding layer is the
+one a real guest carries. `wasi-http-same-instance` is the WASI 0.3
+handler as first written. Its `drain` copies a non-number payload
+between two ends one instance holds, which the spec traps under a
+rule it marks as temporary. The fixture is kept so that lifting the
+rule shows up in the tests. The `fixtures` menu command runs `fixtures/build.sh` with the
 flake's pinned tools and regenerates every output byte for byte,
 including the harness manifest. Each fixture directory holds the
 sources; the `.wast` next to it is generated and runs under the
 harness like the vendored corpora. `fixtures/README.md` documents each
-fixture, the pinned tools, and what the WASI 0.3 handler still needs
-from the polyfill.
+fixture, the pinned tools, and why both WASI 0.3 handlers stop at
+link under the harness.
 
 `wast` has no syntax for a `map` value or a fixed-length list value.
 A directive spells a map as a list of two-element tuples, the map's
