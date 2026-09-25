@@ -469,14 +469,34 @@ below the current frame cannot run, and fails with the stack-switch cause.
 When a block cannot progress and its condition is unmet, the seam reports the
 first cause that holds:
 
-1. The cannot-block cause, if a task that must not block is in progress. The
-   reference forbids that block on every target.
+1. The cannot-block cause, if the blocked thread's own instance must not suspend
+   and no other thread of that instance is ready. The reference forbids that
+   block on every target.
 2. The stack-switch cause, if a nested start lies between the blocked thread and
    the base of the real stack. A provider returns control below that point, so
    only the target's capability is missing.
 3. The stack-switch cause, if a host task is pending.
 4. The deadlock cause in every other case. Then no frame below can move, and
    nothing in the store can meet the condition.
+
+The first rule is scoped to one instance, as in the reference and in Wasmtime.
+An instance must not suspend while a sync-typed call into it is in progress. A
+sync-typed call in another instance of the store does not make this block fail.
+The reference traps a sync-typed call only when it blocks before it returns a
+value and no other thread of the same instance is ready ([CanonicalABI – canon
+lift]). Wasmtime keeps a do-not-suspend flag on each instance and reads only the
+blocked thread's own instance ([Wasmtime may-not-suspend]).
+
+A start intrinsic that begins an async-typed callee clears that flag on the
+callee's instance until the callee returns or suspends. The callee may then
+suspend, because its suspension returns control to its caller, and the caller
+can go on without a block. Wasmtime does the same ([Wasmtime async-typed
+start]). The polyfill follows both rules.
+
+The store-wide view has one use. When a driver's store goes idle with work left,
+the error names the cannot-block cause if any instance in the store must not
+suspend, and the deadlock cause if none must. This is how Wasmtime names the
+error of an idle store ([Wasmtime idle store]).
 
 The second rule is new. It covers a callee that runs above its caller on the
 real stack and waits for work only that caller does. The store marks each nested
@@ -817,6 +837,8 @@ runs the corpus in all four states and each state is green against its lists.
   https://github.com/WebAssembly/component-model/blob/main/design/mvp/Concurrency.md#stackful-async-exports
 [CanonicalABI – thread built-ins]:
   https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md#-canon-threadindex
+[CanonicalABI – canon lift]:
+  https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md#canon-lift
 [`definitions.py`]:
   https://github.com/WebAssembly/component-model/blob/main/design/mvp/canonical-abi/definitions.py
 [Wasmtime]: https://github.com/bytecodealliance/wasmtime
@@ -824,6 +846,10 @@ runs the corpus in all four states and each state is green against its lists.
   https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/environ/src/trap_encoding.rs
 [Wasmtime may-not-suspend]:
   https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent.rs#L2047-L2073
+[Wasmtime async-typed start]:
+  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent.rs#L3249-L3262
+[Wasmtime idle store]:
+  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent.rs#L1402-L1415
 [Wasmtime activations]:
   https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/vm/traphandlers.rs#L1206-L1215
 [Wasmtime stack switching]:
