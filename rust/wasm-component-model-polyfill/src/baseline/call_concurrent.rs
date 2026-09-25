@@ -161,14 +161,10 @@ const SYNC_STEPS: &[u8] = component!(
 /// turn held to that instance's own ready work — which is where a
 /// call into either export queued behind it starts.
 ///
-/// Which export the second call enters decides whether the component
-/// runs the same way on both targets. A call into `step` runs no
-/// host function the block is inside, so it does. A call into
-/// `give-way` reaches `thread.yield` while the first call's
-/// `thread.yield` is still on the stack, and the browser cannot call
-/// a host function twice over: there it fails with the re-entrant
-/// cause and natively it returns. The two tests below take one case
-/// each.
+/// A call into `step` runs no host function the block is inside. A
+/// call into `give-way` reaches `thread.yield` while the first
+/// call's `thread.yield` is still on the stack, which both backends
+/// serve. The two tests below take one case each.
 const SYNC_YIELDS: &[u8] = component!(
     r#"
     (component
@@ -698,7 +694,7 @@ async fn it_starts_a_queued_synchronous_call_inside_the_first_tasks_nested_turn(
 }
 
 #[wcmp_macros::test]
-async fn it_refuses_a_queued_call_that_re_enters_the_import_the_block_is_inside() {
+async fn it_runs_a_queued_call_that_re_enters_the_import_the_block_is_inside() {
     let (mut store, instance, log) = instantiate(SYNC_YIELDS).await;
     let give_way = func(&instance, "give-way");
 
@@ -713,62 +709,16 @@ async fn it_refuses_a_queued_call_that_re_enters_the_import_the_block_is_inside(
         "the first call blocks, its nested turn runs the second call's start, \
          and it returns whatever became of that"
     );
-    assert_reentrant_call(calls.second, entries(&log));
-}
-
-/// What the second call into `give-way` answers, and what the two
-/// tasks logged, on a target whose host functions can be called at
-/// any depth.
-///
-/// The second task's `thread.yield` is an ordinary call there, so
-/// the task gives way to nothing, logs its way out, and returns.
-#[cfg(not(target_arch = "wasm32"))]
-fn assert_reentrant_call(second: Result<Box<[Val]>>, log: Vec<u32>) {
     assert_eq!(
-        second.expect("the second call resolves").as_ref(),
+        calls.second.expect("the second call resolves").as_ref(),
         [Val::U32(100)],
-        "a native engine calls a host function already on the stack, so the \
+        "both backends call a host function already on the stack, so the \
          second task's own yield returns and the task runs to its end"
     );
     assert_eq!(
-        log,
+        entries(&log),
         vec![1, 10, 11, 2],
         "the second task ran to its return inside the first task's block"
-    );
-}
-
-/// What the second call into `give-way` answers, and what the two
-/// tasks logged, in the browser.
-///
-/// The first call's `thread.yield` is still on the stack, and the
-/// browser has one JavaScript function object per host function, so
-/// the second task's yield is a call the backend refuses. The guest
-/// traps where it called the import, the failure reaches this call
-/// as the cause that names the limitation, and the first call —
-/// whose block the refusal did not touch — returns as it does
-/// natively.
-#[cfg(target_arch = "wasm32")]
-fn assert_reentrant_call(second: Result<Box<[Val]>>, log: Vec<u32>) {
-    use crate::SchedulerCause;
-
-    let failure = second.expect_err("the second call fails");
-    assert!(
-        matches!(failure, Error::Scheduler(SchedulerCause::ReentrantHostCall)),
-        "the second task called the host function its caller's block is \
-         inside, which this target refuses: {failure}"
-    );
-    assert!(
-        failure
-            .to_string()
-            .contains(&SchedulerCause::ReentrantHostCall.to_string()),
-        "the failure carries the cause's own message, which names the \
-         limitation: {failure}"
-    );
-    assert_eq!(
-        log,
-        vec![1, 10, 2],
-        "the second task logged its way in and trapped at the yield, and the \
-         first task logged its way out afterwards"
     );
 }
 

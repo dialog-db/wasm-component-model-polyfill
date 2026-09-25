@@ -1,6 +1,4 @@
 use alloc::{vec, vec::Vec};
-use core::cell::RefCell;
-use core::fmt;
 
 use anyhow::{Context, Result};
 use js_sys::{Array, Function};
@@ -85,69 +83,20 @@ macro_rules! to_ty {
     };
 }
 
-/// PATCH (wcmp): the failure a host function answers a call made
-/// while a call of that same function is still on the stack.
-///
-/// The browser has one JavaScript function object per host function,
-/// and the Rust body behind it is entered through a `wasm_bindgen`
-/// closure. A closure that is already running cannot be entered
-/// again: the arguments and the results buffer of a call belong to
-/// that call alone. The wrappers below therefore refuse the second
-/// call rather than let it in, and the guest that made it sees a
-/// thrown error carrying this message.
-///
-/// The refusal is this backend's and no other's. A native engine
-/// calls the same host function at any depth, so a caller that reads
-/// this error is reading something the web target alone produces,
-/// and can say so.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ReentrantHostCall;
-
-impl ReentrantHostCall {
-    /// What the failure says, which is also the message of the
-    /// exception the guest sees.
-    pub const MESSAGE: &'static str =
-        "this backend cannot call a host function while a call of the same host \
-         function is still on the stack";
-}
-
-impl fmt::Display for ReentrantHostCall {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(Self::MESSAGE)
-    }
-}
-
-impl core::error::Error for ReentrantHostCall {}
-
-/// PATCH (wcmp): refuse a re-entrant call of a host function, and
-/// answer the JS exception the guest is given.
-///
-/// The failure is recorded on the store first, under the rule
-/// [`StoreInner::pending_host_error`] states: the exception travels
-/// through guest code that may catch it and re-trap, and the outer
-/// call reports the first failure of the call rather than whatever
-/// ended it. A caller that wants to tell this failure from any other
-/// downcasts that error to [`ReentrantHostCall`].
-fn refuse_reentrant_call<T: 'static>(store_ptr: *mut ()) -> JsValue {
-    // Safety: as in the wrappers below, the pointer is the store the
-    // closure was created in, it outlives every call of that closure,
-    // and no reference to it escapes this function.
-    let store: &mut StoreInner<T> = unsafe { &mut *(store_ptr as *mut StoreInner<T>) };
-    if store.pending_host_error.is_none() {
-        store.pending_host_error = Some(anyhow::Error::new(ReentrantHostCall));
-    }
-    js_sys::Error::new(&format!("host function failed: {ReentrantHostCall}")).into()
-}
-
 /// Creates a variable argument wrapper around a host function
 macro_rules! func_wrapper {
     ($store: ident, $func_ty: ident, $func: ident, $($idx: tt => $ident: ident),*) => {{
         let ty = $func_ty.clone();
-        // PATCH (wcmp): the body of the call, behind a `RefCell` the
-        // shim below borrows for the length of one call. A call made
-        // while that borrow is out is a re-entrant call, which this
-        // backend refuses; see `refuse_reentrant_call`.
-        let body = RefCell::new(move |$($ident: JsValue),*| -> Result<JsValue, JsValue> {
+        // PATCH (wcmp): the shim is a shared closure and not a
+        // `FnMut` one. `wasm_bindgen` clears the pointer of a
+        // mutable closure for the length of a call and throws
+        // "closure invoked recursively or after being dropped" from
+        // inside a second one. A shared closure is entered at any
+        // depth, and nothing in it needs exclusive access: `$func`
+        // is `Fn`, and the arguments and results of a call live in
+        // that call's own frame, so a host function already on the
+        // stack is entered again as a native engine enters it.
+        let closure: Closure<dyn Fn($(to_ty!($ident)),*) -> Result<JsValue, JsValue>> = Closure::new(move |$($ident: JsValue),*| -> Result<JsValue, JsValue> {
             // Safety:
             //
             // This closure is stored inside the store.
@@ -184,22 +133,6 @@ macro_rules! func_wrapper {
                     Err(js_sys::Error::new(&message).into())
                 }
             }
-        });
-
-        // PATCH (wcmp): the shim is a shared closure and not a
-        // `FnMut` one. `wasm_bindgen` clears the pointer of a
-        // mutable closure for the length of a call and throws
-        // "closure invoked recursively or after being dropped" from
-        // inside the second one, which carries neither a cause a
-        // caller can act on nor anything the store recorded. A
-        // shared closure is entered at any depth, so the borrow
-        // above is what detects the re-entrant call and
-        // `refuse_reentrant_call` is what answers it.
-        let closure: Closure<dyn Fn($(to_ty!($ident)),*) -> Result<JsValue, JsValue>> = Closure::new(move |$($ident: JsValue),*| {
-            let Ok(mut body) = body.try_borrow_mut() else {
-                return Err(refuse_reentrant_call::<T>($store));
-            };
-            (*body)($($ident),*)
         });
 
         let func = closure.as_ref().unchecked_ref::<Function>().clone();
@@ -251,12 +184,12 @@ extern "C" {
 fn variadic_wrapper<T: 'static>(
     store_ptr: *mut (),
     func_ty: FuncType,
-    mut func: impl 'static + FnMut(StoreContextMut<T>, &FuncType, &[Val<Engine>]) -> Result<JsValue>,
+    func: impl 'static + Fn(StoreContextMut<T>, &FuncType, &[Val<Engine>]) -> Result<JsValue>,
 ) -> (DropResource, Function) {
     let ty = func_ty.clone();
-    // PATCH (wcmp): the body behind a `RefCell`, and the shim a
-    // shared closure, for the reason `func_wrapper!` states.
-    let body = RefCell::new(move |values: Array| -> Result<JsValue, JsValue> {
+    // PATCH (wcmp): a shared closure, entered at any depth, for the
+    // reason `func_wrapper!` states.
+    let closure: Closure<dyn Fn(Array) -> Result<JsValue, JsValue>> = Closure::new(move |values: Array| -> Result<JsValue, JsValue> {
         // Safety: as in `func_wrapper!`, the closure is stored
         // inside the store and produces no reference to it.
         let store: &mut StoreInner<T> = unsafe { &mut *(store_ptr as *mut StoreInner<T>) };
@@ -290,13 +223,6 @@ fn variadic_wrapper<T: 'static>(
             }
         }
     });
-    let closure: Closure<dyn Fn(Array) -> Result<JsValue, JsValue>> =
-        Closure::new(move |values: Array| {
-            let Ok(mut body) = body.try_borrow_mut() else {
-                return Err(refuse_reentrant_call::<T>(store_ptr));
-            };
-            (*body)(values)
-        });
 
     let func = collect_arguments(closure.as_ref());
     (DropResource::new(closure), func)
@@ -334,12 +260,19 @@ impl WasmFunc<Engine> for Func {
         // live as long as this closure
         let store_ptr = store_ptr as *mut ();
 
-        let mut res = vec![Val::I32(0); ty.results().len()];
+        // PATCH (wcmp): each call gets a results buffer of its own.
+        // Upstream allocates one buffer per host function and
+        // captures it here, which makes the body `FnMut` and lets a
+        // second call of the same function write over the results of
+        // a first one still on the stack.
+        let result_count = ty.results().len();
 
-        let mut func = {
+        let func = {
             move |mut store: StoreContextMut<T>, _ty: &FuncType, args: &[Val<Engine>]| {
                 #[cfg(feature = "tracing")]
                 let _span = tracing::debug_span!("call_host", ty=%_ty, ?args).entered();
+
+                let mut res = vec![Val::I32(0); result_count];
 
                 match func(store.as_context_mut(), args, &mut res) {
                     Ok(()) => {

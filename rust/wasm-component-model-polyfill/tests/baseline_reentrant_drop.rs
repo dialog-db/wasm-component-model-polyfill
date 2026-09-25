@@ -5,16 +5,8 @@
 //! from inside itself. A destructor that drops a second handle of
 //! the same resource type in the same instance therefore calls that
 //! one host function a second time while the first call is still on
-//! the stack.
-//!
-//! A native engine enters a host function at any depth and runs the
-//! component to its end. The browser cannot: a host function there
-//! is one JavaScript function object over one Rust closure, and the
-//! arguments and results of a call belong to that call alone, so the
-//! backend refuses the second call. The component is sound either
-//! way; only the target differs, and the refusal reaches the host as
-//! the scheduler cause that names the limitation rather than as a
-//! substrate string, which is what lets a host tell the two apart.
+//! the stack. Both backends enter a host function at any depth, so
+//! the component runs to its end on both targets.
 //!
 //! The shape needs no nested turn and no concurrency at all — one
 //! synchronous export, one resource type, two handles.
@@ -45,6 +37,9 @@ wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 /// drops the first. The first destructor run drops the second handle
 /// and disarms itself, so the second run drops nothing, and `run`
 /// answers with how many destructor runs the component counted.
+/// `deepest` answers with how many destructor runs were ever on the
+/// stack at once, which is two only if the second run happened
+/// inside the first rather than after it.
 const REENTRANT_DROP: &[u8] = component!(
     r#"
     (component
@@ -58,17 +53,25 @@ const REENTRANT_DROP: &[u8] = component!(
       (core module $Dtor
         (import "" "again" (func $again (param i32)))
         (global $runs (mut i32) (i32.const 0))
+        (global $depth (mut i32) (i32.const 0))
+        (global $deepest (mut i32) (i32.const 0))
         (global $armed (mut i32) (i32.const 0))
         (global $extra (mut i32) (i32.const 0))
         (func (export "arm") (param i32)
           (global.set $extra (local.get 0))
           (global.set $armed (i32.const 1)))
         (func (export "runs") (result i32) (global.get $runs))
+        (func (export "deepest") (result i32) (global.get $deepest))
         (func (export "dtor") (param i32)
           (global.set $runs (i32.add (global.get $runs) (i32.const 1)))
-          (if (i32.eqz (global.get $armed)) (then (return)))
-          (global.set $armed (i32.const 0))
-          (call $again (global.get $extra))))
+          (global.set $depth (i32.add (global.get $depth) (i32.const 1)))
+          (if (i32.gt_u (global.get $depth) (global.get $deepest))
+            (then (global.set $deepest (global.get $depth))))
+          (if (global.get $armed)
+            (then
+              (global.set $armed (i32.const 0))
+              (call $again (global.get $extra))))
+          (global.set $depth (i32.sub (global.get $depth) (i32.const 1)))))
       (core instance $dtor (instantiate $Dtor (with "" (instance
         (export "again" (func $shim "0"))))))
       (type $r (resource (rep i32) (dtor (core func $dtor "dtor"))))
@@ -98,12 +101,14 @@ const REENTRANT_DROP: &[u8] = component!(
         (export "arm" (func $dtor "arm"))
         (export "runs" (func $dtor "runs"))))))
       (func (export "run") (result u32)
-        (canon lift (core func $m "run"))))
+        (canon lift (core func $m "run")))
+      (func (export "deepest") (result u32)
+        (canon lift (core func $dtor "deepest"))))
     "#
 );
 
-/// Instantiate `REENTRANT_DROP` and call its `run` export.
-async fn run_component() -> Result<Box<[Val]>> {
+#[wcmp_macros::test]
+async fn it_runs_a_destructor_that_re_enters_its_own_drop() {
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, REENTRANT_DROP)
         .await
@@ -115,48 +120,25 @@ async fn run_component() -> Result<Box<[Val]>> {
         .await
         .expect("instantiate");
     let run = instance.get_func("run").expect("run export");
-    run.call(&mut store, &[]).await
-}
+    let deepest = instance.get_func("deepest").expect("deepest export");
 
-/// What the call answers on a target whose host functions can be
-/// called at any depth: the nested drop is an ordinary call, both
-/// destructors run, and the export returns the count.
-#[cfg(not(target_arch = "wasm32"))]
-#[wcmp_macros::test]
-async fn it_runs_a_destructor_that_re_enters_its_own_drop() {
-    let result = run_component().await;
+    let runs: Result<Box<[Val]>> = run.call(&mut store, &[]).await;
 
     assert_eq!(
-        result.expect("the call returned").first().cloned(),
+        runs.expect("the call returned").first().cloned(),
         Some(Val::U32(2)),
-        "a native engine calls `resource.drop` while a call of it is still on \
-         the stack, so the first destructor dropped the second handle and both \
+        "`resource.drop` was called while a call of it was still on the \
+         stack, so the first destructor dropped the second handle and both \
          destructor runs were counted"
     );
-}
-
-/// What the call answers in the browser: the destructor's drop is a
-/// second call of the host function its own call is inside, which
-/// the backend refuses, and the refusal reaches the host as the
-/// cause that names the limitation rather than as a substrate
-/// failure of the drop.
-#[cfg(target_arch = "wasm32")]
-#[wcmp_macros::test]
-async fn it_refuses_a_destructor_that_re_enters_its_own_drop() {
-    use wasm_component_model_polyfill::{Error, SchedulerCause};
-
-    let failure = run_component().await.expect_err("the call fails");
-
-    assert!(
-        matches!(failure, Error::Scheduler(SchedulerCause::ReentrantHostCall)),
-        "the destructor called the host function its own run is inside, which \
-         this target refuses: {failure}"
-    );
-    assert!(
-        failure
-            .to_string()
-            .contains(&SchedulerCause::ReentrantHostCall.to_string()),
-        "the failure carries the cause's own message, which names the \
-         limitation: {failure}"
+    assert_eq!(
+        deepest
+            .call(&mut store, &[])
+            .await
+            .expect("the call returned")
+            .first()
+            .cloned(),
+        Some(Val::U32(2)),
+        "the second destructor run happened inside the first, not after it"
     );
 }

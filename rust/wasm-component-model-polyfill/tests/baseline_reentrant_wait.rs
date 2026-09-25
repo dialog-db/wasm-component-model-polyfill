@@ -15,14 +15,9 @@
 //! runs one task only, so the entry rules of the model let both calls
 //! through.
 //!
-//! A native engine enters a host function at any depth, so the second
-//! call blocks in a nested turn of its own and both calls return. The
-//! browser cannot: a host function there is one JavaScript function
-//! object over one Rust closure, and the arguments and results of a
-//! call belong to that call alone, so the backend refuses the second
-//! call. The component is sound either way; only the target differs,
-//! and the refusal reaches the host as the scheduler cause that names
-//! the limitation rather than as a substrate string.
+//! Both backends enter a host function at any depth, so the second
+//! call blocks in a nested turn of its own and both calls return on
+//! both targets.
 
 #![cfg(test)]
 
@@ -182,9 +177,9 @@ impl<V: Unpin> Future for PendingOnce<V> {
     }
 }
 
-/// What the first call answered, if it was waited for, what the
-/// second call answered, and what the guest logged.
-type Outcome = (Option<Result<Box<[Val]>>>, Result<Box<[Val]>>, Vec<u32>);
+/// What the first call answered, what the second call answered, and
+/// what the guest logged.
+type Outcome = (Result<Box<[Val]>>, Result<Box<[Val]>>, Vec<u32>);
 
 /// Instantiate [`TWO_CALLERS_OF_ONE_CALLEE`], call `first` with 1 and
 /// `second` with 10 at once, and hand back the [`Outcome`].
@@ -194,9 +189,8 @@ type Outcome = (Option<Result<Box<[Val]>>>, Result<Box<[Val]>>, Vec<u32>);
 /// opens runs the second call's start, so the second call reaches
 /// that intrinsic while the first call's block is still on the stack.
 ///
-/// The polling stops once the second call has resolved, and also
-/// waits for the first only when `with_first` is set.
-async fn two_callers(with_first: bool) -> Outcome {
+/// The polling stops once both calls have resolved.
+async fn two_callers() -> Outcome {
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, TWO_CALLERS_OF_ONE_CALLEE)
         .await
@@ -248,7 +242,7 @@ async fn two_callers(with_first: bool) -> Outcome {
                 {
                     second_done = Some(value);
                 }
-                if second_done.is_some() && (first_done.is_some() || !with_first) {
+                if first_done.is_some() && second_done.is_some() {
                     Poll::Ready(())
                 } else {
                     Poll::Pending
@@ -256,7 +250,10 @@ async fn two_callers(with_first: bool) -> Outcome {
             })
             .await;
 
-            (first_done, second_done.expect("the second call resolved"))
+            (
+                first_done.expect("the first call resolved"),
+                second_done.expect("the second call resolved"),
+            )
         })
         .await
         .expect("run the closure");
@@ -265,63 +262,27 @@ async fn two_callers(with_first: bool) -> Outcome {
     (first, second, entries)
 }
 
-/// What the two calls answer on a target whose host functions can be
-/// called at any depth: the second call's `sync-start-call` opens a
-/// nested turn of its own, which completes its callee's host call,
-/// and both calls return.
-#[cfg(not(target_arch = "wasm32"))]
+/// What the two calls answer: the second call's `sync-start-call`
+/// opens a nested turn of its own, which completes its callee's host
+/// call, and both calls return.
 #[wcmp_macros::test]
 async fn it_runs_two_callers_that_synchronously_lower_one_async_export() {
-    let (first, second, log) = two_callers(true).await;
+    let (first, second, log) = two_callers().await;
 
     assert_eq!(
-        first
-            .expect("the first call was waited for")
-            .expect("the first call resolves")
-            .as_ref(),
+        first.expect("the first call resolves").as_ref(),
         [Val::U32(2)],
         "the first caller's lower returned with the callee's answer"
     );
     assert_eq!(
         second.expect("the second call resolves").as_ref(),
         [Val::U32(20)],
-        "a native engine calls `sync-start-call` while a call of it is \
+        "both backends call `sync-start-call` while a call of it is \
          still on the stack, so the second caller's lower returned as well"
     );
     assert_eq!(
         log,
         vec![1, 10, 11, 2],
         "the second call started and returned inside the first call's block"
-    );
-}
-
-/// What the second call answers in the browser: its `sync-start-call`
-/// is a second call of the host function the first call's block is
-/// inside, which the backend refuses, and the refusal reaches the
-/// second call as the cause that names the limitation.
-#[cfg(target_arch = "wasm32")]
-#[wcmp_macros::test]
-async fn it_refuses_a_second_caller_that_enters_the_start_call_the_first_is_inside() {
-    use wasm_component_model_polyfill::{Error, SchedulerCause};
-
-    let (_, second, log) = two_callers(false).await;
-
-    let failure = second.expect_err("the second call fails");
-    assert!(
-        matches!(failure, Error::Scheduler(SchedulerCause::ReentrantHostCall)),
-        "the second caller reached the `sync-start-call` the first \
-         caller's block is inside, which this target refuses: {failure}"
-    );
-    assert!(
-        failure
-            .to_string()
-            .contains(&SchedulerCause::ReentrantHostCall.to_string()),
-        "the failure carries the cause's own message, which names the \
-         limitation: {failure}"
-    );
-    assert_eq!(
-        log[..2],
-        [1, 10],
-        "the second call started inside the first call's block"
     );
 }

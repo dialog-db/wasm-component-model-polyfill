@@ -181,49 +181,47 @@ caller can read. The native backend reports that failure as `thrown Wasm
 exception`, so the patch gives the JS backend the same wording for the same
 object, and a caller of either backend reads one message.
 
-## 10. A re-entrant host call is refused, not thrown at (`src/func.rs`, `src/lib.rs`)
+## 10. A host function is entered at any depth (`src/func.rs`)
 
 Upstream wraps every host function in one `Closure<dyn FnMut(..)>`. The JS glue
 `wasm_bindgen` generates for a mutable closure clears the closure's pointer for
 the length of a call and restores it afterwards, so a call made while another
 call of the same closure is still on the stack reaches the shim with a null
 pointer and `throw_str("closure invoked recursively or after being dropped")`
-(`wasm-bindgen`'s `src/convert/closures.rs`). That message names a
-`wasm_bindgen` mechanism rather than anything the caller did, it reaches the
-outer call as a bare JS exception, and it leaves nothing on the store, so the
-host error slot of patch 4 has nothing to report and a guest `catch_all` can
-replace it outright. Upstream also reuses one results buffer per host function
-(the `res` vector in `WasmFunc::new`), which a second call in flight would
-overwrite.
+(`wasm-bindgen`'s `src/convert/closures.rs`). Upstream also allocates one
+results buffer per host function (the `res` vector in `WasmFunc::new`) and
+captures it in the body, which is what makes the body `FnMut`, and a second
+call in flight would write over the first call's results. A native engine has
+neither limit: it calls a host function already on the stack with no more
+ceremony than any other.
 
-The patch makes the wrapper refuse the second call itself. The body of the call
-moves behind a `RefCell`, and the JS-facing shim becomes a `Closure<dyn Fn(..)>`
-— a shared closure, which `wasm_bindgen` lets JavaScript enter at any depth —
-that borrows the body for the length of one call. A call that finds the borrow
-already out is a re-entrant call: it records `ReentrantHostCall` on the store as
-the call's first host error and throws a JS `Error` carrying that type's
-message, so the guest traps where it made the call and the outer `Func::call`
-reports the recorded error. `ReentrantHostCall` is public, so a caller that
-wants to tell this failure from any other downcasts the `anyhow::Error` to it;
-the polyfill does, and answers its own re-entrant-host-call scheduler cause.
+The patch removes both. The JS-facing shim is a `Closure<dyn Fn(..)>`, a shared
+closure, which `wasm_bindgen` lets JavaScript enter at any depth, and it calls
+the body directly. The body is `Fn`: the function the runtime layer hands
+`WasmFunc::new` is `Fn` already, and the results buffer is allocated inside the
+call, so the arguments and the results of one call live in that call's own
+frame and never share a buffer with another call of the same function. A host
+function re-entered from the guest runs as it does natively.
 
-The patch gives up one robustness property in the exchange. The old `FnMut`
-shim's glue cleared the closure's pointer in a `try` and restored it in a
-`finally`, so a call that ended by an engine-level throw — a stack overflow, an
-out-of-memory — still left the closure enterable afterwards. The borrow this
-patch takes is a Rust guard, released when the body's own frame returns, and an
-engine-level throw leaves no frame to return through, so the borrow stays out
-and every later call of that host function is refused for the life of the
-store. An ordinary guest trap is not such a throw: `wasm_bindgen` turns the
-value a guest threw into the `Err` of the call that entered the guest, so the
-body returns and the guard drops. The gap is therefore out of reach of a guest
-that merely traps, and a store that has overflowed the JS stack has little left
-to give in any case; it is recorded because the property existed before and
-does not now.
+Re-entry adds no aliasing of `StoreInner` that the backend did not already
+have. Each call of a host function rebuilds its store context from the raw
+store pointer, and a host function that calls into the guest, which calls a
+different host function, already stacks a second such context over the first;
+that is the "re-entrant with exclusive but stacked calling contexts" case the
+comment on `Store` describes. A second call of the same host function stacks
+its context the same way, through the same pointer. The first-error rule of
+patch 4 holds across depths as well: the store has one slot, an inner call
+that fails records its error there before the outer one can, and an inner
+`Func::call` that returns normally clears it, as it does for a nested call of a
+different function.
 
-The refusal is the whole of the change: nothing here makes a host function
-re-entrant. Doing that would need a results buffer per call and a JS shim per
-call, and the aliasing of `StoreInner` that the whole backend rests on would
-have to be examined first. The proposal for upstream is the shared closure and
-the structured refusal, which is what a native engine's caller already gets:
-there a host function is entered at any depth and this failure does not exist.
+An earlier form of this patch kept the body behind a `RefCell` and refused the
+second call with a public `ReentrantHostCall` error. That type is gone, and the
+backend exports nothing in its place. The borrow guard also gave up a
+robustness property the old glue had, an engine-level throw leaving the guard
+held for the life of the store; with no guard, nothing is held across a call,
+so that gap is gone too.
+
+The proposal for upstream is the shared closure and the per-call results
+buffer, which make the web backend's host functions behave as a native
+engine's do.

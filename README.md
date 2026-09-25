@@ -248,7 +248,6 @@ explainer][Concurrency] define them. A status means:
 | Core modules that import or export exception tags                                           | ⛔     | The runtime layer has no tag type.                                                                      |
 | GC reference types in core modules (`i31ref`, typed function references, non-nullable refs) | ⛔     | The runtime layer has no such value types.                                                              |
 | Wasm Core proposals                                                                         | ⛔     | The host engine's business. The polyfill implements none.                                               |
-| A host function called again while it is on the stack                                       | 🟡     | Runs natively. The browser backend refuses the second call and the polyfill reports a structured cause. |
 
 ### Toward Component Model 1.0
 

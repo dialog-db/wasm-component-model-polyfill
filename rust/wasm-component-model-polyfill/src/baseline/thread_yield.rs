@@ -838,64 +838,27 @@ async fn it_hands_on_a_store_not_in_poll_an_item_of_its_nested_turn_raised() {
 }
 
 #[wcmp_macros::test]
-async fn it_hands_on_what_the_callback_of_its_nested_turn_met_at_the_second_yield() {
+async fn it_runs_the_callback_of_its_nested_turn_through_a_second_yield() {
     let (mut store, instance, log) = instantiate(QUEUES_A_CALLBACK_OF_ITS_OWN).await;
     queue_the_callback(&mut store, &instance, &log).await;
 
     let outcome = call(&mut store, &instance, "give-way-now", &[]).await;
 
-    assert_second_yield(outcome, entries(&log));
-}
-
-/// What `give-way-now` answers, and what the guest logged, on a
-/// target whose host functions can be called at any depth.
-///
-/// The callback's own yield is an ordinary call there. It gives way
-/// to nothing, returns zero, and the callback runs to its end inside
-/// the nested turn the outer yield opened.
-#[cfg(not(target_arch = "wasm32"))]
-fn assert_second_yield(outcome: std::result::Result<Option<Val>, String>, log: Vec<u32>) {
+    // The outer `thread.yield` is still on the stack when the
+    // callback yields, and both backends call a host function
+    // already on the stack. The callback's own yield gives way to
+    // nothing, returns zero, and the callback runs to its end inside
+    // the nested turn the outer yield opened.
     assert_eq!(
         outcome.expect("the call returns"),
         Some(Val::U32(0)),
         "the outer yield returned zero"
     );
     assert_eq!(
-        log,
+        entries(&log),
         vec![1, 5, 6, 3],
         "the queued callback of the same instance ran inside the yield, gave \
          way to nothing, and ran to its end before the yielding export logged \
          its way out"
-    );
-}
-
-/// What `give-way-now` answers, and what the guest logged, in the
-/// browser.
-///
-/// The outer `thread.yield` is still on the stack, and the browser
-/// has one JavaScript function object per host function, so the
-/// callback's own yield is a call of that very object and the
-/// backend refuses it. The refusal is a scheduler cause the seam
-/// never raises, and it belongs to the callback the nested turn was
-/// running, so the outer yield hands it on and the call reports it.
-#[cfg(target_arch = "wasm32")]
-fn assert_second_yield(outcome: std::result::Result<Option<Val>, String>, log: Vec<u32>) {
-    let message = match outcome {
-        Err(message) => message,
-        Ok(value) => panic!("give-way-now returned {value:?} rather than trapping"),
-    };
-    assert!(
-        message.contains(
-            "cannot call a host function while a call of the same host function is \
-             still on the stack"
-        ),
-        "the callback called the built-in its caller's yield is inside, which \
-         this target refuses, and the yield hands the refusal on: {message}"
-    );
-    assert_eq!(
-        log,
-        vec![1, 5],
-        "the callback logged its way in and was refused at its own yield, and \
-         the yielding export never reached the entry after its yield"
     );
 }

@@ -48,8 +48,6 @@ mod store;
 mod table;
 
 pub use func::Func;
-// PATCH (wcmp): the failure a re-entrant host call answers with.
-pub use func::ReentrantHostCall;
 pub use instance::Instance;
 pub use memory::Memory;
 pub use module::Module;

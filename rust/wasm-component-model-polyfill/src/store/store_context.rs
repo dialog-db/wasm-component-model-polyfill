@@ -9,7 +9,7 @@ use wasm_runtime_layer::{AsContextMut, StoreContextMut as RuntimeContextMut, Val
 
 use crate::abi::boundary_call::BoundaryCall;
 use crate::abi::signature::Signature;
-use crate::backend::{Backend, reentrant_refusal};
+use crate::backend::Backend;
 use crate::concurrency::{
     Accessor, CallStatus, EventSlot, FailureChannel, HostTask, InstanceId, Item, LowerKind,
     Outcome, PollScope, ResultChannel, Scheduler, Scope, SubtaskId, SubtaskState, SuspendSeam,
@@ -342,27 +342,15 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                     function
                         .call(&mut store.runtime, &[RuntimeVal::I32(rep as i32)], &mut [])
                         .map_err(|err| {
-                            // A destructor is guest code and may call
-                            // an import; on the web target a call of
-                            // that import's host function may already
-                            // be on the stack — the host released
-                            // this handle from inside one — which the
-                            // backend refuses. The refusal is a
-                            // limitation of the target and not a
-                            // crossing that went wrong, so it keeps
-                            // its own cause and the caller can branch
-                            // on it.
-                            reentrant_refusal(&err).unwrap_or_else(|| {
-                                // The call that failed is the core
-                                // destructor's, whose one argument is
-                                // the resource's `u32` rep, not the
-                                // own handle the caller released, so
-                                // the failure names no value type.
-                                Error::from(AbiError {
-                                    position: AbiPosition::Argument(0),
-                                    valtype: None,
-                                    cause: AbiCause::SubstrateFailure(err),
-                                })
+                            // The call that failed is the core
+                            // destructor's, whose one argument is the
+                            // resource's `u32` rep, not the own handle
+                            // the caller released, so the failure
+                            // names no value type.
+                            Error::from(AbiError {
+                                position: AbiPosition::Argument(0),
+                                valtype: None,
+                                cause: AbiCause::SubstrateFailure(err),
                             })
                         })?;
                     Ok(())

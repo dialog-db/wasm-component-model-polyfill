@@ -255,13 +255,7 @@ pub fn build_resource_drop_trampoline<T: 'static>(
             // trampoline hands back, and a host that wants to know
             // what went wrong can read a structured error and cannot
             // read a string. `context` leaves the error it wraps
-            // reachable, so a failure the browser backend raised —
-            // its refusal of a re-entrant host call, which a
-            // destructor that drops a second handle of its own
-            // resource type meets — still downcasts out of the
-            // `substrate_failure` the export's own call site applies,
-            // and the host reads the cause that names the limitation
-            // rather than a substrate failure.
+            // reachable, so a host can still downcast it.
             match &runtime.destructor {
                 ResourceDestructor::Host(body) => body(store_ctx.data_mut().host_mut(), rep)
                     .map_err(|err| anyhow::Error::new(err).context(DESTRUCTOR_FAILED))?,

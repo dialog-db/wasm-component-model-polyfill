@@ -216,7 +216,6 @@ pub fn wasm_component_model_polyfill::ReturnMismatchKind::fmt(&self, f: &mut cor
 pub wasm_component_model_polyfill::SchedulerCause::CannotBlock
 pub wasm_component_model_polyfill::SchedulerCause::Deadlock
 pub wasm_component_model_polyfill::SchedulerCause::RecursiveDriver
-pub wasm_component_model_polyfill::SchedulerCause::ReentrantHostCall
 pub wasm_component_model_polyfill::SchedulerCause::StackSwitchNeeded
 pub wasm_component_model_polyfill::SchedulerCause::StoreNotInPoll
 pub enum wasm_component_model_polyfill::StreamResult

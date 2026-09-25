@@ -1082,3 +1082,121 @@ async fn it_leaves_the_host_task_of_an_asynchronously_lowered_import_to_a_later_
         "the result was lowered into the destructor's instance"
     );
 }
+
+/// A component whose export and whose resource's destructor both
+/// call one lowered host import, `release`.
+///
+/// `make` mints a handle for the host. `run` calls `release` with 0,
+/// and the destructor calls it with the resource's rep, 100. Both
+/// calls go through the same `canon lower`, so they are calls of one
+/// host function.
+const RELEASE_CALLS_ITSELF_THROUGH_A_DESTRUCTOR: &[u8] = component!(
+    r#"
+    (component
+      (import "release" (func $release (param "x" u32)))
+      (core func $release' (canon lower (func $release)))
+      (core module $Dtor
+        (import "" "release" (func $release (param i32)))
+        (func (export "dtor") (param i32)
+          (call $release (local.get 0))))
+      (core instance $dtor (instantiate $Dtor (with "" (instance
+        (export "release" (func $release'))))))
+      (type $r (resource (rep i32) (dtor (core func $dtor "dtor"))))
+      (core func $new (canon resource.new $r))
+      (core module $M
+        (import "" "new" (func $new (param i32) (result i32)))
+        (import "" "release" (func $release (param i32)))
+        (func (export "make") (result i32)
+          (call $new (i32.const 100)))
+        (func (export "run")
+          (call $release (i32.const 0))))
+      (core instance $m (instantiate $M (with "" (instance
+        (export "new" (func $new))
+        (export "release" (func $release'))))))
+      (export $t "t" (type $r))
+      (func (export "make") (result (own $t))
+        (canon lift (core func $m "make")))
+      (func (export "run")
+        (canon lift (core func $m "run"))))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_calls_a_host_import_again_from_inside_its_own_call() {
+    // The host's `release` drops the handle it holds when the guest
+    // passes 0. The drop runs the destructor, and the destructor calls
+    // `release` again while the first call of it is still on the
+    // stack. Both backends enter a host function at any depth, so the
+    // second call returns, the destructor returns, and so does the
+    // first call.
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, RELEASE_CALLS_ITSELF_THROUGH_A_DESTRUCTOR)
+        .await
+        .expect("component parses");
+    let held: Arc<Mutex<Option<ResourceHandle>>> = Arc::new(Mutex::new(None));
+    // Each entry is the argument of a call and how many calls of
+    // `release` were on the stack when it started.
+    let calls: Arc<Mutex<Vec<(u32, u32)>>> = Arc::new(Mutex::new(Vec::new()));
+    let depth = Arc::new(Mutex::new(0u32));
+    let mut linker: Linker<()> = Linker::new(&engine);
+    {
+        let held = held.clone();
+        let calls = calls.clone();
+        linker
+            .root()
+            .func_wrap(
+                "release",
+                move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<()> {
+                    let entered = {
+                        let mut depth = depth.lock().expect("depth");
+                        *depth += 1;
+                        *depth
+                    };
+                    calls.lock().expect("calls").push((x, entered));
+                    let released = match x {
+                        0 => {
+                            let handle = held
+                                .lock()
+                                .expect("held")
+                                .take()
+                                .expect("the host holds a handle");
+                            call.store().internal().resource_drop(handle)
+                        }
+                        _ => Ok(()),
+                    };
+                    *depth.lock().expect("depth") -= 1;
+                    released
+                },
+            )
+            .expect("the registration");
+    }
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    let made = instance
+        .get_func("make")
+        .expect("make export")
+        .call(&mut store, &[])
+        .await
+        .expect("make returned");
+    let Some(Val::Own(handle)) = made.first().cloned() else {
+        panic!("make returns an owned handle, got {made:?}");
+    };
+    *held.lock().expect("held") = Some(handle);
+
+    instance
+        .get_func("run")
+        .expect("run export")
+        .call(&mut store, &[])
+        .await
+        .expect("the call returned");
+
+    assert_eq!(
+        *calls.lock().expect("calls"),
+        vec![(0, 1), (100, 2)],
+        "the destructor called `release` with its rep while the first call \
+         of `release` was still on the stack"
+    );
+}

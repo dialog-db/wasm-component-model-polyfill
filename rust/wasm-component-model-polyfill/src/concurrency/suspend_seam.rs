@@ -137,34 +137,15 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 ///   store, so the work the store holds is what the depth is drawn
 ///   from.
 ///
-/// One thing the fallback does not run the same way on both
-/// targets. A nested turn runs from inside the lowered import the
-/// guest blocked in, so that import's host function is on the stack
-/// for as long as the block lasts. An item the turn runs which
-/// calls that same import is therefore a second call of the same
-/// host function. A native engine serves it. The browser refuses
-/// it: a host function there is one JavaScript function object over
-/// one Rust closure, and the arguments and results of a call belong
-/// to that call alone. The browser backend detects the second call
-/// and fails it with [`SchedulerCause::ReentrantHostCall`], so the
-/// item traps with a message naming the limitation and the call the
-/// item was made from reports the cause. The backend refused the
-/// second call before it had a guard of its own, too: `wasm_bindgen`
-/// threw a catchable JS exception that named its own mechanism and
-/// left nothing for the outer call to read. Neither took the page
-/// down; what the guard added is a cause a host can act on. The
-/// component itself is sound either way, and the same one runs
-/// natively.
+/// The fallback runs the same way on both targets. A nested turn
+/// runs from inside the lowered import the guest blocked in, so that
+/// import's host function is on the stack for as long as the block
+/// lasts, and every level of nesting leaves its own import's host
+/// function there too. An item a turn runs which calls one of those
+/// imports again is a second call of a host function already on the
+/// stack, and both backends enter a host function at any depth.
 ///
-/// The import the block is inside is not the only one at risk. Every
-/// level of nesting leaves its own import's host function on the
-/// stack, so an item of a turn three levels down which calls the
-/// import a level above it is refused on the same rule. A call to an
-/// import no level has entered, or to the same import of another
-/// component instance, runs the same way on both targets: each of
-/// those is a host function of its own.
-///
-/// A provider in the slot serves the whole of that instead, for a
+/// A provider in the slot serves a block without any of that, for a
 /// task that is allowed to block. It suspends the thread and ends
 /// the turn, and no nested turn runs.
 ///
@@ -190,8 +171,6 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 /// separate, and they compose: a body's closure that reaches a
 /// blocking built-in gets a nested turn, and an item that nested
 /// turn runs which reaches the seam again gets one of its own.
-///
-/// [`SchedulerCause::ReentrantHostCall`]: crate::error::SchedulerCause::ReentrantHostCall
 pub struct SuspendSeam<T: 'static> {
     provider: Option<BoxedProvider<T>>,
     blocked_call_futures: usize,
