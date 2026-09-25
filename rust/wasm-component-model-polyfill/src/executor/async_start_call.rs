@@ -53,7 +53,7 @@ use wasmtime_environ::component::START_FLAG_ASYNC_CALLEE;
 
 use crate::abi::instance::BoundaryInstance;
 use crate::abi::runtime_state::AbiRuntimeState;
-use crate::concurrency::{CallStatus, SubtaskId};
+use crate::concurrency::{CallStatus, LowerKind, SubtaskId};
 use crate::error::{Error, Result};
 use crate::executor::CallbackTask;
 use crate::executor::intrinsics::core_func_type;
@@ -142,14 +142,7 @@ fn async_start_call<T: 'static>(
     // exclusive thread of the callee's instance — the reference's
     // `not opts.async or opts.callback` — and a sync-typed callee
     // ignores the gate either way.
-    store.internal().scheduler_mut().switch_to(item);
-    store.internal().start_switched_export_thread(
-        prepared.task(),
-        prepared.instance(),
-        prepared.callee_async_typed(),
-        true,
-    )?;
-    if let Err(error) = store.internal().run_switch_slot() {
+    if let Err(error) = prepared.run_start(store, item, LowerKind::Async) {
         prepared.remove(&tables);
         return Err(error);
     }

@@ -441,6 +441,9 @@ impl HandleTables {
             Scope::Subtask(subtask) => {
                 SubtaskExit::begin_discard(self, subtask).finish();
             }
+            // A mark holds no record, so there is nothing to give
+            // back.
+            Scope::NestedStart { .. } => {}
         }
     }
 

@@ -62,7 +62,7 @@ use wasm_runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
 
 use crate::abi::layout::FlatType;
 use crate::abi::runtime_state::AbiRuntimeState;
-use crate::concurrency::{SubtaskId, SuspendSeam, TaskId};
+use crate::concurrency::{LowerKind, SubtaskId, SuspendSeam, TaskId};
 use crate::error::{Error, Result};
 use crate::executor::CallbackTask;
 use crate::executor::intrinsics::core_func_type;
@@ -158,14 +158,7 @@ fn sync_start_call<T: 'static>(
     // The callee runs next: the item goes in the switch slot, the
     // gate decides whether it stays there, and the slot is run from
     // inside this frame.
-    store.internal().scheduler_mut().switch_to(item);
-    store.internal().start_switched_export_thread(
-        prepared.task(),
-        prepared.instance(),
-        prepared.callee_async_typed(),
-        true,
-    )?;
-    store.internal().run_switch_slot()?;
+    prepared.run_start(store, item, LowerKind::Sync)?;
 
     // The caller waits for the callee's result. A call that resolved
     // while the slot ran does not wait at all, which is what makes

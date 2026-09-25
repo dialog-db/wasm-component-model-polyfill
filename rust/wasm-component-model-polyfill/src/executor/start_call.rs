@@ -51,7 +51,7 @@ use crate::abi::boundary_call::BoundaryCall;
 use crate::abi::instance::BoundaryInstance;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::backend::substrate_failure;
-use crate::concurrency::{InstanceId, Item, ItemKind, SubtaskId, TaskId};
+use crate::concurrency::{InstanceId, Item, ItemKind, LowerKind, SubtaskId, TaskId};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::{CallbackTask, status_word};
 use crate::internal::ErrorInternal;
@@ -198,12 +198,6 @@ impl Prepared {
         self.instance_index
     }
 
-    /// Whether the callee's function type carries the `async`
-    /// effect, which decides whether its task waits at the gate.
-    pub fn callee_async_typed(&self) -> bool {
-        self.callee_async_typed
-    }
-
     /// The item that starts the callee's implicit thread and fails
     /// the turn that ran it when the call fails.
     ///
@@ -228,6 +222,59 @@ impl Prepared {
     /// the block returns.
     pub fn item_reporting_to<T: 'static>(&self, failure: StartFailure) -> Result<Item<T>> {
         self.build_item(Some(failure))
+    }
+
+    /// Start the callee's implicit thread with `item`, from inside
+    /// the start intrinsic's frame, for a caller that lowered the
+    /// call through `lower`.
+    ///
+    /// The item goes in the switch slot and the thread enters the
+    /// gate. A callee the gate lets through keeps the slot and runs
+    /// here. A callee the gate holds leaves the slot empty and waits
+    /// in arrival order, so nothing runs.
+    ///
+    /// An `async`-typed callee that runs here is a nested start. The
+    /// reference runs it on a stack of its own and returns to this
+    /// frame when it blocks. Without a stack switch it runs on the
+    /// real stack above this frame, and the frames below stay where
+    /// they are until it returns. The stack of current scopes carries
+    /// a mark with the call's subtask and `lower` for as long as it
+    /// runs. A block that fails above the mark names the stack-switch
+    /// cause when the caller would go on once a provider returned
+    /// control to it, and could release the block: always after an
+    /// asynchronous lower, and after a synchronous lower once the
+    /// callee has resolved. A
+    /// sync-typed callee is not a nested start. Its task must not
+    /// block, so it never suspends, and the reference runs it on the
+    /// caller's stack.
+    pub fn run_start<T: 'static>(
+        &self,
+        store: &mut StoreContext<'_, T>,
+        item: Item<T>,
+        lower: LowerKind,
+    ) -> Result<()> {
+        store.internal().scheduler_mut().switch_to(item);
+        store.internal().start_switched_export_thread(
+            self.task,
+            self.instance,
+            self.callee_async_typed,
+            true,
+        )?;
+        if !self.callee_async_typed {
+            return store.internal().run_switch_slot();
+        }
+        // The mark comes back off through an unwind too. One a panic
+        // left on the stack would turn every later deadlock under
+        // this caller into a stack switch.
+        let tables = store.internal().tables_handle();
+        lock(&tables)?.tasks.begin_nested_start(self.subtask, lower);
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            store.internal().run_switch_slot()
+        }));
+        if let Ok(mut guard) = tables.lock() {
+            guard.tasks.end_nested_start();
+        }
+        ran.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     }
 
     /// Whether the call has settled: the callee resolved, or the

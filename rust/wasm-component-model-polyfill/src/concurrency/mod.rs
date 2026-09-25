@@ -62,7 +62,9 @@
 //!   export's task, a host trampoline pushes the subtask of the
 //!   guest's call and keeps it on the stack while the host side
 //!   runs, and an adapter's enter and exit intrinsics push and pop
-//!   the callee's task.
+//!   the callee's task. A start intrinsic that runs an `async`-typed
+//!   callee from inside its own frame marks that nested start on the
+//!   stack for as long as the callee runs.
 //! - [`Task`](task::Task), [`Subtask`](subtask::Subtask),
 //!   [`Thread`](thread::Thread),
 //!   [`WaitableSet`](waitable_set::WaitableSet), and

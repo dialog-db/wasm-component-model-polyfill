@@ -45,10 +45,13 @@ well: the call blocks the guest thread where it stands until the future
 resolves. No call traps for reentrance; the instance's entry gate is
 the only serialization, and a callee the gate holds starts when the
 gate opens. A call that blocks where nothing can make progress fails
-with the message the reference gives it: the deadlock message when the
-store is idle, the cannot-block message when a synchronous call is in
-progress, and the stack-switch message when only a real suspension
-could wait. An exception thrown in a callee reaches the host as the
+with the message the reference gives it: the cannot-block message when
+a synchronous call is in progress, the stack-switch message when only a
+real suspension could wait, and the deadlock message otherwise. A real
+suspension could wait when a host task is pending, or when the blocked
+callee runs above a caller that would go on under a stack switch: a
+caller that lowered the call asynchronously, or synchronously once the
+callee returned. An exception thrown in a callee reaches the host as the
 trap the synchronous baseline gives it.
 
 The directive that first meets what is missing is an expected failure

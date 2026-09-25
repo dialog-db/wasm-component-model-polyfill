@@ -22,6 +22,7 @@ use super::event_code::EventCode;
 use super::failure_channel::FailureChannel;
 use super::instance_id::InstanceId;
 use super::instance_record::InstanceRecord;
+use super::lower_kind::LowerKind;
 use super::pairing::Pairing;
 use super::readiness::Readiness;
 use super::record_table::RecordTable;
@@ -44,8 +45,10 @@ use super::waitable_state::WaitableState;
 /// The store's tables of task, subtask, thread, waitable set, end,
 /// shared, and instance records, with the stack of current scopes.
 ///
-/// A scope is a task record or a subtask record, and the top of the
-/// stack is the current scope. Every borrow operation consults it: a
+/// A scope is a task record or a subtask record, and the innermost
+/// of them on the stack is the current scope. The stack also carries
+/// a mark for each nested start in progress, which the cause of a
+/// failed block reads. Every borrow operation consults it: a
 /// borrow lowered into a guest counts against the current task, a
 /// borrow lifted out of an owning handle is lent to the current
 /// scope, and the scope's exit checks that the guest dropped what it
@@ -355,14 +358,73 @@ impl TaskTables {
         self.subtask(subtask).and_then(|record| record.handle)
     }
 
-    /// Pop the current scope, if there is one.
+    /// Pop the top entry of the stack, if there is one.
     pub fn pop_scope(&mut self) -> Option<Scope> {
         self.scopes.pop()
     }
 
-    /// The current scope: the top of the stack.
+    /// The current scope: the innermost entry of the stack that is a
+    /// task or a subtask. A nested-start mark is not a scope, so the
+    /// scope under it stays current until the callee pushes its own.
     pub fn current_scope(&self) -> Option<Scope> {
-        self.scopes.last().copied()
+        self.scopes
+            .iter()
+            .rev()
+            .find(|scope| !matches!(scope, Scope::NestedStart { .. }))
+            .copied()
+    }
+
+    /// Mark the stack where a trampoline starts a thread from inside
+    /// itself, as a start intrinsic does for an `async`-typed callee.
+    /// `subtask` is the caller's record of the call and `lower` is
+    /// how the caller lowered it. The thread runs above the mark
+    /// until it returns to the trampoline, which then takes the mark
+    /// off with [`end_nested_start`](Self::end_nested_start).
+    pub fn begin_nested_start(&mut self, subtask: SubtaskId, lower: LowerKind) {
+        self.scopes.push(Scope::NestedStart { subtask, lower });
+    }
+
+    /// Take off the innermost nested-start mark. The mark is found
+    /// rather than popped, so that a scope a failed call stranded
+    /// above it stays for the unwind that owns it. A mark an unwind
+    /// already discarded leaves nothing to take.
+    pub fn end_nested_start(&mut self) {
+        if let Some(at) = self
+            .scopes
+            .iter()
+            .rposition(|scope| matches!(scope, Scope::NestedStart { .. }))
+        {
+            self.scopes.remove(at);
+        }
+    }
+
+    /// Whether a frame below the current one would go on under a
+    /// stack switch: the stack carries a nested-start mark whose
+    /// caller would run its own code once control came back to it.
+    ///
+    /// An asynchronous lower's caller always would: the lower
+    /// answers with the status word and the caller goes on from
+    /// there. A synchronous lower's caller would only once the
+    /// callee has resolved, because the lower returns the callee's
+    /// result. Before that, the caller would only wait for the
+    /// callee, and the wait runs the same ready work the callee's own
+    /// block already ran, so it releases nothing. A record that is
+    /// gone counts as resolved. A frame further down that would go
+    /// on has a mark of its own.
+    pub fn caller_below_goes_on(&self) -> bool {
+        self.scopes.iter().any(|scope| match *scope {
+            Scope::NestedStart {
+                lower: LowerKind::Async,
+                ..
+            } => true,
+            Scope::NestedStart {
+                subtask,
+                lower: LowerKind::Sync,
+            } => self
+                .subtask(subtask)
+                .is_none_or(|record| record.state.resolved()),
+            Scope::Task(_) | Scope::Subtask(_) => false,
+        })
     }
 
     /// The scope an operation counts against when the crossing that
@@ -390,13 +452,14 @@ impl TaskTables {
                 .scopes
                 .iter()
                 .rposition(|entry| *entry == Scope::Subtask(subtask))?,
+            Scope::NestedStart { .. } => return None,
         };
         self.scopes[..under]
             .iter()
             .rev()
             .find_map(|scope| match scope {
                 Scope::Task(task) => Some(*task),
-                Scope::Subtask(_) => None,
+                Scope::Subtask(_) | Scope::NestedStart { .. } => None,
             })
     }
 
@@ -411,7 +474,7 @@ impl TaskTables {
     pub fn current_subtask(&self) -> Option<SubtaskId> {
         match self.current_scope()? {
             Scope::Subtask(subtask) => Some(subtask),
-            Scope::Task(_) => None,
+            Scope::Task(_) | Scope::NestedStart { .. } => None,
         }
     }
 
@@ -552,6 +615,7 @@ impl TaskTables {
                 }
                 None => false,
             },
+            Scope::NestedStart { .. } => false,
         }
     }
 
@@ -567,6 +631,7 @@ impl TaskTables {
                 .subtask_mut(subtask)
                 .map(|record| std::mem::take(&mut record.lenders))
                 .unwrap_or_default(),
+            Scope::NestedStart { .. } => Vec::new(),
         }
     }
 
@@ -1885,6 +1950,114 @@ fn event_code(kind: EndKind) -> EventCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[wcmp_macros::test]
+    fn it_keeps_the_scope_under_a_nested_start_mark_current() {
+        // The mark sits between a caller's task and the callee's.
+        // Before the callee pushes its task, the caller's task is
+        // still what borrows and lends count against.
+        let mut tables = TaskTables::new();
+        let instance = tables.insert_instance();
+        let caller = tables.push_task(None, None, instance);
+        let subtask = tables.insert_subtask();
+        tables.begin_nested_start(subtask, LowerKind::Async);
+
+        assert_eq!(tables.current_scope(), Some(Scope::Task(caller)));
+        assert_eq!(tables.current_task(), Some(caller));
+
+        let callee = tables.push_task(None, None, instance);
+        assert_eq!(tables.current_task(), Some(callee));
+        assert_eq!(
+            tables.scopes(),
+            &[
+                Scope::Task(caller),
+                Scope::NestedStart {
+                    subtask,
+                    lower: LowerKind::Async
+                },
+                Scope::Task(callee)
+            ]
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_counts_an_asynchronous_lowers_caller_as_one_that_goes_on() {
+        // The lower answers with the status word, so the caller's own
+        // code runs on whatever the callee has done.
+        let mut tables = TaskTables::new();
+        assert!(!tables.caller_below_goes_on());
+        let subtask = tables.insert_subtask();
+        tables.begin_nested_start(subtask, LowerKind::Async);
+        assert!(tables.caller_below_goes_on());
+    }
+
+    #[wcmp_macros::test]
+    fn it_counts_a_synchronous_lowers_caller_as_one_that_goes_on_once_the_callee_resolved() {
+        // Before the callee resolves, the caller would only wait for
+        // it. Once it has, the lower returns the result and the
+        // caller's own code goes on.
+        let mut tables = TaskTables::new();
+        let subtask = tables.insert_subtask();
+        tables.begin_nested_start(subtask, LowerKind::Sync);
+        assert!(!tables.caller_below_goes_on());
+
+        tables
+            .subtask_returned(subtask)
+            .expect("the callee returns");
+        assert!(tables.caller_below_goes_on());
+    }
+
+    #[wcmp_macros::test]
+    fn it_counts_an_asynchronous_lower_below_a_synchronous_one() {
+        // A frame further down that would go on has a mark of its own.
+        let mut tables = TaskTables::new();
+        let outer = tables.insert_subtask();
+        let inner = tables.insert_subtask();
+        tables.begin_nested_start(outer, LowerKind::Async);
+        tables.begin_nested_start(inner, LowerKind::Sync);
+        assert!(tables.caller_below_goes_on());
+    }
+
+    #[wcmp_macros::test]
+    fn it_takes_off_the_innermost_mark_and_leaves_what_a_failure_stranded_above_it() {
+        // A callee that failed without popping its scope leaves it
+        // above the mark. Ending the nested start takes the mark
+        // alone, so the unwind that owns the stranded scope still
+        // finds it.
+        let mut tables = TaskTables::new();
+        let instance = tables.insert_instance();
+        let caller = tables.push_task(None, None, instance);
+        let outer = tables.insert_subtask();
+        let inner = tables.insert_subtask();
+        tables.begin_nested_start(outer, LowerKind::Async);
+        tables.begin_nested_start(inner, LowerKind::Sync);
+        let stranded = tables.push_task(None, None, instance);
+
+        tables.end_nested_start();
+        assert_eq!(
+            tables.scopes(),
+            &[
+                Scope::Task(caller),
+                Scope::NestedStart {
+                    subtask: outer,
+                    lower: LowerKind::Async
+                },
+                Scope::Task(stranded)
+            ]
+        );
+        tables.end_nested_start();
+        assert!(!tables.caller_below_goes_on());
+        assert_eq!(
+            tables.scopes(),
+            &[Scope::Task(caller), Scope::Task(stranded)]
+        );
+        tables.end_nested_start();
+        assert_eq!(
+            tables.scopes().len(),
+            2,
+            "a mark that is gone leaves nothing to take"
+        );
+    }
 
     #[wcmp_macros::test]
     fn it_resolves_a_stale_subtask_identity_to_no_record() {

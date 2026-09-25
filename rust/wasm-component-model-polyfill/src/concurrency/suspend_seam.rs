@@ -57,17 +57,35 @@ type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
 ///   the nested turn runs the item where it stands.
 /// - **The cause says why the wait cannot end.** When the nested
 ///   turns cannot progress and the condition is still unmet, the
-///   built-in traps. The cause is the cannot-block cause when any
-///   instance of the store has a synchronous call in progress,
-///   which is the may-not-suspend flag of the instance record: some
-///   call has not returned, and the callee blocking for ever is
-///   that caller failing to return, so the cause names the caller's
-///   rule. It is the stack-switch cause when a host task is still
-///   pending — the future of a call that blocked on one of its own
-///   included — because the reference permits that block and only
-///   the target has no provider to serve it. It is the deadlock
-///   cause when the store is idle, because nothing left in the
-///   store can ever meet the condition.
+///   built-in traps with the first of four causes that holds:
+///
+///   1. The cannot-block cause, when any instance of the store has
+///      a synchronous call in progress, which is the may-not-suspend
+///      flag of the instance record. Some call has not returned, and
+///      the callee blocking for ever is that caller failing to
+///      return, so the cause names the caller's rule.
+///   2. The stack-switch cause, when a nested start lies between
+///      the blocked thread and the base of the real stack. A start
+///      intrinsic ran an `async`-typed callee from inside its own
+///      frame, and the store marks that on its stack of current
+///      scopes for as long as the callee runs. A provider would
+///      return control below the mark, where the caller that
+///      started the callee could still meet the condition. That
+///      caller is guest code on the real stack rather than work the
+///      store holds, so an idle store does not say it cannot move.
+///      Only the target's capability is missing. The rule reads the
+///      marks whose caller would go on: an asynchronous lower's, and
+///      a synchronous lower's once the callee has resolved. Before
+///      that, a synchronous lower's caller would get control back
+///      only to wait for the callee, which runs the ready work this
+///      block already ran, so that caller can release nothing.
+///   3. The stack-switch cause, when a host task is still pending —
+///      the future of a call that blocked on one of its own
+///      included — because the reference permits that block and
+///      only the target has no provider to serve it.
+///   4. The deadlock cause in every other case. Then no frame below
+///      can move, and nothing left in the store can ever meet the
+///      condition.
 /// - **A task that must not block gives way to its own instance
 ///   alone.** The rule is lazy, as the reference and Wasmtime state
 ///   it. A task whose instance may not suspend runs the ready work
@@ -532,6 +550,8 @@ mod tests {
     use super::super::instance_id::InstanceId;
     use super::super::item::Item;
     use super::super::item_kind::ItemKind;
+    use super::super::lower_kind::LowerKind;
+    use super::super::subtask_id::SubtaskId;
 
     use super::*;
     use crate::internal::ErrorInternal;
@@ -1077,6 +1097,157 @@ mod tests {
             Error::Scheduler(SchedulerCause::Deadlock).to_string(),
             "this task may block, and nothing left in the store can ever meet \
              the condition it blocked on"
+        );
+    }
+
+    /// Mark the stack of current scopes where a start intrinsic runs
+    /// an `async`-typed callee from inside its own frame, for a
+    /// caller that lowered the call through `lower`, and make a task
+    /// of a fresh instance the callee's scope above the mark. The
+    /// subtask it answers is the caller's record of the call.
+    fn nested_start(
+        store: &StoreContext<'_, ()>,
+        lower: LowerKind,
+        may_not_suspend: bool,
+    ) -> SubtaskId {
+        let subtask = {
+            let mut guard = store.internal_ref().tables().lock().expect("tables");
+            let subtask = guard.tasks.insert_subtask();
+            guard.tasks.begin_nested_start(subtask, lower);
+            subtask
+        };
+        current_task(store, may_not_suspend);
+        subtask
+    }
+
+    #[wcmp_macros::test]
+    fn it_traps_with_the_stack_switch_cause_when_an_asynchronous_start_lies_below_the_block() {
+        let mut owner = store();
+        let mut store = owner.internal().context();
+        // The caller that lowered the call is below the mark, and a
+        // task of its own is the scope under it.
+        current_task(&store, false);
+        let _ = nested_start(&store, LowerKind::Async, false);
+
+        let outcome = store
+            .internal()
+            .run_in_turn(Waker::noop(), |store| {
+                SuspendSeam::suspend(store, |_| false)
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            Error::Scheduler(SchedulerCause::StackSwitchNeeded).to_string(),
+            "the store is idle, but the caller below the nested start could \
+             still meet the condition once a provider returned control to it"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_traps_with_the_deadlock_cause_above_a_synchronous_start_whose_callee_has_not_resolved() {
+        let mut owner = store();
+        let mut store = owner.internal().context();
+        current_task(&store, false);
+        let _ = nested_start(&store, LowerKind::Sync, false);
+
+        let outcome = store
+            .internal()
+            .run_in_turn(Waker::noop(), |store| {
+                SuspendSeam::suspend(store, |_| false)
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            Error::Scheduler(SchedulerCause::Deadlock).to_string(),
+            "a synchronous lower's caller would only wait for its callee, \
+             which runs the work this block already ran, so no frame below \
+             can move"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_traps_with_the_stack_switch_cause_above_a_synchronous_start_whose_callee_resolved() {
+        let mut owner = store();
+        let mut store = owner.internal().context();
+        current_task(&store, false);
+        let subtask = nested_start(&store, LowerKind::Sync, false);
+        store
+            .internal()
+            .tables()
+            .lock()
+            .expect("tables")
+            .tasks
+            .subtask_returned(subtask)
+            .expect("the callee returns");
+
+        let outcome = store
+            .internal()
+            .run_in_turn(Waker::noop(), |store| {
+                SuspendSeam::suspend(store, |_| false)
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            Error::Scheduler(SchedulerCause::StackSwitchNeeded).to_string(),
+            "the callee blocks after its `task.return`, so the synchronous \
+             lower below it would return the result and the caller's own \
+             code would go on"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_traps_with_the_cannot_block_cause_above_a_nested_start_while_a_synchronous_call_is_in_progress()
+     {
+        let mut owner = store();
+        let mut store = owner.internal().context();
+        current_task(&store, true);
+        let _ = nested_start(&store, LowerKind::Async, false);
+
+        let outcome = store
+            .internal()
+            .run_in_turn(Waker::noop(), |store| {
+                SuspendSeam::suspend(store, |_| false)
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            Error::Scheduler(SchedulerCause::CannotBlock).to_string(),
+            "the cannot-block rule comes before the nested start: some \
+             synchronous call has not returned, and the reference forbids \
+             that on every target"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_traps_with_the_deadlock_cause_once_the_nested_start_has_returned() {
+        let mut owner = store();
+        let mut store = owner.internal().context();
+        current_task(&store, false);
+        let _ = nested_start(&store, LowerKind::Async, false);
+        {
+            let mut guard = store.internal().tables().lock().expect("tables");
+            let callee = guard.tasks.current_task().expect("the callee's task");
+            guard.leave_task_scope(callee);
+            guard.tasks.end_nested_start();
+        }
+
+        let outcome = store
+            .internal()
+            .run_in_turn(Waker::noop(), |store| {
+                SuspendSeam::suspend(store, |_| false)
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            Error::Scheduler(SchedulerCause::Deadlock).to_string(),
+            "the caller blocks after its callee returned to it, so no frame \
+             below the block can move and nothing in the store can meet the \
+             condition"
         );
     }
 

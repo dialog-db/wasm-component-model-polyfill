@@ -19,6 +19,7 @@ mod compile_modules;
 mod destructor_task;
 mod host_end_lifecycle;
 mod instantiation;
+mod nested_start;
 mod prepared_call;
 mod realloc_task;
 mod resources;

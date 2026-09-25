@@ -860,10 +860,14 @@ pub enum AbiCause {
 pub enum SchedulerCause {
     /// A driver, or a suspension that fell back to a nested turn,
     /// went idle with nothing ready, no host task pending, no
-    /// synchronous call left to return, and its condition unmet. An
-    /// idle store that still holds such a call — an instance still
-    /// carrying may-not-suspend — fails with
-    /// [`SchedulerCause::CannotBlock`] instead. The message is
+    /// synchronous call left to return, no frame below it that
+    /// could still move, and its condition unmet. An idle store that
+    /// still holds such a call — an instance still carrying
+    /// may-not-suspend — fails with [`SchedulerCause::CannotBlock`]
+    /// instead. A block above a nested start whose caller would go
+    /// on fails with [`SchedulerCause::StackSwitchNeeded`], because
+    /// that caller could still move under a stack switch. The
+    /// message is
     /// Wasmtime's deadlock trap, `Trap::AsyncDeadlock` in
     /// `wasmtime-environ`'s `src/trap_encoding.rs`, so the
     /// conformance corpus can match it by substring.
@@ -891,17 +895,27 @@ pub enum SchedulerCause {
     RecursiveDriver,
 
     /// A guest thread blocked at a point the reference permits
-    /// blocking, the store still held work the block could not
-    /// reach, and the target has no suspend provider to switch its
-    /// stack. Unlike [`Error::Unsupported`], the feature itself is
+    /// blocking, work the block could not reach could still meet its
+    /// condition, and the target has no suspend provider to switch
+    /// its stack. That work is a host task still pending, or a frame
+    /// below the blocked thread: the thread runs above a nested
+    /// start, where a start intrinsic ran an `async`-typed callee
+    /// from inside its own frame, and a provider would return
+    /// control below that point to the caller that started it,
+    /// whose own code goes on from there. That holds after an
+    /// asynchronous lower, and after a synchronous lower once the
+    /// callee has resolved. Before that, a synchronous lower's
+    /// caller would only wait for its callee, so its nested start
+    /// does not count.
+    /// Unlike [`Error::Unsupported`], the feature itself is
     /// supported here; only the capability to serve it on this
     /// target is missing, and a host may want to branch on that
-    /// distinction. A block that the store went idle under fails
-    /// with [`SchedulerCause::Deadlock`] instead, because nothing
-    /// left in the store could have met its condition — or with
-    /// [`SchedulerCause::CannotBlock`] when an instance still
-    /// carried may-not-suspend at idle, because a synchronous call
-    /// had yet to return.
+    /// distinction. A block that the store went idle under with no
+    /// such nested start below it fails with [`SchedulerCause::Deadlock`]
+    /// instead, because nothing left could have met its condition —
+    /// or with [`SchedulerCause::CannotBlock`] when an instance
+    /// still carried may-not-suspend at idle, because a synchronous
+    /// call had yet to return.
     #[error("blocking here requires a stack switch, but the target has no suspend provider")]
     StackSwitchNeeded,
 
