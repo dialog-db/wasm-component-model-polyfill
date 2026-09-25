@@ -44,7 +44,6 @@ kanban-plugin: basic
 - [ ] [[f16638]]
 - [ ] [[902483]]
 - [ ] [[9f1223]]
-- [ ] [[9fc0f4]]
 - [ ] [[536676]]
 - [ ] [[c73ebd]]
 - [ ] [[629412]]
@@ -56,6 +55,7 @@ kanban-plugin: basic
 ## Needs Review
 
 - [ ] [[c723cc]]
+- [ ] [[9fc0f4]]
 
 ## Ready
 
