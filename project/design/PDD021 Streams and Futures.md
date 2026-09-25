@@ -521,14 +521,20 @@ Lowering a typed reader into a guest whose payload type differs from the
 projection of `T` fails with the type mismatch of [PDD010]. Lifting one from a
 guest checks the same.
 
-The lifecycle rule is Wasmtime's. A reader the host holds must end through
-`pipe` or `close`. A reader dropped without either leaks its slot until the
-store drops, and a guest that writes to it waits forever. The two guard types
-close on drop through the accessor they hold. A guard dropped outside a poll of
-its store cannot reach the store, so its end leaks the way an unclosed reader
-does. Dropping the store drops every shared record, every end, and every
-producer and consumer without polling them, which extends the store-drop rule of
-[PDD018].
+The lifecycle rule follows Wasmtime, with one departure. A reader the host holds
+must end through `pipe`, `close`, or a lower into a guest. A reader dropped
+without any of them leaks its slot until the store drops, and a guest that
+writes to it waits forever. The two guard types close on drop through the
+accessor they hold. A guard dropped outside a poll of its store cannot reach the
+store, so its end leaks the way an unclosed reader does. This departs from
+Wasmtime. Wasmtime's guard also closes through `Accessor::with`, and that call
+panics when no poll of the store is running or when another call is already
+inside the store. So a Wasmtime guard dropped there panics, and a failed close
+trips a debug assertion. The polyfill's accessor returns both cases as errors.
+Its guard lets the end leak rather than panic in a drop, because a panic in a
+drop aborts the process when it runs while a thread unwinds. Dropping the store
+drops every shared record, every end, and every producer and consumer without
+polling them, which extends the store-drop rule of [PDD018].
 
 ### The Untyped Values
 
@@ -540,6 +546,76 @@ that `T` projects to the payload type. Lowering one into a guest checks the
 payload type against the guest's. That is Wasmtime's surface at this version.
 Wasmtime has stated that it will let a host read and write these values without
 naming the type, and the polyfill follows that shape when it lands.
+
+### Values That Name One End
+
+Several host values can name one readable end. A value names an end when it
+holds the identity of the end. Cloning a `StreamAny` or a `FutureAny` copies the
+identity. Converting a value into a typed reader, or a reader into a value,
+copies it too. Two readers decoded from one `Val` name one end as well. The
+specification is silent on host values. Its `lower_stream` and `lower_future`
+(`definitions.py` at commit `e5ee0af`, lines 1770 to 1778) assert only the
+value's type and add a new readable end, and what the host holds is the host's
+to define. Wasmtime's values are copies of one identifier, so the polyfill
+follows Wasmtime wherever Wasmtime reaches a state its own code treats as sound.
+
+The host holds an end until one value that names it lowers it into a guest,
+pipes it, or closes it. Every value that names the end then sees that use. An
+end that a guest hands back to the host is the host's again, and so is every
+value that names it.
+
+A use of an end that is gone fails with the not-present cause and Wasmtime's
+message, "resource not present". An end is gone when both of its ends dropped.
+It is gone when the host closed a stream or future it created. It is gone when a
+pipe found the writer dropped or ran to its end. A value that closed names no
+end afterwards, whether its close succeeded or failed.
+
+While the end is in the store, a value that names it can do four things:
+
+- Convert. A conversion between a typed reader and an untyped value checks only
+  that the end is in the store and that the payload type matches. It succeeds
+  whoever holds the end.
+- Close an end that dropped already. Another value closed the end, or the guest
+  the host lowered it into dropped it. A guest still holds the writable end. The
+  close succeeds and changes nothing. The writer learns of the drop once.
+- Pipe an end that another value piped. A guest must hold the writable end, and
+  no write of it can be in flight. A write is in flight from its start until an
+  end answers it. The new consumer replaces the old one. The polyfill drops the
+  old consumer without a poll, and the next write polls the new consumer.
+  Wasmtime's `set_consumer` does the same on a writer that is open.
+- Close an end that another value piped, under the same two conditions. The end
+  drops as a guest's drop does. The polyfill drops the consumer without a poll,
+  and the writer receives the dropped result. Wasmtime's `host_drop_reader` does
+  the same on a writer that is open.
+
+Every other use fails. A pipe or a close fails with the not-held cause, whose
+message is the polyfill's own. A lower fails as an invalid handle. The failing
+uses fall into three groups.
+
+The first group leads Wasmtime into a state that its own code rejects as a bug.
+Wasmtime raises that bug as a panic in a debug build and as a trap in a release
+build. The check a guest read reaches is at `futures_and_streams.rs` line 3785
+at the corpus commit `cb091c33c`. The polyfill does not reproduce a bug as a
+behavior, so it refuses the use first:
+
+- A lower after a pipe, a close, or another lower. A later guest read of the new
+  entry fails Wasmtime's check that the reading side is open.
+- A pipe or a close after a lower. The guest that holds the end then fails its
+  read the same way.
+- A pipe or a close after a pipe while a write the consumer serves is in flight.
+  A second pipe sets two consumers to settle one write, and the second to finish
+  fails. A close drops the reading side under the running consumer, and its next
+  poll fails.
+
+The second group follows a pipe of a stream or future the host created. That
+pipe joins the producer and the consumer in one host task. No later call reaches
+into that task, so a second pipe or a close fails. In Wasmtime, a second pipe
+there fails as a bug, and a close deletes the stream under the task that copies.
+
+The third group is a pipe after a close. Wasmtime opens the reading side again,
+for a writer that learned that the reader dropped. The drop of an end is final
+in the polyfill, as it is in the specification. An end whose consumer ran to its
+end drops the same way.
 
 ## Translation
 
@@ -584,6 +660,12 @@ it by substring:
 - Lift after done, lift in waitable set, and lift during copy: the three lift
   traps, with Wasmtime's message per kind.
 - No copy pending: a cancel on an end that is not copying.
+- Not held by host: a pipe or a close of a readable end that the host no longer
+  holds, because a value naming the same end lowered, piped, or closed it. The
+  message is the polyfill's own. The Values That Name One End section states
+  which uses fail and why.
+- Host end not present: a use of a value whose end left the store, or of a value
+  that closed. Wasmtime's table message, "resource not present".
 - Payload mismatch: the built-in's type differs from the end's. The message is
   the polyfill's own, because Wasmtime checks it through its table types.
 
