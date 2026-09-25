@@ -138,31 +138,32 @@ explainer][Concurrency] define them. A status means:
 | Resource types, imported and locally defined                                 | ✅     |                                                                                                                                           |
 | Core module types in imports and exports                                     | ✅     | A host lends a `Module` through `LinkerInstance::module`. A component can export one.                                                     |
 | `async` function types                                                       | ✅     |                                                                                                                                           |
-| `stream<T>` and `future<T>` as value types                                   | ❌     | A component that declares one is refused. The design is written and the implementation is next.                                           |
+| `stream<T>` and `future<T>` as value types                                   | ✅     | `ValueType::Stream` and `ValueType::Future`, with the payload type.                                                                       |
 | `error-context` type                                                         | ❌     | The gate `wasm_component_model_error_context` exists. The built-ins behind it are refused.                                                |
 | Structural type equality                                                     | ✅     | Two declarations of one shape are one `ValueType`.                                                                                        |
 | Subtyping at the host boundary                                               | ❌     | The linker matches a host registration to an import structurally. Inside a component, the translator's validation applies the spec rules. |
 
 ### Canonical ABI
 
-| Feature                                                            | Status | Notes                                                                                                                             |
-| ------------------------------------------------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| Lift and lower for every supported value type                      | ✅     |                                                                                                                                   |
-| `cabi_realloc`, `memory`, parameter and result spill to memory     | ✅     |                                                                                                                                   |
-| String encodings `utf8`, `utf16`, `latin1+utf16`                   | ✅     |                                                                                                                                   |
-| String transcoding between components                              | ✅     | Every transcode operation the fused adapter compiler emits.                                                                       |
-| `post-return`                                                      | ✅     |                                                                                                                                   |
-| 64-bit memories in canonical options                               | ✅     | On by default (`wasm_component_model_memory64`).                                                                                  |
-| `canon lift async` with a `callback` (stackless)                   | ✅     |                                                                                                                                   |
-| `canon lift async` without a `callback` (stackful)                 | ❌     | Refused even when `wasm_component_model_async_stackful` is on. Neither target can suspend a guest thread in the middle of a call. |
-| `canon lower async`                                                | ✅     | Status word, subtask handle in the caller's table, subtask events.                                                                |
-| Fused adapters between components, every pairing of lift and lower | ✅     |                                                                                                                                   |
-| Instance flags (`may_leave`, `may_enter`, backpressure)            | ✅     |                                                                                                                                   |
-| One handle table per component instance                            | ✅     | Resources, waitables, waitable sets, and subtasks share it.                                                                       |
-| Per-task lift and lower context                                    | ✅     |                                                                                                                                   |
-| Garbage-collected data model (the `gc` canonical option)           | ❌     | The gate `wasm_component_model_gc` exists. The option is refused at translation.                                                  |
-| Additional canonical options on the asynchronous built-ins         | 🔒     | `wasm_component_model_more_async_builtins`. The Explainer marks them in development (🚝).                                         |
-| Trap messages                                                      | ✅     | Wasmtime's wording. No trap-message expectation is outstanding in the corpora.                                                    |
+| Feature                                                            | Status | Notes                                                                                                                                                             |
+| ------------------------------------------------------------------ | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Lift and lower for every supported value type                      | ✅     |                                                                                                                                                                   |
+| `cabi_realloc`, `memory`, parameter and result spill to memory     | ✅     |                                                                                                                                                                   |
+| String encodings `utf8`, `utf16`, `latin1+utf16`                   | ✅     |                                                                                                                                                                   |
+| String transcoding between components                              | ✅     | Every transcode operation the fused adapter compiler emits.                                                                                                       |
+| `post-return`                                                      | ✅     |                                                                                                                                                                   |
+| 64-bit memories in canonical options                               | ✅     | On by default (`wasm_component_model_memory64`).                                                                                                                  |
+| `canon lift async` with a `callback` (stackless)                   | ✅     |                                                                                                                                                                   |
+| `canon lift async` without a `callback` (stackful)                 | ❌     | Refused even when `wasm_component_model_async_stackful` is on. Neither target can suspend a guest thread in the middle of a call.                                 |
+| `canon lower async`                                                | ✅     | Status word, subtask handle in the caller's table, subtask events.                                                                                                |
+| Fused adapters between components, every pairing of lift and lower | ✅     |                                                                                                                                                                   |
+| Instance flags (`may_leave`, `may_enter`, backpressure)            | ✅     |                                                                                                                                                                   |
+| One handle table per component instance                            | ✅     | Resources, waitables, waitable sets, and subtasks share it.                                                                                                       |
+| Per-task lift and lower context                                    | ✅     |                                                                                                                                                                   |
+| Garbage-collected data model (the `gc` canonical option)           | ❌     | The gate `wasm_component_model_gc` exists. The option is refused at translation.                                                                                  |
+| Additional canonical options on the asynchronous built-ins         | 🔒     | `wasm_component_model_more_async_builtins`. The Explainer marks them in development (🚝).                                                                         |
+| Copy budget (Wasmtime's hostcall fuel)                             | ✅     | 128 MiB per crossing, with Wasmtime's message. A list charges 32 bytes per element and a map 64 per entry on both targets. `Store::set_hostcall_fuel` changes it. |
+| Trap messages                                                      | ✅     | Wasmtime's wording. No trap-message expectation is outstanding in the corpora.                                                                                    |
 
 ### Resources
 
@@ -196,46 +197,49 @@ explainer][Concurrency] define them. A status means:
 
 ### Concurrency: tasks, waitables, and threads
 
-| Feature                                                                           | Status | Notes                                                                                                                                    |
-| --------------------------------------------------------------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| Cooperative scheduler per `Store`                                                 | ✅     | Guest code runs only inside a turn. The order matches Wasmtime on both targets.                                                          |
-| `task.return`                                                                     | ✅     |                                                                                                                                          |
-| `task.cancel`                                                                     | ❌     |                                                                                                                                          |
-| `backpressure.inc`, `backpressure.dec`                                            | ✅     |                                                                                                                                          |
-| `context.get`, `context.set`                                                      | ✅     |                                                                                                                                          |
-| `waitable-set.new`, `waitable-set.wait`, `waitable-set.poll`, `waitable-set.drop` | ✅     |                                                                                                                                          |
-| `waitable.join`                                                                   | ✅     |                                                                                                                                          |
-| `thread.yield`                                                                    | ✅     |                                                                                                                                          |
-| The other `thread.*` built-ins (`thread.index`, `thread.suspend`, spawning)       | ❌     | Refused even when `wasm_component_model_threading` is on. The Explainer marks them in development (🧵).                                  |
-| Event codes and callback status words                                             | ✅     |                                                                                                                                          |
-| Reentrance rules                                                                  | ✅     | No call traps for reentrance. The instance's entry gate is the only serialization.                                                       |
-| Trap poisoning of an instance                                                     | ❌     | The rules that decide which trap poisons an instance are not implemented.                                                                |
-| Suspending a guest thread (stack switching, JSPI)                                 | ❌     | A blocking built-in runs a nested scheduler turn instead. A wait that only a caller on the stack can release fails with a clear message. |
-| Cancellation                                                                      | ❌     | `task.cancel`, `subtask.cancel`, and the cancellation events. A design card is filed.                                                    |
+| Feature                                                                           | Status | Notes                                                                                                                                                                          |
+| --------------------------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Cooperative scheduler per `Store`                                                 | ✅     | Guest code runs only inside a turn. The order matches Wasmtime on both targets.                                                                                                |
+| `task.return`                                                                     | ✅     |                                                                                                                                                                                |
+| `task.cancel`                                                                     | 🟡     | Accepted at translation, so a guest whose binding layer links it runs every path that does not cancel. A call fails with `Error::Unsupported`.                                 |
+| `backpressure.inc`, `backpressure.dec`                                            | ✅     |                                                                                                                                                                                |
+| `context.get`, `context.set`                                                      | ✅     |                                                                                                                                                                                |
+| `waitable-set.new`, `waitable-set.wait`, `waitable-set.poll`, `waitable-set.drop` | ✅     |                                                                                                                                                                                |
+| `waitable.join`                                                                   | ✅     |                                                                                                                                                                                |
+| `thread.yield`                                                                    | ✅     |                                                                                                                                                                                |
+| The other `thread.*` built-ins (`thread.index`, `thread.suspend`, spawning)       | ❌     | Refused even when `wasm_component_model_threading` is on. The Explainer marks them in development (🧵).                                                                        |
+| Event codes and callback status words                                             | ✅     |                                                                                                                                                                                |
+| Reentrance rules                                                                  | ✅     | No call traps for reentrance. The instance's entry gate is the only serialization.                                                                                             |
+| Trap poisoning of an instance                                                     | ❌     | The rules that decide which trap poisons an instance are not implemented.                                                                                                      |
+| Suspending a guest thread (stack switching, JSPI)                                 | ❌     | A blocking built-in runs a nested scheduler turn instead. A wait that only a caller on the stack can release fails with a clear message. The providers are designed in PDD022. |
+| Cancellation                                                                      | ❌     | Cancelling a task or subtask, and the cancelled event. The two built-ins are accepted at translation and fail at the call.                                                     |
 
 ### Subtasks and the asynchronous import
 
-| Feature                                                   | Status | Notes                                                  |
-| --------------------------------------------------------- | ------ | ------------------------------------------------------ |
-| Subtask records and supertasks                            | ✅     |                                                        |
-| `subtask.drop`                                            | ✅     |                                                        |
-| `subtask.cancel`                                          | ❌     |                                                        |
-| Subtask events (started, returned) through a waitable set | ✅     |                                                        |
-| Asynchronous lower of a host `async` function             | ✅     | A pending future becomes a subtask the guest waits on. |
-| Synchronous lower of a host `async` function              | ✅     | Blocks the guest thread until the future resolves.     |
+| Feature                                                   | Status | Notes                                                                                  |
+| --------------------------------------------------------- | ------ | -------------------------------------------------------------------------------------- |
+| Subtask records and supertasks                            | ✅     |                                                                                        |
+| `subtask.drop`                                            | ✅     |                                                                                        |
+| `subtask.cancel`                                          | 🟡     | As `task.cancel`: accepted at translation, and a call fails with `Error::Unsupported`. |
+| Subtask events (started, returned) through a waitable set | ✅     |                                                                                        |
+| Asynchronous lower of a host `async` function             | ✅     | A pending future becomes a subtask the guest waits on.                                 |
+| Synchronous lower of a host `async` function              | ✅     | Blocks the guest thread until the future resolves.                                     |
 
 ### Streams, futures, and error contexts
 
-| Feature                                                                                     | Status | Notes                                                        |
-| ------------------------------------------------------------------------------------------- | ------ | ------------------------------------------------------------ |
-| `stream.new`, `stream.read`, `stream.write`                                                 | ❌     | The design is written and in review. Implementation is next. |
-| `stream.cancel-read`, `stream.cancel-write`, `stream.drop-readable`, `stream.drop-writable` | ❌     |                                                              |
-| `future.new`, `future.read`, `future.write`                                                 | ❌     |                                                              |
-| `future.cancel-read`, `future.cancel-write`, `future.drop-readable`, `future.drop-writable` | ❌     |                                                              |
-| Stream readiness and partial copies                                                         | ❌     |                                                              |
-| Transfer of a stream or future end between components                                       | ❌     |                                                              |
-| Host-side stream and future types                                                           | ❌     |                                                              |
-| `error-context.new`, `error-context.debug-message`, `error-context.drop`                    | ❌     |                                                              |
+| Feature                                                                                     | Status | Notes                                                                                                                                                                                                     |
+| ------------------------------------------------------------------------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stream.new`, `stream.read`, `stream.write`                                                 | ✅     | The reference's pairing: partial copies, zero-length copies, and the packed result.                                                                                                                       |
+| `stream.cancel-read`, `stream.cancel-write`, `stream.drop-readable`, `stream.drop-writable` | ✅     | A cancel reports the progress the copy made.                                                                                                                                                              |
+| `future.new`, `future.read`, `future.write`                                                 | ✅     | Each end is used at most once.                                                                                                                                                                            |
+| `future.cancel-read`, `future.cancel-write`, `future.drop-readable`, `future.drop-writable` | ✅     |                                                                                                                                                                                                           |
+| Stream readiness, partial copies, and drop notification                                     | ✅     | A drop notifies the other end, idle or pending, as the current specification and Wasmtime do.                                                                                                             |
+| A synchronous copy                                                                          | 🟡     | Blocks through a nested scheduler turn. A copy that only a caller below it on the stack can release needs a stack switch and fails with a clear message.                                                  |
+| Byte copy of a number payload, and the same-instance rule                                   | ✅     | A payload of a number type, or none, copies as bytes. A read and a write from one instance need such a payload, as the specification's temporary rule states.                                             |
+| Transfer of a stream or future end between components                                       | ✅     | Through the fused adapters' transfer intrinsics, and through `task.return`.                                                                                                                               |
+| Host-side stream and future types                                                           | ✅     | `StreamReader` and `FutureReader` from a `StreamProducer` or `FutureProducer`, piped to a `StreamConsumer` or `FutureConsumer`, with `close`, `close_with`, and `guard`. Named as Wasmtime 49 names them. |
+| Untyped values (`Val::Stream`, `Val::Future`)                                               | ✅     | Close and typed conversion, as Wasmtime offers. Untyped reads and writes follow when Wasmtime adds them.                                                                                                  |
+| `error-context.new`, `error-context.debug-message`, `error-context.drop`                    | ❌     |                                                                                                                                                                                                           |
 
 ### Substrate limits
 
@@ -262,23 +266,24 @@ directive the polyfill does not pass is recorded, with a reason, in
 `rust/wasm-component-model-polyfill/tests/corpus/expected-failures.txt`. The
 harness fails when a listed directive starts to pass, so the list stays current.
 
-The native progress summary as of 2026-09-22 (`tests conformance` prints the
+The native progress summary as of 2026-09-25 (`tests conformance` prints the
 current one):
 
 | Corpus           | Directives | Passed | Pass % |
 | ---------------- | ---------- | ------ | ------ |
 | `cm`             | 1126       | 1038   | 92.2   |
-| `cm/async`       | 393        | 83     | 21.1   |
-| `fixtures`       | 48         | 45     | 93.8   |
+| `cm/async`       | 393        | 214    | 54.5   |
+| `fixtures`       | 56         | 50     | 89.3   |
 | `wasmtime`       | 469        | 431    | 91.9   |
-| `wasmtime/async` | 387        | 125    | 32.3   |
-| total            | 2423       | 1722   | 71.1   |
+| `wasmtime/async` | 387        | 326    | 84.2   |
+| total            | 2431       | 2059   | 84.7   |
 
-The `async` rows hold the total down. Most of what they still exercise is a
-stream, a future, cancellation, an `error-context`, the stackful lift, or a
-thread built-in, and every later directive in a file whose component is refused
-fails as bookkeeping. The browser differs from native by nine directives, all of
-them limits of the browser's engine.
+The `async` rows hold the total down. What they still exercise is cancellation,
+an `error-context`, the stackful lift, a thread built-in, a wait that needs a
+stack switch, or the rules for which trap poisons an instance, and every later
+directive in a file whose component is refused fails as bookkeeping. The browser
+differs from native by ten directives, all of them limits of the browser's
+engine.
 
 ## Targets and requirements
 
@@ -333,7 +338,8 @@ built. Start with `PDD000`, the product overview, `PDD002`, the ecosystem
 foundation, and `PDD003`, the compatibility outlook that maps the Component
 Model onto the polyfill feature by feature. `PDD018` through `PDD021` design the
 concurrency runtime, the callback export, subtasks and the asynchronous import,
-and streams and futures.
+and streams and futures. `PDD022` designs stack switching, the stackful export,
+and the thread built-ins.
 
 ## License
 
