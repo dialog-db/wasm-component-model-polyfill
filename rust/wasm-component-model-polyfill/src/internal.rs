@@ -62,6 +62,9 @@ pub trait EngineInternal {
 pub trait EngineConfigInternal {
     /// The validator features this configuration selects.
     fn wasm_features(&self) -> WasmFeatures;
+
+    /// Whether the host lets the engine select a suspend provider.
+    fn suspend_provider_enabled(&self) -> bool;
 }
 
 /// The crate-internal face of a compound value type: a

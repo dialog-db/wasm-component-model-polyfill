@@ -6,7 +6,8 @@ use crate::internal::EngineConfigInternal;
 use wasmtime_environ::wasmparser::WasmFeatures;
 
 /// The configuration an [`Engine`] is built from: which Component
-/// Model features the translator accepts.
+/// Model features the translator accepts, and whether the engine may
+/// select a suspend provider.
 ///
 /// The polyfill validates a component with the gates Wasmtime
 /// validates with, so a binary Wasmtime rejects is rejected here
@@ -18,10 +19,15 @@ use wasmtime_environ::wasmparser::WasmFeatures;
 /// projections in extern names have no setter: Wasmtime rejects them
 /// too.
 ///
+/// The suspend provider is allowed by default. A host turns it off
+/// with [`suspend_provider`](Self::suspend_provider), a setting
+/// Wasmtime has no counterpart to.
+///
 /// [`Engine`]: crate::Engine
 #[derive(Clone, Debug)]
 pub struct EngineConfig {
     features: WasmFeatures,
+    suspend_provider: bool,
 }
 
 impl Default for EngineConfig {
@@ -31,6 +37,7 @@ impl Default for EngineConfig {
                 | WasmFeatures::CM_MAP
                 | WasmFeatures::CM_FIXED_LENGTH_LISTS
                 | WasmFeatures::CM64,
+            suspend_provider: true,
         }
     }
 }
@@ -95,10 +102,31 @@ impl EngineConfig {
     pub fn wasm_component_model_more_async_builtins(&mut self, enable: bool) -> &mut Self {
         self.set(WasmFeatures::CM_MORE_ASYNC_BUILTINS, enable)
     }
+
+    /// Let the engine select a suspend provider. On by default.
+    ///
+    /// With it off, the engine answers [`SuspendProviderKind::None`]
+    /// whatever its probes would find, and a blocking built-in runs
+    /// the waiting work in a nested turn above the blocked call. A
+    /// host turns it off to keep the synchronous order of nested
+    /// turns, or to avoid a provider that fails on one engine
+    /// version. A test turns it off to measure the nested turn on a
+    /// target that has a provider. Wasmtime has no counterpart,
+    /// because its fibers always exist.
+    ///
+    /// [`SuspendProviderKind::None`]: crate::SuspendProviderKind::None
+    pub fn suspend_provider(&mut self, enable: bool) -> &mut Self {
+        self.suspend_provider = enable;
+        self
+    }
 }
 
 impl EngineConfigInternal for EngineConfig {
     fn wasm_features(&self) -> WasmFeatures {
         self.features
+    }
+
+    fn suspend_provider_enabled(&self) -> bool {
+        self.suspend_provider
     }
 }

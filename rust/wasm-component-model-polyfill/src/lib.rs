@@ -16,6 +16,8 @@
 //!   context with the feature gates it validates against, and the
 //!   owner of guest state, the foundations every higher-level type
 //!   is built against.
+//! - [`SuspendProviderKind`] — which provider, if any, lets an
+//!   engine set a blocked guest thread aside and resume it later.
 //! - [`Component`] — a parsed component value with accessors over
 //!   its declared imports and exports.
 //! - [`PackageName`] and [`InterfaceIdentifier`] — the addressing
@@ -239,6 +241,7 @@ mod linker;
 mod module;
 mod resource;
 mod store;
+mod suspend_provider_kind;
 mod types;
 mod value;
 
@@ -271,6 +274,7 @@ pub use crate::module::{
 };
 pub use crate::resource::{ResourceHandle, ResourceTypeId};
 pub use crate::store::{Store, StoreContext};
+pub use crate::suspend_provider_kind::SuspendProviderKind;
 pub use crate::types::{
     EnumType, FixedLengthListType, FlagsType, FutureType, ListType, MapType, OptionType,
     PrimitiveType, RecordField, RecordType, ResourceType, ResultType, StreamType, TupleType,

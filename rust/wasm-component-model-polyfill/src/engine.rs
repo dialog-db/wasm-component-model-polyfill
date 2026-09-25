@@ -12,7 +12,8 @@
 use crate::backend::Backend;
 use crate::engine_config::EngineConfig;
 use crate::error::Result;
-use crate::internal::EngineInternal;
+use crate::internal::{EngineConfigInternal, EngineInternal};
+use crate::suspend_provider_kind::SuspendProviderKind;
 
 /// The polyfill's compilation context.
 ///
@@ -22,11 +23,13 @@ use crate::internal::EngineInternal;
 /// [`Engine::new`].
 ///
 /// The engine carries the [`EngineConfig`] every component it
-/// translates is validated with.
+/// translates is validated with, and the suspend provider it
+/// selected when it was constructed.
 #[derive(Clone)]
 pub struct Engine {
     inner: wasm_runtime_layer::Engine<Backend>,
     config: EngineConfig,
+    suspend_provider: SuspendProviderKind,
 }
 
 impl Engine {
@@ -43,11 +46,16 @@ impl Engine {
 
     /// Construct an `Engine` from `config`, the polyfill's analogue
     /// to building a Wasmtime engine from a `Config`.
+    ///
+    /// Construction selects the suspend provider, synchronously, and
+    /// the engine keeps that answer for its life: see
+    /// [`suspend_provider`](Self::suspend_provider).
     #[allow(clippy::unnecessary_wraps)]
     pub fn with_config(config: &EngineConfig) -> Result<Self> {
         Ok(Self {
             inner: wasm_runtime_layer::Engine::new(Backend::default()),
             config: config.clone(),
+            suspend_provider: select_suspend_provider(config),
         })
     }
 
@@ -55,10 +63,68 @@ impl Engine {
     pub fn config(&self) -> &EngineConfig {
         &self.config
     }
+
+    /// Which provider fills this engine's suspend capability.
+    ///
+    /// The engine selected it once, when it was constructed, and the
+    /// answer holds for the engine's life and every clone of it.
+    /// [`SuspendProviderKind::None`] means a blocking built-in runs
+    /// the waiting work in a nested turn above the blocked call, so
+    /// a block whose releasing work lies on a frame below it fails
+    /// with [`SchedulerCause::StackSwitchNeeded`]. A host reads the
+    /// answer to explain that failure. The engine answers
+    /// [`SuspendProviderKind::None`] when
+    /// [`EngineConfig::suspend_provider`] turned the provider off,
+    /// and on both targets today, because no probe exists yet.
+    ///
+    /// Wasmtime has no counterpart, because its fibers always exist.
+    ///
+    /// [`SchedulerCause::StackSwitchNeeded`]: crate::SchedulerCause::StackSwitchNeeded
+    pub fn suspend_provider(&self) -> SuspendProviderKind {
+        self.suspend_provider
+    }
 }
 
 impl EngineInternal for Engine {
     fn inner(&self) -> &wasm_runtime_layer::Engine<Backend> {
         &self.inner
     }
+}
+
+/// Select the provider that fills the suspend capability of an
+/// engine built from `config`.
+///
+/// The host's opt-out comes ahead of every probe. The
+/// stack-switching provider comes before the JSPI provider because
+/// it resumes a thread synchronously, so its scheduling order
+/// matches the native order with no microtask between two items. No
+/// engine offers both today, so that order decides nothing yet. Each
+/// probe is small and synchronous, so construction stays
+/// synchronous.
+fn select_suspend_provider(config: &EngineConfig) -> SuspendProviderKind {
+    if !config.suspend_provider_enabled() {
+        return SuspendProviderKind::None;
+    }
+    if switch_probe_passes() {
+        return SuspendProviderKind::StackSwitching;
+    }
+    if jspi_probe_passes() {
+        return SuspendProviderKind::Jspi;
+    }
+    SuspendProviderKind::None
+}
+
+/// Whether the engine runs a thread that suspends and resumes
+/// through the WebAssembly stack-switching instructions. The
+/// polyfill has no switch module to probe with yet, so the probe
+/// never passes.
+fn switch_probe_passes() -> bool {
+    false
+}
+
+/// Whether the browser offers JavaScript Promise Integration. The
+/// polyfill has no JSPI provider to select yet, so the probe never
+/// passes, on the native target or in the browser.
+fn jspi_probe_passes() -> bool {
+    false
 }

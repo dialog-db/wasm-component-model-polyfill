@@ -223,6 +223,10 @@ pub enum wasm_component_model_polyfill::StreamResult
 pub wasm_component_model_polyfill::StreamResult::Cancelled
 pub wasm_component_model_polyfill::StreamResult::Completed
 pub wasm_component_model_polyfill::StreamResult::Dropped
+#[non_exhaustive] pub enum wasm_component_model_polyfill::SuspendProviderKind
+pub wasm_component_model_polyfill::SuspendProviderKind::Jspi
+pub wasm_component_model_polyfill::SuspendProviderKind::None
+pub wasm_component_model_polyfill::SuspendProviderKind::StackSwitching
 #[non_exhaustive] pub enum wasm_component_model_polyfill::TaskCause
 pub wasm_component_model_polyfill::TaskCause::BackpressureOverflow
 pub wasm_component_model_polyfill::TaskCause::CannotLeave
@@ -348,10 +352,12 @@ pub struct wasm_component_model_polyfill::Engine
 impl wasm_component_model_polyfill::Engine
 pub fn wasm_component_model_polyfill::Engine::config(&self) -> &wasm_component_model_polyfill::EngineConfig
 pub fn wasm_component_model_polyfill::Engine::new() -> wasm_component_model_polyfill::Result<Self>
+pub fn wasm_component_model_polyfill::Engine::suspend_provider(&self) -> wasm_component_model_polyfill::SuspendProviderKind
 pub fn wasm_component_model_polyfill::Engine::with_config(config: &wasm_component_model_polyfill::EngineConfig) -> wasm_component_model_polyfill::Result<Self>
 pub struct wasm_component_model_polyfill::EngineConfig
 impl wasm_component_model_polyfill::EngineConfig
 pub fn wasm_component_model_polyfill::EngineConfig::new() -> Self
+pub fn wasm_component_model_polyfill::EngineConfig::suspend_provider(&mut self, enable: bool) -> &mut Self
 pub fn wasm_component_model_polyfill::EngineConfig::wasm_component_model_async_stackful(&mut self, enable: bool) -> &mut Self
 pub fn wasm_component_model_polyfill::EngineConfig::wasm_component_model_error_context(&mut self, enable: bool) -> &mut Self
 pub fn wasm_component_model_polyfill::EngineConfig::wasm_component_model_fixed_length_lists(&mut self, enable: bool) -> &mut Self
