@@ -5,6 +5,8 @@ type: chore
 blocked_by: [b71981, ad5dd3, b07a9c, a31891, 9d86f4, 3fdd33, 88e273, f65b25, 9fc0f4]
 labels: [PDD021, concurrency, conformance]
 created: 2026-09-23T06:00:42Z
+disposition: accepted
+disposition_at: 2026-09-25T08:21:29Z
 ---
 
 ## What to build

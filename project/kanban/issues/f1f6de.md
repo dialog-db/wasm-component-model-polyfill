@@ -5,6 +5,8 @@ type: feature
 blocked_by: []
 labels: [PDD021, concurrency, abi]
 created: 2026-09-23T05:58:18Z
+disposition: accepted
+disposition_at: 2026-09-25T08:21:29Z
 ---
 
 ## What to build
