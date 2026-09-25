@@ -53,7 +53,7 @@ impl Category {
 }
 
 /// One line of `expected-failures.txt`.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Expectation {
     pub file: String,
     pub line: usize,
@@ -99,6 +99,35 @@ fn parse_line(text: &str, number: usize) -> Result<Line<'_>, String> {
 /// missing, unknown, or still the regeneration's placeholder is an
 /// error that names the line.
 pub fn parse_expectations(text: &str) -> Result<Vec<Expectation>, String> {
+    Ok(parse_entries(text)?
+        .into_iter()
+        .map(|(_, expectation, _)| expectation)
+        .collect())
+}
+
+/// Parse an overlay list, one whose every line must fail for one
+/// cause: as `parse_expectations`, and a line whose reason does not
+/// carry `reason` is an error that names the line.
+pub fn parse_overlay(text: &str, reason: &str) -> Result<Vec<Expectation>, String> {
+    let entries = parse_entries(text)?;
+    if let Some((number, expectation, _)) = entries
+        .iter()
+        .find(|(_, _, recorded)| !recorded.contains(reason))
+    {
+        return Err(format!(
+            "expected-failures.txt:{number}: the line for `{}:{}` does not carry the reason \
+             every line of this list must carry: `{reason}`",
+            expectation.file, expectation.line
+        ));
+    }
+    Ok(entries
+        .into_iter()
+        .map(|(_, expectation, _)| expectation)
+        .collect())
+}
+
+/// Parse every entry of a list, with its line number and its reason.
+fn parse_entries(text: &str) -> Result<Vec<(usize, Expectation, &str)>, String> {
     let mut expectations = Vec::new();
     for (index, line) in text.lines().enumerate() {
         let line = line.trim();
@@ -126,13 +155,51 @@ pub fn parse_expectations(text: &str) -> Result<Vec<Expectation>, String> {
                 )
             }
         })?;
-        expectations.push(Expectation {
-            file: parsed.file.to_owned(),
-            line: parsed.line,
-            category,
-        });
+        expectations.push((
+            number,
+            Expectation {
+                file: parsed.file.to_owned(),
+                line: parsed.line,
+                category,
+            },
+            parsed.reason,
+        ));
     }
     Ok(expectations)
+}
+
+/// The run's failures that `base`, another list, does not already
+/// name, so that an overlay regenerated from them holds only what
+/// fails beyond the list it is layered on. Only the locations of
+/// `base` are read, so a line that still carries the placeholder
+/// category counts as named.
+pub fn beyond(reports: &[FileReport], base: &str) -> Result<Vec<FileReport>, String> {
+    let mut named = Vec::new();
+    for (index, raw) in base.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parsed = parse_line(line, index + 1)?;
+        named.push((parsed.file, parsed.line));
+    }
+    Ok(reports
+        .iter()
+        .map(|report| FileReport {
+            path: report.path.clone(),
+            directives: report.directives,
+            failures: report
+                .failures
+                .iter()
+                .filter(|failure| !named.contains(&(report.path.as_str(), failure.line)))
+                .map(|failure| Failure {
+                    line: failure.line,
+                    reason: failure.reason.clone(),
+                })
+                .collect(),
+            expected: Vec::new(),
+        })
+        .collect())
 }
 
 /// A regenerated expected-failures list: the whole file, and what the
@@ -217,7 +284,9 @@ pub fn regenerate(current: &str, reports: &[FileReport]) -> Result<Regeneration,
     for line in &preamble {
         let _ = writeln!(text, "{line}");
     }
-    if !preamble.is_empty() {
+    // The blank line separates the header from the entries, so a list
+    // with none, as an overlay can be, ends at its header.
+    if !preamble.is_empty() && !failing.is_empty() {
         text.push('\n');
     }
     let mut kept = 0;
@@ -650,6 +719,68 @@ mod tests {
         assert!(err.contains("`twelve` is not a line number"), "{err}");
     }
 
+    const CAUSE: &str = "blocking here requires a stack switch";
+
+    #[wcmp_macros::test]
+    async fn it_parses_an_overlay_whose_every_line_carries_the_reason() {
+        let list = "# comment\n\n\
+                    cm/a.wast:12 deferred-feature the call fails with `blocking here requires a \
+                    stack switch`\n\
+                    cm/a.wast:14 cascade scheduler error: blocking here requires a stack switch\n";
+        let expectations = parse_overlay(list, CAUSE).expect("parses");
+        assert_eq!(expectations.len(), 2);
+        assert_eq!(expectations[1].line, 14);
+        assert_eq!(expectations[1].category, Category::Cascade);
+    }
+
+    #[wcmp_macros::test]
+    async fn it_rejects_an_overlay_line_without_the_reason() {
+        let list = "cm/a.wast:12 cascade scheduler error: blocking here requires a stack switch\n\
+                    cm/a.wast:14 cascade no instance to invoke\n";
+        let err = parse_overlay(list, CAUSE).unwrap_err();
+        assert!(err.contains("expected-failures.txt:2"), "{err}");
+        assert!(err.contains("`cm/a.wast:14`"), "{err}");
+        assert!(err.contains(CAUSE), "{err}");
+    }
+
+    #[wcmp_macros::test]
+    async fn it_rejects_an_overlay_line_without_a_category_before_its_reason() {
+        let err = parse_overlay(
+            "cm/a.wast:12 blocking here requires a stack switch\n",
+            CAUSE,
+        )
+        .unwrap_err();
+        assert!(err.contains("is not a category"), "{err}");
+    }
+
+    #[wcmp_macros::test]
+    async fn it_keeps_only_the_failures_beyond_the_base_list() {
+        let base = format!(
+            "{HEADER}cm/a.wast:12 cascade no instance to invoke\n\
+             cm/a.wast:20 {PLACEHOLDER_CATEGORY} expected `1`, got `2`\n"
+        );
+        let reports = [
+            failing(
+                "cm/a.wast",
+                30,
+                &[(12, "no instance to invoke"), (20, "x"), (25, CAUSE)],
+            ),
+            failing("cm/b.wast", 4, &[(12, CAUSE)]),
+        ];
+        let beyond = beyond(&reports, &base).expect("reads the base list");
+        let lines: Vec<(&str, usize)> = beyond
+            .iter()
+            .flat_map(|report| {
+                report
+                    .failures
+                    .iter()
+                    .map(|failure| (report.path.as_str(), failure.line))
+            })
+            .collect();
+        assert_eq!(lines, [("cm/a.wast", 25), ("cm/b.wast", 12)]);
+        assert_eq!(beyond[0].directives, 30);
+    }
+
     fn report(
         path: &str,
         directives: usize,
@@ -716,6 +847,22 @@ mod tests {
         assert_eq!(regeneration.kept, 3);
         assert!(regeneration.dropped.is_empty());
         assert!(regeneration.added.is_empty());
+    }
+
+    #[wcmp_macros::test]
+    async fn it_regenerates_a_list_without_entries_byte_for_byte() {
+        let list = HEADER.trim_end().to_owned() + "\n";
+        let reports = [failing("cm/a.wast", 30, &[])];
+        let regeneration = regenerate(&list, &reports).expect("regenerates");
+        assert_eq!(regeneration.text, list);
+
+        // The first entry a run adds arrives below the blank line.
+        let reports = [failing("cm/a.wast", 30, &[(12, "no instance to invoke")])];
+        let regeneration = regenerate(&list, &reports).expect("regenerates");
+        assert_eq!(
+            regeneration.text,
+            format!("{HEADER}cm/a.wast:12 {PLACEHOLDER_CATEGORY} no instance to invoke\n")
+        );
     }
 
     #[wcmp_macros::test]

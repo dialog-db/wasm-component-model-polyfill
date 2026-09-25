@@ -460,7 +460,7 @@
             --extract-to "''${XDG_CACHE_HOME:-$HOME/.cache}/wcmp-tests/${package}-summary" \
             --extract-overwrite \
             --no-capture \
-            -E 'test(it_reports_conformance_progress)'
+            -E 'test(=it_reports_conformance_progress)'
           rm -rf "''${XDG_CACHE_HOME:-$HOME/.cache}/wcmp-tests/${package}-summary"
         '';
         conformanceSummaryCommand = conformanceSummaryFor "tests-native-debug";
@@ -475,11 +475,15 @@
         # its parenthetical and takes the run's reason, a directive that
         # passes loses its line, and a new failure arrives with a
         # placeholder category the harness rejects until a person replaces
-        # it. The run always writes a copy under the lane workspace and the
-        # diff is printed; `--dry-run` stops there, which is also how to
-        # read the live reason of a directive the list already names.
+        # it. A second run, with the suspend provider turned off, then
+        # rewrites `expected-failures.no-provider.txt` the same way from
+        # the failures the regenerated shared list does not name
+        # (`WCMP_REGENERATE_BASE` names that list). The runs always write
+        # copies under the lane workspace and the diffs are printed;
+        # `--dry-run` stops there, which is also how to read the live
+        # reason of a directive a list already names.
         regenerateExpectationsCommand = ''
-          list="$(git rev-parse --show-toplevel)"/rust/wasm-component-model-polyfill/tests/corpus/expected-failures.txt
+          corpus="$(git rev-parse --show-toplevel)"/rust/wasm-component-model-polyfill/tests/corpus
           dry=""
           for argument in "$@"; do
             case "$argument" in
@@ -495,24 +499,37 @@
           rm -rf "$workspace"
           mkdir -p "$workspace/archive"
           trap 'rm -rf "$workspace"' EXIT
-          candidate="$workspace/expected-failures.txt"
-          cp "$list" "$candidate"
-          WCMP_REGENERATE_EXPECTATIONS="$candidate" cargo nextest run \
-            --workspace-remap ./ \
-            --archive-file "$archive/tests-native-debug.tar.zst" \
-            --extract-to "$workspace/archive" \
-            --extract-overwrite \
-            --no-capture \
-            -E 'test(it_reports_conformance_progress)'
-          echo
-          if diff -u "$list" "$candidate"; then
-            echo "tests regenerate: the list is current, nothing to write"
-          elif [ -n "$dry" ]; then
-            echo "tests regenerate: the diff above is what a run would write; $list is unchanged"
-          else
-            install -m 644 "$candidate" "$list"
-            echo "tests regenerate: wrote $list"
-          fi
+          shared="$workspace/expected-failures.txt"
+          overlay="$workspace/expected-failures.no-provider.txt"
+          cp "$corpus/expected-failures.txt" "$shared"
+          cp "$corpus/expected-failures.no-provider.txt" "$overlay"
+          # One progress test per run: the overlay's run reads the shared
+          # list the first run wrote, so the two cannot run side by side.
+          regenerate() {
+            cargo nextest run \
+              --workspace-remap ./ \
+              --archive-file "$archive/tests-native-debug.tar.zst" \
+              --extract-to "$workspace/archive" \
+              --extract-overwrite \
+              --ignore-default-filter \
+              --no-capture \
+              -E "test(=$1)"
+          }
+          WCMP_REGENERATE_EXPECTATIONS="$shared" \
+            regenerate it_reports_conformance_progress
+          WCMP_REGENERATE_EXPECTATIONS="$overlay" WCMP_REGENERATE_BASE="$shared" \
+            regenerate it_reports_conformance_progress_without_a_provider
+          for name in expected-failures.txt expected-failures.no-provider.txt; do
+            echo
+            if diff -u "$corpus/$name" "$workspace/$name"; then
+              echo "tests regenerate: $name is current, nothing to write"
+            elif [ -n "$dry" ]; then
+              echo "tests regenerate: the diff above is what a run would write; $name is unchanged"
+            else
+              install -m 644 "$workspace/$name" "$corpus/$name"
+              echo "tests regenerate: wrote $corpus/$name"
+            fi
+          done
         '';
 
         # Every replay extracts the archive (4 to 7 GB of test binaries)
@@ -523,8 +540,8 @@
         # path is kept short on purpose: Chromium puts Unix sockets under
         # `$TMPDIR`, and a socket path longer than 108 bytes aborts the
         # browser at startup.
-        testWorkspace = package: ''
-          workspace="''${XDG_CACHE_HOME:-$HOME/.cache}/wcmp-tests/${package}"
+        testWorkspace = lane: ''
+          workspace="''${XDG_CACHE_HOME:-$HOME/.cache}/wcmp-tests/${lane}"
           rm -rf "$workspace"
           mkdir -p "$workspace/archive" "$workspace/tmp"
           trap 'rm -rf "$workspace"' EXIT
@@ -566,20 +583,29 @@
           {
             description,
             package,
+            # The nextest profile (`.config/nextest.toml`) that picks the
+            # lane's tests from the archive.
+            nextestProfile ? "default",
             # Print the conformance progress summary after the run.
             summary ? false,
             # Cap the parallelism from available memory (web lanes).
             browser ? false,
           }:
+          let
+            # Lanes that replay one archive under different profiles get
+            # workspaces of their own.
+            lane = if nextestProfile == "default" then package else "${package}-${nextestProfile}";
+          in
           {
             inherit description;
             command = ''
               archive=$(nix build --no-link --print-out-paths .#${package})
             ''
-            + testWorkspace package
+            + testWorkspace lane
             + pkgs.lib.optionalString browser (browserPool + browserTestThreads)
             + ''
               cargo nextest run \
+                --profile ${nextestProfile} \
                 --workspace-remap ./ \
                 --archive-file "$archive/${package}.tar.zst" \
                 --extract-to "$workspace/archive" \
@@ -656,6 +682,11 @@
                     package = "tests-native-release";
                     summary = true;
                   };
+                  no-provider = menuTestCommand {
+                    description = "The conformance corpus alone, with the suspend provider turned off through `EngineConfig` (${system}, debug)";
+                    package = "tests-native-debug";
+                    nextestProfile = "no-provider";
+                  };
                 };
               };
               web = {
@@ -671,6 +702,12 @@
                     package = "tests-web-release";
                     browser = true;
                   };
+                  no-provider = menuTestCommand {
+                    description = "The conformance corpus alone, with the suspend provider turned off through `EngineConfig` (wasm32-unknown-unknown, debug)";
+                    package = "tests-web-debug";
+                    nextestProfile = "no-provider";
+                    browser = true;
+                  };
                 };
               };
               conformance = {
@@ -678,7 +715,7 @@
                 command = conformanceSummaryCommand + conformanceSummaryFor "tests-web-debug";
               };
               regenerate = {
-                description = "Rewrite the expected-failure list from a native run (`--dry-run` only prints the diff)";
+                description = "Rewrite the shared expected-failure list from the native run with the suspend provider and the no-provider overlay from the native run without it (`--dry-run` only prints the diffs)";
                 command = regenerateExpectationsCommand;
               };
               # The end-to-end smoke test (`rust/wcmp-smoke`): one host
@@ -712,16 +749,22 @@
                   };
                 };
               };
+              # The conformance corpus runs in four states: each target with
+              # the suspend provider allowed (the debug and release lanes)
+              # and with it turned off (the `no-provider` lanes). Each lane
+              # reports its wall-clock time, build included.
               all = {
-                description = "Every archive, each reported (grab a coffee)";
+                description = "Every lane, each timed: both targets in debug and release, and the conformance corpus on both targets with the suspend provider off, so the corpus runs in all four states (grab a coffee)";
                 command = ''
                   status=0
-                  for suite in "native debug" "native release" "web debug" "web release"; do
+                  for suite in "native debug" "native release" "native no-provider" \
+                    "web debug" "web release" "web no-provider"; do
+                    started=$SECONDS
                     # shellcheck disable=SC2086
                     if tests $suite "$@"; then
-                      echo "tests $suite: passed"
+                      echo "tests $suite: passed in $((SECONDS - started))s"
                     else
-                      echo "tests $suite: FAILED"
+                      echo "tests $suite: FAILED after $((SECONDS - started))s"
                       status=1
                     fi
                   done

@@ -139,6 +139,36 @@ produce and must not invent; the delta holds only substrate
 differences, eleven lines today, and each one is written by hand from
 the failure a `tests web debug` run prints.
 
+The shared list records the best case: the failures under a suspend
+provider. `expected-failures.no-provider.txt` is the overlay of the
+directives that fail beyond it without one. The harness applies it
+whenever the engine's provider query answers none, on either target,
+because the nested turn is one code path on both: a lane that turns
+the provider off, a native build on a platform without the
+stack-switching proposal, and a browser without JSPI. In such a
+browser the web delta applies beside it. Every line of the overlay
+carries the stack-switch reason, the text of the scheduler's
+stack-switch cause, and no line may name a directive the shared list
+names; the harness fails the run otherwise.
+
+Each corpus file is two tests. `it_passes_<file>` runs it with the
+provider allowed, and `it_passes_<file>::it_passes_without_a_provider`
+runs it with the provider turned off through `EngineConfig`. The
+nextest profiles in `.config/nextest.toml` at the workspace root split
+them: the ordinary lanes run the first, and `tests native no-provider`
+and `tests web no-provider` run only the second, from the debug
+archives. `tests all` runs the corpus in all four states. No provider
+exists yet, so both states of a target measure the same thing and the
+overlay is empty.
+
+`tests regenerate` writes both lists from the native debug archive: the
+shared list from the progress run with the provider allowed, then the
+overlay from `it_reports_conformance_progress_without_a_provider`, which
+keeps only the failures the regenerated shared list does not name
+(`WCMP_REGENERATE_BASE` names that list). A directive that fails with
+a provider and passes without one has no place in either list; the
+lane without a provider reports it as a stale expectation.
+
 The harness links every file against the host environment Wasmtime's
 wast runner provides: the `host` instance, `host-return-two`, and
 the rest of its component spectest (`crates/wast/src/spectest.rs`

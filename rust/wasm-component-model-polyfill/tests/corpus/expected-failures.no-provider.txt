@@ -1,0 +1,11 @@
+# Directives that fail only without a suspend provider, applied on top
+# of `expected-failures.txt` whenever the engine answers that it has
+# none: a lane that turns the provider off, a native build on a
+# platform without the stack-switching proposal, and a browser without
+# JSPI. The nested turn is one code path on both targets, so this one
+# overlay serves both, beside `expected-failures.web.txt` in a browser.
+# Same line shape: `<path>:<line> <category> <reason>`. Every line
+# carries the stack-switch reason, or the harness fails the run. A line
+# the shared list already names does not belong here. `tests
+# regenerate` rewrites this list from the native run without a
+# provider.

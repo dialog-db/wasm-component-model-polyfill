@@ -1,0 +1,18 @@
+# Every conformance corpus file is two tests: `it_passes_<file>` runs
+# it with the suspend provider allowed, and
+# `it_passes_<file>::it_passes_without_a_provider` runs it with the
+# provider turned off through `EngineConfig` (see
+# `rust/wasm-component-model-polyfill/tests/conformance.rs`). The
+# profiles split the two states into their own lanes. A filterset on
+# the command line narrows a profile's default filter rather than
+# replacing it; `--ignore-default-filter` drops it.
+
+# The ordinary lanes (`tests native|web <profile>`): every test, with
+# the conformance corpus in its provider-allowed state.
+[profile.default]
+default-filter = "not test(/without_a_provider$/)"
+
+# The `no-provider` lanes (`tests native|web no-provider`): the
+# conformance corpus alone, with the provider turned off.
+[profile.no-provider]
+default-filter = "binary(conformance) and test(/::it_passes_without_a_provider$/)"

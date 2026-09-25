@@ -10,6 +10,18 @@
 //! passes and an unlisted directive that fails both fail the test,
 //! so the list stays current.
 //!
+//! The shared list records the best case: the failures under a
+//! suspend provider. Two overlays go on top of it. The web overlay,
+//! `expected-failures.web.txt`, holds what only the browser does
+//! differently and applies on `wasm32-unknown-unknown`. The
+//! no-provider overlay, `expected-failures.no-provider.txt`, holds
+//! what fails beyond the shared list in a nested turn, and applies
+//! whenever the engine's provider query answers none, on either
+//! target. Every line of it carries the stack-switch reason, or the
+//! run fails. Each file runs twice, with the provider allowed and
+//! with it turned off through `EngineConfig`, and the nextest profiles
+//! in `.config/nextest.toml` split the two into their own lanes.
+//!
 //! Every expectation carries a category, and one more test,
 //! `it_reports_conformance_progress`, runs every file in one process
 //! and prints a summary per corpus directory: directives, passes, and
@@ -21,7 +33,10 @@
 //! from the run, which is what the `tests regenerate` menu command
 //! runs. Every failing directive's reason comes from the run, so a
 //! change that alters many reasons at once needs no hand loop over the
-//! printed `unexpected:` lines.
+//! printed `unexpected:` lines. Its twin with the provider turned off,
+//! `it_reports_conformance_progress_without_a_provider`, rewrites the
+//! no-provider overlay the same way, from the failures the shared list
+//! does not name.
 //!
 //! The host environment is the one Wasmtime's wast runner provides:
 //! the fixed set of `host` items its component spectest registers,
@@ -44,15 +59,15 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use wasm_component_model_polyfill::{
     Accessor, Component, Engine, EngineConfig, Error, ExternType, ExternalName, FunctionParameter,
-    FunctionType, HostResource, Instance, Linker, Module, PrimitiveType, ResourceType, Store, Val,
-    ValField, ValueType,
+    FunctionType, HostResource, Instance, Linker, Module, PrimitiveType, ResourceType,
+    SchedulerCause, Store, SuspendProviderKind, Val, ValField, ValueType,
 };
 use wast::component::WastVal;
 use wast::parser::{self, ParseBuffer};
 use wast::token::Span;
 use wast::{Wast, WastArg, WastDirective, WastExecute, WastRet};
 
-use report::{Expectation, Failure, FileReport, Summary, parse_expectations};
+use report::{Expectation, Failure, FileReport, Summary, parse_expectations, parse_overlay};
 
 #[cfg(target_arch = "wasm32")]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
@@ -65,22 +80,86 @@ const EXPECTED_FAILURES: &str = include_str!("corpus/expected-failures.txt");
 /// browser's summary.
 const EXPECTED_FAILURES_WEB: &str = include_str!("corpus/expected-failures.web.txt");
 
-/// Parse the expectations that apply on this target.
-fn expectations() -> Vec<Expectation> {
-    let shared = parse_expectations(EXPECTED_FAILURES).unwrap_or_else(|err| panic!("{err}"));
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        shared
+/// The overlay of directives that fail only without a suspend
+/// provider, applied on top of the shared list whenever the engine
+/// answers that it has none, on either target: a lane that turns the
+/// provider off, a native build on a platform without the
+/// stack-switching proposal, and a browser without JSPI. A nested turn
+/// is one code path on both targets, so one overlay serves both. Every
+/// line carries the stack-switch reason.
+const EXPECTED_FAILURES_NO_PROVIDER: &str =
+    include_str!("corpus/expected-failures.no-provider.txt");
+
+/// The expected-failure lists, parsed.
+struct Lists {
+    /// The failures under a provider, on every target.
+    shared: Vec<Expectation>,
+    /// What only the browser does differently.
+    web: Vec<Expectation>,
+    /// What fails beyond `shared` without a provider.
+    no_provider: Vec<Expectation>,
+}
+
+impl Lists {
+    /// The lists compiled into the harness. A malformed list panics,
+    /// which fails every test that judges a run by it.
+    fn compiled() -> Self {
+        Self::parse(
+            EXPECTED_FAILURES,
+            EXPECTED_FAILURES_WEB,
+            EXPECTED_FAILURES_NO_PROVIDER,
+        )
+        .unwrap_or_else(|err| panic!("{err}"))
     }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let mut all = shared;
-        all.extend(
-            parse_expectations(EXPECTED_FAILURES_WEB)
-                .unwrap_or_else(|err| panic!("expected-failures.web.txt: {err}")),
-        );
+
+    /// Parse the three lists. Every line of the overlay must carry the
+    /// stack-switch reason, and none may name a directive the shared
+    /// list already names.
+    fn parse(shared: &str, web: &str, no_provider: &str) -> Result<Self, String> {
+        let shared = parse_expectations(shared)?;
+        let web =
+            parse_expectations(web).map_err(|err| format!("expected-failures.web.txt: {err}"))?;
+        let no_provider = parse_overlay(no_provider, &stack_switch_reason())
+            .map_err(|err| format!("expected-failures.no-provider.txt: {err}"))?;
+        if let Some(twice) = no_provider.iter().find(|overlay| {
+            shared
+                .iter()
+                .any(|line| line.file == overlay.file && line.line == overlay.line)
+        }) {
+            return Err(format!(
+                "expected-failures.no-provider.txt: `{}:{}` is in expected-failures.txt too: the \
+                 overlay lists only what fails beyond the shared list",
+                twice.file, twice.line
+            ));
+        }
+        Ok(Self {
+            shared,
+            web,
+            no_provider,
+        })
+    }
+
+    /// The expectations a run on this target judges a file by, for an
+    /// engine whose provider query answered `provider`: the shared
+    /// list, the web delta in a browser, and the overlay when the
+    /// engine has no provider.
+    fn applying(&self, provider: SuspendProviderKind) -> Vec<Expectation> {
+        let mut all = self.shared.clone();
+        if cfg!(target_arch = "wasm32") {
+            all.extend(self.web.iter().cloned());
+        }
+        if provider == SuspendProviderKind::None {
+            all.extend(self.no_provider.iter().cloned());
+        }
         all
     }
+}
+
+/// The reason every line of the overlay carries: the text of the
+/// stack-switch cause, which a block whose releasing work lies on a
+/// frame below it fails with in a nested turn.
+fn stack_switch_reason() -> String {
+    SchedulerCause::StackSwitchNeeded.to_string()
 }
 
 /// The 4-byte version word after `\0asm` in a core module.
@@ -1081,19 +1160,22 @@ fn engine_config(path: &str, text: &str) -> EngineConfig {
     config
 }
 
-/// Run one corpus file against the expectations that name it.
-async fn report_file(path: &str, text: &str, expectations: &[Expectation]) -> FileReport {
-    let mut runner = Runner::new(&engine_config(path, text), path.starts_with("cm/")).await;
-    let (directives, failures) = runner.run(text).await;
-    let expected = expectations
-        .iter()
+/// Run one corpus file, with the suspend provider allowed or turned
+/// off through `EngineConfig`, against the expectations that name it.
+/// The lists that apply follow the engine's own answer to which
+/// provider it selected, not the setting: the overlay applies whenever
+/// the engine has none, which a target without a provider gives with
+/// the setting on.
+async fn report_file(path: &str, text: &str, lists: &Lists, suspend_provider: bool) -> FileReport {
+    let mut config = engine_config(path, text);
+    config.suspend_provider(suspend_provider);
+    let mut runner = Runner::new(&config, path.starts_with("cm/")).await;
+    let expected = lists
+        .applying(runner.engine.suspend_provider())
+        .into_iter()
         .filter(|expectation| expectation.file == path)
-        .map(|expectation| Expectation {
-            file: expectation.file.clone(),
-            line: expectation.line,
-            category: expectation.category,
-        })
         .collect();
+    let (directives, failures) = runner.run(text).await;
     FileReport {
         path: path.to_owned(),
         directives,
@@ -1103,12 +1185,11 @@ async fn report_file(path: &str, text: &str, expectations: &[Expectation]) -> Fi
 }
 
 /// Run one corpus file and compare its failures with the expected
-/// list. Panics with every unexpected failure and every stale
-/// expectation, in the format the list uses, and on a list line
-/// without a category.
-async fn check(path: &str, text: &str) {
-    let expectations = expectations();
-    let report = report_file(path, text, &expectations).await;
+/// lists. Panics with every unexpected failure and every stale
+/// expectation, in the format the list uses, and on a malformed list.
+async fn check(path: &str, text: &str, suspend_provider: bool) {
+    let lists = Lists::compiled();
+    let report = report_file(path, text, &lists, suspend_provider).await;
 
     let mut out = String::new();
     for failure in report.unexpected() {
@@ -1126,32 +1207,52 @@ async fn check(path: &str, text: &str) {
 
 /// The progress metric: every corpus file in one process, summarized
 /// per corpus directory. The per-file tests judge pass or fail; this
-/// test only reports, and fails only when the expectation list itself
+/// test only reports, and fails only when an expectation list itself
 /// is malformed.
 #[wcmp_macros::test]
 async fn it_reports_conformance_progress() {
-    let expectations = expectations();
+    progress(true).await;
+}
+
+/// The progress metric with the suspend provider turned off, which
+/// is also the regeneration mode of the overlay: when
+/// `WCMP_REGENERATE_EXPECTATIONS` names a list, the test rewrites it
+/// from the failures that `WCMP_REGENERATE_BASE`, the shared list, does
+/// not name already. Without that variable the base is the shared
+/// list the harness compiled in.
+#[wcmp_macros::test]
+async fn it_reports_conformance_progress_without_a_provider() {
+    progress(false).await;
+}
+
+async fn progress(suspend_provider: bool) {
+    let lists = Lists::compiled();
     let mut reports: Vec<FileReport> = Vec::with_capacity(CORPUS_FILES.len());
     for (path, text) in CORPUS_FILES {
-        reports.push(report_file(path, text, &expectations).await);
+        reports.push(report_file(path, text, &lists, suspend_provider).await);
     }
     let summary = Summary::new(&reports);
+    let state = if suspend_provider {
+        ""
+    } else {
+        ", suspend provider off"
+    };
     #[cfg(target_arch = "wasm32")]
-    println!("\nwasm32-unknown-unknown\n{}", summary.table());
+    println!("\nwasm32-unknown-unknown{state}\n{}", summary.table());
     #[cfg(not(target_arch = "wasm32"))]
     {
-        println!("\nnative\n{}", summary.table());
+        println!("\nnative{state}\n{}", summary.table());
         // The browser's run cannot print for a passing test, so its
         // summary is projected here from the delta it applies. The
-        // projection is exact while `tests web debug` passes.
-        let delta = parse_expectations(EXPECTED_FAILURES_WEB)
-            .unwrap_or_else(|err| panic!("expected-failures.web.txt: {err}"));
-        let web = Summary::new(&report::project(&reports, &delta));
+        // projection is exact while the browser's lane in the same
+        // state passes.
+        let web = Summary::new(&report::project(&reports, &lists.web));
         println!(
-            "wasm32-unknown-unknown (projected: these results plus expected-failures.web.txt)\n{}",
+            "wasm32-unknown-unknown{state} (projected: these results plus \
+             expected-failures.web.txt)\n{}",
             web.table()
         );
-        if let Ok(target) = std::env::var("WCMP_CONFORMANCE_SUMMARY") {
+        if suspend_provider && let Ok(target) = std::env::var("WCMP_CONFORMANCE_SUMMARY") {
             std::fs::write(&target, summary.json())
                 .unwrap_or_else(|err| panic!("cannot write the summary to {target}: {err}"));
             let web_target = target.replace(".json", ".web.json");
@@ -1160,7 +1261,19 @@ async fn it_reports_conformance_progress() {
             println!("summary written to {target} and {web_target}");
         }
         if let Ok(list) = std::env::var("WCMP_REGENERATE_EXPECTATIONS") {
-            regenerate_expectations(&list, &reports);
+            if suspend_provider {
+                regenerate_expectations(&list, &reports);
+            } else {
+                let base = match std::env::var("WCMP_REGENERATE_BASE") {
+                    Ok(base) => std::fs::read_to_string(&base).unwrap_or_else(|err| {
+                        panic!("cannot read the shared expectation list {base}: {err}")
+                    }),
+                    Err(_) => EXPECTED_FAILURES.to_owned(),
+                };
+                let beyond = report::beyond(&reports, &base)
+                    .unwrap_or_else(|err| panic!("the shared list: {err}"));
+                regenerate_expectations(&list, &beyond);
+            }
         }
     }
 }
@@ -1251,6 +1364,94 @@ mod tests {
     )
     (core instance (instantiate $m))
   ))";
+
+    const SHARED: &str = "cm/x.wast:1 cascade no instance to invoke\n";
+    const WEB: &str = "cm/x.wast:2 substrate a difference of the browser\n";
+
+    /// An overlay whose one line carries the stack-switch reason.
+    fn overlay(line: usize) -> String {
+        format!(
+            "cm/x.wast:{line} deferred-feature the call fails with `{}`\n",
+            stack_switch_reason()
+        )
+    }
+
+    fn lines(expectations: &[Expectation]) -> Vec<usize> {
+        let mut lines: Vec<usize> = expectations.iter().map(|e| e.line).collect();
+        lines.sort_unstable();
+        lines
+    }
+
+    #[wcmp_macros::test]
+    async fn it_applies_the_overlay_exactly_when_the_engine_answers_no_provider() {
+        let lists = Lists::parse(SHARED, "", &overlay(3)).expect("parses");
+        for provider in [
+            SuspendProviderKind::StackSwitching,
+            SuspendProviderKind::Jspi,
+        ] {
+            assert_eq!(lines(&lists.applying(provider)), [1], "{provider:?}");
+        }
+        assert_eq!(lines(&lists.applying(SuspendProviderKind::None)), [1, 3]);
+    }
+
+    #[wcmp_macros::test]
+    async fn it_applies_the_web_delta_beside_the_overlay_in_a_browser() {
+        let lists = Lists::parse(SHARED, WEB, &overlay(3)).expect("parses");
+        let applied = lines(&lists.applying(SuspendProviderKind::None));
+        if cfg!(target_arch = "wasm32") {
+            assert_eq!(applied, [1, 2, 3]);
+        } else {
+            assert_eq!(applied, [1, 3]);
+        }
+    }
+
+    #[wcmp_macros::test]
+    async fn it_judges_a_file_by_the_engines_own_answer() {
+        const PATH: &str = "cm/x.wast";
+        const TEXT: &str = "(assert_return (invoke \"f\"))\n";
+        let lists = Lists::parse("", "", &overlay(1)).expect("parses");
+
+        // Turned off, the engine answers none, so the overlay applies.
+        let off = report_file(PATH, TEXT, &lists, false).await;
+        assert_eq!(lines(&off.expected), [1]);
+        assert_eq!(off.unexpected().count(), 0);
+        assert_eq!(off.stale().count(), 0);
+
+        // Allowed, the overlay applies only if the engine found no
+        // provider, which is what a target without one answers.
+        let answer = Engine::with_config(&engine_config(PATH, TEXT))
+            .expect("engine")
+            .suspend_provider();
+        let on = report_file(PATH, TEXT, &lists, true).await;
+        assert_eq!(
+            on.expected.len() == 1,
+            answer == SuspendProviderKind::None,
+            "the engine answered {answer:?}"
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_fails_a_run_on_an_overlay_line_without_the_stack_switch_reason() {
+        let overlay = format!("{}cm/x.wast:4 cascade no instance to invoke\n", overlay(3));
+        let err = Lists::parse(SHARED, WEB, &overlay).err().expect("rejected");
+        assert!(
+            err.starts_with("expected-failures.no-provider.txt:"),
+            "{err}"
+        );
+        assert!(err.contains("`cm/x.wast:4`"), "{err}");
+        assert!(err.contains(&stack_switch_reason()), "{err}");
+    }
+
+    #[wcmp_macros::test]
+    async fn it_rejects_an_overlay_line_the_shared_list_already_names() {
+        let err = Lists::parse(SHARED, WEB, &overlay(1))
+            .err()
+            .expect("rejected");
+        assert!(
+            err.contains("`cm/x.wast:1` is in expected-failures.txt too"),
+            "{err}"
+        );
+    }
 
     #[wcmp_macros::test]
     async fn it_accepts_another_copy_wording_only_in_the_cm_corpus() {
@@ -1432,11 +1633,27 @@ mod tests {
     }
 }
 
+/// Two tests per corpus file: `$name` runs it with the suspend provider
+/// allowed, and `$name::it_passes_without_a_provider` runs it with the
+/// provider turned off through `EngineConfig`. The nextest profiles in
+/// `.config/nextest.toml` split them: the ordinary lanes run the first,
+/// and the `no-provider` lanes run only the second. A function and a
+/// module of one name live in different namespaces, so each file's
+/// text is included once, in the module, and both tests read it.
 macro_rules! corpus_test {
     ($name:ident, $path:literal) => {
         #[wcmp_macros::test]
         async fn $name() {
-            check($path, include_str!(concat!("../corpus/", $path))).await;
+            check($path, $name::TEXT, true).await;
+        }
+
+        mod $name {
+            pub const TEXT: &str = include_str!(concat!("../corpus/", $path));
+
+            #[wcmp_macros::test]
+            async fn it_passes_without_a_provider() {
+                super::check($path, TEXT, false).await;
+            }
         }
     };
 }
