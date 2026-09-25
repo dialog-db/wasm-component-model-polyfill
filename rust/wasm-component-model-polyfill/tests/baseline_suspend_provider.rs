@@ -6,8 +6,11 @@
 //! comes ahead of every probe. The switch probe passes on the native
 //! engine on x86_64 Linux, where Wasmtime implements the
 //! stack-switching proposal, so the engine answers the
-//! stack-switching provider there. The JSPI probe does not exist yet,
-//! so an engine on any other target answers that it has no provider.
+//! stack-switching provider there. The JSPI probe passes in a browser
+//! that offers JavaScript Promise Integration, which the flake's
+//! Chromium does, so the engine answers the JSPI provider in the web
+//! lane. An engine on any other native platform answers that it has no
+//! provider.
 
 #![cfg(test)]
 
@@ -21,7 +24,14 @@ wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 const SELECTED: SuspendProviderKind = SuspendProviderKind::StackSwitching;
 
 /// What an engine that is allowed a provider answers on this target.
-#[cfg(not(all(target_arch = "x86_64", target_os = "linux")))]
+#[cfg(target_arch = "wasm32")]
+const SELECTED: SuspendProviderKind = SuspendProviderKind::Jspi;
+
+/// What an engine that is allowed a provider answers on this target.
+#[cfg(not(any(
+    target_arch = "wasm32",
+    all(target_arch = "x86_64", target_os = "linux")
+)))]
 const SELECTED: SuspendProviderKind = SuspendProviderKind::None;
 
 #[wcmp_macros::test]
@@ -51,7 +61,25 @@ fn it_answers_the_stack_switching_provider_on_the_native_engine() {
     );
 }
 
-#[cfg(not(all(target_arch = "x86_64", target_os = "linux")))]
+#[cfg(target_arch = "wasm32")]
+#[wcmp_macros::test]
+fn it_answers_the_jspi_provider_in_the_browser() {
+    let engine = Engine::new().expect("engine");
+    assert_eq!(
+        engine.suspend_provider(),
+        SuspendProviderKind::Jspi,
+        "the flake's Chromium has `WebAssembly.Suspending` and \
+         `WebAssembly.promising`, and the switch probe fails there"
+    );
+
+    let engine = Engine::with_config(&EngineConfig::new()).expect("engine");
+    assert_eq!(engine.suspend_provider(), SuspendProviderKind::Jspi);
+}
+
+#[cfg(not(any(
+    target_arch = "wasm32",
+    all(target_arch = "x86_64", target_os = "linux")
+)))]
 #[wcmp_macros::test]
 fn it_answers_no_provider_by_default_where_no_probe_passes() {
     let engine = Engine::new().expect("engine");

@@ -10,7 +10,7 @@
 //! delegated to a backend's component runtime.
 
 use crate::backend::Backend;
-use crate::concurrency::SwitchProbe;
+use crate::concurrency::{JspiProbe, SwitchProbe};
 use crate::engine_config::EngineConfig;
 use crate::error::Result;
 use crate::internal::{EngineConfigInternal, EngineInternal};
@@ -57,7 +57,7 @@ impl Engine {
         let suspend_provider = select_suspend_provider(
             config.suspend_provider_enabled(),
             || SwitchProbe::new().passes(&inner),
-            jspi_probe_passes,
+            || JspiProbe::new().passes(),
         );
         Ok(Self {
             inner,
@@ -87,8 +87,12 @@ impl Engine {
     /// the switch probe, a thread that suspends and resumes through
     /// the WebAssembly stack-switching instructions, which the native
     /// engine does on x86_64 Linux. It answers
-    /// [`SuspendProviderKind::None`] on every other target today,
-    /// because the JSPI probe does not exist yet.
+    /// [`SuspendProviderKind::Jspi`] in a browser that offers
+    /// JavaScript Promise Integration: one whose `WebAssembly`
+    /// namespace has `Suspending` and `promising` as functions, which
+    /// every current browser does. It answers
+    /// [`SuspendProviderKind::None`] on every other native platform
+    /// and in an older browser.
     ///
     /// The scheduler does not run guest threads through the selected
     /// provider yet: today a blocking built-in runs the waiting work in
@@ -135,13 +139,6 @@ fn select_suspend_provider(
         return SuspendProviderKind::Jspi;
     }
     SuspendProviderKind::None
-}
-
-/// Whether the browser offers JavaScript Promise Integration. The
-/// polyfill has no JSPI provider to select yet, so the probe never
-/// passes, on the native target or in the browser.
-fn jspi_probe_passes() -> bool {
-    false
 }
 
 #[cfg(test)]
@@ -225,7 +222,7 @@ mod tests {
             "a thread that suspends where it should finish fails the probe"
         );
         assert_eq!(
-            select_suspend_provider(true, || probe.passes(engine.inner()), jspi_probe_passes),
+            select_suspend_provider(true, || probe.passes(engine.inner()), || false),
             SuspendProviderKind::None,
             "a failed probe selects no provider"
         );

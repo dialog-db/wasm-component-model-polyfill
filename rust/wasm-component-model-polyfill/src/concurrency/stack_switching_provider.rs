@@ -17,6 +17,7 @@ use crate::store::{StoreContext, StoreContextInternalExt};
 
 use super::entry_status::EntryStatus;
 use super::suspend_provider::SuspendProvider;
+use super::switch_form::SwitchForm;
 use super::switch_module::SwitchModule;
 use super::thread_id::ThreadId;
 
@@ -64,15 +65,21 @@ impl StackSwitchingProvider {
     /// `hosts` holds the try and the finish host functions of each
     /// shim of `module`, in the order of the shims. The provider
     /// makes the `finished` host function of each entry type itself.
-    /// It fails when the engine refuses the module, which is what an
-    /// engine that does not implement the stack-switching proposal
-    /// does, or when `hosts` does not match the shims.
+    /// It fails when `module` is not of the stack-switching form, when
+    /// the engine refuses the module, which is what an engine that
+    /// does not implement the stack-switching proposal does, or when
+    /// `hosts` does not match the shims.
     pub fn instantiate<T: 'static>(
         store: &mut StoreContext<'_, T>,
         engine: &RuntimeEngine<Backend>,
         module: &SwitchModule,
         hosts: &[(RuntimeFunc, RuntimeFunc)],
     ) -> Result<Self> {
+        if module.form() != SwitchForm::StackSwitching {
+            return Err(Error::internal(
+                "the stack-switching provider needs the stack-switching form of the switch module",
+            ));
+        }
         if hosts.len() != module.shim_count() as usize {
             return Err(Error::internal(
                 "a switch module needs a try and a finish for each shim",

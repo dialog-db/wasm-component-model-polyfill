@@ -393,7 +393,10 @@ impl ToStoredJs for Extern<Engine> {
             Extern::Global(v) => Ok(v.to_stored_js(store)?.into()),
             Extern::Table(v) => Ok(v.to_stored_js(store)?.into()),
             Extern::Memory(v) => Ok(v.to_stored_js(store)?.into()),
-            Extern::Func(v) => Ok(v.to_stored_js(store)?.into()),
+            // PATCH (wcmp): an extern reaches JS only through an
+            // imports object, where a suspending import is its
+            // `WebAssembly.Suspending` object; see `Func::import_js`.
+            Extern::Func(v) => Ok(v.import_js(store)),
         }
     }
 }

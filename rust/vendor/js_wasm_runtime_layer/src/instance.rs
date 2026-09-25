@@ -8,7 +8,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_runtime_layer::backend::{Export, Extern, Imports, WasmInstance};
 
 use crate::{
-    conversion::ToStoredJs, module::ParsedModule, Engine, Func, Global, JsErrorMsg, Memory, Module,
+    conversion::ToStoredJs, module::ParsedModule, Engine, Func, Global, Memory, Module,
     StoreInner, Table,
 };
 
@@ -67,11 +67,9 @@ impl WasmInstance<Engine> for Instance {
                 instance
             }
             Err(js_error) => {
-                return Err(match store.pending_host_error.take() {
-                    Some(err) => err.context("Failed to instantiate module"),
-                    None => anyhow::Error::from(JsErrorMsg::from(js_error))
-                        .context("Failed to instantiate module"),
-                });
+                return Err(store
+                    .failure(&js_error)
+                    .context("Failed to instantiate module"));
             }
         };
 

@@ -25,14 +25,15 @@
 ///    thread that suspends and resumes through the WebAssembly
 ///    stack-switching instructions.
 /// 3. The JSPI provider, when the browser offers JavaScript Promise
-///    Integration.
+///    Integration: its `WebAssembly` namespace has `Suspending` and
+///    `promising` as functions. This probe runs in the browser only.
 /// 4. No provider.
 ///
 /// The switch probe passes on the native engine on x86_64 Linux,
 /// where Wasmtime implements the stack-switching proposal. The JSPI
-/// probe does not exist yet, so an engine answers
-/// [`None`](Self::None) in the browser and on every other native
-/// platform today.
+/// probe passes in every current browser. An engine answers
+/// [`None`](Self::None) on every other native platform, and in an
+/// older browser such as Safari 26.
 ///
 /// Wasmtime has no counterpart to this answer, because its fibers
 /// always exist, so the names are the polyfill's own.

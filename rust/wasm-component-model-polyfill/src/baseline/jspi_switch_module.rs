@@ -1,38 +1,45 @@
-//! Baseline tests for the switch module in its stack-switching form,
-//! next to real core instances.
+//! Baseline tests for the switch module in its JSPI form, next to
+//! real core instances, in the browser.
 //!
-//! The stack-switching provider runs each thread entry as a
-//! continuation of the switch module's entry wrapper, and a thread
-//! suspends in a shim of the switch module when the blocking
-//! built-in it stands for is not ready. The tests run the provider
-//! with two guest core instances around it: an entry of the first
-//! calls a function of the second, which calls the shim, so a frame
-//! of another instance lies between the thread's entry and its
-//! suspension. A host function that runs inside the first thread
-//! starts a second thread through the provider, as a trampoline
-//! starts a nested start: the second thread suspends, the start
-//! returns to the host function, and the host function returns to
-//! the first thread, which then suspends too. Both threads wait in
-//! the switch module's table, and the tests resume them in either
-//! order.
+//! The JSPI provider starts each thread entry through
+//! `WebAssembly.promising` over the switch module's start, and a
+//! thread suspends in a shim of the switch module, through an import
+//! made with `WebAssembly.Suspending`, when the blocking built-in it
+//! stands for is not ready. The tests run the provider with two guest
+//! core instances around it: an entry of the first calls a function
+//! of the second, which calls the shim, so a frame of another
+//! instance lies between the thread's entry and its suspension. A
+//! plain host import that runs inside the first thread starts a
+//! second thread through the provider, as a trampoline starts a
+//! nested start: the promising call begins a second stack, the
+//! second thread suspends, the start returns to the host function,
+//! and the host function returns to the first thread, which then
+//! suspends too. The browser keeps both stacks, and the tests resume
+//! them in either order. A resumption runs on a microtask, so a
+//! resume is awaited.
 //!
-//! Wasmtime 49 implements the stack-switching proposal on x86_64
-//! Linux only, and no browser ships it, so the tests run there alone.
+//! The flake's Chromium ships JSPI, and no native engine offers it,
+//! so the tests run in the web lane alone.
 
-#![cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#![cfg(target_arch = "wasm32")]
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use js_sys::Promise;
+use js_wasm_runtime_layer::Func as BackendFunc;
+use wasm_bindgen::JsValue;
+use wasm_bindgen_futures::JsFuture;
+use wasm_runtime_layer::backend::Extern as BackendExtern;
 use wasm_runtime_layer::{
     Extern as RuntimeExtern, Func as RuntimeFunc, FuncType, Imports, Instance as RuntimeInstance,
     Module as RuntimeModule, Val as RuntimeVal, ValType as RuntimeValType,
 };
 use wcmp_macros::wasm;
 
-use crate::concurrency::{
-    EntryStatus, StackSwitchingProvider, SuspendProvider, SwitchForm, SwitchModule, ThreadId,
-};
+use crate::backend::Backend;
+use crate::concurrency::{EntryStatus, JspiProvider, SwitchForm, SwitchModule, ThreadId};
 use crate::internal::EngineInternal;
 use crate::store::{StoreContext, StoreContextInternalExt, StoreInternalExt};
 use crate::{Engine, Store};
@@ -83,9 +90,10 @@ type Spawned = Arc<Mutex<Option<String>>>;
 /// as the scenario of the module's doc states.
 struct Scenario {
     store: Store<()>,
-    provider: StackSwitchingProvider,
+    provider: JspiProvider,
     first: RuntimeFunc,
     ready: Ready,
+    tries: Arc<Mutex<u32>>,
     spawned: Spawned,
 }
 
@@ -105,11 +113,13 @@ fn setup() -> Scenario {
     let mut store = Store::new(&engine, ()).expect("store");
     let mut context = store.internal().context();
     let ready: Ready = Arc::default();
+    let tries: Arc<Mutex<u32>> = Arc::default();
     let spawned: Spawned = Arc::default();
 
     // The try and the finish of the blocking built-in the shim
     // stands for.
     let tried = ready.clone();
+    let counted = tries.clone();
     let try_part = RuntimeFunc::new(
         context.internal().runtime_mut(),
         i32_to_i32(),
@@ -117,6 +127,7 @@ fn setup() -> Scenario {
             let [RuntimeVal::I32(key)] = args else {
                 anyhow::bail!("the try part takes one key");
             };
+            *counted.lock().expect("tries") += 1;
             let here = tried.lock().expect("ready keys").contains(key);
             results[0] = RuntimeVal::I32(i32::from(here));
             Ok(())
@@ -134,16 +145,16 @@ fn setup() -> Scenario {
         },
     );
 
-    let mut module = SwitchModule::new(SwitchForm::StackSwitching);
+    let mut module = SwitchModule::new(SwitchForm::Jspi);
     let block = module.shim(i32_to_i32());
     module.entry(i32_to_i32());
-    let provider = StackSwitchingProvider::instantiate(
+    let provider = JspiProvider::instantiate(
         &mut context,
         engine.inner(),
         &module,
         &[(try_part, finish_part)],
     )
-    .expect("the engine instantiates the switch module");
+    .expect("the browser instantiates the switch module");
 
     let mut imports = Imports::default();
     imports.define(
@@ -158,9 +169,9 @@ fn setup() -> Scenario {
     )
     .expect("the middle instance");
 
-    // `spawn` starts the second thread as a nested start, from a
-    // host frame that runs inside the first thread, and returns once
-    // the start returns.
+    // `spawn` is a plain import, not a suspending one. It starts the
+    // second thread as a nested start, from a host frame that runs
+    // inside the first thread, and returns once the start returns.
     let second: Arc<Mutex<Option<RuntimeFunc>>> = Arc::default();
     let spawn = {
         let provider = provider.clone();
@@ -212,6 +223,7 @@ fn setup() -> Scenario {
         provider,
         first,
         ready,
+        tries,
         spawned,
     }
 }
@@ -226,17 +238,22 @@ impl Scenario {
         describe(&status)
     }
 
-    fn resume(&mut self, thread: ThreadId) -> String {
+    async fn resume(&mut self, thread: ThreadId) -> String {
         let mut context = self.store.internal().context();
         let status = self
             .provider
             .resume(&mut context, thread)
+            .await
             .expect("the thread resumes");
         describe(&status)
     }
 
     fn make_ready(&self, key: i32) {
         self.ready.lock().expect("ready keys").insert(key);
+    }
+
+    fn tries(&self) -> u32 {
+        *self.tries.lock().expect("tries")
     }
 
     fn spawned(&self) -> Option<String> {
@@ -256,43 +273,44 @@ fn start_both(scenario: &mut Scenario) {
     assert_eq!(
         scenario.spawned().as_deref(),
         Some("suspended"),
-        "the second thread, started from the host function inside the first, \
-         suspended, and its start returned to the host function, which \
-         returned to the first thread before that thread suspended"
+        "the second thread, started from a plain import inside the first, \
+         suspended on a promising stack of its own, and its start returned \
+         to the import, which returned to the first thread before that \
+         thread suspended"
     );
 }
 
 #[wcmp_macros::test]
-fn it_resumes_the_nested_thread_before_the_one_that_started_it() {
+async fn it_resumes_the_nested_thread_before_the_one_that_started_it() {
     let mut scenario = setup();
     start_both(&mut scenario);
 
     assert_eq!(
-        scenario.resume(SECOND),
+        scenario.resume(SECOND).await,
         "suspended",
         "a thread whose built-in is still not ready suspends again"
     );
     scenario.make_ready(2);
     assert_eq!(
-        scenario.resume(SECOND),
+        scenario.resume(SECOND).await,
         "finished with [I32(21)]",
         "the second thread's shim found the built-in ready and returned \
          what its finish computed, through the middle instance"
     );
     scenario.make_ready(1);
-    assert_eq!(scenario.resume(FIRST), "finished with [I32(11)]");
+    assert_eq!(scenario.resume(FIRST).await, "finished with [I32(11)]");
 }
 
 #[wcmp_macros::test]
-fn it_resumes_the_thread_that_started_another_before_the_nested_one() {
+async fn it_resumes_the_thread_that_started_another_before_the_nested_one() {
     let mut scenario = setup();
     start_both(&mut scenario);
 
     scenario.make_ready(1);
     scenario.make_ready(2);
-    assert_eq!(scenario.resume(FIRST), "finished with [I32(11)]");
+    assert_eq!(scenario.resume(FIRST).await, "finished with [I32(11)]");
     assert_eq!(
-        scenario.resume(SECOND),
+        scenario.resume(SECOND).await,
         "finished with [I32(21)]",
         "the nested thread outlived the thread and the host frame that \
          started it"
@@ -300,35 +318,126 @@ fn it_resumes_the_thread_that_started_another_before_the_nested_one() {
 }
 
 #[wcmp_macros::test]
-fn it_refuses_to_resume_a_thread_that_is_not_suspended() {
+async fn it_returns_from_a_shim_whose_built_in_is_ready_without_a_suspension() {
+    // A call of a suspending import always suspends in Chromium, so a
+    // shim that called it here would leave the thread suspended, and
+    // the start would answer so. The shim calls it only when the
+    // built-in is not ready.
     let mut scenario = setup();
     scenario.make_ready(1);
     scenario.make_ready(2);
-    assert_eq!(scenario.start_first(1), "finished with [I32(11)]");
+
+    assert_eq!(
+        scenario.start_first(1),
+        "finished with [I32(11)]",
+        "the promising call ran the thread to its end without returning \
+         to the event loop"
+    );
     assert_eq!(
         scenario.spawned().as_deref(),
         Some("finished with [I32(21)]"),
-        "a thread whose built-in is ready at once never suspends"
+        "the nested thread's shim found its built-in ready too"
+    );
+    assert_eq!(
+        scenario.tries(),
+        2,
+        "each shim tried its built-in once and never retried after a resume"
     );
 
     let mut context = scenario.store.internal().context();
     assert!(
-        scenario.provider.resume(&mut context, FIRST).is_err(),
-        "the first thread finished, so its slot holds no continuation"
+        scenario.provider.resume(&mut context, FIRST).await.is_err(),
+        "the first thread finished, so it holds no suspended promise"
     );
 }
 
 #[wcmp_macros::test]
-fn it_drops_a_store_with_suspended_threads() {
+async fn it_drops_a_store_with_suspended_threads() {
     let mut scenario = setup();
     start_both(&mut scenario);
 
-    // Nothing resumes either thread: the store drops with both in
-    // the switch module's table, and the continuations go with it.
+    // Nothing resolves either thread's promise: the store and the
+    // provider drop with both threads suspended, and the browser's
+    // stacks go with the promises.
     drop(scenario);
 
     let mut again = setup();
     again.make_ready(1);
     again.make_ready(2);
     assert_eq!(again.start_first(1), "finished with [I32(11)]");
+}
+
+/// A guest whose `run` calls a suspending import and then a plain
+/// one.
+const PAUSES: &[u8] = wasm!(
+    r#"
+    (module
+      (import "host" "pause" (func $pause))
+      (import "host" "after" (func $after))
+      (func (export "run")
+        (call $pause)
+        (call $after)))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_suspends_on_a_suspending_import_whose_promise_is_already_resolved() {
+    // The fact the shim rests on. The proposal's overview says a
+    // stack suspends only when the import's function answers a
+    // promise that is still pending. The browser suspends it anyway,
+    // and resumes it on a microtask.
+    let engine = Engine::new().expect("engine");
+    let mut store = Store::new(&engine, ()).expect("store");
+    let mut context = store.internal().context();
+    let after = Arc::new(AtomicBool::new(false));
+
+    let pause = BackendFunc::new_suspending(
+        context.internal().runtime_mut(),
+        FuncType::new([], []),
+        |_store, _args| Ok(Promise::resolve(&JsValue::UNDEFINED)),
+    )
+    .expect("the browser offers `WebAssembly.Suspending`");
+    let reached = after.clone();
+    let after_import = RuntimeFunc::new(
+        context.internal().runtime_mut(),
+        FuncType::new([], []),
+        move |_store, _args, _results| {
+            reached.store(true, Ordering::SeqCst);
+            Ok(())
+        },
+    );
+    let mut imports = Imports::default();
+    imports.define(
+        "host",
+        "pause",
+        RuntimeExtern::from(&BackendExtern::<Backend>::Func(pause)),
+    );
+    imports.define("host", "after", RuntimeExtern::Func(after_import));
+    let instance = RuntimeInstance::new(
+        context.internal().runtime_mut(),
+        &RuntimeModule::new(engine.inner(), PAUSES).expect("the module compiles"),
+        &imports,
+    )
+    .expect("the instance");
+    let run = match BackendExtern::<Backend>::from(
+        &instance
+            .get_export(context.internal().runtime(), "run")
+            .expect("run"),
+    ) {
+        BackendExtern::Func(run) => run,
+        _ => panic!("`run` is a function"),
+    };
+
+    let promise = run
+        .call_promising(context.internal().runtime_mut(), &[])
+        .expect("the promising call starts");
+    assert!(
+        !after.load(Ordering::SeqCst),
+        "the promising call returned at the suspending import, before the \
+         import after it"
+    );
+    JsFuture::from(promise)
+        .await
+        .expect("the stack resumed and returned");
+    assert!(after.load(Ordering::SeqCst));
 }

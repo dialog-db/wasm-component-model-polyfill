@@ -13,7 +13,7 @@ use wasm_runtime_layer::backend::{
 
 use crate::{
     func::FuncInner, instance::InstanceInner, memory::MemoryInner, table::TableInner, DropResource,
-    Engine, Func, Global, GlobalInner, Instance, Memory, Table,
+    Engine, Func, Global, GlobalInner, Instance, JsErrorMsg, Memory, Table,
 };
 
 /// Owns all the data for the wasm module
@@ -246,6 +246,21 @@ impl<T: 'static> StoreInner<T> {
             .get_or_insert_with(Map::new)
             .set(function.as_ref(), &JsValue::from_f64(func.id as f64));
         func
+    }
+
+    /// PATCH (wcmp): the error a call that ended by throwing `reason`
+    /// reports: the error a host function returned during the call,
+    /// if one did, and otherwise `reason` itself. Either way the slot
+    /// of [`StoreInner::pending_host_error`] is empty afterwards.
+    ///
+    /// A failed [`Func::call`](crate::Func) and a failed instantiation
+    /// report through this. So does the owner of a promising call,
+    /// whose failure arrives later, as the rejection of its promise.
+    pub fn failure(&mut self, reason: &JsValue) -> anyhow::Error {
+        match self.pending_host_error.take() {
+            Some(err) => err,
+            None => anyhow::Error::from(JsErrorMsg::from(reason)),
+        }
     }
 
     /// PATCH (wcmp): how many function records this store holds.

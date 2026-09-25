@@ -55,11 +55,15 @@
 //! [`SwitchModule`], is the core module the providers switch stacks
 //! with: shims that suspend in WebAssembly in place of a blocking
 //! built-in's trampoline, and wrappers that hand a thread entry's
-//! results to the host. [`StackSwitchingProvider`] fills the
-//! contract with the instructions of the WebAssembly
-//! stack-switching proposal, over an instance of the switch module,
-//! and [`SwitchProbe`] is what an engine runs when it is constructed
-//! to learn whether it can.
+//! results to the host. It takes one form per provider, a
+//! [`SwitchForm`]. [`StackSwitchingProvider`] fills the contract with
+//! the instructions of the WebAssembly stack-switching proposal, over
+//! an instance of the switch module, and [`SwitchProbe`] is what an
+//! engine runs when it is constructed to learn whether it can. In the
+//! browser, `JspiProvider` fills it through JavaScript Promise
+//! Integration, over an instance of the other form, and [`JspiProbe`]
+//! is what an engine runs next to learn whether the browser offers
+//! that.
 //!
 //! A task is the record of one call into an export; a subtask is the
 //! record of one call out through an import; a thread is one guest
@@ -175,6 +179,9 @@ mod instance_record;
 mod item;
 mod item_action;
 mod item_kind;
+mod jspi_probe;
+#[cfg(target_arch = "wasm32")]
+mod jspi_provider;
 mod lower_kind;
 mod outcome;
 mod pairing;
@@ -197,6 +204,7 @@ mod subtask_id;
 mod subtask_state;
 mod suspend_provider;
 mod suspend_seam;
+mod switch_form;
 mod switch_module;
 mod switch_probe;
 mod task;
@@ -229,10 +237,10 @@ pub use destination::Destination;
 pub use driver::Driver;
 pub use end_id::EndId;
 pub use end_kind::EndKind;
-// The provider contract, its status, the switch module, and the
-// stack-switching provider are spelled outside this module only by
-// their tests: the scheduler does not run guest threads through a
-// provider yet, and the engine runs only the probe.
+// The provider contract, its status, the switch module and its form,
+// and the two providers are spelled outside this module only by their
+// tests: the scheduler does not run guest threads through a provider
+// yet, and the engine runs only the probes.
 #[cfg(test)]
 pub use entry_status::EntryStatus;
 pub use event::Event;
@@ -257,6 +265,9 @@ pub use host_writer::HostWriter;
 pub use instance_id::InstanceId;
 pub use item::Item;
 pub use item_kind::ItemKind;
+pub use jspi_probe::JspiProbe;
+#[cfg(all(test, target_arch = "wasm32"))]
+pub use jspi_provider::JspiProvider;
 pub use lower_kind::LowerKind;
 pub use outcome::Outcome;
 pub use pairing::Pairing;
@@ -278,6 +289,8 @@ pub use subtask_state::SubtaskState;
 #[cfg(test)]
 pub use suspend_provider::SuspendProvider;
 pub use suspend_seam::SuspendSeam;
+#[cfg(test)]
+pub use switch_form::SwitchForm;
 #[cfg(test)]
 pub use switch_module::SwitchModule;
 pub use switch_probe::SwitchProbe;

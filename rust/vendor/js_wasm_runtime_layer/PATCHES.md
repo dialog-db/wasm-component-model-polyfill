@@ -243,3 +243,45 @@ the value types it has, takes its index as `None`, and so does a defined table
 of such references. Only an import or an export of one is an error. A module
 that keeps those types inside itself parses, and `WebAssembly.Module` decides
 whether the browser compiles it.
+
+## 12. JavaScript Promise Integration (`src/func.rs`, `src/lib.rs`, `src/store.rs`, `src/instance.rs`)
+
+Upstream has no way to reach JavaScript Promise Integration (JSPI). The
+polyfill switches the stacks of guest threads with it in the browser: a guest
+thread starts through `WebAssembly.promising`, and it suspends by calling an
+import made with `WebAssembly.Suspending`. The patch adds three items.
+
+`Func::new_suspending` makes a host function that a guest imports through
+`new WebAssembly.Suspending(f)`. Its body answers a promise, and the calling
+stack suspends until the promise settles. The function shares the JS shim of
+`WasmFunc::new`, which the patch moves into `js_shim`. The record of such a
+function keeps the `WebAssembly.Suspending` object, and an imports object takes
+that object in place of the function. It is an import and nothing else: a call
+from the host, a table store, or a conversion to a value fails with an error,
+because the JS API accepts the object only in an imports object and the
+function behind it answers a promise instead of its declared results.
+
+`Func::call_promising` calls an exported function through
+`WebAssembly.promising` and answers the promise. The call runs the function
+synchronously until it returns or first suspends. The wrapper is made once per
+function and kept on its record. A trap never comes back from the call itself:
+the browser rejects the promise with it.
+
+`StoreInner::failure` turns the value a failed call threw into the error it
+reports: the host's own error of patch 4 when one is pending, and the thrown
+value otherwise. `Func::call` and `Instance::new` report through it now, and
+the owner of a promising call uses it when the promise is rejected.
+
+Both constructors of the JSPI API are read from the global `WebAssembly`
+namespace when they are needed, so a browser without JSPI loads the backend
+unchanged and fails only a call of the two functions.
+
+The proposal's overview states that a suspending import suspends only when its
+function answers a promise that is still pending. Chromium 147 suspends on
+every call, even for a plain value or a resolved promise. The browser test
+`it_suspends_on_a_suspending_import_whose_promise_is_already_resolved`, in
+`rust/wasm-component-model-polyfill/src/baseline/jspi_switch_module.rs`, holds
+the measured behavior down.
+
+The proposal for upstream is the two functions and the failure helper, since a
+runtime layer over the browser engine has no other way to suspend a stack.

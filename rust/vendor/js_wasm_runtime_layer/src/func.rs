@@ -1,7 +1,7 @@
 use alloc::{vec, vec::Vec};
 
-use anyhow::{Context, Result};
-use js_sys::{Array, Function};
+use anyhow::{bail, Context, Result};
+use js_sys::{Array, Function, Promise, Reflect};
 use wasm_bindgen::{closure::Closure, prelude::wasm_bindgen, JsCast, JsValue};
 use wasm_runtime_layer::{
     backend::{AsContext, AsContextMut, Val, WasmFunc},
@@ -35,6 +35,13 @@ pub(crate) struct FuncInner {
     /// and types off the slice the caller supplied; see
     /// [`WasmFunc::call`] and `value_from_js_untyped`.
     signature_known: bool,
+    /// PATCH (wcmp): the `WebAssembly.Suspending` object a guest
+    /// imports in place of `func`, for a function made with
+    /// [`Func::new_suspending`].
+    suspending: Option<JsValue>,
+    /// PATCH (wcmp): `WebAssembly.promising` over `func`, made by the
+    /// first [`Func::call_promising`] and kept for the next.
+    promising: Option<Function>,
 }
 
 impl FuncInner {
@@ -46,6 +53,8 @@ impl FuncInner {
             func,
             ty: FuncType::new([], []),
             signature_known: false,
+            suspending: None,
+            promising: None,
         }
     }
 }
@@ -54,6 +63,14 @@ impl ToStoredJs for Func {
     type Repr = Function;
     fn to_stored_js<T>(&self, store: &StoreInner<T>) -> Result<Function> {
         let func = &store.funcs[self.id];
+        // PATCH (wcmp): a suspending import is an import and nothing
+        // else. The JS API accepts a `WebAssembly.Suspending` object
+        // only in an imports object, and the function behind it
+        // answers a promise rather than the declared results, so it
+        // is not a value a table or a call can take.
+        if func.suspending.is_some() {
+            bail!("a suspending import is not a function value");
+        }
         Ok(func.func.clone())
     }
 }
@@ -72,8 +89,126 @@ impl Func {
             // TODO: we don't really know what the exported function's signature is
             ty: signature,
             signature_known: true,
+            suspending: None,
+            promising: None,
         }))
     }
+
+    /// PATCH (wcmp): what an imports object holds for this function:
+    /// the `WebAssembly.Suspending` object of a suspending import, and
+    /// the function itself otherwise.
+    pub(crate) fn import_js<T>(&self, store: &StoreInner<T>) -> JsValue {
+        let func = &store.funcs[self.id];
+        match &func.suspending {
+            Some(suspending) => suspending.clone(),
+            None => func.func.clone().into(),
+        }
+    }
+
+    /// PATCH (wcmp): a host function that a guest imports through
+    /// JavaScript Promise Integration, as `new
+    /// WebAssembly.Suspending(f)`.
+    ///
+    /// `func` takes the call's arguments and answers a promise. A
+    /// call of the import from inside a stack that
+    /// [`Func::call_promising`] began suspends that stack until the
+    /// promise settles, and the stack resumes on a microtask with the
+    /// value the promise resolves to, converted to the declared
+    /// results. The proposal's overview says a stack suspends only
+    /// when a promise comes back, but Chromium 147 suspends on every
+    /// call of such an import, even for a promise that is already
+    /// resolved, so a caller that must not suspend must not call it.
+    ///
+    /// A call from a stack that no promising call began, or with a
+    /// frame that is not WebAssembly between the promising call and
+    /// the import, traps. The function is an import and nothing else:
+    /// it cannot be called from the host, stored in a table, or passed
+    /// as a value. It fails when the browser has no
+    /// `WebAssembly.Suspending`.
+    pub fn new_suspending<T: 'static>(
+        mut ctx: impl AsContextMut<Engine, UserState = T>,
+        ty: FuncType,
+        func: impl 'static + Fn(StoreContextMut<T>, &[Val<Engine>]) -> Result<Promise>,
+    ) -> Result<Self> {
+        let suspending = webassembly_member("Suspending")?;
+        let mut ctx: StoreContextMut<_> = ctx.as_context_mut();
+        // The pointer lives as long as the closure does, for the
+        // reason `WasmFunc::new` states.
+        let store_ptr = ctx.as_ptr() as *mut ();
+        let body = move |store: StoreContextMut<T>, _ty: &FuncType, args: &[Val<Engine>]| {
+            func(store, args).map(JsValue::from)
+        };
+        let (resource, function) = js_shim(store_ptr, &ty, body);
+        let suspending = Reflect::construct(&suspending, &Array::of1(&function))
+            .map_err(JsErrorMsg::from)?;
+        let func = ctx.insert_func(FuncInner {
+            func: function,
+            ty,
+            signature_known: true,
+            suspending: Some(suspending),
+            promising: None,
+        });
+        ctx.insert_drop_resource(DropResource::new(resource));
+        Ok(func)
+    }
+
+    /// PATCH (wcmp): call this function through
+    /// `WebAssembly.promising`, and answer the promise of its results.
+    ///
+    /// The call runs the function on a stack of its own,
+    /// synchronously, until it returns or first suspends in an import
+    /// made with [`Func::new_suspending`], and returns then. The
+    /// promise resolves when the function returns, after any number
+    /// of suspensions, and is rejected with what the function throws,
+    /// a trap included. A trap therefore never comes back from this
+    /// call itself; [`StoreInner::failure`] turns the rejection into
+    /// the error [`WasmFunc::call`] would report.
+    ///
+    /// A promising call made from a host function that runs inside
+    /// another promising stack begins a stack of its own, and either
+    /// stack can resume first. The JS API wraps only a function an
+    /// instance exported. The call fails when the browser has no
+    /// `WebAssembly.promising`.
+    pub fn call_promising(
+        &self,
+        mut ctx: impl AsContextMut<Engine>,
+        args: &[Val<Engine>],
+    ) -> Result<Promise> {
+        let ctx: &mut StoreInner<_> = &mut *ctx.as_context_mut();
+        let promising = match &ctx.funcs[self.id].promising {
+            Some(promising) => promising.clone(),
+            None => {
+                let promising = webassembly_member("promising")?
+                    .call1(&JsValue::UNDEFINED, &ctx.funcs[self.id].func)
+                    .map_err(JsErrorMsg::from)?
+                    .dyn_into::<Function>()
+                    .map_err(JsErrorMsg::from)?;
+                ctx.funcs[self.id].promising = Some(promising.clone());
+                promising
+            }
+        };
+        let args = args
+            .iter()
+            .map(|v| v.to_stored_js(ctx))
+            .collect::<Result<Array>>()?;
+        let promise = promising
+            .apply(&JsValue::UNDEFINED, &args)
+            .map_err(JsErrorMsg::from)?;
+        Ok(promise.dyn_into::<Promise>().map_err(JsErrorMsg::from)?)
+    }
+}
+
+/// PATCH (wcmp): the member `name` of the global `WebAssembly`
+/// namespace, which must be a function. JavaScript Promise
+/// Integration adds `Suspending` and `promising` there, and a
+/// browser without it has neither.
+fn webassembly_member(name: &str) -> Result<Function> {
+    let namespace =
+        Reflect::get(&js_sys::global(), &"WebAssembly".into()).map_err(JsErrorMsg::from)?;
+    Reflect::get(&namespace, &name.into())
+        .ok()
+        .and_then(|member| member.dyn_into::<Function>().ok())
+        .with_context(|| alloc::format!("this browser has no `WebAssembly.{name}`"))
 }
 
 /// Converts any repeated argument to `JsValue`
@@ -228,6 +363,37 @@ fn variadic_wrapper<T: 'static>(
     (DropResource::new(closure), func)
 }
 
+/// The JS function a guest calls for the host function `func` of
+/// type `ty`, and the closure behind it, which the store keeps alive.
+///
+/// PATCH (wcmp): `WasmFunc::new` and `Func::new_suspending` share
+/// this; upstream has the match inline in the former.
+fn js_shim<T: 'static>(
+    store_ptr: *mut (),
+    ty: &FuncType,
+    func: impl 'static + Fn(StoreContextMut<T>, &FuncType, &[Val<Engine>]) -> Result<JsValue>,
+) -> (DropResource, Function) {
+    match ty.params().len() {
+        0 => func_wrapper!(store_ptr, ty, func,),
+        1 => func_wrapper!(store_ptr, ty, func, 0 => a),
+        2 => func_wrapper!(store_ptr, ty, func, 0 => a, 1 => b),
+        3 => func_wrapper!(store_ptr, ty, func, 0 => a, 1 => b, 2 => c),
+        4 => func_wrapper!(store_ptr, ty, func, 0 => a, 1 => b, 2 => c, 3 => d),
+        5 => func_wrapper!(store_ptr, ty, func, 0 => a, 1 => b, 2 => c, 3 => d, 4 => e),
+        6 => func_wrapper!(store_ptr, ty, func, 0 => a, 1 => b, 2 => c, 3 => d, 4 => e, 5 => f),
+        7 => {
+            func_wrapper!(store_ptr, ty, func, 0 => a, 1 => b, 2 => c, 3 => d, 4 => e, 5 => f, 6 => g)
+        }
+        8 => {
+            func_wrapper!(store_ptr, ty, func, 0 => a, 1 => b, 2 => c, 3 => d, 4 => e, 5 => f, 6 => g, 7 => h)
+        }
+        // PATCH (wcmp): a host function of more parameters than a
+        // `wasm_bindgen` closure can take collects them from one
+        // JS array instead; see `variadic_wrapper`.
+        _ => variadic_wrapper(store_ptr, ty.clone(), func),
+    }
+}
+
 impl WasmFunc<Engine> for Func {
     fn new<T: 'static>(
         mut ctx: impl AsContextMut<Engine, UserState = T>,
@@ -300,30 +466,14 @@ impl WasmFunc<Engine> for Func {
             }
         };
 
-        let (resource, func) = match ty.params().len() {
-            0 => func_wrapper!(store_ptr, ty, func,),
-            1 => func_wrapper!(store_ptr, ty, func, 0 => a),
-            2 => func_wrapper!(store_ptr, ty, func, 0 => a, 1 => b),
-            3 => func_wrapper!(store_ptr, ty, func, 0 => a, 1 => b, 2 => c),
-            4 => func_wrapper!(store_ptr, ty, func, 0 => a, 1 => b, 2 => c, 3 => d),
-            5 => func_wrapper!(store_ptr, ty, func, 0 => a, 1 => b, 2 => c, 3 => d, 4 => e),
-            6 => func_wrapper!(store_ptr, ty, func, 0 => a, 1 => b, 2 => c, 3 => d, 4 => e, 5 => f),
-            7 => {
-                func_wrapper!(store_ptr, ty, func, 0 => a, 1 => b, 2 => c, 3 => d, 4 => e, 5 => f, 6 => g)
-            }
-            8 => {
-                func_wrapper!(store_ptr, ty, func, 0 => a, 1 => b, 2 => c, 3 => d, 4 => e, 5 => f, 6 => g, 7 => h)
-            }
-            // PATCH (wcmp): a host function of more parameters than a
-            // `wasm_bindgen` closure can take collects them from one
-            // JS array instead; see `variadic_wrapper`.
-            _ => variadic_wrapper(store_ptr, ty.clone(), func),
-        };
+        let (resource, func) = js_shim(store_ptr, &ty, func);
 
         let func = ctx.insert_func(FuncInner {
             func,
             ty,
             signature_known: true,
+            suspending: None,
+            promising: None,
         });
 
         #[cfg(feature = "tracing")]
@@ -345,6 +495,11 @@ impl WasmFunc<Engine> for Func {
     ) -> Result<()> {
         let ctx: &mut StoreInner<_> = &mut *ctx.as_context_mut();
         let inner: &FuncInner = &ctx.funcs[self.id];
+        // PATCH (wcmp): the function behind a suspending import
+        // answers a promise, not its declared results.
+        if inner.suspending.is_some() {
+            bail!("a suspending import cannot be called from the host");
+        }
         let func = inner.func.clone();
         // PATCH (wcmp): a function reference the host received as an
         // argument carries no signature, so the caller's own result
@@ -374,11 +529,9 @@ impl WasmFunc<Engine> for Func {
                 res
             }
             Err(js_error) => {
-                return Err(match ctx.pending_host_error.take() {
-                    Some(err) => err.context("Guest function threw an error"),
-                    None => anyhow::Error::from(JsErrorMsg::from(js_error))
-                        .context("Guest function threw an error"),
-                });
+                return Err(ctx
+                    .failure(&js_error)
+                    .context("Guest function threw an error"));
             }
         };
 
