@@ -16,6 +16,7 @@ use crate::value::Val;
 use super::accessor::Accessor;
 use super::end_id::EndId;
 use super::end_kind::EndKind;
+use super::future_any::FutureAny;
 use super::future_consumer::FutureConsumer;
 use super::future_producer::FutureProducer;
 use super::guarded_future_reader::GuardedFutureReader;
@@ -67,9 +68,17 @@ use super::source::Source;
 /// guest reads, the consumer takes, or the close ends the other
 /// store's future. The close needs no identity of the store to keep
 /// its own contract, so none is added. Wasmtime's
-/// reader carries no store identity either. The reader is moved when
-/// it is lowered or piped, so an end crosses into a guest, or reaches
-/// a consumer, once.
+/// reader carries no store identity either.
+///
+/// The reader is moved when it is lowered or piped, but it is not the
+/// only value that can name its end: each reader decoded from the
+/// same [`Val`], or converted from the same untyped value, names it
+/// too, as Wasmtime's copies of an id do. Once one of them lowers,
+/// pipes, or closes the end, the others are refused those uses, as
+/// [`CopyCause::NotHeldByHost`] states, except that a close of an end
+/// closed already succeeds and does nothing, and that an end another
+/// value piped to a consumer while a guest holds the writable end may
+/// be piped again or closed while no write of it is in flight.
 pub struct FutureReader<T> {
     end: EndId,
     item: PhantomData<fn() -> T>,
@@ -130,8 +139,8 @@ impl<T: ComponentValue> FutureReader<T> {
     /// the context from a store the host holds, and a host `async`
     /// function reaches it through [`Accessor::with`].
     ///
-    /// Fails with the not-held cause of [`CopyCause`] when the store
-    /// holds no readable end for the host under this reader, as
+    /// Fails with the not-present or the not-held cause of
+    /// [`CopyCause`], as
     /// [`StreamReader::pipe`](super::StreamReader::pipe) states.
     ///
     /// [`Store::as_context_mut`]: crate::Store::as_context_mut
@@ -147,6 +156,24 @@ impl<T: ComponentValue> FutureReader<T> {
             data: PhantomData,
         };
         pipe_readable_end(store, self.end, EndKind::FutureReadable, consumer)
+    }
+
+    /// Convert the reader into a [`FutureAny`], the untyped value of
+    /// its end, in the store `store` reaches. The name is Wasmtime's,
+    /// and [`FutureAny::try_from_future_reader`] states the contract.
+    pub fn try_into_future_any<D: 'static>(
+        self,
+        store: &mut StoreContext<'_, D>,
+    ) -> Result<FutureAny> {
+        FutureAny::try_from_future_reader(store, self)
+    }
+
+    /// Convert `future` into a reader whose value is of the Rust type
+    /// `T`, after checking that the future carries the type `T`
+    /// projects to. The name is Wasmtime's, and
+    /// [`FutureAny::try_into_future_reader`] states the contract.
+    pub fn try_from_future_any(future: FutureAny) -> Result<Self> {
+        future.try_into_future_reader()
     }
 }
 
@@ -165,13 +192,13 @@ impl<T> FutureReader<T> {
     /// [`close_with`](Self::close_with) closes the future from inside
     /// a poll, through an accessor.
     ///
-    /// Fails with the not-held cause of [`CopyCause`] when the store
-    /// holds no readable end for the host under this reader, as
+    /// Fails with the not-present or the not-held cause of
+    /// [`CopyCause`], or does nothing, as
     /// [`StreamReader::close`](super::StreamReader::close) states.
     ///
     /// [`Store::as_context_mut`]: crate::Store::as_context_mut
     pub fn close<D: 'static>(&mut self, store: &mut StoreContext<'_, D>) -> Result<()> {
-        close_readable_end(store, self.end, EndKind::FutureReadable)
+        close_readable_end(store, &mut self.end, EndKind::FutureReadable)
     }
 
     /// Close this future through `accessor`, as

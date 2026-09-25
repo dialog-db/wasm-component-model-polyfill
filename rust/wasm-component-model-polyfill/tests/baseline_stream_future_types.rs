@@ -50,21 +50,33 @@ const STREAMS_AND_FUTURES: &[u8] = component!(
     "#
 );
 
-/// A component whose one export returns a future, and whose guest
+/// A component whose export `make` returns a future, and whose guest
 /// hands back the readable end of a future it made, which the host
-/// lifts.
+/// lifts. `last` answers the index the readable end had, and `drop`
+/// drops a future's readable end at an index.
 const RETURNS_A_FUTURE: &[u8] = component!(
     r#"
     (component
       (type $f (future u32))
       (core func $future-new (canon future.new $f))
+      (core func $drop-readable (canon future.drop-readable $f))
       (core module $m
         (import "" "future.new" (func $future-new (result i64)))
-        (func (export "make") (result i32) (i32.wrap_i64 (call $future-new))))
+        (import "" "future.drop-readable" (func $drop-readable (param i32)))
+        (global $r (mut i32) (i32.const 0))
+        (func (export "make") (result i32)
+          (global.set $r (i32.wrap_i64 (call $future-new)))
+          (global.get $r))
+        (func (export "last") (result i32) (global.get $r))
+        (func (export "drop") (param i32) (call $drop-readable (local.get 0))))
       (core instance $i (instantiate $m
-        (with "" (instance (export "future.new" (func $future-new))))))
+        (with "" (instance
+          (export "future.new" (func $future-new))
+          (export "future.drop-readable" (func $drop-readable))))))
       (func (export "make") (result $f)
-        (canon lift (core func $i "make"))))
+        (canon lift (core func $i "make")))
+      (func (export "last") (result u32) (canon lift (core func $i "last")))
+      (func (export "drop") (param "e" u32) (canon lift (core func $i "drop"))))
     "#
 );
 
@@ -347,6 +359,41 @@ async fn it_hands_the_host_a_future_from_an_export_result() {
         matches!(results.as_ref(), [Val::Future(_)]),
         "expected a future the host holds, got {results:?}"
     );
+
+    let last = instance
+        .get_func("last")
+        .expect("the component exports `last`")
+        .call(&mut store, &[])
+        .await
+        .expect("`last` runs");
+    let [Val::U32(index)] = last.as_ref() else {
+        panic!("`last` answered {last:?}");
+    };
+    let failure = instance
+        .get_func("drop")
+        .expect("the component exports `drop`")
+        .call(&mut store, &[Val::U32(*index)])
+        .await
+        .expect_err("the guest's entry for the readable end is gone");
+    assert!(
+        failure_chain(&failure).contains(&format!("unknown handle index {index}")),
+        "{failure:?}"
+    );
+}
+
+/// Every message in an error's source chain, joined, so that a trap a
+/// built-in raised can be matched wherever the substrate put it.
+fn failure_chain(error: &Error) -> String {
+    let mut out = String::new();
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(link) = current {
+        if !out.is_empty() {
+            out.push_str(": ");
+        }
+        out.push_str(&link.to_string());
+        current = link.source();
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[wcmp_macros::test]

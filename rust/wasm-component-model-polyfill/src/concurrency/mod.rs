@@ -87,7 +87,9 @@
 //! task while the producer is pending. [`Destination`] is the buffer
 //! of the read a stream's producer serves, and [`StreamResult`] what
 //! one of its polls answers. [`StreamAny`] and [`FutureAny`] carry a
-//! readable end the host holds as a [`Val`](crate::Val).
+//! readable end the host holds as a [`Val`](crate::Val), without the
+//! payload type in Rust: each converts to and from its typed reader,
+//! checking the payload type, and closes the end.
 //!
 //! A host reads a stream or a future through a consumer: a
 //! [`StreamConsumer`] or a [`FutureConsumer`], handed to
@@ -102,8 +104,15 @@
 //! consumer, with no guest involved.
 //!
 //! A reader the host holds and will not read ends through
-//! [`StreamReader::close`] or [`FutureReader::close`], which drop the
-//! readable end and tell the writer. [`GuardedStreamReader`] and
+//! [`StreamReader::close`] or [`FutureReader::close`], and an untyped
+//! value through [`StreamAny::close`] or [`FutureAny::close`]. Each
+//! drops the readable end and tells the writer, through the one close
+//! of the executor. Several values can name one end, because cloning
+//! an untyped value or converting it copies the end's identity, as in
+//! Wasmtime; once one of them lowers, pipes, or closes the end, the
+//! others are refused those uses, save the ones
+//! [`CopyCause::NotHeldByHost`](crate::CopyCause::NotHeldByHost)
+//! lets through as Wasmtime does. [`GuardedStreamReader`] and
 //! [`GuardedFutureReader`] pair a reader with an accessor and close
 //! it when they drop inside a poll of the store. A reader that ends
 //! no other way leaks its end until the store drops, and dropping the

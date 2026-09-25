@@ -40,6 +40,17 @@ pub struct CopyEnd {
     /// a new index in the receiver's table, and the entry that
     /// receives it records the new one here.
     pub handle: Option<u32>,
+    /// Whether the host holds the end: a readable end the host
+    /// created, or lifted out of a guest, and has not yet lowered
+    /// into a guest, piped to a consumer, or closed. A host value
+    /// lowers, pipes, or closes only an end the host holds, so a
+    /// second value that names the same end, such as a clone of a
+    /// [`Val`](crate::Val), is refused once the first gave the end
+    /// up. [`TaskTables::held_by_host`] states the rule and why it
+    /// departs from Wasmtime where it does.
+    ///
+    /// [`TaskTables::held_by_host`]: super::TaskTables::held_by_host
+    pub held_by_host: bool,
     /// Whether the end has delivered a dropped result: it was told
     /// that the other end dropped, and so is done. Wasmtime keeps the
     /// same flag on the end's handle-table entry. A later copy on a
@@ -50,15 +61,16 @@ pub struct CopyEnd {
     /// Whether this end itself was dropped while the other end lives
     /// on: its entry left a guest's table, or the host let go of it.
     /// The record stays in the store until the other end drops too,
-    /// and nothing may drop, lower, pipe, or close it again.
+    /// and nothing may drop, lower, or pipe it again. A host close
+    /// of it succeeds and does nothing, as Wasmtime's does.
     pub dropped: bool,
 }
 
 impl CopyEnd {
     /// Construct an idle end with the given direction, sharing the
     /// record at `shared`: no pending event, no set, no waiter, and
-    /// no copy in progress, with no dropped result delivered and
-    /// nothing dropped.
+    /// no copy in progress, held by nobody yet, with no dropped result
+    /// delivered and nothing dropped.
     pub fn new(direction: EndDirection, shared: u32) -> Self {
         Self {
             waitable: WaitableState::new(),
@@ -67,6 +79,7 @@ impl CopyEnd {
             shared,
             buffer: None,
             handle: None,
+            held_by_host: false,
             notified_dropped: false,
             dropped: false,
         }

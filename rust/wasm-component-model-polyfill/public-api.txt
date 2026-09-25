@@ -38,6 +38,8 @@ pub wasm_component_model_polyfill::CopyCause::CountTooLarge
 pub wasm_component_model_polyfill::CopyCause::FutureReadAfterDone
 pub wasm_component_model_polyfill::CopyCause::FutureWriteAfterDone
 pub wasm_component_model_polyfill::CopyCause::FutureWriteEndNotWritten
+pub wasm_component_model_polyfill::CopyCause::HostEndNotPresent
+pub wasm_component_model_polyfill::CopyCause::HostEndNotPresent::kind: wasm_component_model_polyfill::EndKind
 pub wasm_component_model_polyfill::CopyCause::IntraInstanceNonNumber
 pub wasm_component_model_polyfill::CopyCause::LiftAfterDone
 pub wasm_component_model_polyfill::CopyCause::LiftAfterDone::kind: wasm_component_model_polyfill::EndKind
@@ -397,10 +399,16 @@ pub wasm_component_model_polyfill::FunctionType::async_: bool
 pub wasm_component_model_polyfill::FunctionType::parameters: alloc::vec::Vec<wasm_component_model_polyfill::FunctionParameter>
 pub wasm_component_model_polyfill::FunctionType::result: core::option::Option<wasm_component_model_polyfill::ValueType>
 pub struct wasm_component_model_polyfill::FutureAny
+impl wasm_component_model_polyfill::FutureAny
+pub fn wasm_component_model_polyfill::FutureAny::close<D: 'static>(&mut self, store: &mut wasm_component_model_polyfill::StoreContext<'_, D>) -> wasm_component_model_polyfill::Result<()>
+pub fn wasm_component_model_polyfill::FutureAny::try_from_future_reader<T, D: 'static>(store: &mut wasm_component_model_polyfill::StoreContext<'_, D>, reader: wasm_component_model_polyfill::FutureReader<T>) -> wasm_component_model_polyfill::Result<Self>
+pub fn wasm_component_model_polyfill::FutureAny::try_into_future_reader<T: wasm_component_model_polyfill::ComponentValue>(self) -> wasm_component_model_polyfill::Result<wasm_component_model_polyfill::FutureReader<T>>
 pub struct wasm_component_model_polyfill::FutureReader<T>
 impl<T: wasm_component_model_polyfill::ComponentValue> wasm_component_model_polyfill::FutureReader<T>
 pub fn wasm_component_model_polyfill::FutureReader<T>::new<D: 'static>(store: &mut wasm_component_model_polyfill::StoreContext<'_, D>, producer: impl wasm_component_model_polyfill::FutureProducer<D, Item = T>) -> wasm_component_model_polyfill::Result<Self>
 pub fn wasm_component_model_polyfill::FutureReader<T>::pipe<D: 'static>(self, store: &mut wasm_component_model_polyfill::StoreContext<'_, D>, consumer: impl wasm_component_model_polyfill::FutureConsumer<D, Item = T>) -> wasm_component_model_polyfill::Result<()>
+pub fn wasm_component_model_polyfill::FutureReader<T>::try_from_future_any(future: wasm_component_model_polyfill::FutureAny) -> wasm_component_model_polyfill::Result<Self>
+pub fn wasm_component_model_polyfill::FutureReader<T>::try_into_future_any<D: 'static>(self, store: &mut wasm_component_model_polyfill::StoreContext<'_, D>) -> wasm_component_model_polyfill::Result<wasm_component_model_polyfill::FutureAny>
 impl<T> wasm_component_model_polyfill::FutureReader<T>
 pub fn wasm_component_model_polyfill::FutureReader<T>::close<D: 'static>(&mut self, store: &mut wasm_component_model_polyfill::StoreContext<'_, D>) -> wasm_component_model_polyfill::Result<()>
 pub fn wasm_component_model_polyfill::FutureReader<T>::close_with<D: 'static>(&mut self, accessor: &wasm_component_model_polyfill::Accessor<D>) -> wasm_component_model_polyfill::Result<()>
@@ -591,10 +599,16 @@ pub fn wasm_component_model_polyfill::StoreContext<'a, T>::data_mut(&mut self) -
 pub fn wasm_component_model_polyfill::StoreContext<'a, T>::hostcall_fuel(&self) -> usize
 pub fn wasm_component_model_polyfill::StoreContext<'a, T>::set_hostcall_fuel(&mut self, fuel: usize)
 pub struct wasm_component_model_polyfill::StreamAny
+impl wasm_component_model_polyfill::StreamAny
+pub fn wasm_component_model_polyfill::StreamAny::close<D: 'static>(&mut self, store: &mut wasm_component_model_polyfill::StoreContext<'_, D>) -> wasm_component_model_polyfill::Result<()>
+pub fn wasm_component_model_polyfill::StreamAny::try_from_stream_reader<T, D: 'static>(store: &mut wasm_component_model_polyfill::StoreContext<'_, D>, reader: wasm_component_model_polyfill::StreamReader<T>) -> wasm_component_model_polyfill::Result<Self>
+pub fn wasm_component_model_polyfill::StreamAny::try_into_stream_reader<T: wasm_component_model_polyfill::ComponentValue>(self) -> wasm_component_model_polyfill::Result<wasm_component_model_polyfill::StreamReader<T>>
 pub struct wasm_component_model_polyfill::StreamReader<T>
 impl<T: wasm_component_model_polyfill::ComponentValue> wasm_component_model_polyfill::StreamReader<T>
 pub fn wasm_component_model_polyfill::StreamReader<T>::new<D: 'static>(store: &mut wasm_component_model_polyfill::StoreContext<'_, D>, producer: impl wasm_component_model_polyfill::StreamProducer<D, Item = T>) -> wasm_component_model_polyfill::Result<Self>
 pub fn wasm_component_model_polyfill::StreamReader<T>::pipe<D: 'static>(self, store: &mut wasm_component_model_polyfill::StoreContext<'_, D>, consumer: impl wasm_component_model_polyfill::StreamConsumer<D, Item = T>) -> wasm_component_model_polyfill::Result<()>
+pub fn wasm_component_model_polyfill::StreamReader<T>::try_from_stream_any(stream: wasm_component_model_polyfill::StreamAny) -> wasm_component_model_polyfill::Result<Self>
+pub fn wasm_component_model_polyfill::StreamReader<T>::try_into_stream_any<D: 'static>(self, store: &mut wasm_component_model_polyfill::StoreContext<'_, D>) -> wasm_component_model_polyfill::Result<wasm_component_model_polyfill::StreamAny>
 impl<T> wasm_component_model_polyfill::StreamReader<T>
 pub fn wasm_component_model_polyfill::StreamReader<T>::close<D: 'static>(&mut self, store: &mut wasm_component_model_polyfill::StoreContext<'_, D>) -> wasm_component_model_polyfill::Result<()>
 pub fn wasm_component_model_polyfill::StreamReader<T>::close_with<D: 'static>(&mut self, accessor: &wasm_component_model_polyfill::Accessor<D>) -> wasm_component_model_polyfill::Result<()>

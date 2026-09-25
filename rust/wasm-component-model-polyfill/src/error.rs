@@ -1129,7 +1129,11 @@ pub enum CopyCause {
 
     /// A built-in or a crossing named an end whose stream or future
     /// carries another payload type than the one the built-in was
-    /// declared with, or the one the crossing's type names. Wasmtime
+    /// declared with, or the one the crossing's type names. A host
+    /// that converts a [`StreamAny`](crate::StreamAny) or a
+    /// [`FutureAny`](crate::FutureAny) into a typed reader whose type
+    /// projects to another payload meets the same cause, as its
+    /// conversion is the lift the typed crossing would make. Wasmtime
     /// checks the same thing through the types of its handle tables,
     /// so the message is the polyfill's own.
     #[error("the {kind} carries another payload type than the built-in or crossing declares")]
@@ -1282,15 +1286,60 @@ pub enum CopyCause {
     )]
     ConsumerCancelledWithoutFinish,
 
-    /// A host piped a reader whose end the store does not hold for
-    /// the host: the end is gone, or it sits in a guest's handle
-    /// table. A reader is moved when it is lowered or piped, so this
-    /// takes a reader made by another store, whose end names nothing
-    /// here or names an end of this store's own. Wasmtime fails the
-    /// same pipe with the failed lookup of the end in its table.
+    /// A host piped or closed a reader or an untyped value whose end
+    /// is in the store but no longer the host's to use: another value
+    /// that names the same end, such as a clone of a
+    /// [`StreamAny`](crate::StreamAny) or another reader decoded from
+    /// the same [`Val`](crate::Val), lowered it into a guest, piped it
+    /// to a consumer, or, for a pipe, closed it. A lower of such a
+    /// value fails as an invalid handle for the same reason. A close
+    /// of an end that was closed or dropped already is not refused:
+    /// it succeeds and does nothing, as Wasmtime's does. A conversion
+    /// into an untyped value is not refused either, as Wasmtime's is
+    /// not. Nor is a pipe or a close of an end piped to a consumer
+    /// while a guest holds the writable end, when no write of it is in
+    /// flight: the pipe replaces the consumer and the close drops it,
+    /// both unpolled, as Wasmtime's do.
+    ///
+    /// The specification is silent here: its `lower_stream` and
+    /// `lower_future` assert only the value's type and add a new
+    /// readable end sharing the stream or future, and what the host
+    /// holds is the host's to define. So the polyfill follows
+    /// Wasmtime as far as it can. Wasmtime checks no holder: its
+    /// lower, pipe, and close fail only when the end is gone, which
+    /// the polyfill reports with the not-present cause. When the end
+    /// is there, Wasmtime lets the use through into a state its own
+    /// code later rejects as a bug of its own, which panics in a
+    /// debug build: the guest's read of an end a consumer serves, or
+    /// of one already dropped, fails its check that the reading side
+    /// is open, and a second consumer or a close meets the first
+    /// consumer's write in flight. The polyfill cannot reproduce a
+    /// bug as a behaviour, so it refuses each of those uses up front,
+    /// with this cause, and the message is its own. Two refusals have
+    /// reasons of the polyfill's own: a second pipe, or a close,
+    /// after a pipe of a stream or future the host created, whose
+    /// consumer the polyfill joins to the producer in a host task no
+    /// later call reaches; and a pipe after a close, which in
+    /// Wasmtime reopens a reader its writer was told had dropped,
+    /// where the polyfill's drop, like the specification's, is final.
     #[error("the {kind} is not one the host holds")]
     NotHeldByHost {
-        /// The kind of end the reader names.
+        /// The kind of end the value names.
+        kind: EndKind,
+    },
+
+    /// A host lowered, piped, closed, or converted a reader or an
+    /// untyped value whose end the store holds no readable record of:
+    /// the value was closed already, which leaves it naming no end,
+    /// or the end is gone, because both ends dropped, the host closed
+    /// a stream or future it created, or a pipe ended. A reader made
+    /// by another store meets it too when its end names nothing here.
+    /// Wasmtime fails the same uses when its lookup of the end's id
+    /// finds nothing, and the message is the one that lookup raises.
+    /// A lower fails as an invalid handle with the same message.
+    #[error("resource not present")]
+    HostEndNotPresent {
+        /// The kind of end the value names.
         kind: EndKind,
     },
 

@@ -15,6 +15,14 @@
 //! - A writable end that was dropped: the readable end drops at once,
 //!   and the consumer with it, unpolled, as Wasmtime drops it.
 //!
+//! A pipe of an end already piped the first way, through another
+//! value that names it, replaces the consumer in the scheduler while
+//! no write is in flight, and the old consumer is dropped unpolled, as
+//! Wasmtime's `set_consumer` replaces the reading side of a writer
+//! that is open. A later write polls the new consumer. With a write
+//! in flight, or after a pipe of the second way, the pipe is refused,
+//! for the reasons `TaskTables::held_by_host` states.
+//!
 //! The host end runs as a host task. When a guest starts a write
 //! against it, the copy built-in polls the end once, with the waker
 //! of the turn that is running, before it returns:
@@ -52,7 +60,6 @@ use core::task::{Context, Poll};
 
 use crate::concurrency::{
     Accessor, CopyBuffer, CopyState, EndId, EndKind, HostConsumer, HostTask, HostTaskBody, TaskId,
-    TaskTables,
 };
 use crate::error::{CopyCause, Error, Result};
 use crate::internal::ErrorInternal;
@@ -65,8 +72,15 @@ use super::host_pipe::start_host_pipe;
 /// kind `kind` the host holds, and give the end up. The routes are the
 /// ones the module states.
 ///
-/// Fails with the not-held cause when the store does not hold
-/// `reader` for the host.
+/// An end another value piped to a consumer already, for a guest's
+/// writable end with no write in flight, takes `consumer` in the old
+/// one's place, and the old one is dropped unpolled.
+///
+/// Fails with the not-present cause when the store holds no readable
+/// end under `reader`, and with the not-held cause when the end is
+/// there but the host gave it up otherwise, as
+/// [`TaskTables::held_by_host`](crate::concurrency::TaskTables::held_by_host)
+/// states.
 pub fn pipe_readable_end<T: 'static, H: HostConsumer<T>>(
     store: &mut StoreContext<'_, T>,
     reader: EndId,
@@ -77,23 +91,37 @@ pub fn pipe_readable_end<T: 'static, H: HostConsumer<T>>(
     let route = {
         let mut guard = store.internal().lock_tables()?;
         let tasks = &mut guard.tasks;
-        if !tasks.held_by_host(reader) {
-            return Err(not_held());
-        }
-        let dropped = tasks
-            .shared_record(reader)
-            .is_some_and(|record| record.dropped);
-        match tasks.host_counterpart(reader) {
-            Some(writer) => Route::Pipe(writer),
-            None => {
-                tasks.serve_reader(reader, kind)?;
-                if dropped {
-                    tasks.release_host_end(reader)?;
-                    Route::Dropped
-                } else {
-                    Route::Guest(writer_is_waiting(tasks, reader)?)
-                }
+        tasks.readable_end(reader, kind)?;
+        if tasks.consumer_at_rest(reader) {
+            Route::Replace
+        } else {
+            if !tasks.held_by_host(reader) {
+                return Err(not_held());
             }
+            let dropped = tasks
+                .shared_record(reader)
+                .is_some_and(|record| record.dropped);
+            let route = match tasks.host_counterpart(reader) {
+                Some(writer) => Route::Pipe(writer),
+                None => {
+                    tasks.serve_reader(reader, kind)?;
+                    if dropped {
+                        Route::Dropped
+                    } else {
+                        Route::Guest(tasks.write_in_flight(reader))
+                    }
+                }
+            };
+            // The end is the consumer's now, so no other value that
+            // names it can lower it, or pipe or close it but as the
+            // routes allow.
+            if let Some(record) = tasks.end_mut(reader) {
+                record.held_by_host = false;
+            }
+            if let Route::Dropped = route {
+                tasks.release_host_end(reader)?;
+            }
+            route
         }
     };
     match route {
@@ -123,6 +151,17 @@ pub fn pipe_readable_end<T: 'static, H: HostConsumer<T>>(
                 serve_host_write(store, reader, None, false)?;
             }
         }
+        Route::Replace => {
+            // With no write in flight, no poll has the old consumer
+            // out, and nothing kept a waker for it. It is dropped with
+            // no lock held, because its drop runs host code.
+            let scheduler = store.internal().scheduler_mut();
+            let replaced = scheduler
+                .release_host_reader(reader)
+                .ok_or_else(|| Error::internal("a consumer at rest is not in the scheduler"))?;
+            scheduler.insert_host_reader(reader, Box::new(consumer));
+            drop(replaced);
+        }
     }
     Ok(())
 }
@@ -135,18 +174,9 @@ enum Route {
     Pipe(EndId),
     /// A guest holds the writable end; whether a write of it waits.
     Guest(bool),
-}
-
-/// Whether the writable end of `reader`'s stream or future has a
-/// write in progress that nothing has answered yet.
-fn writer_is_waiting(tasks: &TaskTables, reader: EndId) -> Result<bool> {
-    let writer = tasks
-        .shared_record(reader)
-        .ok_or_else(|| Error::internal("a piped readable end has no shared record"))?
-        .writable;
-    Ok(tasks
-        .end(writer)
-        .is_some_and(|record| record.state.busy() && record.waitable.pending_event.is_none()))
+    /// A guest holds the writable end, and another value piped the
+    /// end to a consumer this one replaces.
+    Replace,
 }
 
 /// Serve the write a guest started against `reader`, the readable end

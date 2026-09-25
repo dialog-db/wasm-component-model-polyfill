@@ -22,7 +22,9 @@
 //! calls together, so that the write which releases the read is work
 //! the suspend seam's nested turn can run. A second such pair has a
 //! writer that parks in its event loop after the write, and a read no
-//! writer serves fails with the deadlock cause.
+//! writer serves fails with the deadlock cause. Two more composed
+//! components copy a `stream<stream<u8>>`, and the write moves the
+//! inner readable end out of the writer's table into the reader's.
 
 #![cfg(test)]
 
@@ -298,6 +300,100 @@ const MASSIVE_SEND: &[u8] = component!(
       (instance $r (instantiate $reader))
       (instance $w (instantiate $writer (with "start-read" (func $r "start-read"))))
       (export "run" (func $w "run")))
+    "#
+);
+
+/// A reader and a writer, composed, over a `stream<stream<u8>>`.
+///
+/// The writer's `run` creates the outer stream, hands its readable
+/// end to the reader's `start-read`, which starts a read of one value
+/// into its memory at 0 and returns, creates an inner `stream<u8>`,
+/// and writes the inner readable end into the outer stream. The read
+/// is pending, so the write pairs with it at once and moves the inner
+/// end from the writer's table into the reader's. `sent` answers the
+/// index the inner end had in the writer's table and `drop-sent`
+/// drops an index there; `received` answers the index the read wrote
+/// and `drop-received` drops an index in the reader's table.
+const NESTED_BETWEEN_GUESTS: &[u8] = component!(
+    r#"
+    (component
+      (type $s (stream u8))
+      (type $n (stream $s))
+
+      (component $reader
+        (core module $libc (memory (export "memory") 1))
+        (core instance $libc (instantiate $libc))
+        (core func $read (canon stream.read $n async (memory (core memory $libc "memory"))))
+        (core func $drop-readable (canon stream.drop-readable $s))
+        (core module $m
+          (import "libc" "memory" (memory 1))
+          (import "" "stream.read" (func $read (param i32 i32 i32) (result i32)))
+          (import "" "stream.drop-readable" (func $drop-readable (param i32)))
+          (func (export "start-read") (param i32) (result i32)
+            (call $read (local.get 0) (i32.const 0) (i32.const 1)))
+          (func (export "received") (result i32) (i32.load (i32.const 0)))
+          (func (export "drop-readable") (param i32) (call $drop-readable (local.get 0))))
+        (core instance $i (instantiate $m
+          (with "libc" (instance $libc))
+          (with "" (instance
+            (export "stream.read" (func $read))
+            (export "stream.drop-readable" (func $drop-readable))))))
+        (func (export "start-read") (param "s" $n) (result u32)
+          (canon lift (core func $i "start-read")))
+        (func (export "received") (result u32) (canon lift (core func $i "received")))
+        (func (export "drop-readable") (param "e" u32)
+          (canon lift (core func $i "drop-readable"))))
+
+      (component $writer
+        (import "start-read" (func $start-read (param "s" $n) (result u32)))
+        (core module $libc (memory (export "memory") 1))
+        (core instance $libc (instantiate $libc))
+        (core func $stream-new (canon stream.new $s))
+        (core func $nested-new (canon stream.new $n))
+        (core func $write (canon stream.write $n async (memory (core memory $libc "memory"))))
+        (core func $drop-readable (canon stream.drop-readable $s))
+        (core func $start-read (canon lower (func $start-read)))
+        (core module $m
+          (import "libc" "memory" (memory 1))
+          (import "" "stream.new" (func $stream-new (result i64)))
+          (import "" "nested.new" (func $nested-new (result i64)))
+          (import "" "nested.write" (func $write (param i32 i32 i32) (result i32)))
+          (import "" "stream.drop-readable" (func $drop-readable (param i32)))
+          (import "" "start-read" (func $start-read (param i32) (result i32)))
+          (global $inner (mut i32) (i32.const 0))
+          (func (export "run") (result i32)
+            (local $pair i64)
+            (local.set $pair (call $nested-new))
+            (if (i32.ne (call $start-read (i32.wrap_i64 (local.get $pair))) (i32.const -1))
+              (then unreachable))
+            (global.set $inner (i32.wrap_i64 (call $stream-new)))
+            (i32.store (i32.const 0) (global.get $inner))
+            (call $write
+              (i32.wrap_i64 (i64.shr_u (local.get $pair) (i64.const 32)))
+              (i32.const 0)
+              (i32.const 1)))
+          (func (export "sent") (result i32) (global.get $inner))
+          (func (export "drop-readable") (param i32) (call $drop-readable (local.get 0))))
+        (core instance $i (instantiate $m
+          (with "libc" (instance $libc))
+          (with "" (instance
+            (export "stream.new" (func $stream-new))
+            (export "nested.new" (func $nested-new))
+            (export "nested.write" (func $write))
+            (export "stream.drop-readable" (func $drop-readable))
+            (export "start-read" (func $start-read))))))
+        (func (export "run") (result u32) (canon lift (core func $i "run")))
+        (func (export "sent") (result u32) (canon lift (core func $i "sent")))
+        (func (export "drop-readable") (param "e" u32)
+          (canon lift (core func $i "drop-readable"))))
+
+      (instance $r (instantiate $reader))
+      (instance $w (instantiate $writer (with "start-read" (func $r "start-read"))))
+      (export "run" (func $w "run"))
+      (export "sent" (func $w "sent"))
+      (export "drop-sent" (func $w "drop-readable"))
+      (export "received" (func $r "received"))
+      (export "drop-received" (func $r "drop-readable")))
     "#
 );
 
@@ -1203,4 +1299,23 @@ async fn it_fails_a_synchronous_read_no_writer_ever_serves_with_the_deadlock_cau
         message.contains("deadlock detected: event loop cannot make further progress"),
         "{message}"
     );
+}
+
+#[wcmp_macros::test]
+async fn it_moves_an_inner_readable_end_from_the_writers_table_into_the_readers() {
+    let (mut store, instance) = instantiate(NESTED_BETWEEN_GUESTS).await;
+    assert_eq!(
+        call_u32(&mut store, &instance, "run", &[]).await,
+        packed(0, 1),
+        "the write met the pending read and moved the inner end"
+    );
+
+    let sent = call_u32(&mut store, &instance, "sent", &[]).await;
+    let failure = call_trap(&mut store, &instance, "drop-sent", &[sent]).await;
+    assert!(
+        failure.contains(&format!("unknown handle index {sent}")),
+        "the inner end left the writer's table: {failure}"
+    );
+    let received = call_u32(&mut store, &instance, "received", &[]).await;
+    call_ok(&mut store, &instance, "drop-received", &[received]).await;
 }

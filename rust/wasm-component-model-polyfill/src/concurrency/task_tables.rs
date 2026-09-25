@@ -982,9 +982,9 @@ impl TaskTables {
     /// the host's. Answers the readable end and then the writable
     /// end.
     ///
-    /// Neither end enters a handle table here. The readable end
-    /// enters a guest's when the host lowers it into a call, and the
-    /// writable end never enters one: the scheduler holds the
+    /// Neither end enters a handle table here. The host holds the
+    /// readable end until it lowers it into a call or pipes it, and
+    /// the writable end never enters a table: the scheduler holds the
     /// producer that serves it.
     pub fn insert_host_ends(
         &mut self,
@@ -992,12 +992,176 @@ impl TaskTables {
         host: EndKind,
     ) -> (EndId, EndId) {
         let (readable, writable) = self.insert_ends(payload);
-        if let Some(shared) = self.end(readable).map(|record| record.shared)
+        let shared = self.end_mut(readable).map(|record| {
+            record.held_by_host = true;
+            record.shared
+        });
+        if let Some(shared) = shared
             && let Some(record) = self.shared_records.get_mut(shared)
         {
             record.host = Some(host);
         }
         (readable, writable)
+    }
+
+    /// Whether `end` is a readable end the host holds: one it created
+    /// or lifted out of a guest, and has not lowered, piped, or
+    /// closed since. The end record's `held_by_host` flag answers it,
+    /// and it is the one check the lower, the pipe, and the close of
+    /// a host value make beyond the end's presence.
+    ///
+    /// A host value names its end by identity, and cloning a
+    /// [`StreamAny`](crate::StreamAny) or a
+    /// [`FutureAny`](crate::FutureAny), or converting one into a
+    /// reader, copies the identity. So once one value lowers, pipes,
+    /// or closes the end, another may try to use it again. The
+    /// specification is silent on that: its `lower_stream` and
+    /// `lower_future` assert only the value's type and add a new
+    /// readable end sharing the stream or future, and what the host
+    /// holds is the host's to define. So the polyfill follows
+    /// Wasmtime, whose values are the same copies of an id.
+    ///
+    /// Wasmtime checks no holder. Its lower (`lower_transmit_to_index`
+    /// in `futures_and_streams.rs`), its pipe (`set_consumer`), its
+    /// close (`host_drop_reader`), and its conversion to an untyped
+    /// value (`transmit_origin`) each look the id up in the store's
+    /// table and fail only when nothing is there, with the table's
+    /// "resource not present". The entry leaves the table only when
+    /// both ends have dropped, when the host closes a stream or
+    /// future it created, and when a pipe finds the writer dropped or
+    /// runs to its end. A value's own close leaves it naming nothing
+    /// too, because the close replaces the value's id with
+    /// `u32::MAX`. The polyfill fails every such use with the
+    /// not-present cause and Wasmtime's message, and a value it
+    /// closed holds an identity that names no end.
+    ///
+    /// While the entry is there, Wasmtime's use succeeds, and the
+    /// polyfill follows it where the result is one Wasmtime's own
+    /// code treats as sound:
+    ///
+    /// - A conversion of a reader to an untyped value checks only
+    ///   that the end is in the store, so it succeeds whoever holds
+    ///   the end, and the new value is one more copy. The conversion
+    ///   the other way checks only the payload type.
+    /// - A close of an end already dropped, by a close through
+    ///   another value or by the guest it was lowered into, while a
+    ///   guest still holds the writable end, succeeds and changes
+    ///   nothing. Wasmtime drops the end a second time: the reader
+    ///   stays dropped, and the writer is told again of a drop it was
+    ///   told of. When that first notice is still pending, Wasmtime
+    ///   merges the two and nothing is observable. When the writer
+    ///   took it, Wasmtime sets the notice again, which a waitable
+    ///   set then reports. The polyfill does not: its end drops once,
+    ///   and that drop is what tells the writer.
+    /// - A pipe or a close of an end the host piped to a consumer
+    ///   while a guest holds the writable end, when no write of that
+    ///   end is in flight, as
+    ///   [`consumer_at_rest`](Self::consumer_at_rest) answers. A
+    ///   second pipe replaces the consumer: Wasmtime's `set_consumer`
+    ///   on a writer that is open (`WriteState::Open`) puts the new
+    ///   consumer in the reading side's place
+    ///   (`ReadState::HostReady`), which drops the old one unpolled,
+    ///   and the next write polls the new one. A close drops the end
+    ///   as a guest's drop does: Wasmtime's `host_drop_reader` on an
+    ///   open writer drops the reading side, and the consumer with
+    ///   it, unpolled, and gives the writer the dropped result.
+    ///
+    /// Everywhere else the polyfill refuses what Wasmtime lets
+    /// through. Wasmtime lets it through into a state that its own
+    /// code rejects as a bug of its own, with `bail_bug!`, which
+    /// panics in a debug build and traps in a release build, either
+    /// at the next ordinary step or when the timing goes one way. The
+    /// polyfill cannot reproduce a bug as a behaviour, so it refuses
+    /// the use that leads there:
+    ///
+    /// - A lower after a pipe, a close, or a lower of another value.
+    ///   The guest's new entry names an end a consumer serves, an end
+    ///   dropped already, or an end another entry names, and a read
+    ///   through it fails Wasmtime's check that the reading side is
+    ///   open (`guest_read`, "expected `ReadState::Open`"). That holds
+    ///   for a stream the host created and piped to a consumer of its
+    ///   own too.
+    /// - A pipe after a lower: the guest that holds the end then
+    ///   fails its read the same way.
+    /// - A pipe or a close after a pipe, while a guest's write the
+    ///   consumer serves is in flight. Wasmtime's consumer is then
+    ///   settling the write in a task of its own. A second pipe
+    ///   starts a second such task for the same write, both settle
+    ///   it, and the second to finish fails "expected
+    ///   `WriteState::GuestReady`" (`pipe_from_guest`). A close drops
+    ///   the reading side under the first task, whose next poll fails
+    ///   "unexpected read state" (`set_consumer`).
+    /// - A close after a lower: the guest's read then finds the
+    ///   reading side dropped, and fails as above.
+    /// - A pipe after a close: Wasmtime opens the reading side again,
+    ///   for a writer that was told the reader dropped. The polyfill's
+    ///   drop of an end is final, as the specification's is: its
+    ///   writer never sees a dropped reader come back. An end whose
+    ///   consumer finished dropped the same way.
+    ///
+    /// One refusal is the polyfill's own: a pipe or a close after a
+    /// pipe of a stream or future the host created, to a consumer of
+    /// its own. That pipe joins the producer and the consumer in the
+    /// host task it starts, and no later call reaches into that task
+    /// to replace or drop the consumer. Wasmtime's second pipe there
+    /// fails "unexpected invocation of `produce`", and its close
+    /// deletes the stream under the task that copies.
+    ///
+    /// Those fail with the not-held cause, or as an invalid handle
+    /// for a lower. An end that goes back into a guest and comes back
+    /// out is the host's again, and so is every value that names it,
+    /// as in Wasmtime.
+    pub fn held_by_host(&self, end: EndId) -> bool {
+        self.end(end)
+            .is_some_and(|record| record.direction == EndDirection::Readable && record.held_by_host)
+    }
+
+    /// Whether `end` is a readable end the host piped to a consumer
+    /// while a guest held the writable end, and no write of that end
+    /// is in flight, so a later pipe may replace the consumer and a
+    /// close may drop it, as [`held_by_host`](Self::held_by_host)
+    /// states. The consumer then waits in the scheduler, which a
+    /// later call reaches. Neither end has dropped.
+    pub fn consumer_at_rest(&self, end: EndId) -> bool {
+        let Some(record) = self.end(end) else {
+            return false;
+        };
+        let Some(shared) = self.shared_records.get(record.shared) else {
+            return false;
+        };
+        record.direction == EndDirection::Readable
+            && !record.held_by_host
+            && !shared.dropped
+            && shared
+                .host
+                .is_some_and(|host| direction_of(host) == EndDirection::Readable)
+            && !self.write_in_flight(end)
+    }
+
+    /// Whether the writable end of `reader`'s stream or future has a
+    /// write in progress that nothing has answered yet. Wasmtime
+    /// holds such a write as `WriteState::GuestReady`; a write whose
+    /// completion waits only to be delivered is over for it.
+    pub fn write_in_flight(&self, reader: EndId) -> bool {
+        self.shared_record(reader)
+            .and_then(|record| self.end(record.writable))
+            .is_some_and(|record| record.state.busy() && record.waitable.pending_event.is_none())
+    }
+
+    /// The payload of the stream or future of `end`, a readable end in
+    /// the store, whoever holds it: a conversion to an untyped value
+    /// checks no more, as [`held_by_host`](Self::held_by_host)
+    /// states.
+    ///
+    /// Fails with the not-present cause as
+    /// [`readable_end`](Self::readable_end) does.
+    pub fn readable_payload(&self, end: EndId, kind: EndKind) -> Result<Option<ValueType>> {
+        self.readable_end(end, kind)?;
+        Ok(self
+            .shared_record(end)
+            .ok_or_else(|| Error::internal("a readable end has no shared record"))?
+            .payload
+            .clone())
     }
 
     /// The other end of `end`'s stream or future when the host serves
@@ -1031,48 +1195,70 @@ impl TaskTables {
         Ok(())
     }
 
-    /// Whether `end` is a readable end the host holds: a reader can
-    /// still lower it into a guest, pipe it, or close it. It is in no
-    /// guest's table, it has not been dropped, and the host does not
-    /// already serve it through a consumer it was piped to.
-    pub fn held_by_host(&self, end: EndId) -> bool {
-        let Some(record) = self.end(end) else {
-            return false;
-        };
-        let piped = self
-            .shared_records
-            .get(record.shared)
-            .and_then(|shared| shared.host)
-            .is_some_and(|host| direction_of(host) == EndDirection::Readable);
-        record.direction == EndDirection::Readable
-            && record.handle.is_none()
-            && !record.dropped
-            && !piped
-    }
-
-    /// Drop `reader`, a readable end of kind `kind` the host holds,
-    /// because the host closed it. The rules of
+    /// Close `reader`, a readable end of kind `kind`, because a host
+    /// value that names it closed it, and answer the host end the
+    /// caller lets go of: the writable end whose producer the host
+    /// served, or `reader` itself when a consumer served it.
+    ///
+    /// When the host holds the end, it drops, and the rules of
     /// [`drop_end`](Self::drop_end) tell the writable end: a write in
     /// progress completes with the dropped result, and a later write
-    /// sees it at once.
+    /// sees it at once. A stream or future the host created takes its
+    /// writable end with it, as a guest's drop of such a readable end
+    /// does: nobody is left to read what the producer would produce,
+    /// and both records leave the store.
     ///
-    /// A stream or future the host created takes its writable end
-    /// with it, as a guest's drop of such a readable end does: nobody
-    /// is left to read what the producer would produce. Answers that
-    /// writable end, whose producer the caller lets go of.
+    /// When the host piped the end to a consumer while a guest holds
+    /// the writable end, and no write is in flight, as
+    /// [`consumer_at_rest`](Self::consumer_at_rest) answers, the end
+    /// drops the same way and tells the idle writer, and the caller
+    /// lets the consumer go.
     ///
-    /// Fails with the not-held cause when `reader` is no readable end
-    /// the host holds.
+    /// When the end was dropped already, by an earlier close through
+    /// another value that names it or by the guest the host lowered
+    /// it into, and its record stays because a guest still holds the
+    /// writable end, the close does nothing and succeeds, as
+    /// [`held_by_host`](Self::held_by_host) states Wasmtime's does.
+    ///
+    /// Fails with the not-present cause when the store holds no
+    /// readable end under `reader`, and with the not-held cause when
+    /// the end lives on in a guest's table, or with a consumer that
+    /// serves a write in flight or that the host's own pipe holds.
     pub fn close_host_reader(&mut self, reader: EndId, kind: EndKind) -> Result<Option<EndId>> {
-        if !self.held_by_host(reader) {
-            return Err(Error::Copy(CopyCause::NotHeldByHost { kind }));
+        if self.consumer_at_rest(reader) {
+            self.drop_end(kind, reader)?;
+            return Ok(Some(reader));
+        }
+        let record = self.readable_end(reader, kind)?;
+        if !record.held_by_host {
+            return if record.dropped {
+                Ok(None)
+            } else {
+                Err(Error::Copy(CopyCause::NotHeldByHost { kind }))
+            };
         }
         let writer = self.host_counterpart(reader);
+        self.end_record_mut(reader)?.held_by_host = false;
         self.drop_end(kind, reader)?;
         if let Some(writer) = writer {
             self.release_host_end(writer)?;
         }
         Ok(writer)
+    }
+
+    /// The record of `end`, a readable end of kind `kind` in the
+    /// store, whoever holds it. This is the lookup Wasmtime makes of
+    /// a host value's end before it lowers, pipes, closes, or
+    /// converts the value, and the only check it makes there.
+    ///
+    /// Fails with the not-present cause when the store holds no
+    /// readable end under `end`: both ends dropped, the host closed a
+    /// stream or future it created, or `end` is what a value holds
+    /// after its own close.
+    pub fn readable_end(&self, end: EndId, kind: EndKind) -> Result<&CopyEnd> {
+        self.end(end)
+            .filter(|record| record.direction == EndDirection::Readable)
+            .ok_or(Error::Copy(CopyCause::HostEndNotPresent { kind }))
     }
 
     /// The host moved `count` values through `host`, the end it

@@ -232,11 +232,22 @@ pub fn lower_readable_end(
 ///
 /// The checks:
 ///
-/// 1. The end must be a readable end the store holds and no guest
-///    holds: an end the host already lowered, or one the host never
-///    had, fails as an invalid handle.
-/// 2. Its stream or future must carry the payload `ty` names, or the
+/// 1. The end must be a readable end in the store, or the crossing
+///    fails as an invalid handle with the message Wasmtime's lower
+///    raises there, "resource not present": the value was closed, or
+///    its end is gone.
+/// 2. The host must hold the end, or the crossing fails as an invalid
+///    handle. A value that names an end is a plain copy of its
+///    identity, so a clone of a [`Val::Stream`] reaches here after
+///    another copy lowered, piped, or closed the end, and this is the
+///    check that stops it. Wasmtime does not make it: its lower moves
+///    such an end into the guest all the same, and the guest's first
+///    read of it then fails Wasmtime's own check that the reading
+///    side is open. [`TaskTables::held_by_host`] states the rule.
+/// 3. Its stream or future must carry the payload `ty` names, or the
 ///    crossing fails with the payload-mismatch cause.
+///
+/// [`TaskTables::held_by_host`]: crate::concurrency::TaskTables::held_by_host
 pub fn lower_host_end<T: 'static>(
     ctx: &BoundaryContext<'_, T>,
     end: EndId,
@@ -270,6 +281,9 @@ pub fn lower_host_end<T: 'static>(
     let mut guard = tables
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
+    if guard.tasks.readable_end(end, kind).is_err() {
+        return Err(invalid("resource not present"));
+    }
     if !guard.tasks.held_by_host(end) {
         return Err(invalid("the readable end is not one the host holds"));
     }

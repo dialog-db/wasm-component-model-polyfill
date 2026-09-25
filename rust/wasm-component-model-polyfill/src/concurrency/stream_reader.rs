@@ -22,6 +22,7 @@ use super::guarded_stream_reader::GuardedStreamReader;
 use super::host_consumer::HostConsumer;
 use super::host_writer::HostWriter;
 use super::source::Source;
+use super::stream_any::StreamAny;
 use super::stream_consumer::StreamConsumer;
 use super::stream_producer::StreamProducer;
 use super::stream_result::StreamResult;
@@ -72,9 +73,17 @@ use super::stream_result::StreamResult;
 /// guest reads, the consumer takes, or the close ends the other
 /// store's stream. The close needs no identity of the store to keep
 /// its own contract, so none is added. Wasmtime's
-/// reader carries no store identity either. The reader is moved when
-/// it is lowered or piped, so an end crosses into a guest, or reaches
-/// a consumer, once.
+/// reader carries no store identity either.
+///
+/// The reader is moved when it is lowered or piped, but it is not the
+/// only value that can name its end: each reader decoded from the
+/// same [`Val`], or converted from the same untyped value, names it
+/// too, as Wasmtime's copies of an id do. Once one of them lowers,
+/// pipes, or closes the end, the others are refused those uses, as
+/// [`CopyCause::NotHeldByHost`] states, except that a close of an end
+/// closed already succeeds and does nothing, and that an end another
+/// value piped to a consumer while a guest holds the writable end may
+/// be piped again or closed while no write of it is in flight.
 pub struct StreamReader<T> {
     end: EndId,
     item: PhantomData<fn() -> T>,
@@ -135,11 +144,18 @@ impl<T: ComponentValue> StreamReader<T> {
     /// the context from a store the host holds, and a host `async`
     /// function reaches it through [`Accessor::with`].
     ///
-    /// Fails with the not-held cause of [`CopyCause`] when the store
-    /// holds no readable end for the host under this reader: the end
-    /// was piped or lowered already, through another reader decoded
-    /// from the same [`Val`], or the reader is another store's.
-    /// Wasmtime fails its pipe when the lookup of the end fails.
+    /// Fails with the not-present cause of [`CopyCause`] when the
+    /// store holds no readable end under this reader: the end is gone,
+    /// or the reader came from a value that was closed. Wasmtime fails
+    /// its pipe there too. Fails with the not-held cause when the end
+    /// is there but the host gave it up, through another value that
+    /// names it: it was lowered into a guest or closed, or piped while
+    /// a write of it is in flight or piped to itself by a stream the
+    /// host created. Wasmtime lets those pipes through, as
+    /// [`CopyCause::NotHeldByHost`] states. An end another value piped
+    /// already, while a guest holds the writable end and no write of
+    /// it is in flight, takes this consumer in place of that one,
+    /// which is dropped unpolled, as Wasmtime's pipe replaces it.
     ///
     /// [`Store::as_context_mut`]: crate::Store::as_context_mut
     /// [`Accessor::with`]: crate::Accessor::with
@@ -154,6 +170,24 @@ impl<T: ComponentValue> StreamReader<T> {
             data: PhantomData,
         };
         pipe_readable_end(store, self.end, EndKind::StreamReadable, consumer)
+    }
+
+    /// Convert the reader into a [`StreamAny`], the untyped value of
+    /// its end, in the store `store` reaches. The name is Wasmtime's,
+    /// and [`StreamAny::try_from_stream_reader`] states the contract.
+    pub fn try_into_stream_any<D: 'static>(
+        self,
+        store: &mut StoreContext<'_, D>,
+    ) -> Result<StreamAny> {
+        StreamAny::try_from_stream_reader(store, self)
+    }
+
+    /// Convert `stream` into a reader whose items are of the Rust type
+    /// `T`, after checking that the stream carries the type `T`
+    /// projects to. The name is Wasmtime's, and
+    /// [`StreamAny::try_into_stream_reader`] states the contract.
+    pub fn try_from_stream_any(stream: StreamAny) -> Result<Self> {
+        stream.try_into_stream_reader()
     }
 }
 
@@ -172,15 +206,27 @@ impl<T> StreamReader<T> {
     /// [`close_with`](Self::close_with) closes the stream from inside
     /// a poll, through an accessor.
     ///
-    /// Fails with the not-held cause of [`CopyCause`] when the store
-    /// holds no readable end for the host under this reader: the
-    /// reader was closed already, its end was piped or lowered through
-    /// another reader decoded from the same [`Val`], or the reader is
-    /// another store's. Wasmtime fails a second close the same way.
+    /// Fails with the not-present cause of [`CopyCause`] when the
+    /// store holds no readable end under this reader: the reader was
+    /// closed already, or its end is gone. Wasmtime fails those closes
+    /// too. Fails with the not-held cause when the end lives on in a
+    /// guest, lowered through another value that names it, or with a
+    /// consumer another value piped it to that serves a write in
+    /// flight or that the pipe of a stream the host created holds,
+    /// which Wasmtime lets through, as [`CopyCause::NotHeldByHost`]
+    /// states. A close of an end another value piped to a consumer,
+    /// while a guest holds the writable end and no write of it is in
+    /// flight, drops the end and the consumer, unpolled, and the
+    /// writer sees the dropped result, as Wasmtime's close does. A
+    /// close of an end that
+    /// another value closed already, while a guest still holds the
+    /// writable end, succeeds and does nothing, as Wasmtime's does.
+    /// The reader names no end after a close, whether it succeeds or
+    /// fails, as Wasmtime's names none.
     ///
     /// [`Store::as_context_mut`]: crate::Store::as_context_mut
     pub fn close<D: 'static>(&mut self, store: &mut StoreContext<'_, D>) -> Result<()> {
-        close_readable_end(store, self.end, EndKind::StreamReadable)
+        close_readable_end(store, &mut self.end, EndKind::StreamReadable)
     }
 
     /// Close this stream through `accessor`, as [`close`](Self::close)

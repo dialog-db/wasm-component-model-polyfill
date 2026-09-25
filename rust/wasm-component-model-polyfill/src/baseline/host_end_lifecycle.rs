@@ -12,6 +12,16 @@
 //! every shared record, every end, and every producer and consumer,
 //! polling none of them.
 //!
+//! Several host values can name one end: clones of an untyped value,
+//! and the readers converted from them. Once one lowers, pipes, or
+//! closes the end, the others may still convert, and a close of an end
+//! closed already does nothing, as in Wasmtime. An end one piped to a
+//! consumer while the guest holds the writable end may be piped again,
+//! which replaces the consumer, or closed, which drops it, while no
+//! write is in flight, as in Wasmtime too. Every other use is refused.
+//! A use of an end that is gone, or of a value that closed, fails with
+//! Wasmtime's "resource not present".
+//!
 //! The tests drive one component whose synchronous exports each call
 //! one built-in, and read what the store holds through its internal
 //! surface: the end and shared records, the producers the scheduler
@@ -30,9 +40,9 @@ use crate::internal::{FutureReaderInternal, StreamReaderInternal};
 use crate::resource::HandleTables;
 use crate::store::StoreInternalExt;
 use crate::{
-    Component, CopyCause, Destination, EndKind, Engine, Error, FutureConsumer, FutureReader,
-    Instance, Linker, SchedulerCause, Source, Store, StoreContext, StreamConsumer, StreamProducer,
-    StreamReader, StreamResult, Val,
+    AbiCause, Component, CopyCause, Destination, EndKind, Engine, Error, FutureConsumer,
+    FutureReader, GuardedFutureReader, Instance, Linker, SchedulerCause, Source, Store,
+    StoreContext, StreamAny, StreamConsumer, StreamProducer, StreamReader, StreamResult, Val,
 };
 use wcmp_macros::component;
 
@@ -64,9 +74,11 @@ const CALLS_WITHOUT_AN_EVENT: usize = 4;
 /// end from a pointer, and `drop-writable` and `future-drop-writable`
 /// drop it. `writable` and `future-writable` return the kept indices.
 /// `take` takes a stream from its caller and returns the index it
-/// arrived under. `poll` polls a set and writes the event it delivers
-/// at address 0: the end's index there and the packed result at
-/// address 4. `peek` reads a word of memory and `poke` writes one.
+/// arrived under, `give` returns the stream at an index to its
+/// caller, and `drop-readable` drops the readable end at an index.
+/// `poll` polls a set and writes the event it delivers at address 0:
+/// the end's index there and the packed result at address 4. `peek`
+/// reads a word of memory and `poke` writes one.
 const WRITES: &[u8] = component!(
     r#"
     (component
@@ -84,6 +96,7 @@ const WRITES: &[u8] = component!(
       (core func $future-write
         (canon future.write $f async (memory (core memory $libc "memory"))))
       (core func $drop-writable (canon stream.drop-writable $s))
+      (core func $drop-readable (canon stream.drop-readable $s))
       (core func $future-drop-writable (canon future.drop-writable $f))
       (core func $set-new (canon waitable-set.new))
       (core func $poll (canon waitable-set.poll (memory (core memory $libc "memory"))))
@@ -95,6 +108,7 @@ const WRITES: &[u8] = component!(
         (import "" "stream.write" (func $write (param i32 i32 i32) (result i32)))
         (import "" "future.write" (func $future-write (param i32 i32) (result i32)))
         (import "" "stream.drop-writable" (func $drop-writable (param i32)))
+        (import "" "stream.drop-readable" (func $drop-readable (param i32)))
         (import "" "future.drop-writable" (func $future-drop-writable (param i32)))
         (import "" "waitable-set.new" (func $set-new (result i32)))
         (import "" "waitable-set.poll" (func $poll (param i32 i32) (result i32)))
@@ -120,6 +134,8 @@ const WRITES: &[u8] = component!(
         (func (export "writable") (result i32) (global.get $w))
         (func (export "future-writable") (result i32) (global.get $fw))
         (func (export "take") (param i32) (result i32) (local.get 0))
+        (func (export "give") (param i32) (result i32) (local.get 0))
+        (func (export "drop-readable") (param i32) (call $drop-readable (local.get 0)))
         (func (export "new-set") (result i32) (call $set-new))
         (func (export "poll") (param i32) (result i32) (call $poll (local.get 0) (i32.const 0)))
         (func (export "join") (param i32 i32) (call $join (local.get 0) (local.get 1))))
@@ -129,6 +145,7 @@ const WRITES: &[u8] = component!(
         (export "stream.write" (func $write))
         (export "future.write" (func $future-write))
         (export "stream.drop-writable" (func $drop-writable))
+        (export "stream.drop-readable" (func $drop-readable))
         (export "future.drop-writable" (func $future-drop-writable))
         (export "waitable-set.new" (func $set-new))
         (export "waitable-set.poll" (func $poll))
@@ -145,6 +162,9 @@ const WRITES: &[u8] = component!(
       (func (export "writable") (result u32) (canon lift (core func $m "writable")))
       (func (export "future-writable") (result u32) (canon lift (core func $m "future-writable")))
       (func (export "take") (param "s" $s) (result u32) (canon lift (core func $m "take")))
+      (func (export "give") (param "i" u32) (result $s) (canon lift (core func $m "give")))
+      (func (export "drop-readable") (param "i" u32)
+        (canon lift (core func $m "drop-readable")))
       (func (export "new-set") (result u32) (canon lift (core func $m "new-set")))
       (func (export "poll") (param "s" u32) (result u32) (canon lift (core func $m "poll")))
       (func (export "join") (param "w" u32) (param "s" u32) (canon lift (core func $m "join")))
@@ -223,6 +243,27 @@ impl FutureConsumer<()> for Counted {
     ) -> Poll<Result<(), Error>> {
         self.0.polls.fetch_add(1, Ordering::SeqCst);
         Poll::Pending
+    }
+}
+
+/// A consumer that counts its polls and its drop through the
+/// [`Counted`] it holds, and takes the whole of every write at once.
+struct Taking(Counted);
+
+impl StreamConsumer<()> for Taking {
+    type Item = u8;
+
+    fn poll_consume(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        store: &mut StoreContext<'_, ()>,
+        mut source: Source<'_, u8>,
+        _finish: bool,
+    ) -> Poll<Result<StreamResult, Error>> {
+        self.0.0.polls.fetch_add(1, Ordering::SeqCst);
+        let count = source.remaining();
+        source.read(store, &mut Vec::new(), count)?;
+        Poll::Ready(Ok(StreamResult::Completed))
     }
 }
 
@@ -412,6 +453,68 @@ fn not_held(failure: &Error, kind: EndKind) -> bool {
     matches!(failure, Error::Copy(CopyCause::NotHeldByHost { kind: k }) if *k == kind)
 }
 
+/// Whether `failure` is the not-present cause for `kind`.
+fn not_present(failure: &Error, kind: EndKind) -> bool {
+    matches!(failure, Error::Copy(CopyCause::HostEndNotPresent { kind: k }) if *k == kind)
+}
+
+/// Whether `failure` is a lower refused as an invalid handle for
+/// `reason`.
+fn invalid_handle(failure: &Error, reason: &str) -> bool {
+    matches!(
+        failure,
+        Error::Abi(abi) if matches!(&abi.cause, AbiCause::InvalidHandle { reason: r } if r == reason)
+    )
+}
+
+/// The reason a lower of a value whose end the host gave up is
+/// refused for.
+const NOT_HELD: &str = "the readable end is not one the host holds";
+
+/// Call the guest's `make` and convert the reader it hands the host
+/// into an untyped value, which the tests of copies clone.
+async fn make_any(store: &mut Store<()>, instance: &Instance) -> StreamAny {
+    make(store, instance)
+        .await
+        .try_into_stream_any(&mut store.as_context_mut())
+        .expect("the host holds the end the guest handed it")
+}
+
+/// Lower `stream` into the guest through its `take`, and answer the
+/// index the guest's entry took, or the lower's refusal.
+async fn take(
+    store: &mut Store<()>,
+    instance: &Instance,
+    stream: &StreamAny,
+) -> Result<u32, Error> {
+    let results = instance
+        .get_func("take")
+        .expect("the component exports `take`")
+        .call(store, &[Val::Stream(stream.clone())])
+        .await?;
+    match results.as_ref() {
+        [Val::U32(index)] => Ok(*index),
+        other => panic!("`take` answered {other:?}"),
+    }
+}
+
+/// Pipe `stream` to `consumer` through its typed reader.
+fn pipe(
+    store: &mut Store<()>,
+    stream: &StreamAny,
+    consumer: impl StreamConsumer<(), Item = u8>,
+) -> Result<(), Error> {
+    StreamReader::<u8>::try_from_stream_any(stream.clone())
+        .expect("the stream carries `u8`")
+        .pipe(&mut store.as_context_mut(), consumer)
+}
+
+/// Close a clone of `stream`, which leaves `stream` itself naming its
+/// end whatever the close does.
+fn close_copy(store: &mut Store<()>, stream: &StreamAny) -> Result<(), Error> {
+    stream.clone().close(&mut store.as_context_mut())
+}
+
 #[wcmp_macros::test]
 async fn it_completes_a_pending_guest_write_with_the_dropped_result_when_the_host_closes() {
     let (mut store, instance) = instantiate().await;
@@ -496,8 +599,13 @@ async fn it_refuses_to_close_or_lower_a_reader_it_closed_already() {
         .close(&mut store.as_context_mut())
         .expect_err("the second close is refused");
     assert!(
-        not_held(&again, EndKind::StreamReadable),
-        "a closed end is not one the host holds: {again}"
+        not_present(&again, EndKind::StreamReadable),
+        "the close left the reader naming no end, as Wasmtime's does: {again}"
+    );
+    assert_eq!(
+        again.to_string(),
+        "copy error: resource not present",
+        "the cause carries Wasmtime's message"
     );
 
     let lowered = instance
@@ -507,9 +615,10 @@ async fn it_refuses_to_close_or_lower_a_reader_it_closed_already() {
         .expect("`take` takes a `stream<u8>`")
         .call(&mut store, (reader,))
         .await;
+    let lowered = lowered.expect_err("a closed end does not enter a guest's table");
     assert!(
-        lowered.is_err(),
-        "a closed end does not enter a guest's table"
+        invalid_handle(&lowered, "resource not present"),
+        "{lowered:?}"
     );
     assert_eq!(
         record_counts(&store),
@@ -799,4 +908,519 @@ async fn it_drops_every_record_producer_and_consumer_unpolled_when_the_store_dro
         "the waker is let go of, not woken"
     );
     drop((held_stream, held_future, instance));
+}
+
+#[wcmp_macros::test]
+async fn it_closes_nothing_when_a_copy_closes_an_end_another_copy_closed() {
+    let (mut store, instance) = instantiate().await;
+    let mut first = make_any(&mut store, &instance).await;
+    let mut second = first.clone();
+    assert_eq!(write(&mut store, &instance).await, BLOCKED);
+
+    first
+        .close(&mut store.as_context_mut())
+        .expect("the first copy closes the stream");
+    let writable = call_u32(&mut store, &instance, "writable", &[]).await;
+    assert_eq!(
+        poll_event(&mut store, &instance, "writable").await,
+        (STREAM_WRITE, writable, DROPPED)
+    );
+
+    second
+        .close(&mut store.as_context_mut())
+        .expect("Wasmtime's close finds the end in its table, and drops it again");
+    assert!(
+        !any_event(&mut store, &instance, "writable").await,
+        "the writer is told of the drop once"
+    );
+    assert_eq!(
+        record_counts(&store),
+        (2, 1),
+        "the records still wait for the guest's drop"
+    );
+
+    let again = second
+        .close(&mut store.as_context_mut())
+        .expect_err("the copy that closed names no end");
+    assert!(not_present(&again, EndKind::StreamReadable), "{again:?}");
+    call_ok(&mut store, &instance, "drop-writable", &[]).await;
+    assert_eq!(record_counts(&store), (0, 0));
+}
+
+#[wcmp_macros::test]
+async fn it_closes_nothing_when_the_host_closes_an_end_the_guest_dropped() {
+    let (mut store, instance) = instantiate().await;
+    let lowered = make_any(&mut store, &instance).await;
+    let mut kept = lowered.clone();
+    let index = take(&mut store, &instance, &lowered)
+        .await
+        .expect("the first copy lowers the end into the guest");
+    call_ok(&mut store, &instance, "drop-readable", &[index]).await;
+
+    kept.close(&mut store.as_context_mut())
+        .expect("Wasmtime's guest drop and host close are the same drop");
+    assert_eq!(
+        write(&mut store, &instance).await,
+        DROPPED,
+        "the guest's drop told the writer"
+    );
+    assert_eq!(record_counts(&store), (2, 1));
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_every_use_of_a_copy_once_another_copy_closed_a_stream_the_host_created() {
+    let (mut store, instance) = instantiate().await;
+    let counts = Arc::new(Counts::default());
+    let mut first = StreamReader::<u8>::new(&mut store.as_context_mut(), Counted(counts.clone()))
+        .expect("the host creates a stream")
+        .try_into_stream_any(&mut store.as_context_mut())
+        .expect("the host holds the end it created");
+    let second = first.clone();
+    first
+        .close(&mut store.as_context_mut())
+        .expect("the host closes its own stream");
+    assert_eq!(
+        record_counts(&store),
+        (0, 0),
+        "the close took both ends, as Wasmtime's deletes the stream"
+    );
+
+    let lowered = take(&mut store, &instance, &second)
+        .await
+        .expect_err("no end is left to lower");
+    assert!(
+        invalid_handle(&lowered, "resource not present"),
+        "{lowered:?}"
+    );
+    let piped =
+        pipe(&mut store, &second, Counted(counts.clone())).expect_err("no end is left to pipe");
+    assert!(not_present(&piped, EndKind::StreamReadable), "{piped:?}");
+    let converted = StreamReader::<u8>::try_from_stream_any(second.clone())
+        .expect("the payload type still matches")
+        .try_into_stream_any(&mut store.as_context_mut())
+        .expect_err("no end is left to convert");
+    assert!(
+        not_present(&converted, EndKind::StreamReadable),
+        "{converted:?}"
+    );
+    let closed = close_copy(&mut store, &second).expect_err("no end is left to close");
+    assert!(not_present(&closed, EndKind::StreamReadable), "{closed:?}");
+    assert_eq!(
+        closed.to_string(),
+        "copy error: resource not present",
+        "the cause carries Wasmtime's message"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_copy_the_lower_or_pipe_of_an_end_another_copy_closed() {
+    let (mut store, instance) = instantiate().await;
+    let mut first = make_any(&mut store, &instance).await;
+    let second = first.clone();
+    first
+        .close(&mut store.as_context_mut())
+        .expect("the first copy closes the stream");
+
+    let lowered = take(&mut store, &instance, &second)
+        .await
+        .expect_err("a dropped end enters no guest's table");
+    assert!(invalid_handle(&lowered, NOT_HELD), "{lowered:?}");
+    let counts = Arc::new(Counts::default());
+    let piped = pipe(&mut store, &second, Counted(counts.clone()))
+        .expect_err("a dropped end does not open again for a consumer");
+    assert!(not_held(&piped, EndKind::StreamReadable), "{piped:?}");
+    assert_eq!(
+        (counts.polls(), counts.drops()),
+        (0, 1),
+        "the refused consumer is dropped unpolled"
+    );
+    StreamReader::<u8>::try_from_stream_any(second)
+        .expect("the payload type still matches")
+        .try_into_stream_any(&mut store.as_context_mut())
+        .expect("a conversion checks only that the end is in the store");
+    assert_eq!(
+        write(&mut store, &instance).await,
+        DROPPED,
+        "the writer still sees the close"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_copy_every_use_but_conversion_of_an_end_another_copy_lowered() {
+    let (mut store, instance) = instantiate().await;
+    let lowered = make_any(&mut store, &instance).await;
+    let kept = lowered.clone();
+    take(&mut store, &instance, &lowered)
+        .await
+        .expect("the first copy lowers the end into the guest");
+
+    let again = take(&mut store, &instance, &kept)
+        .await
+        .expect_err("the guest's table holds the end");
+    assert!(invalid_handle(&again, NOT_HELD), "{again:?}");
+    let piped = pipe(&mut store, &kept, Counted(Arc::new(Counts::default())))
+        .expect_err("the guest reads the end");
+    assert!(not_held(&piped, EndKind::StreamReadable), "{piped:?}");
+    let closed = close_copy(&mut store, &kept).expect_err("the guest holds the end");
+    assert!(not_held(&closed, EndKind::StreamReadable), "{closed:?}");
+    StreamReader::<u8>::try_from_stream_any(kept)
+        .expect("the payload type still matches")
+        .try_into_stream_any(&mut store.as_context_mut())
+        .expect("a conversion checks only that the end is in the store");
+}
+
+#[wcmp_macros::test]
+async fn it_gives_every_copy_back_an_end_the_guest_returns() {
+    let (mut store, instance) = instantiate().await;
+    let lowered = make_any(&mut store, &instance).await;
+    let mut kept = lowered.clone();
+    let index = take(&mut store, &instance, &lowered)
+        .await
+        .expect("the first copy lowers the end into the guest");
+    let returned = match call(&mut store, &instance, "give", &[index]).await {
+        Ok(Some(Val::Stream(stream))) => stream,
+        other => panic!("`give` answered {other:?}"),
+    };
+    assert_eq!(returned, kept, "the end comes back under its identity");
+
+    assert_eq!(write(&mut store, &instance).await, BLOCKED);
+    kept.close(&mut store.as_context_mut())
+        .expect("the host holds the end again, through every copy");
+    let writable = call_u32(&mut store, &instance, "writable", &[]).await;
+    assert_eq!(
+        poll_event(&mut store, &instance, "writable").await,
+        (STREAM_WRITE, writable, DROPPED)
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_copy_the_lower_of_an_end_another_copy_piped() {
+    let (mut store, instance) = instantiate().await;
+    let piped = make_any(&mut store, &instance).await;
+    let kept = piped.clone();
+    let counts = Arc::new(Counts::default());
+    pipe(&mut store, &piped, Counted(counts.clone())).expect("the first copy pipes the end");
+
+    let lowered = take(&mut store, &instance, &kept)
+        .await
+        .expect_err("a consumer reads the end");
+    assert!(invalid_handle(&lowered, NOT_HELD), "{lowered:?}");
+    StreamReader::<u8>::try_from_stream_any(kept)
+        .expect("the payload type still matches")
+        .try_into_stream_any(&mut store.as_context_mut())
+        .expect("a conversion checks only that the end is in the store");
+
+    assert_eq!(write(&mut store, &instance).await, BLOCKED);
+    assert!(
+        counts.polls() > 0 && counts.drops() == 0,
+        "the first consumer still serves the writer"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_copy_the_pipe_or_close_of_an_end_whose_consumer_serves_a_write() {
+    let (mut store, instance) = instantiate().await;
+    let piped = make_any(&mut store, &instance).await;
+    let kept = piped.clone();
+    let counts = Arc::new(Counts::default());
+    pipe(&mut store, &piped, Counted(counts.clone())).expect("the first copy pipes the end");
+    assert_eq!(
+        write(&mut store, &instance).await,
+        BLOCKED,
+        "the consumer holds the write in flight"
+    );
+
+    let refused = Arc::new(Counts::default());
+    let again =
+        pipe(&mut store, &kept, Counted(refused.clone())).expect_err("a write is in flight");
+    assert!(not_held(&again, EndKind::StreamReadable), "{again:?}");
+    let closed = close_copy(&mut store, &kept).expect_err("a write is in flight");
+    assert!(not_held(&closed, EndKind::StreamReadable), "{closed:?}");
+
+    assert_eq!(
+        (refused.polls(), refused.drops()),
+        (0, 1),
+        "only the refused consumer is dropped"
+    );
+    assert!(
+        counts.polls() > 0 && counts.drops() == 0,
+        "the first consumer still serves the write"
+    );
+    assert!(
+        !any_event(&mut store, &instance, "writable").await,
+        "the write is still in flight"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_replaces_the_consumer_of_an_end_another_copy_piped_with_no_write_in_flight() {
+    let (mut store, instance) = instantiate().await;
+    let piped = make_any(&mut store, &instance).await;
+    let kept = piped.clone();
+    let first = Arc::new(Counts::default());
+    pipe(&mut store, &piped, Taking(Counted(first.clone()))).expect("the first copy pipes");
+    assert_eq!(
+        write(&mut store, &instance).await,
+        4 << 4,
+        "the first consumer takes the four bytes at once, so no write is in flight"
+    );
+    assert_eq!(first.polls(), 1);
+
+    let second = Arc::new(Counts::default());
+    pipe(&mut store, &kept, Counted(second.clone()))
+        .expect("a second pipe with no write in flight replaces the consumer");
+    assert_eq!(
+        (first.polls(), first.drops()),
+        (1, 1),
+        "the replaced consumer is dropped without another poll"
+    );
+    assert_eq!((second.polls(), second.drops()), (0, 0));
+
+    assert_eq!(write(&mut store, &instance).await, BLOCKED);
+    assert!(
+        second.polls() > 0 && second.drops() == 0,
+        "the next write polls the new consumer"
+    );
+    assert_eq!(
+        first.polls(),
+        1,
+        "the replaced consumer is never polled again"
+    );
+    assert_eq!(
+        record_counts(&store),
+        (2, 1),
+        "the stream is still open between the guest and the new consumer"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_replaces_the_consumer_of_a_future_another_copy_piped_with_no_write_in_flight() {
+    let (mut store, instance) = instantiate().await;
+    let piped = make_future(&mut store, &instance)
+        .await
+        .try_into_future_any(&mut store.as_context_mut())
+        .expect("the host holds the end the guest handed it");
+    let first = Arc::new(Counts::default());
+    FutureReader::<u32>::try_from_future_any(piped.clone())
+        .expect("the future carries `u32`")
+        .pipe(&mut store.as_context_mut(), Counted(first.clone()))
+        .expect("the first copy pipes");
+
+    let second = Arc::new(Counts::default());
+    FutureReader::<u32>::try_from_future_any(piped)
+        .expect("the future carries `u32`")
+        .pipe(&mut store.as_context_mut(), Counted(second.clone()))
+        .expect("a second pipe with no write in flight replaces the consumer");
+    assert_eq!(
+        (first.polls(), first.drops()),
+        (0, 1),
+        "the replaced consumer is dropped unpolled"
+    );
+
+    assert_eq!(future_write(&mut store, &instance).await, BLOCKED);
+    assert!(
+        second.polls() > 0 && second.drops() == 0,
+        "the write polls the new consumer"
+    );
+    assert_eq!(first.polls(), 0, "the replaced consumer is never polled");
+}
+
+#[wcmp_macros::test]
+async fn it_closes_an_end_another_copy_piped_with_no_write_in_flight() {
+    let (mut store, instance) = instantiate().await;
+    let piped = make_any(&mut store, &instance).await;
+    let kept = piped.clone();
+    let counts = Arc::new(Counts::default());
+    pipe(&mut store, &piped, Counted(counts.clone())).expect("the first copy pipes the end");
+
+    close_copy(&mut store, &kept).expect("a close with no write in flight drops the consumer");
+    assert_eq!(
+        (counts.polls(), counts.drops()),
+        (0, 1),
+        "the consumer is dropped unpolled"
+    );
+
+    let writable = call_u32(&mut store, &instance, "writable", &[]).await;
+    assert_eq!(
+        poll_event(&mut store, &instance, "writable").await,
+        (STREAM_WRITE, writable, DROPPED),
+        "the idle writer is given the dropped result"
+    );
+    close_copy(&mut store, &kept).expect("a close of an end closed already does nothing");
+    call_ok(&mut store, &instance, "drop-writable", &[]).await;
+    assert_eq!(
+        record_counts(&store),
+        (0, 0),
+        "the guest's drop is the second of the pair"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_closes_a_future_another_copy_piped_with_no_write_in_flight() {
+    let (mut store, instance) = instantiate().await;
+    let mut piped = make_future(&mut store, &instance)
+        .await
+        .try_into_future_any(&mut store.as_context_mut())
+        .expect("the host holds the end the guest handed it");
+    let counts = Arc::new(Counts::default());
+    FutureReader::<u32>::try_from_future_any(piped.clone())
+        .expect("the future carries `u32`")
+        .pipe(&mut store.as_context_mut(), Counted(counts.clone()))
+        .expect("the first copy pipes");
+
+    piped
+        .close(&mut store.as_context_mut())
+        .expect("a close with no write in flight drops the consumer");
+    assert_eq!(
+        (counts.polls(), counts.drops()),
+        (0, 1),
+        "the consumer is dropped unpolled"
+    );
+
+    let writable = call_u32(&mut store, &instance, "future-writable", &[]).await;
+    assert_eq!(
+        poll_event(&mut store, &instance, "future-writable").await,
+        (FUTURE_WRITE, writable, DROPPED),
+        "the idle writer is given the dropped result"
+    );
+    call_ok(&mut store, &instance, "future-drop-writable", &[]).await;
+    assert_eq!(
+        record_counts(&store),
+        (0, 0),
+        "a writable future end told of the drop is done, and drops cleanly"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_every_copy_of_a_stream_the_host_created_and_piped_to_itself() {
+    let (mut store, instance) = instantiate().await;
+    let counts = Arc::new(Counts::default());
+    let piped = StreamReader::<u8>::new(&mut store.as_context_mut(), Counted(counts.clone()))
+        .expect("the host creates a stream")
+        .try_into_stream_any(&mut store.as_context_mut())
+        .expect("the host holds the end it created");
+    let kept = piped.clone();
+    pipe(&mut store, &piped, Counted(counts.clone())).expect("the host pipes its own stream");
+
+    let lowered = take(&mut store, &instance, &kept)
+        .await
+        .expect_err("the host's pipe reads the end");
+    assert!(invalid_handle(&lowered, NOT_HELD), "{lowered:?}");
+    let refused = Arc::new(Counts::default());
+    let again =
+        pipe(&mut store, &kept, Counted(refused.clone())).expect_err("the end has a consumer");
+    assert!(not_held(&again, EndKind::StreamReadable), "{again:?}");
+    let closed = close_copy(&mut store, &kept).expect_err("the host's pipe reads the end");
+    assert!(not_held(&closed, EndKind::StreamReadable), "{closed:?}");
+
+    assert_eq!(refused.drops(), 1, "only the refused consumer is dropped");
+    assert_eq!(
+        counts.drops(),
+        0,
+        "the pipe keeps its producer and consumer"
+    );
+    assert_eq!(store.internal().scheduler().host_task_count(), 1);
+}
+
+#[wcmp_macros::test]
+async fn it_leaves_a_value_naming_no_end_after_a_refused_close() {
+    let (mut store, instance) = instantiate().await;
+    let lowered = make_any(&mut store, &instance).await;
+    let mut kept = lowered.clone();
+    take(&mut store, &instance, &lowered)
+        .await
+        .expect("the first copy lowers the end into the guest");
+
+    let refused = kept
+        .close(&mut store.as_context_mut())
+        .expect_err("the guest holds the end");
+    assert!(not_held(&refused, EndKind::StreamReadable), "{refused:?}");
+    let again = kept
+        .close(&mut store.as_context_mut())
+        .expect_err("Wasmtime's close replaces the id before it looks the end up");
+    assert!(not_present(&again, EndKind::StreamReadable), "{again:?}");
+}
+
+#[wcmp_macros::test]
+async fn it_closes_a_stream_through_an_accessor_inside_a_poll() {
+    let (mut store, instance) = instantiate().await;
+    let mut reader = make(&mut store, &instance).await;
+    assert_eq!(write(&mut store, &instance).await, BLOCKED);
+
+    store
+        .run_concurrent(async move |accessor| reader.close_with(accessor))
+        .await
+        .expect("run the closure")
+        .expect("the close reaches the store");
+
+    let writable = call_u32(&mut store, &instance, "writable", &[]).await;
+    assert_eq!(
+        poll_event(&mut store, &instance, "writable").await,
+        (STREAM_WRITE, writable, DROPPED)
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_closes_a_guarded_future_reader_that_drops_inside_a_poll() {
+    let (mut store, instance) = instantiate().await;
+    let reader = make_future(&mut store, &instance).await;
+    assert_eq!(future_write(&mut store, &instance).await, BLOCKED);
+
+    store
+        .run_concurrent(async move |accessor| {
+            drop(GuardedFutureReader::new(accessor.clone(), reader));
+        })
+        .await
+        .expect("run the closure");
+
+    let writable = call_u32(&mut store, &instance, "future-writable", &[]).await;
+    assert_eq!(
+        poll_event(&mut store, &instance, "future-writable").await,
+        (FUTURE_WRITE, writable, DROPPED),
+        "the guard's drop closed the future"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_gives_the_future_reader_back_from_a_guard_without_closing() {
+    let (mut store, instance) = instantiate().await;
+    let reader = make_future(&mut store, &instance).await;
+    assert_eq!(future_write(&mut store, &instance).await, BLOCKED);
+
+    let mut reader = store
+        .run_concurrent(async move |accessor| reader.guard(accessor.clone()).into_future())
+        .await
+        .expect("run the closure");
+    assert!(
+        !any_event(&mut store, &instance, "future-writable").await,
+        "a guard that gave its reader back closed nothing"
+    );
+
+    reader
+        .close(&mut store.as_context_mut())
+        .expect("the reader given back closes");
+    let writable = call_u32(&mut store, &instance, "future-writable", &[]).await;
+    assert_eq!(
+        poll_event(&mut store, &instance, "future-writable").await,
+        (FUTURE_WRITE, writable, DROPPED)
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_leaks_the_end_of_a_guarded_future_reader_that_drops_outside_a_poll() {
+    let (mut store, instance) = instantiate().await;
+    let reader = make_future(&mut store, &instance).await;
+    assert_eq!(future_write(&mut store, &instance).await, BLOCKED);
+
+    let guard = store
+        .run_concurrent(async move |accessor| reader.guard(accessor.clone()))
+        .await
+        .expect("run the closure");
+    drop(guard);
+
+    assert!(
+        !any_event(&mut store, &instance, "future-writable").await,
+        "a guard dropped outside a poll cannot reach the store"
+    );
+    assert_eq!(record_counts(&store), (2, 1), "its end leaks");
 }

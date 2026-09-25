@@ -29,8 +29,10 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use wasm_component_model_polyfill::{
-    Component, CopyCause, Engine, EngineConfig, Error, FutureConsumer, FutureReader, HostCall,
-    Instance, Linker, Source, Store, StoreContext, StreamConsumer, StreamReader, StreamResult, Val,
+    AbiCause, Component, ComponentValue, CopyCause, Destination, EndKind, Engine, EngineConfig,
+    Error, FunctionParameter, FunctionType, FutureConsumer, FutureReader, HostCall, Instance,
+    Linker, Source, Store, StoreContext, StreamAny, StreamConsumer, StreamProducer, StreamReader,
+    StreamResult, Val,
 };
 use wcmp_macros::component;
 
@@ -69,9 +71,14 @@ const CALLS_UNTIL_AN_EVENT: usize = 8;
 /// `make` creates a stream, keeps its writable end, and returns its
 /// readable end; `make-future` does the same for a future.
 /// `hand-over` creates a stream, keeps its writable end, and passes
-/// its readable end to the imported host function `consume`. Each of
-/// the three keeps the index the readable end had, which
-/// `last-readable` returns and `drop-readable` drops. `write` and
+/// its readable end to the imported host function `consume`, and
+/// `hand-over-future` does the same for a future and the imported
+/// `consume-future`. Each of the four keeps the index the readable
+/// end had, which `last-readable` returns; `drop-readable` drops a
+/// stream's readable end at an index and `drop-future-readable` a
+/// future's. `adopt` takes a `stream<u8>` and returns the index the
+/// end took in the guest's table, and `take-wide` takes a
+/// `stream<u32>` and does nothing with it. `write` and
 /// `future-write` start an asynchronous write of the kept writable
 /// end from a pointer, and `cancel-write` and `future-cancel-write`
 /// cancel it asynchronously. `drop-writable` drops the stream's
@@ -87,7 +94,9 @@ const WRITES_TO_THE_HOST: &[u8] = component!(
       (type $s (stream u8))
       (type $f (future u32))
       (type $t (stream string))
+      (type $wide (stream u32))
       (import "consume" (func $consume (param "s" $s)))
+      (import "consume-future" (func $consume-future (param "f" $f)))
       (core module $libc
         (memory (export "memory") 1)
         (func (export "peek") (param i32) (result i32) (i32.load (local.get 0)))
@@ -106,7 +115,9 @@ const WRITES_TO_THE_HOST: &[u8] = component!(
       (core func $future-cancel-write (canon future.cancel-write $f async))
       (core func $drop-readable (canon stream.drop-readable $s))
       (core func $drop-writable (canon stream.drop-writable $s))
+      (core func $future-drop-readable (canon future.drop-readable $f))
       (core func $consume (canon lower (func $consume)))
+      (core func $consume-future (canon lower (func $consume-future)))
       (core func $set-new (canon waitable-set.new))
       (core func $poll (canon waitable-set.poll (memory (core memory $libc "memory"))))
       (core func $join (canon waitable.join))
@@ -122,7 +133,9 @@ const WRITES_TO_THE_HOST: &[u8] = component!(
         (import "" "future.cancel-write" (func $future-cancel-write (param i32) (result i32)))
         (import "" "stream.drop-readable" (func $drop-readable (param i32)))
         (import "" "stream.drop-writable" (func $drop-writable (param i32)))
+        (import "" "future.drop-readable" (func $future-drop-readable (param i32)))
         (import "" "consume" (func $consume (param i32)))
+        (import "" "consume-future" (func $consume-future (param i32)))
         (import "" "waitable-set.new" (func $set-new (result i32)))
         (import "" "waitable-set.poll" (func $poll (param i32 i32) (result i32)))
         (import "" "waitable.join" (func $join (param i32 i32)))
@@ -142,6 +155,16 @@ const WRITES_TO_THE_HOST: &[u8] = component!(
           (global.set $fw (i32.wrap_i64 (i64.shr_u (local.get $pair) (i64.const 32))))
           (global.get $r))
         (func (export "hand-over") (call $consume (call $keep (call $stream-new))))
+        (func (export "hand-over-future")
+          (local $pair i64)
+          (local.set $pair (call $future-new))
+          (global.set $r (i32.wrap_i64 (local.get $pair)))
+          (global.set $fw (i32.wrap_i64 (i64.shr_u (local.get $pair) (i64.const 32))))
+          (call $consume-future (global.get $r)))
+        (func (export "drop-future-readable") (param i32)
+          (call $future-drop-readable (local.get 0)))
+        (func (export "adopt") (param i32) (result i32) (local.get 0))
+        (func (export "take-wide") (param i32))
         (func (export "make-strings") (result i32)
           (local $pair i64)
           (local.set $pair (call $strings-new))
@@ -175,7 +198,9 @@ const WRITES_TO_THE_HOST: &[u8] = component!(
         (export "future.cancel-write" (func $future-cancel-write))
         (export "stream.drop-readable" (func $drop-readable))
         (export "stream.drop-writable" (func $drop-writable))
+        (export "future.drop-readable" (func $future-drop-readable))
         (export "consume" (func $consume))
+        (export "consume-future" (func $consume-future))
         (export "waitable-set.new" (func $set-new))
         (export "waitable-set.poll" (func $poll))
         (export "waitable.join" (func $join))))))
@@ -183,6 +208,11 @@ const WRITES_TO_THE_HOST: &[u8] = component!(
       (func (export "make") (result $s) (canon lift (core func $m "make")))
       (func (export "make-future") (result $f) (canon lift (core func $m "make-future")))
       (func (export "hand-over") (canon lift (core func $m "hand-over")))
+      (func (export "hand-over-future") (canon lift (core func $m "hand-over-future")))
+      (func (export "drop-future-readable") (param "e" u32)
+        (canon lift (core func $m "drop-future-readable")))
+      (func (export "adopt") (param "s" $s) (result u32) (canon lift (core func $m "adopt")))
+      (func (export "take-wide") (param "s" $wide) (canon lift (core func $m "take-wide")))
       (func (export "make-strings") (result $t) (canon lift (core func $m "make-strings")))
       (func (export "write-strings") (param "p" u32) (param "n" u32) (result u32)
         (canon lift (core func $m "write-strings")))
@@ -387,18 +417,9 @@ fn finished_last(log: &Shared) -> bool {
 /// import `consume` is a typed host function that takes a
 /// `StreamReader<u8>` and pipes it to the consumer `consumer` holds.
 async fn instantiate(consumer: Option<Scripted>) -> (Store<()>, Instance) {
-    // The `async` cancels need the more-async-builtins feature.
-    let mut config = EngineConfig::new();
-    config.wasm_component_model_more_async_builtins(true);
-    let engine = Engine::with_config(&config).expect("engine");
-    let component = Component::new(&engine, WRITES_TO_THE_HOST)
-        .await
-        .expect("the component parses");
     let slot = Arc::new(Mutex::new(consumer));
-    let mut linker: Linker<()> = Linker::new(&engine);
-    linker
-        .root()
-        .func_wrap(
+    let (store, instance, _) = instantiate_with(move |linker, _| {
+        linker.root().func_wrap(
             "consume",
             move |mut call: HostCall<'_, ()>, (reader,): (StreamReader<u8>,)| {
                 let consumer = slot
@@ -409,13 +430,82 @@ async fn instantiate(consumer: Option<Scripted>) -> (Store<()>, Instance) {
                 reader.pipe(call.store(), consumer)
             },
         )
-        .expect("register `consume`");
+    })
+    .await;
+    (store, instance)
+}
+
+/// The values the untyped host functions of [`WRITES_TO_THE_HOST`]
+/// received, in order.
+type Received = Arc<Mutex<Vec<Val>>>;
+
+/// Instantiate [`WRITES_TO_THE_HOST`] into a store of its own, with
+/// both imports untyped entries of the linker that keep every value
+/// they receive in the log this answers.
+async fn instantiate_untyped() -> (Store<()>, Instance, Received) {
+    instantiate_with(|linker, received| {
+        let log = received.clone();
+        linker.root().func_new(
+            "consume",
+            FunctionType {
+                parameters: vec![FunctionParameter {
+                    name: "s".to_owned(),
+                    ty: StreamReader::<u8>::value_type(),
+                }],
+                result: None,
+                async_: false,
+            },
+            move |_call, args, _results| {
+                log.lock().expect("the log").extend(args.iter().cloned());
+                Ok(())
+            },
+        )
+    })
+    .await
+}
+
+/// Instantiate [`WRITES_TO_THE_HOST`] into a store of its own.
+/// `consume` registers the import of that name. The import
+/// `consume-future` is an untyped entry of the linker that keeps every
+/// value it receives in the log this answers.
+async fn instantiate_with(
+    consume: impl FnOnce(&mut Linker<()>, &Received) -> Result<(), Error>,
+) -> (Store<()>, Instance, Received) {
+    // The `async` cancels need the more-async-builtins feature.
+    let mut config = EngineConfig::new();
+    config.wasm_component_model_more_async_builtins(true);
+    let engine = Engine::with_config(&config).expect("engine");
+    let component = Component::new(&engine, WRITES_TO_THE_HOST)
+        .await
+        .expect("the component parses");
+    let received = Received::default();
+    let mut linker: Linker<()> = Linker::new(&engine);
+    consume(&mut linker, &received).expect("register `consume`");
+    let log = received.clone();
+    linker
+        .root()
+        .func_new(
+            "consume-future",
+            FunctionType {
+                parameters: vec![FunctionParameter {
+                    name: "f".to_owned(),
+                    ty: FutureReader::<u32>::value_type(),
+                }],
+                result: None,
+                async_: false,
+            },
+            move |_call, args, _results| {
+                log.lock().expect("the log").extend(args.iter().cloned());
+                Ok(())
+            },
+        )
+        .expect("register `consume-future`");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
         .await
         .expect("instantiation succeeds");
-    (store, instance)
+    (store, instance, received)
 }
 
 /// Every message in an error's source chain, joined, so that a trap a
@@ -866,8 +956,11 @@ async fn it_refuses_a_typed_reader_of_another_payload_type() {
         matches!(refused, Err(Error::TypeMismatch(_))),
         "a `stream<u8>` does not lift as a `StreamReader<u32>`"
     );
-    // The guest's end stays where it was.
-    let _ = make(&mut store, &instance).await;
+    assert_eq!(
+        call_u32(&mut store, &instance, "last-readable", &[]).await,
+        0,
+        "the refusal came before any call, so the guest made no stream"
+    );
 }
 
 /// What a future consumer answers on one poll.
@@ -1194,4 +1287,484 @@ async fn it_lifts_each_string_a_guest_writes_out_of_its_memory() {
         ["hello", "wasm"],
         "each string was lifted out of the writer's memory as it was taken"
     );
+}
+
+/// Call the guest's `make` through an untyped call, which hands the
+/// host the readable end of the stream the guest created as a
+/// `Val::Stream`.
+async fn make_untyped(store: &mut Store<()>, instance: &Instance) -> StreamAny {
+    match call(store, instance, "make", &[]).await {
+        Ok(Some(Val::Stream(stream))) => stream,
+        other => panic!("`make` answered {other:?}"),
+    }
+}
+
+/// Whether `error` is the failure of a host that names a readable end
+/// of kind `kind` it does not hold.
+fn not_held(error: &Error, kind: EndKind) -> bool {
+    matches!(error, Error::Copy(CopyCause::NotHeldByHost { kind: k }) if *k == kind)
+}
+
+/// Whether `error` is the failure of a host that names a readable end
+/// of kind `kind` the store holds no record of: the value closed, or
+/// the end is gone.
+fn not_present(error: &Error, kind: EndKind) -> bool {
+    matches!(error, Error::Copy(CopyCause::HostEndNotPresent { kind: k }) if *k == kind)
+}
+
+/// Whether `error` is the failure of a value whose payload type is not
+/// the one asked for, on a readable end of kind `kind`.
+fn payload_mismatch(error: &Error, kind: EndKind) -> bool {
+    matches!(error, Error::Copy(CopyCause::PayloadMismatch { kind: k }) if *k == kind)
+}
+
+#[wcmp_macros::test]
+async fn it_returns_a_val_stream_from_an_untyped_call_and_takes_the_guests_entry() {
+    let (mut store, instance) = instantiate(None).await;
+    let stream = make_untyped(&mut store, &instance).await;
+    let index = call_u32(&mut store, &instance, "last-readable", &[]).await;
+
+    let failure = call(&mut store, &instance, "drop-readable", &[index])
+        .await
+        .expect_err("the guest's entry for the readable end is gone");
+    assert!(
+        failure.contains(&format!("unknown handle index {index}")),
+        "{failure}"
+    );
+
+    // The host holds the end: its typed reader reads the guest's
+    // writes.
+    let (consumer, log) = Scripted::new([Take::All]);
+    StreamReader::<u8>::try_from_stream_any(stream)
+        .expect("the stream carries `u8`")
+        .pipe(&mut store.as_context_mut(), consumer)
+        .expect("the host pipes the end it holds");
+    assert_eq!(
+        write(&mut store, &instance, b"any").await,
+        packed(COMPLETED, 3)
+    );
+    assert_eq!(lock(&log).taken, b"any");
+}
+
+#[wcmp_macros::test]
+async fn it_hands_an_untyped_host_function_a_val_future_for_a_parameter() {
+    let (mut store, instance, received) = instantiate_untyped().await;
+    call_ok(&mut store, &instance, "hand-over-future", &[]).await;
+    let index = call_u32(&mut store, &instance, "last-readable", &[]).await;
+    let future = match received.lock().expect("the log").as_slice() {
+        [Val::Future(future)] => future.clone(),
+        other => panic!("the host function received {other:?}"),
+    };
+
+    let failure = call(&mut store, &instance, "drop-future-readable", &[index])
+        .await
+        .expect_err("the guest's entry for the readable end is gone");
+    assert!(
+        failure.contains(&format!("unknown handle index {index}")),
+        "{failure}"
+    );
+
+    let (consumer, log) = Receives::new([Receive::Take]);
+    FutureReader::<u32>::try_from_future_any(future)
+        .expect("the future carries `u32`")
+        .pipe(&mut store.as_context_mut(), consumer)
+        .expect("the host pipes the end it holds");
+    call_ok(&mut store, &instance, "poke", &[100, 7]).await;
+    assert_eq!(
+        call_u32(&mut store, &instance, "future-write", &[100]).await,
+        packed(COMPLETED, 0)
+    );
+    assert_eq!(log.lock().expect("the consumer's log").value, Some(7));
+}
+
+#[wcmp_macros::test]
+async fn it_hands_an_untyped_host_function_a_val_stream_for_a_parameter() {
+    let (mut store, instance, received) = instantiate_untyped().await;
+    call_ok(&mut store, &instance, "hand-over", &[]).await;
+    let mut stream = match received.lock().expect("the log").as_slice() {
+        [Val::Stream(stream)] => stream.clone(),
+        other => panic!("the host function received {other:?}"),
+    };
+    stream
+        .close(&mut store.as_context_mut())
+        .expect("the host closes the stream it was handed");
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_to_convert_an_untyped_value_into_a_reader_of_another_payload_type() {
+    let (mut store, instance) = instantiate(None).await;
+    let stream = make_untyped(&mut store, &instance).await;
+    let Err(refused) = StreamReader::<u32>::try_from_stream_any(stream.clone()) else {
+        panic!("a `stream<u8>` is no `StreamReader<u32>`");
+    };
+    assert!(
+        payload_mismatch(&refused, EndKind::StreamReadable),
+        "{refused:?}"
+    );
+    let Err(refused) = stream.clone().try_into_stream_reader::<String>() else {
+        panic!("a `stream<u8>` is no `StreamReader<String>`");
+    };
+    assert!(
+        payload_mismatch(&refused, EndKind::StreamReadable),
+        "{refused:?}"
+    );
+
+    let future = match call(&mut store, &instance, "make-future", &[]).await {
+        Ok(Some(Val::Future(future))) => future,
+        other => panic!("`make-future` answered {other:?}"),
+    };
+    let Err(refused) = FutureReader::<u8>::try_from_future_any(future.clone()) else {
+        panic!("a `future<u32>` is no `FutureReader<u8>`");
+    };
+    assert!(
+        payload_mismatch(&refused, EndKind::FutureReadable),
+        "{refused:?}"
+    );
+
+    // A refused conversion leaves the end with the host.
+    let (consumer, log) = Scripted::new([Take::All]);
+    stream
+        .try_into_stream_reader::<u8>()
+        .expect("the stream carries `u8`")
+        .pipe(&mut store.as_context_mut(), consumer)
+        .expect("the host still holds the end");
+    assert_eq!(
+        write(&mut store, &instance, b"ok").await,
+        packed(COMPLETED, 2)
+    );
+    assert_eq!(lock(&log).taken, b"ok");
+    future
+        .try_into_future_reader::<u32>()
+        .expect("the future carries `u32`")
+        .try_into_future_any(&mut store.as_context_mut())
+        .expect("the host still holds the end")
+        .close(&mut store.as_context_mut())
+        .expect("the host closes the future");
+}
+
+#[wcmp_macros::test]
+async fn it_converts_a_typed_reader_into_an_untyped_value_and_back() {
+    let (mut store, instance) = instantiate(None).await;
+    let reader = make(&mut store, &instance).await;
+    let stream = reader
+        .try_into_stream_any(&mut store.as_context_mut())
+        .expect("the host holds the end");
+    let (consumer, log) = Scripted::new([Take::All]);
+    StreamReader::<u8>::try_from_stream_any(stream.clone())
+        .expect("the stream carries `u8`")
+        .pipe(&mut store.as_context_mut(), consumer)
+        .expect("the host pipes the end");
+    assert_eq!(
+        write(&mut store, &instance, b"back").await,
+        packed(COMPLETED, 4)
+    );
+    assert_eq!(lock(&log).taken, b"back");
+
+    // A second reader decoded from a clone names an end the host gave
+    // up. It still converts, because Wasmtime's conversion checks only
+    // that the end is in the store, and with no write in flight the
+    // value it becomes closes the end the consumer reads, as
+    // Wasmtime's does.
+    let mut second = StreamReader::<u8>::try_from_stream_any(stream)
+        .expect("the payload type still matches")
+        .try_into_stream_any(&mut store.as_context_mut())
+        .expect("the end is still in the store");
+    second
+        .close(&mut store.as_context_mut())
+        .expect("no write is in flight");
+    assert_eq!(
+        write(&mut store, &instance, b"gone").await,
+        packed(DROPPED, 0),
+        "the writer sees the drop at once"
+    );
+    assert_eq!(
+        lock(&log).taken,
+        b"back",
+        "the dropped consumer takes nothing"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_completes_the_guests_pending_write_dropped_when_the_host_closes_the_stream() {
+    let (mut store, instance) = instantiate(None).await;
+    let mut stream = make_untyped(&mut store, &instance).await;
+    assert_eq!(
+        write(&mut store, &instance, b"lost").await,
+        BLOCKED,
+        "nothing reads the stream yet"
+    );
+
+    stream
+        .close(&mut store.as_context_mut())
+        .expect("the host closes the stream it holds");
+    let writable = call_u32(&mut store, &instance, "writable", &[]).await;
+    assert_eq!(
+        poll_until_an_event(&mut store, &instance, "writable").await,
+        (STREAM_WRITE, writable, packed(DROPPED, 0))
+    );
+
+    let refused = stream
+        .close(&mut store.as_context_mut())
+        .expect_err("the stream is closed already");
+    assert!(
+        not_present(&refused, EndKind::StreamReadable),
+        "the close left the value naming no end: {refused:?}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_answers_the_guests_future_write_dropped_after_the_host_closes_the_future() {
+    let (mut store, instance) = instantiate(None).await;
+    let mut future = match call(&mut store, &instance, "make-future", &[]).await {
+        Ok(Some(Val::Future(future))) => future,
+        other => panic!("`make-future` answered {other:?}"),
+    };
+    future
+        .close(&mut store.as_context_mut())
+        .expect("the host closes the future it holds");
+
+    call_ok(&mut store, &instance, "poke", &[100, 9]).await;
+    assert_eq!(
+        call_u32(&mut store, &instance, "future-write", &[100]).await,
+        packed(DROPPED, 0),
+        "nobody is left to read the value"
+    );
+    let refused = future
+        .close(&mut store.as_context_mut())
+        .expect_err("the future is closed already");
+    assert!(
+        not_present(&refused, EndKind::FutureReadable),
+        "the close left the value naming no end: {refused:?}"
+    );
+}
+
+/// A producer that writes nothing and records that it was dropped.
+struct Silent(Arc<Mutex<bool>>);
+
+impl Drop for Silent {
+    fn drop(&mut self) {
+        if let Ok(mut dropped) = self.0.lock() {
+            *dropped = true;
+        }
+    }
+}
+
+impl StreamProducer<()> for Silent {
+    type Item = u8;
+
+    fn poll_produce(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _store: &mut StoreContext<'_, ()>,
+        _destination: Destination<'_, u8>,
+        _finish: bool,
+    ) -> Poll<Result<StreamResult, Error>> {
+        Poll::Pending
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_drops_the_producer_of_a_host_stream_the_host_closes() {
+    let engine = Engine::new().expect("engine");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let dropped = Arc::new(Mutex::new(false));
+    let mut stream = StreamReader::new(&mut store.as_context_mut(), Silent(dropped.clone()))
+        .expect("a stream the host writes")
+        .try_into_stream_any(&mut store.as_context_mut())
+        .expect("the host holds the end it created");
+    stream
+        .close(&mut store.as_context_mut())
+        .expect("the host closes its own stream");
+    assert!(
+        *dropped.lock().expect("the flag"),
+        "nothing is left to read what the producer would produce"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_lowers_an_untyped_stream_into_a_guest_of_its_payload_type_only() {
+    let (mut store, instance) = instantiate(None).await;
+    let stream = make_untyped(&mut store, &instance).await;
+
+    let failure = instance
+        .get_func("take-wide")
+        .expect("the component exports `take-wide`")
+        .call(&mut store, &[Val::Stream(stream.clone())])
+        .await
+        .expect_err("a `stream<u8>` does not lower as a `stream<u32>`");
+    assert!(
+        payload_mismatch(&failure, EndKind::StreamReadable),
+        "{failure:?}"
+    );
+
+    // The refused lower left the end with the host, and a guest of the
+    // same payload type takes it into its table.
+    let adopted = instance
+        .get_func("adopt")
+        .expect("the component exports `adopt`")
+        .call(&mut store, &[Val::Stream(stream)])
+        .await
+        .expect("a `stream<u8>` lowers as one");
+    let [Val::U32(index)] = adopted.as_ref() else {
+        panic!("`adopt` answered {adopted:?}");
+    };
+    call_ok(&mut store, &instance, "drop-readable", &[*index]).await;
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_to_lower_a_clone_of_a_stream_the_host_piped_or_close_it_mid_write() {
+    let (mut store, instance) = instantiate(None).await;
+    let mut stream = make_untyped(&mut store, &instance).await;
+    let (consumer, _log) = Scripted::new([Take::Gate]);
+    StreamReader::<u8>::try_from_stream_any(stream.clone())
+        .expect("the stream carries `u8`")
+        .pipe(&mut store.as_context_mut(), consumer)
+        .expect("the host pipes the end");
+
+    let failure = instance
+        .get_func("adopt")
+        .expect("the component exports `adopt`")
+        .call(&mut store, &[Val::Stream(stream.clone())])
+        .await
+        .expect_err("the consumer reads the end now");
+    assert!(
+        matches!(&failure, Error::Abi(abi) if matches!(abi.cause, AbiCause::InvalidHandle { .. })),
+        "{failure:?}"
+    );
+    assert_eq!(
+        write(&mut store, &instance, b"held").await,
+        BLOCKED,
+        "the consumer holds the write in flight"
+    );
+    let refused = stream
+        .close(&mut store.as_context_mut())
+        .expect_err("a write is in flight");
+    assert!(not_held(&refused, EndKind::StreamReadable), "{refused:?}");
+}
+
+/// A component that writes the readable ends of two streams of bytes
+/// into a `stream<stream<u8>>` whose readable end the host holds.
+///
+/// `make` creates the outer stream, keeps its writable end, creates
+/// the two inner streams, keeps their readable ends at addresses 100
+/// and 104, and returns the outer readable end. `write` starts an
+/// asynchronous write of the two inner ends. `item` returns the index
+/// of the inner end at a position, and `drop-readable` drops an inner
+/// readable end.
+const NESTED_TO_THE_HOST: &[u8] = component!(
+    r#"
+    (component
+      (type $s (stream u8))
+      (type $n (stream $s))
+      (core module $libc (memory (export "memory") 1))
+      (core instance $libc (instantiate $libc))
+      (core func $stream-new (canon stream.new $s))
+      (core func $nested-new (canon stream.new $n))
+      (core func $write (canon stream.write $n async (memory (core memory $libc "memory"))))
+      (core func $drop-readable (canon stream.drop-readable $s))
+      (core module $m
+        (import "libc" "memory" (memory 1))
+        (import "" "stream.new" (func $stream-new (result i64)))
+        (import "" "nested.new" (func $nested-new (result i64)))
+        (import "" "nested.write" (func $write (param i32 i32 i32) (result i32)))
+        (import "" "stream.drop-readable" (func $drop-readable (param i32)))
+        (global $w (mut i32) (i32.const 0))
+        (func (export "make") (result i32)
+          (local $pair i64)
+          (local.set $pair (call $nested-new))
+          (global.set $w (i32.wrap_i64 (i64.shr_u (local.get $pair) (i64.const 32))))
+          (i32.store (i32.const 100) (i32.wrap_i64 (call $stream-new)))
+          (i32.store (i32.const 104) (i32.wrap_i64 (call $stream-new)))
+          (i32.wrap_i64 (local.get $pair)))
+        (func (export "write") (result i32)
+          (call $write (global.get $w) (i32.const 100) (i32.const 2)))
+        (func (export "item") (param i32) (result i32)
+          (i32.load (i32.add (i32.const 100) (i32.shl (local.get 0) (i32.const 2)))))
+        (func (export "drop-readable") (param i32) (call $drop-readable (local.get 0))))
+      (core instance $m (instantiate $m
+        (with "libc" (instance $libc))
+        (with "" (instance
+          (export "stream.new" (func $stream-new))
+          (export "nested.new" (func $nested-new))
+          (export "nested.write" (func $write))
+          (export "stream.drop-readable" (func $drop-readable))))))
+      (func (export "make") (result $n) (canon lift (core func $m "make")))
+      (func (export "write") (result u32) (canon lift (core func $m "write")))
+      (func (export "item") (param "i" u32) (result u32) (canon lift (core func $m "item")))
+      (func (export "drop-readable") (param "e" u32)
+        (canon lift (core func $m "drop-readable"))))
+    "#
+);
+
+/// A consumer of readers that takes one reader per poll and keeps it.
+struct TakesOneReader(Arc<Mutex<Vec<StreamReader<u8>>>>);
+
+impl StreamConsumer<()> for TakesOneReader {
+    type Item = StreamReader<u8>;
+
+    fn poll_consume(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        store: &mut StoreContext<'_, ()>,
+        mut source: Source<'_, StreamReader<u8>>,
+        _finish: bool,
+    ) -> Poll<Result<StreamResult, Error>> {
+        let mut items = Vec::new();
+        source.read(store, &mut items, 1)?;
+        self.0.lock().expect("the readers").extend(items);
+        Poll::Ready(Ok(StreamResult::Completed))
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_moves_out_of_the_writers_table_only_the_inner_ends_a_consumer_takes() {
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, NESTED_TO_THE_HOST)
+        .await
+        .expect("the component parses");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let linker: Linker<()> = Linker::new(&engine);
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiation succeeds");
+    let outer = instance
+        .get_func("make")
+        .expect("the component exports `make`")
+        .typed::<(), StreamReader<StreamReader<u8>>>()
+        .expect("`make` returns a `stream<stream<u8>>`")
+        .call(&mut store, ())
+        .await
+        .expect("the readable end crosses to the host");
+    let taken = Arc::new(Mutex::new(Vec::new()));
+    outer
+        .pipe(&mut store.as_context_mut(), TakesOneReader(taken.clone()))
+        .expect("the host pipes the outer stream");
+
+    assert_eq!(
+        call_u32(&mut store, &instance, "write", &[]).await,
+        packed(COMPLETED, 1),
+        "the consumer took one of the two inner ends"
+    );
+    let first = call_u32(&mut store, &instance, "item", &[0]).await;
+    let failure = call(&mut store, &instance, "drop-readable", &[first])
+        .await
+        .expect_err("the taken inner end left the writer's table");
+    assert!(
+        failure.contains(&format!("unknown handle index {first}")),
+        "{failure}"
+    );
+    let second = call_u32(&mut store, &instance, "item", &[1]).await;
+    call_ok(&mut store, &instance, "drop-readable", &[second]).await;
+
+    let reader = taken
+        .lock()
+        .expect("the readers")
+        .pop()
+        .expect("the consumer kept the inner end it took");
+    reader
+        .try_into_stream_any(&mut store.as_context_mut())
+        .expect("the host holds the inner end it took")
+        .close(&mut store.as_context_mut())
+        .expect("the host closes it");
 }

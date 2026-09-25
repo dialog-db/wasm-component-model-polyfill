@@ -85,6 +85,13 @@ impl<T> Source<'_, T> {
     /// UTF-8, fails the read, and the items lifted before it stay in
     /// `buffer`. Wasmtime's `read` takes the store too, and fills the
     /// spare capacity of its buffer rather than a count.
+    ///
+    /// Each read from a guest lifts through a boundary context of its
+    /// own, so the store's copy budget bounds the host values one read
+    /// builds, not the whole write: a consumer that takes a write in
+    /// several reads, in one poll or across polls, can build more in
+    /// all than the budget allows one crossing. Wasmtime builds a
+    /// fresh lift context for each of its reads too.
     pub fn read<D: 'static>(
         &mut self,
         store: &mut StoreContext<'_, D>,

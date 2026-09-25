@@ -231,6 +231,7 @@ pub fn lift_end_for_host<T: 'static>(
     // The end is in no guest's table now: the host holds it.
     if let Some(record) = guard.tasks.end_mut(end) {
         record.handle = None;
+        record.held_by_host = true;
     }
     Ok(match ty {
         ValueType::Future(future) => Val::Future(FutureAny::new(end, future.payload().cloned())),
@@ -967,6 +968,70 @@ mod tests {
                 .all(|element| matches!(element, Val::Flags(names) if names.is_empty())),
             "a `flags` with no labels has no flag set"
         );
+    }
+
+    /// Assert that `result` failed as a host value mismatch declared
+    /// as `ty`: the refusal of a typed value paired with a type that
+    /// is not its own.
+    fn assert_declared_mismatch<V>(result: Result<V>, ty: &ValueType) {
+        match result {
+            Err(Error::Abi(abi)) => {
+                assert!(
+                    matches!(abi.cause, AbiCause::HostValueMismatch),
+                    "{:?}",
+                    abi.cause
+                );
+                assert_eq!(abi.valtype.as_ref(), Some(ty));
+            }
+            Err(other) => panic!("expected a host value mismatch, got {other:?}"),
+            Ok(_) => panic!("a typed reader lifted as another type"),
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_refuses_a_typed_reader_declared_as_another_type_before_it_reads_the_table() {
+        // No entry sits at index 0, so a lift that reached the table
+        // would fail as an invalid handle instead.
+        use crate::concurrency::{FutureReader, StreamReader};
+        use crate::linker::ComponentValue;
+        use crate::types::{FutureType, StreamType};
+
+        let engine = Engine::new().expect("engine");
+        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+        let (options, instance) = one_page(&mut store);
+        let mut ctx = BoundaryContext::new(
+            store.internal().inner_mut().as_context_mut(),
+            options,
+            instance,
+            None,
+        );
+        let u32_type = ValueType::Primitive(PrimitiveType::U32);
+        let wide = ValueType::Stream(StreamType::new(Some(u32_type.clone())));
+        let future = ValueType::Future(FutureType::new(Some(u32_type)));
+        let slots = [RuntimeVal::I32(0)];
+
+        let flat = <StreamReader<u8> as ComponentValue>::lift_flat(
+            &mut ctx,
+            &slots,
+            &mut 0,
+            &wide,
+            AbiPosition::Result,
+        );
+        assert_declared_mismatch(flat, &wide);
+        let loaded =
+            <StreamReader<u8> as ComponentValue>::load(&mut ctx, 0, &wide, AbiPosition::Result);
+        assert_declared_mismatch(loaded, &wide);
+        let flat = <FutureReader<u8> as ComponentValue>::lift_flat(
+            &mut ctx,
+            &slots,
+            &mut 0,
+            &future,
+            AbiPosition::Result,
+        );
+        assert_declared_mismatch(flat, &future);
+        let loaded =
+            <FutureReader<u8> as ComponentValue>::load(&mut ctx, 0, &future, AbiPosition::Result);
+        assert_declared_mismatch(loaded, &future);
     }
 
     /// Where the bump `cabi_realloc` of [`with_realloc`] hands out its

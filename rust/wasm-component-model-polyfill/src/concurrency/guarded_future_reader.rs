@@ -20,6 +20,15 @@ use super::future_reader::FutureReader;
 /// drops, with a guest that writes to the future waiting for good. A
 /// close that fails is not reported, because a drop has nowhere to
 /// report it.
+///
+/// That leak departs from Wasmtime. Its guard closes through
+/// `Accessor::with` too, which panics when no poll of the store is
+/// running and when another reach of the store is, so a Wasmtime
+/// guard dropped there panics, and one whose close fails trips a
+/// debug assertion. The polyfill's accessor reports both cases as
+/// errors instead, and the guard lets the end leak rather than turn
+/// an error into a panic in a drop, which aborts the process when the
+/// drop runs while a thread unwinds.
 pub struct GuardedFutureReader<T, D: 'static> {
     /// The reader, until the guard drops or gives it back.
     reader: Option<FutureReader<T>>,

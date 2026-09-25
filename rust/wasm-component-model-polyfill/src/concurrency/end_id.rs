@@ -22,6 +22,16 @@ pub struct EndId {
 }
 
 impl EndId {
+    /// The identity a host value holds once it closed its end, which
+    /// names no end record: no table reaches the index. Wasmtime's
+    /// close leaves the same kind of identity, `u32::MAX`, in its
+    /// value, so every later use of the value fails as the lookup of
+    /// an end that is not there.
+    pub const CLOSED: Self = Self {
+        index: u32::MAX,
+        generation: u32::MAX,
+    };
+
     /// Name the end record at `index` of generation `generation`.
     /// Workspace-internal: only the store's table of ends mints one.
     pub fn new(index: u32, generation: u32) -> Self {
