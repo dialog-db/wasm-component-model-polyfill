@@ -289,9 +289,17 @@ The four drop built-ins remove the entry and drop the end.
   message, so that a reader always gets its value. A writable future end whose
   reader dropped is in the `done` state and drops cleanly.
 - Dropping the first end of a pair marks the shared record dropped and notifies
-  the other end if it is pending: its copy completes with the dropped result. A
-  later copy on the other end completes with the dropped result at once and
-  moves that end to `done`.
+  the other end. A pending copy there completes with the dropped result. An idle
+  end that is not `done` and holds no event receives the dropped result with no
+  progress. A stream end that holds an undelivered completion has it replaced by
+  the dropped result with the same progress; a future end keeps the event it
+  holds. A later copy on the other end completes with the dropped result at once
+  and moves that end to `done`. The reference at the corpus commit notifies only
+  a pending copy. The polyfill follows the reference's current text, which
+  notifies an idle end too (`End.drop` and `stream_event`), and Wasmtime at the
+  corpus commit, which queues the dropped event on an idle reader and rewrites
+  an undelivered stream completion (`futures_and_streams.rs`, `update_event`).
+  No corpus directive depends on the difference.
 - Dropping the second end frees the shared record.
 - Every drop traps when the may-leave flag is clear.
 
@@ -307,12 +315,13 @@ into the receiver's table. The two operations are the reference's
 
 ```text
 fn lift_readable_end(cx, index, ty):
-    entry = cx.instance.handles.remove(index)     // traps unless the kind matches
+    entry = cx.instance.handles.get(index)        // traps unless the kind matches
     end = store.ends.get(entry.end)
     trap_if(end.shared.payload != ty.payload, PayloadMismatch)
+    trap_if(end.state == copying, LiftDuringCopy)
     trap_if(end.state == done, LiftAfterDone)     // Wasmtime names the reason per kind
     trap_if(end.set is set, LiftInWaitableSet)
-    trap_if(end.state != idle, LiftDuringCopy)
+    cx.instance.handles.remove(index)
     return end
 
 fn lower_readable_end(cx, end, ty):
@@ -323,7 +332,12 @@ Wasmtime's three lift messages name the kind and the cause. The causes are that
 the end was notified that the writable end dropped, that the end is in a
 waitable set, and that a previous read succeeded. The reference traps on the
 same three conditions with one message. The polyfill uses Wasmtime's, because
-the corpus matches them.
+the corpus matches them. The order of the checks follows the reference and
+Wasmtime: a busy or done end traps before an end in a waitable set. The
+reference and Wasmtime remove the entry before the checks. The polyfill checks
+first and removes after, so an entry survives a failed lift. The difference is
+not observable in the reference, where every trap is fatal, and it keeps the
+instance's table whole for a host that continues after the error.
 
 Between two components the fused adapters of Wasmtime 49 call the
 `StreamTransfer` and `FutureTransfer` intrinsics, one per value, with the source
@@ -351,13 +365,24 @@ guest: fuel allocated for hostcalls has been exhausted". The design uses the
 words copy budget for the concept. The message keeps Wasmtime's wording only so
 the corpus matches it by substring.
 
-The budget applies to every crossing, not only to a copy. Each list, string, and
-map lift charges the count of its elements times the size in bytes of the host
-value type it builds. Wasmtime charges the size of its `Val` the same way. A
-crossing is one context, so one call, one `task.return`, or one copy has one
-budget. The Wasmtime corpus proves the budget with a stream write and a future
-write of a nested list whose layers alias one another, which no host can
-materialize. Without the budget the polyfill attempts it.
+The budget applies to every crossing, not only to a copy. A list lift charges 32
+bytes per element, and a map lift charges 64 bytes per entry, on both targets.
+Those are the sizes of Wasmtime's `Val` and of a pair of them on a 64-bit host,
+which Wasmtime charges per element. A fixed cost keeps the budget the same in a
+browser, where the polyfill's own `Val` is smaller. A string charges its byte
+length, and a typed list of a number type charges its length times the size of
+the number, as Wasmtime does. A copy of a number payload moves bytes and builds
+no value, so it charges nothing, as Wasmtime's flat copy charges nothing.
+
+The budget replaces the element bound on a list lift that the polyfill had
+before this design. It is the one guard against a guest making the host build a
+value without bound. A host changes it through `Store::set_hostcall_fuel` and
+reads it through `Store::hostcall_fuel`, both named as Wasmtime names them, and
+the same pair on the store context. A crossing is one context, so one call, one
+`task.return`, or one copy has one budget. The Wasmtime corpus proves the budget
+with a stream write and a future write of a nested list whose layers alias one
+another, which no host can materialize. Without the budget the polyfill attempts
+it.
 
 ## Blocking
 
@@ -687,8 +712,14 @@ natively, absent in the browser, under one declaration.
 ## The Corpus
 
 This feature removes the lines its scope owns from the expected-failure list and
-leaves the rest with their reasons. The harness registers no new host item. The
-files and directives this design owns, in the Component Model corpus:
+leaves the rest with their reasons. The harness registers no new host item. It
+gains one matching rule, which mirrors Wasmtime's own test runner
+(`crates/wast/src/wast.rs`, lines 551 to 554, at the corpus commit): in the
+Component Model corpus only, an expected trap that names "cannot read" or
+"cannot write" matches any trap that names the same phrase. The Component Model
+corpus words these traps differently from Wasmtime, the specification fixes no
+wording, and the polyfill raises Wasmtime's. The files and directives this
+design owns, in the Component Model corpus:
 
 - `builtin-trap-poisons-instance.wast`, its second component, that component's
   instantiation, and the directive that drops a busy stream. Its two directives
@@ -697,7 +728,8 @@ files and directives this design owns, in the Component Model corpus:
   `drop-stream.wast`, `empty-wait.wast`, `futures-must-write.wast`,
   `partial-stream-copies.wast`, `same-component-stream-future.wast`,
   `trap-if-done.wast`, `trap-if-transfer-in-waitable-set.wast`,
-  `wait-during-callback.wast`, and `zero-length.wast`, whole.
+  `wait-during-callback.wast`, and `zero-length.wast`, whole. Five lines of
+  `trap-if-done.wast` pass through the matching rule above.
 - `drop-cross-task-borrow.wast`, whole. A borrow lent to a callback task that
   waits on a future is dropped from another task of the same instance. The
   lender's return then traps or succeeds as [PDD014] states.
@@ -722,18 +754,24 @@ In the Wasmtime corpus:
   `future-drop-writable-after-notified-drop.wast`, `futures-must-write.wast`,
   `futures-must-write2.wast`, `intra-futures.wast`, `intra-streams.wast`,
   `partial-stream-copies.wast`, `stream-cancel-finished-op.wast`,
-  `stream-zero-ops.wast`, `sync-and-async-waitable.wast`, `trap-if-done.wast`,
-  `trap-if-transfer-in-waitable-set.wast`, and `waitable-set-stale-entry.wast`,
-  whole.
+  `sync-and-async-waitable.wast`, `trap-if-transfer-in-waitable-set.wast`, and
+  `waitable-set-stale-entry.wast`, whole.
+- `stream-zero-ops.wast`, except its directive at line 201, which needs a stack
+  switch.
+- `trap-if-done.wast`, except seven directives that need a stack switch.
 - `future-read.wast`, whole. Its four directives permute a synchronous and an
   asynchronous read with a synchronous and a callback lift. The synchronous read
   from the synchronous lift fails with the cannot-block message, and from the
   callback lift with the deadlock message.
 - `stream-big-read-and-writes.wast`, whole. A count of 2^28 traps with the count
   message, and a buffer past the end of memory traps with the bounds message.
-- `streams-massive-send.wast`, whole, through the copy budget.
-- `task-builtins.wast`, its stream and future case, and its `subtask.cancel`
-  component, which now instantiates.
+- The copy budget of `streams-massive-send.wast`. The file itself needs a stack
+  switch, because a callee writes its stream synchronously after `task.return`
+  for a caller below it on the stack. A repository test proves the budget
+  instead: a write past it fails with the budget cause and Wasmtime's message.
+- `task-builtins.wast`, its `subtask.cancel` component, which now instantiates.
+  Its stream and future case needs a stack switch, because a callee reads a
+  future synchronously that only its caller writes.
 
 The lines that change without joining this design's scope, because the
 translator now accepts `task.cancel` and `subtask.cancel`:
@@ -753,20 +791,35 @@ translator now accepts `task.cancel` and `subtask.cancel`:
 The files that stay deferred, with the reason:
 
 - A stack switch: `sync-streams.wast` in both corpora, and
-  `async-calls-sync.wast` as before.
+  `async-calls-sync.wast` as before. Also `stream-zero-ops.wast` at line 201,
+  `streams-massive-send.wast`, seven directives of the Wasmtime
+  `trap-if-done.wast`, the stream and future case of `task-builtins.wast`,
+  `cancel-and-exclusive-lock.wast` at line 196, which then also needs
+  cancellation, and `reenter-during-yield.wast` at line 81. In each, a
+  synchronous copy or wait can be released only by a frame below it on the
+  stack. The suspend capability has no provider on either target, and each
+  line's note names the stackful design that fills it.
 - The stackful lift: `sync-barges-in.wast`, `stackful.wast`,
-  `drop-waitable-set-stackful.wast`, `reenter-during-yield.wast`, five
-  directives of `task-return-traps.wast`, and `big-interleaving-test.wast`,
-  which is also cancellation.
+  `drop-waitable-set-stackful.wast`, `task-deletion.wast`, the directive of
+  `cm/values/variants.wast` at line 186, four components of
+  `task-return-traps.wast`, and `big-interleaving-test.wast`, which is also
+  cancellation.
 - Thread built-ins: `switch-to-ready-callback.wast`,
   `trap-if-block-and-sync.wast`, `trap-if-sync-and-waitable-set.wast`,
-  `join-during-sync-read.wast`, `cm/values/post-return.wast`, and every file
-  [PDD020] lists for that reason.
-- Cancellation: the files named above.
+  `join-during-sync-read.wast`, `cm/values/post-return.wast`, two components of
+  `task-return-traps.wast`, and every file [PDD020] lists for that reason.
+- Cancellation: the files named above, except two.
+  `cancel-starting-subtask-does-not-leak.wast` stops at link, because it needs a
+  host item, `wasmtime.set-max-table-capacity`, and the harness registers none.
+  The cancel directive of `reentrance.wast` at line 891 traps before its cancel:
+  a callee that an earlier deadlocked call left waiting runs and traps first,
+  because a trap does not yet poison its instance.
 - Error contexts: `error-context.wast` and
   `error-context-trap-in-post-return.wast`.
 - The trap rules: `builtin-trap-poisons-instance.wast`, its two poisoning
-  directives.
+  directives, and `reentrance.wast` at line 891.
+- A host interface the harness does not supply: the `drain` directives of both
+  WASI HTTP fixtures, which cascade from a link failure on `wasi:http/types`.
 
 ### The WASI 0.3 HTTP Handler
 
@@ -781,6 +834,14 @@ so the guest instantiates and its handler runs its paths that never cancel. The
 host side of such a fixture supplies the `wasi:http/types` interface. It creates
 request bodies as host streams and reads response bodies through host consumers,
 through the host surface of this design.
+
+The repository keeps two such fixtures. The first answers a request, and its
+`drain` export resolves a `future<u32>`. The second is the same guest as first
+written, whose `drain` both writes and reads a `future<result<_, error-code>>`
+in one instance. The specification traps that with a rule it marks temporary: a
+read and a write from one instance need a number payload or none. The second
+fixture traps today, a repository test says so, and that test fails on the day
+the polyfill follows the specification in lifting the rule.
 
 ## User Stories
 
