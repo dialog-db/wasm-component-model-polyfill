@@ -21,7 +21,7 @@ use crate::error::{
     AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result, SchedulerCause,
 };
 use crate::executor::ir::CanonOptions;
-use crate::executor::{CallbackTask, status_word};
+use crate::executor::{AsyncLift, CallbackTask};
 use crate::instance::ExportedFunction;
 use crate::internal::{ErrorInternal, FuncInternal, FuncParts};
 use crate::resource::TableId;
@@ -162,6 +162,17 @@ impl Func {
     /// callback that has yet to run stays in the store, and a failure
     /// it raises belongs to whichever driver's turn runs it.
     ///
+    /// An export lifted `canon lift async` with no callback is the
+    /// stackful form, which an engine accepts only with
+    /// `EngineConfig::wasm_component_model_async_stackful` on. Its
+    /// core function runs as the task's implicit thread, returns
+    /// nothing, and calls `task.return` to resolve the call. It does
+    /// not take its instance exclusively. A core function that returns
+    /// without calling `task.return` fails the call with the no-result
+    /// cause. It runs on the real stack, so a block inside it waits in
+    /// a nested turn, and a block that only a frame below it can
+    /// release fails with the stack-switch cause.
+    ///
     /// Entering the call while another driver of the same store is
     /// inside a turn fails with the recursive-driver cause, and a
     /// turn that goes idle with the task unresolved fails with the
@@ -248,9 +259,8 @@ impl Func {
             instance_id,
         )?;
 
-        // A call into an export lifted `async` is a task that returns
-        // a status word and produces its result through
-        // `task.return`. The task outlives the call, so the call
+        // A call into an export lifted `async` is a task that produces
+        // its result through `task.return`. The task outlives the call, so the call
         // watches the task's channel rather than a slot of its own.
         if self.export.options.async_ {
             return self
@@ -322,7 +332,8 @@ impl Func {
     /// another task of the same instance holds the instance
     /// exclusively, and starts when that holder releases it — on
     /// return for a synchronous task, and between events for a
-    /// callback task. The returned future resolves when the task's
+    /// callback task. A stackful export waits at the gate only while
+    /// backpressure is set or an earlier task is waiting there. The returned future resolves when the task's
     /// result is set and yields the lifted result; `post-return`,
     /// for a synchronous export that declares one, runs after the
     /// result is lifted, as it does for [`Self::call`].
@@ -450,17 +461,13 @@ impl Func {
             // resolve through and the call watches that rather than
             // the record.
             let channel = store.internal().attach_result_channel(task)?;
-            let callback = options
-                .callback()
-                .cloned()
-                .ok_or_else(|| Error::internal("an `async` export's lift named no callback"))?;
-            let table = self.handle_table()?;
-            let loop_ = CallbackTask::new(task, instance_id, table, callback);
+            let lift = self.async_lift(task, instance_id, &options)?;
+            let needs_exclusive = lift.needs_exclusive();
             let item = Item::new(
                 ItemKind::TaskStart,
                 move |store: &mut StoreContext<'_, T>| {
                     let started =
-                        replica.start_async_task(task, &loop_, &instance, store, values, &options);
+                        replica.start_async_task(task, &lift, &instance, store, values, &options);
                     if let Err(error) = started {
                         queued.fill(error);
                     }
@@ -473,13 +480,14 @@ impl Func {
             )
             .for_task(task);
 
-            // The entry gate applies: the function type is `async`,
-            // and a callback task needs the instance exclusively,
-            // because the core code it runs between events must not
-            // overlap another exclusive task of the same instance.
+            // The entry gate applies: the function type is `async`.
+            // A callback task needs the instance exclusively, because
+            // the core code it runs between events must not overlap
+            // another exclusive task of the same instance. A stackful
+            // task does not.
             store
                 .internal()
-                .start_export_thread(task, instance_id, true, true, item)?;
+                .start_export_thread(task, instance_id, true, needs_exclusive, item)?;
             return Ok((Delivery::Resolved(channel), failure));
         }
 
@@ -517,25 +525,31 @@ impl Func {
         Ok((Delivery::Returned(returned), failure))
     }
 
-    /// Invoke an export lifted `canon lift async` with a callback.
+    /// Invoke an export lifted `canon lift async`, with a callback or
+    /// stackful.
     ///
     /// The call is a task whose implicit thread waits at the entry
-    /// gate of its instance while backpressure is set or another task
-    /// holds the instance exclusively. Once through the gate, the
-    /// item lowers the arguments, marks the task started, calls the
-    /// core function, and hands the status word it returned to the
-    /// callback loop. There is no post-return: the reference calls
-    /// one only on the synchronous path.
+    /// gate of its instance while backpressure is set, or, for a
+    /// callback export, while another task holds the instance
+    /// exclusively. Once through the gate, the item lowers the
+    /// arguments, marks the task started, and calls the core
+    /// function. A callback export's core function returns a status
+    /// word, which goes to the callback loop. A stackful export's
+    /// core function runs as the task's implicit thread and returns
+    /// nothing, and its return ends the thread. There is no
+    /// post-return: the reference calls one only on the synchronous
+    /// path.
     ///
     /// The call's future resolves when `task.return` sets the task's
     /// result, and it returns the lifted value. The export's core
-    /// function has by then returned a status word, or it is still on
-    /// the stack below `task.return`, and the driver sees the result
-    /// in the same turn after it returns. The task does not end with
+    /// function has by then returned, or it is still on the stack
+    /// below `task.return`, and the driver sees the result in the
+    /// same turn after it returns. A callback task does not end with
     /// the call: a task that yielded or waited leaves a callback item
     /// in the store, which runs in the turn of whichever driver comes
     /// next, and an error that item raises fails that driver rather
-    /// than this call.
+    /// than this call. A stackful core function that returns without
+    /// `task.return` fails the call with the no-result cause.
     ///
     /// A turn that finds the task at the gate or waiting, with
     /// nothing else ready, fails the call with the deadlock cause.
@@ -548,12 +562,8 @@ impl Func {
         options: BoundaryOptions,
         values: C,
     ) -> Result<C::Output> {
-        let callback = options
-            .callback()
-            .cloned()
-            .ok_or_else(|| Error::internal("an `async` export's lift named no callback"))?;
-        let table = self.handle_table()?;
-        let loop_ = CallbackTask::new(task, instance_id, table, callback);
+        let lift = self.async_lift(task, instance_id, &options)?;
+        let needs_exclusive = lift.needs_exclusive();
         let channel: ResultChannel = store.internal().attach_result_channel(task)?;
 
         let failure: CallFailure = store.internal().attach_failure_channel(task)?;
@@ -563,7 +573,7 @@ impl Func {
             ItemKind::TaskStart,
             move |store: &mut StoreContext<'_, T>| {
                 let started =
-                    replica.start_async_task(task, &loop_, &instance, store, values, &options);
+                    replica.start_async_task(task, &lift, &instance, store, values, &options);
                 if let Err(error) = started {
                     queued.fill(error);
                 }
@@ -575,13 +585,14 @@ impl Func {
         )
         .for_task(task);
 
-        // The entry gate applies: the function type is `async`, and a
+        // The entry gate applies: the function type is `async`. A
         // callback task needs the instance exclusively, because the
         // core code it runs between events must not overlap another
-        // exclusive task of the same instance.
+        // exclusive task of the same instance. A stackful task does
+        // not.
         store
             .internal()
-            .start_export_thread(task, instance_id, true, true, item)?;
+            .start_export_thread(task, instance_id, true, needs_exclusive, item)?;
 
         Driver::new(store, Some(task), move |_store, waker| {
             if let Some(error) = failure.take_or_wait(waker) {
@@ -593,25 +604,51 @@ impl Func {
         .await
     }
 
+    /// The form of this export's asynchronous lift for the call that
+    /// is `task`: the callback loop when the lift names a callback,
+    /// and the stackful form when it names none.
+    fn async_lift(
+        &self,
+        task: TaskId,
+        instance_id: InstanceId,
+        options: &BoundaryOptions,
+    ) -> Result<AsyncLift> {
+        if self.export.options.callback.is_none() {
+            return Ok(AsyncLift::Stackful(task));
+        }
+        let callback = options.callback().cloned().ok_or_else(|| {
+            Error::internal(
+                "an `async` export's lift names a callback the instance did not extract",
+            )
+        })?;
+        let table = self.handle_table()?;
+        Ok(AsyncLift::Callback(CallbackTask::new(
+            task,
+            instance_id,
+            table,
+            callback,
+        )))
+    }
+
     /// Run the start of an asynchronous call's task: the task becomes
     /// the current scope, the arguments are lowered, the core
-    /// function runs, the scope is popped, and the status word goes
-    /// to the callback loop. A failure anywhere in that ends the task
-    /// and travels out to the call.
+    /// function runs, the scope is popped, and what the core function
+    /// returned goes to `lift`. A failure anywhere in that ends the
+    /// task and travels out to the call.
     fn start_async_task<T: 'static, C: CallValues>(
         &self,
         task: TaskId,
-        loop_: &CallbackTask,
+        lift: &AsyncLift,
         instance: &BoundaryInstance,
         store: &mut StoreContext<'_, T>,
         values: C,
         options: &BoundaryOptions,
     ) -> Result<()> {
         store.internal().enter_export_task(task)?;
-        match self.call_async_core(task, instance, store, values, options) {
-            Ok(word) => {
+        match self.call_async_core(task, lift, instance, store, values, options) {
+            Ok(core_results) => {
                 store.internal().leave_export_task(task)?;
-                loop_.handle_status_word(store, word)
+                lift.returned(store, &core_results)
             }
             Err(error) => {
                 store.internal().abandon_export_task(task)?;
@@ -621,19 +658,21 @@ impl Func {
     }
 
     /// Lower the arguments and call the core function of an
-    /// asynchronous export, and report the status word it returned.
-    /// A `cabi_realloc` the lowering calls is a task of its own, as
-    /// the reference lifts it.
+    /// asynchronous export, and report what it returned: the status
+    /// word of a callback export, and nothing for a stackful one. A
+    /// `cabi_realloc` the lowering calls is a task of its own, as the
+    /// reference lifts it.
     fn call_async_core<T: 'static, C: CallValues>(
         &self,
         task: TaskId,
+        lift: &AsyncLift,
         instance: &BoundaryInstance,
         store: &mut StoreContext<'_, T>,
         values: C,
         options: &BoundaryOptions,
-    ) -> Result<i32> {
+    ) -> Result<Vec<RuntimeVal>> {
         let core_args = self.lower_args(store, values, instance, task, options)?;
-        let mut core_results = vec![RuntimeVal::I32(0); 1];
+        let mut core_results = vec![RuntimeVal::I32(0); lift.result_count()];
 
         // The arguments are lowered, so the task's thread runs now.
         store.internal().start_export_task(task)?;
@@ -645,7 +684,7 @@ impl Func {
                 &mut core_results,
             )
             .map_err(substrate_failure)?;
-        status_word(&core_results)
+        Ok(core_results)
     }
 
     /// The handle table of the component instance this export belongs

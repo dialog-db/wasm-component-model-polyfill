@@ -469,23 +469,17 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
             // A synchronous start reaches an asynchronously lifted
-            // callee alone, and the callback is what the callee's
-            // status word is handed to. A lift that named none is
-            // the stackful form, which the polyfill refuses.
+            // callee alone. The callback is what the callee's status
+            // word is handed to. A lift that named none is the
+            // stackful form, whose core function returns nothing.
             Trampoline::SyncStartCall { callback } => TrampolineSpec::SyncStartCall {
-                callback: callback.map(|slot| slot.as_u32() as usize).ok_or_else(|| {
-                    Error::unsupported(
-                        "stackful asynchronous lifts (`canon lift async` without a callback)",
-                    )
-                })?,
+                callback: callback.map(|slot| slot.as_u32() as usize),
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
-            // An asynchronous start reaches both lifts the polyfill
-            // serves, and the adapter says which at the call rather
-            // than here: a callback slot alone does not tell a
-            // synchronous lift from the stackful form, since neither
-            // names one. The stackful form is refused where a
-            // component declares it and again at the call.
+            // An asynchronous start reaches all three lifts, and the
+            // adapter says which at the call rather than here: a
+            // callback slot alone does not tell a synchronous lift
+            // from the stackful form, since neither names one.
             Trampoline::AsyncStartCall {
                 callback,
                 post_return,
@@ -899,16 +893,6 @@ fn collect_export_spec(
                 .get(*options)
                 .ok_or_else(|| Error::internal("export OptionsIndex out of bounds"))?;
             let options = lift_canon_options(canon)?;
-            // The stackful form of an asynchronous lift, the one
-            // with no callback, would need the export's core
-            // function to be suspended mid-call. The polyfill runs
-            // the guest on the one real stack, so it refuses the
-            // form rather than accepting a lift it cannot resume.
-            if options.async_ && options.callback.is_none() {
-                return Err(Error::unsupported(
-                    "stackful asynchronous lifts (`canon lift async` without a callback)",
-                ));
-            }
             out.functions.push(ExportSpec {
                 name: name.to_owned(),
                 path: path.into(),
@@ -1252,11 +1236,27 @@ fn lift_entity_index(idx: EnvironEntityIndex) -> EntityIndex {
     }
 }
 
+/// The validator's message for a stackful lift whose feature gate is
+/// off.
+const STACKFUL_GATE_MESSAGE: &str = "requires the component model async stackful feature";
+
 /// Map a translator failure onto the polyfill's error model. A
 /// validation failure keeps the byte offset the translator reports;
 /// a feature the translator itself does not support is surfaced as
 /// [`Error::Unsupported`].
+///
+/// The validator refuses a stackful lift while the engine's gate for
+/// it is off. The gate is a feature the host has not turned on, so
+/// that refusal is surfaced as [`Error::Unsupported`] too, and not as
+/// a malformed binary. The validator's gate covers the stackful lift
+/// and nothing else, so the refusal names that lift.
 fn translation_error(err: TranslatorError) -> Error {
+    if format!("{err:#}").contains(STACKFUL_GATE_MESSAGE) {
+        return Error::unsupported(
+            "stackful asynchronous lifts (`canon lift async` without a callback) \
+             while `wasm_component_model_async_stackful` is off",
+        );
+    }
     match err.downcast::<WasmError>() {
         Ok(WasmError::InvalidWebAssembly { message, offset }) => {
             Error::InvalidComponentBinary { message, offset }

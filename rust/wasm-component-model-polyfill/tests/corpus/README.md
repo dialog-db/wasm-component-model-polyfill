@@ -12,11 +12,15 @@ commit, recorded below.
 | `wasmtime/`       | `bytecodealliance/wasmtime`, `tests/misc_testsuite/component-model/` (synchronous subset) | `cb091c33cece` | 2026-09-14 |
 | `wasmtime/async/` | `bytecodealliance/wasmtime`, `tests/misc_testsuite/component-model/async/`                | `cb091c33cece` | 2026-09-16 |
 
-The polyfill runs the callback form of an asynchronous export, the task
-built-ins that come with it, and both lowers of a call out through an
-import, so part of `cm/async/` and `wasmtime/async/` passes: a host
-call into such an export, `task.return`, backpressure, the waitable set
-built-ins, `thread.yield`, and the context slots. A call between two
+The polyfill runs both forms of an asynchronous export, the callback
+form and the stackful form, the task built-ins that come with them, and
+both lowers of a call out through an import, so part of `cm/async/` and
+`wasmtime/async/` passes: a host call into such an export,
+`task.return`, backpressure, the waitable set built-ins, `thread.yield`,
+and the context slots. A stackful export's core function runs on the
+real stack as its task's implicit thread, so a block inside it waits in
+a nested turn, and it does not take its instance exclusively. A call
+between two
 components crosses in all four combinations of lift and lower, and the
 readable end of a stream or a future crosses with it. A read and a
 write on the two ends of a stream pair up as the reference's stream
@@ -55,9 +59,9 @@ callee returned. An exception thrown in a callee reaches the host as the
 trap the synchronous baseline gives it.
 
 The directive that first meets what is missing is an expected failure
-of category `deferred-feature`, for one of six reasons: a call whose
+of category `deferred-feature`, for one of five reasons: a call whose
 callee can be released only by a caller that is on the stack, which
-needs a stack switch, the stackful lift, a thread built-in other than
+needs a stack switch, a thread built-in other than
 `thread.yield`, the cancellation of a task or a subtask, an error
 context, or the rules that decide which trap poisons an instance.
 Three definitions in the same category fail at link instead, on a
@@ -214,19 +218,19 @@ conformance` prints the current one):
 
 | Corpus           | Directives | Passed | Pass % | Expected failures by category                                 |
 | ---------------- | ---------- | ------ | ------ | ------------------------------------------------------------- |
-| `cm`             | 1126       | 1038   | 92.2   | deferred-feature 2, substrate 4, validation 20, cascade 62    |
-| `cm/async`       | 393        | 214    | 54.5   | deferred-feature 38, cascade 141                              |
+| `cm`             | 1126       | 1039   | 92.3   | deferred-feature 1, substrate 4, validation 20, cascade 62    |
+| `cm/async`       | 393        | 219    | 55.7   | deferred-feature 33, cascade 141                              |
 | `fixtures`       | 56         | 50     | 89.3   | deferred-feature 2, cascade 4                                 |
 | `wasmtime`       | 469        | 431    | 91.9   | deferred-feature 2, substrate 8, cascade 28                   |
-| `wasmtime/async` | 387        | 326    | 84.2   | deferred-feature 39, cascade 22                               |
-| total            | 2431       | 2059   | 84.7   | deferred-feature 83, substrate 12, validation 20, cascade 257 |
+| `wasmtime/async` | 387        | 339    | 87.6   | deferred-feature 32, cascade 16                               |
+| total            | 2431       | 2078   | 85.5   | deferred-feature 70, substrate 12, validation 20, cascade 251 |
 
 The browser's summary differs by the ten lines of
 `expected-failures.web.txt`, which move ten passing directives into
-`substrate`: `cm` passes 1037 (92.1%) with substrate 5, `cm/async` 213
-(54.2%) with substrate 1, `wasmtime` 425 (90.6%) with substrate 14,
-`wasmtime/async` 324 (83.7%) with substrate 2, and the total is 2049
-(84.3%) with substrate 22. Every other cell is the same. Five of the
+`substrate`: `cm` passes 1038 (92.2%) with substrate 5, `cm/async` 218
+(55.5%) with substrate 1, `wasmtime` 425 (90.6%) with substrate 14,
+`wasmtime/async` 337 (87.1%) with substrate 2, and the total is 2068
+(85.1%) with substrate 22. Every other cell is the same. Five of the
 ten lines, among them the three in the `async` rows, are the browser
 engine's wording for a trap or a validation error that Wasmtime words
 differently. Two in `wasmtime/big-strings.wast` trap in the adapter
@@ -236,11 +240,11 @@ in the browser cannot address. No line of the delta is a difference
 of the polyfill.
 
 The `async` rows still hold the pass rate down, `cm/async` far more
-than `wasmtime/async`, and the six reasons above cover what those
+than `wasmtime/async`, and the five reasons above cover what those
 directories still exercise. Each component those directories define
 that the polyfill rejects is a `deferred-feature` failure, and every
 later directive in the same file that names it is a `cascade` one, so
-the two async rows together hold 163 of the 257 cascade lines. Four
+the two async rows together hold 157 of the 251 cascade lines. Four
 files of `cm/async` whose components need a thread built-in hold 116
 of them: `trap-if-block-and-sync.wast` 47,
 `trap-if-sync-and-waitable-set.wast` 28,
@@ -248,7 +252,7 @@ of them: `trap-if-block-and-sync.wast` 47,
 `switch-to-ready-callback.wast` 16.
 
 Of the 38 files of `cm/async`, 21 pass whole on both targets. Of the
-54 files of `wasmtime/async`, 37 pass whole natively and 35 in the
+54 files of `wasmtime/async`, 38 pass whole natively and 36 in the
 browser, where `subtask-wait.wast` and `sync-call-context-trap.wast`
 each hold one line of the browser's delta. Seven of the nine fixtures
 pass whole.
@@ -302,29 +306,31 @@ and the one directive of `cm/async/cancel-and-exclusive-lock.wast`
 that fails has a callee that blocks in `waitable-set.wait` until its
 caller writes a future. `cm/async/async-calls-sync.wast` and
 `wasmtime/async/reenter-during-yield.wast` wait on a stack switch as
-well, for a callee that only an outer caller can release.
+well, for a callee that only an outer caller can release. So do
+`cm/async/sync-barges-in.wast` and
+`wasmtime/async/drop-waitable-set-stackful.wast`, whose stackful
+callee blocks in `waitable-set.wait` inside its core function until
+its caller, below it on the stack, goes on.
 
-The rest of the async rows wait on the other reasons. The stackful
-lift holds `cm/async/sync-barges-in.wast`,
-`wasmtime/async/stackful.wast`,
-`wasmtime/async/drop-waitable-set-stackful.wast`,
-`wasmtime/async/task-deletion.wast`, four components of
-`wasmtime/async/task-return-traps.wast`, and the directives of
-`cm/async/big-interleaving-test.wast` that do not reach a cancel, as
-well as one directive of `cm/values/variants.wast`. A thread built-in
-holds the four `cm/async/during-sync-*.wast` files,
+The stackful lift runs, so `wasmtime/async/stackful.wast` passes
+whole, and so do the four stackful components of
+`wasmtime/async/task-return-traps.wast`, five directives of
+`cm/async/big-interleaving-test.wast`, and the stackful directive of
+`cm/values/variants.wast`. The rest of the async rows wait on the
+other reasons. A thread built-in holds the four `cm/async/during-sync-*.wast` files,
 `cm/async/self-switch-traps.wast`,
 `cm/async/switch-to-ready-callback.wast`,
 `cm/async/trap-if-block-and-sync.wast`,
 `cm/async/trap-if-sync-and-waitable-set.wast`,
-`wasmtime/async/join-during-sync-read.wast`, the other two components
-of `wasmtime/async/task-return-traps.wast`,
+`wasmtime/async/join-during-sync-read.wast`,
+`wasmtime/async/task-deletion.wast`, the other two components of
+`wasmtime/async/task-return-traps.wast`,
 `cm/values/post-return.wast`, and
 `wasmtime/thread-transparency/reentrancy.wast`.
 Cancellation holds `cm/async/cancel-delivery.wast`,
 `cm/async/cancel-subtask.wast`, `wasmtime/async/cancel-host.wast`,
 `wasmtime/async/cancel-sibling-subtask.wast`,
-`wasmtime/async/yield-when-cancelled.wast`, and two directives of
+`wasmtime/async/yield-when-cancelled.wast`, and four directives of
 `cm/async/big-interleaving-test.wast`, each of which instantiates and
 fails at its call to `subtask.cancel`.
 `wasmtime/async/cancel-starting-subtask-does-not-leak.wast` stops at

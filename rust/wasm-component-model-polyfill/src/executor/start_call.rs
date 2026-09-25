@@ -26,9 +26,13 @@
 //!   event when the caller already holds a handle for it — the
 //!   callee the gate held and later let through.
 //! - It calls the callee's core function.
-//! - An asynchronously lifted callee returns a status word, which
+//! - A callee lifted with a callback returns a status word, which
 //!   goes to the callback loop of [`crate::executor::CallbackTask`].
-//!   A synchronously lifted one returns its flat results, which
+//!   A stackful callee returns nothing, and its return ends its
+//!   implicit thread, which fails the call with the no-result cause
+//!   when the callee has not called `task.return` by then.
+//!   [`crate::executor::AsyncLift`] names the two forms. A
+//!   synchronously lifted callee returns its flat results, which
 //!   cross into the caller through the return function at that
 //!   moment; its `post-return` runs afterwards, inside its own task,
 //!   and the task then ends.
@@ -53,7 +57,7 @@ use crate::abi::runtime_state::AbiRuntimeState;
 use crate::backend::substrate_failure;
 use crate::concurrency::{InstanceId, Item, ItemKind, LowerKind, SubtaskId, TaskId};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
-use crate::executor::{CallbackTask, status_word};
+use crate::executor::{AsyncLift, CallbackTask};
 use crate::internal::ErrorInternal;
 use crate::resource::{HandleTables, TableId};
 use crate::store::StoreContext;
@@ -98,15 +102,15 @@ struct Callee {
     /// How many flat parameters that function takes, which the
     /// adapter names because the types are its own.
     param_count: usize,
-    /// How many flat results it returns. An asynchronously lifted
-    /// callee returns the status word, which the adapter counts as
-    /// one.
+    /// How many flat results it returns. A callee lifted with a
+    /// callback returns the status word, which the adapter counts as
+    /// one, and a stackful callee returns nothing.
     result_count: usize,
-    /// The callback loop of an asynchronously lifted callee, which
-    /// the status word its core function returned is handed to.
-    /// `None` for a synchronously lifted callee, whose results cross
-    /// into the caller as its core function returns.
-    loop_: Option<CallbackTask>,
+    /// The form of an asynchronously lifted callee's lift, which
+    /// says what its core function's return does. `None` for a
+    /// synchronously lifted callee, whose results cross into the
+    /// caller as its core function returns.
+    lift: Option<AsyncLift>,
     /// The `post-return` of a synchronously lifted callee, which
     /// runs once its results have crossed, with the callee's
     /// component instance as a crossing names it: that is what holds
@@ -156,13 +160,13 @@ impl Prepared {
 
     /// Name the callee the start intrinsic was called with: its core
     /// function, the count of its flat parameters and results, the
-    /// callback loop of an asynchronously lifted callee, and the
+    /// form of an asynchronously lifted callee's lift, and the
     /// `post-return` of a synchronously lifted one.
     pub fn with_callee(
         mut self,
         function: RuntimeFunc,
         counts: (usize, usize),
-        loop_: Option<CallbackTask>,
+        lift: Option<AsyncLift>,
         post_return: Option<(RuntimeFunc, BoundaryInstance)>,
     ) -> Self {
         let (param_count, result_count) = counts;
@@ -170,7 +174,7 @@ impl Prepared {
             function,
             param_count,
             result_count,
-            loop_,
+            lift,
             post_return,
         });
         self
@@ -186,16 +190,35 @@ impl Prepared {
         self.task
     }
 
-    /// The callee's component instance.
-    pub fn instance(&self) -> InstanceId {
-        self.instance
-    }
-
-    /// The callee's component instance by the translator's
-    /// per-instantiation index, which is what the ABI state is keyed
-    /// on.
-    pub fn instance_index(&self) -> usize {
-        self.instance_index
+    /// The form of an asynchronously lifted callee's lift, with the
+    /// `async` option and the callback recorded on its task so that
+    /// the callee's `task.return` finds them set. `callback` is the
+    /// runtime callback slot the adapter named, and a lift that named
+    /// none is the stackful form.
+    pub fn async_lift(
+        &self,
+        tables: &Arc<Mutex<HandleTables>>,
+        abi_state: &Arc<Mutex<AbiRuntimeState>>,
+        callback: Option<usize>,
+    ) -> Result<AsyncLift> {
+        if let Some(options) = lock(tables)?
+            .tasks
+            .task_mut(self.task)
+            .and_then(|record| record.options.as_mut().map(Arc::make_mut))
+        {
+            options.async_ = true;
+            options.callback = callback;
+        }
+        let Some(callback) = callback else {
+            return Ok(AsyncLift::Stackful(self.task));
+        };
+        let (function, table) = callee_callback(abi_state, self.instance_index, callback)?;
+        Ok(AsyncLift::Callback(CallbackTask::new(
+            self.task,
+            self.instance,
+            table,
+            function,
+        )))
     }
 
     /// The item that starts the callee's implicit thread and fails
@@ -247,18 +270,27 @@ impl Prepared {
     /// sync-typed callee is not a nested start. Its task must not
     /// block, so it never suspends, and the reference runs it on the
     /// caller's stack.
+    ///
+    /// The callee's task takes the exclusive thread of its instance
+    /// unless it is stackful, which is the reference's
+    /// `needs_exclusive`: `not opts.async or opts.callback`.
     pub fn run_start<T: 'static>(
         &self,
         store: &mut StoreContext<'_, T>,
         item: Item<T>,
         lower: LowerKind,
     ) -> Result<()> {
+        let needs_exclusive = self
+            .callee
+            .as_ref()
+            .and_then(|callee| callee.lift.as_ref())
+            .is_none_or(AsyncLift::needs_exclusive);
         store.internal().scheduler_mut().switch_to(item);
         store.internal().start_switched_export_thread(
             self.task,
             self.instance,
             self.callee_async_typed,
-            true,
+            needs_exclusive,
         )?;
         if !self.callee_async_typed {
             return store.internal().run_switch_slot();
@@ -347,11 +379,12 @@ fn start_call<T: 'static>(
 
     // The callee's flat result types are the adapter's own, and the
     // adapter names only how many there are. A status word is an
-    // `i32`; a synchronously lifted callee's one flat result can be
-    // of any type, so its slot is filled with the widest flat value,
-    // which every backend overwrites with the value and the type the
-    // core function returned.
-    let placeholder = match callee.loop_ {
+    // `i32`, and a stackful callee returns nothing. A synchronously
+    // lifted callee's one flat result can be of any type, so its
+    // slot is filled with the widest flat value, which every backend
+    // overwrites with the value and the type the core function
+    // returned.
+    let placeholder = match callee.lift {
         Some(_) => RuntimeVal::I32(0),
         None => RuntimeVal::F64(0.0),
     };
@@ -368,10 +401,10 @@ fn start_call<T: 'static>(
         store.internal().abandon_export_task(task)?;
         return called;
     };
-    match &callee.loop_ {
-        Some(loop_) => {
+    match &callee.lift {
+        Some(lift) => {
             store.internal().leave_export_task(task)?;
-            loop_.handle_status_word(store, status_word(&core_results)?)
+            lift.returned(store, &core_results)
         }
         None => match resolve_sync_lift(store, subtask, task, callee, &core_results) {
             Ok(()) => Ok(()),
@@ -533,7 +566,7 @@ pub fn funcref_argument(args: &[RuntimeVal], index: usize) -> Result<RuntimeFunc
 
 /// The callback the callee's lift named and the handle table of the
 /// callee's instance, by the translator's per-instantiation index.
-pub fn callee_callback(
+fn callee_callback(
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     instance_index: usize,
     callback: usize,

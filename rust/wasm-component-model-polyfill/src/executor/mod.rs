@@ -21,6 +21,7 @@
 //!
 //! [`wasm_runtime_layer`]: https://docs.rs/wasm_runtime_layer
 
+mod async_lift;
 mod async_start_call;
 mod callback_task;
 mod cancel;
@@ -47,8 +48,9 @@ pub mod ir;
 pub mod trampoline;
 pub mod waitable_builtins;
 
+pub use async_lift::AsyncLift;
 pub use async_start_call::build_async_start_call;
-pub use callback_task::{CallbackTask, status_word};
+pub use callback_task::CallbackTask;
 pub use cancel::{build_subtask_cancel, build_task_cancel};
 pub use compile_module::{compile_module, compile_modules};
 pub use copy::{build_cancel_copy, build_copy};

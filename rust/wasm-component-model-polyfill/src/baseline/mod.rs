@@ -24,6 +24,7 @@ mod prepared_call;
 mod realloc_task;
 mod resources;
 mod run_concurrent;
+mod stackful_export;
 mod stream_copy_handles;
 mod stream_copy_paths;
 mod stream_future_ends;

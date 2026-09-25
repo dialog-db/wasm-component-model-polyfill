@@ -2,9 +2,10 @@
 //!
 //! An asynchronous lower reaches this intrinsic right after the
 //! prepare intrinsic of [`super::prepare_call`], whether the callee
-//! is lifted synchronously or with a callback. It runs the call the
-//! preparation set up and answers with the status word, so the
-//! caller gets control back before the callee necessarily returns.
+//! is lifted synchronously, with a callback, or stackfully. It runs
+//! the call the preparation set up and answers with the status word,
+//! so the caller gets control back before the callee necessarily
+//! returns.
 //!
 //! The adapter passes the callee's core function as a `funcref`, the
 //! number of flat parameters and of flat results that function has,
@@ -55,7 +56,7 @@ use crate::abi::instance::BoundaryInstance;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::concurrency::{CallStatus, LowerKind, SubtaskId};
 use crate::error::{Error, Result};
-use crate::executor::CallbackTask;
+use crate::executor::AsyncLift;
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::CoreSignature;
 use crate::internal::ErrorInternal;
@@ -64,7 +65,7 @@ use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 
 use super::prepare_call::u32_argument;
-use super::start_call::{Prepared, callee_callback, funcref_argument, lock, post_return_at};
+use super::start_call::{Prepared, funcref_argument, lock, post_return_at};
 
 /// Build the `async-start-call` intrinsic of one fused adapter.
 /// `callback` is the runtime callback slot of an asynchronously
@@ -114,17 +115,18 @@ fn async_start_call<T: 'static>(
     let subtask = prepared.subtask();
     let caller_table = caller_table(&tables, subtask)?;
 
-    let loop_ = if async_lifted {
-        Some(callback_loop(&tables, abi_state, &prepared, callback)?)
+    let lift = if async_lifted {
+        Some(prepared.async_lift(&tables, abi_state, callback)?)
     } else {
         None
     };
     // A synchronously lifted callee's `post-return` is the one canon
     // option of the callee's lift that the preparation could not
     // record: the adapter names it here, with the start, rather than
-    // there. An asynchronously lifted callee has none — its task
-    // ends at the exit code of its callback loop, and the loop runs
-    // the reference's `post-return` step itself.
+    // there. An asynchronously lifted callee has none: its task ends
+    // at the exit code of its callback loop, or when its stackful
+    // core function returns, and the reference calls a
+    // `post-return` only on the synchronous path.
     let post = match (async_lifted, post_return) {
         (false, Some(slot)) => Some((
             post_return_at(abi_state, slot)?,
@@ -133,15 +135,17 @@ fn async_start_call<T: 'static>(
         _ => None,
     };
 
-    let prepared = prepared.with_callee(callee_function, (param_count, result_count), loop_, post);
+    // The adapter counts one flat result for every asynchronously
+    // lifted callee, the status word. A stackful callee's core
+    // function returns none, so the lift's own count is the one the
+    // call is made with.
+    let result_count = lift.as_ref().map_or(result_count, AsyncLift::result_count);
+    let prepared = prepared.with_callee(callee_function, (param_count, result_count), lift, post);
     let item = prepared.item()?;
 
     // The callee runs next: the item goes in the switch slot, the
     // gate decides whether it stays there, and the slot is run from
-    // inside this frame. Both shapes the polyfill serves need the
-    // exclusive thread of the callee's instance — the reference's
-    // `not opts.async or opts.callback` — and a sync-typed callee
-    // ignores the gate either way.
+    // inside this frame.
     if let Err(error) = prepared.run_start(store, item, LowerKind::Async) {
         prepared.remove(&tables);
         return Err(error);
@@ -193,43 +197,6 @@ fn caller_table(tables: &Arc<Mutex<HandleTables>>, subtask: SubtaskId) -> Result
         .and_then(|record| record.bridge.as_ref())
         .map(|bridge| bridge.caller_table)
         .ok_or_else(|| Error::internal("a prepared call carries no generated functions"))
-}
-
-/// The callback loop of an asynchronously lifted callee, with the
-/// `async` option recorded on its task so that the callee's
-/// `task.return` finds it set.
-///
-/// A lift that named no callback is the stackful form, which the
-/// polyfill refuses. Translation refuses it where a component
-/// declares it; the refusal is repeated here because the adapter
-/// says which lift it is only at the call, and the two forms share
-/// this intrinsic.
-fn callback_loop(
-    tables: &Arc<Mutex<HandleTables>>,
-    abi_state: &Arc<Mutex<AbiRuntimeState>>,
-    prepared: &Prepared,
-    callback: Option<usize>,
-) -> Result<CallbackTask> {
-    let Some(callback) = callback else {
-        return Err(Error::unsupported(
-            "stackful asynchronous lifts (`canon lift async` without a callback)",
-        ));
-    };
-    let (function, table) = callee_callback(abi_state, prepared.instance_index(), callback)?;
-    if let Some(options) = lock(tables)?
-        .tasks
-        .task_mut(prepared.task())
-        .and_then(|record| record.options.as_mut().map(Arc::make_mut))
-    {
-        options.async_ = true;
-        options.callback = Some(callback);
-    }
-    Ok(CallbackTask::new(
-        prepared.task(),
-        prepared.instance(),
-        table,
-        function,
-    ))
 }
 
 /// The callee's component instance as a crossing names it, which is

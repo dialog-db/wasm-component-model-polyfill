@@ -361,13 +361,16 @@ pub struct CanonOptions {
     /// post-return option.
     pub post_return: Option<usize>,
     /// Whether the lift or lower declared the `async` option. A
-    /// lift that declares it returns a status word instead of the
-    /// result, and names the callback below.
+    /// lift that declares it delivers its result through
+    /// `task.return` instead of returning it. Its core function
+    /// returns a status word when the lift names the callback below,
+    /// and nothing when it does not.
     pub async_: bool,
     /// Index into the `num_runtime_callbacks` slab on
     /// [`ExecutorIr`]. `None` when the function declares no
     /// callback, which for a lift that is `async_` is the stackful
-    /// form the polyfill refuses at translation.
+    /// form: its core function returns nothing and delivers its
+    /// result through `task.return`.
     pub callback: Option<usize>,
     /// The string encoding the lift or lower uses for
     /// `string`-typed values.
@@ -761,10 +764,10 @@ pub enum TrampolineSpec {
     /// lower is synchronous and whose lift is asynchronous: it runs
     /// the prepared call and blocks the caller until it resolves.
     SyncStartCall {
-        /// The runtime callback slot of the callee's lift. The
-        /// stackful form of `canon lift async` names none, and
-        /// translation refuses it, so the slot is always filled here.
-        callback: usize,
+        /// The runtime callback slot of the callee's lift. `None`
+        /// for the stackful form of `canon lift async`, which names
+        /// none.
+        callback: Option<usize>,
         /// The core signature the adapter imports: the callee's
         /// `funcref` and its flat parameter count in, and the
         /// caller's flat results out.

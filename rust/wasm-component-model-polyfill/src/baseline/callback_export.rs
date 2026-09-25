@@ -17,10 +17,6 @@
 //! that yielded or waited outlives the call, so its callback runs in
 //! the turn of whichever driver comes next, and an error it raises
 //! fails that driver rather than the call.
-//!
-//! The stackful form of the lift, the one with no callback, is
-//! refused at translation: the polyfill runs the guest on the one
-//! real stack and cannot resume an export suspended mid-call.
 
 #![cfg(test)]
 
@@ -31,8 +27,8 @@ use core::task::{Context, Poll, Waker};
 use crate::internal::FuncInternal;
 use crate::store::StoreInternalExt;
 use crate::{
-    Component, Engine, EngineConfig, Error, ExternType, ExternalName, Func, FunctionType, Instance,
-    Linker, Store, Val,
+    Component, Engine, Error, ExternType, ExternalName, Func, FunctionType, Instance, Linker,
+    Store, Val,
 };
 use wcmp_macros::component;
 
@@ -234,18 +230,6 @@ const STATUS_WORD_TRAPS: &[u8] = component!(
     "#
 );
 
-/// An export lifted `async` with no callback: the stackful form.
-const STACKFUL_EXPORT: &[u8] = component!(
-    r#"
-    (component
-      (core module $m
-        (func (export "answer") (param i32) unreachable))
-      (core instance $i (instantiate $m))
-      (func (export "answer") async (param "x" u32) (result u32)
-        (canon lift (core func $i "answer") async)))
-    "#
-);
-
 /// The [`FunctionType`] of the named root-level function export.
 fn export_signature(component: &Component, wire_name: &str) -> FunctionType {
     let export = component
@@ -265,16 +249,6 @@ fn export_signature(component: &Component, wire_name: &str) -> FunctionType {
 /// Parse `bytes` with the default engine configuration.
 async fn parse(bytes: &[u8]) -> Result<Component, Error> {
     let engine = Engine::new().expect("engine");
-    Component::new(&engine, bytes).await
-}
-
-/// Parse `bytes` with the stackful asynchronous lift accepted by the
-/// validator, so that the polyfill's own refusal is what the test
-/// observes rather than the validator's.
-async fn parse_with_stackful_lifts(bytes: &[u8]) -> Result<Component, Error> {
-    let mut config = EngineConfig::new();
-    config.wasm_component_model_async_stackful(true);
-    let engine = Engine::with_config(&config).expect("engine");
     Component::new(&engine, bytes).await
 }
 
@@ -731,18 +705,4 @@ async fn it_fails_an_exit_from_a_task_that_never_returned_a_result() {
     );
     assert_eq!(task_count(&store), 0, "the failed task left the store");
     assert!(!instance_is_held(&store));
-}
-
-#[wcmp_macros::test]
-async fn it_refuses_a_stackful_asynchronous_lift() {
-    // The stackful form has no callback, so resuming it would mean
-    // suspending the export's core function mid-call. The polyfill
-    // runs the guest on the one real stack and refuses the lift.
-    let err = parse_with_stackful_lifts(STACKFUL_EXPORT)
-        .await
-        .expect_err("the stackful lift is refused");
-    assert!(
-        matches!(&err, Error::Unsupported { feature } if feature.contains("stackful")),
-        "expected Error::Unsupported, got {err:?}"
-    );
 }

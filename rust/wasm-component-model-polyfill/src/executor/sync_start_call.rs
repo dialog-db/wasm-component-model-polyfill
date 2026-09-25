@@ -14,7 +14,9 @@
 //!   which is the item of [`super::start_call`]: it lifts and lowers
 //!   the arguments, marks the subtask started, calls the callee's
 //!   core function, and hands the status word it returned to the
-//!   callback loop of [`crate::executor::CallbackTask`].
+//!   callback loop of [`crate::executor::CallbackTask`]. A stackful
+//!   callee returns no status word, and its return ends its implicit
+//!   thread.
 //! - It places that item in the scheduler's switch slot and enters
 //!   the callee's implicit thread through the entry gate. A callee
 //!   the gate holds leaves the slot empty and waits there in arrival
@@ -64,7 +66,6 @@ use crate::abi::layout::FlatType;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::concurrency::{LowerKind, Readiness, SubtaskId, SuspendSeam, TaskId};
 use crate::error::{Error, Result};
-use crate::executor::CallbackTask;
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::CoreSignature;
 use crate::internal::ErrorInternal;
@@ -72,14 +73,15 @@ use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 
 use super::prepare_call::u32_argument;
-use super::start_call::{Prepared, callee_callback, funcref_argument, lock, release_subtask};
+use super::start_call::{Prepared, funcref_argument, lock, release_subtask};
 use super::start_failure::StartFailure;
 
 /// Build the `sync-start-call` intrinsic of one fused adapter.
-/// `callback` is the runtime callback slot of the callee's lift.
+/// `callback` is the runtime callback slot of the callee's lift, and
+/// `None` for a stackful lift.
 pub fn build_sync_start_call<T: 'static>(
     store: &mut StoreContext<'_, T>,
-    callback: usize,
+    callback: Option<usize>,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> RuntimeFunc {
@@ -108,7 +110,7 @@ pub fn build_sync_start_call<T: 'static>(
 /// The body of one call of the intrinsic.
 fn sync_start_call<T: 'static>(
     store: &mut StoreContext<'_, T>,
-    callback: usize,
+    callback: Option<usize>,
     caller_results: &[FlatType],
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     args: &[RuntimeVal],
@@ -121,38 +123,30 @@ fn sync_start_call<T: 'static>(
     let prepared = Prepared::take(&tables)?;
     let subtask = prepared.subtask();
 
-    // The callee's lift is asynchronous with a callback: a
-    // synchronous start reaches no other shape, because the
-    // stackful form is refused at translation and a synchronously
-    // lifted callee takes the enter and exit intrinsics instead.
-    // The task learns that here, where the adapter says it, so that
-    // the callee's `task.return` finds the `async` option set.
-    let loop_ = {
-        let (function, table) = callee_callback(abi_state, prepared.instance_index(), callback)?;
-        let mut guard = lock(&tables)?;
-        if let Some(options) = guard
-            .tasks
-            .task_mut(prepared.task())
-            .and_then(|record| record.options.as_mut().map(Arc::make_mut))
-        {
-            options.async_ = true;
-            options.callback = Some(callback);
-        }
-        if let Some(bridge) = guard
-            .tasks
-            .subtask_mut(subtask)
-            .and_then(|record| record.bridge.as_mut())
-        {
-            bridge.caller_results = caller_results.to_vec();
-        }
-        drop(guard);
-        CallbackTask::new(prepared.task(), prepared.instance(), table, function)
-    };
+    // The callee's lift is asynchronous, with a callback or
+    // stackful: a synchronously lifted callee takes the enter and
+    // exit intrinsics instead. The task learns that here, where the
+    // adapter says it, so that the callee's `task.return` finds the
+    // `async` option set.
+    let lift = prepared.async_lift(&tables, abi_state, callback)?;
+    if let Some(bridge) = lock(&tables)?
+        .tasks
+        .subtask_mut(subtask)
+        .and_then(|record| record.bridge.as_mut())
+    {
+        bridge.caller_results = caller_results.to_vec();
+    }
 
     let failure: StartFailure = Arc::new(Mutex::new(None));
-    // The status word of an asynchronously lifted callee is its one
-    // flat result, which the callback loop reads.
-    let prepared = prepared.with_callee(callee_function, (param_count, 1), Some(loop_), None);
+    // A callback lift's core function returns the status word, and
+    // a stackful one returns nothing.
+    let result_count = lift.result_count();
+    let prepared = prepared.with_callee(
+        callee_function,
+        (param_count, result_count),
+        Some(lift),
+        None,
+    );
     let item = prepared.item_reporting_to(failure.clone())?;
 
     // The callee runs next: the item goes in the switch slot, the

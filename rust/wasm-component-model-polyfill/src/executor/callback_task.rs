@@ -50,12 +50,13 @@ use wasm_runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
 
 use crate::backend::substrate_failure;
 use crate::concurrency::{Event, EventSlot, InstanceId, Item, ItemKind, TaskId};
-use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, TaskCause};
+use crate::error::{Error, Result, TaskCause};
 use crate::internal::ErrorInternal;
 use crate::resource::TableId;
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 
+use super::async_lift::exit_implicit_thread;
 use super::start_call::release_subtask;
 
 /// How many low bits of a status word are the code.
@@ -132,15 +133,7 @@ impl CallbackTask {
     /// that has not returned a result fails with the no-result cause,
     /// and its record leaves the store either way.
     fn exit<T: 'static>(&self, store: &mut StoreContext<'_, T>) -> Result<()> {
-        let resolved = store.internal().export_task_resolved(self.task)?;
-        let borrows = store.internal().end_export_task(self.task)?;
-        if !resolved {
-            return Err(Error::Task(TaskCause::NoResult));
-        }
-        match borrows {
-            Ok(()) => Ok(()),
-            Err(count) => Err(outstanding_borrows(count)),
-        }
+        exit_implicit_thread(store, self.task)
     }
 
     /// Give way, which is the yield code: the instance goes back and
@@ -306,16 +299,4 @@ pub fn status_word(results: &[RuntimeVal]) -> Result<i32> {
             "an asynchronous export returned no status word",
         )),
     }
-}
-
-/// The outstanding-borrows failure of a task whose implicit thread
-/// exited while the guest still owed a borrow.
-fn outstanding_borrows(count: u32) -> Error {
-    Error::from(AbiError {
-        position: AbiPosition::Result,
-        valtype: None,
-        cause: AbiCause::OutstandingBorrows {
-            count: count as usize,
-        },
-    })
 }
