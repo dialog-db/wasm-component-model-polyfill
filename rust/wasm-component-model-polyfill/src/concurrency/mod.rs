@@ -39,15 +39,27 @@
 //! blocking built-in asks it to suspend the current guest thread
 //! until a readiness condition holds. A [`Readiness`] is that
 //! condition as data: the thread's record holds it while the thread
-//! waits, and evaluating it only reads the store. The seam's
-//! provider slot takes the [`SuspendProvider`] a target fills it
-//! with, and is empty on both targets today, so a suspension runs a
-//! nested turn from inside the guest call instead. That nested turn
-//! is not the nesting [`SchedulerState`] counts: a host task's body
-//! that reaches the store through its accessor enters a turn of its
-//! own and raises that count, while the seam's fallback deliberately
-//! does not, because a nested turn is not a driver and polls with
-//! the waker the outer turn recorded.
+//! waits, and evaluating it only reads the store. A blocking
+//! built-in reaches the seam through a host trampoline, and a host
+//! frame cannot suspend a guest stack, so the seam runs a nested turn
+//! from inside the guest call. That nested turn is not the nesting
+//! [`SchedulerState`] counts: a host task's body that reaches the
+//! store through its accessor enters a turn of its own and raises
+//! that count, while the seam's fallback deliberately does not,
+//! because a nested turn is not a driver and polls with the waker
+//! the outer turn recorded.
+//!
+//! [`SuspendProvider`] is the contract a mechanism that switches
+//! guest stacks meets, and [`EntryStatus`] is where a thread entry
+//! stopped when the provider handed control back. The switch module,
+//! [`SwitchModule`], is the core module the providers switch stacks
+//! with: shims that suspend in WebAssembly in place of a blocking
+//! built-in's trampoline, and wrappers that hand a thread entry's
+//! results to the host. [`StackSwitchingProvider`] fills the
+//! contract with the instructions of the WebAssembly
+//! stack-switching proposal, over an instance of the switch module,
+//! and [`SwitchProbe`] is what an engine runs when it is constructed
+//! to learn whether it can.
 //!
 //! A task is the record of one call into an export; a subtask is the
 //! record of one call out through an import; a thread is one guest
@@ -139,6 +151,7 @@ mod driver;
 mod end_direction;
 mod end_id;
 mod end_kind;
+mod entry_status;
 mod event;
 mod event_code;
 mod event_slot;
@@ -173,6 +186,7 @@ mod scheduler_state;
 mod scope;
 mod shared_record;
 mod source;
+mod stack_switching_provider;
 mod stream_any;
 mod stream_consumer;
 mod stream_producer;
@@ -183,6 +197,8 @@ mod subtask_id;
 mod subtask_state;
 mod suspend_provider;
 mod suspend_seam;
+mod switch_module;
+mod switch_probe;
 mod task;
 mod task_id;
 mod task_result;
@@ -213,6 +229,12 @@ pub use destination::Destination;
 pub use driver::Driver;
 pub use end_id::EndId;
 pub use end_kind::EndKind;
+// The provider contract, its status, the switch module, and the
+// stack-switching provider are spelled outside this module only by
+// their tests: the scheduler does not run guest threads through a
+// provider yet, and the engine runs only the probe.
+#[cfg(test)]
+pub use entry_status::EntryStatus;
 pub use event::Event;
 // An event code is spelled outside this module only by the tests that
 // leave a copy event on an end by hand; the built-ins that finish a
@@ -244,6 +266,8 @@ pub use scheduler::Scheduler;
 pub use scheduler_state::SchedulerState;
 pub use scope::Scope;
 pub use source::Source;
+#[cfg(test)]
+pub use stack_switching_provider::StackSwitchingProvider;
 pub use stream_any::StreamAny;
 pub use stream_consumer::StreamConsumer;
 pub use stream_producer::StreamProducer;
@@ -251,8 +275,12 @@ pub use stream_reader::StreamReader;
 pub use stream_result::StreamResult;
 pub use subtask_id::SubtaskId;
 pub use subtask_state::SubtaskState;
+#[cfg(test)]
 pub use suspend_provider::SuspendProvider;
 pub use suspend_seam::SuspendSeam;
+#[cfg(test)]
+pub use switch_module::SwitchModule;
+pub use switch_probe::SwitchProbe;
 pub use task_id::TaskId;
 pub use task_result::ResultChannel;
 // Where a task's result went is read back only by the tests of the

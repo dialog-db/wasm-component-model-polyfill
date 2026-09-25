@@ -301,13 +301,12 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// seam, whose nested turns nest in this one, and a task that
     /// never resolves fails the release with the cannot-block cause.
     ///
-    /// That cause holds on every target and whether or not the
-    /// seam's provider slot is filled, because a destructor may not
-    /// block. The Canonical ABI says so under `canon resource.drop`,
-    /// where the destructor call works like a synchronous
-    /// cross-component call, and `canon lift` traps a call that is
-    /// not `async`-typed and blocks before it returns. Wasmtime
-    /// enters a destructor as a synchronous call and traps a block
+    /// That cause holds on every target and whatever provider the
+    /// engine selected, because a destructor may not block. The
+    /// Canonical ABI says so under `canon resource.drop`, where the
+    /// destructor call works like a synchronous cross-component call,
+    /// and `canon lift` traps a call that is not `async`-typed and
+    /// blocks before it returns. Wasmtime enters a destructor as a synchronous call and traps a block
     /// inside it with `Trap::CannotBlockSyncTask`. The destructor's
     /// task holds its instance's may-not-suspend flag for as long as
     /// it runs, which is what the seam reads for that rule.
@@ -613,29 +612,28 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// waiting thread ready, and what the body produced stays in the
     /// store. The store therefore always knows about the pending
     /// future, and the cause a block that gives up fails with reads
-    /// it there. With no provider in the seam's slot, the seam's
-    /// fallback also polls the parked task before each nested turn it
-    /// runs, which is what serves a body that stays pending once
-    /// or twice and a caller that must not block.
+    /// it there. The seam's fallback also polls the parked task
+    /// before each nested turn it runs, which is what serves a body
+    /// that stays pending once or twice and a caller that must not
+    /// block.
     ///
     /// The finish part runs once the thread resumes. It delivers the
     /// subtask's resolution, which gives back the handles the guest
     /// lent for the call, exactly as a call whose first poll resolved
     /// the body delivers it, and it lowers what the body produced.
-    /// A body that failed, a block that failed, and a provider that
-    /// returned with the subtask unresolved are each a call that
+    /// A body that failed and a block that failed are each a call that
     /// never returned: the subtask resolves as a cancellation, the
     /// parked task leaves the store, and the failure travels out to
     /// the guest's call.
     ///
     /// A wait that unwinds takes the parked task out of the store as
     /// well, pending or settled, before the panic carries on. An item
-    /// a nested turn runs, a host task it polls, and a provider can
-    /// each panic, and a task left parked after the frame that parked
-    /// it was gone would keep the store holding a host future nothing
-    /// waits on: every later block would read it as one that can
-    /// still resolve, and a later turn would settle it into a call
-    /// that no longer exists. The task sits in the store's own data
+    /// a nested turn runs and a host task it polls can each panic,
+    /// and a task left parked after the frame that parked it was gone
+    /// would keep the store holding a host future nothing waits on:
+    /// every later block would read it as one that can still resolve,
+    /// and a later turn would settle it into a call that no longer
+    /// exists. The task sits in the store's own data
     /// rather than behind a handle a guard could hold, so the unwind
     /// is caught here and resumed once the task is out.
     fn block_on_host_task(&mut self, task: HostTask<T>, subtask: SubtaskId) -> Result<CallStatus> {
@@ -974,10 +972,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// holds no such task pending, or when a turn has it out.
     ///
     /// The suspend seam's fallback calls this before each nested
-    /// turn it runs for the lower, which is what makes a block with
-    /// no provider poll the call's own future at every check of its
-    /// condition. A nested turn held to one instance polls no host
-    /// task, and a future that answered pending without asking for a
+    /// turn it runs for the lower, which is what makes a block poll
+    /// the call's own future at every check of its condition. A nested
+    /// turn held to one instance polls no host task, and a future that answered pending without asking for a
     /// wake would otherwise never be polled again inside the block.
     fn poll_parked_call(&mut self, subtask: SubtaskId) -> Result<()> {
         // The task's own waker passes a wake on to the waker of the
@@ -1590,7 +1587,7 @@ mod tests {
 
     use crate::component::Component;
     use crate::concurrency::{
-        Driver, Event, HostTask, ItemKind, Readiness, Scope, SuspendProvider, ThreadId, WaitableId,
+        Driver, Event, HostTask, ItemKind, Readiness, Scope, ThreadId, WaitableId,
     };
     use crate::engine::Engine;
     use crate::error::SchedulerCause;
@@ -3095,7 +3092,8 @@ mod tests {
     /// export calls the host function, adds one to what it returns,
     /// hands that to `task.return`, and exits. A call into such an
     /// export is a task the reference allows to block, so a block in
-    /// the host function's trampoline is one a provider may serve.
+    /// the host function's trampoline waits rather than failing with
+    /// the cannot-block cause.
     const CALLBACK_CALLS_THE_HOST: &[u8] = component!(
         r#"
         (component
@@ -3138,40 +3136,6 @@ mod tests {
                 return Poll::Ready(Ok(vec![Val::U32(this.value)]));
             }
             Poll::Pending
-        }
-    }
-
-    /// A provider that stands in for a target that can switch
-    /// stacks. It consults the readiness condition until it holds,
-    /// as a provider that suspended the guest thread and resumed it
-    /// between checks would, and gives up rather than spinning for
-    /// ever. Between two checks it runs one turn of the store, which
-    /// stands in for the turns the scheduler runs while a real
-    /// provider holds the thread suspended: the condition only reads
-    /// the store, so something else has to poll the host future the
-    /// thread waits on. It counts the suspensions it was handed, so a
-    /// test can tell a block it served from one the seam's fallback
-    /// served.
-    struct Resumes {
-        checks: usize,
-        calls: Arc<Mutex<usize>>,
-    }
-
-    impl SuspendProvider<()> for Resumes {
-        fn suspend(
-            &mut self,
-            store: &mut StoreContext<'_, ()>,
-            condition: &mut dyn FnMut(&mut StoreContext<'_, ()>) -> bool,
-        ) -> Result<()> {
-            *self.calls.lock().expect("provider calls") += 1;
-            for _ in 0..self.checks {
-                if condition(store) {
-                    return Ok(());
-                }
-                let waker = store.active_waker();
-                store.nested_turn(&waker, None)?;
-            }
-            Err(Error::Scheduler(store.suspend_cause()))
         }
     }
 
@@ -3245,7 +3209,7 @@ mod tests {
         assert_eq!(
             *started.lock().expect("record"),
             Some((CallStatus::returned().value().to_string(), 0, 0)),
-            "with no provider in the slot the block took the seam's fallback, \
+            "the block took the seam's fallback, \
              which polled the body again at the first check of its condition \
              and found it ready, so the call returned with no host task left \
              in the store and no item run — the check comes before the first \
@@ -3265,27 +3229,12 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    async fn it_blocks_a_synchronous_lower_through_the_seam_when_the_slot_is_filled() {
+    async fn it_blocks_a_synchronous_lower_of_a_task_that_may_block_on_the_seams_condition() {
         let engine = Engine::new().expect("engine");
         let component = Component::new(&engine, CALLBACK_CALLS_THE_HOST)
             .await
             .expect("component parses");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-
-        // The target fills the capability. The trampoline finds it
-        // through the core store's context the runtime layer hands
-        // it, which reaches the same scheduler this fills. The export
-        // is `async`-typed, so its task may block, and the seam hands
-        // the block to the provider rather than to its fallback.
-        let calls = Arc::new(Mutex::new(0usize));
-        store
-            .internal()
-            .scheduler_mut()
-            .suspend_seam_mut()
-            .set_provider(Resumes {
-                checks: 4,
-                calls: calls.clone(),
-            });
 
         // The status word the call reported, and what the lowering
         // was handed.
@@ -3335,16 +3284,10 @@ mod tests {
             .expect("call run");
 
         assert_eq!(
-            *calls.lock().expect("provider calls"),
-            1,
-            "the call into an `async`-typed export may block, so the seam \
-             handed the block to the provider in its slot, once"
-        );
-        assert_eq!(
             *reported.lock().expect("record"),
             Some(CallStatus::returned().value()),
-            "the provider served the block until the body was ready, so the \
-             call returned its result to the guest with no subtask behind it"
+            "the seam served the block until the body was ready, so the call \
+             returned its result to the guest with no subtask behind it"
         );
         assert_eq!(
             lowered(&slot),

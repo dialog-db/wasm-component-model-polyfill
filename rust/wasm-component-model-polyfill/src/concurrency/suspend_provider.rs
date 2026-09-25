@@ -1,72 +1,98 @@
-//! The target's filling of the scheduler's suspend capability.
+//! The contract a provider of the scheduler's suspend capability
+//! meets.
+
+use wasm_runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
 
 use crate::error::Result;
 use crate::store::StoreContext;
 
-/// The target's filling of the scheduler's suspend capability.
+use super::entry_status::EntryStatus;
+use super::thread_id::ThreadId;
+
+/// The contract a provider of the scheduler's suspend capability
+/// meets.
 ///
 /// The reference lets a running guest thread block inside a
 /// built-in, and Wasmtime serves that by suspending the fiber the
-/// guest runs on. The polyfill runs the guest on the one real stack,
-/// so a host trampoline that must block has no way back to the
-/// scheduler without unwinding the guest. A provider is what gives
-/// it one: it switches the stack the guest runs on, parks the
-/// current thread until the readiness condition holds, and returns
-/// when the thread resumes.
+/// guest runs on. The polyfill runs a guest on the one real stack,
+/// so it needs a mechanism that sets a guest stack aside and resumes
+/// it later: a provider. A provider must do six things:
 ///
-/// The polyfill fills the capability on neither target today. In the
-/// browser JavaScript Promise Integration is the intended provider:
-/// the host's entry into the guest becomes a promising call and a
-/// blocking built-in becomes a suspending import, whose promise
-/// suspends the guest until it resolves. The native target has no
-/// intended provider. Neither is designed here.
+/// 1. Start a thread entry on a stack of its own, from the scheduler
+///    or from inside a trampoline. A thread entry is a guest function
+///    that starts a thread: a task's core function, a callback, or a
+///    thread's start function. That is [`start`](Self::start).
+/// 2. Suspend the running thread when a blocking built-in is not
+///    ready, with only WebAssembly frames between the start of that
+///    stack and the point of suspension.
+/// 3. Resume a suspended thread later, with the result of the
+///    built-in it suspended in. That is [`resume`](Self::resume).
+/// 4. Keep any number of threads suspended at once, and resume them
+///    in any order.
+/// 5. Report to the caller whether a thread entry finished or
+///    suspended, at the moment it does so, which is the
+///    [`EntryStatus`] both methods answer.
+/// 6. Drop a suspended thread without resuming it when its store
+///    drops. No destructor runs, as for anything else the store
+///    holds.
 ///
-/// Two consequences of that shape hold for every provider, and the
-/// seam is built around them:
+/// A mechanism that cannot meet all six is not a provider, and the
+/// polyfill never fills the capability with less. Where no provider
+/// exists, a blocking built-in runs the waiting work in a nested turn
+/// above the blocked call instead.
 ///
-/// - A suspension traps if a frame that is not WebAssembly sits
-///   between the promising entry and the suspending import, and in
-///   the browser every host trampoline puts a JavaScript frame on
-///   the stack. Guest code is therefore entered only from the
-///   scheduler while a provider is present, never from inside a
-///   trampoline — which is why the seam consults the slot before it
-///   falls back to a nested turn, and why the two never run
-///   together. The one exception is a frame that cannot block: a
-///   synchronous resource destructor or a `post-return` run from a
-///   trampoline.
-/// - A suspended thread resumes outside any poll of a driver. The
-///   scheduler's state is therefore reachable from a trampoline
-///   without a driver on the stack. It rides in the core store's
-///   data, which the runtime layer hands every trampoline as a
-///   context, so a blocking built-in reaches the seam, the queues,
-///   and the host tasks through [`StoreContext`] and captures
-///   nothing.
+/// The second duty has no method, because no host frame can perform
+/// it: a host function is not WebAssembly, so a suspension from
+/// inside one would put a frame that is not WebAssembly on the
+/// thread's stack. Both providers suspend in WebAssembly instead, in
+/// the switch module, a small core module the polyfill generates for
+/// each store. A guest imports the switch module's shim for each
+/// blocking built-in in place of the host trampoline. The shim calls
+/// a host function that tries the built-in and returns at once. It
+/// returns the built-in's result when it is ready, and otherwise
+/// suspends in the provider's own form of suspension and tries again
+/// once the thread resumes. The try and the finish of the built-in
+/// are host frames that return before the shim suspends, so they are
+/// not on the stack at the point of suspension. That is also how the
+/// third duty hands the thread the built-in's result: the shim's
+/// retry computes it after the resume.
 ///
-/// A provider needs nothing more from the store than the condition
-/// it is handed. A blocking built-in's condition only reads the
-/// store: it changes nothing, polls no host future, and runs no
-/// guest code. What makes it hold is done by the scheduler's turns,
-/// which run while the thread is suspended. A synchronous lower of a
-/// host `async` function parks its future among the store's host
-/// tasks, so a driver of the same store knows the future is pending
-/// and polls it with the driver's waker, as it polls every host
-/// task. The poll that completes it resolves the call, and that
-/// makes the waiting thread ready.
+/// The switch module also wraps each thread entry. The wrapper calls
+/// the entry and hands its results to a host function before it
+/// returns, so the provider has them the moment the entry finishes,
+/// whether or not it suspended on the way.
+///
+/// A resumption returns when the thread suspends again or finishes.
+/// The stack-switching provider does both at once, inside the call.
+///
+/// The provider is shared and never taken out of the store while a
+/// thread is suspended, so both methods take `&self`. A caller that
+/// reaches the provider through the store clones its handle first,
+/// and hands the store in beside it.
 pub trait SuspendProvider<T: 'static>: 'static {
-    /// Suspend the current guest thread until `condition` holds.
+    /// Start `entry` with `args` as `thread`, on a stack of its own,
+    /// and run it until it finishes or first suspends.
     ///
-    /// The provider returns `Ok(())` once the thread has resumed
-    /// with the condition true. It returns a scheduler error when it
-    /// cannot serve the block — a thread that must not block, or a
-    /// condition nothing can still make true.
+    /// The caller is the scheduler or a trampoline. From a
+    /// trampoline this is a nested start: the new thread runs above
+    /// the trampoline's frame, and control comes back to the
+    /// trampoline when the thread suspends or finishes.
     ///
-    /// `condition` is consulted against the store, so a provider
-    /// that hands control back to the scheduler between checks sees
-    /// whatever the turns in between produced. It only reads the
-    /// store, so the provider can consult it as often as it likes.
-    fn suspend(
-        &mut self,
+    /// It answers the entry's results when the entry finished, and
+    /// [`EntryStatus::Suspended`] when it suspended, in which case
+    /// the provider keeps the thread until a [`resume`](Self::resume)
+    /// names it. It fails with the entry's trap, or when the provider
+    /// has no wrapper for the entry's type.
+    fn start(
+        &self,
         store: &mut StoreContext<'_, T>,
-        condition: &mut dyn FnMut(&mut StoreContext<'_, T>) -> bool,
-    ) -> Result<()>;
+        thread: ThreadId,
+        entry: &RuntimeFunc,
+        args: &[RuntimeVal],
+    ) -> Result<EntryStatus>;
+
+    /// Resume the suspended `thread`, and run it until it finishes or
+    /// suspends again. It answers as [`start`](Self::start) does, and
+    /// fails when `thread` is not suspended.
+    fn resume(&self, store: &mut StoreContext<'_, T>, thread: ThreadId) -> Result<EntryStatus>;
 }

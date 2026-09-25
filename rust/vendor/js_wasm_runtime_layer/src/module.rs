@@ -142,14 +142,18 @@ pub(crate) fn parse_module(bytes: &[u8]) -> Result<ParsedModule> {
     parser.parse_all(bytes).try_for_each(|payload| {
         match payload? {
             wasmparser::Payload::TypeSection(section) => {
+                // PATCH (wcmp): every subtype of every recursion group
+                // takes its index, and a type the runtime layer cannot
+                // name, such as a continuation type or a function type
+                // over a typed reference, takes it as `None`. Only an
+                // import or export of such a type is an error, so a
+                // module that keeps them inside itself parses, and the
+                // engine decides whether it compiles.
                 for ty in section {
                     let ty = ty?;
 
-                    let mut subtypes = ty.types();
-                    let subtype = subtypes.next();
-
-                    let ty = match (subtype, subtypes.next()) {
-                        (Some(subtype), None) => match &subtype.composite_type {
+                    for subtype in ty.types() {
+                        let ty = match &subtype.composite_type {
                             wasmparser::CompositeType {
                                 inner: wasmparser::CompositeInnerType::Func(func_type),
                                 shared: false,
@@ -160,20 +164,24 @@ pub(crate) fn parse_module(bytes: &[u8]) -> Result<ParsedModule> {
                                     .params()
                                     .iter()
                                     .map(value_type_from)
-                                    .collect::<Result<ArgumentVec<_>>>()?;
+                                    .collect::<Result<ArgumentVec<_>>>();
                                 let results = func_type
                                     .results()
                                     .iter()
                                     .map(value_type_from)
-                                    .collect::<Result<ArgumentVec<_>>>()?;
-                                FuncType::new(params, results)
+                                    .collect::<Result<ArgumentVec<_>>>();
+                                match (params, results) {
+                                    (Ok(params), Ok(results)) => {
+                                        Some(FuncType::new(params, results))
+                                    }
+                                    _ => None,
+                                }
                             }
-                            _ => unreachable!(),
-                        },
-                        _ => unimplemented!(),
-                    };
+                            _ => None,
+                        };
 
-                    types.push(ty);
+                        types.push(ty);
+                    }
                 }
             }
             wasmparser::Payload::FunctionSection(section) => {
@@ -189,7 +197,9 @@ pub(crate) fn parse_module(bytes: &[u8]) -> Result<ParsedModule> {
                 for table in section {
                     let table = table?;
 
-                    tables.push(table_type_from(&table.ty)?);
+                    // PATCH (wcmp): a table of references the runtime
+                    // layer cannot name is an error only when exported.
+                    tables.push(table_type_from(&table.ty).ok());
                 }
             }
             wasmparser::Payload::MemorySection(section) => {
@@ -226,13 +236,18 @@ pub(crate) fn parse_module(bytes: &[u8]) -> Result<ParsedModule> {
                     let import = import?;
                     let ty = match import.ty {
                         wasmparser::TypeRef::Func(index) => {
-                            let sig = types[index as usize].clone().with_name(import.name);
-                            functions.push(sig.clone());
+                            // PATCH (wcmp): an import of a type the runtime
+                            // layer cannot name is an error.
+                            let Some(sig) = types[index as usize].clone() else {
+                                bail!("function import of a type the wasm_runtime_layer cannot name")
+                            };
+                            let sig = sig.with_name(import.name);
+                            functions.push(Some(sig.clone()));
                             ExternType::Func(sig)
                         }
                         wasmparser::TypeRef::Table(ty) => {
                             // functions.push(sig.clone());
-                            tables.push(table_type_from(&ty)?);
+                            tables.push(Some(table_type_from(&ty)?));
                             ExternType::Table(table_type_from(&ty)?)
                         }
                         // PATCH (wcmp): imported memories and globals take
@@ -270,10 +285,20 @@ pub(crate) fn parse_module(bytes: &[u8]) -> Result<ParsedModule> {
                     let export = export?;
                     let index = export.index as usize;
                     let ty = match export.kind {
-                        wasmparser::ExternalKind::Func => {
-                            ExternType::Func(functions[index].clone().with_name(export.name))
-                        }
-                        wasmparser::ExternalKind::Table => ExternType::Table(tables[index]),
+                        // PATCH (wcmp): an export of a type the runtime
+                        // layer cannot name is an error.
+                        wasmparser::ExternalKind::Func => match functions[index].clone() {
+                            Some(ty) => ExternType::Func(ty.with_name(export.name)),
+                            None => bail!(
+                                "function export of a type the wasm_runtime_layer cannot name"
+                            ),
+                        },
+                        wasmparser::ExternalKind::Table => match tables[index] {
+                            Some(ty) => ExternType::Table(ty),
+                            None => bail!(
+                                "table export of a type the wasm_runtime_layer cannot name"
+                            ),
+                        },
                         wasmparser::ExternalKind::Memory => ExternType::Memory(memories[index]),
                         wasmparser::ExternalKind::Global => ExternType::Global(globals[index]),
                         // PATCH (wcmp): an error instead of a panic.

@@ -28,7 +28,7 @@
 //! reference says so of every destructor, and Wasmtime runs one as a
 //! synchronous call whose block traps with `CannotBlockSyncTask`. A
 //! block inside a destructor therefore fails with the cannot-block
-//! cause, whether or not a suspend provider fills the seam, and an
+//! cause, whatever provider the engine selected, and an
 //! import lowered with the `async` option, which does not block,
 //! leaves its host task to a later turn.
 
@@ -39,11 +39,10 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use std::sync::{Arc, Mutex};
 
-use crate::concurrency::SuspendProvider;
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
     Accessor, Component, Engine, Error, HostCall, Instance, Linker, ResourceHandle, Result,
-    SchedulerCause, Store, StoreContext, Val,
+    SchedulerCause, Store, Val,
 };
 use wcmp_macros::component;
 
@@ -653,22 +652,6 @@ impl<V: Unpin> Future for PendingOnce<V> {
     }
 }
 
-/// A suspend provider that counts the suspensions it was handed and
-/// returns from each at once, as one that suspended and resumed
-/// would.
-struct Counted(Arc<Mutex<usize>>);
-
-impl SuspendProvider<()> for Counted {
-    fn suspend(
-        &mut self,
-        _store: &mut StoreContext<'_, ()>,
-        _condition: &mut dyn FnMut(&mut StoreContext<'_, ()>) -> bool,
-    ) -> Result<()> {
-        *self.0.lock().expect("provider calls") += 1;
-        Ok(())
-    }
-}
-
 /// Check what a release whose destructor blocked left behind: the
 /// cannot-block cause with Wasmtime's wording, a destructor that ran
 /// inside a turn that has ended, and nothing of the destructor, its
@@ -783,45 +766,6 @@ async fn it_fails_a_host_release_whose_destructor_blocks_on_a_pending_host_task(
     assert_blocked_release(&mut released, &err);
 }
 
-#[wcmp_macros::test]
-async fn it_fails_a_blocking_destructor_with_the_cannot_block_cause_under_a_suspend_provider() {
-    // A provider would let a task that is allowed to block suspend
-    // and the store run on. A destructor is not such a task, so the
-    // seam never hands its block to the provider: the block fails
-    // with the cannot-block cause exactly as it does with the slot
-    // empty.
-    let mut released =
-        host_release_caller(HOST_RELEASE_CALLS_A_HOST_ASYNC_IMPORT, never_answers).await;
-    let calls = Arc::new(Mutex::new(0usize));
-    released
-        .store
-        .internal()
-        .scheduler_mut()
-        .suspend_seam_mut()
-        .set_provider(Counted(calls.clone()));
-
-    let err = released
-        .store
-        .resource_drop(released.handle)
-        .expect_err("a destructor may not block, whatever fills the seam");
-
-    assert_blocked_release(&mut released, &err);
-    assert_eq!(
-        *calls.lock().expect("provider calls"),
-        0,
-        "the seam did not hand the destructor's block to the provider"
-    );
-    assert!(
-        released
-            .store
-            .internal()
-            .scheduler()
-            .suspend_seam()
-            .has_provider(),
-        "the provider is still in its slot"
-    );
-}
-
 /// A component whose locally-defined resource has a destructor that
 /// calls an `async`-typed `answer` import lowered without the
 /// `async` option, so the call blocks until the host's future
@@ -869,9 +813,8 @@ async fn it_fails_a_guest_drop_whose_destructor_blocks_with_the_cannot_block_cau
     // host's release does, so the destructor's task holds its
     // instance's may-not-suspend flag here too. The export that drops
     // the handle is `async`-typed and may block, so without that flag
-    // the seam would hand the block to the provider installed below,
-    // and with the slot empty would fail it with the stack-switch
-    // cause instead.
+    // the seam would fail the block with the stack-switch cause
+    // instead, because the host task it waits on is pending.
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, GUEST_DROP_BLOCKS)
         .await
@@ -883,13 +826,6 @@ async fn it_fails_a_guest_drop_whose_destructor_blocks_with_the_cannot_block_cau
         .instantiate(&mut store, &component)
         .await
         .expect("instantiate");
-    let calls = Arc::new(Mutex::new(0usize));
-    store
-        .internal()
-        .scheduler_mut()
-        .suspend_seam_mut()
-        .set_provider(Counted(calls.clone()));
-
     let run = instance.get_func("run").expect("run export");
     let err = run
         .call(&mut store, &[])
@@ -903,11 +839,6 @@ async fn it_fails_a_guest_drop_whose_destructor_blocks_with_the_cannot_block_cau
     assert!(
         chain(&err).contains("cannot block a synchronous task before returning"),
         "the cause carries the words of Wasmtime's `CannotBlockSyncTask`, got {err:?}"
-    );
-    assert_eq!(
-        *calls.lock().expect("provider calls"),
-        0,
-        "the seam did not hand the destructor's block to the provider"
     );
     assert_eq!(
         store.internal().scheduler().host_task_count(),

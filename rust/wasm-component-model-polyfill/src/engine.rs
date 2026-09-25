@@ -10,6 +10,7 @@
 //! delegated to a backend's component runtime.
 
 use crate::backend::Backend;
+use crate::concurrency::SwitchProbe;
 use crate::engine_config::EngineConfig;
 use crate::error::Result;
 use crate::internal::{EngineConfigInternal, EngineInternal};
@@ -52,10 +53,16 @@ impl Engine {
     /// [`suspend_provider`](Self::suspend_provider).
     #[allow(clippy::unnecessary_wraps)]
     pub fn with_config(config: &EngineConfig) -> Result<Self> {
+        let inner = wasm_runtime_layer::Engine::new(Backend::default());
+        let suspend_provider = select_suspend_provider(
+            config.suspend_provider_enabled(),
+            || SwitchProbe::new().passes(&inner),
+            jspi_probe_passes,
+        );
         Ok(Self {
-            inner: wasm_runtime_layer::Engine::new(Backend::default()),
+            inner,
             config: config.clone(),
-            suspend_provider: select_suspend_provider(config),
+            suspend_provider,
         })
     }
 
@@ -74,8 +81,18 @@ impl Engine {
     /// with [`SchedulerCause::StackSwitchNeeded`]. A host reads the
     /// answer to explain that failure. The engine answers
     /// [`SuspendProviderKind::None`] when
-    /// [`EngineConfig::suspend_provider`] turned the provider off,
-    /// and on both targets today, because no probe exists yet.
+    /// [`EngineConfig::suspend_provider`] turned the provider off.
+    /// Otherwise it answers
+    /// [`SuspendProviderKind::StackSwitching`] where the engine runs
+    /// the switch probe, a thread that suspends and resumes through
+    /// the WebAssembly stack-switching instructions, which the native
+    /// engine does on x86_64 Linux. It answers
+    /// [`SuspendProviderKind::None`] on every other target today,
+    /// because the JSPI probe does not exist yet.
+    ///
+    /// The scheduler does not run guest threads through the selected
+    /// provider yet: today a blocking built-in runs the waiting work in
+    /// a nested turn whatever the answer is.
     ///
     /// Wasmtime has no counterpart, because its fibers always exist.
     ///
@@ -92,34 +109,32 @@ impl EngineInternal for Engine {
 }
 
 /// Select the provider that fills the suspend capability of an
-/// engine built from `config`.
+/// engine, in the order the engine fixes: the host's opt-out,
+/// `enabled`, then the switch probe, then the JSPI probe, then no
+/// provider.
 ///
-/// The host's opt-out comes ahead of every probe. The
-/// stack-switching provider comes before the JSPI provider because
-/// it resumes a thread synchronously, so its scheduling order
-/// matches the native order with no microtask between two items. No
-/// engine offers both today, so that order decides nothing yet. Each
-/// probe is small and synchronous, so construction stays
-/// synchronous.
-fn select_suspend_provider(config: &EngineConfig) -> SuspendProviderKind {
-    if !config.suspend_provider_enabled() {
+/// The host's opt-out comes ahead of every probe, and a probe the
+/// order does not reach never runs. The stack-switching provider
+/// comes before the JSPI provider because it resumes a thread
+/// synchronously, so its scheduling order matches the native order
+/// with no microtask between two items. No engine offers both today,
+/// so that order decides nothing yet. Each probe is small and
+/// synchronous, so construction stays synchronous.
+fn select_suspend_provider(
+    enabled: bool,
+    switch_probe: impl FnOnce() -> bool,
+    jspi_probe: impl FnOnce() -> bool,
+) -> SuspendProviderKind {
+    if !enabled {
         return SuspendProviderKind::None;
     }
-    if switch_probe_passes() {
+    if switch_probe() {
         return SuspendProviderKind::StackSwitching;
     }
-    if jspi_probe_passes() {
+    if jspi_probe() {
         return SuspendProviderKind::Jspi;
     }
     SuspendProviderKind::None
-}
-
-/// Whether the engine runs a thread that suspends and resumes
-/// through the WebAssembly stack-switching instructions. The
-/// polyfill has no switch module to probe with yet, so the probe
-/// never passes.
-fn switch_probe_passes() -> bool {
-    false
 }
 
 /// Whether the browser offers JavaScript Promise Integration. The
@@ -127,4 +142,99 @@ fn switch_probe_passes() -> bool {
 /// passes, on the native target or in the browser.
 fn jspi_probe_passes() -> bool {
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::concurrency::SwitchProbe;
+
+    /// A probe the selection must not reach.
+    fn unreached() -> bool {
+        panic!("the selection ran a probe after its answer was settled")
+    }
+
+    #[wcmp_macros::test]
+    fn it_selects_no_provider_ahead_of_every_probe_when_the_host_opts_out() {
+        assert_eq!(
+            select_suspend_provider(false, unreached, unreached),
+            SuspendProviderKind::None
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_selects_the_stack_switching_provider_before_the_jspi_provider() {
+        assert_eq!(
+            select_suspend_provider(true, || true, unreached),
+            SuspendProviderKind::StackSwitching,
+            "a passing switch probe settles the answer, so the JSPI probe \
+             never runs"
+        );
+        assert_eq!(
+            select_suspend_provider(true, || false, || true),
+            SuspendProviderKind::Jspi
+        );
+        assert_eq!(
+            select_suspend_provider(true, || false, || false),
+            SuspendProviderKind::None
+        );
+    }
+
+    /// The probe module with a thread that suspends a second time
+    /// where it should return, so `run` answers that the thread
+    /// suspended again rather than finished.
+    const NEVER_FINISHES: &[u8] = wcmp_macros::wasm!(
+        r#"
+        (module
+          (type (func))
+          (type (cont 0))
+          (tag (type 0))
+          (func (type 0)
+            suspend 0
+            suspend 0)
+          (elem declare func 0)
+          (func (export "run") (result i32)
+            (local (ref null 1))
+            block (result (ref 1))
+              ref.func 0
+              cont.new 1
+              resume 1 (on 0 0)
+              i32.const 0
+              return
+            end
+            local.set 0
+            block (result (ref 1))
+              local.get 0
+              resume 1 (on 0 0)
+              i32.const 1
+              return
+            end
+            drop
+            i32.const 2))
+        "#
+    );
+
+    #[wcmp_macros::test]
+    fn it_selects_no_provider_when_the_probe_thread_does_not_finish() {
+        let engine = Engine::new().expect("engine");
+        let probe = SwitchProbe::over(NEVER_FINISHES);
+
+        assert!(
+            !probe.passes(engine.inner()),
+            "a thread that suspends where it should finish fails the probe"
+        );
+        assert_eq!(
+            select_suspend_provider(true, || probe.passes(engine.inner()), jspi_probe_passes),
+            SuspendProviderKind::None,
+            "a failed probe selects no provider"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_fails_the_probe_for_a_module_the_engine_rejects() {
+        let engine = Engine::new().expect("engine");
+
+        assert!(!SwitchProbe::over(b"\0asm\x01\0\0\0\x0d").passes(engine.inner()));
+    }
 }

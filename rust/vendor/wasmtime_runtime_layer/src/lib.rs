@@ -128,7 +128,10 @@ macro_rules! delegate {
     }
 }
 
-delegate! { #[derive(Clone, Default)] Engine[](wasmtime::Engine) }
+// PATCH (wcmp): `Default` is written out below rather than derived, so
+// that the default engine turns on the stack-switching proposal where
+// Wasmtime implements it.
+delegate! { #[derive(Clone)] Engine[](wasmtime::Engine) }
 delegate! { #[derive(Clone)] ExternRef[](wasmtime::Rooted<wasmtime::ExternRef>) }
 delegate! { #[derive(Clone)] Func[](wasmtime::Func) }
 delegate! { #[derive(Clone)] Global[](wasmtime::Global) }
@@ -138,6 +141,28 @@ delegate! { #[derive()] Store[<T>](wasmtime::Store<T>) <T: 'static> }
 delegate! { #[derive()] StoreContext[<'a, T>](wasmtime::StoreContext<'a, T>) <'a, T: 'static> }
 delegate! { #[derive()] StoreContextMut[<'a, T>](wasmtime::StoreContextMut<'a, T>) <'a, T: 'static> }
 delegate! { #[derive(Clone)] Table[](wasmtime::Table) }
+
+// PATCH (wcmp): the default engine turns on the WebAssembly
+// stack-switching proposal on x86_64 Linux, the one platform where the
+// polyfill relies on Wasmtime 49's implementation of it. The proposal
+// turns off Wasmtime's compiler inlining, which is off by default and
+// can then no longer be turned on. An engine that refuses the
+// configuration falls back to Wasmtime's default one, so that the
+// embedder's probe finds no stack switching rather than the
+// constructor panicking.
+impl Default for Engine {
+    fn default() -> Self {
+        #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+        {
+            let mut config = wasmtime::Config::new();
+            config.wasm_stack_switching(true);
+            if let Ok(engine) = wasmtime::Engine::new(&config) {
+                return Self::new(engine);
+            }
+        }
+        Self::new(wasmtime::Engine::default())
+    }
+}
 
 impl WasmEngine for Engine {
     type ExternRef = ExternRef;

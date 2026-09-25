@@ -1,6 +1,7 @@
 //! The scheduler's one suspend capability, and the nested turn it
 //! falls back to.
 
+use std::marker::PhantomData;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::error::{Error, Result, SchedulerCause};
@@ -8,36 +9,22 @@ use crate::resource::HandleTables;
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 
-use super::SuspendProvider;
 use super::outcome::Outcome;
 use super::readiness::Readiness;
 use super::scheduler::SPIN_BUDGET;
 use super::subtask_id::SubtaskId;
 use super::thread_id::ThreadId;
 
-/// The boxed provider of the suspend capability, with the `Send`
-/// bound the native target puts on everything a store holds. It is
-/// the bound a host task's future carries, and no more: a store is
-/// `Send` and not `Sync` today, so nothing in it needs `Sync`.
-#[cfg(not(target_arch = "wasm32"))]
-type BoxedProvider<T> = Box<dyn SuspendProvider<T> + Send>;
-
-/// The boxed provider of the suspend capability. The browser drops
-/// the `Send` bound, as it does for a host task's future: the
-/// provider it will hold is a JavaScript object.
-#[cfg(target_arch = "wasm32")]
-type BoxedProvider<T> = Box<dyn SuspendProvider<T>>;
-
 /// A thread's wait as the try part recorded it, and its pairing with
 /// the end of the wait.
 ///
 /// The wait ends when the guard is dropped, whether the wait returned
-/// or unwound. An item a nested turn runs, a host task it polls, and
-/// a provider can each panic, and a thread whose record kept the
-/// condition after its frame was gone would stay among the waiting
-/// threads for the life of the store. The record lives behind the
-/// store's handle tables, so the guard holds a handle to them, as a
-/// turn's guard does.
+/// or unwound. An item a nested turn runs and a host task it polls
+/// can each panic, and a thread whose record kept the condition
+/// after its frame was gone would stay among the waiting threads for
+/// the life of the store. The record lives behind the store's handle
+/// tables, so the guard holds a handle to them, as a turn's guard
+/// does.
 ///
 /// The lock is read past a poison without clearing it. The panic the
 /// wait unwound with can have poisoned it, and the wait ends all the
@@ -105,9 +92,13 @@ impl Drop for Waiting {
 /// [`give_way`](Self::give_way), because a yield waits for nothing
 /// but its turn.
 ///
-/// The seam is a slot a target fills with a [`SuspendProvider`], and
-/// the polyfill fills it on neither target today, so every block
-/// takes the fallback below.
+/// A blocking built-in reaches the seam through a host trampoline.
+/// A host frame cannot suspend a guest stack: a provider suspends a
+/// thread only in WebAssembly, in a shim of the switch module, with
+/// nothing but WebAssembly frames between the start of the thread's
+/// stack and the suspension. Every block that reaches the seam
+/// therefore takes the fallback below, whatever provider the engine
+/// selected.
 ///
 /// The fallback is a nested turn, run from inside the guest call
 /// that blocked. It runs the guest work of other tasks that is
@@ -182,11 +173,8 @@ impl Drop for Waiting {
 ///   the condition still does not hold. That is the case of a start
 ///   function, of a host call into a synchronous export, of a
 ///   synchronous call between two components, and of a resource
-///   destructor. The rule holds whether or not the provider slot is
-///   filled: a provider would let the store run on while the task is
-///   suspended, which is the block the reference forbids it. A task
-///   that is allowed to block runs every ready item and polls every
-///   woken host task.
+///   destructor. A task that is allowed to block runs every ready
+///   item and polls every woken host task.
 /// - **The seam keeps one budget, and past it the call fails with
 ///   the stack-switch cause.** This is the polyfill's one departure
 ///   from the reference, which bounds neither the yielded item the
@@ -213,8 +201,7 @@ impl Drop for Waiting {
 ///   The bound is a budget and not a proof: a yielder that
 ///   converges after more than [`SPIN_BUDGET`] turns of its own
 ///   would be cut short by it, which is why the number is drawn
-///   generously. A target that fills the provider slot never
-///   consults it.
+///   generously.
 ///
 ///   [`SchedulerCause::StackSwitchNeeded`]: crate::error::SchedulerCause::StackSwitchNeeded
 /// - **Nested turns nest.** An item a nested turn runs can block
@@ -232,10 +219,6 @@ impl Drop for Waiting {
 /// function there too. An item a turn runs which calls one of those
 /// imports again is a second call of a host function already on the
 /// stack, and both backends enter a host function at any depth.
-///
-/// A provider in the slot serves a block without any of that, for a
-/// task that is allowed to block. It suspends the thread and ends
-/// the turn, and no nested turn runs.
 ///
 /// A nested executor that blocks the native thread is not an option
 /// here. It deadlocks under a current-thread executor, tokio forbids
@@ -260,39 +243,21 @@ impl Drop for Waiting {
 /// blocking built-in gets a nested turn, and an item that nested
 /// turn runs which reaches the seam again gets one of its own.
 pub struct SuspendSeam<T: 'static> {
-    provider: Option<BoxedProvider<T>>,
     unserved_turns: u32,
     served_mark: (u64, u64),
+    /// The seam serves the stores of one host data type, whose
+    /// context each of its entries takes.
+    store: PhantomData<fn(T)>,
 }
 
 impl<T: 'static> SuspendSeam<T> {
-    /// Construct the seam with its provider slot empty, which is
-    /// what both targets start with.
+    /// Construct the seam, with no nested turn noted yet.
     pub fn new() -> Self {
         Self {
-            provider: None,
             unserved_turns: 0,
             served_mark: (0, 0),
+            store: PhantomData,
         }
-    }
-
-    /// Whether a target has filled the capability.
-    pub fn has_provider(&self) -> bool {
-        self.provider.is_some()
-    }
-
-    /// Fill the capability with `provider`.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn set_provider(&mut self, provider: impl SuspendProvider<T> + Send) {
-        self.provider = Some(Box::new(provider));
-    }
-
-    /// Fill the capability with `provider`. See the native
-    /// definition; the `Send` half of the bound is absent here, as it
-    /// is on a host task's future.
-    #[cfg(target_arch = "wasm32")]
-    pub fn set_provider(&mut self, provider: impl SuspendProvider<T>) {
-        self.provider = Some(Box::new(provider));
     }
 
     /// Wait until `readiness` holds, which is the whole of what the
@@ -304,11 +269,10 @@ impl<T: 'static> SuspendSeam<T> {
     /// built-in ready, and the seam returns at once: a wait whose set
     /// already holds an event, a copy whose end already holds its
     /// event, a call that already resolved. Otherwise the thread
-    /// suspends until the condition holds, through the provider or
-    /// the fallback, under the rules the type states. The wait ends
-    /// before the seam returns, whichever way it went, so the
-    /// thread's record never keeps a condition it is no longer
-    /// suspended on.
+    /// suspends until the condition holds, through the fallback, under
+    /// the rules the type states. The wait ends before the seam
+    /// returns, whichever way it went, so the thread's record never
+    /// keeps a condition it is no longer suspended on.
     ///
     /// It returns `Ok(())` with the condition true, and otherwise the
     /// scheduler error the built-in traps with. The finish part of
@@ -335,7 +299,7 @@ impl<T: 'static> SuspendSeam<T> {
             Readiness::Subtask { subtask } => Some(subtask),
             _ => None,
         };
-        Self::serve(store, &condition, call)
+        Self::run_nested_turns(store, &condition, call)
     }
 
     /// Suspend the current guest thread until `condition` holds.
@@ -360,7 +324,7 @@ impl<T: 'static> SuspendSeam<T> {
         store: &mut StoreContext<'_, T>,
         condition: impl Fn(&StoreContext<'_, T>) -> bool,
     ) -> Result<()> {
-        Self::serve(store, &condition, None)
+        Self::run_nested_turns(store, &condition, None)
     }
 
     /// Give way once, which is the whole of what `thread.yield`
@@ -369,11 +333,9 @@ impl<T: 'static> SuspendSeam<T> {
     /// A yield waits for one chance to be given back control and
     /// for nothing else, so it records a condition that always
     /// holds, and it gives way whether or not that condition holds:
-    /// a yield always gives way. A target with a provider suspends
-    /// the thread once and resumes it, unless the task must not
-    /// block. Otherwise the seam runs exactly one nested turn: the
-    /// ready work of the store, or of the calling task's own instance
-    /// alone when that task must not block. A task that must not
+    /// a yield always gives way. The seam runs exactly one nested
+    /// turn: the ready work of the store, or of the calling task's own
+    /// instance alone when that task must not block. A task that must not
     /// block with no ready work of its own instance gives way to
     /// nothing, as Wasmtime runs it.
     ///
@@ -391,14 +353,6 @@ impl<T: 'static> SuspendSeam<T> {
 
     /// The one chance [`give_way`](Self::give_way) gives.
     fn give_way_once(store: &mut StoreContext<'_, T>) -> Result<()> {
-        if Self::provider_serves(store) {
-            return Self::suspend_with_provider(store, &|store: &StoreContext<'_, T>| {
-                store
-                    .internal_ref()
-                    .lock_tables()
-                    .is_ok_and(|guard| guard.tasks.readiness_holds(Readiness::Yielded))
-            });
-        }
         let waker = store.internal().active_waker();
         let only = store.internal().must_not_block_instance();
         store.internal().nested_turn(&waker, only)?;
@@ -406,85 +360,6 @@ impl<T: 'static> SuspendSeam<T> {
             return Err(Error::Scheduler(SchedulerCause::StackSwitchNeeded));
         }
         Ok(())
-    }
-
-    /// Suspend until `condition` holds, through the provider when
-    /// one serves the current task and through the fallback
-    /// otherwise.
-    ///
-    /// The provider slot is consulted first. When a target fills
-    /// the capability the thread suspends there, and no guest code
-    /// is entered from the trampoline this runs in — which is what a
-    /// provider that switches stacks needs. The nested turn runs
-    /// only when the slot is empty or the task must not block, so
-    /// the two never meet.
-    ///
-    /// A task that must not block never reaches the provider. A
-    /// provider suspends the thread and lets the store run on, which
-    /// is the block the reference forbids such a task; the nested
-    /// turn gives way to the task's own instance alone and then fails
-    /// with the cannot-block cause, which is the whole of what the
-    /// reference allows it.
-    ///
-    /// `call` names the subtask of a synchronous lower the wait is
-    /// for, whose parked host task the fallback polls.
-    fn serve(
-        store: &mut StoreContext<'_, T>,
-        condition: &dyn Fn(&StoreContext<'_, T>) -> bool,
-        call: Option<SubtaskId>,
-    ) -> Result<()> {
-        if Self::provider_serves(store) {
-            return Self::suspend_with_provider(store, condition);
-        }
-        Self::run_nested_turns(store, condition, call)
-    }
-
-    /// Whether the target's provider serves a suspension of the
-    /// current task: the slot is filled and the task is allowed to
-    /// block. A task whose instance may not suspend — a synchronous
-    /// call that has not returned, a start function, or a resource
-    /// destructor — takes the nested turn whatever the slot holds.
-    fn provider_serves(store: &mut StoreContext<'_, T>) -> bool {
-        store.internal().scheduler().suspend_seam().has_provider()
-            && store.internal().must_not_block_instance().is_none()
-    }
-
-    /// Hand the suspension to the target's provider. The provider
-    /// leaves the slot for the duration of the call, because it runs
-    /// against the store the slot sits in, and goes back into it
-    /// afterwards — whether the call returned or unwound. A provider
-    /// a panic swallowed would leave the seam with an empty slot for
-    /// the life of the store, and every later suspension would take
-    /// the nested-turn fallback on a target that had a provider.
-    ///
-    /// The provider is handed `condition` and nothing else. It only
-    /// reads the store, so the provider can evaluate it as often as it
-    /// likes, and a host future the thread waits on is polled by the
-    /// turns the scheduler runs while the thread is suspended, never
-    /// by the condition.
-    fn suspend_with_provider(
-        store: &mut StoreContext<'_, T>,
-        condition: &dyn Fn(&StoreContext<'_, T>) -> bool,
-    ) -> Result<()> {
-        let Some(mut provider) = store
-            .internal()
-            .scheduler_mut()
-            .suspend_seam_mut()
-            .provider
-            .take()
-        else {
-            return Self::run_nested_turns(store, condition, None);
-        };
-        // `provider` stays in this frame. The closure only borrows
-        // it, so an unwind through the call leaves it here to put
-        // back rather than dropping it inside the closure.
-        let outcome = Self::caught(|| {
-            provider.suspend(&mut *store, &mut |store: &mut StoreContext<'_, T>| {
-                condition(store)
-            })
-        });
-        store.internal().scheduler_mut().suspend_seam_mut().provider = Some(provider);
-        Self::resume(outcome)
     }
 
     /// The fallback: turns of the store's scheduler run from inside
@@ -618,31 +493,6 @@ impl<T: 'static> SuspendSeam<T> {
         };
         seam.unserved_turns > SPIN_BUDGET
     }
-
-    /// Run `body` and hand back what it did, an unwind included.
-    ///
-    /// The seam cannot pair the provider it borrows with a guard the
-    /// way it pairs a thread's wait. The wait lives behind the store's
-    /// handle tables, which a guard can hold a handle to; the provider
-    /// lives on the store itself, and the body needs the store
-    /// mutably for as long as it runs, so no value can hold both.
-    /// The seam therefore catches the unwind, puts back what it
-    /// borrowed, and lets the panic carry on from where it was. The
-    /// browser aborts on a panic rather than unwinding, so there
-    /// nothing is ever caught and the path that returns is the whole
-    /// of it.
-    fn caught<R>(body: impl FnOnce() -> R) -> std::thread::Result<R> {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(body))
-    }
-
-    /// Hand back what [`caught`](Self::caught) returned: the value,
-    /// or the panic, continuing its unwind.
-    fn resume<R>(outcome: std::thread::Result<R>) -> R {
-        match outcome {
-            Ok(value) => value,
-            Err(panic) => std::panic::resume_unwind(panic),
-        }
-    }
 }
 
 impl<T: 'static> Default for SuspendSeam<T> {
@@ -758,49 +608,6 @@ mod tests {
                 Poll::Pending
             }
         }
-    }
-
-    /// A provider that records that the seam consulted it and
-    /// returns at once, as one that suspended and resumed would.
-    struct Recorded(Arc<Mutex<usize>>);
-
-    impl SuspendProvider<()> for Recorded {
-        fn suspend(
-            &mut self,
-            _store: &mut StoreContext<'_, ()>,
-            _condition: &mut dyn FnMut(&mut StoreContext<'_, ()>) -> bool,
-        ) -> Result<()> {
-            *self.0.lock().expect("provider calls") += 1;
-            Ok(())
-        }
-    }
-
-    /// A provider that panics where one that switched stacks would
-    /// have suspended.
-    #[cfg(not(target_arch = "wasm32"))]
-    struct Panics;
-
-    #[cfg(not(target_arch = "wasm32"))]
-    impl SuspendProvider<()> for Panics {
-        fn suspend(
-            &mut self,
-            _store: &mut StoreContext<'_, ()>,
-            _condition: &mut dyn FnMut(&mut StoreContext<'_, ()>) -> bool,
-        ) -> Result<()> {
-            panic!("the provider panicked")
-        }
-    }
-
-    /// Run `body` and catch the panic it is expected to unwind
-    /// with, keeping the report of that panic out of the test's
-    /// output.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn unwind<R>(body: impl FnOnce() -> R) -> std::thread::Result<R> {
-        let hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
-        std::panic::set_hook(hook);
-        outcome
     }
 
     fn store() -> Store<()> {
@@ -980,18 +787,6 @@ mod tests {
             Err(error) => error.to_string(),
             Ok(()) => "the seam returned with the condition held".to_owned(),
         }
-    }
-
-    #[wcmp_macros::test]
-    fn it_has_an_empty_provider_slot_on_both_targets() {
-        let mut owner = store();
-        let mut store = owner.internal().context();
-
-        assert!(
-            !store.internal().scheduler().suspend_seam().has_provider(),
-            "the capability is filled on neither target, so every suspension \
-             takes the nested turn"
-        );
     }
 
     #[wcmp_macros::test]
@@ -1465,102 +1260,6 @@ mod tests {
             polls.lock().expect("polls").clone(),
             vec![true],
             "the nested turn polled with a waker that wakes the driver's own"
-        );
-    }
-
-    #[wcmp_macros::test]
-    fn it_consults_the_provider_slot_before_it_falls_back_to_a_nested_turn() {
-        let mut owner = store();
-        let mut store = owner.internal().context();
-        let calls = Arc::new(Mutex::new(0usize));
-        store
-            .internal()
-            .scheduler_mut()
-            .suspend_seam_mut()
-            .set_provider(Recorded(calls.clone()));
-
-        // Ready guest work a nested turn would have run.
-        let log = log();
-        store
-            .internal()
-            .scheduler_mut()
-            .push_high_priority(marker(&log, "the nested turn"));
-
-        let outcome = store
-            .internal()
-            .run_in_turn(Waker::noop(), |store| {
-                SuspendSeam::suspend(store, |_| false)
-            })
-            .expect("the outer turn runs");
-
-        assert_eq!(
-            cause(outcome),
-            "the seam returned with the condition held",
-            "the provider served the suspension"
-        );
-        assert_eq!(
-            *calls.lock().expect("provider calls"),
-            1,
-            "the seam consulted the provider slot"
-        );
-        assert!(
-            entries(&log).is_empty(),
-            "no nested turn ran, so no guest work was entered from the frame \
-             that blocked"
-        );
-        assert_eq!(
-            store.internal().scheduler().queued_items(),
-            1,
-            "the ready item is still queued for a turn of the scheduler"
-        );
-        assert!(
-            store.internal().scheduler().suspend_seam().has_provider(),
-            "the provider went back into its slot"
-        );
-    }
-
-    #[wcmp_macros::test]
-    fn it_keeps_a_task_that_must_not_block_away_from_the_provider() {
-        let mut owner = store();
-        let mut store = owner.internal().context();
-        let calls = Arc::new(Mutex::new(0usize));
-        store
-            .internal()
-            .scheduler_mut()
-            .suspend_seam_mut()
-            .set_provider(Recorded(calls.clone()));
-        current_task(&store, true);
-
-        let outcome = store
-            .internal()
-            .run_in_turn(Waker::noop(), |store| {
-                SuspendSeam::suspend(store, |_| false)
-            })
-            .expect("the outer turn runs");
-        let yielded = store
-            .internal()
-            .run_in_turn(Waker::noop(), SuspendSeam::give_way)
-            .expect("the outer turn runs");
-
-        assert_eq!(
-            cause(outcome),
-            Error::Scheduler(SchedulerCause::CannotBlock).to_string(),
-            "a provider would have let the task block, which the reference \
-             forbids it, so the block took the nested turn and failed there"
-        );
-        assert!(
-            yielded.is_ok(),
-            "the yield gave way to nothing and returned"
-        );
-        assert_eq!(
-            *calls.lock().expect("provider calls"),
-            0,
-            "the seam consulted the provider for neither the block nor the \
-             yield"
-        );
-        assert!(
-            store.internal().scheduler().suspend_seam().has_provider(),
-            "the provider is still in its slot"
         );
     }
 
@@ -2335,33 +2034,6 @@ mod tests {
              next one runs its nested turns too"
         );
         assert_eq!(polls.lock().expect("polls").clone(), vec![true]);
-    }
-
-    // The test below is native only: the browser aborts on a
-    // panic instead of unwinding, so there is nothing to catch there
-    // and nothing the seam could be left holding.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn it_puts_the_provider_back_when_the_suspension_panicked() {
-        let mut owner = store();
-        let mut store = owner.internal().context();
-        store
-            .internal()
-            .scheduler_mut()
-            .suspend_seam_mut()
-            .set_provider(Panics);
-
-        let unwound = unwind(|| SuspendSeam::suspend(&mut store, |_| false));
-
-        assert!(
-            unwound.is_err(),
-            "the provider's panic unwound the suspension"
-        );
-        assert!(
-            store.internal().scheduler().suspend_seam().has_provider(),
-            "the provider went back into its slot, so the target still has the \
-             capability it filled"
-        );
     }
 
     /// A component whose export calls a host function and adds one

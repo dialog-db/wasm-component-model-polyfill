@@ -359,8 +359,9 @@ impl<T: 'static> Scheduler<T> {
         &self.suspend_seam
     }
 
-    /// The store's one suspend capability, mutably, which is how a
-    /// target fills its provider slot.
+    /// The store's one suspend capability, mutably, which is where
+    /// the seam keeps its count of the nested turns the store did not
+    /// serve.
     pub fn suspend_seam_mut(&mut self) -> &mut SuspendSeam<T> {
         &mut self.suspend_seam
     }

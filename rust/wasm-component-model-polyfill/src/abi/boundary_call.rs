@@ -91,9 +91,9 @@ impl BoundaryCall {
     /// `Trap::CannotBlockSyncTask`. The may-not-suspend flag is what
     /// the suspend seam reads for that rule, so a block anywhere
     /// inside the destructor fails with the cannot-block cause,
-    /// whether or not a target fills the seam's provider slot. A
-    /// host destructor has no instance to mark and needs none: it is
-    /// a synchronous closure, which cannot reach the seam.
+    /// whatever provider the engine selected. A host destructor has no
+    /// instance to mark and needs none: it is a synchronous closure,
+    /// which cannot reach the seam.
     pub fn destructor(
         tables: &Arc<Mutex<HandleTables>>,
         instance: Option<InstanceId>,

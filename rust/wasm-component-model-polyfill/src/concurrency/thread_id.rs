@@ -27,7 +27,7 @@ pub struct ThreadId {
 impl ThreadId {
     /// Name the thread record at `index` of generation `generation`.
     /// Workspace-internal: only the store's thread table mints one.
-    pub fn new(index: u32, generation: u32) -> Self {
+    pub const fn new(index: u32, generation: u32) -> Self {
         Self { index, generation }
     }
 

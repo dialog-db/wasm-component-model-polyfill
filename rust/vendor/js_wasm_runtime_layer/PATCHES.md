@@ -225,3 +225,21 @@ so that gap is gone too.
 The proposal for upstream is the shared closure and the per-call results
 buffer, which make the web backend's host functions behave as a native
 engine's do.
+
+## 11. Types the runtime layer cannot name (`src/module.rs`)
+
+Upstream's module parser reaches `unreachable!()` for a type that is not a plain
+function type, such as a continuation type of the stack-switching proposal, and
+`unimplemented!()` for a recursion group of more than one type. It also rejects
+a module that defines a table of any reference type other than `funcref` and
+`externref`. The polyfill compiles a probe module that defines a continuation
+type and a table of continuations on every target, to ask the engine whether it
+switches stacks, and in the browser that probe must fail with an error rather
+than abort the page.
+
+The patch gives every type of every recursion group its index. A type the
+runtime layer cannot name, which is any type other than a function type over
+the value types it has, takes its index as `None`, and so does a defined table
+of such references. Only an import or an export of one is an error. A module
+that keeps those types inside itself parses, and `WebAssembly.Module` decides
+whether the browser compiles it.

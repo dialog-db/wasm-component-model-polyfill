@@ -21,9 +21,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::concurrency::{InstanceId, SuspendProvider};
+use crate::concurrency::{InstanceId, Item, ItemKind, Readiness};
 use crate::store::{StoreContext, StoreContextInternalExt, StoreInternalExt};
-use crate::{Component, Engine, EngineConfig, Error, Instance, Linker, Store, Val};
+use crate::{Component, Engine, EngineConfig, Error, Instance, Linker, SchedulerCause, Store, Val};
 use wcmp_macros::component;
 
 /// A callee that returns its result and exits in its first call,
@@ -770,24 +770,16 @@ async fn it_fails_the_callers_call_when_the_callee_traps() {
     assert_eq!(subtask_count(&store), 0, "the subtask left the store");
 }
 
-/// A provider that stands in for a target that can switch stacks,
-/// and lets the gate go as the caller suspends. It lowers the
-/// backpressure of every instance, then consults the readiness
-/// condition, running one turn of the store between two checks as
-/// the scheduler would while the thread is suspended. It records
-/// whether the condition held before it gave up.
-struct OpensTheGate {
-    checks: usize,
-    held: Arc<Mutex<Option<bool>>>,
-}
-
-impl SuspendProvider<()> for OpensTheGate {
-    fn suspend(
-        &mut self,
-        store: &mut StoreContext<'_, ()>,
-        condition: &mut dyn FnMut(&mut StoreContext<'_, ()>) -> bool,
-    ) -> Result<(), Error> {
-        {
+/// An item that lets the gate go: it lowers the backpressure of every
+/// instance, and records whether a thread was waiting on the
+/// resolution of a subtask as it did. Queued as the resumption after
+/// a yield, it runs only once no other item is ready, which is from
+/// inside the nested turn of a caller that blocked.
+fn opens_the_gate(seen: &Arc<Mutex<Option<bool>>>) -> Item<()> {
+    let seen = seen.clone();
+    Item::new(
+        ItemKind::TaskStart,
+        move |store: &mut StoreContext<'_, ()>| {
             let mut guard = store.internal().lock_tables()?;
             let count = guard.tasks.instances().len();
             for index in 0..count {
@@ -798,29 +790,31 @@ impl SuspendProvider<()> for OpensTheGate {
                     record.backpressure = 0;
                 }
             }
-        }
-        for _ in 0..self.checks {
-            if condition(store) {
-                *self.held.lock().expect("record") = Some(true);
-                return Ok(());
-            }
-            let waker = store.internal().active_waker();
-            store.internal().nested_turn(&waker, None)?;
-        }
-        *self.held.lock().expect("record") = Some(false);
-        Err(Error::Scheduler(store.internal().suspend_cause()))
-    }
+            let waiting = guard.tasks.waiting_threads().iter().any(|thread| {
+                matches!(
+                    guard
+                        .tasks
+                        .thread(*thread)
+                        .and_then(|record| record.readiness),
+                    Some(Readiness::Subtask { .. })
+                )
+            });
+            *seen.lock().expect("record") = Some(waiting);
+            Ok(())
+        },
+    )
 }
 
 #[wcmp_macros::test]
 async fn it_ends_the_callers_wait_when_the_callees_start_fails() {
     // The gate holds the callee's start, so the caller, which is
     // allowed to block, waits on the resolution of the call's subtask
-    // through the provider. The provider lets the gate go, and the
-    // turn after that runs the start, which traps. A start that fails
-    // resolves the subtask as a cancellation, so the caller's
-    // condition holds and its wait ends there, and the caller's call
-    // fails with the callee's trap.
+    // in a nested turn. Nothing else is ready there, so the nested
+    // turn runs the item that lets the gate go, and the turn after
+    // that runs the start, which traps. A start that fails resolves
+    // the subtask as a cancellation, so the caller's condition holds
+    // and its wait ends there, and the caller's call fails with the
+    // callee's trap rather than with the cause of a wait that gave up.
     let (mut store, instance) = instantiate(TRAPS_AFTER_THE_GATE_UNDER_AN_ASYNC_CALLER).await;
     instance
         .get_func("block")
@@ -828,15 +822,11 @@ async fn it_ends_the_callers_wait_when_the_callees_start_fails() {
         .call(&mut store, &[])
         .await
         .expect("the callee raises its own backpressure");
-    let held = Arc::new(Mutex::new(None));
+    let seen = Arc::new(Mutex::new(None));
     store
         .internal()
         .scheduler_mut()
-        .suspend_seam_mut()
-        .set_provider(OpensTheGate {
-            checks: 8,
-            held: held.clone(),
-        });
+        .push_low_priority(opens_the_gate(&seen));
 
     let run = instance.get_func("run").expect("the caller's export");
     let err = run
@@ -845,16 +835,22 @@ async fn it_ends_the_callers_wait_when_the_callees_start_fails() {
         .expect_err("the callee's trap fails the caller's call");
 
     assert_eq!(
-        *held.lock().expect("record"),
+        *seen.lock().expect("record"),
         Some(true),
-        "the failed start met the caller's condition, so the wait ended \
-         rather than running until the provider gave up"
+        "the gate was let go while the caller waited on the subtask"
     );
     let message = chain(&err);
     assert!(
         message.contains("unreachable"),
         "expected the baseline's trap message, got {message}"
     );
+    for cause in [SchedulerCause::Deadlock, SchedulerCause::StackSwitchNeeded] {
+        assert!(
+            !message.contains(&Error::Scheduler(cause).to_string()),
+            "the failed start met the caller's condition, so the wait ended \
+             rather than giving up, got {message}"
+        );
+    }
     assert!(
         !any_instance_is_held(&store),
         "the callee's exclusive thread is released by the failure"

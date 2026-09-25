@@ -66,3 +66,10 @@ features = [
     "gc",
 ]
 default-features = false
+
+# PATCH (wcmp): the stack-switching proposal, on the one platform where
+# Wasmtime 49 implements it and the default engine turns it on.
+[target.'cfg(all(target_arch = "x86_64", target_os = "linux"))'.dependencies.wasmtime]
+version = "=49.0.0-rc.1"
+features = ["stack-switching"]
+default-features = false

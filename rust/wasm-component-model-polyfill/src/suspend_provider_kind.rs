@@ -28,8 +28,11 @@
 ///    Integration.
 /// 4. No provider.
 ///
-/// Neither probe exists yet, so an engine answers
-/// [`None`](Self::None) on both targets today.
+/// The switch probe passes on the native engine on x86_64 Linux,
+/// where Wasmtime implements the stack-switching proposal. The JSPI
+/// probe does not exist yet, so an engine answers
+/// [`None`](Self::None) in the browser and on every other native
+/// platform today.
 ///
 /// Wasmtime has no counterpart to this answer, because its fibers
 /// always exist, so the names are the polyfill's own.
