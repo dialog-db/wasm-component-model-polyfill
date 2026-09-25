@@ -17,6 +17,8 @@ form and the stackful form, the task built-ins that come with them, and
 both lowers of a call out through an import, so part of `cm/async/` and
 `wasmtime/async/` passes: a host call into such an export,
 `task.return`, backpressure, the waitable set built-ins, `thread.yield`,
+the thread built-ins that need no stack switch (`thread.index`,
+`thread.new-indirect`, and `thread.resume-later`),
 and the context slots. A stackful export's core function runs on the
 real stack as its task's implicit thread, so a block inside it waits in
 a nested turn, and it does not take its instance exclusively. A call
@@ -61,9 +63,9 @@ trap the synchronous baseline gives it.
 The directive that first meets what is missing is an expected failure
 of category `deferred-feature`, for one of five reasons: a call whose
 callee can be released only by a caller that is on the stack, which
-needs a stack switch, a thread built-in other than
-`thread.yield`, the cancellation of a task or a subtask, an error
-context, or the rules that decide which trap poisons an instance.
+needs a stack switch, a thread built-in that switches stacks, the
+cancellation of a task or a subtask, an error context, or the rules
+that decide which trap poisons an instance.
 Three definitions in the same category fail at link instead, on a
 host item the harness does not provide: the two WASI 0.3 handler
 fixtures import `wasi:http/types`, and
@@ -106,11 +108,14 @@ against an unchanged tree rewrites the list byte for byte.
 Two kinds of hand-written text survive the rewrite. A trailing
 parenthetical is a note a person appended, and the rewrite restores it
 after the run's reason, unless the run's reason already ends with the
-same group, which is how the runtime's own wording — `unsupported
-component feature: thread built-ins (table extraction)` — is told
-apart from a note. A reason that ends in the run's cause behind other
-leading text is a sentence a person wrote over that cause, and it is
-kept whole: the nineteen such lines say in one clause what the substrate
+same group, which is how the runtime's own wording — ``unsupported
+component feature: subtask cancellation (`subtask.cancel`)`` — is told
+apart from a note. When the runtime's wording drops such a group, the
+rewrite reads the old group as a note and restores it after the new
+reason, so that line needs a person to strike the group. A reason
+that ends in the run's cause behind other leading text is a sentence
+a person wrote over that cause, and it is kept whole: the nineteen
+such lines say in one clause what the substrate
 says in a nested error and a backtrace. A line refreshes when the
 cause at the end of the run's reason changes, which is what a change
 to the failure text means. A line the rule reads the other way is
@@ -131,7 +136,7 @@ Wasmtime), so a polyfill gap is recorded once, in the shared list, and
 counts on both targets. `tests regenerate` does not touch it. Its
 reasons are the browser engine's wording, which a native run cannot
 produce and must not invent; the delta holds only substrate
-differences, ten lines today, and each one is written by hand from
+differences, eleven lines today, and each one is written by hand from
 the failure a `tests web debug` run prints.
 
 The harness links every file against the host environment Wasmtime's
@@ -218,20 +223,20 @@ conformance` prints the current one):
 
 | Corpus           | Directives | Passed | Pass % | Expected failures by category                                 |
 | ---------------- | ---------- | ------ | ------ | ------------------------------------------------------------- |
-| `cm`             | 1126       | 1039   | 92.3   | deferred-feature 1, substrate 4, validation 20, cascade 62    |
+| `cm`             | 1126       | 1096   | 97.3   | substrate 4, validation 20, cascade 6                         |
 | `cm/async`       | 393        | 219    | 55.7   | deferred-feature 33, cascade 141                              |
 | `fixtures`       | 56         | 50     | 89.3   | deferred-feature 2, cascade 4                                 |
-| `wasmtime`       | 469        | 431    | 91.9   | deferred-feature 2, substrate 8, cascade 28                   |
-| `wasmtime/async` | 387        | 339    | 87.6   | deferred-feature 32, cascade 16                               |
-| total            | 2431       | 2078   | 85.5   | deferred-feature 70, substrate 12, validation 20, cascade 251 |
+| `wasmtime`       | 469        | 434    | 92.5   | deferred-feature 1, substrate 8, cascade 26                   |
+| `wasmtime/async` | 387        | 343    | 88.6   | deferred-feature 30, cascade 14                               |
+| total            | 2431       | 2142   | 88.1   | deferred-feature 66, substrate 12, validation 20, cascade 191 |
 
-The browser's summary differs by the ten lines of
-`expected-failures.web.txt`, which move ten passing directives into
-`substrate`: `cm` passes 1038 (92.2%) with substrate 5, `cm/async` 218
-(55.5%) with substrate 1, `wasmtime` 425 (90.6%) with substrate 14,
-`wasmtime/async` 337 (87.1%) with substrate 2, and the total is 2068
-(85.1%) with substrate 22. Every other cell is the same. Five of the
-ten lines, among them the three in the `async` rows, are the browser
+The browser's summary differs by the eleven lines of
+`expected-failures.web.txt`, which move eleven passing directives into
+`substrate`: `cm` passes 1095 (97.2%) with substrate 5, `cm/async` 218
+(55.5%) with substrate 1, `wasmtime` 427 (91.0%) with substrate 15,
+`wasmtime/async` 341 (88.1%) with substrate 2, and the total is 2131
+(87.7%) with substrate 23. Every other cell is the same. Six of the
+eleven lines, among them the three in the `async` rows, are the browser
 engine's wording for a trap or a validation error that Wasmtime words
 differently. Two in `wasmtime/big-strings.wast` trap in the adapter
 before the bounds check Wasmtime reaches, and three in
@@ -244,7 +249,7 @@ than `wasmtime/async`, and the five reasons above cover what those
 directories still exercise. Each component those directories define
 that the polyfill rejects is a `deferred-feature` failure, and every
 later directive in the same file that names it is a `cascade` one, so
-the two async rows together hold 157 of the 251 cascade lines. Four
+the two async rows together hold 155 of the 191 cascade lines. Four
 files of `cm/async` whose components need a thread built-in hold 116
 of them: `trap-if-block-and-sync.wast` 47,
 `trap-if-sync-and-waitable-set.wast` 28,
@@ -252,7 +257,7 @@ of them: `trap-if-block-and-sync.wast` 47,
 `switch-to-ready-callback.wast` 16.
 
 Of the 38 files of `cm/async`, 21 pass whole on both targets. Of the
-54 files of `wasmtime/async`, 38 pass whole natively and 36 in the
+54 files of `wasmtime/async`, 39 pass whole natively and 37 in the
 browser, where `subtask-wait.wast` and `sync-call-context-trap.wast`
 each hold one line of the browser's delta. Seven of the nine fixtures
 pass whole.
@@ -316,17 +321,19 @@ The stackful lift runs, so `wasmtime/async/stackful.wast` passes
 whole, and so do the four stackful components of
 `wasmtime/async/task-return-traps.wast`, five directives of
 `cm/async/big-interleaving-test.wast`, and the stackful directive of
-`cm/values/variants.wast`. The rest of the async rows wait on the
-other reasons. A thread built-in holds the four `cm/async/during-sync-*.wast` files,
+`cm/values/variants.wast`. `thread.index`, `thread.new-indirect`, and
+`thread.resume-later` run too, so the other two components of
+`wasmtime/async/task-return-traps.wast` pass and that file passes
+whole, as do `cm/values/post-return.wast` and, natively,
+`wasmtime/thread-transparency/reentrancy.wast`. The rest of the async
+rows wait on the other reasons. A thread built-in that switches stacks
+holds the four `cm/async/during-sync-*.wast` files,
 `cm/async/self-switch-traps.wast`,
 `cm/async/switch-to-ready-callback.wast`,
 `cm/async/trap-if-block-and-sync.wast`,
 `cm/async/trap-if-sync-and-waitable-set.wast`,
-`wasmtime/async/join-during-sync-read.wast`,
-`wasmtime/async/task-deletion.wast`, the other two components of
-`wasmtime/async/task-return-traps.wast`,
-`cm/values/post-return.wast`, and
-`wasmtime/thread-transparency/reentrancy.wast`.
+`wasmtime/async/join-during-sync-read.wast`, and
+`wasmtime/async/task-deletion.wast`.
 Cancellation holds `cm/async/cancel-delivery.wast`,
 `cm/async/cancel-subtask.wast`, `wasmtime/async/cancel-host.wast`,
 `wasmtime/async/cancel-sibling-subtask.wast`,

@@ -9,6 +9,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use wasm_runtime_layer::Module as RuntimeModule;
+
 use crate::abi::layout::FlatType;
 use crate::abi::signature::Signature;
 use crate::component::ExternalName;
@@ -93,6 +95,15 @@ pub struct ExecutorIr {
     /// The number of runtime callback slots
     /// `Initializer::ExtractCallback` populates.
     pub num_runtime_callbacks: usize,
+    /// The number of runtime table slots `Initializer::ExtractTable`
+    /// populates: one per table a `thread.new-indirect` reads its
+    /// start function from.
+    pub num_runtime_tables: usize,
+    /// The module that reads a start function out of a table and
+    /// tells its type, compiled once for the component when it
+    /// declares a `thread.new-indirect`, and `None` otherwise. Each
+    /// extracted table gets an instance of it.
+    pub thread_start_probe: Option<RuntimeModule>,
     /// The number of component instances the component contains,
     /// counting nested components. Each carries a `may_leave` flags
     /// global that adapter modules import through
@@ -253,6 +264,18 @@ pub enum Initializer {
         /// The runtime-callback slot this directive populates.
         slot: usize,
         /// Where the underlying core function comes from.
+        source: ImportSource,
+    },
+
+    /// Extract a core table and bind it to the next runtime-table
+    /// slot. A `thread.new-indirect` reads the start function of the
+    /// thread it creates out of the table in its slot, and the
+    /// validator has already checked that the table holds `funcref`s
+    /// and is addressed with an `i32`.
+    ExtractTable {
+        /// The runtime-table slot this directive populates.
+        slot: usize,
+        /// Where the underlying core table comes from.
         source: ImportSource,
     },
 }
@@ -800,6 +823,38 @@ pub enum TrampolineSpec {
         instance: usize,
         /// The core signature the guest imports: no parameters and
         /// one `i32` result.
+        signature: CoreSignature,
+    },
+    /// The `thread.index` built-in: the built-in returns the current
+    /// thread's index in the calling instance's thread table.
+    ThreadIndex {
+        /// The component instance that calls the built-in.
+        instance: usize,
+        /// The core signature the guest imports: no parameters and
+        /// one `i32` result.
+        signature: CoreSignature,
+    },
+    /// The `thread.new-indirect` built-in: a suspended thread whose
+    /// start function comes from a table enters the calling
+    /// instance's thread table, and the built-in returns its index.
+    ThreadNewIndirect {
+        /// The component instance that calls the built-in.
+        instance: usize,
+        /// The runtime-table slot the start function is read from.
+        table: usize,
+        /// The core signature the guest imports: the table index and
+        /// the context value in, the thread's index out. The type of
+        /// the context value is the type the start function takes.
+        signature: CoreSignature,
+    },
+    /// The `thread.resume-later` built-in: the named suspended thread
+    /// of the calling instance becomes ready, and a later turn runs
+    /// it.
+    ThreadResumeLater {
+        /// The component instance that calls the built-in.
+        instance: usize,
+        /// The core signature the guest imports: the thread's index
+        /// in and no results.
         signature: CoreSignature,
     },
     /// The `task.cancel` built-in. Cancellation is not built, so a

@@ -13,6 +13,10 @@ pub enum ItemKind {
     /// The start of a task: the implicit thread of a call into an
     /// export runs for the first time.
     TaskStart,
+    /// The start of an explicit thread: a thread `thread.new-indirect`
+    /// created, and `thread.resume-later` made ready, runs for the
+    /// first time.
+    ThreadStart,
     /// A callback invocation: the polyfill re-enters the callback of
     /// an `async` export that returned a status code.
     Callback,

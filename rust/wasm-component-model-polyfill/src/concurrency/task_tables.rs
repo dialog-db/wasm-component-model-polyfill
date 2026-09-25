@@ -37,6 +37,7 @@ use super::task_result::{ResultChannel, TaskResult};
 use super::task_state::TaskState;
 use super::thread::Thread;
 use super::thread_id::ThreadId;
+use super::thread_start::ThreadStart;
 use super::waitable_id::WaitableId;
 use super::waitable_set::WaitableSet;
 use super::waitable_set_id::WaitableSetId;
@@ -65,6 +66,13 @@ use super::waitable_state::WaitableState;
 /// how a callback item held until its set holds an event is found
 /// without examining every held item on every turn.
 ///
+/// The current thread is the implicit thread of the current task,
+/// except while an explicit thread runs. An explicit thread runs in
+/// its task's scope, pushed again for the length of the thread's run,
+/// and the tables remember which entry of the stack that push was:
+/// while that entry is the innermost task on the stack, the explicit
+/// thread is the current thread.
+///
 /// The tables keep the threads that wait, too. A waiting thread's
 /// record holds its readiness condition, and two lists name the
 /// waiting threads: one in the order they began to wait, and one in
@@ -80,6 +88,7 @@ pub struct TaskTables {
     scopes: Vec<Scope>,
     prepared_call: Option<SubtaskId>,
     signalled_sets: Vec<WaitableSetId>,
+    running_threads: Vec<(usize, ThreadId)>,
     waiting: Vec<ThreadId>,
     ready: Vec<ThreadId>,
 }
@@ -98,6 +107,7 @@ impl TaskTables {
             scopes: Vec::new(),
             prepared_call: None,
             signalled_sets: Vec::new(),
+            running_threads: Vec::new(),
             waiting: Vec::new(),
             ready: Vec::new(),
         }
@@ -325,9 +335,130 @@ impl TaskTables {
     }
 
     /// Move a task to its started state: its thread is running.
+    ///
+    /// The task's implicit thread takes its index in the thread
+    /// table of the task's instance here, as the reference registers
+    /// the implicit thread once the task is past the entry gate. A
+    /// task that belongs to no instance has no table to join, and a
+    /// thread that already holds an index keeps it.
     pub fn start_task(&mut self, task: TaskId) {
+        let Some(record) = self.task_mut(task) else {
+            return;
+        };
+        record.state = TaskState::Started;
+        let thread = record.implicit_thread;
+        let _ = self.register_thread(thread);
+    }
+
+    /// Give `thread` an index in the thread table of its task's
+    /// instance, and answer the index. A thread that already holds
+    /// one answers it again. `None` when the thread or its task is
+    /// gone, when the task belongs to no instance, or when the
+    /// instance's table has no index left to hand out.
+    pub fn register_thread(&mut self, thread: ThreadId) -> Option<u32> {
+        let record = self.thread(thread)?;
+        if let Some(index) = record.index {
+            return Some(index);
+        }
+        let instance = self.task(record.task)?.instance?;
+        let index = self.instance_mut(instance)?.threads.insert(thread)?;
+        self.thread_mut(thread)?.index = Some(index);
+        Some(index)
+    }
+
+    /// Take `thread` out of the thread table of its task's instance,
+    /// when it holds an index there.
+    fn unregister_thread(&mut self, thread: ThreadId) {
+        let Some(record) = self.thread(thread) else {
+            return;
+        };
+        let Some(index) = record.index else {
+            return;
+        };
+        let instance = self.task(record.task).and_then(|task| task.instance);
+        if let Some(instance) = instance.and_then(|instance| self.instance_mut(instance)) {
+            instance.threads.remove(index, thread);
+        }
+        if let Some(record) = self.thread_mut(thread) {
+            record.index = None;
+        }
+    }
+
+    /// Create an explicit thread of `task`, suspended, that runs
+    /// `start` when it starts, and answer it with its index in the
+    /// thread table of the task's instance. This is the record half
+    /// of `thread.new-indirect`. `None` when the task is gone, when
+    /// it belongs to no instance, or when the instance's table has
+    /// no index left; the thread is not created then.
+    pub fn create_thread(&mut self, task: TaskId, start: ThreadStart) -> Option<(ThreadId, u32)> {
+        self.task(task)?.instance?;
+        let (index, generation) = self
+            .threads
+            .insert_with_generation(Thread::explicit(task, start));
+        let thread = ThreadId::new(index, generation);
+        let Some(table_index) = self.register_thread(thread) else {
+            self.threads.remove(index);
+            return None;
+        };
         if let Some(record) = self.task_mut(task) {
-            record.state = TaskState::Started;
+            record.threads.push(thread);
+        }
+        Some((thread, table_index))
+    }
+
+    /// The thread at `index` of `instance`'s thread table.
+    pub fn thread_at(&self, instance: InstanceId, index: u32) -> Option<ThreadId> {
+        self.instance(instance)?.threads.get(index)
+    }
+
+    /// End `thread` on its own: it leaves its instance's thread table
+    /// and its task's list of threads, and its record leaves the
+    /// store. The task itself stays. This is the end of an explicit
+    /// thread whose start function returned or failed.
+    pub fn end_thread(&mut self, thread: ThreadId) {
+        self.unregister_thread(thread);
+        let Some(task) = self.thread(thread).map(|record| record.task) else {
+            return;
+        };
+        if let Some(record) = self.task_mut(task) {
+            record.threads.retain(|held| *held != thread);
+        }
+        if let Some(index) = self.thread_index(thread) {
+            self.threads.remove(index);
+        }
+    }
+
+    /// Make the explicit thread `thread` the current thread, by
+    /// pushing its task as the current scope and remembering that
+    /// the push was the thread's. `None` when the thread or its task
+    /// is gone, and nothing is pushed then.
+    pub fn enter_thread(&mut self, thread: ThreadId) -> Option<()> {
+        let task = self.thread(thread)?.task;
+        self.task(task)?;
+        self.scopes.push(Scope::Task(task));
+        self.running_threads.push((self.scopes.len() - 1, thread));
+        Some(())
+    }
+
+    /// Where on the stack of current scopes the explicit thread
+    /// `thread` pushed its task's scope, while it is running.
+    pub fn running_thread_position(&self, thread: ThreadId) -> Option<usize> {
+        self.running_threads
+            .iter()
+            .rev()
+            .find(|(_, running)| *running == thread)
+            .map(|(position, _)| *position)
+    }
+
+    /// Forget that the explicit thread `thread` is running. The scope
+    /// it pushed is popped by the caller.
+    pub fn forget_running_thread(&mut self, thread: ThreadId) {
+        if let Some(at) = self
+            .running_threads
+            .iter()
+            .rposition(|(_, running)| *running == thread)
+        {
+            self.running_threads.remove(at);
         }
     }
 
@@ -511,9 +642,30 @@ impl TaskTables {
 
     /// The current thread: the thread the current task is running.
     /// A synchronous task runs its implicit thread from the call
-    /// that starts it to the return that ends it.
+    /// that starts it to the return that ends it. An explicit thread
+    /// is the current thread while the scope it pushed is the
+    /// innermost task on the stack, which is what
+    /// [`enter_thread`](Self::enter_thread) records.
     pub fn current_thread(&self) -> Option<ThreadId> {
-        Some(self.task(self.current_task()?)?.implicit_thread)
+        let task = self.current_task()?;
+        let at = self
+            .scopes
+            .iter()
+            .rposition(|scope| matches!(scope, Scope::Task(_)));
+        let explicit = self
+            .running_threads
+            .iter()
+            .rev()
+            .find(|(position, _)| Some(*position) == at)
+            .map(|(_, thread)| *thread)
+            .filter(|thread| {
+                self.thread(*thread)
+                    .is_some_and(|record| record.task == task)
+            });
+        match explicit {
+            Some(thread) => Some(thread),
+            None => Some(self.task(task)?.implicit_thread),
+        }
     }
 
     /// The whole stack of current scopes, outermost first.
@@ -707,6 +859,7 @@ impl TaskTables {
             return;
         };
         for thread in threads {
+            self.unregister_thread(thread);
             if let Some(index) = self.thread_index(thread) {
                 self.threads.remove(index);
             }

@@ -40,6 +40,8 @@ mod start_failure;
 mod start_task;
 mod sync_start_call;
 mod task_return;
+mod thread_builtins;
+mod thread_start_table;
 mod thread_yield;
 mod translate;
 
@@ -63,5 +65,9 @@ pub use resource_destructor::ResourceDestructor;
 pub use start_call::release_subtask;
 pub use sync_start_call::build_sync_start_call;
 pub use task_return::build_task_return;
+pub use thread_builtins::{
+    build_thread_index, build_thread_new_indirect, build_thread_resume_later,
+};
+pub use thread_start_table::ThreadStartTable;
 pub use thread_yield::build_thread_yield;
 pub use translate::translate;

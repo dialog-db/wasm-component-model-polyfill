@@ -2,6 +2,7 @@
 
 use super::readiness::Readiness;
 use super::task_id::TaskId;
+use super::thread_start::ThreadStart;
 
 /// The record of one guest execution.
 ///
@@ -11,6 +12,13 @@ use super::task_id::TaskId;
 /// per instantiation, because an adapter that saves them around a
 /// callee must see the callee's own pair rather than one it shares
 /// with the caller.
+///
+/// A task can hold more threads than its implicit one. Each further
+/// thread is an explicit thread, which `thread.new-indirect` creates
+/// suspended with the start function it will run. Every thread that
+/// belongs to a component instance has an index in that instance's
+/// thread table, which is what `thread.index` answers and what the
+/// thread built-ins name a thread by.
 pub struct Thread {
     /// The task that contains this thread.
     pub task: TaskId,
@@ -30,6 +38,20 @@ pub struct Thread {
     /// an `async` callee. Wasmtime saves the same value in the same
     /// place.
     pub old_may_not_suspend: Option<bool>,
+    /// The thread's index in its instance's thread table. `None`
+    /// until the thread is registered there: an implicit thread is
+    /// registered as its task starts, and an explicit thread as it
+    /// is created. A thread of a task that belongs to no instance is
+    /// never registered.
+    pub index: Option<u32>,
+    /// Whether the thread is suspended: it is not running, and it is
+    /// not waiting to run. An explicit thread is suspended from its
+    /// creation until `thread.resume-later` makes it ready.
+    pub suspended: bool,
+    /// What an explicit thread runs when it starts, until it starts.
+    /// `None` for an implicit thread and for an explicit thread that
+    /// has started.
+    pub start: Option<ThreadStart>,
 }
 
 impl Thread {
@@ -41,6 +63,19 @@ impl Thread {
             readiness: None,
             context: [0; 2],
             old_may_not_suspend: None,
+            index: None,
+            suspended: false,
+            start: None,
+        }
+    }
+
+    /// Construct an explicit thread of `task`, suspended, that runs
+    /// `start` when it starts.
+    pub fn explicit(task: TaskId, start: ThreadStart) -> Self {
+        Self {
+            suspended: true,
+            start: Some(start),
+            ..Self::new(task)
         }
     }
 }

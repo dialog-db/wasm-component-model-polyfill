@@ -17,11 +17,11 @@ use wasmtime_environ::component::{
     CanonicalOptions as EnvironCanonOptions, CanonicalOptionsDataModel, ComponentTranslation,
     ComponentTypes, ComponentTypesBuilder, CoreDef, CoreExport, Export as EnvironExport,
     ExportIndex, ExportItem as EnvironExportItem, ExtractCallback, ExtractMemory,
-    ExtractPostReturn, ExtractRealloc, FixedEncoding, GlobalInitializer, InstantiateModule,
-    InterfaceType, LoweredIndex, OptionsIndex, RuntimeImportIndex, StaticModuleIndex,
-    StringEncoding as EnvironStringEncoding, Trampoline, TrampolineIndex, Transcode, Translator,
-    TypeFutureTableIndex, TypeResourceTable, TypeResourceTableIndex, TypeStreamTableIndex,
-    UnsafeIntrinsic,
+    ExtractPostReturn, ExtractRealloc, ExtractTable, FixedEncoding, GlobalInitializer,
+    InstantiateModule, InterfaceType, LoweredIndex, OptionsIndex, RuntimeImportIndex,
+    StaticModuleIndex, StringEncoding as EnvironStringEncoding, Trampoline, TrampolineIndex,
+    Transcode, Translator, TypeFutureTableIndex, TypeResourceTable, TypeResourceTableIndex,
+    TypeStreamTableIndex, UnsafeIntrinsic,
 };
 use wasmtime_environ::prelude::Error as TranslatorError;
 use wasmtime_environ::wasmparser::Validator;
@@ -41,13 +41,14 @@ use crate::error::{Error, Result};
 use crate::module::Module;
 use crate::types::{PrimitiveType, ValueType};
 
-use super::compile_modules;
 use super::ir::{
     CanonOptions, CoreInstanceExport, CoreParameter, CoreSignature, CoreSourceItem, DataModel,
     EndTableSpec, EntityIndex, ExecutorIr, ExportSpec, ImportSource, Initializer, LoweringSpec,
     ModuleEntry, ModuleExportSpec, ModuleSource, NamedImportSource, ResourceSpec,
     ResourceTableSpec, StringEncoding, TrampolineSpec, TranscodeOp,
 };
+use super::thread_start_table::THREAD_START_PROBE;
+use super::{compile_module, compile_modules};
 
 /// What the trampoline pre-walk decided about one trampoline.
 enum TrampolineOutcome {
@@ -500,6 +501,32 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 instance: instance.as_u32() as usize,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
+            // The three thread built-ins that never switch stacks.
+            // Each names the instance whose thread table it works on.
+            // `thread.new-indirect` also names the runtime table its
+            // start function is read from, which a table initializer
+            // below extracts. The start function type it declares is
+            // dropped: the context parameter of the core signature
+            // is of the one type the start function takes, and the
+            // type index names a type in the declaring component's
+            // own index space, which inlining has left behind.
+            Trampoline::ThreadIndex { instance } => TrampolineSpec::ThreadIndex {
+                instance: instance.as_u32() as usize,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::ThreadNewIndirect {
+                instance,
+                start_func_table_idx,
+                ..
+            } => TrampolineSpec::ThreadNewIndirect {
+                instance: instance.as_u32() as usize,
+                table: start_func_table_idx.as_u32() as usize,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::ThreadResumeLater { instance } => TrampolineSpec::ThreadResumeLater {
+                instance: instance.as_u32() as usize,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
             // The two cancellation built-ins are the one exception to
             // refusing what is not built. The binding layer of the
             // Rust toolchain links `task.cancel` in every `async`
@@ -621,8 +648,13 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                     .initializers
                     .push(Initializer::ExtractCallback { slot, source });
             }
-            GlobalInitializer::ExtractTable(_) => {
-                return Err(Error::unsupported("thread built-ins (table extraction)"));
+            GlobalInitializer::ExtractTable(ExtractTable { index, export }) => {
+                let source = state.lift_core_export(export)?;
+                let slot = index.as_u32() as usize;
+                state.num_runtime_tables = state.num_runtime_tables.max(slot + 1);
+                state
+                    .initializers
+                    .push(Initializer::ExtractTable { slot, source });
             }
             GlobalInitializer::Resource(resource) => {
                 if resource.rep != WasmValType::I32 {
@@ -678,6 +710,15 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
 
     trampoline_specs.append(&mut state.extra_specs);
 
+    // The probe a `thread.new-indirect` reads its start function
+    // through is compiled once per component that extracts a table
+    // for one; see `ThreadStartTable` for what it answers.
+    let thread_start_probe = if state.num_runtime_tables > 0 {
+        Some(compile_module(engine, THREAD_START_PROBE).await?)
+    } else {
+        None
+    };
+
     Ok(Translation {
         imports,
         exports,
@@ -695,6 +736,8 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
             num_runtime_reallocs: state.num_runtime_reallocs,
             num_runtime_post_returns: state.num_runtime_post_returns,
             num_runtime_callbacks: state.num_runtime_callbacks,
+            num_runtime_tables: state.num_runtime_tables,
+            thread_start_probe,
             num_component_instances: translation.component.num_runtime_component_instances as usize,
         },
     })
@@ -1067,6 +1110,7 @@ struct ProjectionState {
     num_runtime_reallocs: usize,
     num_runtime_post_returns: usize,
     num_runtime_callbacks: usize,
+    num_runtime_tables: usize,
     /// Trampoline specs created on demand for intrinsics that appear
     /// as `CoreDef`s. Their indices start at `spec_base`.
     extra_specs: Vec<TrampolineSpec>,
@@ -1083,6 +1127,7 @@ impl ProjectionState {
             num_runtime_reallocs: 0,
             num_runtime_post_returns: 0,
             num_runtime_callbacks: 0,
+            num_runtime_tables: 0,
             extra_specs: Vec::new(),
             spec_base,
             intrinsic_to_spec: HashMap::new(),
@@ -1236,28 +1281,35 @@ fn lift_entity_index(idx: EnvironEntityIndex) -> EntityIndex {
     }
 }
 
-/// The validator's message for a stackful lift whose feature gate is
-/// off.
-const STACKFUL_GATE_MESSAGE: &str = "requires the component model async stackful feature";
+/// The validator's refusals of a feature whose engine gate is off,
+/// each with the feature it is surfaced as. A gate the host did not
+/// turn on is a feature the polyfill leaves out, not a malformed
+/// binary, so each refusal is surfaced as [`Error::Unsupported`].
+///
+/// The stackful gate covers the stackful lift and nothing else, so
+/// its refusal names that lift. The threading gate covers every
+/// thread built-in, and the validator words its refusal the same way
+/// for each, naming the built-in; that refusal keeps the validator's
+/// message whole inside the feature, so a reader matching the
+/// validator's text still finds it.
+const GATE_REFUSALS: &[(&str, Option<&str>)] = &[
+    (
+        "requires the component model async stackful feature",
+        Some(
+            "stackful asynchronous lifts (`canon lift async` without a callback) \
+             while `wasm_component_model_async_stackful` is off",
+        ),
+    ),
+    ("requires the component model threading feature", None),
+];
 
 /// Map a translator failure onto the polyfill's error model. A
 /// validation failure keeps the byte offset the translator reports;
-/// a feature the translator itself does not support is surfaced as
+/// a feature the translator itself does not support, and a feature
+/// behind an engine gate the host left off, are surfaced as
 /// [`Error::Unsupported`].
-///
-/// The validator refuses a stackful lift while the engine's gate for
-/// it is off. The gate is a feature the host has not turned on, so
-/// that refusal is surfaced as [`Error::Unsupported`] too, and not as
-/// a malformed binary. The validator's gate covers the stackful lift
-/// and nothing else, so the refusal names that lift.
 fn translation_error(err: TranslatorError) -> Error {
-    if format!("{err:#}").contains(STACKFUL_GATE_MESSAGE) {
-        return Error::unsupported(
-            "stackful asynchronous lifts (`canon lift async` without a callback) \
-             while `wasm_component_model_async_stackful` is off",
-        );
-    }
-    match err.downcast::<WasmError>() {
+    let error = match err.downcast::<WasmError>() {
         Ok(WasmError::InvalidWebAssembly { message, offset }) => {
             Error::InvalidComponentBinary { message, offset }
         }
@@ -1270,6 +1322,17 @@ fn translation_error(err: TranslatorError) -> Error {
             message: format!("{other:#}"),
             offset: 0,
         },
+    };
+    let Error::InvalidComponentBinary { message, .. } = &error else {
+        return error;
+    };
+    match GATE_REFUSALS
+        .iter()
+        .find(|(words, _)| message.contains(words))
+    {
+        Some((_, Some(feature))) => Error::unsupported(*feature),
+        Some((_, None)) => Error::unsupported(message.clone()),
+        None => error,
     }
 }
 

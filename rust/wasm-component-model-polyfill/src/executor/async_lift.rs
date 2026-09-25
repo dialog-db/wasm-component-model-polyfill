@@ -15,8 +15,12 @@
 //!   thread, which is the reference's `exit_implicit_thread` in
 //!   `canon_lift`.
 //!
-//! A task ends when its last thread does. A stackful task has only
-//! its implicit thread, so the return of its core function ends the
+//! A task ends when its implicit thread does. A stackful task can hold
+//! explicit threads beside its implicit one, but none of them is
+//! running when its core function returns: an explicit thread runs
+//! from its start to its end inside one turn, and one whose start
+//! has not run yet is the task's pending work, which leaves with the
+//! task. So the return of a stackful task's core function ends the
 //! task. A task that has not resolved by then fails with the
 //! no-result cause, which is Wasmtime's message "async-lifted export
 //! failed to produce a result". The callback loop's exit code ends
@@ -88,7 +92,7 @@ impl AsyncLift {
 }
 
 /// End the implicit thread of an `async`-lifted task whose scope is
-/// already off the stack. The task has no other thread, so its
+/// already off the stack. No other thread of the task runs, so its
 /// record leaves the store, and a task that has not resolved fails
 /// with the no-result cause. A borrow the guest did not drop fails a
 /// task that did resolve.

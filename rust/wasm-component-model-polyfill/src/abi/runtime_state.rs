@@ -20,6 +20,7 @@ use wasm_runtime_layer::{Func as RuntimeFunc, Memory};
 
 use crate::abi::instance_flags::InstanceFlags;
 use crate::concurrency::InstanceId;
+use crate::executor::ThreadStartTable;
 use crate::resource::{ResourceTableRuntime, TableId};
 
 /// Per-component canonical-ABI runtime state. Populated by the
@@ -39,6 +40,10 @@ pub struct AbiRuntimeState {
     /// The callback of an export lifted `canon lift async (callback
     /// ...)` is resumed once per event the export's task receives.
     pub callbacks: Vec<Option<RuntimeFunc>>,
+    /// Every table a `thread.new-indirect` reads start functions out
+    /// of, by runtime slot, each with the probe instance that reads
+    /// it.
+    pub thread_start_tables: Vec<Option<ThreadStartTable>>,
     /// Every resource table of the instance, by the translator's
     /// table index: the table created for this instantiation, the
     /// identity of the resource type it holds, and whether the table's
@@ -82,6 +87,7 @@ impl AbiRuntimeState {
             reallocs: vec![None; num_reallocs],
             post_returns: vec![None; num_post_returns],
             callbacks: vec![None; num_callbacks],
+            thread_start_tables: Vec::new(),
             resource_tables: resource_tables.into(),
             component_instances,
             handle_tables,
@@ -94,6 +100,13 @@ impl AbiRuntimeState {
     /// instance with.
     pub fn with_instance_flags(mut self, flags: Vec<InstanceFlags>) -> Self {
         self.instance_flags = flags;
+        self
+    }
+
+    /// Give the state `count` empty runtime-table slots, which the
+    /// instantiation's table directives fill.
+    pub fn with_thread_start_tables(mut self, count: usize) -> Self {
+        self.thread_start_tables = vec![None; count];
         self
     }
 

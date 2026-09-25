@@ -106,6 +106,7 @@ pub wasm_component_model_polyfill::Error::Link(alloc::boxed::Box<wasm_component_
 pub wasm_component_model_polyfill::Error::NotAComponent
 pub wasm_component_model_polyfill::Error::Scheduler(wasm_component_model_polyfill::SchedulerCause)
 pub wasm_component_model_polyfill::Error::Task(wasm_component_model_polyfill::TaskCause)
+pub wasm_component_model_polyfill::Error::Thread(wasm_component_model_polyfill::ThreadCause)
 pub wasm_component_model_polyfill::Error::TypeIndexOutOfBounds
 pub wasm_component_model_polyfill::Error::TypeIndexOutOfBounds::index: u32
 pub wasm_component_model_polyfill::Error::TypeMismatch(alloc::boxed::Box<wasm_component_model_polyfill::TypeMismatch>)
@@ -235,6 +236,13 @@ pub wasm_component_model_polyfill::TaskCause::ReturnMismatch
 pub wasm_component_model_polyfill::TaskCause::ReturnMismatch::kind: wasm_component_model_polyfill::ReturnMismatchKind
 pub wasm_component_model_polyfill::TaskCause::ReturnedTwice
 pub wasm_component_model_polyfill::TaskCause::UnsupportedCallbackCode
+#[non_exhaustive] pub enum wasm_component_model_polyfill::ThreadCause
+pub wasm_component_model_polyfill::ThreadCause::NotSuspended
+pub wasm_component_model_polyfill::ThreadCause::StartFunctionOutOfBounds
+pub wasm_component_model_polyfill::ThreadCause::StartFunctionType
+pub wasm_component_model_polyfill::ThreadCause::StartFunctionUninitialized
+pub wasm_component_model_polyfill::ThreadCause::UnknownThread
+pub wasm_component_model_polyfill::ThreadCause::UnknownThread::index: u32
 #[non_exhaustive] pub enum wasm_component_model_polyfill::TypeMismatchPosition
 pub wasm_component_model_polyfill::TypeMismatchPosition::HostFunctionRegistration
 pub wasm_component_model_polyfill::TypeMismatchPosition::HostFunctionRegistration::interface: wasm_component_model_polyfill::InterfaceIdentifier

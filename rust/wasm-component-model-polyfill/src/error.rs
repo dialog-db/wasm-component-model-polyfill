@@ -147,6 +147,12 @@ pub enum Error {
     #[error("task error: {0}")]
     Task(#[source] TaskCause),
 
+    /// A guest broke one of the rules that govern threads and the
+    /// thread built-ins. The carried [`ThreadCause`] names which
+    /// rule. Each is a trap in the reference.
+    #[error("thread error: {0}")]
+    Thread(#[source] ThreadCause),
+
     /// A guest broke one of the rules that govern the ends of a
     /// stream or a future and the copies made through them. The
     /// carried [`CopyCause`] names which rule. Each is a trap in the
@@ -1034,6 +1040,60 @@ pub enum TaskCause {
     CannotLeave,
 }
 
+/// The structured reason a thread built-in failed.
+///
+/// Carried by [`Error::Thread`]. Each cause is a trap in the
+/// reference, so a built-in that meets one fails the guest's call.
+/// Where Wasmtime raises the same trap, the message is Wasmtime's,
+/// so the conformance corpora can match it by substring.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum ThreadCause {
+    /// A guest asked to resume a thread that is not suspended: one
+    /// that is running, or one that is already ready to run. The
+    /// message is Wasmtime's trap, `Trap::CannotResumeThread` in
+    /// `wasmtime-environ`'s `src/trap_encoding.rs`, so the
+    /// conformance corpus can match it by substring.
+    #[error("cannot resume thread which is not suspended")]
+    NotSuspended,
+
+    /// A guest named a thread index that no thread of its instance
+    /// holds. The message is the one Wasmtime's handle table raises
+    /// for an index it holds nothing at.
+    #[error("unknown handle index {index}")]
+    UnknownThread {
+        /// The index the guest named.
+        index: u32,
+    },
+
+    /// `thread.new-indirect` named a table entry past the end of the
+    /// table. The message is Wasmtime's trap,
+    /// `Trap::TableOutOfBounds`, under the same rule as
+    /// [`ThreadCause::NotSuspended`].
+    #[error("undefined element: out of bounds table access")]
+    StartFunctionOutOfBounds,
+
+    /// `thread.new-indirect` named a table entry that holds no
+    /// function. The message is Wasmtime's trap,
+    /// `Trap::ThreadNewIndirectUninitialized`, under the same rule as
+    /// [`ThreadCause::NotSuspended`].
+    #[error("the start function index points to an uninitialized function")]
+    StartFunctionUninitialized,
+
+    /// `thread.new-indirect` named a table entry whose function is
+    /// not of the start function type the built-in declares. The
+    /// message is Wasmtime's trap,
+    /// `Trap::ThreadNewIndirectInvalidType`, under the same rule as
+    /// [`ThreadCause::NotSuspended`]. Its text names the `i32` form
+    /// alone, because that is the one form Wasmtime admits; the
+    /// polyfill admits the `i64` form of a 64-bit memory too, and
+    /// raises the same message for either.
+    #[error(
+        "start function does not match expected type (currently only `(i32) -> ()` is supported)"
+    )]
+    StartFunctionType,
+}
+
 impl TaskCause {
     /// Wasmtime's whole message for a `task.return` mismatch, which
     /// the rendering of [`TaskCause::ReturnMismatch`] opens with. The
@@ -1693,6 +1753,63 @@ mod tests {
             ),
         ] {
             assert_eq!(Error::Task(cause).to_string(), rendered);
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_renders_the_thread_causes() {
+        for (cause, rendered) in [
+            (
+                ThreadCause::NotSuspended,
+                "thread error: cannot resume thread which is not suspended",
+            ),
+            (
+                ThreadCause::UnknownThread { index: 7 },
+                "thread error: unknown handle index 7",
+            ),
+            (
+                ThreadCause::StartFunctionOutOfBounds,
+                "thread error: undefined element: out of bounds table access",
+            ),
+            (
+                ThreadCause::StartFunctionUninitialized,
+                "thread error: the start function index points to an uninitialized function",
+            ),
+            (
+                ThreadCause::StartFunctionType,
+                "thread error: start function does not match expected type \
+                 (currently only `(i32) -> ()` is supported)",
+            ),
+        ] {
+            assert_eq!(Error::Thread(cause).to_string(), rendered);
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_pins_the_thread_causes_to_the_traps_wasmtime_environ_renders() {
+        for (trap, cause) in [
+            (Trap::CannotResumeThread, ThreadCause::NotSuspended),
+            (
+                Trap::TableOutOfBounds,
+                ThreadCause::StartFunctionOutOfBounds,
+            ),
+            (
+                Trap::ThreadNewIndirectUninitialized,
+                ThreadCause::StartFunctionUninitialized,
+            ),
+            (
+                Trap::ThreadNewIndirectInvalidType,
+                ThreadCause::StartFunctionType,
+            ),
+        ] {
+            let rendered = trap.to_string();
+            let cause = cause.to_string();
+            assert!(
+                rendered.ends_with(&cause),
+                "{trap:?} now renders as {rendered:?}, which no longer ends with the \
+                 `ThreadCause` message {cause:?}; the conformance corpus matches these \
+                 traps by substring, so the messages have to follow the traps"
+            );
         }
     }
 

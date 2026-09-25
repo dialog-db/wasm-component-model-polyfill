@@ -331,15 +331,15 @@ const TRAPS_AFTER_THE_GATE_UNDER_AN_ASYNC_CALLER: &[u8] = component!(
     "#
 );
 
-/// A component that declares `canon thread.index`, one of the thread
-/// built-ins other than `thread.yield`, which stay refused.
-const THREAD_INDEX: &[u8] = component!(
+/// A component that declares `canon thread.suspend`, one of the thread
+/// built-ins that switch stacks, which stay refused.
+const THREAD_SUSPEND: &[u8] = component!(
     r#"
     (component
-      (core func $thread-index (canon thread.index))
-      (core module $m (import "" "thread.index" (func $thread-index (result i32))))
+      (core func $thread-suspend (canon thread.suspend))
+      (core module $m (import "" "thread.suspend" (func $thread-suspend (result i32))))
       (core instance $i (instantiate $m
-        (with "" (instance (export "thread.index" (func $thread-index)))))))
+        (with "" (instance (export "thread.suspend" (func $thread-suspend)))))))
     "#
 );
 
@@ -865,19 +865,19 @@ async fn it_ends_the_callers_wait_when_the_callees_start_fails() {
 
 #[wcmp_macros::test]
 async fn it_still_refuses_the_built_ins_this_design_does_not_own() {
-    // The thread built-ins other than `thread.yield` stay refused at
+    // The thread built-ins that switch stacks stay refused at
     // translation, under the name the translator gives each. The
     // stream, future, and error-context built-ins are refused the
     // same way, which the conformance corpus records file by file.
     // The thread built-ins are behind a validator gate of their own,
     // so the refusal a component that opts into them reads is the
     // polyfill's rather than the validator's.
-    let err = parse_with_threading(THREAD_INDEX)
+    let err = parse_with_threading(THREAD_SUSPEND)
         .await
         .expect_err("the thread built-in is refused");
     assert!(
-        matches!(&err, Error::Unsupported { feature } if feature.contains("thread-index")),
-        "expected `thread-index` to be refused, got {err:?}"
+        matches!(&err, Error::Unsupported { feature } if feature.contains("thread-suspend")),
+        "expected `thread-suspend` to be refused, got {err:?}"
     );
 }
 

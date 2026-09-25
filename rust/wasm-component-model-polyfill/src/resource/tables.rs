@@ -154,6 +154,30 @@ impl HandleTables {
         while !self.unwind_one(Scope::Task(task)) {}
     }
 
+    /// Pop the scope the explicit thread `thread` pushed as it
+    /// started, without ending its task, and forget that the thread
+    /// is running.
+    ///
+    /// The thread's task can be on the stack more than once — its
+    /// implicit thread can be below, blocked in a nested turn that
+    /// runs the explicit thread — so the pop goes by the position the
+    /// thread's own push took rather than by the task. Every scope a
+    /// failed call left above it is discarded first, under the rule
+    /// [`exit_task`](Self::exit_task) states.
+    pub fn leave_thread(&mut self, thread: ThreadId) {
+        if let Some(position) = self.tasks.running_thread_position(thread) {
+            while self.tasks.scopes().len() > position + 1 {
+                if let Some(top) = self.tasks.pop_scope() {
+                    self.discard_scope(top);
+                }
+            }
+            if self.tasks.scopes().len() == position + 1 {
+                self.tasks.pop_scope();
+            }
+        }
+        self.tasks.forget_running_thread(thread);
+    }
+
     /// End the innermost task on the stack on its success path, for
     /// the one caller that cannot name the task it pushed: an
     /// adapter's enter and exit intrinsics are two separate calls

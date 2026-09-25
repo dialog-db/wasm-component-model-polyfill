@@ -24,65 +24,65 @@ cm/async/builtin-trap-poisons-instance.wast:39 deferred-feature expected a trap 
 cm/async/cancel-and-exclusive-lock.wast:196 deferred-feature the callee blocks in `waitable-set.wait` inside its first core function until its caller writes the future, so only that caller, below it on the stack, can release it, which needs a stack switch, and the suspend capability that serves one has no provider on either target until the stackful design fills it: the call fails with `blocking here requires a stack switch, but the target has no suspend provider`
 cm/async/cancel-delivery.wast:278 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x155 - DM!run: unsupported component feature: subtask cancellation (`subtask.cancel`)
 cm/async/cancel-subtask.wast:217 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0xfb - DM!run: unsupported component feature: subtask cancellation (`subtask.cancel`)
-cm/async/during-sync-call-exclusive-resume.wast:9 deferred-feature component rejected: unsupported component feature: the `thread-index` trampoline
+cm/async/during-sync-call-exclusive-resume.wast:9 deferred-feature component rejected: unsupported component feature: the `thread-suspend` trampoline
 cm/async/during-sync-call-exclusive-resume.wast:59 cascade no instance to invoke
 cm/async/during-sync-call-exclusive-resume.wast:60 cascade no instance to invoke
 cm/async/during-sync-call-exclusive-resume.wast:65 deferred-feature component rejected: unsupported component feature: the `thread-suspend` trampoline
 cm/async/during-sync-call-exclusive-resume.wast:102 cascade no instance to invoke
 cm/async/during-sync-call-exclusive-resume.wast:103 cascade expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
-cm/async/during-sync-call-may-block-if-other-ready-threads.wast:12 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
+cm/async/during-sync-call-may-block-if-other-ready-threads.wast:12 deferred-feature component rejected: unsupported component feature: the `thread-suspend-then-resume` trampoline
 cm/async/during-sync-call-may-block-if-other-ready-threads.wast:110 cascade no definition named `Tester`
 cm/async/during-sync-call-may-block-if-other-ready-threads.wast:111 cascade no instance to invoke
 cm/async/during-sync-call-may-block-if-other-ready-threads.wast:112 cascade no instance to invoke
 cm/async/during-sync-call-may-block-if-other-ready-threads.wast:114 cascade no definition named `Tester`
 cm/async/during-sync-call-may-block-if-other-ready-threads.wast:115 cascade no instance to invoke
-cm/async/during-sync-call-may-block-if-other-ready-threads.wast:136 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
+cm/async/during-sync-call-may-block-if-other-ready-threads.wast:136 deferred-feature component rejected: unsupported component feature: the `thread-suspend` trampoline
 cm/async/during-sync-call-may-block-if-other-ready-threads.wast:206 cascade no instance to invoke
 cm/async/during-sync-call-may-block-if-other-ready-threads.wast:207 cascade no instance to invoke
-cm/async/during-sync-call-no-sibling-resume.wast:16 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
+cm/async/during-sync-call-no-sibling-resume.wast:16 deferred-feature component rejected: unsupported component feature: the `thread-suspend-then-resume` trampoline
 cm/async/during-sync-call-no-sibling-resume.wast:155 cascade no instance to invoke
 cm/async/during-sync-call-no-sibling-resume.wast:156 cascade no instance to invoke
 cm/async/during-sync-call-no-sibling-resume.wast:162 deferred-feature component rejected: unsupported component feature: the `thread-suspend` trampoline
 cm/async/during-sync-call-no-sibling-resume.wast:214 cascade no instance to invoke
 cm/async/during-sync-call-no-sibling-resume.wast:215 cascade expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
-cm/async/during-sync-scheduling-candidates.wast:19 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
+cm/async/during-sync-scheduling-candidates.wast:19 deferred-feature component rejected: unsupported component feature: the `thread-yield-then-promote` trampoline
 cm/async/during-sync-scheduling-candidates.wast:74 cascade no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:75 cascade no instance to invoke
-cm/async/during-sync-scheduling-candidates.wast:78 deferred-feature component rejected: unsupported component feature: the `thread-index` trampoline
+cm/async/during-sync-scheduling-candidates.wast:78 deferred-feature component rejected: unsupported component feature: the `thread-yield-then-promote` trampoline
 cm/async/during-sync-scheduling-candidates.wast:132 cascade no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:133 cascade no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:134 cascade no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:135 cascade no instance to invoke
-cm/async/during-sync-scheduling-candidates.wast:144 deferred-feature component rejected: unsupported component feature: the `thread-index` trampoline
+cm/async/during-sync-scheduling-candidates.wast:144 deferred-feature component rejected: unsupported component feature: the `thread-yield-then-promote` trampoline
 cm/async/during-sync-scheduling-candidates.wast:234 cascade no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:235 cascade no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:236 cascade no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:237 cascade no instance to invoke
-cm/async/during-sync-scheduling-candidates.wast:245 deferred-feature component rejected: unsupported component feature: the `thread-index` trampoline
+cm/async/during-sync-scheduling-candidates.wast:245 deferred-feature component rejected: unsupported component feature: the `thread-suspend` trampoline
 cm/async/during-sync-scheduling-candidates.wast:303 cascade no definition named `BlockedCallbackTester`
 cm/async/during-sync-scheduling-candidates.wast:304 cascade no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:305 cascade no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:307 cascade no definition named `BlockedCallbackTester`
 cm/async/during-sync-scheduling-candidates.wast:308 cascade no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:309 cascade no instance to invoke
-cm/async/during-sync-scheduling-candidates.wast:315 deferred-feature component rejected: unsupported component feature: the `thread-index` trampoline
+cm/async/during-sync-scheduling-candidates.wast:315 deferred-feature component rejected: unsupported component feature: the `thread-suspend` trampoline
 cm/async/during-sync-scheduling-candidates.wast:403 cascade no definition named `SyncLiftedTester`
 cm/async/during-sync-scheduling-candidates.wast:404 cascade no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:405 cascade no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:407 cascade no definition named `SyncLiftedTester`
 cm/async/during-sync-scheduling-candidates.wast:408 cascade no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:409 cascade no instance to invoke
-cm/async/during-sync-scheduling-candidates.wast:414 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
+cm/async/during-sync-scheduling-candidates.wast:414 deferred-feature component rejected: unsupported component feature: the `thread-yield-then-promote` trampoline
 cm/async/during-sync-scheduling-candidates.wast:482 cascade no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:483 cascade no instance to invoke
 cm/async/during-sync-scheduling-candidates.wast:484 cascade no instance to invoke
 cm/async/reentrance.wast:548 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x66 - Canceller!<wasm function 1> 1: 0xe7 - <unknown>!<wasm function 5> 2: 0xa7 - CalleeModule!<wasm function 6> 3: 0x1f8 - <unknown>!<wasm function 12> 4: 0xc4 - Main!<wasm function 6>: unsupported component feature: subtask cancellation (`subtask.cancel`)
-cm/async/reentrance.wast:557 deferred-feature component rejected: unsupported component feature: the `thread-index` trampoline
+cm/async/reentrance.wast:557 deferred-feature component rejected: unsupported component feature: the `thread-suspend-then-promote` trampoline
 cm/async/reentrance.wast:685 cascade no instance to invoke
-cm/async/reentrance.wast:701 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
+cm/async/reentrance.wast:701 deferred-feature component rejected: unsupported component feature: the `thread-suspend-then-resume` trampoline
 cm/async/reentrance.wast:813 cascade no instance to invoke
 cm/async/reentrance.wast:891 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x96 - MC!<wasm function 4>: wasm trap: wasm `unreachable` instruction executed` (the deadlocked call of line 429 leaves its callee waiting, and a trap does not poison its instances yet, so that callee resumes here and traps before `subtask.cancel` is reached)
-cm/async/self-switch-traps.wast:3 deferred-feature component rejected: unsupported component feature: the `thread-index` trampoline
+cm/async/self-switch-traps.wast:3 deferred-feature component rejected: unsupported component feature: the `thread-suspend-then-resume` trampoline
 cm/async/self-switch-traps.wast:45 cascade no definition named `Tester`
 cm/async/self-switch-traps.wast:46 cascade expected a trap `cannot resume thread which is not suspended`, got `no instance to invoke`
 cm/async/self-switch-traps.wast:47 cascade no definition named `Tester`
@@ -91,7 +91,7 @@ cm/async/self-switch-traps.wast:49 cascade no definition named `Tester`
 cm/async/self-switch-traps.wast:50 cascade expected a trap `cannot resume thread which is not suspended`, got `no instance to invoke`
 cm/async/self-switch-traps.wast:51 cascade no definition named `Tester`
 cm/async/self-switch-traps.wast:52 cascade expected a trap `cannot resume thread which is not suspended`, got `no instance to invoke`
-cm/async/switch-to-ready-callback.wast:16 deferred-feature component rejected: unsupported component feature: the `thread-index` trampoline
+cm/async/switch-to-ready-callback.wast:16 deferred-feature component rejected: unsupported component feature: the `thread-suspend-then-resume` trampoline
 cm/async/switch-to-ready-callback.wast:354 cascade no definition named `Tester`
 cm/async/switch-to-ready-callback.wast:355 cascade expected a trap `cannot resume thread which is not suspended`, got `no instance to invoke`
 cm/async/switch-to-ready-callback.wast:356 cascade no definition named `Tester`
@@ -110,7 +110,7 @@ cm/async/switch-to-ready-callback.wast:368 cascade no definition named `Tester`
 cm/async/switch-to-ready-callback.wast:369 cascade no instance to invoke
 cm/async/sync-barges-in.wast:323 deferred-feature the stackful callee `blocker` waits in `waitable-set.wait` inside its core function until its caller, below it on the stack, barges in with a synchronous call, which needs a stack switch, and the suspend capability that serves one has no provider on either target until the stackful design fills it: the call fails with `blocking here requires a stack switch, but the target has no suspend provider`
 cm/async/sync-streams.wast:208 deferred-feature the callee writes its stream synchronously after `task.return`, and only its caller, below it on the stack, reads it, which needs a stack switch, and the suspend capability that serves one has no provider on either target until the stackful design fills it: the call fails with `blocking here requires a stack switch, but the target has no suspend provider`
-cm/async/trap-if-block-and-sync.wast:5 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
+cm/async/trap-if-block-and-sync.wast:5 deferred-feature component rejected: unsupported component feature: the `thread-yield-then-resume` trampoline
 cm/async/trap-if-block-and-sync.wast:315 cascade no definition named `Tester`
 cm/async/trap-if-block-and-sync.wast:316 cascade expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
 cm/async/trap-if-block-and-sync.wast:317 cascade no definition named `Tester`
@@ -158,7 +158,7 @@ cm/async/trap-if-block-and-sync.wast:358 cascade expected a trap `cannot block a
 cm/async/trap-if-block-and-sync.wast:359 cascade no definition named `Tester`
 cm/async/trap-if-block-and-sync.wast:360 cascade expected a trap `cannot block a synchronous task before returning`, got `no instance to invoke`
 cm/async/trap-if-block-and-sync.wast:361 cascade no definition named `Tester`
-cm/async/trap-if-sync-and-waitable-set.wast:8 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
+cm/async/trap-if-sync-and-waitable-set.wast:8 deferred-feature component rejected: unsupported component feature: the `thread-yield-then-resume` trampoline
 cm/async/trap-if-sync-and-waitable-set.wast:300 cascade no definition named `Tester`
 cm/async/trap-if-sync-and-waitable-set.wast:301 cascade expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
 cm/async/trap-if-sync-and-waitable-set.wast:302 cascade no definition named `Tester`
@@ -217,63 +217,6 @@ cm/validation/max-value-size.wast:43 validation expected rejection `exceeds maxi
 cm/validation/max-value-size.wast:48 validation expected rejection `exceeds maximum byte size`, but the component parsed (wasmparser 0.254 predates the element-size limit the corpus checks)
 cm/validation/max-value-size.wast:57 validation expected rejection `exceeds maximum byte size`, but the component parsed (wasmparser 0.254 predates the element-size limit the corpus checks)
 cm/validation/max-value-size.wast:63 validation expected rejection `exceeds maximum byte size`, but the component parsed (wasmparser 0.254 predates the element-size limit the corpus checks)
-cm/values/post-return.wast:4 deferred-feature component rejected: unsupported component feature: the `thread-index` trampoline
-cm/values/post-return.wast:201 cascade no definition named `Tester`
-cm/values/post-return.wast:202 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:203 cascade no definition named `Tester`
-cm/values/post-return.wast:204 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:205 cascade no definition named `Tester`
-cm/values/post-return.wast:206 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:207 cascade no definition named `Tester`
-cm/values/post-return.wast:208 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:209 cascade no definition named `Tester`
-cm/values/post-return.wast:210 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:211 cascade no definition named `Tester`
-cm/values/post-return.wast:212 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:213 cascade no definition named `Tester`
-cm/values/post-return.wast:214 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:215 cascade no definition named `Tester`
-cm/values/post-return.wast:216 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:217 cascade no definition named `Tester`
-cm/values/post-return.wast:218 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:219 cascade no definition named `Tester`
-cm/values/post-return.wast:220 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:221 cascade no definition named `Tester`
-cm/values/post-return.wast:222 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:223 cascade no definition named `Tester`
-cm/values/post-return.wast:224 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:225 cascade no definition named `Tester`
-cm/values/post-return.wast:226 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:227 cascade no definition named `Tester`
-cm/values/post-return.wast:228 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:229 cascade no definition named `Tester`
-cm/values/post-return.wast:230 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:231 cascade no definition named `Tester`
-cm/values/post-return.wast:232 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:233 cascade no definition named `Tester`
-cm/values/post-return.wast:234 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:235 cascade no definition named `Tester`
-cm/values/post-return.wast:236 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:237 cascade no definition named `Tester`
-cm/values/post-return.wast:238 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:239 cascade no definition named `Tester`
-cm/values/post-return.wast:240 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:241 cascade no definition named `Tester`
-cm/values/post-return.wast:242 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:243 cascade no definition named `Tester`
-cm/values/post-return.wast:244 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:245 cascade no definition named `Tester`
-cm/values/post-return.wast:246 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:247 cascade no definition named `Tester`
-cm/values/post-return.wast:248 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:249 cascade no definition named `Tester`
-cm/values/post-return.wast:250 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:251 cascade no definition named `Tester`
-cm/values/post-return.wast:252 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:253 cascade no definition named `Tester`
-cm/values/post-return.wast:254 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-cm/values/post-return.wast:255 cascade no definition named `Tester`
-cm/values/post-return.wast:256 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
 fixtures/wasi-http-same-instance.wast:4 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `wasi:http/types@0.3.0`: no registered linker instance satisfies import `wasi:http/types@0.3.0`
 fixtures/wasi-http-same-instance.wast:2128 cascade no instance to invoke (given a host for `wasi:http/types`, `drain` traps here on the spec's temporary same-instance rule for a non-number payload; it passes once the spec lifts that rule)
 fixtures/wasi-http-same-instance.wast:2131 cascade no instance to invoke (given a host for `wasi:http/types`, `drain` traps here on the spec's temporary same-instance rule for a non-number payload; it passes once the spec lifts that rule)
@@ -321,7 +264,7 @@ wasmtime/async/error-context.wast:39 deferred-feature component rejected: unsupp
 wasmtime/async/error-context.wast:84 cascade no definition named `A`
 wasmtime/async/error-context.wast:85 cascade no instance to invoke
 wasmtime/async/error-context.wast:86 cascade expected a trap `invalid debug message pointer`, got `no instance to invoke`
-wasmtime/async/join-during-sync-read.wast:8 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
+wasmtime/async/join-during-sync-read.wast:8 deferred-feature component rejected: unsupported component feature: the `thread-yield-then-resume` trampoline
 wasmtime/async/join-during-sync-read.wast:66 cascade expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `no instance to invoke`
 wasmtime/async/reenter-during-yield.wast:81 deferred-feature the callee's core function yields for ever and only its caller can release it, which needs a stack switch: the call fails with `blocking here requires a stack switch, but the target has no suspend provider`
 wasmtime/async/stream-zero-ops.wast:201 deferred-feature the callee is a synchronous lift the caller reached through an asynchronous lower, and it blocks in `waitable-set.wait` until the caller writes, so only that caller, below it on the stack, can release it, which needs a stack switch, and the suspend capability that serves one has no provider on either target until the stackful design fills it: the call fails with `blocking here requires a stack switch, but the target has no suspend provider`
@@ -329,7 +272,7 @@ wasmtime/async/streams-massive-send.wast:238 deferred-feature the callee writes 
 wasmtime/async/streams-massive-send.wast:240 deferred-feature the callee writes its future synchronously after `task.return` for its caller, below it on the stack, to read, which needs a stack switch, and the suspend capability that serves one has no provider on either target until the stackful design fills it: the call fails with `blocking here requires a stack switch, but the target has no suspend provider`
 wasmtime/async/sync-streams.wast:186 deferred-feature the callee writes its stream synchronously after `task.return`, and only its caller, below it on the stack, reads it, which needs a stack switch, and the suspend capability that serves one has no provider on either target until the stackful design fills it: the call fails with `blocking here requires a stack switch, but the target has no suspend provider`
 wasmtime/async/task-builtins.wast:723 deferred-feature the callee reads the future synchronously in its first core function, and only its caller, below it on the stack, writes it, which needs a stack switch, and the suspend capability that serves one has no provider on either target until the stackful design fills it: the call fails with `blocking here requires a stack switch, but the target has no suspend provider`
-wasmtime/async/task-deletion.wast:11 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
+wasmtime/async/task-deletion.wast:11 deferred-feature component rejected: unsupported component feature: the `thread-suspend` trampoline
 wasmtime/async/task-deletion.wast:311 cascade no instance to invoke
 wasmtime/async/task-deletion.wast:312 cascade no instance to invoke
 wasmtime/async/task-deletion.wast:313 cascade no instance to invoke
@@ -339,10 +282,6 @@ wasmtime/async/task-deletion.wast:316 cascade no instance to invoke
 wasmtime/async/task-deletion.wast:317 cascade no instance to invoke
 wasmtime/async/task-deletion.wast:318 cascade no instance to invoke
 wasmtime/async/task-deletion.wast:319 cascade no instance to invoke
-wasmtime/async/task-return-traps.wast:21 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
-wasmtime/async/task-return-traps.wast:56 cascade expected a trap `async-lifted export failed to produce a result`, got `no instance to invoke`
-wasmtime/async/task-return-traps.wast:58 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
-wasmtime/async/task-return-traps.wast:91 cascade expected a trap `async-lifted export failed to produce a result`, got `no instance to invoke`
 wasmtime/async/trap-if-done.wast:594 deferred-feature the callee is a synchronous lift the caller reached through an asynchronous lower, and it writes its future synchronously, so only that caller, below it on the stack, can read it and release the write, which needs a stack switch, and the suspend capability that serves one has no provider on either target until the stackful design fills it: the call fails with `blocking here requires a stack switch, but the target has no suspend provider`
 wasmtime/async/trap-if-done.wast:596 deferred-feature the callee is a synchronous lift the caller reached through an asynchronous lower, and it writes its future synchronously, so only that caller, below it on the stack, can read it and release the write, which needs a stack switch, and the suspend capability that serves one has no provider on either target until the stackful design fills it: the call fails with `blocking here requires a stack switch, but the target has no suspend provider`
 wasmtime/async/trap-if-done.wast:612 deferred-feature the callee is a synchronous lift the caller reached through an asynchronous lower, and it writes its future synchronously, so only that caller, below it on the stack, can read it and release the write, which needs a stack switch, and the suspend capability that serves one has no provider on either target until the stackful design fills it: the call fails with `blocking here requires a stack switch, but the target has no suspend provider`
@@ -363,6 +302,3 @@ wasmtime/exceptions.wast:237 cascade expected a trap `uncaught exception propaga
 wasmtime/modules.wast:482 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
 wasmtime/modules.wast:485 cascade instantiation failed: link error: no registered linker instance satisfies import `tag-module`: no registered linker instance satisfies import `tag-module` (the component at line 482 did not instantiate)
 wasmtime/tags.wast:3 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
-wasmtime/thread-transparency/reentrancy.wast:22 deferred-feature component rejected: unsupported component feature: thread built-ins (table extraction)
-wasmtime/thread-transparency/reentrancy.wast:113 cascade no definition named `Tester`
-wasmtime/thread-transparency/reentrancy.wast:114 cascade expected a trap `wasm `unreachable` instruction executed`, got `no instance to invoke`

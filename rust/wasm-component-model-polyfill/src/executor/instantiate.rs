@@ -50,6 +50,9 @@ use super::waitable_builtins::{
     build_subtask_drop, build_waitable_join, build_waitable_set_drop, build_waitable_set_new,
     build_waitable_set_poll, build_waitable_set_wait,
 };
+use super::{
+    ThreadStartTable, build_thread_index, build_thread_new_indirect, build_thread_resume_later,
+};
 use super::{build_cancel_copy, build_copy, build_drop_end, build_future_new, build_stream_new};
 use crate::abi::instance_flags::InstanceFlags;
 use crate::abi::runtime_state::AbiRuntimeState;
@@ -381,7 +384,8 @@ fn run_plan<T: 'static>(
             component_instances,
             instance_tables,
         )
-        .with_instance_flags(flags.clone()),
+        .with_instance_flags(flags.clone())
+        .with_thread_start_tables(ir.num_runtime_tables),
     ));
 
     // Build every trampoline upfront. Trampolines never depend on
@@ -570,6 +574,28 @@ fn run_plan<T: 'static>(
                     *s = Some(callback);
                 } else {
                     return Err(internal("ExtractCallback slot out of bounds"));
+                }
+            }
+            Initializer::ExtractTable { slot, source } => {
+                let extern_value = resolve_source(ir, &items, store, source)?;
+                let RuntimeExtern::Table(table) = extern_value else {
+                    return Err(internal(
+                        "ExtractTable directive resolved to a non-table item",
+                    ));
+                };
+                let probe = ir.thread_start_probe.as_ref().ok_or_else(|| {
+                    internal("ExtractTable directive in a component with no thread start probe")
+                })?;
+                let start_table =
+                    ThreadStartTable::new(store.internal().runtime_mut(), probe, table)
+                        .map_err(InstantiationError::SubstrateFailure)?;
+                let mut state = abi_state
+                    .lock()
+                    .map_err(|_| internal("ABI state poisoned"))?;
+                if let Some(s) = state.thread_start_tables.get_mut(*slot) {
+                    *s = Some(start_table);
+                } else {
+                    return Err(internal("ExtractTable slot out of bounds"));
                 }
             }
         }
@@ -855,6 +881,35 @@ fn build_runtime_trampoline<T: 'static>(
             instance,
             signature,
         } => Ok(build_thread_yield(
+            store,
+            *instance,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::ThreadIndex {
+            instance,
+            signature,
+        } => Ok(build_thread_index(
+            store,
+            *instance,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::ThreadNewIndirect {
+            instance,
+            table,
+            signature,
+        } => Ok(build_thread_new_indirect(
+            store,
+            *instance,
+            *table,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::ThreadResumeLater {
+            instance,
+            signature,
+        } => Ok(build_thread_resume_later(
             store,
             *instance,
             signature,

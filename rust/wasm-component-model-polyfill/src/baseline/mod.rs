@@ -33,6 +33,7 @@ mod subtask_drop;
 mod suspend;
 mod sync_lower;
 mod tasks;
+mod thread_builtins;
 mod thread_yield;
 mod waitable_builtins;
 mod waitables;
