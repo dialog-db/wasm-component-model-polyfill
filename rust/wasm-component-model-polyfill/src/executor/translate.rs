@@ -489,7 +489,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 post_return: post_return.map(|slot| slot.as_u32() as usize),
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
-            // The one thread built-in the polyfill implements. The
+            // The `thread.yield` built-in. The
             // `cancellable` field is dropped here. It is the
             // trampoline IR's own and not the reference's: `canon
             // thread.yield` carries no such immediate, and the
@@ -527,6 +527,38 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 instance: instance.as_u32() as usize,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
+            // The five thread built-ins that suspend or switch. Each
+            // names the instance whose thread table it works on. The
+            // `cancellable` field is dropped, for the reason the
+            // `thread.yield` arm gives.
+            Trampoline::ThreadSuspend { instance, .. } => TrampolineSpec::ThreadSuspend {
+                instance: instance.as_u32() as usize,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::ThreadSuspendThenResume { instance, .. } => {
+                TrampolineSpec::ThreadSuspendThenResume {
+                    instance: instance.as_u32() as usize,
+                    signature: core_signature(&component_types, &translation, trampoline_idx)?,
+                }
+            }
+            Trampoline::ThreadYieldThenResume { instance, .. } => {
+                TrampolineSpec::ThreadYieldThenResume {
+                    instance: instance.as_u32() as usize,
+                    signature: core_signature(&component_types, &translation, trampoline_idx)?,
+                }
+            }
+            Trampoline::ThreadSuspendThenPromote { instance, .. } => {
+                TrampolineSpec::ThreadSuspendThenPromote {
+                    instance: instance.as_u32() as usize,
+                    signature: core_signature(&component_types, &translation, trampoline_idx)?,
+                }
+            }
+            Trampoline::ThreadYieldThenPromote { instance, .. } => {
+                TrampolineSpec::ThreadYieldThenPromote {
+                    instance: instance.as_u32() as usize,
+                    signature: core_signature(&component_types, &translation, trampoline_idx)?,
+                }
+            }
             // The two cancellation built-ins are the one exception to
             // refusing what is not built. The binding layer of the
             // Rust toolchain links `task.cancel` in every `async`

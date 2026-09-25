@@ -931,6 +931,18 @@ impl<T: 'static> Scheduler<T> {
         self.held_callbacks.len()
     }
 
+    /// Whether a callback item the store holds until an event is
+    /// parked on behalf of `thread`: the implicit thread of a callback
+    /// task that returned the wait code. Such a thread waits on a set
+    /// as a thread inside `waitable-set.wait` does, but it is no frame
+    /// on the stack. Its callback runs as an item once the set holds
+    /// an event and the instance's exclusive thread is free.
+    pub fn holds_callback_of(&self, thread: ThreadId) -> bool {
+        self.held_callbacks.entries.values().any(|entry| {
+            matches!(entry.condition, HeldFor::Event { thread: held, .. } if held == thread)
+        })
+    }
+
     /// Hold `item` until a waitable of `set` holds an event. `thread`
     /// is the task's implicit thread, which the caller parked on the
     /// set; the wait ends when the item is queued.

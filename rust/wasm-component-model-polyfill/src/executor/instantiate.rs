@@ -52,6 +52,8 @@ use super::waitable_builtins::{
 };
 use super::{
     ThreadStartTable, build_thread_index, build_thread_new_indirect, build_thread_resume_later,
+    build_thread_suspend, build_thread_suspend_then_promote, build_thread_suspend_then_resume,
+    build_thread_yield_then_promote, build_thread_yield_then_resume,
 };
 use super::{build_cancel_copy, build_copy, build_drop_end, build_future_new, build_stream_new};
 use crate::abi::instance_flags::InstanceFlags;
@@ -910,6 +912,51 @@ fn build_runtime_trampoline<T: 'static>(
             instance,
             signature,
         } => Ok(build_thread_resume_later(
+            store,
+            *instance,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::ThreadSuspend {
+            instance,
+            signature,
+        } => Ok(build_thread_suspend(
+            store,
+            *instance,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::ThreadSuspendThenResume {
+            instance,
+            signature,
+        } => Ok(build_thread_suspend_then_resume(
+            store,
+            *instance,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::ThreadYieldThenResume {
+            instance,
+            signature,
+        } => Ok(build_thread_yield_then_resume(
+            store,
+            *instance,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::ThreadSuspendThenPromote {
+            instance,
+            signature,
+        } => Ok(build_thread_suspend_then_promote(
+            store,
+            *instance,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::ThreadYieldThenPromote {
+            instance,
+            signature,
+        } => Ok(build_thread_yield_then_promote(
             store,
             *instance,
             signature,

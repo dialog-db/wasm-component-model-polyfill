@@ -3,6 +3,7 @@
 use super::lower_kind::LowerKind;
 use super::subtask_id::SubtaskId;
 use super::task_id::TaskId;
+use super::thread_id::ThreadId;
 
 /// One entry of the store's stack of current scopes.
 ///
@@ -22,6 +23,11 @@ use super::task_id::TaskId;
 /// a task or a subtask. It records where the real stack holds a
 /// frame that a stack switch would return to, which is what the
 /// cause of a failed block reads.
+///
+/// A thread built-in that switches to a thread that has never run
+/// starts it the same way, from inside its own frame, and marks that
+/// with a [`ThreadSwitch`](Self::ThreadSwitch) mark for as long as
+/// the started thread runs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Scope {
     /// A call into an export.
@@ -45,4 +51,27 @@ pub enum Scope {
         /// How the caller lowered the call.
         lower: LowerKind,
     },
+    /// A thread a switching thread built-in started from inside
+    /// itself, on the real stack above the built-in's frame. The
+    /// reference runs the started thread on a stack of its own, and
+    /// the frame that resumed the switching thread runs it next.
+    /// Without a stack switch, the switching thread stays below the
+    /// mark until the started thread returns.
+    ///
+    /// The switching thread would go on once control came back to it
+    /// when it is not suspended: it yielded to the started thread, or
+    /// a `thread.resume-later` has made it ready again since.
+    ThreadSwitch {
+        /// The thread whose built-in switched.
+        thread: ThreadId,
+    },
+}
+
+impl Scope {
+    /// Whether the entry is a mark of a thread started from inside a
+    /// frame, rather than a scope. Nothing counts a borrow or a lend
+    /// against a mark.
+    pub fn is_mark(self) -> bool {
+        matches!(self, Self::NestedStart { .. } | Self::ThreadSwitch { .. })
+    }
 }

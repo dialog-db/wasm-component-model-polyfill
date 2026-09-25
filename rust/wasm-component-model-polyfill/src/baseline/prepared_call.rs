@@ -331,15 +331,15 @@ const TRAPS_AFTER_THE_GATE_UNDER_AN_ASYNC_CALLER: &[u8] = component!(
     "#
 );
 
-/// A component that declares `canon thread.suspend`, one of the thread
-/// built-ins that switch stacks, which stay refused.
-const THREAD_SUSPEND: &[u8] = component!(
+/// A component that declares `canon error-context.drop`, one of the
+/// error-context built-ins, which stay refused.
+const ERROR_CONTEXT_DROP: &[u8] = component!(
     r#"
     (component
-      (core func $thread-suspend (canon thread.suspend))
-      (core module $m (import "" "thread.suspend" (func $thread-suspend (result i32))))
+      (core func $error-context-drop (canon error-context.drop))
+      (core module $m (import "" "error-context.drop" (func $error-context-drop (param i32))))
       (core instance $i (instantiate $m
-        (with "" (instance (export "thread.suspend" (func $thread-suspend)))))))
+        (with "" (instance (export "error-context.drop" (func $error-context-drop)))))))
     "#
 );
 
@@ -357,12 +357,12 @@ async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
     (store, instance)
 }
 
-/// Parse with the thread built-ins allowed past validation, so that
-/// the refusal a test reads is the polyfill's own and not the
+/// Parse with the error-context built-ins allowed past validation, so
+/// that the refusal a test reads is the polyfill's own and not the
 /// validator's feature gate.
-async fn parse_with_threading(bytes: &[u8]) -> Result<Component, Error> {
+async fn parse_with_error_context(bytes: &[u8]) -> Result<Component, Error> {
     let mut config = EngineConfig::new();
-    config.wasm_component_model_threading(true);
+    config.wasm_component_model_error_context(true);
     let engine = Engine::with_config(&config).expect("engine");
     Component::new(&engine, bytes).await
 }
@@ -861,19 +861,17 @@ async fn it_ends_the_callers_wait_when_the_callees_start_fails() {
 
 #[wcmp_macros::test]
 async fn it_still_refuses_the_built_ins_this_design_does_not_own() {
-    // The thread built-ins that switch stacks stay refused at
-    // translation, under the name the translator gives each. The
-    // stream, future, and error-context built-ins are refused the
-    // same way, which the conformance corpus records file by file.
-    // The thread built-ins are behind a validator gate of their own,
-    // so the refusal a component that opts into them reads is the
-    // polyfill's rather than the validator's.
-    let err = parse_with_threading(THREAD_SUSPEND)
+    // The error-context built-ins stay refused at translation, under
+    // the name the translator gives each, which the conformance
+    // corpus records file by file. They are behind a validator gate
+    // of their own, so the refusal a component that opts into them
+    // reads is the polyfill's rather than the validator's.
+    let err = parse_with_error_context(ERROR_CONTEXT_DROP)
         .await
-        .expect_err("the thread built-in is refused");
+        .expect_err("the error-context built-in is refused");
     assert!(
-        matches!(&err, Error::Unsupported { feature } if feature.contains("thread-suspend")),
-        "expected `thread-suspend` to be refused, got {err:?}"
+        matches!(&err, Error::Unsupported { feature } if feature.contains("error-context-drop")),
+        "expected `error-context-drop` to be refused, got {err:?}"
     );
 }
 

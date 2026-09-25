@@ -5,6 +5,7 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::error::{Error, Result, SchedulerCause};
+use crate::internal::ErrorInternal;
 use crate::resource::HandleTables;
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
@@ -65,6 +66,57 @@ impl Drop for Waiting {
             .unwrap_or_else(PoisonError::into_inner)
             .tasks
             .stop_waiting(thread, previous);
+    }
+}
+
+/// A thread's suspension, and its pairing with the thread's resume.
+///
+/// A suspended thread waits on no condition. It runs again once a
+/// resume names it, which makes it ready, and the suspension ends
+/// when the guard is dropped, whether the wait returned or unwound,
+/// for the reason [`Waiting`] gives. The thread then runs, waits on
+/// the condition it waited on before, and is suspended no more.
+struct Suspended {
+    tables: Arc<Mutex<HandleTables>>,
+    /// The thread, and the condition it waited on before.
+    thread: ThreadId,
+    previous: Option<Readiness>,
+}
+
+impl Suspended {
+    /// Suspend the current thread of `store`. A store with no current
+    /// thread has nothing to suspend, and that is an internal error:
+    /// every guest call runs a thread.
+    fn start<T: 'static>(store: &mut StoreContext<'_, T>) -> Result<Self> {
+        let tables = store.internal().tables_handle();
+        let (thread, previous) = {
+            let mut guard = store.internal().lock_tables()?;
+            let thread = guard
+                .tasks
+                .current_thread()
+                .ok_or_else(|| Error::internal("a thread suspended with no thread running"))?;
+            let previous = guard
+                .tasks
+                .thread(thread)
+                .and_then(|record| record.readiness);
+            guard.tasks.suspend_thread(thread)?;
+            (thread, previous)
+        };
+        Ok(Self {
+            tables,
+            thread,
+            previous,
+        })
+    }
+}
+
+impl Drop for Suspended {
+    fn drop(&mut self) {
+        let mut guard = self.tables.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(record) = guard.tasks.thread_mut(self.thread) {
+            record.suspended = false;
+        }
+        guard.tasks.stop_waiting(self.thread, self.previous);
     }
 }
 
@@ -190,6 +242,7 @@ impl Drop for Waiting {
 ///   [`SchedulerCause::StackSwitchNeeded`], because the one thread
 ///   that could release it is a guest frame on the real stack that
 ///   the store cannot reach and only a stack switch could resume.
+///   The failure starts the count over, since it ends the run.
 ///   Two shapes reach the budget and they are one shape. A callee
 ///   that spin-waits in its event loop until its caller unblocks it
 ///   gives way, is re-queued, runs again and gives way again, and
@@ -351,13 +404,66 @@ impl<T: 'static> SuspendSeam<T> {
         Self::give_way_once(store)
     }
 
+    /// Suspend the current thread, run `switch`, and then wait until
+    /// a resume names the thread, which is what `thread.suspend` and
+    /// the two built-ins that suspend and then switch ask of the seam.
+    ///
+    /// The try part suspends the thread: it neither runs nor waits on
+    /// any condition. `switch` runs next, with the thread suspended.
+    /// It is the switch of the reference's `Thread.resume` loop,
+    /// which runs the named thread before anything else, and it does
+    /// nothing for a plain suspension. The thread then waits until a
+    /// resume makes it ready. A resume that runs while `switch` runs
+    /// makes it ready at once. Otherwise the wait goes through the
+    /// fallback, under the rules the type states, and a thread that
+    /// nothing resumes fails with the cause those rules select. The
+    /// suspension ends before the seam returns, however it went, and
+    /// on an unwind too, for the reason [`Suspended`] gives. A failure
+    /// of `switch` is the seam's failure.
+    pub fn suspend_current(
+        store: &mut StoreContext<'_, T>,
+        switch: impl FnOnce(&mut StoreContext<'_, T>) -> Result<()>,
+    ) -> Result<()> {
+        let suspended = Suspended::start(store)?;
+        switch(store)?;
+        let thread = suspended.thread;
+        let resumed = move |store: &StoreContext<'_, T>| {
+            store
+                .internal_ref()
+                .lock_tables()
+                .is_ok_and(|guard| !guard.tasks.thread_suspended(thread))
+        };
+        if resumed(store) {
+            return Ok(());
+        }
+        Self::run_nested_turns(store, &resumed, None)
+    }
+
+    /// Make the current thread ready and run `switch`, which is what
+    /// the two built-ins that yield and then switch ask of the seam.
+    ///
+    /// The thread waits on a condition that always holds for as long
+    /// as `switch` runs, as the reference's `yield_then_resume`
+    /// records it: a thread that the started thread names sees it
+    /// ready and not suspended. Once `switch` has returned, the
+    /// thread's yield has given way to the thread it named, and its
+    /// condition holds, so it goes on at once. A failure of `switch`
+    /// is the seam's failure.
+    pub fn yield_to(
+        store: &mut StoreContext<'_, T>,
+        switch: impl FnOnce(&mut StoreContext<'_, T>) -> Result<()>,
+    ) -> Result<()> {
+        let _waiting = Waiting::start(store, Readiness::Yielded)?;
+        switch(store)
+    }
+
     /// The one chance [`give_way`](Self::give_way) gives.
     fn give_way_once(store: &mut StoreContext<'_, T>) -> Result<()> {
         let waker = store.internal().active_waker();
         let only = store.internal().must_not_block_instance();
         store.internal().nested_turn(&waker, only)?;
         if Self::note_turn(store) {
-            return Err(Error::Scheduler(SchedulerCause::StackSwitchNeeded));
+            return Err(Self::past_budget(store));
         }
         Ok(())
     }
@@ -454,7 +560,7 @@ impl<T: 'static> SuspendSeam<T> {
             return Ok(());
         }
         if past_budget {
-            return Err(Error::Scheduler(SchedulerCause::StackSwitchNeeded));
+            return Err(Self::past_budget(store));
         }
         Err(Error::Scheduler(store.internal().suspend_cause()))
     }
@@ -492,6 +598,24 @@ impl<T: 'static> SuspendSeam<T> {
             seam.unserved_turns.saturating_add(1)
         };
         seam.unserved_turns > SPIN_BUDGET
+    }
+
+    /// The failure a suspension ends with once the run of turns the
+    /// store did not serve has passed [`SPIN_BUDGET`].
+    ///
+    /// The run starts over here. The failure ends the call the
+    /// spinning thread is inside, so the run it built ends with it. A
+    /// later block of the same store, in the next call a host makes,
+    /// say, is a run of its own, and would otherwise read the
+    /// finished run as its own and fail with the stack-switch cause
+    /// at its first turn, whatever the store's other rules would name.
+    fn past_budget(store: &mut StoreContext<'_, T>) -> Error {
+        store
+            .internal()
+            .scheduler_mut()
+            .suspend_seam_mut()
+            .unserved_turns = 0;
+        Error::Scheduler(SchedulerCause::StackSwitchNeeded)
     }
 }
 
@@ -2620,6 +2744,24 @@ mod tests {
             "the store held nothing at every one of them and ran nothing \
              between them, so the thread is waiting on a guest frame on the \
              real stack and only a stack switch would reach it"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_starts_the_run_of_give_ways_over_once_the_budget_has_failed_one() {
+        let mut owner = store();
+        let mut store = owner.internal().context();
+
+        assert_eq!(
+            cause(gives_way(&mut store, SPIN_BUDGET + 1)),
+            Error::Scheduler(SchedulerCause::StackSwitchNeeded).to_string(),
+            "the run passed the budget"
+        );
+        assert_eq!(
+            cause(SuspendSeam::give_way(&mut store)),
+            "the seam returned with the condition held",
+            "the failure ended the run it closed, so the next give way, in \
+             whatever call makes it, starts a run of its own"
         );
     }
 

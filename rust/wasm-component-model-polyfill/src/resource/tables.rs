@@ -467,7 +467,7 @@ impl HandleTables {
             }
             // A mark holds no record, so there is nothing to give
             // back.
-            Scope::NestedStart { .. } => {}
+            Scope::NestedStart { .. } | Scope::ThreadSwitch { .. } => {}
         }
     }
 

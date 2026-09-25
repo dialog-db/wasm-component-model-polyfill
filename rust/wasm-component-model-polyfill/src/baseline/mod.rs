@@ -36,6 +36,7 @@ mod switch_module;
 mod sync_lower;
 mod tasks;
 mod thread_builtins;
+mod thread_switch;
 mod thread_yield;
 mod waitable_builtins;
 mod waitables;

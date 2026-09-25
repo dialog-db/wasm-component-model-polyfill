@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use crate::abi::signature::Signature;
-use crate::error::{CopyCause, Error, Result, WaitableCause};
+use crate::error::{CopyCause, Error, Result, ThreadCause, WaitableCause};
 use crate::executor::ir::CanonOptions;
 use crate::internal::ErrorInternal;
 use crate::resource::TableId;
@@ -411,6 +411,55 @@ impl TaskTables {
         self.instance(instance)?.threads.get(index)
     }
 
+    /// Suspend the running thread `thread`: it neither runs nor waits
+    /// to run until a resume names it. This is what `thread.suspend`
+    /// and the switching built-ins do to the thread that calls them.
+    pub fn suspend_thread(&mut self, thread: ThreadId) -> Result<()> {
+        self.thread_mut(thread)
+            .ok_or_else(|| Error::internal("a suspending thread is not in the store"))?
+            .suspended = true;
+        Ok(())
+    }
+
+    /// Whether `thread` is suspended. A thread whose record is gone
+    /// is not.
+    pub fn thread_suspended(&self, thread: ThreadId) -> bool {
+        self.thread(thread).is_some_and(|record| record.suspended)
+    }
+
+    /// Make the suspended thread `thread` ready, which is the record
+    /// half of `thread.resume-later` and the reference's
+    /// `Thread.resume_later`: the thread waits on a condition that
+    /// always holds. Answers whether the thread has never run, in
+    /// which case its start still has to be queued. A thread that is
+    /// not suspended fails with Wasmtime's message.
+    pub fn resume_later(&mut self, thread: ThreadId) -> Result<bool> {
+        let record = self.thread_mut(thread).ok_or_else(|| {
+            Error::internal("a thread table names a thread the store does not hold")
+        })?;
+        if !record.suspended {
+            return Err(Error::Thread(ThreadCause::NotSuspended));
+        }
+        record.suspended = false;
+        let never_ran = record.start.is_some();
+        self.start_waiting(thread, Readiness::Yielded)?;
+        Ok(never_ran)
+    }
+
+    /// Take what the explicit thread `thread` runs as it starts,
+    /// together with its task. The thread is running from here on: it
+    /// is not suspended, and a wait `thread.resume-later` recorded
+    /// for it ends. `None` when the thread has started already, or
+    /// its record is gone.
+    pub fn take_thread_start(&mut self, thread: ThreadId) -> Option<(TaskId, ThreadStart)> {
+        let record = self.thread_mut(thread)?;
+        let start = record.start.take()?;
+        record.suspended = false;
+        let task = record.task;
+        self.stop_waiting(thread, None);
+        Some((task, start))
+    }
+
     /// End `thread` on its own: it leaves its instance's thread table
     /// and its task's list of threads, and its record leaves the
     /// store. The task itself stays. This is the end of an explicit
@@ -510,7 +559,7 @@ impl TaskTables {
         self.scopes
             .iter()
             .rev()
-            .find(|scope| !matches!(scope, Scope::NestedStart { .. }))
+            .find(|scope| !scope.is_mark())
             .copied()
     }
 
@@ -538,6 +587,28 @@ impl TaskTables {
         }
     }
 
+    /// Mark the stack where the thread built-in of `thread` starts a
+    /// thread it switched to, from inside itself. The started thread
+    /// runs above the mark until it returns to the built-in, which
+    /// then takes the mark off with
+    /// [`end_thread_switch`](Self::end_thread_switch).
+    pub fn begin_thread_switch(&mut self, thread: ThreadId) {
+        self.scopes.push(Scope::ThreadSwitch { thread });
+    }
+
+    /// Take off the innermost thread-switch mark, under the rule
+    /// [`end_nested_start`](Self::end_nested_start) states for its
+    /// own mark.
+    pub fn end_thread_switch(&mut self) {
+        if let Some(at) = self
+            .scopes
+            .iter()
+            .rposition(|scope| matches!(scope, Scope::ThreadSwitch { .. }))
+        {
+            self.scopes.remove(at);
+        }
+    }
+
     /// Whether a frame below the current one would go on under a
     /// stack switch: the stack carries a nested-start mark whose
     /// caller would run its own code once control came back to it.
@@ -551,6 +622,13 @@ impl TaskTables {
     /// block already ran, so it releases nothing. A record that is
     /// gone counts as resolved. A frame further down that would go
     /// on has a mark of its own.
+    ///
+    /// A thread-switch mark counts while the thread that switched is
+    /// not suspended: it yielded to the thread it started, or a
+    /// `thread.resume-later` has made it ready since. A thread that
+    /// stays suspended would get control back only once something
+    /// resumed it, and that is the ready work the block above it
+    /// already ran.
     pub fn caller_below_goes_on(&self) -> bool {
         self.scopes.iter().any(|scope| match *scope {
             Scope::NestedStart {
@@ -563,6 +641,9 @@ impl TaskTables {
             } => self
                 .subtask(subtask)
                 .is_none_or(|record| record.state.resolved()),
+            Scope::ThreadSwitch { thread } => {
+                self.thread(thread).is_some_and(|record| !record.suspended)
+            }
             Scope::Task(_) | Scope::Subtask(_) => false,
         })
     }
@@ -592,14 +673,14 @@ impl TaskTables {
                 .scopes
                 .iter()
                 .rposition(|entry| *entry == Scope::Subtask(subtask))?,
-            Scope::NestedStart { .. } => return None,
+            Scope::NestedStart { .. } | Scope::ThreadSwitch { .. } => return None,
         };
         self.scopes[..under]
             .iter()
             .rev()
             .find_map(|scope| match scope {
                 Scope::Task(task) => Some(*task),
-                Scope::Subtask(_) | Scope::NestedStart { .. } => None,
+                Scope::Subtask(_) | Scope::NestedStart { .. } | Scope::ThreadSwitch { .. } => None,
             })
     }
 
@@ -614,7 +695,7 @@ impl TaskTables {
     pub fn current_subtask(&self) -> Option<SubtaskId> {
         match self.current_scope()? {
             Scope::Subtask(subtask) => Some(subtask),
-            Scope::Task(_) | Scope::NestedStart { .. } => None,
+            Scope::Task(_) | Scope::NestedStart { .. } | Scope::ThreadSwitch { .. } => None,
         }
     }
 
@@ -776,7 +857,7 @@ impl TaskTables {
                 }
                 None => false,
             },
-            Scope::NestedStart { .. } => false,
+            Scope::NestedStart { .. } | Scope::ThreadSwitch { .. } => false,
         }
     }
 
@@ -792,7 +873,7 @@ impl TaskTables {
                 .subtask_mut(subtask)
                 .map(|record| std::mem::take(&mut record.lenders))
                 .unwrap_or_default(),
-            Scope::NestedStart { .. } => Vec::new(),
+            Scope::NestedStart { .. } | Scope::ThreadSwitch { .. } => Vec::new(),
         }
     }
 
@@ -2287,6 +2368,37 @@ mod tests {
             .subtask_returned(subtask)
             .expect("the callee returns");
         assert!(tables.caller_below_goes_on());
+    }
+
+    #[wcmp_macros::test]
+    fn it_counts_a_thread_switch_as_one_that_goes_on_while_the_switching_thread_is_not_suspended() {
+        // A thread that yielded to the thread it started would go on
+        // once control came back to it. One that suspended would not,
+        // until a resume made it ready again.
+        let mut tables = TaskTables::new();
+        let instance = tables.insert_instance();
+        let task = tables.push_task(None, None, instance);
+        tables.start_task(task);
+        let thread = tables.current_thread().expect("the task's implicit thread");
+
+        tables.begin_thread_switch(thread);
+        assert_eq!(tables.current_scope(), Some(Scope::Task(task)));
+        assert!(tables.caller_below_goes_on());
+
+        tables.suspend_thread(thread).expect("the thread suspends");
+        assert!(!tables.caller_below_goes_on());
+
+        assert!(
+            !tables
+                .resume_later(thread)
+                .expect("the thread is suspended"),
+            "the thread has run, so it has no start to queue"
+        );
+        assert!(tables.caller_below_goes_on());
+
+        tables.end_thread_switch();
+        assert_eq!(tables.scopes(), &[Scope::Task(task)]);
+        assert!(!tables.caller_below_goes_on());
     }
 
     #[wcmp_macros::test]

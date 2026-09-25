@@ -857,6 +857,53 @@ pub enum TrampolineSpec {
         /// in and no results.
         signature: CoreSignature,
     },
+    /// The `thread.suspend` built-in: the calling thread suspends
+    /// until a resume names it, and the built-in returns zero.
+    ThreadSuspend {
+        /// The component instance that calls the built-in.
+        instance: usize,
+        /// The core signature the guest imports: no parameters and
+        /// one `i32` result.
+        signature: CoreSignature,
+    },
+    /// The `thread.suspend-then-resume` built-in: the calling thread
+    /// suspends and switches to the suspended thread it names.
+    ThreadSuspendThenResume {
+        /// The component instance that calls the built-in.
+        instance: usize,
+        /// The core signature the guest imports: the thread's index
+        /// in and one `i32` result.
+        signature: CoreSignature,
+    },
+    /// The `thread.yield-then-resume` built-in: the calling thread
+    /// becomes ready and switches to the suspended thread it names.
+    ThreadYieldThenResume {
+        /// The component instance that calls the built-in.
+        instance: usize,
+        /// The core signature the guest imports: the thread's index
+        /// in and one `i32` result.
+        signature: CoreSignature,
+    },
+    /// The `thread.suspend-then-promote` built-in: the calling thread
+    /// switches to the thread it names when that thread is ready, and
+    /// suspends otherwise.
+    ThreadSuspendThenPromote {
+        /// The component instance that calls the built-in.
+        instance: usize,
+        /// The core signature the guest imports: the thread's index
+        /// in and one `i32` result.
+        signature: CoreSignature,
+    },
+    /// The `thread.yield-then-promote` built-in: the calling thread
+    /// switches to the thread it names when that thread is ready, and
+    /// yields otherwise.
+    ThreadYieldThenPromote {
+        /// The component instance that calls the built-in.
+        instance: usize,
+        /// The core signature the guest imports: the thread's index
+        /// in and one `i32` result.
+        signature: CoreSignature,
+    },
     /// The `task.cancel` built-in. Cancellation is not built, so a
     /// call fails with [`Error::Unsupported`](crate::Error) once the
     /// may-leave check has passed. The built-in is accepted so that

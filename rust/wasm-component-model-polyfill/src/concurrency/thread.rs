@@ -46,7 +46,10 @@ pub struct Thread {
     pub index: Option<u32>,
     /// Whether the thread is suspended: it is not running, and it is
     /// not waiting to run. An explicit thread is suspended from its
-    /// creation until `thread.resume-later` makes it ready.
+    /// creation until `thread.resume-later` makes it ready or a
+    /// switching built-in starts it. A running thread is suspended by
+    /// `thread.suspend` and by the built-ins that suspend and then
+    /// switch, until a resume names it.
     pub suspended: bool,
     /// What an explicit thread runs when it starts, until it starts.
     /// `None` for an implicit thread and for an explicit thread that

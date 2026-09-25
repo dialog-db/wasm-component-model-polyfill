@@ -66,7 +66,9 @@ pub use start_call::release_subtask;
 pub use sync_start_call::build_sync_start_call;
 pub use task_return::build_task_return;
 pub use thread_builtins::{
-    build_thread_index, build_thread_new_indirect, build_thread_resume_later,
+    build_thread_index, build_thread_new_indirect, build_thread_resume_later, build_thread_suspend,
+    build_thread_suspend_then_promote, build_thread_suspend_then_resume,
+    build_thread_yield_then_promote, build_thread_yield_then_resume,
 };
 pub use thread_start_table::ThreadStartTable;
 pub use thread_yield::build_thread_yield;

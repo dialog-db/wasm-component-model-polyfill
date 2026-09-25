@@ -57,8 +57,12 @@ pub enum Readiness {
     #[allow(dead_code)]
     EntryGate,
     /// The thread gave way and waits for its turn to resume, which
-    /// is what `thread.yield` records. The condition always holds: a
-    /// yield waits for nothing but its turn.
+    /// is what `thread.yield` records, and what a thread that yields
+    /// to another thread records while that thread runs. The
+    /// condition always holds: a yield waits for nothing but its
+    /// turn. A suspended thread that `thread.resume-later` made
+    /// ready waits on it too, as the reference's
+    /// `Thread.resume_later` records.
     ///
     /// A callback that returns the yield code records no condition.
     /// Its task gives its instance back, and its callback item waits
