@@ -64,6 +64,11 @@ use super::waitable_state::WaitableState;
 /// given an event, or a waitable holding one joined it. That list is
 /// how a callback item held until its set holds an event is found
 /// without examining every held item on every turn.
+///
+/// The tables keep the threads that wait, too. A waiting thread's
+/// record holds its readiness condition, and two lists name the
+/// waiting threads: one in the order they began to wait, and one in
+/// the order the scheduler found their conditions holding.
 pub struct TaskTables {
     tasks: RecordTable<Task>,
     subtasks: RecordTable<Subtask>,
@@ -75,6 +80,8 @@ pub struct TaskTables {
     scopes: Vec<Scope>,
     prepared_call: Option<SubtaskId>,
     signalled_sets: Vec<WaitableSetId>,
+    waiting: Vec<ThreadId>,
+    ready: Vec<ThreadId>,
 }
 
 impl TaskTables {
@@ -91,6 +98,8 @@ impl TaskTables {
             scopes: Vec::new(),
             prepared_call: None,
             signalled_sets: Vec::new(),
+            waiting: Vec::new(),
+            ready: Vec::new(),
         }
     }
 
@@ -701,6 +710,8 @@ impl TaskTables {
             if let Some(index) = self.thread_index(thread) {
                 self.threads.remove(index);
             }
+            self.waiting.retain(|waiting| *waiting != thread);
+            self.ready.retain(|ready| *ready != thread);
         }
     }
 
@@ -926,8 +937,8 @@ impl TaskTables {
     }
 
     /// Park `thread` on `set`: the set's waiter count rises and the
-    /// thread's readiness condition names the set. The scheduler
-    /// suspends the thread after this, and
+    /// thread starts waiting with a readiness condition that names
+    /// the set. The scheduler suspends the thread after this, and
     /// [`end_wait`](Self::end_wait) undoes it when the thread runs
     /// again.
     pub fn begin_wait(&mut self, set: WaitableSetId, thread: ThreadId) -> Result<()> {
@@ -939,22 +950,140 @@ impl TaskTables {
             return Err(Error::internal("waiting thread is not in the store"));
         }
         self.waitable_set_record_mut(set)?.num_waiting += 1;
-        if let Some(record) = self.thread_mut(thread) {
-            record.readiness = Some(Readiness::WaitableSet { set });
-        }
+        self.start_waiting(thread, Readiness::WaitableSet { set })?;
         Ok(())
     }
 
     /// The wait [`begin_wait`](Self::begin_wait) parked `thread` for
-    /// is over: the set's waiter count falls and the thread's
-    /// readiness condition clears.
+    /// is over: the set's waiter count falls and the thread stops
+    /// waiting.
     pub fn end_wait(&mut self, set: WaitableSetId, thread: ThreadId) -> Result<()> {
         let record = self.waitable_set_record_mut(set)?;
         record.num_waiting = record.num_waiting.saturating_sub(1);
-        if let Some(record) = self.thread_mut(thread) {
-            record.readiness = None;
-        }
+        self.stop_waiting(thread, None);
         Ok(())
+    }
+
+    // ---- waiting threads ----
+
+    /// Record that `thread` waits until `readiness` holds, which is
+    /// what the try part of a blocking built-in sets up. A thread that
+    /// waited on nothing joins the back of the list of waiting
+    /// threads.
+    ///
+    /// Answers the condition the thread waited on before, which is
+    /// `None` unless this block nests inside another block of the
+    /// same thread. [`stop_waiting`](Self::stop_waiting) puts it
+    /// back.
+    pub fn start_waiting(
+        &mut self,
+        thread: ThreadId,
+        readiness: Readiness,
+    ) -> Result<Option<Readiness>> {
+        let record = self
+            .thread_mut(thread)
+            .ok_or_else(|| Error::internal("waiting thread is not in the store"))?;
+        let previous = record.readiness.replace(readiness);
+        if previous.is_none() {
+            self.waiting.push(thread);
+        }
+        Ok(previous)
+    }
+
+    /// The wait [`start_waiting`](Self::start_waiting) recorded for
+    /// `thread` is over: the thread resumed, or its block failed. Its
+    /// record takes back `previous`, the condition it waited on
+    /// before, and a thread that now waits on nothing leaves both
+    /// lists.
+    pub fn stop_waiting(&mut self, thread: ThreadId, previous: Option<Readiness>) {
+        if let Some(record) = self.thread_mut(thread) {
+            record.readiness = previous;
+        }
+        if previous.is_none() {
+            self.waiting.retain(|waiting| *waiting != thread);
+            self.ready.retain(|ready| *ready != thread);
+        }
+    }
+
+    /// Whether `readiness` holds.
+    ///
+    /// The evaluation reads these tables and nothing else. It changes
+    /// nothing, polls no host future, and runs no guest code, which
+    /// is the property of the reference's `ready_func`: the tables
+    /// are borrowed shared, and they hold neither a host future nor a
+    /// guest function. A record the condition names that cannot be
+    /// read answers `false`, except a subtask record that is gone,
+    /// which a call that failed takes away with it.
+    pub fn readiness_holds(&self, readiness: Readiness) -> bool {
+        match readiness {
+            Readiness::WaitableSet { set } => self.set_has_pending_event(set).unwrap_or(false),
+            Readiness::Waitable { waitable } => self.has_pending_event(waitable).unwrap_or(false),
+            Readiness::Subtask { subtask } => self
+                .subtask(subtask)
+                .is_none_or(|record| record.state.resolved()),
+            Readiness::EntryGate => false,
+            Readiness::Yielded => true,
+        }
+    }
+
+    /// Whether `thread` waits and its readiness condition holds,
+    /// which is the reference's `Thread.ready`. A thread that runs,
+    /// or whose record is gone, is not ready.
+    pub fn thread_ready(&self, thread: ThreadId) -> bool {
+        self.thread(thread)
+            .and_then(|record| record.readiness)
+            .is_some_and(|readiness| self.readiness_holds(readiness))
+    }
+
+    /// Evaluate the condition of every waiting thread, which the
+    /// scheduler does between two items, and note the threads that
+    /// became ready since the last evaluation.
+    ///
+    /// A thread that became ready joins the back of the ready list,
+    /// so the list keeps the order in which the threads became ready.
+    /// Threads that became ready together, between the same two
+    /// items, join it in the order they began to wait. A thread on
+    /// the list whose condition no longer holds leaves it: another
+    /// thread took what it waited for, and it joins again at the back
+    /// once its condition holds again.
+    ///
+    /// Only the ready list changes here. Each condition is evaluated
+    /// through [`readiness_holds`](Self::readiness_holds), which
+    /// changes nothing.
+    pub fn note_ready_threads(&mut self) {
+        if self.waiting.is_empty() {
+            return;
+        }
+        let ready: Vec<ThreadId> = self
+            .waiting
+            .iter()
+            .copied()
+            .filter(|thread| self.thread_ready(*thread))
+            .collect();
+        self.ready.retain(|thread| ready.contains(thread));
+        for thread in ready {
+            if !self.ready.contains(&thread) {
+                self.ready.push(thread);
+            }
+        }
+    }
+
+    /// The waiting threads whose conditions held when the scheduler
+    /// last evaluated them and still hold, in the order they became
+    /// ready. Threads that became ready together resume in the order
+    /// they became ready, so this is the order a waiting thread
+    /// resumes in.
+    pub fn ready_threads(&self) -> Vec<ThreadId> {
+        self.ready
+            .iter()
+            .copied()
+            .filter(|thread| self.thread_ready(*thread))
+            .collect()
+    }
+
+    /// The threads that wait, in the order they began to wait.
+    pub fn waiting_threads(&self) -> &[ThreadId] {
+        &self.waiting
     }
 
     /// Drop the waitable set `set`. A set that still holds waitables

@@ -62,7 +62,7 @@ use wasm_runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
 
 use crate::abi::layout::FlatType;
 use crate::abi::runtime_state::AbiRuntimeState;
-use crate::concurrency::{LowerKind, SubtaskId, SuspendSeam, TaskId};
+use crate::concurrency::{LowerKind, Readiness, SubtaskId, SuspendSeam, TaskId};
 use crate::error::{Error, Result};
 use crate::executor::CallbackTask;
 use crate::executor::intrinsics::core_func_type;
@@ -160,11 +160,14 @@ fn sync_start_call<T: 'static>(
     // inside this frame.
     prepared.run_start(store, item, LowerKind::Sync)?;
 
-    // The caller waits for the callee's result. A call that resolved
-    // while the slot ran does not wait at all, which is what makes
-    // the cannot-block failure of a sync-typed caller lazy.
-    let watched = tables.clone();
-    let blocked = SuspendSeam::suspend(store, |_store| prepared.settled(&watched, &failure));
+    // The caller waits for the callee's result: its readiness
+    // condition is the resolution of the call's subtask. A start
+    // that fails resolves the subtask as a cancellation before it
+    // leaves its failure in the slot, so the condition covers that
+    // too. A call that resolved while the slot ran does not wait at
+    // all, which is what makes the cannot-block failure of a
+    // sync-typed caller lazy.
+    let blocked = SuspendSeam::wait_until(store, Readiness::Subtask { subtask });
     if let Some(error) = failure.lock().ok().and_then(|mut slot| slot.take()) {
         prepared.remove(&tables);
         return Err(error);

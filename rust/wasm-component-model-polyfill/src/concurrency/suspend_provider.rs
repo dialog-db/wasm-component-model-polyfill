@@ -42,28 +42,16 @@ use crate::store::StoreContext;
 ///   and the host tasks through [`StoreContext`] and captures
 ///   nothing.
 ///
-/// Two obligations fall on the first provider to fill the seam.
-///
-/// The first is to keep the store aware of a pending body. A
-/// synchronous lower of a host `async` function that blocks keeps
-/// its host task in the trampoline's frame rather than among the
-/// store's host tasks, because the call the task belongs to is
-/// still on the guest's stack. While the thread is suspended the
-/// store therefore holds no record of that pending body, and a
-/// driver that asks the store whether it holds work a turn can
-/// carry forward is told no. A provider that lets a driver of the
-/// same store run while such a frame is suspended must keep the
-/// store aware of the pending body — by parking a record of it
-/// there, or by admitting no turn until the frame resumes. A
-/// provider that does neither leaves that driver to go idle with
-/// the task unresolved, which raises the deadlock cause.
-///
-/// The second is to supply the wake. Such a body is polled from the
-/// readiness condition, once per check, and the poll carries the
-/// waker of the turn that is running, or one that does nothing when
-/// the thread suspended outside a turn. The seam hands the
-/// condition no waker of its own, so a provider that parks until
-/// something wakes it is the thing that has to wake it.
+/// A provider needs nothing more from the store than the condition
+/// it is handed. A blocking built-in's condition only reads the
+/// store: it changes nothing, polls no host future, and runs no
+/// guest code. What makes it hold is done by the scheduler's turns,
+/// which run while the thread is suspended. A synchronous lower of a
+/// host `async` function parks its future among the store's host
+/// tasks, so a driver of the same store knows the future is pending
+/// and polls it with the driver's waker, as it polls every host
+/// task. The poll that completes it resolves the call, and that
+/// makes the waiting thread ready.
 pub trait SuspendProvider<T: 'static>: 'static {
     /// Suspend the current guest thread until `condition` holds.
     ///
@@ -74,7 +62,8 @@ pub trait SuspendProvider<T: 'static>: 'static {
     ///
     /// `condition` is consulted against the store, so a provider
     /// that hands control back to the scheduler between checks sees
-    /// whatever the turns in between produced.
+    /// whatever the turns in between produced. It only reads the
+    /// store, so the provider can consult it as often as it likes.
     fn suspend(
         &mut self,
         store: &mut StoreContext<'_, T>,

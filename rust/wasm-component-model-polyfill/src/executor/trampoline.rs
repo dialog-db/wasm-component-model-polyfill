@@ -986,12 +986,12 @@ fn start_host_call<T: 'static>(
 /// concurrent registration reached through a synchronous lower.
 ///
 /// The guest expects the result when the call returns, so the store
-/// blocks the guest thread on the future where it stands. The block
-/// runs through the suspend seam and polls the future at every check
-/// of its condition, so a future that resolves after a few polls
-/// resolves inside it; a future that stays pending fails the call
-/// with the cause the seam selects, and the failure travels out to
-/// the guest's call.
+/// blocks the guest thread on the future where it stands. The store
+/// parks the future among its host tasks and blocks through the
+/// suspend seam until a poll of it resolves the call, so a future
+/// that resolves after a few polls resolves inside the block; a
+/// future that stays pending fails the call with the cause the seam
+/// selects, and the failure travels out to the guest's call.
 ///
 /// The whole of the call is therefore over by the time the block
 /// returns: the subtask has resolved, which gave back the handles the

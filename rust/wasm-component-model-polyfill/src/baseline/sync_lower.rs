@@ -4,22 +4,24 @@
 //! A guest that lowers an import without the `async` option expects
 //! the result when the call returns, so a host function whose future
 //! is not ready at once has to block the guest thread where it
-//! stands. The block runs through the suspend seam on every target,
-//! and the blocked call's own future is polled at every check of the
-//! seam's condition rather than from the store, because the store
-//! does not hold it: the call it belongs to is still on the guest's
-//! stack.
+//! stands. The block runs through the suspend seam on every target.
+//! The lower parks the call's future among the store's host tasks,
+//! and the poll that completes it resolves the call's subtask, which
+//! is the condition the blocked thread waits on. With no provider,
+//! the seam polls that parked future once before each nested turn,
+//! so the call's own future is polled between every two checks of
+//! the condition, whether or not it asked for a wake.
 //!
 //! The block checks its condition before it runs a turn. A future
 //! that is pending once and then ready — which is what a future that
-//! yields once comes to — therefore resolves at the first check,
-//! with no nested turn run at all, and the call returns its result
-//! through the flat results of the synchronous lower. The nested
-//! turns are what a future the store's own work has to release
-//! needs, and one test here holds such a future against a sibling
-//! task's item, so that the call returns only once a turn has run
-//! that item. Only a future that stays pending fails the call, and
-//! what it fails with is the cause the seam selects: the
+//! yields once comes to — therefore resolves at the poll after the
+//! first check, with no nested turn run at all, and the call returns
+//! its result through the flat results of the synchronous lower. The
+//! nested turns are what a future the store's own work has to
+//! release needs, and one test here holds such a future against a
+//! sibling task's item, so that the call returns only once a turn
+//! has run that item. Only a future that stays pending fails the
+//! call, and what it fails with is the cause the seam selects: the
 //! stack-switch cause when the caller is a task that is allowed to
 //! block, and the cannot-block cause when some sync-typed call of
 //! the store has yet to return.
@@ -401,6 +403,51 @@ async fn it_returns_the_result_of_an_untyped_registration_that_is_pending_once()
         Some(&Val::U32(42)),
         "the untyped entry's pending future reads back exactly as the typed \
          entry's does"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_returns_the_result_of_a_future_pending_twice_to_a_sync_typed_task() {
+    // The future answers pending on its first two polls and never
+    // asks for a wake. The lower parks it among the store's host
+    // tasks, and the caller is a task that must not block, whose
+    // nested turns poll no host task. The seam's fallback polls the
+    // call's own parked future before each nested turn and after the
+    // last, so the third poll resolves it inside the block.
+    let polls = Arc::new(Mutex::new(0u32));
+    let counted = polls.clone();
+    let (mut store, instance) = caller(A_SYNC_TYPED_TASK_CALLS_A_HOST_ASYNC_FUNCTION, |linker| {
+        linker
+            .root()
+            .func_wrap_concurrent("answer", move |_accessor: &Accessor<()>, (x,): (u32,)| {
+                let counted = counted.clone();
+                core::future::poll_fn(move |_context| {
+                    let mut polls = counted.lock().expect("polls");
+                    *polls += 1;
+                    if *polls < 3 {
+                        return Poll::Pending;
+                    }
+                    Poll::Ready(Ok::<u32, Error>(x * 2))
+                })
+            })
+            .expect("the registration");
+    })
+    .await;
+
+    let result = func(&instance, "run")
+        .call(&mut store, &[Val::U32(21)])
+        .await
+        .expect("the blocked call resolves on the future's third poll");
+
+    assert_eq!(
+        result.first(),
+        Some(&Val::U32(42)),
+        "the host's result crossed as the synchronous lower returned"
+    );
+    assert_eq!(
+        *polls.lock().expect("polls"),
+        3,
+        "the future was polled once as the call started and twice inside the block"
     );
 }
 

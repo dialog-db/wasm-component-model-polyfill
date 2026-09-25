@@ -277,25 +277,6 @@ impl Prepared {
         ran.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     }
 
-    /// Whether the call has settled: the callee resolved, or the
-    /// start left a failure behind.
-    pub fn settled(&self, tables: &Arc<Mutex<HandleTables>>, failure: &StartFailure) -> bool {
-        if failure.lock().map(|slot| slot.is_some()).unwrap_or(false) {
-            return true;
-        }
-        self.resolved(tables).unwrap_or(true)
-    }
-
-    /// Whether the call resolved, or `None` when its record is gone.
-    pub fn resolved(&self, tables: &Arc<Mutex<HandleTables>>) -> Option<bool> {
-        tables.lock().ok().and_then(|guard| {
-            guard
-                .tasks
-                .subtask(self.subtask)
-                .map(|record| record.state.resolved())
-        })
-    }
-
     /// Remove the subtask record of a call that failed, once the
     /// trampoline has taken its failure.
     pub fn remove(&self, tables: &Arc<Mutex<HandleTables>>) {

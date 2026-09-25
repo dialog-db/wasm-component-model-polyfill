@@ -12,12 +12,14 @@ use super::host_task_set::HostTaskSet;
 use super::host_writer::HostWriter;
 use super::instance_id::InstanceId;
 use super::item::Item;
+use super::subtask_id::SubtaskId;
 use super::task_id::TaskId;
 use super::task_tables::TaskTables;
 use super::thread_id::ThreadId;
 use super::waitable_set_id::WaitableSetId;
 use crate::error::Result;
 use crate::resource::HandleTables;
+use crate::value::Val;
 
 /// One task held at an instance's entry gate.
 ///
@@ -261,6 +263,13 @@ pub struct Scheduler<T: 'static> {
     entry_gate: VecDeque<GateEntry<T>>,
     held_callbacks: HeldCallbacks<T>,
     host_tasks: HostTaskSet<T>,
+    /// The key each host task a synchronous lower parked is held
+    /// under, by the subtask of its call.
+    parked_calls: HashMap<SubtaskId, u64>,
+    /// What the host task of a synchronous lower produced, with the
+    /// task itself, by the subtask of its call, from the poll that
+    /// completed it to the finish part of the lower that takes it.
+    settled_calls: HashMap<SubtaskId, (HostTask<T>, Result<Vec<Val>>)>,
     host_writers: HashMap<EndId, Box<dyn HostWriter<T>>>,
     host_readers: HashMap<EndId, Box<dyn HostReader<T>>>,
     /// The waker of the last poll of each host end that answered
@@ -303,6 +312,8 @@ impl<T: 'static> Scheduler<T> {
             entry_gate: VecDeque::new(),
             held_callbacks: HeldCallbacks::new(),
             host_tasks: HostTaskSet::new(),
+            parked_calls: HashMap::new(),
+            settled_calls: HashMap::new(),
             host_writers: HashMap::new(),
             host_readers: HashMap::new(),
             host_end_wakers: HashMap::new(),
@@ -327,10 +338,10 @@ impl<T: 'static> Scheduler<T> {
         self.items_run
     }
 
-    /// Whether a host future that can still resolve is pending: one
-    /// of the store's host tasks, or the future of a call that
-    /// blocked on one of its own, which stays in the frame that
-    /// started it rather than joining the store's host tasks.
+    /// Whether a host future that can still resolve is pending, which
+    /// is whether the store holds a host task. The future of a
+    /// synchronous lower counts through that alone, because the lower
+    /// parks its future among the store's host tasks.
     ///
     /// A store holding one moves on its own when its executor polls
     /// it again, so a nested turn that ran nothing against such a
@@ -338,7 +349,7 @@ impl<T: 'static> Scheduler<T> {
     /// keeps a thread waiting on a host future out of the seam's
     /// budget.
     pub fn host_future_pending(&self) -> bool {
-        !self.host_tasks.is_empty() || self.suspend_seam.blocked_on_a_call_future()
+        !self.host_tasks.is_empty()
     }
 
     /// The store's one suspend capability: the seam a blocking
@@ -358,6 +369,75 @@ impl<T: 'static> Scheduler<T> {
     /// last turn counts as woken, so the next turn polls it.
     pub fn push_host_task(&mut self, task: HostTask<T>) {
         self.host_tasks.push(task);
+    }
+
+    /// Park the host task of a synchronous lower among the store's
+    /// host tasks, where turns poll it as they poll every other. It
+    /// counts as woken, as every task that joins does. A task that
+    /// resolves no subtask is not a call, and joins as any other
+    /// host task does.
+    pub fn park_call(&mut self, task: HostTask<T>) {
+        let subtask = task.subtask();
+        let key = self.host_tasks.push(task);
+        if let Some(subtask) = subtask {
+            self.parked_calls.insert(subtask, key);
+        }
+    }
+
+    /// Whether the host task of the call `subtask` records is one a
+    /// synchronous lower parked, and still pending.
+    pub fn is_parked_call(&self, subtask: SubtaskId) -> bool {
+        self.parked_calls.contains_key(&subtask)
+    }
+
+    /// Take out the parked host task of the call `subtask` records,
+    /// with its key and the waker to poll it with. `None` when no
+    /// such task is parked, or when a turn has it out. The task goes
+    /// back through [`restore_host_task`](Self::restore_host_task),
+    /// or leaves through [`complete_host_task`](Self::complete_host_task).
+    pub fn take_parked_call(&mut self, subtask: SubtaskId) -> Option<(u64, Waker, HostTask<T>)> {
+        let key = *self.parked_calls.get(&subtask)?;
+        let (waker, task) = self.host_tasks.take(key)?;
+        Some((key, waker, task))
+    }
+
+    /// Keep what the parked host task of the call `subtask` records
+    /// produced, with the task, for the finish part of the lower that
+    /// waits on it. The task is no longer parked.
+    pub fn settle_call(
+        &mut self,
+        subtask: SubtaskId,
+        task: HostTask<T>,
+        outcome: Result<Vec<Val>>,
+    ) {
+        self.parked_calls.remove(&subtask);
+        self.settled_calls.insert(subtask, (task, outcome));
+    }
+
+    /// Take what the parked host task of the call `subtask` records
+    /// produced, with the task, once a poll has completed it.
+    pub fn take_settled_call(
+        &mut self,
+        subtask: SubtaskId,
+    ) -> Option<(HostTask<T>, Result<Vec<Val>>)> {
+        self.settled_calls.remove(&subtask)
+    }
+
+    /// Take the parked host task of the call `subtask` records out of
+    /// the store for good, pending or settled, without polling it:
+    /// the lower that waited on it failed, and nothing will lower
+    /// what it produces.
+    pub fn withdraw_call(&mut self, subtask: SubtaskId) {
+        if let Some(key) = self.parked_calls.remove(&subtask) {
+            self.host_tasks.remove(key);
+        }
+        self.settled_calls.remove(&subtask);
+    }
+
+    /// Whether the store holds the host task of the call `subtask`
+    /// records among its host tasks.
+    pub fn holds_host_task(&self, subtask: SubtaskId) -> bool {
+        self.host_tasks.holds(subtask)
     }
 
     /// Record `waker`, the waker of the driver polling the store, as
@@ -1140,7 +1220,6 @@ mod tests {
     use crate::store::{Store, StoreContext};
     use crate::value::Val;
 
-    use super::super::SuspendSeam;
     use super::super::end_id::EndId;
     use super::super::event::Event;
     use super::super::event_slot::EventSlot;
@@ -2639,23 +2718,41 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    fn it_reports_a_host_future_pending_for_a_call_blocked_on_one_of_its_own() {
+    fn it_reports_a_host_future_pending_for_a_call_a_synchronous_lower_parked() {
         let mut owner = store();
         let mut store = owner.internal().context();
+        let subtask = store
+            .internal()
+            .tables()
+            .lock()
+            .expect("tables")
+            .tasks
+            .insert_subtask();
 
-        SuspendSeam::while_blocked_on_a_call_future(&mut store, |store| {
-            assert!(
-                store.internal().scheduler().host_future_pending(),
-                "the future of a call that blocked on one of its own is \
-                 pending in the frame that started it, which the store's own \
-                 tasks do not show"
-            );
-        });
+        store
+            .internal()
+            .scheduler_mut()
+            .park_call(HostTask::from_future(
+                subtask,
+                |_store: &mut StoreContext<'_, ()>, _outcome: Result<Vec<Val>>| Ok(()),
+                NeverReady,
+            ));
+
+        assert!(
+            store.internal().scheduler().host_future_pending(),
+            "the parked future of a synchronous lower is one of the store's \
+             host tasks, so the store knows it is pending"
+        );
+        assert!(store.internal().scheduler().holds_host_task(subtask));
+        assert!(store.internal().scheduler().is_parked_call(subtask));
+
+        store.internal().scheduler_mut().withdraw_call(subtask);
 
         assert!(
             !store.internal().scheduler().host_future_pending(),
-            "the mark came back off when the blocked call's frame ended"
+            "the lower withdrew its call, so the store holds no future"
         );
+        assert!(!store.internal().scheduler().is_parked_call(subtask));
     }
 
     #[wcmp_macros::test]

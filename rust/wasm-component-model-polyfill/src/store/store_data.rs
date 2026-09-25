@@ -482,10 +482,10 @@ impl<T: 'static> StoreData<T> {
     ///
     /// A host task that has not resolved gives the stack-switch
     /// cause, because the reference permits that block and only the
-    /// target has no provider to serve it. The future of a call
-    /// that blocked on one of its own counts: it is pending, it can
-    /// still resolve, and it is in the frame that blocked rather
-    /// than in the store.
+    /// target has no provider to serve it. The rule reads the
+    /// store's host tasks and nothing else. The future of a
+    /// synchronous lower counts through them: the lower parks its
+    /// future there for as long as the call waits on it.
     ///
     /// Otherwise the store is idle and no frame below the block can
     /// move, which gives the deadlock cause: nothing left can ever
@@ -516,9 +516,9 @@ impl<T: 'static> StoreData<T> {
             .unwrap_or(false)
     }
 
-    /// Whether a host future that can still resolve is pending: one
-    /// of the store's host tasks, or the future of a call that
-    /// blocked on it, which stays in the frame that started it.
+    /// Whether a host future that can still resolve is pending: the
+    /// store holds a host task, the parked future of a synchronous
+    /// lower included.
     fn host_future_pending(&self) -> bool {
         self.scheduler.host_future_pending()
     }

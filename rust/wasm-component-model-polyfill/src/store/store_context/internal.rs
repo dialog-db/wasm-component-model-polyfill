@@ -24,7 +24,7 @@ use crate::abi::signature::Signature;
 use crate::backend::Backend;
 use crate::concurrency::{
     Accessor, CallStatus, EventSlot, FailureChannel, HostTask, InstanceId, Item, LowerKind,
-    Outcome, ResultChannel, Scheduler, TaskId,
+    Outcome, ResultChannel, Scheduler, SubtaskId, TaskId,
 };
 use crate::error::{Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
@@ -163,6 +163,12 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
     /// Run one nested turn of this store's scheduler.
     pub fn nested_turn(self, waker: &Waker, only: Option<InstanceId>) -> Result<Outcome> {
         self.context.nested_turn(waker, only)
+    }
+
+    /// Poll the parked host task of the synchronous lower of the
+    /// call `subtask` records, once, and settle it if it completed.
+    pub fn poll_parked_call(self, subtask: SubtaskId) -> Result<()> {
+        self.context.poll_parked_call(subtask)
     }
 
     /// The instance a nested turn must not block, when one is set.

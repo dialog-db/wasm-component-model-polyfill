@@ -46,7 +46,7 @@ use crate::abi::context::BoundaryContext;
 use crate::abi::instance::BoundaryInstance;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::backend::Backend;
-use crate::concurrency::{Event, InstanceId, SuspendSeam, ThreadId, WaitableSetId};
+use crate::concurrency::{Event, InstanceId, Readiness, SuspendSeam, ThreadId, WaitableSetId};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, TaskCause};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CanonOptions, CoreSignature};
@@ -334,14 +334,7 @@ fn block_until_ready<T: 'static>(
 ) -> anyhow::Result<Event> {
     let suspended = {
         let mut store = StoreContext::new(store_ctx.as_context_mut());
-        SuspendSeam::suspend(&mut store, |store| {
-            store
-                .internal()
-                .lock_tables()
-                .ok()
-                .and_then(|guard| guard.tasks.set_has_pending_event(set).ok())
-                .unwrap_or(false)
-        })
+        SuspendSeam::wait_until(&mut store, Readiness::WaitableSet { set })
     };
     let ended = lock_tables(tables)?.finish_wait_on_waitable_set(set, thread);
     suspended.map_err(trap)?;

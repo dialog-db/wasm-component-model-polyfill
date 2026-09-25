@@ -156,7 +156,7 @@ use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::{lift_list, lower};
 use crate::backend::Backend;
 use crate::concurrency::{
-    CopyBuffer, CopyState, EndId, EndKind, InstanceId, Pairing, SuspendSeam, WaitableId,
+    CopyBuffer, CopyState, EndId, EndKind, InstanceId, Pairing, Readiness, SuspendSeam, WaitableId,
 };
 use crate::error::{AbiPosition, CopyCause, Error, TaskCause, WaitableCause};
 use crate::executor::intrinsics::core_func_type;
@@ -331,14 +331,7 @@ fn finish<T: 'static>(
     }
     let suspended = {
         let mut store = StoreContext::new(store_ctx.as_context_mut());
-        SuspendSeam::suspend(&mut store, |store| {
-            store
-                .internal()
-                .lock_tables()
-                .ok()
-                .and_then(|guard| guard.tasks.has_pending_event(waitable).ok())
-                .unwrap_or(false)
-        })
+        SuspendSeam::wait_until(&mut store, Readiness::Waitable { waitable })
     };
     let mut guard = lock_tables(tables)?;
     let ended = guard.tasks.end_synchronous_wait(waitable);

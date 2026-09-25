@@ -12,8 +12,8 @@ use crate::abi::signature::Signature;
 use crate::backend::Backend;
 use crate::concurrency::{
     Accessor, CallStatus, EventSlot, FailureChannel, HostTask, InstanceId, Item, LowerKind,
-    Outcome, PollScope, ResultChannel, Scheduler, Scope, SubtaskId, SubtaskState, SuspendSeam,
-    TaskId, TaskState, TurnGuard, WaitableSetId, YieldWake,
+    Outcome, PollScope, Readiness, ResultChannel, Scheduler, Scope, SubtaskId, SubtaskState,
+    SuspendSeam, TaskId, TaskState, TurnGuard, WaitableSetId, YieldWake,
 };
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
@@ -515,12 +515,13 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     ///
     /// Through a synchronous lower the guest expects the result when
     /// the call returns, so a body that is still running has to block
-    /// the guest thread where it stands. That block goes through the
-    /// suspend seam on every target, and the body is polled at every
-    /// check of the block's condition, so a body that resolves after
-    /// a few polls resolves inside the block and the call returns its
-    /// result. A body that stays pending leaves the store waiting and
-    /// the call fails with the cause the seam selects.
+    /// the guest thread where it stands. The body is parked among the
+    /// store's host tasks, and the block goes through the suspend
+    /// seam on every target until the poll that completes the body
+    /// resolves the call, so a body that resolves after a few polls
+    /// resolves inside the block and the call returns its result. A
+    /// body that stays pending leaves the store waiting and the call
+    /// fails with the cause the seam selects.
     ///
     /// Workspace-internal; not re-exported by `lib.rs`.
     fn start_host_task(
@@ -603,89 +604,84 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// function comes to: the guest expects the result when the call
     /// returns, so the call cannot return until the body does.
     ///
-    /// The block goes through the suspend seam on every target. A
-    /// target that has filled the seam's provider slot serves it
-    /// there; a target that has not takes the seam's nested turns,
-    /// which run the guest work of other tasks and poll the store's
-    /// host tasks from inside the guest call that blocked. Either
-    /// way the body of this call is polled at every check of the
-    /// condition below, so a body that is pending once and ready
-    /// afterwards — which is what a body that yields once comes to —
-    /// resolves inside the block and the call returns its result
-    /// through the lower's flat results. A body that stays pending
-    /// leaves the store waiting, and the seam's cause selection says
-    /// why the wait could not end: the stack-switch cause from a
-    /// caller that is allowed to block, and the cannot-block cause
-    /// when some sync-typed call of the store has yet to return.
+    /// The block has the two parts of every blocking built-in. The
+    /// try part parks the task among the store's host tasks, in every
+    /// case, and waits through the suspend seam until the call's
+    /// subtask resolves. Turns poll the parked task with the driver's
+    /// waker, as they poll every host task, and the poll that
+    /// completes it settles it: the subtask resolves, which makes the
+    /// waiting thread ready, and what the body produced stays in the
+    /// store. The store therefore always knows about the pending
+    /// future, and the cause a block that gives up fails with reads
+    /// it there. With no provider in the seam's slot, the seam's
+    /// fallback also polls the parked task before each nested turn it
+    /// runs, which is what serves a body that stays pending once
+    /// or twice and a caller that must not block.
     ///
-    /// The subtask's resolution is delivered as the call returns,
-    /// which gives back the handles the guest lent for it, exactly
-    /// as a call whose first poll resolved the body delivers it.
+    /// The finish part runs once the thread resumes. It delivers the
+    /// subtask's resolution, which gives back the handles the guest
+    /// lent for the call, exactly as a call whose first poll resolved
+    /// the body delivers it, and it lowers what the body produced.
+    /// A body that failed, a block that failed, and a provider that
+    /// returned with the subtask unresolved are each a call that
+    /// never returned: the subtask resolves as a cancellation, the
+    /// parked task leaves the store, and the failure travels out to
+    /// the guest's call.
     ///
-    /// The task stays in this frame while the thread is suspended.
-    /// It belongs to a call the guest still has on the stack, and
-    /// its subtask is still the current scope, so it is not one of
-    /// the store's host tasks: the store's are the ones whose calls
-    /// have returned, and a lowering queued for one of those
-    /// resolves its subtask and fills its event, which is what a
-    /// guest told the call started waits for and not what a guest
-    /// still inside the call does.
-    ///
-    /// The body is therefore polled from the readiness condition,
-    /// once per check, and the provider decides when to check — a
-    /// suspension and a resumption apart. The wake that brings the
-    /// thread back to a check is the provider's to supply, which is
-    /// one of the two obligations the suspend provider trait states.
-    fn block_on_host_task(
-        &mut self,
-        mut task: HostTask<T>,
-        subtask: SubtaskId,
-    ) -> Result<CallStatus> {
-        // The future is pending and the store does not hold it, so
-        // nothing a turn can see says the store is still waiting on
-        // something. The mark says it for as long as this frame
-        // holds the future, and a suspension that gives up under it
-        // therefore names the stack-switch cause rather than the
-        // deadlock cause.
-        SuspendSeam::while_blocked_on_a_call_future(self, move |store| {
-            let mut produced: Option<Result<Vec<Val>>> = None;
-            let suspended = SuspendSeam::suspend(store, |store| {
-                if produced.is_some() {
-                    return true;
-                }
-                let waker = store.active_waker();
-                match task.poll(store, &waker) {
-                    Poll::Ready(value) => {
-                        produced = Some(value);
-                        true
-                    }
-                    Poll::Pending => false,
-                }
-            });
+    /// A wait that unwinds takes the parked task out of the store as
+    /// well, pending or settled, before the panic carries on. An item
+    /// a nested turn runs, a host task it polls, and a provider can
+    /// each panic, and a task left parked after the frame that parked
+    /// it was gone would keep the store holding a host future nothing
+    /// waits on: every later block would read it as one that can
+    /// still resolve, and a later turn would settle it into a call
+    /// that no longer exists. The task sits in the store's own data
+    /// rather than behind a handle a guard could hold, so the unwind
+    /// is caught here and resumed once the task is out.
+    fn block_on_host_task(&mut self, task: HostTask<T>, subtask: SubtaskId) -> Result<CallStatus> {
+        self.scheduler_mut().park_call(task);
+        let waited = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            SuspendSeam::wait_until(&mut *self, Readiness::Subtask { subtask })
+        }))
+        .unwrap_or_else(|panic| {
+            self.scheduler_mut().withdraw_call(subtask);
+            std::panic::resume_unwind(panic)
+        });
+        let settled = self.scheduler_mut().take_settled_call(subtask);
 
-            match (suspended, produced) {
-                (Ok(()), Some(Ok(values))) => {
-                    store
-                        .lock_tables()?
-                        .exit_subtask(subtask, SubtaskState::Returned);
-                    task.lower(store, Ok(values))?;
-                    Ok(CallStatus::returned())
-                }
-                // The body failed, the suspension failed, or the
-                // provider returned with the condition unmet. Each
-                // is a call that never returned, so the subtask
-                // resolves as a cancellation and the failure travels
-                // out to the guest's call.
-                (Ok(()), Some(Err(error))) | (Err(error), _) => {
-                    store.lock_tables()?.abandon_subtask(subtask);
-                    Err(error)
-                }
-                (Ok(()), None) => {
-                    store.lock_tables()?.abandon_subtask(subtask);
-                    Err(Error::Scheduler(store.suspend_cause()))
-                }
+        match (waited, settled) {
+            (Ok(()), Some((task, Ok(values)))) => {
+                self.lock_tables()?
+                    .exit_subtask(subtask, SubtaskState::Returned);
+                task.lower(self, Ok(values))?;
+                Ok(CallStatus::returned())
             }
-        })
+            // The body failed, so the poll that saw it resolved the
+            // subtask as a cancellation already, and the failure
+            // travels out to the guest's call.
+            (Ok(()), Some((_task, Err(error)))) => {
+                let mut guard = self.lock_tables()?;
+                let state = guard
+                    .tasks
+                    .subtask(subtask)
+                    .map_or(SubtaskState::CancelledBeforeReturned, |record| record.state);
+                guard.exit_subtask(subtask, state);
+                Err(error)
+            }
+            (Err(error), _) => {
+                self.scheduler_mut().withdraw_call(subtask);
+                self.lock_tables()?.abandon_subtask(subtask);
+                Err(error)
+            }
+            (Ok(()), None) => {
+                // The cause is read with the task still parked, so a
+                // body that can still resolve names the stack switch.
+                let cause = self.suspend_cause();
+                self.scheduler_mut().withdraw_call(subtask);
+                self.lock_tables()?.abandon_subtask(subtask);
+                Err(Error::Scheduler(cause))
+            }
+        }
     }
 
     /// Give a host task to the store. It counts as woken, so the next
@@ -751,8 +747,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         if !nested {
             let resumed = self.scheduler_mut().take_resume_after_yield();
             if let Some(item) = resumed {
-                self.scheduler_mut().note_item_run();
-                item.run(self)?;
+                self.run_item(item)?;
             }
         }
         let mut ran = false;
@@ -763,8 +758,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             };
             if let Some(item) = ready {
                 ran = true;
-                self.scheduler_mut().note_item_run();
-                item.run(self)?;
+                self.run_item(item)?;
                 continue;
             }
             // Work this turn released — a task the entry gate can
@@ -810,8 +804,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             // condition; an idle answer is its cue to stop and trap
             // with the cannot-block cause.
             if let Some(item) = self.scheduler_mut().take_deferred_in(instance) {
-                self.scheduler_mut().note_item_run();
-                item.run(self)?;
+                self.run_item(item)?;
                 return Ok(Outcome::Progress);
             }
             return Ok(if ran {
@@ -821,6 +814,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             });
         }
         self.poll_host_tasks(waker)?;
+        self.note_ready_threads()?;
         // A host task's body reaches the store through its accessor,
         // so a poll of one can have satisfied what the store was
         // holding back: a callback whose wait it filled the event
@@ -841,8 +835,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         // already.
         if nested {
             if let Some(item) = self.scheduler_mut().take_deferred() {
-                self.scheduler_mut().note_item_run();
-                item.run(self)?;
+                self.run_item(item)?;
                 return Ok(Outcome::Progress);
             }
         } else if self.scheduler().has_deferred_item() {
@@ -930,10 +923,98 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             }
         }
         for (task, value) in completed {
+            // The task of a synchronous lower settles where it
+            // completed. Its caller is still inside the call, so there
+            // is no subtask event to fill and nothing to queue: the
+            // resolution is what the caller's readiness condition
+            // watches for.
+            if let Some(subtask) = task.subtask()
+                && self.scheduler().is_parked_call(subtask)
+            {
+                self.settle_call(subtask, task, value)?;
+                continue;
+            }
             self.scheduler_mut()
                 .push_high_priority(task.lowering_item(value));
         }
         Ok(())
+    }
+
+    /// Settle the parked host task of the synchronous lower of the
+    /// call `subtask` records: `outcome` is what its body produced.
+    ///
+    /// The subtask resolves, which is what the waiting thread's
+    /// readiness condition watches for, and the task and its outcome
+    /// stay in the store for the finish part of the lower. A value
+    /// resolves it as returned. A failure resolves it as cancelled,
+    /// because the call never returned, and the finish part hands the
+    /// failure to the guest's call. Nothing crosses into the guest
+    /// here: the lower's finish part runs the lowering once the
+    /// thread resumes.
+    fn settle_call(
+        &mut self,
+        subtask: SubtaskId,
+        task: HostTask<T>,
+        outcome: Result<Vec<Val>>,
+    ) -> Result<()> {
+        {
+            let mut guard = self.lock_tables()?;
+            match outcome {
+                Ok(_) => guard.tasks.subtask_returned(subtask)?,
+                Err(_) => guard.tasks.subtask_cancelled(subtask)?,
+            }
+        }
+        self.scheduler_mut().settle_call(subtask, task, outcome);
+        Ok(())
+    }
+
+    /// Poll the parked host task of the synchronous lower of the call
+    /// `subtask` records, once, with the task's own waker, and settle
+    /// it when the poll completes it. Nothing happens when the store
+    /// holds no such task pending, or when a turn has it out.
+    ///
+    /// The suspend seam's fallback calls this before each nested
+    /// turn it runs for the lower, which is what makes a block with
+    /// no provider poll the call's own future at every check of its
+    /// condition. A nested turn held to one instance polls no host
+    /// task, and a future that answered pending without asking for a
+    /// wake would otherwise never be polled again inside the block.
+    fn poll_parked_call(&mut self, subtask: SubtaskId) -> Result<()> {
+        // The task's own waker passes a wake on to the waker of the
+        // turn that is running, as a turn's poll of it does.
+        if self.turn_in_flight() {
+            let waker = self.active_waker();
+            self.scheduler().watch_host_tasks(&waker);
+        }
+        let Some((key, waker, mut task)) = self.scheduler_mut().take_parked_call(subtask) else {
+            return Ok(());
+        };
+        match task.poll(self, &waker) {
+            Poll::Ready(value) => {
+                self.scheduler_mut().complete_host_task(key);
+                self.settle_call(subtask, task, value)
+            }
+            Poll::Pending => {
+                self.scheduler_mut().restore_host_task(key, task);
+                Ok(())
+            }
+        }
+    }
+
+    /// Evaluate the readiness condition of every waiting thread and
+    /// note the threads that became ready, which a turn does between
+    /// two items. The evaluation only reads the tables.
+    fn note_ready_threads(&mut self) -> Result<()> {
+        self.lock_tables()?.tasks.note_ready_threads();
+        Ok(())
+    }
+
+    /// Run one item of a turn, and evaluate the conditions of the
+    /// waiting threads after it, since the item can have met them.
+    fn run_item(&mut self, item: Item<T>) -> Result<()> {
+        self.scheduler_mut().note_item_run();
+        item.run(self)?;
+        self.note_ready_threads()
     }
 
     /// Create the task of one call into an export, without making it
@@ -1007,8 +1088,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         let Some(item) = self.scheduler_mut().take_switch_slot() else {
             return Ok(());
         };
-        self.scheduler_mut().note_item_run();
-        item.run(self)
+        self.run_item(item)
     }
 
     /// Give an export's task a channel to resolve through and hand
@@ -1510,7 +1590,7 @@ mod tests {
 
     use crate::component::Component;
     use crate::concurrency::{
-        Driver, Event, HostTask, ItemKind, Scope, SuspendProvider, WaitableId,
+        Driver, Event, HostTask, ItemKind, Readiness, Scope, SuspendProvider, ThreadId, WaitableId,
     };
     use crate::engine::Engine;
     use crate::error::SchedulerCause;
@@ -3065,9 +3145,11 @@ mod tests {
     /// stacks. It consults the readiness condition until it holds,
     /// as a provider that suspended the guest thread and resumed it
     /// between checks would, and gives up rather than spinning for
-    /// ever. What it does not do is run a turn: the point of a
-    /// provider is that the thread suspends and the scheduler runs
-    /// somewhere else. It counts the suspensions it was handed, so a
+    /// ever. Between two checks it runs one turn of the store, which
+    /// stands in for the turns the scheduler runs while a real
+    /// provider holds the thread suspended: the condition only reads
+    /// the store, so something else has to poll the host future the
+    /// thread waits on. It counts the suspensions it was handed, so a
     /// test can tell a block it served from one the seam's fallback
     /// served.
     struct Resumes {
@@ -3086,6 +3168,8 @@ mod tests {
                 if condition(store) {
                     return Ok(());
                 }
+                let waker = store.active_waker();
+                store.nested_turn(&waker, None)?;
             }
             Err(Error::Scheduler(store.suspend_cause()))
         }
@@ -3277,8 +3361,342 @@ mod tests {
         assert_eq!(
             store.internal().scheduler().host_task_count(),
             0,
-            "the task the call blocked on stayed in the frame that started it, \
-             so the store holds none"
+            "the task the call blocked on was parked in the store, and the \
+             turn that completed it took it out again"
+        );
+    }
+
+    /// A host task's body that is still running on its first two
+    /// polls and completes on its third. It asks for the next poll
+    /// every time it answers pending, as a future that waits on
+    /// something outside the store does once that thing moves.
+    struct ReadyOnThirdPoll {
+        polls: Arc<AtomicUsize>,
+        value: u32,
+    }
+
+    impl Future for ReadyOnThirdPoll {
+        type Output = Result<Vec<Val>>;
+
+        fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+            let this = self.get_mut();
+            if this.polls.fetch_add(1, AtomicOrdering::Relaxed) + 1 >= 3 {
+                return Poll::Ready(Ok(vec![Val::U32(this.value)]));
+            }
+            context.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+
+    /// What the store held while a synchronous lower waited: how
+    /// many host tasks, whether the call's own task was among them,
+    /// and the readiness conditions of the waiting threads.
+    type WhileWaiting = Arc<Mutex<Option<(usize, bool, Vec<Readiness>)>>>;
+
+    #[wcmp_macros::test]
+    async fn it_parks_the_future_of_a_synchronous_lower_among_the_stores_host_tasks() {
+        let engine = Engine::new().expect("engine");
+        let component = Component::new(&engine, CALLBACK_CALLS_THE_HOST)
+            .await
+            .expect("component parses");
+        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+
+        let seen: WhileWaiting = Arc::new(Mutex::new(None));
+        let polls = Arc::new(AtomicUsize::new(0));
+        let reported: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
+        let slot: Lowered = Arc::new(Mutex::new(None));
+
+        let mut linker: Linker<()> = Linker::new(&engine);
+        {
+            let (seen, polls, reported, filled) =
+                (seen.clone(), polls.clone(), reported.clone(), slot.clone());
+            linker
+                .root()
+                .func_wrap(
+                    "probe",
+                    move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
+                        let store = call.store();
+                        let subtask = store.lock_tables()?.tasks.push_subtask();
+
+                        // Ready work of the store, which the block's
+                        // nested turn runs while the call waits. It
+                        // reads the store as it finds it then.
+                        let recorded = seen.clone();
+                        store.scheduler_mut().push_high_priority(Item::new(
+                            ItemKind::TaskStart,
+                            move |store: &mut StoreContext<'_, ()>| {
+                                let held = store.scheduler().host_task_count();
+                                let parked = store.scheduler().holds_host_task(subtask);
+                                let guard = store.lock_tables()?;
+                                let waiting = guard
+                                    .tasks
+                                    .waiting_threads()
+                                    .iter()
+                                    .filter_map(|thread| guard.tasks.thread(*thread))
+                                    .filter_map(|record| record.readiness)
+                                    .collect();
+                                *recorded.lock().expect("record") = Some((held, parked, waiting));
+                                Ok(())
+                            },
+                        ));
+
+                        let lowering = filled.clone();
+                        let status = store.start_host_task(
+                            HostTask::from_future(
+                                subtask,
+                                move |_store: &mut StoreContext<'_, ()>,
+                                      outcome: Result<Vec<Val>>| {
+                                    *lowering.lock().expect("the lowering's slot") = Some(outcome);
+                                    Ok(())
+                                },
+                                ReadyOnThirdPoll {
+                                    polls: polls.clone(),
+                                    value: x * 2,
+                                },
+                            ),
+                            TableId::fresh(),
+                            LowerKind::Sync,
+                        )?;
+                        *reported.lock().expect("record") = Some(status.value());
+                        Ok(x)
+                    },
+                )
+                .expect("the registration");
+        }
+
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .await
+            .expect("instantiate");
+        let run = instance.get_func("run").expect("run export");
+        let result = run
+            .call(&mut store, &[Val::U32(20)])
+            .await
+            .expect("call run");
+
+        let (held, parked, waiting) = seen
+            .lock()
+            .expect("record")
+            .clone()
+            .expect("the nested turn ran the item while the call waited");
+        assert_eq!(
+            held, 1,
+            "while the call waited, the store held one host task"
+        );
+        assert!(
+            parked,
+            "and it was the call's own future, which the lower parked there"
+        );
+        assert_eq!(
+            waiting.len(),
+            1,
+            "one thread waited, on the resolution of the call: {waiting:?}"
+        );
+        assert!(
+            matches!(waiting[0], Readiness::Subtask { .. }),
+            "the waiting thread's condition names the call's subtask: {waiting:?}"
+        );
+        assert_eq!(
+            polls.load(AtomicOrdering::Relaxed),
+            3,
+            "the future was pending for two polls and ready on the third"
+        );
+        assert_eq!(
+            *reported.lock().expect("record"),
+            Some(CallStatus::returned().value()),
+            "the call returned its result to the guest"
+        );
+        assert_eq!(lowered(&slot), vec![Val::U32(40)]);
+        assert_eq!(result.first(), Some(&Val::U32(21)));
+        assert_eq!(
+            store.internal().scheduler().host_task_count(),
+            0,
+            "the poll that completed the future took it out of the store"
+        );
+    }
+
+    /// Make a task of a fresh instance the current scope, and push
+    /// the subtask of a call it makes, as a synchronous lower finds
+    /// them. The instance may block. Answers the task's thread and
+    /// the call's subtask.
+    fn a_call_of_the_current_task(store: &StoreContext<'_, ()>) -> (ThreadId, SubtaskId) {
+        let mut guard = store.lock_tables().expect("tables");
+        let instance = guard.tasks.insert_instance();
+        let task = guard.tasks.create_task(None, None, instance);
+        guard.tasks.push_task_scope(task);
+        let thread = guard.tasks.current_thread().expect("the task's thread");
+        (thread, guard.tasks.push_subtask())
+    }
+
+    /// Lower the call `subtask` records synchronously, with a body
+    /// that stays pending and never asks for a wake.
+    fn lower_a_call_that_never_resolves(
+        store: &mut StoreContext<'_, ()>,
+        subtask: SubtaskId,
+    ) -> Result<CallStatus> {
+        store.start_host_task(
+            HostTask::from_future(
+                subtask,
+                |_store: &mut StoreContext<'_, ()>, _outcome: Result<Vec<Val>>| Ok(()),
+                core::future::pending::<Result<Vec<Val>>>(),
+            ),
+            TableId::fresh(),
+            LowerKind::Sync,
+        )
+    }
+
+    /// The condition `thread` waits on, and the threads the store
+    /// lists as waiting.
+    fn waits(store: &StoreContext<'_, ()>, thread: ThreadId) -> (Option<Readiness>, Vec<ThreadId>) {
+        let guard = store.lock_tables().expect("tables");
+        (
+            guard
+                .tasks
+                .thread(thread)
+                .and_then(|record| record.readiness),
+            guard.tasks.waiting_threads().to_vec(),
+        )
+    }
+
+    /// What a later block that nothing can serve fails with. The
+    /// store is idle, so the cause says whether it still holds a
+    /// host future that can resolve.
+    fn a_later_failed_block(store: &mut StoreContext<'_, ()>) -> String {
+        let outcome = store
+            .run_in_turn(Waker::noop(), |store| {
+                SuspendSeam::suspend(store, |_| false)
+            })
+            .expect("the outer turn runs");
+        match outcome {
+            Err(error) => error.to_string(),
+            Ok(()) => "the later block returned".to_owned(),
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_withdraws_the_parked_call_of_a_synchronous_lower_whose_wait_failed() {
+        let engine = Engine::new().expect("engine");
+        let mut owner: Store<()> = Store::new(&engine, ()).expect("store");
+        let mut store = owner.internal().context();
+        let (thread, subtask) = a_call_of_the_current_task(&store);
+
+        let lowered = store
+            .run_in_turn(Waker::noop(), move |store| {
+                lower_a_call_that_never_resolves(store, subtask)
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            lowered
+                .map(|status| status.value())
+                .map_err(|error| error.to_string()),
+            Err(Error::Scheduler(SchedulerCause::StackSwitchNeeded).to_string()),
+            "the call's own future was parked and still pending when the \
+             store went idle, so the wait failed with the stack-switch cause"
+        );
+        assert_eq!(
+            store.scheduler().host_task_count(),
+            0,
+            "the lower withdrew the parked task when its wait failed"
+        );
+        assert!(!store.scheduler().is_parked_call(subtask));
+        assert_eq!(
+            waits(&store, thread),
+            (None, Vec::new()),
+            "and the thread's wait ended"
+        );
+        assert_eq!(
+            a_later_failed_block(&mut store),
+            Error::Scheduler(SchedulerCause::Deadlock).to_string(),
+            "no host future is left pending, so a later block of an idle \
+             store names the deadlock cause"
+        );
+    }
+
+    /// Lower a call that never resolves, with an item queued that
+    /// panics when the block's nested turn runs it, and catch the
+    /// unwind. With `tables_locked`, the item panics while it holds
+    /// the store's handle tables, which poisons their lock.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn panic_inside_a_blocked_lower(
+        store: &mut StoreContext<'_, ()>,
+        subtask: SubtaskId,
+        tables_locked: bool,
+    ) {
+        store.scheduler_mut().push_high_priority(Item::new(
+            ItemKind::TaskStart,
+            move |store: &mut StoreContext<'_, ()>| -> Result<()> {
+                let _tables = tables_locked.then(|| store.lock_tables().expect("tables"));
+                panic!("the item panicked")
+            },
+        ));
+
+        let unwound = unwind(|| {
+            store.run_in_turn(Waker::noop(), move |store| {
+                lower_a_call_that_never_resolves(store, subtask)
+            })
+        });
+
+        assert!(
+            unwound.is_err(),
+            "the item's panic unwound through the block"
+        );
+    }
+
+    // The two tests below are native only: the browser aborts on a
+    // panic instead of unwinding, so there is nothing to catch there
+    // and nothing the block could be left holding.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn it_leaves_no_parked_call_and_no_waiting_thread_when_a_blocked_lower_panicked() {
+        let engine = Engine::new().expect("engine");
+        let mut owner: Store<()> = Store::new(&engine, ()).expect("store");
+        let mut store = owner.internal().context();
+        let (thread, subtask) = a_call_of_the_current_task(&store);
+
+        panic_inside_a_blocked_lower(&mut store, subtask, false);
+
+        assert_eq!(
+            store.scheduler().host_task_count(),
+            0,
+            "the lower withdrew the task it parked as the panic unwound \
+             through it"
+        );
+        assert!(!store.scheduler().is_parked_call(subtask));
+        assert_eq!(
+            waits(&store, thread),
+            (None, Vec::new()),
+            "the thread's wait ended as the panic unwound through the seam"
+        );
+        assert_eq!(
+            a_later_failed_block(&mut store),
+            Error::Scheduler(SchedulerCause::Deadlock).to_string(),
+            "the store is idle and no host future is pending, so a parked \
+             task the panic left behind would have named the stack-switch \
+             cause here"
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn it_ends_the_wait_of_a_blocked_lower_whose_panic_poisoned_the_tables() {
+        let engine = Engine::new().expect("engine");
+        let mut owner: Store<()> = Store::new(&engine, ()).expect("store");
+        let mut store = owner.internal().context();
+        let (thread, subtask) = a_call_of_the_current_task(&store);
+
+        panic_inside_a_blocked_lower(&mut store, subtask, true);
+
+        assert_eq!(
+            waits(&store, thread),
+            (None, Vec::new()),
+            "the seam read past the poison to end the thread's wait, and \
+             the turn took the tables back from it"
+        );
+        assert_eq!(store.scheduler().host_task_count(), 0);
+        assert_eq!(
+            a_later_failed_block(&mut store),
+            Error::Scheduler(SchedulerCause::Deadlock).to_string()
         );
     }
 

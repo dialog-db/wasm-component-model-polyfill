@@ -19,7 +19,10 @@
 
 #![cfg(test)]
 
-use crate::store::StoreInternalExt;
+use std::sync::{Arc, Mutex};
+
+use crate::concurrency::{InstanceId, SuspendProvider};
+use crate::store::{StoreContext, StoreContextInternalExt, StoreInternalExt};
 use crate::{Component, Engine, EngineConfig, Error, Instance, Linker, Store, Val};
 use wcmp_macros::component;
 
@@ -281,6 +284,50 @@ const TRAPS: &[u8] = component!(
       (instance $a (instantiate $callee))
       (instance $b (instantiate $caller (with "answer" (func $a "answer"))))
       (export "run" (func $b "run")))
+    "#
+);
+
+/// A callee whose core function traps and whose instance can raise
+/// its own backpressure, under a caller that is allowed to block. The
+/// gate holds the callee's start for as long as the backpressure is
+/// raised, so the start fails while the caller waits for it rather
+/// than while the switch slot runs.
+const TRAPS_AFTER_THE_GATE_UNDER_AN_ASYNC_CALLER: &[u8] = component!(
+    r#"
+    (component
+      (component $callee
+        (core func $inc (canon backpressure.inc))
+        (core module $m
+          (import "" "backpressure.inc" (func $inc))
+          (func (export "cb") (param i32 i32 i32) (result i32) unreachable)
+          (func (export "answer") (param i32) (result i32) unreachable)
+          (func (export "block") (call $inc)))
+        (core instance $i (instantiate $m
+          (with "" (instance (export "backpressure.inc" (func $inc))))))
+        (func (export "answer") async (param "x" u32) (result u32)
+          (canon lift (core func $i "answer") async (callback (core func $i "cb"))))
+        (func (export "block") (canon lift (core func $i "block"))))
+      (component $caller
+        (import "answer" (func $answer async (param "x" u32) (result u32)))
+        (core func $lowered (canon lower (func $answer)))
+        (core func $task-return (canon task.return (result u32)))
+        (core module $m
+          (import "" "answer" (func $answer (param i32) (result i32)))
+          (import "" "task.return" (func $task-return (param i32)))
+          (func (export "cb") (param i32 i32 i32) (result i32) unreachable)
+          (func (export "run") (param i32) (result i32)
+            (call $task-return (i32.add (call $answer (local.get 0)) (i32.const 1)))
+            (i32.const 0)))
+        (core instance $i (instantiate $m
+          (with "" (instance
+            (export "answer" (func $lowered))
+            (export "task.return" (func $task-return))))))
+        (func (export "run") async (param "x" u32) (result u32)
+          (canon lift (core func $i "run") async (callback (core func $i "cb")))))
+      (instance $a (instantiate $callee))
+      (instance $b (instantiate $caller (with "answer" (func $a "answer"))))
+      (export "run" (func $b "run"))
+      (export "block" (func $a "block")))
     "#
 );
 
@@ -710,6 +757,99 @@ async fn it_fails_the_callers_call_when_the_callee_traps() {
         .call(&mut store, &[Val::U32(1)])
         .await
         .expect_err("the callee's trap fails the caller's call");
+    let message = chain(&err);
+    assert!(
+        message.contains("unreachable"),
+        "expected the baseline's trap message, got {message}"
+    );
+    assert!(
+        !any_instance_is_held(&store),
+        "the callee's exclusive thread is released by the failure"
+    );
+    assert_eq!(task_count(&store), 0, "neither task is left in the store");
+    assert_eq!(subtask_count(&store), 0, "the subtask left the store");
+}
+
+/// A provider that stands in for a target that can switch stacks,
+/// and lets the gate go as the caller suspends. It lowers the
+/// backpressure of every instance, then consults the readiness
+/// condition, running one turn of the store between two checks as
+/// the scheduler would while the thread is suspended. It records
+/// whether the condition held before it gave up.
+struct OpensTheGate {
+    checks: usize,
+    held: Arc<Mutex<Option<bool>>>,
+}
+
+impl SuspendProvider<()> for OpensTheGate {
+    fn suspend(
+        &mut self,
+        store: &mut StoreContext<'_, ()>,
+        condition: &mut dyn FnMut(&mut StoreContext<'_, ()>) -> bool,
+    ) -> Result<(), Error> {
+        {
+            let mut guard = store.internal().lock_tables()?;
+            let count = guard.tasks.instances().len();
+            for index in 0..count {
+                if let Some(record) = guard
+                    .tasks
+                    .instance_mut(InstanceId::from_index(index as u32))
+                {
+                    record.backpressure = 0;
+                }
+            }
+        }
+        for _ in 0..self.checks {
+            if condition(store) {
+                *self.held.lock().expect("record") = Some(true);
+                return Ok(());
+            }
+            let waker = store.internal().active_waker();
+            store.internal().nested_turn(&waker, None)?;
+        }
+        *self.held.lock().expect("record") = Some(false);
+        Err(Error::Scheduler(store.internal().suspend_cause()))
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_ends_the_callers_wait_when_the_callees_start_fails() {
+    // The gate holds the callee's start, so the caller, which is
+    // allowed to block, waits on the resolution of the call's subtask
+    // through the provider. The provider lets the gate go, and the
+    // turn after that runs the start, which traps. A start that fails
+    // resolves the subtask as a cancellation, so the caller's
+    // condition holds and its wait ends there, and the caller's call
+    // fails with the callee's trap.
+    let (mut store, instance) = instantiate(TRAPS_AFTER_THE_GATE_UNDER_AN_ASYNC_CALLER).await;
+    instance
+        .get_func("block")
+        .expect("the callee's backpressure export")
+        .call(&mut store, &[])
+        .await
+        .expect("the callee raises its own backpressure");
+    let held = Arc::new(Mutex::new(None));
+    store
+        .internal()
+        .scheduler_mut()
+        .suspend_seam_mut()
+        .set_provider(OpensTheGate {
+            checks: 8,
+            held: held.clone(),
+        });
+
+    let run = instance.get_func("run").expect("the caller's export");
+    let err = run
+        .call(&mut store, &[Val::U32(1)])
+        .await
+        .expect_err("the callee's trap fails the caller's call");
+
+    assert_eq!(
+        *held.lock().expect("record"),
+        Some(true),
+        "the failed start met the caller's condition, so the wait ended \
+         rather than running until the provider gave up"
+    );
     let message = chain(&err);
     assert!(
         message.contains("unreachable"),

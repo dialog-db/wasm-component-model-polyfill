@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::task::Wake;
 
 use super::host_task::HostTask;
+use super::subtask_id::SubtaskId;
 
 /// The store's host tasks, each with a waker of its own, and the
 /// order in which they were woken.
@@ -106,9 +107,9 @@ impl<T: 'static> HostTaskSet<T> {
         }
     }
 
-    /// Give `task` to the set. It counts as woken, so the next turn
-    /// polls it.
-    pub fn push(&mut self, task: HostTask<T>) {
+    /// Give `task` to the set, and answer the key it is held under.
+    /// It counts as woken, so the next turn polls it.
+    pub fn push(&mut self, task: HostTask<T>) -> u64 {
         let key = self.next_key;
         self.next_key += 1;
         let wake = Arc::new(TaskWake {
@@ -126,6 +127,7 @@ impl<T: 'static> HostTaskSet<T> {
                 waker,
             },
         );
+        key
     }
 
     /// Record `waker` as the waker of the driver that polls the
@@ -209,6 +211,50 @@ impl<T: 'static> HostTaskSet<T> {
         {
             self.out = self.out.saturating_sub(1);
         }
+    }
+
+    /// Take out the task held under `key`, woken or not, with the
+    /// waker to poll it with. `None` when the set holds no task under
+    /// the key, or when a turn has it out already.
+    ///
+    /// The task's key leaves the ready queue and its mark comes off,
+    /// as [`take_woken`](Self::take_woken) takes them off: a wake the
+    /// poll sends queues the task for the next take, and a wake that
+    /// came before it is answered by this poll. The task goes back
+    /// through [`restore`](Self::restore) or leaves through
+    /// [`complete`](Self::complete), as a task that one hands out
+    /// does.
+    pub fn take(&mut self, key: u64) -> Option<(Waker, HostTask<T>)> {
+        let entry = self.tasks.get_mut(&key)?;
+        let task = entry.task.take()?;
+        if let Ok(mut woken) = self.queue.woken.lock() {
+            woken.retain(|queued| *queued != key);
+        }
+        entry.wake.queued.store(false, Ordering::Release);
+        self.out += 1;
+        Some((entry.waker.clone(), task))
+    }
+
+    /// Take the task held under `key` out of the set for good,
+    /// without polling it. `None` when the set holds no task under
+    /// the key, or when a turn has it out.
+    pub fn remove(&mut self, key: u64) -> Option<HostTask<T>> {
+        // A task a turn has out stays: the turn puts it back or lets
+        // it go itself.
+        self.tasks.get(&key)?.task.as_ref()?;
+        self.tasks.remove(&key).and_then(|entry| entry.task)
+    }
+
+    /// Whether the set holds the host task of `subtask`, woken or not.
+    /// A task that is out being polled is not counted, as
+    /// [`len`](Self::len) does not count it.
+    pub fn holds(&self, subtask: SubtaskId) -> bool {
+        self.tasks.values().any(|entry| {
+            entry
+                .task
+                .as_ref()
+                .is_some_and(|task| task.subtask() == Some(subtask))
+        })
     }
 
     /// Take every task the set holds out, woken or not, in the order

@@ -15,9 +15,10 @@ pub struct Thread {
     /// The task that contains this thread.
     pub task: TaskId,
     /// The readiness condition the thread waits on, or `None` when
-    /// it is running or ready. A thread of a synchronous call never
-    /// waits; a thread parked on a waitable set names the set here
-    /// until its wait ends.
+    /// it waits on nothing. The try part of a blocking built-in
+    /// records it, and it stays here until the thread's wait ends:
+    /// a thread parked on a waitable set names the set, and a
+    /// thread inside a synchronous lower names the call's subtask.
     pub readiness: Option<Readiness>,
     /// The two context slots, which `context.get` reads and
     /// `context.set` writes.

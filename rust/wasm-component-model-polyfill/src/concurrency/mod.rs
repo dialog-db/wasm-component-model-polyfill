@@ -37,15 +37,17 @@
 //!
 //! [`SuspendSeam`] is the scheduler's one suspend capability: a
 //! blocking built-in asks it to suspend the current guest thread
-//! until a readiness condition holds. Its provider slot takes the
-//! [`SuspendProvider`] a target fills it with, and is empty on both
-//! targets today, so a suspension runs a nested turn from inside the
-//! guest call instead. That nested turn is not the nesting
-//! [`SchedulerState`] counts: a host task's body that reaches the
-//! store through its accessor enters a turn of its own and raises
-//! that count, while the seam's fallback deliberately does not,
-//! because a nested turn is not a driver and polls with the waker
-//! the outer turn recorded.
+//! until a readiness condition holds. A [`Readiness`] is that
+//! condition as data: the thread's record holds it while the thread
+//! waits, and evaluating it only reads the store. The seam's
+//! provider slot takes the [`SuspendProvider`] a target fills it
+//! with, and is empty on both targets today, so a suspension runs a
+//! nested turn from inside the guest call instead. That nested turn
+//! is not the nesting [`SchedulerState`] counts: a host task's body
+//! that reaches the store through its accessor enters a turn of its
+//! own and raises that count, while the seam's fallback deliberately
+//! does not, because a nested turn is not a driver and polls with
+//! the waker the outer turn recorded.
 //!
 //! A task is the record of one call into an export; a subtask is the
 //! record of one call out through an import; a thread is one guest
@@ -235,6 +237,7 @@ pub use lower_kind::LowerKind;
 pub use outcome::Outcome;
 pub use pairing::Pairing;
 pub use poll_scope::PollScope;
+pub use readiness::Readiness;
 pub use scheduler::Scheduler;
 pub use scheduler_state::SchedulerState;
 pub use scope::Scope;
