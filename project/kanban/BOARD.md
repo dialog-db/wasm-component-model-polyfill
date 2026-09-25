@@ -66,12 +66,11 @@ kanban-plugin: basic
 ## In Progress
 
 - [ ] [[79456d]]
-- [ ] [[ee45f4]]
 
 ## Needs Review
 
 - [ ] [[c723cc]]
-- [ ] [[1e133e]]
+- [ ] [[ee45f4]]
 
 ## Ready
 
@@ -83,6 +82,7 @@ kanban-plugin: basic
 - [ ] [[576452]]
 - [ ] [[b588ed]]
 - [ ] [[5e6c63]]
+- [ ] [[1e133e]]
 
 ---
 
