@@ -420,7 +420,8 @@ frame is on the stack. `cm/async/switch-to-ready-callback.wast` passes
 whole natively; without a provider two of its directives fail, whose
 test function suspends above the asynchronous lower of its caller
 where the reference deadlocks. A task lives until its last thread
-ends, so `wasmtime/async/task-deletion.wast` passes whole natively:
+ends, so `wasmtime/async/task-deletion.wast` passes whole natively and
+in the browser:
 each explicit thread runs after the implicit thread of its task has
 exited, one of them calls `task.return`, and the others suspend or
 yield for ever in the provider after their calls returned. Without a
