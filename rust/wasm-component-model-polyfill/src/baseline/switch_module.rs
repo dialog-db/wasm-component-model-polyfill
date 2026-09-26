@@ -97,6 +97,7 @@ fn describe(status: &EntryStatus) -> String {
     match status {
         EntryStatus::Suspended => "suspended".to_owned(),
         EntryStatus::Finished(results) => format!("finished with {results:?}"),
+        EntryStatus::Running => "running".to_owned(),
     }
 }
 
@@ -169,7 +170,7 @@ fn setup() -> Scenario {
                     .clone()
                     .expect("the second entry is set before any thread runs");
                 let mut context = StoreContext::new(runtime);
-                let status = provider.start(&mut context, SECOND, &entry, args)?;
+                let status = provider.start(&mut context, SECOND, &entry, &i32_to_i32(), args)?;
                 *spawned.lock().expect("record") = Some(describe(&status));
                 Ok(())
             },
@@ -214,7 +215,13 @@ impl Scenario {
         let mut context = self.store.internal().context();
         let status = self
             .provider
-            .start(&mut context, FIRST, &self.first, &[RuntimeVal::I32(key)])
+            .start(
+                &mut context,
+                FIRST,
+                &self.first,
+                &i32_to_i32(),
+                &[RuntimeVal::I32(key)],
+            )
             .expect("the first thread starts");
         describe(&status)
     }
@@ -461,9 +468,10 @@ fn it_runs_entries_with_no_results_and_with_several() {
             .expect("an entry export")
     };
     let (none, several, floats) = (entry("none"), entry("several"), entry("floats"));
+    let types = [&none, &several, &floats].map(|func| func.ty(context.internal().runtime()));
 
     let status = provider
-        .start(&mut context, FIRST, &none, &[])
+        .start(&mut context, FIRST, &none, &types[0], &[])
         .expect("the entry with nothing starts");
     assert_eq!(describe(&status), "finished with []");
 
@@ -472,6 +480,7 @@ fn it_runs_entries_with_no_results_and_with_several() {
             &mut context,
             SECOND,
             &several,
+            &types[1],
             &[RuntimeVal::I32(4), RuntimeVal::I64(7)],
         )
         .expect("the entry with several starts");
@@ -491,6 +500,7 @@ fn it_runs_entries_with_no_results_and_with_several() {
             &mut context,
             FIRST,
             &floats,
+            &types[2],
             &[RuntimeVal::F32(1.5), RuntimeVal::F64(2.0)],
         )
         .expect("the entry over floats starts");

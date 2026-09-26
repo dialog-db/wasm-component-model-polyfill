@@ -4,6 +4,7 @@ use core::task::Waker;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use super::SuspendSeam;
+use super::deferred_work::DeferredWork;
 use super::end_id::EndId;
 use super::event_slot::EventSlot;
 use super::host_reader::HostReader;
@@ -298,6 +299,10 @@ pub struct Scheduler<T: 'static> {
     /// to run next, from the try part of its switch to the frame that
     /// resumed it.
     next_thread: Option<ThreadId>,
+    /// What the scheduler has to do before a turn goes on, under a
+    /// provider that resumes a thread only where the store runs no
+    /// guest code.
+    deferred: DeferredWork<T>,
 }
 
 /// How many nested turns in a row the suspend seam runs against a
@@ -346,6 +351,7 @@ impl<T: 'static> Scheduler<T> {
             blocks: HashMap::new(),
             ready_block: None,
             next_thread: None,
+            deferred: DeferredWork::default(),
         }
     }
 
@@ -433,7 +439,7 @@ impl<T: 'static> Scheduler<T> {
     /// already.
     pub fn queue_resumption(&mut self, thread: ThreadId) -> Option<(TaskId, u64)> {
         let parked = self.parked.get_mut(&thread)?;
-        if parked.queued {
+        if parked.queued || parked.held {
             return None;
         }
         parked.queued = true;
@@ -457,7 +463,38 @@ impl<T: 'static> Scheduler<T> {
 
     /// Take the thread a switch named to run next.
     pub fn take_next_thread(&mut self) -> Option<ThreadId> {
+        self.deferred.next_left = false;
         self.next_thread.take()
+    }
+
+    /// Leave the resumption of the parked `thread` to the store, under
+    /// a provider that cannot resume it from the frame that runs now:
+    /// the thread is named to run next, and the scheduler resumes it
+    /// before anything else once the store runs no guest code.
+    pub fn leave_resumption(&mut self, thread: ThreadId) {
+        self.next_thread = Some(thread);
+        self.deferred.next_left = true;
+    }
+
+    /// What the scheduler has to do before a turn goes on.
+    pub fn deferred(&self) -> &DeferredWork<T> {
+        &self.deferred
+    }
+
+    /// What the scheduler has to do before a turn goes on, mutably.
+    pub fn deferred_mut(&mut self) -> &mut DeferredWork<T> {
+        &mut self.deferred
+    }
+
+    /// The blocking built-in `thread` waits in, mutably, when it waits
+    /// in one.
+    pub fn block_mut(&mut self, thread: ThreadId) -> Option<&mut PendingBlock<T>> {
+        self.blocks.get_mut(&thread)
+    }
+
+    /// The parked `thread`, mutably, when it is parked.
+    pub fn parked_mut(&mut self, thread: ThreadId) -> Option<&mut ParkedThread<T>> {
+        self.parked.get_mut(&thread)
     }
 
     /// Record the blocking built-in `thread` waits in, from the try

@@ -5,7 +5,7 @@ use core::task::Waker;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::concurrency::{InstanceId, Scheduler, StackSwitchingProvider, TaskId, TurnGuard};
+use crate::concurrency::{InstanceId, Scheduler, StoreProvider, TaskId, TurnGuard};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
 use crate::internal::ErrorInternal;
@@ -57,7 +57,12 @@ pub struct StoreData<T: 'static> {
     /// the engine selected one. It is installed as the store is
     /// constructed and stays for the store's whole life: nothing
     /// takes it out, a suspension included.
-    provider: Option<StackSwitchingProvider>,
+    provider: Option<StoreProvider>,
+    /// Whether the store's owner dropped it while a thread the
+    /// provider resumed had yet to run, which keeps the store
+    /// allocated for that thread. The thread's shim reads the flag,
+    /// has the store freed, and runs nothing else in it.
+    dropped: bool,
     /// The copy budget each crossing starts with, in bytes of host
     /// values: what Wasmtime calls the store's hostcall fuel.
     hostcall_fuel: usize,
@@ -104,6 +109,7 @@ impl<T: 'static> StoreData<T> {
             resource_types: HashMap::new(),
             scheduler: Scheduler::new(),
             provider: None,
+            dropped: false,
             hostcall_fuel: DEFAULT_HOSTCALL_FUEL,
         }
     }
@@ -171,14 +177,27 @@ impl<T: 'static> StoreData<T> {
     }
 
     /// Install the provider the engine selected. Workspace-internal.
-    pub fn install_provider(&mut self, provider: StackSwitchingProvider) {
+    pub fn install_provider(&mut self, provider: StoreProvider) {
         self.provider = Some(provider);
     }
 
     /// The provider that fills the store's suspend capability, or
     /// `None` when the engine selected none. Workspace-internal.
-    pub fn provider(&self) -> Option<&StackSwitchingProvider> {
+    pub fn provider(&self) -> Option<&StoreProvider> {
         self.provider.as_ref()
+    }
+
+    /// Whether the owner dropped the store while a resumed thread had
+    /// yet to run. Workspace-internal.
+    pub fn dropped(&self) -> bool {
+        self.dropped
+    }
+
+    /// Record that the owner dropped the store while a resumed thread
+    /// had yet to run. Workspace-internal.
+    #[cfg(target_arch = "wasm32")]
+    pub fn mark_dropped(&mut self) {
+        self.dropped = true;
     }
 
     /// Record what the store knows about a resource type an

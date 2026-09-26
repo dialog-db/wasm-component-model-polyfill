@@ -329,10 +329,11 @@ fn engine() -> Engine {
     Engine::with_config(&config).expect("engine")
 }
 
-/// Whether the engine runs guest threads through the stack-switching
-/// provider, which the native engine selects on x86_64 Linux.
+/// Whether the engine runs guest threads through a provider: the
+/// stack-switching provider natively on x86_64 Linux, and the JSPI
+/// provider in a browser that ships JSPI.
 fn has_provider() -> bool {
-    engine().suspend_provider() == SuspendProviderKind::StackSwitching
+    engine().suspend_provider() != SuspendProviderKind::None
 }
 
 /// Instantiate `bytes` in a fresh store of an engine with the thread

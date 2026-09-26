@@ -2,8 +2,7 @@
 # of `expected-failures.txt` whenever the store runs no guest thread
 # through a provider: a lane that turns the provider off, a native
 # build on a platform without the stack-switching proposal, and a
-# browser, whose JSPI provider the scheduler does not run threads
-# through yet. The nested turn is one code path on both targets, so
+# browser without JSPI. The nested turn is one code path on both targets, so
 # this one overlay serves both, beside `expected-failures.web.txt` in a
 # browser. Same line shape: `<path>:<line> <category> <reason>`. Every
 # line carries the stack-switch reason, or the harness fails the run. A

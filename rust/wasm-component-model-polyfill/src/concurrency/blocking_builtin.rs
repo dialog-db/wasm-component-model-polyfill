@@ -9,6 +9,7 @@ use crate::store::{StoreContext, StoreContextInternalExt};
 
 use super::block_step::BlockStep;
 use super::suspend_seam::SuspendSeam;
+use super::switch_module::SwitchModule;
 
 /// The first part of one blocking built-in, as a host function body.
 type Begin<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> anyhow::Result<BlockStep<T>>
@@ -19,7 +20,7 @@ type Begin<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> anyhow::Resul
 /// The whole of one blocking built-in, as a host function body, for
 /// a built-in that waits in a way of its own where its thread cannot
 /// suspend its stack.
-type Whole<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> anyhow::Result<Vec<RuntimeVal>>
+type Whole<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> anyhow::Result<Option<Vec<RuntimeVal>>>
     + Send
     + Sync
     + 'static;
@@ -91,14 +92,19 @@ impl<T: 'static> BlockingBuiltin<T> {
 
     /// A blocking built-in of core type `ty`, whose first part is
     /// `begin` for a thread that suspends its stack, and whose whole
-    /// is `fallback` for a thread that cannot.
+    /// is `fallback` for a thread that cannot. The fallback answers
+    /// `None` when it left the rest of itself to the scheduler as a
+    /// plan, having parked its step for the plan's outcome.
     pub fn with_fallback(
         ty: FuncType,
         begin: impl Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> anyhow::Result<BlockStep<T>>
         + Send
         + Sync
         + 'static,
-        fallback: impl Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> anyhow::Result<Vec<RuntimeVal>>
+        fallback: impl Fn(
+            &mut StoreContext<'_, T>,
+            &[RuntimeVal],
+        ) -> anyhow::Result<Option<Vec<RuntimeVal>>>
         + Send
         + Sync
         + 'static,
@@ -126,7 +132,9 @@ impl<T: 'static> BlockingBuiltin<T> {
             move |store_ctx, args, results| {
                 let mut store = StoreContext::new(store_ctx);
                 let values = match &fallback {
-                    Some(whole) => whole(&mut store, args)?,
+                    Some(whole) => whole(&mut store, args)?.ok_or_else(|| {
+                        anyhow!("a blocking built-in left a plan with no provider to run it")
+                    })?,
                     None => SuspendSeam::block(&mut store, &*begin, args)?,
                 };
                 deliver(results, values)
@@ -144,6 +152,18 @@ impl<T: 'static> BlockingBuiltin<T> {
             FuncType::new(self.ty.params().iter().copied(), [ValType::I32]),
             move |store_ctx, args, results| {
                 let mut store = StoreContext::new(store_ctx);
+                if store.internal().dropped() {
+                    // The owner dropped the store while this thread's
+                    // resume was under way, and the store was kept
+                    // only for this call. The shim traps on the
+                    // answer, so the store is freed once the stack
+                    // has unwound.
+                    if let Some(provider) = store.internal().provider() {
+                        provider.release_dropped(&mut store);
+                    }
+                    results[0] = RuntimeVal::I32(SwitchModule::DROPPED);
+                    return Ok(());
+                }
                 let ready = SuspendSeam::try_block(
                     &mut store,
                     &*begin,

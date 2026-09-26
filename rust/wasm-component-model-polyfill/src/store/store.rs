@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use wasm_runtime_layer::AsContextMut;
 
 use crate::backend::Backend;
-use crate::concurrency::{Accessor, Outcome, Scheduler, StackSwitchingProvider};
+#[cfg(target_arch = "wasm32")]
+use crate::concurrency::JspiProvider;
+use crate::concurrency::{Accessor, Outcome, Scheduler, StackSwitchingProvider, StoreProvider};
 use crate::engine::Engine;
 use crate::error::Result;
 use crate::internal::EngineInternal;
@@ -141,12 +143,22 @@ impl<T: 'static> Store<T> {
         };
         // The provider the engine selected is instantiated in the
         // store once, here, and stays in it for the store's life.
-        if engine.suspend_provider() == SuspendProviderKind::StackSwitching {
-            let provider = StackSwitchingProvider::instantiate(
+        let provider = match engine.suspend_provider() {
+            SuspendProviderKind::StackSwitching => Some(StoreProvider::StackSwitching(
+                StackSwitchingProvider::instantiate(
+                    &mut store.context(),
+                    engine.inner(),
+                    engine.switch_modules(),
+                )?,
+            )),
+            #[cfg(target_arch = "wasm32")]
+            SuspendProviderKind::Jspi => Some(StoreProvider::Jspi(JspiProvider::instantiate(
                 &mut store.context(),
-                engine.inner(),
                 engine.switch_modules(),
-            )?;
+            )?)),
+            _ => None,
+        };
+        if let Some(provider) = provider {
             store.store_data_mut().install_provider(provider);
         }
         Ok(store)
@@ -423,6 +435,26 @@ impl<T: 'static> Store<T> {
     /// Workspace-internal; not re-exported by `lib.rs`.
     fn inner_mut(&mut self) -> &mut wasm_runtime_layer::Store<StoreData<T>, Backend> {
         &mut self.inner
+    }
+}
+
+impl<T: 'static> Drop for Store<T> {
+    /// Drop the store, and with it every task, host task, and
+    /// suspended thread, with no destructor run.
+    ///
+    /// A thread the JSPI provider resumed runs on a microtask, after
+    /// the turn that resumed it returned, and reaches the store as it
+    /// runs. A store dropped between the two stays allocated until
+    /// then, marked dropped. The thread's shim finds the mark, has the
+    /// store freed on a later microtask, and traps, so the thread's
+    /// stack unwinds where it suspended and runs no guest code, host
+    /// import, or destructor. The host's data drops with the store
+    /// then, on that later microtask.
+    fn drop(&mut self) {
+        let mut context = self.context();
+        if let Some(provider) = context.internal().provider() {
+            provider.retain_if_resuming(&mut context);
+        }
     }
 }
 

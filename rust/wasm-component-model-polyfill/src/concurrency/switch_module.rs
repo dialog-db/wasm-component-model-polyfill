@@ -130,9 +130,11 @@ use super::switch_form::SwitchForm;
 /// module `base`, and from the module `host`:
 ///
 /// - `try{i}` and `finish{i}` for shim `i`. The try takes the shim's
-///   parameters and answers an `i32`, nonzero when the built-in is
-///   ready. The finish takes the shim's parameters and answers its
-///   results.
+///   parameters and answers an `i32`: positive when the built-in is
+///   ready, zero when it is not, and [`DROPPED`](Self::DROPPED),
+///   which is negative and on which the shim traps, when the store
+///   was dropped while a resume of the thread was under way. The
+///   finish takes the shim's parameters and answers its results.
 /// - `finished{j}` for entry type `j`, which takes the thread index
 ///   and then the entry's results.
 ///
@@ -240,6 +242,11 @@ impl SwitchModule {
     /// What a start or a resume of the stack-switching form answers
     /// when the thread suspended.
     pub const SUSPENDED: i32 = 1;
+
+    /// What a try answers when the store its thread runs in was
+    /// dropped while a resume of the thread was under way. The shim
+    /// traps on it, so the stack unwinds where it suspended.
+    pub const DROPPED: i32 = -1;
 
     /// A module of `form` with no shims and no entry wrappers: an
     /// extension module in the stack-switching form.
@@ -743,15 +750,26 @@ fn run(body: &mut Function, cont_type: u32, operands: impl FnOnce(&mut Function)
 /// The body of a shim of type `ty`, over its try and finish imports,
 /// which suspends by calling `suspend`: the base module's `suspend`
 /// in the stack-switching form, and the `WebAssembly.Suspending`
-/// import in the JSPI form.
+/// import in the JSPI form. A try that answers
+/// [`DROPPED`](SwitchModule::DROPPED) makes it trap, which no guest
+/// handler catches, so the stack unwinds at once and runs no guest
+/// code on the way.
 fn shim_body(ty: &FuncType, try_import: u32, finish_import: u32, suspend: u32) -> Function {
     let arguments = index(ty.params().len());
-    let mut body = Function::new([]);
+    let answer = arguments;
+    let mut body = Function::new([(1, ValType::I32)]);
     body.instruction(&Instruction::Loop(BlockType::Empty));
     for local in 0..arguments {
         body.instruction(&Instruction::LocalGet(local));
     }
     body.instruction(&Instruction::Call(try_import));
+    body.instruction(&Instruction::LocalTee(answer));
+    body.instruction(&Instruction::I32Const(0));
+    body.instruction(&Instruction::I32LtS);
+    body.instruction(&Instruction::If(BlockType::Empty));
+    body.instruction(&Instruction::Unreachable);
+    body.instruction(&Instruction::End);
+    body.instruction(&Instruction::LocalGet(answer));
     body.instruction(&Instruction::If(BlockType::Empty));
     for local in 0..arguments {
         body.instruction(&Instruction::LocalGet(local));

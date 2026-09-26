@@ -273,8 +273,7 @@ async fn two_callers() -> Outcome {
 /// second entry once its own callee has answered.
 #[wcmp_macros::test]
 async fn it_runs_two_callers_that_synchronously_lower_one_async_export() {
-    let provider =
-        Engine::new().expect("engine").suspend_provider() == SuspendProviderKind::StackSwitching;
+    let provider = Engine::new().expect("engine").suspend_provider() != SuspendProviderKind::None;
     let (first, second, log) = two_callers().await;
 
     assert_eq!(

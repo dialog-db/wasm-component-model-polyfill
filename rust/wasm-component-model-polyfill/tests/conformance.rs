@@ -17,9 +17,7 @@
 //! no-provider overlay, `expected-failures.no-provider.txt`, holds
 //! what fails beyond the shared list in a nested turn, and applies
 //! whenever the store runs no guest thread through a provider, on
-//! either target: the engine's provider query answers none, or the
-//! JSPI provider, which the scheduler does not run threads through
-//! yet. Every line of it carries the stack-switch reason, or the
+//! either target: the engine's provider query answers none. Every line of it carries the stack-switch reason, or the
 //! run fails. Each file runs twice, with the provider allowed and
 //! with it turned off through `EngineConfig`, and the nextest profiles
 //! in `.config/nextest.toml` split the two into their own lanes.
@@ -86,8 +84,7 @@ const EXPECTED_FAILURES_WEB: &str = include_str!("corpus/expected-failures.web.t
 /// provider, applied on top of the shared list whenever the store runs
 /// no guest thread through a provider, on either target: a lane that
 /// turns the provider off, a native build on a platform without the
-/// stack-switching proposal, and a browser, whose JSPI provider the
-/// scheduler does not run threads through yet. A nested turn
+/// stack-switching proposal, and a browser without JSPI. A nested turn
 /// is one code path on both targets, so one overlay serves both. Every
 /// line carries the stack-switch reason.
 const EXPECTED_FAILURES_NO_PROVIDER: &str =
@@ -217,13 +214,12 @@ impl Lists {
 /// guest threads through that provider, so that a block suspends
 /// rather than waiting in a nested turn.
 ///
-/// The stack-switching provider does. The JSPI provider is selected in
-/// a browser that ships JSPI, but the scheduler does not run guest
-/// threads through it yet, so a store there serves every block with
-/// the nested turn, as a store with no provider does, and the overlay
-/// applies.
+/// Every provider does: the stack-switching provider natively, and
+/// the JSPI provider in a browser that ships JSPI. Only an engine that
+/// answers none serves every block with the nested turn, and only
+/// then does the overlay apply.
 fn runs_threads_through(provider: SuspendProviderKind) -> bool {
-    provider == SuspendProviderKind::StackSwitching
+    provider != SuspendProviderKind::None
 }
 
 /// The reason every line of the overlay carries: the text of the
@@ -1559,11 +1555,11 @@ mod tests {
             lines(&lists.applying(SuspendProviderKind::StackSwitching)),
             [1]
         );
-        // The JSPI provider does not run guest threads yet, so a store
-        // of an engine that selected it blocks as one with none does.
-        for provider in [SuspendProviderKind::Jspi, SuspendProviderKind::None] {
-            assert_eq!(lines(&lists.applying(provider)), [1, 3], "{provider:?}");
-        }
+        // The JSPI provider runs guest threads as the stack-switching
+        // provider does, so a store of an engine that selected it
+        // blocks as one under that provider does.
+        assert_eq!(lines(&lists.applying(SuspendProviderKind::Jspi)), [1]);
+        assert_eq!(lines(&lists.applying(SuspendProviderKind::None)), [1, 3]);
     }
 
     #[wcmp_macros::test]

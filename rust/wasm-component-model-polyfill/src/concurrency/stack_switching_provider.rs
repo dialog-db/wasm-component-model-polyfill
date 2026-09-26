@@ -1,6 +1,7 @@
 //! The provider that switches stacks with the instructions of the
 //! WebAssembly stack-switching proposal.
 
+use core::task::{Poll, Waker};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -267,10 +268,10 @@ impl<T: 'static> SuspendProvider<T> for StackSwitchingProvider {
         store: &mut StoreContext<'_, T>,
         thread: ThreadId,
         entry: &RuntimeFunc,
+        ty: &FuncType,
         args: &[RuntimeVal],
     ) -> Result<EntryStatus> {
-        let ty = entry.ty(store.internal().runtime());
-        let start = self.start_for(store, &ty)?;
+        let start = self.start_for(store, ty)?;
         let index = thread.index();
         let arguments = [
             RuntimeVal::I32(index.cast_signed()),
@@ -297,6 +298,19 @@ impl<T: 'static> SuspendProvider<T> for StackSwitchingProvider {
             )
             .map_err(substrate_failure)?;
         self.status(index, &status[0])
+    }
+
+    fn poll_stop(
+        &self,
+        _store: &mut StoreContext<'_, T>,
+        _thread: ThreadId,
+        _waker: &Waker,
+    ) -> Poll<Result<EntryStatus>> {
+        // A start and a resume run the thread inside the call and
+        // never answer that it runs on.
+        Poll::Ready(Err(Error::internal(
+            "the stack-switching provider runs no thread on after a call",
+        )))
     }
 }
 

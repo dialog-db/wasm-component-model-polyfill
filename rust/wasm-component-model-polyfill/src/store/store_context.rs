@@ -6,16 +6,17 @@ use core::task::{Context, Poll, Waker};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use wasm_runtime_layer::{
-    AsContextMut, Func as RuntimeFunc, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
+    AsContextMut, Func as RuntimeFunc, FuncType, StoreContextMut as RuntimeContextMut,
+    Val as RuntimeVal,
 };
 
 use crate::abi::boundary_call::BoundaryCall;
 use crate::abi::signature::Signature;
 use crate::backend::{Backend, substrate_failure};
 use crate::concurrency::{
-    Accessor, CallStatus, EntryFinish, EntryStatus, EventSlot, FailureChannel, HostTask,
-    InstanceId, Item, ItemKind, LowerKind, Outcome, ParkedThread, PendingBlock, PollScope,
-    Readiness, ResultChannel, Scheduler, Scope, StackSwitchingProvider, SubtaskId, SubtaskState,
+    Accessor, CallStatus, EntryFinish, EntryStatus, EventSlot, FailureChannel, HostTask, InFlight,
+    InstanceId, Item, ItemKind, LowerKind, Outcome, ParkedThread, PendingBlock, Plan, PollScope,
+    Readiness, ResultChannel, Scheduler, Scope, SeamWait, StoreProvider, SubtaskId, SubtaskState,
     SuspendProvider, SuspendSeam, TaskId, TaskState, ThreadId, ThreadStart, TurnGuard,
     WaitableSetId, YieldWake,
 };
@@ -386,7 +387,27 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     fn turn(&mut self, waker: &Waker) -> Result<Outcome> {
         let _turn = TurnGuard::enter(self.tables(), waker);
         self.scheduler().watch_host_tasks(waker);
-        self.run_turn(waker, false, None)
+        loop {
+            // Work a turn stopped for comes first, and nothing else
+            // runs before it is done. A thread that runs on after the
+            // call that resumed it returned is what such work waits
+            // for, and the turn ends there: the thread runs once the
+            // driver has returned control to the host executor.
+            if self.run_deferred_work(waker)?.is_pending() {
+                return Ok(Outcome::Resuming);
+            }
+            let resume = core::mem::take(&mut self.scheduler_mut().deferred_mut().turn_open);
+            let outcome = self.run_turn(waker, false, None, resume)?;
+            if !self.defers_work() {
+                return Ok(outcome);
+            }
+            // An item of the turn left work to the store. The turn
+            // goes on where it stopped once that work is done, and the
+            // item that stopped owes the evaluation that follows it.
+            let deferred = self.scheduler_mut().deferred_mut();
+            deferred.turn_open = true;
+            deferred.turn_note_owed |= core::mem::take(&mut deferred.note_owed);
+        }
     }
 
     /// Whether a turn of this store is running. Workspace-internal.
@@ -462,10 +483,25 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// The other two rules belong to the seam: the cause a
     /// suspension that cannot progress fails with, and that an item
     /// a nested turn runs may block and open a nested turn of its
-    /// own. Workspace-internal.
-    fn nested_turn(&mut self, waker: &Waker, only: Option<InstanceId>) -> Result<Outcome> {
-        self.scheduler_mut().note_nested_turn();
-        self.run_turn(waker, true, only)
+    /// own.
+    ///
+    /// With `resume`, the turn goes on with the nested turn that last
+    /// stopped for work it left to the store, from the item after the
+    /// one it stopped in. A turn that stops that way answers
+    /// [`Outcome::Progress`] with the work pending, and one whose
+    /// stop ended it also marks the work as having stopped at the
+    /// turn's end, which its caller takes at once: such a turn is not
+    /// gone on with. Workspace-internal.
+    fn continue_nested_turn(
+        &mut self,
+        waker: &Waker,
+        only: Option<InstanceId>,
+        resume: bool,
+    ) -> Result<Outcome> {
+        if !resume {
+            self.scheduler_mut().note_nested_turn();
+        }
+        self.run_turn(waker, true, only, resume)
     }
 
     /// The instance a nested turn run for the current task may run
@@ -814,14 +850,23 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         waker: &Waker,
         nested: bool,
         only: Option<InstanceId>,
+        resume: bool,
     ) -> Result<Outcome> {
-        self.open_entry_gate()?;
-        let mut ran = false;
-        if !nested {
-            let resumed = self.scheduler_mut().take_resume_after_yield();
-            if let Some(item) = resumed {
-                ran = true;
-                self.run_item(item)?;
+        // A turn that goes on after the work an item left to the
+        // store has been done starts again with the next item, as
+        // though the item had just returned, and it has run one.
+        let mut ran = resume;
+        if !resume {
+            self.open_entry_gate()?;
+            if !nested {
+                let resumed = self.scheduler_mut().take_resume_after_yield();
+                if let Some(item) = resumed {
+                    ran = true;
+                    self.run_item(item)?;
+                    if self.defers_work() {
+                        return Ok(Outcome::Progress);
+                    }
+                }
             }
         }
         loop {
@@ -832,6 +877,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             if let Some(item) = ready {
                 ran = true;
                 self.run_item(item)?;
+                if self.defers_work() {
+                    return Ok(Outcome::Progress);
+                }
                 continue;
             }
             // Work this turn released — a task the entry gate can
@@ -882,6 +930,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             // with the cannot-block cause.
             if let Some(item) = self.scheduler_mut().take_deferred_in(instance) {
                 self.run_item(item)?;
+                self.note_stop_at_turn_end();
                 return Ok(Outcome::Progress);
             }
             return Ok(if ran {
@@ -913,6 +962,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         if nested {
             if let Some(item) = self.scheduler_mut().take_deferred() {
                 self.run_item(item)?;
+                self.note_stop_at_turn_end();
                 return Ok(Outcome::Progress);
             }
         } else if self.scheduler().has_deferred_item() {
@@ -1090,7 +1140,23 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     fn run_item(&mut self, item: Item<T>) -> Result<()> {
         self.scheduler_mut().note_item_run();
         item.run(self)?;
+        if self.defers_work() {
+            // The item stopped for work it left to the store, and is
+            // done only once that work is. The evaluation that follows
+            // it waits until then too.
+            self.scheduler_mut().deferred_mut().note_owed = true;
+            return Ok(());
+        }
         self.note_ready_threads()
+    }
+
+    /// Mark the work the item that ended a nested turn left to the
+    /// store, when it left any, as work the turn stopped for at its
+    /// end.
+    fn note_stop_at_turn_end(&mut self) {
+        if self.defers_work() {
+            self.scheduler_mut().deferred_mut().stopped_at_end = true;
+        }
     }
 
     /// Create the task of one call into an export, without making it
@@ -1171,8 +1237,24 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// `None` when the engine selected none. The store keeps the
     /// provider for its whole life; this hands out a handle to it.
     /// Workspace-internal.
-    fn provider(&self) -> Option<StackSwitchingProvider> {
+    fn provider(&self) -> Option<StoreProvider> {
         self.store_data().provider().cloned()
+    }
+
+    /// Whether the store's owner dropped it while a thread the
+    /// provider resumed had yet to run. That thread finds the store
+    /// kept for it, and must run nothing in it. Workspace-internal.
+    fn dropped(&self) -> bool {
+        self.store_data().dropped()
+    }
+
+    /// Record that the store's owner dropped it while a thread the
+    /// provider resumed had yet to run. Workspace-internal.
+    // Only the JSPI provider, in the browser, resumes a thread that
+    // can outlive its store's owner.
+    #[cfg(target_arch = "wasm32")]
+    fn mark_dropped(&mut self) {
+        self.store_data_mut().mark_dropped();
     }
 
     /// How deep the stack of current scopes is, which is where the
@@ -1228,18 +1310,27 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         results: Vec<RuntimeVal>,
         finish: impl EntryFinish<T>,
     ) -> Result<()> {
-        self.start_thread_entry(thread, base, entry, args, results, finish)?;
+        let ty = entry.ty(self.runtime());
+        self.start_thread_entry(thread, base, entry, &ty, args, results, finish)?;
         self.follow_switches()
     }
 
     /// Run `entry` as [`run_thread_entry`](Self::run_thread_entry)
     /// does, up to the moment it finishes or first suspends, and leave
     /// a switch the thread made as it suspended for the caller.
+    ///
+    /// Under a provider that hands over a failure only after the start
+    /// returned, an entry that failed before it first suspended leaves
+    /// its failure to the store, as a resumed thread's stop is: the
+    /// scheduler waits for the failure before anything else, and runs
+    /// the finish with it then.
+    #[allow(clippy::too_many_arguments)]
     fn start_thread_entry(
         &mut self,
         thread: ThreadId,
         base: usize,
         entry: &RuntimeFunc,
+        ty: &FuncType,
         args: &[RuntimeVal],
         results: Vec<RuntimeVal>,
         finish: impl EntryFinish<T>,
@@ -1261,16 +1352,31 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 .map(|record| record.task)
                 .ok_or_else(|| Error::internal("a thread entry started for no thread"))?
         };
-        match provider.start(self, thread, entry, args) {
+        match provider.start(self, thread, entry, ty, args) {
             Ok(EntryStatus::Suspended) => {
                 let (scopes, running) = self.lock_tables()?.tasks.cut_scopes(base);
                 self.scheduler_mut()
                     .park_thread(thread, ParkedThread::new(task, scopes, running, finish));
+                self.note_plan_of(thread);
                 Ok(())
             }
             Ok(EntryStatus::Finished(values)) => {
                 self.lock_tables()?.tasks.set_own_stack(thread, false);
                 finish(self, Ok(values))
+            }
+            Ok(EntryStatus::Running) => {
+                let (scopes, running) = self.lock_tables()?.tasks.cut_scopes(base);
+                let parked = ParkedThread::new(task, scopes, running, finish);
+                debug_assert!(
+                    self.scheduler().deferred().failed_start.is_none(),
+                    "a failed start was handed over while another one waits"
+                );
+                self.scheduler_mut().deferred_mut().failed_start = Some(InFlight {
+                    thread,
+                    parked,
+                    base: None,
+                });
+                Ok(())
             }
             Err(error) => {
                 if let Ok(mut guard) = self.lock_tables() {
@@ -1315,10 +1421,29 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// [`resume_parked_thread`](Self::resume_parked_thread) does, up
     /// to the moment it suspends again or finishes, and leave a switch
     /// it made as it suspended for the caller.
+    ///
+    /// A provider that runs the thread on a microtask resumes it only
+    /// where the store runs no guest code, and runs it after the frame
+    /// that resumed it returned. Anywhere else the resumption is left
+    /// to the store, as the switch the thread would be: the thread is
+    /// named to run next, and the frame goes no further. Where it may,
+    /// the resume leaves the thread's stop to the store, which waits
+    /// for it before anything else and does the rest then.
     fn resume_thread_once(&mut self, thread: ThreadId) -> Result<()> {
         let Some(provider) = self.provider() else {
             return Ok(());
         };
+        if !self.scheduler().is_parked(thread) {
+            return Ok(());
+        }
+        if provider.resumes_later()
+            && (self.defers_work()
+                || self.scheduler().deferred().resumed.is_some()
+                || !provider.may_resume_here(self))
+        {
+            self.scheduler_mut().leave_resumption(thread);
+            return Ok(());
+        }
         let Some(mut parked) = self.scheduler_mut().take_parked_thread(thread) else {
             return Ok(());
         };
@@ -1331,23 +1456,398 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             guard.tasks.restore_scopes(scopes, running);
             base
         };
-        match provider.resume(self, thread) {
+        let resumed = provider.resume(self, thread);
+        self.thread_stopped(thread, parked, base, resumed)
+    }
+
+    /// Act on where `thread`, which ran with its scopes on the stack
+    /// from `base` up, stopped: `stopped` is what its start or resume
+    /// answered, or what the provider answered once it stopped. A
+    /// thread that suspended again is parked again, one that finished
+    /// or failed runs the finish `parked` carries, and one that runs on
+    /// leaves its stop to the store.
+    fn thread_stopped(
+        &mut self,
+        thread: ThreadId,
+        mut parked: ParkedThread<T>,
+        base: usize,
+        stopped: Result<EntryStatus>,
+    ) -> Result<()> {
+        match stopped {
             Ok(EntryStatus::Suspended) => {
                 let (scopes, running) = self.lock_tables()?.tasks.cut_scopes(base);
                 parked.scopes = scopes;
                 parked.running = running;
                 self.scheduler_mut().park_thread(thread, parked);
+                self.note_plan_of(thread);
                 Ok(())
             }
             Ok(EntryStatus::Finished(values)) => {
                 self.lock_tables()?.tasks.set_own_stack(thread, false);
                 parked.finish(self, Ok(values))
             }
+            Ok(EntryStatus::Running) => {
+                let deferred = self.scheduler_mut().deferred_mut();
+                deferred.resumed = Some(InFlight {
+                    thread,
+                    parked,
+                    base: Some(base),
+                });
+                deferred.resume_issued = true;
+                Ok(())
+            }
             Err(error) => {
                 if let Ok(mut guard) = self.lock_tables() {
                     guard.tasks.set_own_stack(thread, false);
                 }
                 parked.finish(self, Err(error))
+            }
+        }
+    }
+
+    /// Take the plan the trampoline of the parked `thread` left as the
+    /// thread suspended, when it left one: the plan is the thread's,
+    /// and holds it until the plan is done. The plan waits among the
+    /// plans stops left until the scheduler takes it up.
+    fn note_plan_of(&mut self, thread: ThreadId) {
+        let Some(mut plan) = self.scheduler_mut().deferred_mut().request.take() else {
+            return;
+        };
+        plan.owner = Some(thread);
+        if let Some(parked) = self.scheduler_mut().parked_mut(thread) {
+            parked.held = true;
+        }
+        self.scheduler_mut().deferred_mut().stopped.push(plan);
+    }
+
+    /// Whether the frame that runs now left work to the store that it
+    /// must not go past: under a provider that resumes a thread on a
+    /// microtask, a thread whose stop the store waits for, a
+    /// resumption the frame could not make, or a plan a thread's
+    /// suspension left. Always `false` under every other provider.
+    /// Workspace-internal.
+    fn defers_work(&self) -> bool {
+        self.scheduler().deferred().pending()
+    }
+
+    /// Whether the store is inside such work: a turn stopped for it,
+    /// a plan runs, or work is pending. A driver consults its
+    /// condition only when the store is not. Workspace-internal.
+    fn deferred_busy(&self) -> bool {
+        self.scheduler().deferred().busy()
+    }
+
+    /// Leave `plan` for the thread the running trampoline runs in,
+    /// which is about to suspend in the trampoline's shim, and give it
+    /// the marks and the evaluation the work it waits for owes. It
+    /// fails with the stack-switch cause when that thread cannot
+    /// suspend here, which is when a host frame lies between the start
+    /// of its stack and the shim, or no provider suspends a thread
+    /// that way. The work stays with the store then, and the marks
+    /// come off at once, as the trampoline returns. Workspace-internal.
+    fn leave_plan(&mut self, mut plan: Plan<T>) -> Result<()> {
+        let may = match self.provider() {
+            Some(provider) => provider.may_suspend_here(self),
+            None => false,
+        };
+        let deferred = self.scheduler_mut().deferred_mut();
+        plan.ends_nested_start = core::mem::take(&mut deferred.ends_nested_start);
+        plan.ends_thread_switch = core::mem::take(&mut deferred.ends_thread_switch);
+        plan.note_owed = core::mem::take(&mut deferred.note_owed);
+        if !may {
+            self.end_marks(plan.ends_nested_start, plan.ends_thread_switch)?;
+            return Err(Error::Scheduler(SchedulerCause::StackSwitchNeeded));
+        }
+        debug_assert!(
+            self.scheduler().deferred().request.is_none(),
+            "a plan was left while another one waits for its thread to suspend"
+        );
+        self.scheduler_mut().deferred_mut().request = Some(plan);
+        Ok(())
+    }
+
+    /// Take off the marks a trampoline that left a plan put on the
+    /// stack: its nested-start mark and its thread-switch mark, as
+    /// `nested_start` and `thread_switch` say.
+    fn end_marks(&mut self, nested_start: bool, thread_switch: bool) -> Result<()> {
+        let mut guard = self.lock_tables()?;
+        if nested_start {
+            guard.tasks.end_nested_start();
+        }
+        if thread_switch {
+            guard.tasks.end_thread_switch();
+        }
+        Ok(())
+    }
+
+    /// Do the work frames left to the store, before anything else and
+    /// with nothing else in between, until none is left or a thread
+    /// runs on a microtask, which is when this answers pending: the
+    /// provider wakes `waker` once the thread stopped.
+    ///
+    /// A failure of work a plan runs is a failure of the built-in the
+    /// plan serves, as it would have failed the built-in's own frame:
+    /// the plan ends with it, and its thread resumes with it. A
+    /// failure with no plan to take it is the turn's.
+    fn run_deferred_work(&mut self, waker: &Waker) -> Result<Poll<()>> {
+        loop {
+            match self.step_deferred_work(waker) {
+                Ok(Some(true)) => {}
+                Ok(Some(false)) => return Ok(Poll::Ready(())),
+                Ok(None) => return Ok(Poll::Pending),
+                Err(error) => {
+                    let Some(plan) = self.scheduler_mut().deferred_mut().plans.pop() else {
+                        let deferred = self.scheduler_mut().deferred_mut();
+                        deferred.turn_open = false;
+                        deferred.turn_note_owed = false;
+                        return Err(error);
+                    };
+                    self.finish_plan(plan, Err(error))?;
+                }
+            }
+        }
+    }
+
+    /// Take one step of the work frames left to the store. It answers
+    /// `Some(true)` when it did something, `Some(false)` when nothing
+    /// is left, and `None` while a thread runs on a microtask.
+    ///
+    /// The order is fixed: the thread a turn resumed, then the plans
+    /// that stops left, the outermost first so that the innermost runs
+    /// first, then the failure of a start, then the thread named to run
+    /// next, then the innermost plan.
+    fn step_deferred_work(&mut self, waker: &Waker) -> Result<Option<bool>> {
+        match self.take_stop(waker, false)? {
+            Some(true) => return Ok(Some(true)),
+            Some(false) => {}
+            None => return Ok(None),
+        }
+        let stopped = core::mem::take(&mut self.scheduler_mut().deferred_mut().stopped);
+        if !stopped.is_empty() {
+            for plan in stopped.into_iter().rev() {
+                self.activate_plan(plan)?;
+            }
+            return Ok(Some(true));
+        }
+        match self.take_stop(waker, true)? {
+            Some(true) => return Ok(Some(true)),
+            Some(false) => {}
+            None => return Ok(None),
+        }
+        if let Some(next) = self.scheduler_mut().take_next_thread() {
+            self.enter_switched_thread(next)?;
+            return Ok(Some(true));
+        }
+        if self.scheduler().deferred().plans.is_empty() {
+            if core::mem::take(&mut self.scheduler_mut().deferred_mut().turn_note_owed) {
+                self.note_ready_threads()?;
+            }
+            return Ok(Some(false));
+        }
+        self.step_plan()?;
+        Ok(Some(true))
+    }
+
+    /// Act on the stop of the thread a turn resumed, or, with
+    /// `failed_start`, of the thread whose start failed, once the
+    /// provider has it. It answers `Some(true)` when it acted,
+    /// `Some(false)` when there is no such thread, and `None` while the
+    /// thread has not stopped.
+    fn take_stop(&mut self, waker: &Waker, failed_start: bool) -> Result<Option<bool>> {
+        let Some(thread) = self
+            .scheduler_mut()
+            .deferred_mut()
+            .in_flight(failed_start)
+            .as_ref()
+            .map(|in_flight| in_flight.thread)
+        else {
+            return Ok(Some(false));
+        };
+        let provider = self
+            .provider()
+            .ok_or_else(|| Error::internal("a thread runs on in a store with no provider"))?;
+        let stopped = match provider.poll_stop(self, thread, waker) {
+            // Control goes back to the executor now, and the thread
+            // runs: the frames it runs see no resume left to them.
+            Poll::Pending => {
+                self.scheduler_mut().deferred_mut().resume_issued = false;
+                return Ok(None);
+            }
+            Poll::Ready(stopped) => stopped,
+        };
+        let InFlight {
+            thread,
+            mut parked,
+            base,
+        } = self
+            .scheduler_mut()
+            .deferred_mut()
+            .in_flight(failed_start)
+            .take()
+            .ok_or_else(|| Error::internal("a thread in flight went missing"))?;
+        // A thread whose start failed left the stack with its scopes,
+        // which go back for its finish.
+        let base = match base {
+            Some(base) => base,
+            None => {
+                let mut guard = self.lock_tables()?;
+                let base = guard.tasks.scopes().len();
+                let scopes = core::mem::take(&mut parked.scopes);
+                let running = core::mem::take(&mut parked.running);
+                guard.tasks.restore_scopes(scopes, running);
+                base
+            }
+        };
+        self.thread_stopped(thread, parked, base, stopped)?;
+        Ok(Some(true))
+    }
+
+    /// Take up `plan`, whose owner suspended for it: the owner's scopes
+    /// go back on the stack for as long as the plan runs, as they
+    /// would be on it if the trampoline had done the work itself.
+    fn activate_plan(&mut self, mut plan: Plan<T>) -> Result<()> {
+        let owner = plan
+            .owner
+            .ok_or_else(|| Error::internal("a plan was taken up with no thread"))?;
+        let (scopes, running) = match self.scheduler_mut().parked_mut(owner) {
+            Some(parked) => (
+                core::mem::take(&mut parked.scopes),
+                core::mem::take(&mut parked.running),
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
+        {
+            let mut guard = self.lock_tables()?;
+            plan.base = guard.tasks.scopes().len();
+            guard.tasks.restore_scopes(scopes, running);
+        }
+        self.scheduler_mut().deferred_mut().plans.push(plan);
+        Ok(())
+    }
+
+    /// Run the innermost plan on, once no work is left above it. The
+    /// work the trampoline left is done then: the item that stopped
+    /// for it owes its evaluation no longer, and the marks the
+    /// trampoline put on the stack come off. Then the plan's wait
+    /// runs, from where it stopped. A plan whose wait stops again
+    /// stays; one that is done ends, and its owner resumes.
+    ///
+    /// The plan stays among the plans until it ends, so that a failure
+    /// of its work on the way ends it and no other.
+    fn step_plan(&mut self) -> Result<()> {
+        let (note_owed, nested_start, thread_switch, then_wait) = {
+            let plan = self.innermost_plan()?;
+            (
+                core::mem::take(&mut plan.note_owed),
+                core::mem::take(&mut plan.ends_nested_start),
+                core::mem::take(&mut plan.ends_thread_switch),
+                plan.then_wait.take(),
+            )
+        };
+        if note_owed {
+            self.note_ready_threads()?;
+        }
+        self.end_marks(nested_start, thread_switch)?;
+        if let Some(readiness) = then_wait {
+            let wait = if readiness == Readiness::Yielded {
+                SeamWait::give_way(self)?
+            } else {
+                SeamWait::until(self, readiness)?
+            };
+            self.innermost_plan()?.wait = Some(wait);
+        }
+        let wait = self.innermost_plan()?.wait.take();
+        let outcome = match wait {
+            None => Ok(()),
+            Some(mut wait) => match wait.run(self) {
+                // The wait is over, which ends the thread's part in it.
+                Some(outcome) => outcome,
+                None => {
+                    let owed = core::mem::take(&mut self.scheduler_mut().deferred_mut().note_owed);
+                    let plan = self.innermost_plan()?;
+                    plan.wait = Some(wait);
+                    plan.note_owed = owed;
+                    return Ok(());
+                }
+            },
+        };
+        let plan = self
+            .scheduler_mut()
+            .deferred_mut()
+            .plans
+            .pop()
+            .ok_or_else(|| Error::internal("a plan went missing as it ran"))?;
+        self.finish_plan(plan, outcome)
+    }
+
+    /// The innermost plan the store runs.
+    fn innermost_plan(&mut self) -> Result<&mut Plan<T>> {
+        self.scheduler_mut()
+            .deferred_mut()
+            .plans
+            .last_mut()
+            .ok_or_else(|| Error::internal("a plan went missing as it ran"))
+    }
+
+    /// End `plan` with `outcome`, and resume its owner, whose shim
+    /// tries the built-in again and reads the outcome.
+    ///
+    /// The owner's scopes come off the stack as it suspended with
+    /// them. A plan of a built-in that suspends its thread records the
+    /// built-in's condition on the thread now, as the built-in would
+    /// have once its first part returned, and resumes the thread only
+    /// when the condition holds: otherwise the thread waits as any
+    /// suspended thread does. An owner whose task ended while the plan
+    /// ran is not resumed.
+    fn finish_plan(&mut self, plan: Plan<T>, outcome: Result<()>) -> Result<()> {
+        let owner = plan
+            .owner
+            .ok_or_else(|| Error::internal("a plan ended with no thread"))?;
+        let (scopes, running) = self.lock_tables()?.tasks.cut_scopes(plan.base);
+        let Some(parked) = self.scheduler_mut().parked_mut(owner) else {
+            return Ok(());
+        };
+        parked.scopes = scopes;
+        parked.running = running;
+        parked.held = false;
+        let resume = match (plan.suspends, outcome) {
+            (true, Ok(())) => self.record_planned_wait(owner)?,
+            (_, outcome) => {
+                if let Some(block) = self.scheduler_mut().block_mut(plan.blocked) {
+                    block.waited = Some(outcome);
+                }
+                true
+            }
+        };
+        if resume {
+            self.resume_thread_once(owner)?;
+        }
+        Ok(())
+    }
+
+    /// Record the condition of the built-in the thread `owner` waits
+    /// in, whose first part left a plan, on the thread's record, and
+    /// answer whether the thread goes on at once, which is when the
+    /// condition holds and is not a yield's.
+    fn record_planned_wait(&mut self, owner: ThreadId) -> Result<bool> {
+        let Some(readiness) = self.scheduler().block_readiness(owner) else {
+            return Ok(true);
+        };
+        match readiness {
+            Readiness::Planned => Ok(true),
+            Readiness::Resumed { thread } => {
+                Ok(!self.lock_tables()?.tasks.thread_suspended(thread))
+            }
+            _ => {
+                let (previous, holds) = {
+                    let mut guard = self.lock_tables()?;
+                    let previous = guard.tasks.start_waiting(owner, readiness)?;
+                    (previous, guard.tasks.readiness_holds(readiness))
+                };
+                if let Some(block) = self.scheduler_mut().block_mut(owner) {
+                    block.previous = previous;
+                }
+                Ok(readiness != Readiness::Yielded && holds)
             }
         }
     }
@@ -1365,8 +1865,15 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// without naming one, or finishes. Each thread runs from this one
     /// frame, so a chain of switches of any length adds no depth to
     /// the real stack.
+    ///
+    /// Under a provider that resumes a thread on a microtask, the loop
+    /// stops as soon as a thread it runs leaves work to the store, and
+    /// the store goes on with the loop once that work is done.
     fn follow_switches(&mut self) -> Result<()> {
-        while let Some(next) = self.scheduler_mut().take_next_thread() {
+        while !self.defers_work() {
+            let Some(next) = self.scheduler_mut().take_next_thread() else {
+                break;
+            };
             self.enter_switched_thread(next)?;
         }
         Ok(())
@@ -1446,10 +1953,16 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 Err(error) => store.fail_export_task(Some(task), error),
             }
         };
+        // A thread's start function takes its context, an `i32` or an
+        // `i64` to match its memory, and returns nothing, whatever the
+        // table it came from says of it: a reference read out of a
+        // table does not always carry its type.
+        let ty = FuncType::new([start.context.ty()], []);
         self.start_thread_entry(
             thread,
             base,
             &start.function,
+            &ty,
             &[start.context],
             Vec::new(),
             finish,
@@ -2151,13 +2664,18 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             // host executor before the item that yielded runs.
             if let Some(wake) = &yield_wake {
                 if !wake.landed() {
+                    wake.rewake(waker);
                     return Poll::Pending;
                 }
                 yield_wake = None;
             }
 
             loop {
-                if let Poll::Ready(value) = poll_lent(&mut store, future.as_mut(), context) {
+                // The closure waits while a turn is stopped for a thread
+                // that runs on a microtask: the turn is not over.
+                if !store.deferred_busy()
+                    && let Poll::Ready(value) = poll_lent(&mut store, future.as_mut(), context)
+                {
                     return Poll::Ready(Ok(value));
                 }
                 let outcome = match store.turn(waker) {
@@ -2170,6 +2688,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                         yield_wake = Some(YieldWake::after_yield(waker));
                         return Poll::Pending;
                     }
+                    Outcome::Resuming => return Poll::Pending,
                     // A turn that leaves a host task pending can
                     // have completed the closure's future all the
                     // same: it runs the items that are ready before

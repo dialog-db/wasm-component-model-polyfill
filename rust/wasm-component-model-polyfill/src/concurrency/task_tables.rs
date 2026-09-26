@@ -1346,6 +1346,7 @@ impl TaskTables {
             Readiness::EntryGate => false,
             Readiness::Yielded => true,
             Readiness::Resumed { thread } => !self.thread_suspended(thread),
+            Readiness::Planned => true,
         }
     }
 

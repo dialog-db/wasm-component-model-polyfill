@@ -1,7 +1,9 @@
 //! The contract a provider of the scheduler's suspend capability
 //! meets.
 
-use wasm_runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
+use core::task::{Poll, Waker};
+
+use wasm_runtime_layer::{Func as RuntimeFunc, FuncType, Val as RuntimeVal};
 
 use crate::error::Result;
 use crate::store::StoreContext;
@@ -62,16 +64,25 @@ use super::thread_id::ThreadId;
 /// returns, so the provider has them the moment the entry finishes,
 /// whether or not it suspended on the way.
 ///
-/// A resumption returns when the thread suspends again or finishes.
-/// The stack-switching provider does both at once, inside the call.
+/// A resumption can complete at once or later. The stack-switching
+/// provider resumes a thread inside the call that asks for it, which
+/// returns when the thread suspends again or finishes. The JSPI
+/// provider resumes a thread on a microtask, never inside that call,
+/// so its resume answers [`EntryStatus::Running`], and the caller
+/// learns where the thread stopped from
+/// [`poll_stop`](Self::poll_stop). The scheduler treats both the same
+/// way: a turn that resumes a thread waits until the thread stops,
+/// and runs nothing else in between.
 ///
 /// The provider is shared and never taken out of the store while a
-/// thread is suspended, so both methods take `&self`. A caller that
+/// thread is suspended, so every method takes `&self`. A caller that
 /// reaches the provider through the store clones its handle first,
 /// and hands the store in beside it.
 pub trait SuspendProvider<T: 'static>: 'static {
-    /// Start `entry` with `args` as `thread`, on a stack of its own,
-    /// and run it until it finishes or first suspends.
+    /// Start `entry`, whose core type is `ty`, with `args` as `thread`,
+    /// on a stack of its own, and run it until it finishes or first
+    /// suspends. The caller names the type because a function reference
+    /// the host received does not always carry one.
     ///
     /// The caller is the scheduler or a trampoline. From a
     /// trampoline this is a nested start: the new thread runs above
@@ -81,18 +92,35 @@ pub trait SuspendProvider<T: 'static>: 'static {
     /// It answers the entry's results when the entry finished, and
     /// [`EntryStatus::Suspended`] when it suspended, in which case
     /// the provider keeps the thread until a [`resume`](Self::resume)
-    /// names it. It fails with the entry's trap, or when the provider
-    /// has no wrapper for the entry's type.
+    /// names it. A provider that learns of a failure only later
+    /// answers [`EntryStatus::Running`] for an entry that failed, and
+    /// [`poll_stop`](Self::poll_stop) then fails with the entry's
+    /// trap. Otherwise it fails with the entry's trap itself, or when
+    /// the provider has no wrapper for the entry's type.
     fn start(
         &self,
         store: &mut StoreContext<'_, T>,
         thread: ThreadId,
         entry: &RuntimeFunc,
+        ty: &FuncType,
         args: &[RuntimeVal],
     ) -> Result<EntryStatus>;
 
-    /// Resume the suspended `thread`, and run it until it finishes or
-    /// suspends again. It answers as [`start`](Self::start) does, and
-    /// fails when `thread` is not suspended.
+    /// Resume the suspended `thread`. A provider that runs it inside
+    /// the call runs it until it finishes or suspends again, and
+    /// answers as [`start`](Self::start) does. One that runs it later
+    /// answers [`EntryStatus::Running`]. It fails when `thread` is not
+    /// suspended.
     fn resume(&self, store: &mut StoreContext<'_, T>, thread: ThreadId) -> Result<EntryStatus>;
+
+    /// Where `thread` stopped, once a start or a resume of it answered
+    /// [`EntryStatus::Running`]: finished or suspended again, or the
+    /// trap it failed with. Pending until it stops, in which case
+    /// `waker` is woken when it does.
+    fn poll_stop(
+        &self,
+        store: &mut StoreContext<'_, T>,
+        thread: ThreadId,
+        waker: &Waker,
+    ) -> Poll<Result<EntryStatus>>;
 }

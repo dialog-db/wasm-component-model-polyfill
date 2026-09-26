@@ -99,13 +99,19 @@ where
         // boundary, and the driver waits here until it lands.
         if let Some(wake) = &this.yield_wake {
             if !wake.landed() {
+                wake.rewake(waker);
                 return Poll::Pending;
             }
             this.yield_wake = None;
         }
 
         loop {
-            if let Some(done) = (this.condition)(&mut this.store, waker) {
+            // A turn that stopped for a thread that runs on a microtask
+            // is not over, and the condition waits until it is: a turn
+            // runs with no condition consulted in between.
+            if !this.store.internal().deferred_busy()
+                && let Some(done) = (this.condition)(&mut this.store, waker)
+            {
                 return Poll::Ready(done);
             }
             let outcome = match this.store.internal().turn(waker) {
@@ -118,6 +124,7 @@ where
                     this.yield_wake = Some(YieldWake::after_yield(waker));
                     return Poll::Pending;
                 }
+                Outcome::Resuming => return Poll::Pending,
                 // A turn that leaves a host task pending can have
                 // resolved what this driver waits on all the same:
                 // it runs the items that are ready before it polls

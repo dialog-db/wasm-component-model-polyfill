@@ -15,8 +15,8 @@
 //! Each test states what a store with no provider does instead, and
 //! checks that too, so the tests run in every lane: the native engine
 //! selects the stack-switching provider on x86_64 Linux and no
-//! provider elsewhere, and the scheduler runs no browser thread through
-//! a provider yet.
+//! provider elsewhere, and a browser that ships JavaScript Promise
+//! Integration runs every thread through the JSPI provider.
 
 #![cfg(test)]
 
@@ -26,6 +26,7 @@ use core::task::{Context, Poll, Waker};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::concurrency::StoreProvider;
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
     Accessor, Component, Engine, EngineConfig, Error, Func, HostCall, Instance, Linker, Store,
@@ -527,22 +528,22 @@ fn engine(provider: bool) -> Engine {
     Engine::with_config(&config).expect("engine")
 }
 
-/// Whether `engine` runs guest threads through a provider. A browser
-/// that ships JSPI selects the JSPI provider, which the scheduler does
-/// not run guest threads through yet.
+/// Whether `engine` runs guest threads through a provider: the
+/// stack-switching provider natively on x86_64 Linux, and the JSPI
+/// provider in a browser that ships JSPI.
 fn has_provider(engine: &Engine) -> bool {
-    engine.suspend_provider() == SuspendProviderKind::StackSwitching
+    engine.suspend_provider() != SuspendProviderKind::None
 }
 
 /// A linker whose `note` records each step in `notes`.
-fn noting(engine: &Engine, notes: &Notes) -> Linker<()> {
-    let mut linker: Linker<()> = Linker::new(engine);
+fn noting<T: 'static>(engine: &Engine, notes: &Notes) -> Linker<T> {
+    let mut linker: Linker<T> = Linker::new(engine);
     let recorded = notes.clone();
     linker
         .root()
         .func_wrap(
             "note",
-            move |_: HostCall<'_, ()>, (step,): (u32,)| -> Result<(), Error> {
+            move |_: HostCall<'_, T>, (step,): (u32,)| -> Result<(), Error> {
                 recorded.lock().expect("notes").push(step);
                 Ok(())
             },
@@ -1015,7 +1016,9 @@ async fn it_reuses_the_workers_of_finished_threads() {
     // each suspends once. A worker whose thread finished waits in the
     // switch module's pool, and the next thread runs on it, so the
     // store never holds more workers than it had threads alive at
-    // once, however many calls it runs.
+    // once, however many calls it runs. The JSPI provider has no
+    // workers, since the browser keeps each stack, and runs the same
+    // calls.
     let engine = engine(true);
     if !has_provider(&engine) {
         return;
@@ -1034,10 +1037,9 @@ async fn it_reuses_the_workers_of_finished_threads() {
     }
 
     let mut context = store.internal().context();
-    let provider = context
-        .internal()
-        .provider()
-        .expect("the store keeps its provider");
+    let Some(StoreProvider::StackSwitching(provider)) = context.internal().provider() else {
+        return;
+    };
     assert_eq!(
         provider.workers(&mut context).expect("the worker count"),
         2,
@@ -1315,5 +1317,490 @@ async fn it_runs_a_chain_of_switches_from_the_frame_that_resumed_the_first() {
             chain(&err).contains("blocking here requires a stack switch"),
             "expected the stack-switch cause, got {err:?}"
         );
+    }
+}
+
+/// Two component instances: one whose synchronous export resumes a
+/// suspended thread of its own instance from inside its own call, and
+/// one that keeps the rest of the store busy.
+///
+/// In the first, `setup` starts a worker thread, which suspends
+/// itself, then notes `1`, returns, and suspends its own thread for
+/// good. `wake` is sync-typed, so its task must not block. It notes
+/// `2` and switches to the worker with `thread.yield-then-resume`,
+/// which resumes the worker from inside the call: the worker notes
+/// `3` and ends. `wake` goes on once it has, notes `4`, and returns 7,
+/// or traps when the worker has not run.
+///
+/// In the second, `spin` lowers the host's `tick` asynchronously and
+/// yields for ever: its callback notes `200` each time it runs, and
+/// `tick`'s host task, which notes `100` on each poll, wakes itself on
+/// each poll.
+const WAKES_ITS_OWN_WORKER: &[u8] = component!(
+    r#"
+    (component
+      (import "note" (func $note (param "step" u32)))
+      (import "tick" (func $tick async))
+      (component $own
+        (import "note" (func $note (param "step" u32)))
+        (core module $libc (table (export "__indirect_function_table") 1 funcref))
+        (core instance $libc (instantiate $libc))
+        (core func $note (canon lower (func $note)))
+        (core func $task-return (canon task.return (result u32)))
+        (core type $start-ty (func (param i32)))
+        (alias core export $libc "__indirect_function_table" (core table $table))
+        (core func $new-indirect (canon thread.new-indirect $start-ty (core table $table)))
+        (core func $resume-later (canon thread.resume-later))
+        (core func $yield (canon thread.yield))
+        (core func $suspend (canon thread.suspend))
+        (core func $yield-then-resume (canon thread.yield-then-resume))
+        (core module $m
+          (import "" "note" (func $note (param i32)))
+          (import "" "task.return" (func $task-return (param i32)))
+          (import "" "thread.new-indirect" (func $new-indirect (param i32 i32) (result i32)))
+          (import "" "thread.resume-later" (func $resume-later (param i32)))
+          (import "" "thread.yield" (func $yield (result i32)))
+          (import "" "thread.suspend" (func $suspend (result i32)))
+          (import "" "thread.yield-then-resume" (func $yield-then-resume (param i32) (result i32)))
+          (import "libc" "__indirect_function_table" (table 1 funcref))
+          (global $worker (mut i32) (i32.const 0))
+          (global $done (mut i32) (i32.const 0))
+          (func $work (param i32)
+            (drop (call $suspend))
+            (call $note (i32.const 3))
+            (global.set $done (i32.const 1)))
+          (elem (table 0) (i32.const 0) func $work)
+          (func (export "setup")
+            (global.set $worker (call $new-indirect (i32.const 0) (i32.const 0)))
+            (call $resume-later (global.get $worker))
+            (drop (call $yield))
+            (call $note (i32.const 1))
+            (call $task-return (i32.const 0))
+            (drop (call $suspend)))
+          (func (export "wake") (result i32)
+            (call $note (i32.const 2))
+            (drop (call $yield-then-resume (global.get $worker)))
+            (if (i32.eqz (global.get $done)) (then unreachable))
+            (call $note (i32.const 4))
+            (i32.const 7)))
+        (core instance $i (instantiate $m
+          (with "" (instance
+            (export "note" (func $note))
+            (export "task.return" (func $task-return))
+            (export "thread.new-indirect" (func $new-indirect))
+            (export "thread.resume-later" (func $resume-later))
+            (export "thread.yield" (func $yield))
+            (export "thread.suspend" (func $suspend))
+            (export "thread.yield-then-resume" (func $yield-then-resume))))
+          (with "libc" (instance $libc))))
+        (func (export "setup") async (result u32)
+          (canon lift (core func $i "setup") async))
+        (func (export "wake") (result u32)
+          (canon lift (core func $i "wake"))))
+      (component $other
+        (import "note" (func $note (param "step" u32)))
+        (import "tick" (func $tick async))
+        (core func $note (canon lower (func $note)))
+        (core func $tick (canon lower (func $tick) async))
+        (core module $m
+          (import "" "note" (func $note (param i32)))
+          (import "" "tick" (func $tick (result i32)))
+          (func (export "spin") (result i32)
+            (drop (call $tick))
+            (call $note (i32.const 200))
+            (i32.const 1))
+          (func (export "spin-again") (param i32 i32 i32) (result i32)
+            (call $note (i32.const 200))
+            (i32.const 1)))
+        (core instance $i (instantiate $m
+          (with "" (instance
+            (export "note" (func $note))
+            (export "tick" (func $tick))))))
+        (func (export "spin") async
+          (canon lift (core func $i "spin") async (callback (core func $i "spin-again")))))
+      (instance $a (instantiate $own (with "note" (func $note))))
+      (instance $b (instantiate $other (with "note" (func $note)) (with "tick" (func $tick))))
+      (export "setup" (func $a "setup"))
+      (export "wake" (func $a "wake"))
+      (export "spin" (func $b "spin")))
+    "#
+);
+
+/// A host future that notes `100` in `notes` on each poll, wakes its
+/// waker, and never completes: a host task the store polls in every
+/// turn that polls host tasks.
+struct Ticks {
+    notes: Notes,
+}
+
+impl Future for Ticks {
+    type Output = Result<(), Error>;
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        self.notes.lock().expect("notes").push(100);
+        context.waker().wake_by_ref();
+        Poll::Pending
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_resumes_a_thread_of_its_own_instance_from_a_synchronous_export_and_nothing_else() {
+    // `wake`'s task must not block, so its thread cannot suspend its
+    // stack, and its switch to the worker runs the worker from inside
+    // the built-in, as the reference resumes a thread from inside the
+    // trampoline and goes on in it once the thread stops. Under the
+    // stack-switching provider the built-in resumes the worker in
+    // place. The JSPI provider cannot resume a stack from inside a
+    // call, so `wake`'s own thread suspends as well, and the scheduler
+    // resumes the worker, then `wake`. Either way no other item runs
+    // and no host task is polled in between: the other instance's
+    // callback, which yields for ever, and its host task, which wakes
+    // itself on every poll, note nothing between `wake`'s `2` and its
+    // `4`. Without a provider the worker waits on the real stack, and
+    // nothing can switch to it.
+    let engine = engine(true);
+    if !has_provider(&engine) {
+        return;
+    }
+    #[cfg(target_arch = "wasm32")]
+    assert_eq!(
+        engine.suspend_provider(),
+        SuspendProviderKind::Jspi,
+        "the web lane runs the JSPI provider"
+    );
+    let notes: Notes = Arc::default();
+    let mut linker = noting(&engine, &notes);
+    {
+        let notes = notes.clone();
+        linker
+            .root()
+            .func_wrap_concurrent("tick", move |_accessor: &Accessor<()>, (): ()| Ticks {
+                notes: notes.clone(),
+            })
+            .expect("the registration");
+    }
+    let (mut store, instance) = instantiate(&engine, &linker, WAKES_ITS_OWN_WORKER).await;
+
+    let setup = func(&instance, "setup")
+        .call(&mut store, &[])
+        .await
+        .expect("`setup` returns once its worker has suspended");
+    assert_eq!(setup.as_ref(), [Val::U32(0)]);
+    {
+        // The spinner stays in the store once its call is dropped.
+        let spin = func(&instance, "spin");
+        let mut spin = Box::pin(spin.call(&mut store, &[]));
+        assert!(poll_once(&mut spin).is_pending(), "`spin` never returns");
+    }
+    let woken = func(&instance, "wake")
+        .call(&mut store, &[])
+        .await
+        .expect("`wake` returns once its worker has run");
+
+    assert_eq!(woken.as_ref(), [Val::U32(7)]);
+    let notes = notes.lock().expect("notes").clone();
+    let begun = notes
+        .iter()
+        .position(|note| *note == 2)
+        .unwrap_or_else(|| panic!("`wake` began: {notes:?}"));
+    assert_eq!(
+        notes.get(begun..begun + 3),
+        Some(&[2, 3, 4][..]),
+        "the worker ran inside `wake`'s call, and nothing else ran and no \
+         host task was polled until it stopped and `wake` returned: {notes:?}"
+    );
+    assert!(
+        notes[..begun].contains(&100) && notes[..begun].contains(&200),
+        "the other instance was busy before `wake` began: {notes:?}"
+    );
+}
+
+/// Host data that notes `500` when its store frees it.
+#[cfg(target_arch = "wasm32")]
+struct NotesItsDrop(Notes);
+
+#[cfg(target_arch = "wasm32")]
+impl Drop for NotesItsDrop {
+    fn drop(&mut self) {
+        self.0.lock().expect("notes").push(500);
+    }
+}
+
+/// Let the browser run microtasks until `notes` holds `note`, or give
+/// up after enough of them for any settled promise to have been seen.
+#[cfg(target_arch = "wasm32")]
+async fn run_microtasks_until(notes: &Notes, note: u32) {
+    for _ in 0..64 {
+        if notes.lock().expect("notes").contains(&note) {
+            return;
+        }
+        wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(
+            &wasm_bindgen::JsValue::UNDEFINED,
+        ))
+        .await
+        .expect("a resolved promise");
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wcmp_macros::test]
+async fn it_runs_nothing_in_a_store_dropped_while_a_resumed_thread_has_yet_to_run() {
+    // The first poll of the call suspends the export's thread on
+    // `hold`, polls `hold` to its end, and resumes the thread, which
+    // the browser runs on a microtask: the turn ends there, and the
+    // poll returns pending. The test drops the store before the
+    // microtask runs. The thread runs all the same, and finds the
+    // store dropped: its shim traps before the guest goes on, so the
+    // guest never drops its handle and no destructor runs. The store
+    // is freed then, and its host data with it, which notes `500`. A
+    // later store of the same engine runs the export to its end.
+    let engine = engine(true);
+    assert_eq!(engine.suspend_provider(), SuspendProviderKind::Jspi);
+    let notes: Notes = Arc::default();
+    let mut linker = noting::<NotesItsDrop>(&engine, &notes);
+    linker
+        .root()
+        .func_wrap_concurrent("hold", |_accessor: &Accessor<NotesItsDrop>, (): ()| {
+            PendingOnce { polled: false }
+        })
+        .expect("the registration");
+    let component = Component::new(&engine, HOLDS_A_HANDLE_ACROSS_A_BLOCK)
+        .await
+        .expect("component parses");
+
+    {
+        let mut store = Store::new(&engine, NotesItsDrop(notes.clone())).expect("store");
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .await
+            .expect("instantiate");
+        let run = func(&instance, "run");
+        let first = {
+            let mut call = Box::pin(run.call(&mut store, &[]));
+            poll_once(&mut call)
+        };
+        assert!(first.is_pending(), "the resumed thread runs on a microtask");
+        assert!(
+            store.internal().context().internal().deferred_busy(),
+            "the turn stopped for the resumed thread"
+        );
+        assert!(notes.lock().expect("notes").is_empty());
+        drop(store);
+    }
+    run_microtasks_until(&notes, 500).await;
+    assert_eq!(
+        notes.lock().expect("notes").clone(),
+        vec![500],
+        "the thread resumed before the drop ran no guest code, and the store was freed"
+    );
+
+    let mut store = Store::new(&engine, NotesItsDrop(notes.clone())).expect("a later store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    let result = func(&instance, "run")
+        .call(&mut store, &[])
+        .await
+        .expect("the export runs to its end in the later store");
+    assert_eq!(result.as_ref(), [Val::U32(7)]);
+    assert_eq!(notes.lock().expect("notes").clone(), vec![500, 99]);
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wcmp_macros::test]
+async fn it_takes_the_stop_of_a_resume_whose_driver_was_dropped_on_the_next_call() {
+    // The first poll of the call resumes the export's thread, which
+    // the browser runs on a microtask, and the test drops the call
+    // there. The resume stays with the store: the next call's driver
+    // takes the thread's stop before it does anything else, and runs
+    // its own thread to its end. The first thread went on in the
+    // meantime, so both threads dropped their handle.
+    let engine = engine(true);
+    assert_eq!(engine.suspend_provider(), SuspendProviderKind::Jspi);
+    let notes: Notes = Arc::default();
+    let mut linker = noting(&engine, &notes);
+    linker
+        .root()
+        .func_wrap_concurrent("hold", |_accessor: &Accessor<()>, (): ()| PendingOnce {
+            polled: false,
+        })
+        .expect("the registration");
+    let (mut store, instance) = instantiate(&engine, &linker, HOLDS_A_HANDLE_ACROSS_A_BLOCK).await;
+    let run = func(&instance, "run");
+
+    {
+        let mut call = Box::pin(run.call(&mut store, &[]));
+        assert!(
+            poll_once(&mut call).is_pending(),
+            "the resumed thread runs on a microtask"
+        );
+    }
+    assert!(
+        store.internal().context().internal().deferred_busy(),
+        "the resume outlived the call that made it"
+    );
+
+    let result = run
+        .call(&mut store, &[])
+        .await
+        .expect("the next call runs to its end");
+    assert_eq!(result.as_ref(), [Val::U32(7)]);
+    assert_eq!(
+        notes.lock().expect("notes").clone(),
+        vec![99, 99],
+        "the thread whose call was dropped ran on, and so did the next one"
+    );
+}
+
+/// Stackful exports that fail before and after their thread first
+/// suspends: with a trap of their own, or with the failure of a host
+/// import they call. `fail` is the host import.
+const FAILS_AROUND_A_SUSPENSION: &[u8] = component!(
+    r#"
+    (component
+      (import "fail" (func $fail))
+      (core func $fail (canon lower (func $fail)))
+      (core func $yield (canon thread.yield))
+      (core module $m
+        (import "" "fail" (func $fail))
+        (import "" "yield" (func $yield (result i32)))
+        (func (export "trap-early") unreachable)
+        (func (export "trap-late") (drop (call $yield)) unreachable)
+        (func (export "fail-early") (call $fail))
+        (func (export "fail-late") (drop (call $yield)) (call $fail)))
+      (core instance $i (instantiate $m (with "" (instance
+        (export "fail" (func $fail))
+        (export "yield" (func $yield))))))
+      (func (export "trap-early") async (result u32)
+        (canon lift (core func $i "trap-early") async))
+      (func (export "trap-late") async (result u32)
+        (canon lift (core func $i "trap-late") async))
+      (func (export "fail-early") async (result u32)
+        (canon lift (core func $i "fail-early") async))
+      (func (export "fail-late") async (result u32)
+        (canon lift (core func $i "fail-late") async)))
+    "#
+);
+
+/// A caller whose asynchronous lower starts a callee of a second
+/// component as a nested start, and whose callee traps before it first
+/// suspends.
+const STARTS_A_CALLEE_THAT_TRAPS: &[u8] = component!(
+    r#"
+    (component
+      (import "note" (func $note (param "step" u32)))
+      (component $callee
+        (core module $m
+          (func (export "work") unreachable))
+        (core instance $i (instantiate $m))
+        (func (export "work") async (result u32)
+          (canon lift (core func $i "work") async)))
+      (component $caller
+        (import "note" (func $note (param "step" u32)))
+        (import "work" (func $work async (result u32)))
+        (core module $libc (memory (export "mem") 1))
+        (core instance $libc (instantiate $libc))
+        (core func $note (canon lower (func $note)))
+        (core func $work (canon lower (func $work) async (memory (core memory $libc "mem"))))
+        (core module $m
+          (import "" "note" (func $note (param i32)))
+          (import "" "work" (func $work (param i32) (result i32)))
+          (func (export "run")
+            (drop (call $work (i32.const 0)))
+            (call $note (i32.const 1))))
+        (core instance $i (instantiate $m (with "" (instance
+          (export "note" (func $note))
+          (export "work" (func $work))))))
+        (func (export "run") async (result u32)
+          (canon lift (core func $i "run") async)))
+      (instance $a (instantiate $callee))
+      (instance $b (instantiate $caller
+        (with "note" (func $note))
+        (with "work" (func $a "work"))))
+      (export "run" (func $b "run")))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_fails_a_thread_with_its_own_trap_or_host_error_before_and_after_it_suspends() {
+    // A thread that fails before it first suspends fails its call with
+    // its own trap, as one that fails after a resumption does. The JSPI
+    // provider learns of a trap only from the rejection of the
+    // thread's promise, which the browser reports on a microtask, and
+    // the scheduler waits for it rather than reporting the start's
+    // failure without its reason. A host import's error is the failure
+    // either way, and one thread's host error does not leak into
+    // another's failure.
+    let engine = engine(true);
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker
+        .root()
+        .func_wrap("fail", |_: HostCall<'_, ()>, (): ()| -> Result<(), Error> {
+            Err(Error::Unsupported {
+                feature: "the host refused".to_owned(),
+            })
+        })
+        .expect("the registration");
+    let (mut store, instance) = instantiate(&engine, &linker, FAILS_AROUND_A_SUSPENSION).await;
+
+    for (name, expected) in [
+        ("trap-early", "unreachable"),
+        ("fail-early", "the host refused"),
+        ("trap-late", "unreachable"),
+        ("fail-late", "the host refused"),
+        ("trap-early", "unreachable"),
+    ] {
+        let err = func(&instance, name)
+            .call(&mut store, &[])
+            .await
+            .expect_err("the export fails");
+        let message = chain(&err);
+        assert!(
+            message.contains(expected),
+            "`{name}` fails with `{expected}`, got {message}"
+        );
+        if expected == "unreachable" {
+            assert!(
+                !message.contains("the host refused"),
+                "`{name}` fails with its own trap, not an earlier call's host error: {message}"
+            );
+        }
+    }
+    if has_provider(&engine) {
+        assert_eq!(parked_threads(&mut store), 0, "no thread is left suspended");
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_fails_the_caller_of_a_nested_start_whose_callee_traps_before_it_suspends() {
+    // The caller's asynchronous lower starts the callee from inside
+    // the start intrinsic, and the callee traps at once. The trap
+    // fails the caller's call with the callee's own trap, and the
+    // caller never gets past the lower. Under the JSPI provider the
+    // intrinsic learns of the trap only on a microtask, so the caller's
+    // thread suspends in the intrinsic's shim until the scheduler has
+    // the trap, and fails there.
+    let engine = engine(true);
+    let notes: Notes = Arc::default();
+    let linker = noting(&engine, &notes);
+    let (mut store, instance) = instantiate(&engine, &linker, STARTS_A_CALLEE_THAT_TRAPS).await;
+
+    let err = func(&instance, "run")
+        .call(&mut store, &[])
+        .await
+        .expect_err("the callee's trap fails the caller's call");
+
+    let message = chain(&err);
+    assert!(
+        message.contains("unreachable"),
+        "the caller fails with the callee's trap, got {message}"
+    );
+    assert!(
+        notes.lock().expect("notes").is_empty(),
+        "the caller never got past its lower"
+    );
+    if has_provider(&engine) {
+        assert_eq!(parked_threads(&mut store), 0, "no thread is left suspended");
     }
 }

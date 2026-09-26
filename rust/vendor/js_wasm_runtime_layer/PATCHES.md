@@ -285,3 +285,54 @@ the measured behavior down.
 
 The proposal for upstream is the two functions and the failure helper, since a
 runtime layer over the browser engine has no other way to suspend a stack.
+
+## 13. Running guest threads through JSPI (`src/store.rs`, `src/func.rs`, `src/instance.rs`)
+
+The polyfill's scheduler runs every guest thread through JavaScript Promise
+Integration in the browser. A resumed stack runs on a microtask, after the Rust
+frame that resolved its promise returned, so the scheduler has to know where a
+host function runs, and a store has to outlive a stack that still runs. The
+patch adds five things.
+
+`StoreInner::guest_depth` counts the calls from the host into the guest that are
+running: `Func::call` and an instantiation whose start function runs raise it
+for their length. A promising call does not, because it returns as soon as its
+stack first suspends. A host function that runs inside a promising stack at the
+depth the stack began at has only WebAssembly frames between it and the start of
+that stack, so a suspending import called above it may suspend the stack. Deeper
+than that a host frame lies in between, and a suspension there traps.
+
+`StoreInner::clear_failure` drops the error a host function returned during a
+call that went on to succeed, as a `Func::call` that returns does, and
+`StoreInner::pending_failure` says whether one is pending. The owner of a
+promising call clears the slot when the stack suspends or returns, so that a
+host error one stack caught never becomes the failure another stack reports. A
+stack that fails before it first suspends reports the pending host error at
+once; its promise is rejected only on a microtask.
+
+`StoreInner::retain_on_drop` leaves the store allocated when its owner drops it.
+A stack whose promise was resolved resumes on a microtask and reaches the store
+through its raw pointer, so the owner calls this when the store drops in
+between. `StoreInner::release_orphaned` then frees the store on a later
+microtask. The stack calls it from a host function as it resumes, and reaches
+the store no more once that function returns, so no frame holds the store when
+it is freed.
+
+`Func::from_exported_function` records an exported function's typed record as
+the record a reference to the same function object converts to
+(`StoreInner::remember_exported`). The JS API carries no signature with a
+function reference, and a promising call runs its callee from WebAssembly, which
+names the callee's exact type. A guest that passes one of its exports on as a
+`funcref`, as a fused adapter passes the callee's core function, now hands the
+host the function with its real signature. A function the guest never exported
+still converts to a record of unknown signature.
+
+`Instance::new` borrows the engine only to read the module out, and not across
+the instantiation. A start function runs inside it, and a host function that
+start function calls can compile a module of its own, which borrows the engine
+again: the switch module the polyfill compiles for a thread's first entry of a
+new type is one. Upstream panics with `RefCell already borrowed` there.
+
+The proposal for upstream is the depth, the failure helpers, the typed export
+records, and the shorter engine borrow. The retention is the polyfill's own
+answer to a store that drops while one of its stacks is scheduled to run.

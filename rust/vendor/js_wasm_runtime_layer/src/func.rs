@@ -84,14 +84,21 @@ impl Func {
     ) -> Option<Self> {
         let func: Function = value.dyn_into().ok()?;
 
-        Some(store.insert_func(FuncInner {
+        // PATCH (wcmp): the store's record of an exported function is
+        // also the record a reference to it converts to, so a host
+        // that receives the function as an argument learns its
+        // signature; see `StoreInner::remember_exported`.
+        let function = func.clone();
+        let record = store.insert_func(FuncInner {
             func,
             // TODO: we don't really know what the exported function's signature is
             ty: signature,
             signature_known: true,
             suspending: None,
             promising: None,
-        }))
+        });
+        store.remember_exported(&function, &record);
+        Some(record)
     }
 
     /// PATCH (wcmp): what an imports object holds for this function:
@@ -523,7 +530,11 @@ impl WasmFunc<Engine> for Func {
 
         // PATCH (wcmp): a failed call reports the host's own error when a
         // host function failed during it; see `StoreInner::pending_host_error`.
-        let res = match func.apply(&JsValue::UNDEFINED, &args) {
+        // PATCH (wcmp): count the call; see `StoreInner::guest_depth`.
+        ctx.guest_depth += 1;
+        let applied = func.apply(&JsValue::UNDEFINED, &args);
+        ctx.guest_depth -= 1;
+        let res = match applied {
             Ok(res) => {
                 ctx.pending_host_error = None;
                 res

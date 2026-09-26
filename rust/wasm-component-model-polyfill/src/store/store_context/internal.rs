@@ -26,8 +26,7 @@ use crate::abi::signature::Signature;
 use crate::backend::Backend;
 use crate::concurrency::{
     Accessor, CallStatus, EntryFinish, EventSlot, FailureChannel, HostTask, InstanceId, Item,
-    LowerKind, Outcome, ResultChannel, Scheduler, StackSwitchingProvider, SubtaskId, TaskId,
-    ThreadId,
+    LowerKind, Outcome, Plan, ResultChannel, Scheduler, StoreProvider, SubtaskId, TaskId, ThreadId,
 };
 use crate::error::{Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
@@ -163,9 +162,31 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
         self.context.run_in_turn(waker, body)
     }
 
-    /// Run one nested turn of this store's scheduler.
-    pub fn nested_turn(self, waker: &Waker, only: Option<InstanceId>) -> Result<Outcome> {
-        self.context.nested_turn(waker, only)
+    /// Run one nested turn, or go on with the one that last stopped
+    /// for work it left to the store.
+    pub fn continue_nested_turn(
+        self,
+        waker: &Waker,
+        only: Option<InstanceId>,
+        resume: bool,
+    ) -> Result<Outcome> {
+        self.context.continue_nested_turn(waker, only, resume)
+    }
+
+    /// Whether the frame that runs now left work to the store that it
+    /// must not go past.
+    pub fn defers_work(self) -> bool {
+        self.context.defers_work()
+    }
+
+    /// Whether the store is inside work frames left to it.
+    pub fn deferred_busy(self) -> bool {
+        self.context.deferred_busy()
+    }
+
+    /// Leave `plan` for the thread the running trampoline runs in.
+    pub fn leave_plan(self, plan: Plan<T>) -> Result<()> {
+        self.context.leave_plan(plan)
     }
 
     /// Poll the parked host task of the synchronous lower of the
@@ -279,8 +300,21 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
     }
 
     /// The provider the store keeps, when the engine selected one.
-    pub fn provider(self) -> Option<StackSwitchingProvider> {
+    pub fn provider(self) -> Option<StoreProvider> {
         self.context.provider()
+    }
+
+    /// Whether the store's owner dropped it while a thread the
+    /// provider resumed had yet to run.
+    pub fn dropped(self) -> bool {
+        self.context.dropped()
+    }
+
+    /// Record that the store's owner dropped it while a thread the
+    /// provider resumed had yet to run.
+    #[cfg(target_arch = "wasm32")]
+    pub fn mark_dropped(self) {
+        self.context.mark_dropped();
     }
 
     /// Run a thread entry, through the provider when the store has

@@ -89,6 +89,13 @@ impl<T: 'static> Store<T> {
 
 impl<T: 'static> Drop for Store<T> {
     fn drop(&mut self) {
+        // PATCH (wcmp): a store whose owner asked to retain it stays
+        // allocated until `StoreInner::release_orphaned` frees it; see
+        // `StoreInner::retain_on_drop`.
+        if unsafe { (*self.inner).retained } {
+            unsafe { (*self.inner).orphaned = true };
+            return;
+        }
         unsafe { drop(Box::from_raw(self.inner)) }
     }
 }
@@ -108,6 +115,9 @@ impl<T: 'static> WasmStore<T, Engine> for Store<T> {
             data,
             pending_host_error: None,
             funcref_records: None,
+            guest_depth: 0,
+            retained: false,
+            orphaned: false,
         }))
     }
 
@@ -200,9 +210,24 @@ pub struct StoreInner<T: 'static> {
     /// A conversion with nothing to look in records a function on
     /// every call and nothing ever removes one, so a store that runs
     /// prepared calls grows without bound. The map is built the first
-    /// time a reference is converted, so a store that never converts
-    /// one never allocates it.
+    /// time a reference is converted or a function exported, so a store
+    /// that does neither never allocates it. An exported function's
+    /// record is its typed one; see [`StoreInner::remember_exported`].
     funcref_records: Option<Map>,
+
+    /// PATCH (wcmp): how many calls from the host into the guest are
+    /// running: a [`Func::call`](crate::Func), or an instantiation
+    /// whose start function runs. A promising call is not counted,
+    /// because it returns as soon as its stack first suspends.
+    pub(crate) guest_depth: usize,
+
+    /// PATCH (wcmp): whether the store stays allocated when its owner
+    /// drops it; see [`StoreInner::retain_on_drop`].
+    pub(crate) retained: bool,
+
+    /// PATCH (wcmp): whether the owner dropped the store while it was
+    /// retained, which leaves it to [`StoreInner::release_orphaned`].
+    pub(crate) orphaned: bool,
 }
 
 impl<T: 'static> StoreInner<T> {
@@ -248,6 +273,26 @@ impl<T: 'static> StoreInner<T> {
         func
     }
 
+    /// PATCH (wcmp): make `record`, the record of an instance's export
+    /// `function`, the record a reference to that function object
+    /// converts to.
+    ///
+    /// An exported function is a WebAssembly function whose signature
+    /// the instance's module declares, and a guest that passes it on
+    /// as a `funcref` passes the same function object. With the export
+    /// remembered, the host that receives the reference holds the
+    /// function with its real signature rather than an unknown one,
+    /// which is what a promising call of it needs: JavaScript Promise
+    /// Integration runs the function from WebAssembly, and a call from
+    /// WebAssembly names the callee's exact type. A function the guest
+    /// never exported still converts to a record of unknown
+    /// signature.
+    pub(crate) fn remember_exported(&mut self, function: &Function, record: &Func) {
+        self.funcref_records
+            .get_or_insert_with(Map::new)
+            .set(function.as_ref(), &JsValue::from_f64(record.id as f64));
+    }
+
     /// PATCH (wcmp): the error a call that ended by throwing `reason`
     /// reports: the error a host function returned during the call,
     /// if one did, and otherwise `reason` itself. Either way the slot
@@ -261,6 +306,79 @@ impl<T: 'static> StoreInner<T> {
             Some(err) => err,
             None => anyhow::Error::from(JsErrorMsg::from(reason)),
         }
+    }
+
+    /// PATCH (wcmp): drop the error a host function returned during a
+    /// call that went on to succeed, as a [`Func::call`](crate::Func)
+    /// that returns does. The owner of a promising call calls this
+    /// when the stack the call began suspends or returns, so that a
+    /// host error one stack caught never becomes the failure another
+    /// stack reports.
+    pub fn clear_failure(&mut self) {
+        self.pending_host_error = None;
+    }
+
+    /// PATCH (wcmp): whether a host function returned an error during
+    /// the current guest call, which is then the reason
+    /// [`StoreInner::failure`] reports whatever the call threw. The
+    /// owner of a promising call whose stack failed before it first
+    /// suspended reads this at once, while the rejection of the
+    /// promise arrives only on a microtask.
+    pub fn pending_failure(&self) -> bool {
+        self.pending_host_error.is_some()
+    }
+
+    /// PATCH (wcmp): how many calls from the host into the guest are
+    /// running now: function calls, and instantiations whose start
+    /// function runs.
+    ///
+    /// A host function that runs inside a stack a promising call
+    /// began, at the depth that call was made at, has only
+    /// WebAssembly frames between it and the start of that stack, so
+    /// a suspending import called above it may suspend the stack. One
+    /// that runs deeper has a host frame in between, and a suspension
+    /// there traps.
+    pub fn guest_depth(&self) -> usize {
+        self.guest_depth
+    }
+
+    /// PATCH (wcmp): leave the store allocated when its owner drops
+    /// it.
+    ///
+    /// A stack a promising call began resumes on a microtask once its
+    /// promise resolves, and the host functions it calls reach the
+    /// store through its raw pointer. The owner of such a stack calls
+    /// this when the store drops after the promise resolved and
+    /// before the stack ran, so that the stack finds the store where
+    /// it left it. The stack frees the store with
+    /// [`StoreInner::release_orphaned`] once it reached it.
+    pub fn retain_on_drop(&mut self) {
+        self.retained = true;
+    }
+
+    /// PATCH (wcmp): free, on a microtask, a store its owner dropped
+    /// while it was retained. It does nothing for a store whose owner
+    /// still holds it, or whose release is already queued.
+    ///
+    /// The stack the store was retained for calls this from a host
+    /// function, and reaches the store no more once that host
+    /// function returns: it traps, suspends, or ends. All of that
+    /// happens before the microtask runs, so no frame holds the store
+    /// when it is freed.
+    pub fn release_orphaned(&mut self) {
+        if !self.orphaned {
+            return;
+        }
+        self.orphaned = false;
+        let inner: *mut StoreInner<T> = self;
+        // A spawned task first runs on a microtask, never inside the
+        // call that spawns it.
+        wasm_bindgen_futures::spawn_local(async move {
+            // Safety: the owner dropped the store and left it to this
+            // microtask, which runs once the stack that queued it no
+            // longer reaches it, and nothing else holds it.
+            unsafe { drop(Box::from_raw(inner)) }
+        });
     }
 
     /// PATCH (wcmp): how many function records this store holds.

@@ -56,12 +56,16 @@ mod imp {
         pub fn landed(&self) -> bool {
             true
         }
+
+        /// Wake `waker` rather than the waker the wake was arranged
+        /// with, when it lands. Natively it has landed already.
+        pub fn rewake(&self, _waker: &Waker) {}
     }
 }
 
 #[cfg(target_arch = "wasm32")]
 mod imp {
-    use core::cell::Cell;
+    use core::cell::{Cell, RefCell};
     use core::task::Waker;
     use std::rc::Rc;
 
@@ -77,6 +81,7 @@ mod imp {
     /// whether that message has arrived.
     pub struct YieldWake {
         landed: Rc<Cell<bool>>,
+        waker: Rc<RefCell<Waker>>,
     }
 
     impl YieldWake {
@@ -84,19 +89,32 @@ mod imp {
         /// executor after a yield.
         pub fn after_yield(waker: &Waker) -> Self {
             let landed = Rc::new(Cell::new(false));
-            if !post_message(&landed, waker) && !schedule_timeout(&landed, waker) {
+            let wakes = Rc::new(RefCell::new(waker.clone()));
+            if !post_message(&landed, &wakes) && !schedule_timeout(&landed, &wakes) {
                 // Neither mechanism on this global: fall back to the
                 // native behaviour rather than stall the driver.
                 landed.set(true);
                 waker.wake_by_ref();
             }
-            Self { landed }
+            Self {
+                landed,
+                waker: wakes,
+            }
         }
 
         /// Whether the wake has landed and the driver may run the
         /// item that yielded.
         pub fn landed(&self) -> bool {
             self.landed.get()
+        }
+
+        /// Wake `waker` rather than the waker the wake was arranged
+        /// with, when it lands: the driver was polled again, with the
+        /// waker of its latest poll, before the wake landed.
+        pub fn rewake(&self, waker: &Waker) {
+            if !self.waker.borrow().will_wake(waker) {
+                *self.waker.borrow_mut() = waker.clone();
+            }
         }
     }
 
@@ -109,7 +127,7 @@ mod imp {
     /// reachable from the handler, so the pair lives until the
     /// message is delivered, and the handler closes it before it
     /// wakes anything.
-    fn post_message(landed: &Rc<Cell<bool>>, waker: &Waker) -> bool {
+    fn post_message(landed: &Rc<Cell<bool>>, waker: &Rc<RefCell<Waker>>) -> bool {
         let global = js_sys::global();
         let Some(constructor) = member(&global, "MessageChannel") else {
             return false;
@@ -135,7 +153,7 @@ mod imp {
                 let _ = close.call0(&port);
             }
             landed.set(true);
-            waker.wake();
+            waker.borrow().wake_by_ref();
         });
         // Assigning the handler is what starts the receiving port.
         if js_sys::Reflect::set(&receiver, &JsValue::from_str("onmessage"), &handler).is_err() {
@@ -147,7 +165,7 @@ mod imp {
     /// Ask the global for a `setTimeout` of zero that sets `landed`
     /// and wakes `waker`. `false` when this global has no
     /// `setTimeout` to schedule it with.
-    fn schedule_timeout(landed: &Rc<Cell<bool>>, waker: &Waker) -> bool {
+    fn schedule_timeout(landed: &Rc<Cell<bool>>, waker: &Rc<RefCell<Waker>>) -> bool {
         let global = js_sys::global();
         let Some(set_timeout) = member(&global, "setTimeout") else {
             return false;
@@ -156,7 +174,7 @@ mod imp {
         let waker = waker.clone();
         let callback = Closure::once_into_js(move || {
             landed.set(true);
-            waker.wake();
+            waker.borrow().wake_by_ref();
         });
         set_timeout
             .call2(&global, &callback, &JsValue::from_f64(0.0))

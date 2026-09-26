@@ -2,22 +2,20 @@
 //! falls back to.
 
 use std::marker::PhantomData;
-use std::sync::{Arc, Mutex, PoisonError};
 
 use wasm_runtime_layer::Val as RuntimeVal;
 
 use crate::error::{Error, Result, SchedulerCause};
 use crate::internal::ErrorInternal;
-use crate::resource::HandleTables;
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 
 use super::block_step::BlockStep;
-use super::outcome::Outcome;
 use super::pending_block::PendingBlock;
+use super::plan::Plan;
 use super::readiness::Readiness;
 use super::scheduler::SPIN_BUDGET;
-use super::subtask_id::SubtaskId;
+use super::seam_wait::SeamWait;
 use super::thread_id::ThreadId;
 
 /// The first part of a blocking built-in, which answers what it
@@ -25,112 +23,10 @@ use super::thread_id::ThreadId;
 type Begin<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> anyhow::Result<BlockStep<T>>;
 
 /// The whole of a blocking built-in that brings its own wait for a
-/// thread that cannot suspend its stack.
-type Whole<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> anyhow::Result<Vec<RuntimeVal>>;
-
-/// A thread's wait as the try part recorded it, and its pairing with
-/// the end of the wait.
-///
-/// The wait ends when the guard is dropped, whether the wait returned
-/// or unwound. An item a nested turn runs and a host task it polls
-/// can each panic, and a thread whose record kept the condition
-/// after its frame was gone would stay among the waiting threads for
-/// the life of the store. The record lives behind the store's handle
-/// tables, so the guard holds a handle to them, as a turn's guard
-/// does.
-///
-/// The lock is read past a poison without clearing it. The panic the
-/// wait unwound with can have poisoned it, and the wait ends all the
-/// same. Clearing the poison is left to the turn, where the store is
-/// handed over.
-struct Waiting {
-    tables: Arc<Mutex<HandleTables>>,
-    /// The thread, and the condition it waited on before, which the
-    /// wait puts back when it ends. `None` when the store had no
-    /// current thread, and so recorded nothing.
-    recorded: Option<(ThreadId, Option<Readiness>)>,
-}
-
-impl Waiting {
-    /// Record that the current thread of `store` waits until
-    /// `readiness` holds. A store with no current thread records
-    /// nothing.
-    fn start<T: 'static>(store: &mut StoreContext<'_, T>, readiness: Readiness) -> Result<Self> {
-        let tables = store.internal().tables_handle();
-        let recorded = {
-            let mut guard = store.internal().lock_tables()?;
-            match guard.tasks.current_thread() {
-                Some(thread) => Some((thread, guard.tasks.start_waiting(thread, readiness)?)),
-                None => None,
-            }
-        };
-        Ok(Self { tables, recorded })
-    }
-}
-
-impl Drop for Waiting {
-    fn drop(&mut self) {
-        let Some((thread, previous)) = self.recorded.take() else {
-            return;
-        };
-        self.tables
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .tasks
-            .stop_waiting(thread, previous);
-    }
-}
-
-/// A thread's suspension, and its pairing with the thread's resume.
-///
-/// A suspended thread waits on no condition. It runs again once a
-/// resume names it, which makes it ready, and the suspension ends
-/// when the guard is dropped, whether the wait returned or unwound,
-/// for the reason [`Waiting`] gives. The thread then runs, waits on
-/// the condition it waited on before, and is suspended no more.
-struct Suspended {
-    tables: Arc<Mutex<HandleTables>>,
-    /// The thread, and the condition it waited on before.
-    thread: ThreadId,
-    previous: Option<Readiness>,
-}
-
-impl Suspended {
-    /// Suspend the current thread of `store`. A store with no current
-    /// thread has nothing to suspend, and that is an internal error:
-    /// every guest call runs a thread.
-    fn start<T: 'static>(store: &mut StoreContext<'_, T>) -> Result<Self> {
-        let tables = store.internal().tables_handle();
-        let (thread, previous) = {
-            let mut guard = store.internal().lock_tables()?;
-            let thread = guard
-                .tasks
-                .current_thread()
-                .ok_or_else(|| Error::internal("a thread suspended with no thread running"))?;
-            let previous = guard
-                .tasks
-                .thread(thread)
-                .and_then(|record| record.readiness);
-            guard.tasks.suspend_thread(thread)?;
-            (thread, previous)
-        };
-        Ok(Self {
-            tables,
-            thread,
-            previous,
-        })
-    }
-}
-
-impl Drop for Suspended {
-    fn drop(&mut self) {
-        let mut guard = self.tables.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(record) = guard.tasks.thread_mut(self.thread) {
-            record.suspended = false;
-        }
-        guard.tasks.stop_waiting(self.thread, self.previous);
-    }
-}
+/// thread that cannot suspend its stack. It answers `None` when it
+/// left a plan for the scheduler and parked its step.
+type Whole<T> =
+    dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> anyhow::Result<Option<Vec<RuntimeVal>>>;
 
 /// The scheduler's one suspend capability.
 ///
@@ -296,6 +192,21 @@ impl Drop for Suspended {
 /// imports again is a second call of a host function already on the
 /// stack, and both backends enter a host function at any depth.
 ///
+/// Under the JSPI provider a nested turn cannot resume a thread
+/// suspended in the provider: the browser resumes a suspended stack
+/// on a microtask, never inside the call that asks for it. The
+/// fallback therefore runs as a [`SeamWait`], which stops where an
+/// item leaves a resumption to the store. The seam then leaves the
+/// rest of the wait to the scheduler as a [`Plan`], and the built-in's
+/// shim suspends the thread the built-in runs in. The scheduler runs
+/// the resumption, whatever it leads to, and the rest of the wait,
+/// from a turn of a driver, and then resumes the thread with what the
+/// wait ended with, which the try part reads on its retry. A first
+/// part that leaves a resumption to the store, as a start intrinsic
+/// whose callee switched to a suspended thread does, leaves a plan
+/// the same way. No other item runs and no other host task is polled
+/// in between, so a guest cannot tell.
+///
 /// A nested executor that blocks the native thread is not an option
 /// here. It deadlocks under a current-thread executor, tokio forbids
 /// it inside a runtime, and it has no browser counterpart.
@@ -358,24 +269,13 @@ impl<T: 'static> SuspendSeam<T> {
     /// thread. A block with none, such as the host task of a store
     /// that runs no task, waits on the condition all the same.
     ///
-    /// The wait ends on an unwind too, for the reason [`Waiting`]
-    /// gives.
+    /// The wait ends on an unwind too, for the reason [`SeamWait`]
+    /// gives. This wait leaves no plan: a wait that stops for the
+    /// store fails with the stack-switch cause.
     pub fn wait_until(store: &mut StoreContext<'_, T>, readiness: Readiness) -> Result<()> {
-        let _waiting = Waiting::start(store, readiness)?;
-        let condition = move |store: &StoreContext<'_, T>| {
-            store
-                .internal_ref()
-                .lock_tables()
-                .is_ok_and(|guard| guard.tasks.readiness_holds(readiness))
-        };
-        if condition(store) {
-            return Ok(());
-        }
-        let call = match readiness {
-            Readiness::Subtask { subtask } => Some(subtask),
-            _ => None,
-        };
-        Self::run_nested_turns(store, &condition, call)
+        let mut wait = SeamWait::until(store, readiness)?;
+        wait.run(store)
+            .unwrap_or(Err(Error::Scheduler(SchedulerCause::StackSwitchNeeded)))
     }
 
     /// Run a blocking built-in whole, where it stands: its first
@@ -384,32 +284,74 @@ impl<T: 'static> SuspendSeam<T> {
     /// for a yield — and its finish part.
     ///
     /// This is the built-in's host trampoline when the engine has no
-    /// provider, and what the try part of its shim runs for a thread
-    /// that cannot suspend its stack. The finish part runs whichever
-    /// way the wait went, so a wait that failed gives back what the
-    /// first part took. A wait that unwinds hands the finish part a
-    /// failure too before the panic carries on: an item a nested turn
-    /// runs and a host task it polls can each panic, and a copy, a
-    /// call, or a host future the first part left in the store would
-    /// otherwise outlive the frame that waited on it.
+    /// provider. The finish part runs whichever way the wait went, so
+    /// a wait that failed gives back what the first part took.
     pub fn block(
         store: &mut StoreContext<'_, T>,
         begin: &Begin<T>,
         args: &[RuntimeVal],
     ) -> anyhow::Result<Vec<RuntimeVal>> {
+        Self::block_or_plan(store, begin, args)?.ok_or_else(|| {
+            anyhow::Error::from(Error::internal(
+                "a blocking built-in left a plan with no provider to run it",
+            ))
+        })
+    }
+
+    /// Run a blocking built-in whole, as [`block`](Self::block) does,
+    /// or leave the rest of it to the scheduler as a plan. This is
+    /// what the try part of the built-in's shim runs for a thread
+    /// that cannot suspend its stack, under a provider.
+    ///
+    /// A first part or a wait that leaves work to the store, which is
+    /// what an item or a start that has to resume a thread does under
+    /// the JSPI provider, cannot go on inside the guest call. The rest
+    /// of the built-in — its wait, if it has one, and its finish part
+    /// — goes to the scheduler as a plan, the built-in's step waits
+    /// for the plan's outcome, and this answers `None`: the try part
+    /// answers that the built-in is not ready, and the shim suspends
+    /// the thread. A wait that unwinds hands the finish part a failure
+    /// before the panic carries on: an item a nested turn runs and a
+    /// host task it polls can each panic, and a copy, a call, or a
+    /// host future the first part left in the store would otherwise
+    /// outlive the frame that waited on it.
+    pub fn block_or_plan(
+        store: &mut StoreContext<'_, T>,
+        begin: &Begin<T>,
+        args: &[RuntimeVal],
+    ) -> anyhow::Result<Option<Vec<RuntimeVal>>> {
         let step = begin(store, args)?;
-        let Some(readiness) = step.readiness() else {
-            return step.finish(store, Ok(()));
-        };
-        let waited = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            if readiness == Readiness::Yielded {
-                Self::give_way(store)
-            } else {
-                Self::wait_until(store, readiness)
+        let readiness = step.readiness();
+        if store.internal().defers_work() {
+            // The wait begins once the work the first part left is
+            // done, as it would begin once the first part returned.
+            let mut plan = Self::plan(store)?;
+            plan.then_wait = readiness;
+            Self::park(store, step)?;
+            if let Err(error) = store.internal().leave_plan(plan) {
+                Self::unpark(store);
+                return Err(error.into());
             }
+            return Ok(None);
+        }
+        let Some(readiness) = readiness else {
+            return Ok(Some(step.finish(store, Ok(()))?));
+        };
+        let waited = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<_> {
+            let wait = if readiness == Readiness::Yielded {
+                SeamWait::give_way(store)?
+            } else {
+                SeamWait::until(store, readiness)?
+            };
+            Ok(Self::wait_or_plan(store, wait))
         }));
         match waited {
-            Ok(waited) => step.finish(store, waited),
+            Ok(Ok(Some(waited))) => Ok(Some(step.finish(store, waited)?)),
+            Ok(Ok(None)) => {
+                Self::park(store, step)?;
+                Ok(None)
+            }
+            Ok(Err(error)) => Ok(Some(step.finish(store, Err(error))?)),
             Err(panic) => {
                 let _ = step.finish(
                     store,
@@ -439,17 +381,27 @@ impl<T: 'static> SuspendSeam<T> {
     /// nothing of the built-in: it only asks whether the condition
     /// still holds, since another thread may have taken what it
     /// waited for between the two, and a thread whose condition no
-    /// longer holds suspends again.
+    /// longer holds suspends again. A thread whose built-in left a
+    /// plan is ready once the scheduler resumes it, with the plan's
+    /// outcome for the finish part.
     ///
     /// Only a thread whose entry started through the provider runs on
     /// a stack of its own, so only such a thread suspends. A thread
     /// that runs on the stack of another, which is the callee of a
     /// synchronous call between two components, and a thread of a
     /// task that must not block, wait where they stand, through
-    /// [`block`](Self::block). A task that must not block must
-    /// return before it waits on anything but the ready work of its
-    /// own instance, and the nested turn serves exactly that rule. A
-    /// built-in that brings a `fallback` of its own runs that instead.
+    /// [`block_or_plan`](Self::block_or_plan). A task that must not
+    /// block must return before it waits on anything but the ready
+    /// work of its own instance, and the nested turn serves exactly
+    /// that rule. A built-in that brings a `fallback` of its own runs
+    /// that instead.
+    ///
+    /// A first part that leaves work to the store, which a start
+    /// intrinsic whose callee switched to a suspended thread does
+    /// under the JSPI provider, leaves a plan for the thread: the
+    /// scheduler does that work first, then records the built-in's
+    /// condition on the thread and resumes it at once when the
+    /// condition holds, as the try would have answered.
     ///
     /// A thread that suspended itself waits on
     /// [`Readiness::Resumed`], which no thread's record holds: the
@@ -469,20 +421,45 @@ impl<T: 'static> SuspendSeam<T> {
             (thread, own_stack)
         };
         if let Some(thread) = thread
-            && let Some(readiness) = store.internal().scheduler().block_readiness(thread)
+            && let Some(block) = store.internal().scheduler_mut().block_mut(thread)
         {
+            if block.waited.is_some() {
+                return Ok(true);
+            }
+            let readiness = block.readiness;
             return Ok(Self::holds(store, readiness));
         }
         let suspends = own_stack && store.internal().must_not_block_instance().is_none();
         let (Some(thread), true) = (thread, suspends) else {
-            let values = match fallback {
+            let done = match fallback {
                 Some(whole) => whole(store, args)?,
-                None => Self::block(store, begin, args)?,
+                None => Self::block_or_plan(store, begin, args)?,
+            };
+            let Some(values) = done else {
+                return Ok(false);
             };
             store.internal().scheduler_mut().keep_ready_block(values);
             return Ok(true);
         };
         let step = begin(store, args)?;
+        if store.internal().defers_work() {
+            // The condition is recorded once the work is done, as it
+            // would be once the first part returned. Until then the
+            // thread is inside the built-in, and waits on nothing.
+            let readiness = step.readiness().unwrap_or(Readiness::Planned);
+            let mut plan = Self::plan(store)?;
+            plan.suspends = true;
+            let previous = Self::current_readiness(store, thread)?;
+            store
+                .internal()
+                .scheduler_mut()
+                .begin_block(thread, PendingBlock::new(readiness, previous, step));
+            if let Err(error) = store.internal().leave_plan(plan) {
+                store.internal().scheduler_mut().end_block(thread);
+                return Err(error.into());
+            }
+            return Ok(false);
+        }
         let Some(readiness) = step.readiness() else {
             let values = step.finish(store, Ok(()))?;
             store.internal().scheduler_mut().keep_ready_block(values);
@@ -491,21 +468,17 @@ impl<T: 'static> SuspendSeam<T> {
         let previous = {
             let mut guard = store.internal().lock_tables()?;
             match readiness {
-                Readiness::Resumed { .. } => guard
+                Readiness::Resumed { .. } | Readiness::Planned => guard
                     .tasks
                     .thread(thread)
                     .and_then(|record| record.readiness),
                 _ => guard.tasks.start_waiting(thread, readiness)?,
             }
         };
-        store.internal().scheduler_mut().begin_block(
-            thread,
-            PendingBlock {
-                readiness,
-                previous,
-                step,
-            },
-        );
+        store
+            .internal()
+            .scheduler_mut()
+            .begin_block(thread, PendingBlock::new(readiness, previous, step));
         Ok(readiness != Readiness::Yielded && Self::holds(store, readiness))
     }
 
@@ -515,17 +488,24 @@ impl<T: 'static> SuspendSeam<T> {
     /// The results of a built-in that was done at its first try are
     /// the ones the try kept. A built-in whose thread waited ends the
     /// wait, which takes the thread off the list of waiting threads,
-    /// and runs its finish part.
+    /// and runs its finish part, with what the wait of its plan ended
+    /// with when it left one.
     pub fn finish_block(store: &mut StoreContext<'_, T>) -> anyhow::Result<Vec<RuntimeVal>> {
         let thread = store.internal().lock_tables()?.tasks.current_thread();
         let block = thread.and_then(|thread| store.internal().scheduler_mut().end_block(thread));
         if let (Some(thread), Some(block)) = (thread, block) {
-            store
-                .internal()
-                .lock_tables()?
-                .tasks
-                .stop_waiting(thread, block.previous);
-            return block.step.finish(store, Ok(()));
+            // A built-in that left a plan recorded nothing on the
+            // thread for it: the plan's wait kept its own record, and
+            // ended it before the thread resumed.
+            if block.readiness != Readiness::Planned {
+                store
+                    .internal()
+                    .lock_tables()?
+                    .tasks
+                    .stop_waiting(thread, block.previous);
+            }
+            let waited = block.waited.unwrap_or(Ok(()));
+            return block.step.finish(store, waited);
         }
         store
             .internal()
@@ -564,7 +544,7 @@ impl<T: 'static> SuspendSeam<T> {
         store: &mut StoreContext<'_, T>,
         condition: impl Fn(&StoreContext<'_, T>) -> bool,
     ) -> Result<()> {
-        Self::run_nested_turns(store, &condition, None)
+        SeamWait::run_until(store, &condition)
     }
 
     /// Give way once, which is the whole of what `thread.yield`
@@ -584,11 +564,12 @@ impl<T: 'static> SuspendSeam<T> {
     /// [`SPIN_BUDGET`] times over is spin-waiting for a guest frame
     /// on the real stack, and the failure is the stack-switch cause
     /// that ends the call the thread is inside. Everything else
-    /// answers `Ok(())`, which is what makes the built-in return
-    /// zero whenever it returns at all.
-    pub fn give_way(store: &mut StoreContext<'_, T>) -> Result<()> {
-        let _waiting = Waiting::start(store, Readiness::Yielded)?;
-        Self::give_way_once(store)
+    /// answers `Ok(Some(()))`, which is what makes the built-in return
+    /// zero whenever it returns at all. It answers `Ok(None)` when it
+    /// left the rest of the yield to the scheduler as a plan.
+    pub fn give_way(store: &mut StoreContext<'_, T>) -> Result<Option<()>> {
+        let wait = SeamWait::give_way(store)?;
+        Self::waited(store, wait)
     }
 
     /// Suspend the current thread, run `switch`, and then wait until
@@ -605,25 +586,20 @@ impl<T: 'static> SuspendSeam<T> {
     /// fallback, under the rules the type states, and a thread that
     /// nothing resumes fails with the cause those rules select. The
     /// suspension ends before the seam returns, however it went, and
-    /// on an unwind too, for the reason [`Suspended`] gives. A failure
-    /// of `switch` is the seam's failure.
+    /// on an unwind too, for the reason [`SeamWait`] gives. A failure
+    /// of `switch` is the seam's failure. A switch or a wait that
+    /// leaves work to the store leaves the rest to the scheduler as a
+    /// plan, and the seam answers `Ok(None)`.
     pub fn suspend_current(
         store: &mut StoreContext<'_, T>,
         switch: impl FnOnce(&mut StoreContext<'_, T>) -> Result<()>,
-    ) -> Result<()> {
-        let suspended = Suspended::start(store)?;
+    ) -> Result<Option<()>> {
+        let wait = SeamWait::suspended(store)?;
         switch(store)?;
-        let thread = suspended.thread;
-        let resumed = move |store: &StoreContext<'_, T>| {
-            store
-                .internal_ref()
-                .lock_tables()
-                .is_ok_and(|guard| !guard.tasks.thread_suspended(thread))
-        };
-        if resumed(store) {
-            return Ok(());
+        if store.internal().defers_work() {
+            return Self::leave(store, wait);
         }
-        Self::run_nested_turns(store, &resumed, None)
+        Self::waited(store, wait)
     }
 
     /// Make the current thread ready and run `switch`, which is what
@@ -635,121 +611,101 @@ impl<T: 'static> SuspendSeam<T> {
     /// ready and not suspended. Once `switch` has returned, the
     /// thread's yield has given way to the thread it named, and its
     /// condition holds, so it goes on at once. A failure of `switch`
-    /// is the seam's failure.
+    /// is the seam's failure. A switch that leaves work to the store
+    /// leaves the rest to the scheduler as a plan, and the seam
+    /// answers `Ok(None)`.
     pub fn yield_to(
         store: &mut StoreContext<'_, T>,
         switch: impl FnOnce(&mut StoreContext<'_, T>) -> Result<()>,
-    ) -> Result<()> {
-        let _waiting = Waiting::start(store, Readiness::Yielded)?;
-        switch(store)
+    ) -> Result<Option<()>> {
+        let wait = SeamWait::yield_to(store)?;
+        switch(store)?;
+        if store.internal().defers_work() {
+            return Self::leave(store, wait);
+        }
+        Ok(Some(()))
     }
 
-    /// The one chance [`give_way`](Self::give_way) gives.
-    fn give_way_once(store: &mut StoreContext<'_, T>) -> Result<()> {
-        let waker = store.internal().active_waker();
-        let only = store.internal().must_not_block_instance();
-        store.internal().nested_turn(&waker, only)?;
-        if Self::note_turn(store) {
-            return Err(Self::past_budget(store));
-        }
+    /// Park `step`, the step of the built-in the current thread runs,
+    /// until the plan the built-in leaves is done: the thread's retry
+    /// reads the plan's outcome from it.
+    pub fn park(store: &mut StoreContext<'_, T>, step: BlockStep<T>) -> Result<()> {
+        let thread = Self::current(store)?;
+        store
+            .internal()
+            .scheduler_mut()
+            .begin_block(thread, PendingBlock::new(Readiness::Planned, None, step));
         Ok(())
     }
 
-    /// The fallback: turns of the store's scheduler run from inside
-    /// the guest call that blocked, until the condition holds or
-    /// nothing can progress.
-    ///
-    /// When the wait is a synchronous lower's, `call` names the
-    /// subtask of its call, and the parked host task of that call is
-    /// polled once before each nested turn and once after the last.
-    /// A task that must not block reaches it too, since the turns it
-    /// runs poll no host task, and so does a body that answered
-    /// pending without asking for a wake. The poll that completes it
-    /// settles it, and the condition checked after it then holds.
-    ///
-    /// Nothing marks the seam as running one. Nested turns nest: an
-    /// item this loop runs that reaches the seam again gets a loop
-    /// of its own, one real frame further down the stack, and the
-    /// work the store holds is what bounds the depth.
-    fn run_nested_turns(
+    /// Run `wait` to its end, or leave the rest of it to the
+    /// scheduler as a plan, which answers `Ok(None)`. A failed wait is
+    /// the seam's failure.
+    fn waited(store: &mut StoreContext<'_, T>, wait: SeamWait<T>) -> Result<Option<()>> {
+        match Self::wait_or_plan(store, wait) {
+            Some(waited) => waited.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Run `wait` until it ends, answering what it ended with, or
+    /// until it stops for work it left to the store, in which case the
+    /// rest of it goes to the scheduler as a plan and this answers
+    /// `None`. A wait that stops where the thread cannot suspend its
+    /// stack ends with the stack-switch cause.
+    fn wait_or_plan(store: &mut StoreContext<'_, T>, mut wait: SeamWait<T>) -> Option<Result<()>> {
+        if let Some(waited) = wait.run(store) {
+            return Some(waited);
+        }
+        match Self::leave(store, wait) {
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        }
+    }
+
+    /// Leave the rest of `wait` to the scheduler as a plan for the
+    /// current thread, answering `Ok(None)`.
+    fn leave(store: &mut StoreContext<'_, T>, wait: SeamWait<T>) -> Result<Option<()>> {
+        let mut plan = Self::plan(store)?;
+        plan.wait = Some(wait);
+        store.internal().leave_plan(plan)?;
+        Ok(None)
+    }
+
+    /// An empty plan for the built-in the current thread runs.
+    fn plan(store: &mut StoreContext<'_, T>) -> Result<Plan<T>> {
+        Ok(Plan::new(Self::current(store)?))
+    }
+
+    /// Take back the step [`park`](Self::park) parked, for a plan the
+    /// store refused.
+    fn unpark(store: &mut StoreContext<'_, T>) {
+        if let Ok(thread) = Self::current(store) {
+            store.internal().scheduler_mut().end_block(thread);
+        }
+    }
+
+    /// The current thread of `store`. Every guest call runs a thread.
+    fn current(store: &mut StoreContext<'_, T>) -> Result<ThreadId> {
+        store
+            .internal()
+            .lock_tables()?
+            .tasks
+            .current_thread()
+            .ok_or_else(|| Error::internal("a blocking built-in ran with no thread on the stack"))
+    }
+
+    /// The condition `thread`'s record holds now.
+    fn current_readiness(
         store: &mut StoreContext<'_, T>,
-        condition: &dyn Fn(&StoreContext<'_, T>) -> bool,
-        call: Option<SubtaskId>,
-    ) -> Result<()> {
-        // The waker of the outer turn, so that a wake of a host task
-        // polled here reaches the waker the executor already holds.
-        // There is none when no turn is running — a thread resumed
-        // outside any poll of a driver — and a waker that does
-        // nothing serves instead, as it does for a trampoline that
-        // starts a host task outside a turn.
-        let waker = store.internal().active_waker();
-        // A task that must not block gives way only to the ready
-        // work of its own instance. The instance is read once: what
-        // the turn is allowed to run cannot change under it, because
-        // the flag is set for the length of the call this thread is
-        // inside.
-        let only = store.internal().must_not_block_instance();
-        // Whether the seam's budget is what ended the loop. The
-        // budget is the run of turns the store did not serve, and
-        // it is kept on the seam rather than here, so that a thread
-        // which asks again and again in separate frames — a yield
-        // loop — is one run and not a fresh one every time.
-        let past_budget;
-        loop {
-            if condition(store) {
-                return Ok(());
-            }
-            if let Some(call) = call {
-                store.internal().poll_parked_call(call)?;
-                if condition(store) {
-                    return Ok(());
-                }
-            }
-            let outcome = store.internal().nested_turn(&waker, only)?;
-            let noted = Self::note_turn(store);
-            match outcome {
-                Outcome::Progress if !noted => continue,
-                // Nothing more can progress from inside the guest
-                // call. `Waiting` leaves its host tasks in the store
-                // for the outer turn to poll again. `Yield` is the
-                // answer a driver's turn gives for a resumption it
-                // deferred, and a nested turn gives it for nothing:
-                // it runs that resumption itself and reports
-                // progress. Ending the loop is what it would mean
-                // here all the same, since a turn that ran nothing
-                // and deferred nothing has nothing left to offer.
-                //
-                // Progress ends it too once the run of turns the
-                // store did not serve has gone past the budget. A
-                // callee that spin-waits in its event loop until its
-                // caller unblocks it re-queues itself every time it
-                // runs, and this block is that caller, so no number
-                // of further turns would change anything; the block
-                // has to reach its failure rather than run for ever.
-                // The budget is what the polyfill spends before it
-                // decides that is what it is looking at, and
-                // [`SPIN_BUDGET`] says why it is a budget rather
-                // than a proof.
-                Outcome::Progress | Outcome::Yield | Outcome::Waiting | Outcome::Idle => {
-                    past_budget = noted;
-                    break;
-                }
-            }
-        }
-        // A last turn that met the condition is the wait ending,
-        // whatever the budget stands at: the block got what it was
-        // waiting for and the call goes on. A synchronous lower's own
-        // call gets its last poll first.
-        if let Some(call) = call {
-            store.internal().poll_parked_call(call)?;
-        }
-        if condition(store) {
-            return Ok(());
-        }
-        if past_budget {
-            return Err(Self::past_budget(store));
-        }
-        Err(Error::Scheduler(store.internal().suspend_cause()))
+        thread: ThreadId,
+    ) -> Result<Option<Readiness>> {
+        Ok(store
+            .internal()
+            .lock_tables()?
+            .tasks
+            .thread(thread)
+            .and_then(|record| record.readiness))
     }
 
     /// Record what the store did for the suspended thread over the
@@ -771,7 +727,7 @@ impl<T: 'static> SuspendSeam<T> {
     /// thread that gives way in one frame after another builds a
     /// single run, and whatever the store ran in between — a
     /// driver's turn included — ends it.
-    fn note_turn(store: &mut StoreContext<'_, T>) -> bool {
+    pub fn note_turn(store: &mut StoreContext<'_, T>) -> bool {
         let items_run = store.internal().scheduler().items_run();
         let resumptions = store.internal().scheduler().resumptions();
         let pending = store.internal().scheduler().host_future_pending();
@@ -796,7 +752,7 @@ impl<T: 'static> SuspendSeam<T> {
     /// say, is a run of its own, and would otherwise read the
     /// finished run as its own and fail with the stack-switch cause
     /// at its first turn, whatever the store's other rules would name.
-    fn past_budget(store: &mut StoreContext<'_, T>) -> Error {
+    pub fn past_budget(store: &mut StoreContext<'_, T>) -> Error {
         store
             .internal()
             .scheduler_mut()
@@ -842,6 +798,7 @@ mod tests {
     use super::super::item::Item;
     use super::super::item_kind::ItemKind;
     use super::super::lower_kind::LowerKind;
+    use super::super::outcome::Outcome;
     use super::super::subtask_id::SubtaskId;
 
     use super::*;
@@ -2902,7 +2859,7 @@ mod tests {
     fn gives_way(store: &mut StoreContext<'_, ()>, count: u32) -> Result<()> {
         let mut outcome = Ok(());
         for _ in 0..count {
-            outcome = SuspendSeam::give_way(store);
+            outcome = SuspendSeam::give_way(store).map(|_| ());
         }
         outcome
     }
@@ -2945,7 +2902,7 @@ mod tests {
             "the run passed the budget"
         );
         assert_eq!(
-            cause(SuspendSeam::give_way(&mut store)),
+            cause(SuspendSeam::give_way(&mut store).map(|_| ())),
             "the seam returned with the condition held",
             "the failure ended the run it closed, so the next give way, in \
              whatever call makes it, starts a run of its own"
@@ -2966,7 +2923,7 @@ mod tests {
                 .internal()
                 .scheduler_mut()
                 .push_high_priority(marker(&log, "ready"));
-            outcome = SuspendSeam::give_way(&mut store);
+            outcome = SuspendSeam::give_way(&mut store).map(|_| ());
         }
 
         assert_eq!(

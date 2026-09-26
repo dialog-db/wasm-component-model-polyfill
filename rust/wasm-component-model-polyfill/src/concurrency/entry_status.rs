@@ -5,11 +5,18 @@ use wasm_runtime_layer::Val as RuntimeVal;
 /// Where a thread entry stopped when a provider's start or resume
 /// handed control back to its caller.
 ///
-/// A provider reports this at the moment the entry stops, so the
-/// caller never has to ask again. The results of an entry that
-/// finished come with the answer: the switch module's entry wrapper
-/// handed them to the host before it returned, whether or not the
-/// entry suspended on the way.
+/// A provider reports where the entry stopped at the moment it
+/// stops. The results of an entry that finished come with the answer:
+/// the switch module's entry wrapper handed them to the host before it
+/// returned, whether or not the entry suspended on the way.
+///
+/// A provider that runs a thread on after the call that asked for it
+/// returns answers [`Running`](Self::Running) instead, and the caller
+/// learns where the thread stopped later, from the provider's
+/// `poll_stop`. The JSPI provider answers it for every resume, since
+/// a resumed stack runs on a microtask, and for a start whose thread
+/// failed before it first suspended, since the browser hands over the
+/// failure on a microtask too.
 #[derive(Clone, Debug)]
 pub enum EntryStatus {
     /// The entry returned these core results, and its thread is
@@ -18,4 +25,10 @@ pub enum EntryStatus {
     /// The entry suspended in a shim, and the provider keeps its
     /// thread until a resume names it.
     Suspended,
+    /// The thread runs on, or has failed, after the call returned,
+    /// and the provider's `poll_stop` answers where it stopped.
+    // Only the JSPI provider answers it, and it exists in the browser
+    // alone.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    Running,
 }

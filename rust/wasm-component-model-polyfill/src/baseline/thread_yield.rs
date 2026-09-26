@@ -44,7 +44,6 @@
 
 #![cfg(test)]
 
-use core::task::Waker;
 use std::sync::{Arc, Mutex};
 
 use crate::concurrency::Outcome;
@@ -899,7 +898,7 @@ async fn it_suspends_a_callback_tasks_yield_behind_another_tasks_item_under_the_
     // it, so the test runs turns until the store is idle, and the
     // second callback logs 4 in one of them.
     let engine = Engine::new().expect("engine");
-    if engine.suspend_provider() != SuspendProviderKind::StackSwitching {
+    if engine.suspend_provider() == SuspendProviderKind::None {
         return;
     }
     let (mut store, instance, log) = instantiate_on(engine, TWO_INSTANCES).await;
@@ -913,7 +912,19 @@ async fn it_suspends_a_callback_tasks_yield_behind_another_tasks_item_under_the_
         vec![1, 2, 3],
         "the other task's item ran while the yield was suspended"
     );
-    while store.internal().turn(Waker::noop()).expect("turn") != Outcome::Idle {}
+    // A turn that resumed a thread under the JSPI provider answers
+    // `Resuming`, and the thread runs only once control is back with
+    // the executor, which wakes the loop when the thread stops.
+    core::future::poll_fn(|context| {
+        loop {
+            match store.internal().turn(context.waker()).expect("turn") {
+                Outcome::Idle => return core::task::Poll::Ready(()),
+                Outcome::Resuming => return core::task::Poll::Pending,
+                _ => {}
+            }
+        }
+    })
+    .await;
     assert_eq!(
         call_u32(&mut store, &instance, "nested-word", &[]).await,
         0,

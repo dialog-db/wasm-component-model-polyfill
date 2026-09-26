@@ -101,14 +101,12 @@ impl Engine {
     /// [`SuspendProviderKind::None`] on every other native platform
     /// and in an older browser.
     ///
-    /// Each store of an engine that selected the stack-switching
-    /// provider instantiates it as it is constructed, and runs its
-    /// guest threads through it: each thread entry starts on a stack of
-    /// its own, and a blocking built-in suspends that stack until the
-    /// scheduler resumes it. The scheduler does not run guest threads
-    /// through the JSPI provider yet, so a store of an engine that
-    /// selected it serves every block with the nested turn, as a store
-    /// of an engine with no provider does.
+    /// Each store of an engine that selected a provider instantiates it
+    /// as it is constructed, and runs its guest threads through it:
+    /// each thread entry starts on a stack of its own, and a blocking
+    /// built-in suspends that stack until the scheduler resumes it. The
+    /// JSPI provider resumes a thread on a microtask, and the scheduler
+    /// runs nothing else until the thread stops again.
     ///
     /// Wasmtime has no counterpart, because its fibers always exist.
     ///

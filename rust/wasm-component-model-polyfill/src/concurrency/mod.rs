@@ -67,8 +67,20 @@
 //! its whole life, and [`SwitchProbe`] is what an engine runs when it
 //! is constructed to learn whether it can. In the browser,
 //! `JspiProvider` fills it through JavaScript Promise Integration,
-//! over an instance of the other form, and [`JspiProbe`] is what an
+//! over instances of the other form, and [`JspiProbe`] is what an
 //! engine runs next to learn whether the browser offers that.
+//! [`StoreProvider`] is the one a store runs its threads through.
+//!
+//! The JSPI provider resumes a thread on a microtask, never inside the
+//! call that asks for it. A resume is therefore made only from a turn
+//! of a driver, and the turn waits for the thread, an [`InFlight`]
+//! thread, before it runs anything else. A frame inside a guest call
+//! that has to resume a thread leaves the resumption to the store, and
+//! the trampoline it runs in leaves a [`Plan`] for the rest of its
+//! work: its shim suspends the thread it runs in, the scheduler runs
+//! the plan from a turn, and then resumes the thread. The rest of a
+//! blocking built-in's nested-turn fallback is a [`SeamWait`], which a
+//! plan can carry.
 //!
 //! A task is the record of one call into an export; a subtask is the
 //! record of one call out through an import; a thread is one guest
@@ -157,6 +169,7 @@ mod copy_buffer;
 mod copy_end;
 mod copy_result;
 mod copy_state;
+mod deferred_work;
 mod destination;
 mod driver;
 mod end_direction;
@@ -182,6 +195,7 @@ mod host_task;
 mod host_task_body;
 mod host_task_set;
 mod host_writer;
+mod in_flight;
 mod instance_id;
 mod instance_record;
 mod item;
@@ -195,15 +209,18 @@ mod outcome;
 mod pairing;
 mod parked_thread;
 mod pending_block;
+mod plan;
 mod poll_scope;
 mod readiness;
 mod record_table;
 mod scheduler;
 mod scheduler_state;
 mod scope;
+mod seam_wait;
 mod shared_record;
 mod source;
 mod stack_switching_provider;
+mod store_provider;
 mod stream_any;
 mod stream_consumer;
 mod stream_producer;
@@ -270,24 +287,28 @@ pub use host_future::HostFuture;
 pub use host_task::HostTask;
 pub use host_task_body::HostTaskBody;
 pub use host_writer::HostWriter;
+pub use in_flight::InFlight;
 pub use instance_id::InstanceId;
 pub use item::Item;
 pub use item_kind::ItemKind;
 pub use jspi_probe::JspiProbe;
-#[cfg(all(test, target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 pub use jspi_provider::JspiProvider;
 pub use lower_kind::LowerKind;
 pub use outcome::Outcome;
 pub use pairing::Pairing;
 pub use parked_thread::ParkedThread;
 pub use pending_block::PendingBlock;
+pub use plan::Plan;
 pub use poll_scope::PollScope;
 pub use readiness::Readiness;
 pub use scheduler::Scheduler;
 pub use scheduler_state::SchedulerState;
 pub use scope::Scope;
+pub use seam_wait::SeamWait;
 pub use source::Source;
 pub use stack_switching_provider::StackSwitchingProvider;
+pub use store_provider::StoreProvider;
 pub use stream_any::StreamAny;
 pub use stream_consumer::StreamConsumer;
 pub use stream_producer::StreamProducer;
@@ -299,9 +320,9 @@ pub use suspend_provider::SuspendProvider;
 pub use suspend_seam::SuspendSeam;
 // The switch module and its form are spelled outside this module only
 // by their tests: each provider builds its modules itself.
-#[cfg(test)]
+#[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 pub use switch_form::SwitchForm;
-#[cfg(test)]
+#[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 pub use switch_module::SwitchModule;
 pub use switch_probe::SwitchProbe;
 pub use task_id::TaskId;

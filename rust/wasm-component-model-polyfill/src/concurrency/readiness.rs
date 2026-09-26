@@ -86,4 +86,14 @@ pub enum Readiness {
         /// The thread that suspended itself.
         thread: ThreadId,
     },
+    /// A trampoline that had to resume a thread from inside a guest
+    /// call, under a provider that resumes a thread only where the
+    /// store runs no guest code, suspended its own thread to have the
+    /// scheduler do it, and continues once the scheduler resumes it.
+    /// The condition holds: what the trampoline waited for is done by
+    /// the time its thread resumes.
+    ///
+    /// No thread's record holds it. The thread is still inside the
+    /// trampoline, and runs, as far as any other thread can tell.
+    Planned,
 }

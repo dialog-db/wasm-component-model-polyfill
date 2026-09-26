@@ -57,6 +57,10 @@ pub struct ParkedThread<T: 'static> {
     /// the store: a thread a nested start began suspends before the
     /// thread whose trampoline began it, which is still running then.
     pub number: u64,
+    /// Whether a plan holds the thread: it suspended so that the
+    /// scheduler could run the plan, which resumes it once done, and
+    /// no queued resumption does.
+    pub held: bool,
     finish: BoxedFinish<T>,
 }
 
@@ -76,6 +80,7 @@ impl<T: 'static> ParkedThread<T> {
             running,
             queued: false,
             number: 0,
+            held: false,
             finish: Box::new(finish),
         }
     }

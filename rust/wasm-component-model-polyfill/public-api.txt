@@ -605,6 +605,8 @@ pub fn wasm_component_model_polyfill::Store<T>::resource_drop(&mut self, handle:
 pub fn wasm_component_model_polyfill::Store<T>::resource_new(&self, type_id: wasm_component_model_polyfill::ResourceTypeId, rep: u32) -> wasm_component_model_polyfill::Result<wasm_component_model_polyfill::ResourceHandle>
 pub async fn wasm_component_model_polyfill::Store<T>::run_concurrent<R, F>(&mut self, body: F) -> wasm_component_model_polyfill::Result<R> where F: core::ops::async_function::AsyncFnOnce(&wasm_component_model_polyfill::Accessor<T>) -> R
 pub fn wasm_component_model_polyfill::Store<T>::set_hostcall_fuel(&mut self, fuel: usize)
+impl<T: 'static> core::ops::drop::Drop for wasm_component_model_polyfill::Store<T>
+pub fn wasm_component_model_polyfill::Store<T>::drop(&mut self)
 pub struct wasm_component_model_polyfill::StoreContext<'a, T: 'static>
 impl<'a, T: 'static> wasm_component_model_polyfill::StoreContext<'a, T>
 pub fn wasm_component_model_polyfill::StoreContext<'a, T>::data(&self) -> &T

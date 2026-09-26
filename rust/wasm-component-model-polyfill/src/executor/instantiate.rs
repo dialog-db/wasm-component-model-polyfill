@@ -920,13 +920,15 @@ fn build_runtime_trampoline<T: 'static>(
             callback,
             post_return,
             signature,
-        } => Ok(build_async_start_call(
-            store,
-            *callback,
-            *post_return,
-            signature,
-            abi_state.clone(),
-        )),
+        } => {
+            return Ok(Trampoline::Blocking(build_async_start_call(
+                store,
+                *callback,
+                *post_return,
+                signature,
+                abi_state.clone(),
+            )));
+        }
         TrampolineSpec::ThreadYield {
             instance,
             signature,

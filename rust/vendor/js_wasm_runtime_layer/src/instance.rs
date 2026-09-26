@@ -45,17 +45,27 @@ impl WasmInstance<Engine> for Instance {
         let parsed;
         let imports_object;
 
-        {
+        // PATCH (wcmp): the engine is borrowed only to read the module
+        // out, and not across the instantiation. A start function runs
+        // inside it, and a host function the start function calls can
+        // compile a module of its own, which borrows the engine again.
+        let js_module = {
             let mut engine = store.engine.borrow_mut();
             let module = &mut engine.modules[module.id];
             parsed = module.parsed.clone();
-
+            module.module.clone()
+        };
+        {
             imports_object = create_imports_object(store, imports)?;
 
             // TODO: async instantiation, possibly through a `.ready().await` call on the returned
             // module
             // let instance = WebAssembly::instantiate_module(&module.module, &imports);
-            instantiated = WebAssembly::Instance::new(&module.module, &imports_object);
+            // PATCH (wcmp): a start function runs inside this call;
+            // see `StoreInner::guest_depth`.
+            store.guest_depth += 1;
+            instantiated = WebAssembly::Instance::new(&js_module, &imports_object);
+            store.guest_depth -= 1;
         };
 
         // PATCH (wcmp): a start function can call a host function; report

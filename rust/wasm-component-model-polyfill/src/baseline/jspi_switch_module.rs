@@ -24,6 +24,7 @@
 #![cfg(target_arch = "wasm32")]
 
 use std::collections::HashSet;
+use std::future::poll_fn;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -39,7 +40,7 @@ use wasm_runtime_layer::{
 use wcmp_macros::wasm;
 
 use crate::backend::Backend;
-use crate::concurrency::{EntryStatus, JspiProvider, SwitchForm, SwitchModule, ThreadId};
+use crate::concurrency::{EntryStatus, JspiProvider, SuspendProvider, ThreadId};
 use crate::internal::EngineInternal;
 use crate::store::{StoreContext, StoreContextInternalExt, StoreInternalExt};
 use crate::{Engine, Store};
@@ -105,6 +106,7 @@ fn describe(status: &EntryStatus) -> String {
     match status {
         EntryStatus::Suspended => "suspended".to_owned(),
         EntryStatus::Finished(results) => format!("finished with {results:?}"),
+        EntryStatus::Running => "running".to_owned(),
     }
 }
 
@@ -145,23 +147,15 @@ fn setup() -> Scenario {
         },
     );
 
-    let mut module = SwitchModule::new(SwitchForm::Jspi);
-    let block = module.shim(i32_to_i32());
-    module.entry(i32_to_i32());
-    let provider = JspiProvider::instantiate(
-        &mut context,
-        engine.inner(),
-        &module,
-        &[(try_part, finish_part)],
-    )
-    .expect("the browser instantiates the switch module");
+    let provider = JspiProvider::instantiate(&mut context, engine.switch_modules())
+        .expect("the browser offers `WebAssembly.Suspending`");
+    let block = provider
+        .shims(&mut context, &[(i32_to_i32(), try_part, finish_part)])
+        .expect("the browser instantiates the switch module")
+        .remove(0);
 
     let mut imports = Imports::default();
-    imports.define(
-        "switch",
-        "block",
-        RuntimeExtern::Func(provider.shim(block).expect("the shim").clone()),
-    );
+    imports.define("switch", "block", RuntimeExtern::Func(block));
     let middle = RuntimeInstance::new(
         context.internal().runtime_mut(),
         &RuntimeModule::new(engine.inner(), MIDDLE).expect("the module compiles"),
@@ -187,7 +181,7 @@ fn setup() -> Scenario {
                     .clone()
                     .expect("the second entry is set before any thread runs");
                 let mut context = StoreContext::new(runtime);
-                let status = provider.start(&mut context, SECOND, &entry, args)?;
+                let status = provider.start(&mut context, SECOND, &entry, &i32_to_i32(), args)?;
                 *spawned.lock().expect("record") = Some(describe(&status));
                 Ok(())
             },
@@ -233,7 +227,13 @@ impl Scenario {
         let mut context = self.store.internal().context();
         let status = self
             .provider
-            .start(&mut context, FIRST, &self.first, &[RuntimeVal::I32(key)])
+            .start(
+                &mut context,
+                FIRST,
+                &self.first,
+                &i32_to_i32(),
+                &[RuntimeVal::I32(key)],
+            )
             .expect("the first thread starts");
         describe(&status)
     }
@@ -242,7 +242,7 @@ impl Scenario {
         let mut context = self.store.internal().context();
         let status = self
             .provider
-            .resume(&mut context, thread)
+            .resume_and_wait(&mut context, thread)
             .await
             .expect("the thread resumes");
         describe(&status)
@@ -346,8 +346,44 @@ async fn it_returns_from_a_shim_whose_built_in_is_ready_without_a_suspension() {
 
     let mut context = scenario.store.internal().context();
     assert!(
-        scenario.provider.resume(&mut context, FIRST).await.is_err(),
+        scenario
+            .provider
+            .resume_and_wait(&mut context, FIRST)
+            .await
+            .is_err(),
         "the first thread finished, so it holds no suspended promise"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_resume_while_another_resume_is_under_way() {
+    // A resumed thread runs on a microtask, and the provider knows
+    // which thread runs by the order its resumes were made in. A
+    // second resume made before the first thread stopped is refused,
+    // and leaves its thread suspended for a later resume.
+    let mut scenario = setup();
+    start_both(&mut scenario);
+    scenario.make_ready(1);
+    scenario.make_ready(2);
+
+    let mut context = scenario.store.internal().context();
+    let resumed = SuspendProvider::resume(&scenario.provider, &mut context, FIRST)
+        .expect("the first thread resumes");
+    assert_eq!(describe(&resumed), "running");
+    assert!(
+        SuspendProvider::resume(&scenario.provider, &mut context, SECOND).is_err(),
+        "a resume made while another is under way is refused"
+    );
+    let first = poll_fn(|poll| {
+        SuspendProvider::poll_stop(&scenario.provider, &mut context, FIRST, poll.waker())
+    })
+    .await
+    .expect("the first thread stops");
+    assert_eq!(describe(&first), "finished with [I32(11)]");
+    assert_eq!(
+        scenario.resume(SECOND).await,
+        "finished with [I32(21)]",
+        "the refused resume left the second thread suspended"
     );
 }
 

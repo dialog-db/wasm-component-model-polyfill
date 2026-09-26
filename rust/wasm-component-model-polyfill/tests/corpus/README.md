@@ -21,11 +21,12 @@ the other eight thread built-ins, and the context slots. A stackful
 export's core function runs as its task's implicit thread, and it does
 not take its instance exclusively. Natively on x86_64 Linux every
 thread entry runs on a stack of its own through the stack-switching
-provider: a blocking built-in suspends the thread, the five thread
-built-ins that suspend or switch suspend it the same way, and a switch
-starts or resumes the thread it names there. A thread of a sync-typed
-call cannot suspend its stack, and without a provider, in the browser
-and in the `no-provider` lanes, no thread can. Such a thread waits in a
+provider, and in the browser through the JSPI provider: a blocking
+built-in suspends the thread, the five thread built-ins that suspend
+or switch suspend it the same way, and a switch starts or resumes the
+thread it names there. A thread of a sync-typed call cannot suspend its
+stack, and without a provider, in the `no-provider` lanes, no thread
+can. Such a thread waits in a
 nested turn: a suspension waits in turns run from inside the built-in,
 a switch to a thread that never ran starts that thread above the
 built-in, and a switch to a thread suspended below the current frame
@@ -157,10 +158,10 @@ directives that fail beyond it without one. The harness applies it
 whenever the store runs no guest thread through a provider, on either
 target, because the nested turn is one code path on both: a lane that
 turns the provider off, a native build on a platform without the
-stack-switching proposal, and a browser. A browser that ships JSPI
-answers the JSPI provider, but the scheduler does not run guest
-threads through it yet, so the overlay applies there too. In a
-browser the web delta applies beside it. Every line of the overlay
+stack-switching proposal, and a browser without JSPI. A browser that
+ships JSPI answers the JSPI provider, which runs guest threads as the
+stack-switching provider does, so the overlay does not apply there. In
+a browser the web delta applies beside it. Every line of the overlay
 carries the stack-switch reason, the text of the scheduler's
 stack-switch cause, and no line may name a directive the shared list
 names; the harness fails the run otherwise.
@@ -172,10 +173,11 @@ nextest profiles in `.config/nextest.toml` at the workspace root split
 them: the ordinary lanes run the first, and `tests native no-provider`
 and `tests web no-provider` run only the second, from the debug
 archives. `tests all` runs the corpus in all four states. The native
-lanes run the stack-switching provider on the x86_64 Linux host, and
-the overlay holds the directives only a stack switch passes. No browser
-runs guest threads through a provider yet, so both states of the web target measure the same
-thing, and the web lane applies the overlay in both.
+lanes run the stack-switching provider on the x86_64 Linux host, the
+web lanes run the JSPI provider in the flake's Chromium, and the
+overlay holds the directives only a stack switch passes. The provider
+states of both targets pass the same directives, and the web delta is
+the only difference between them.
 
 `tests regenerate` writes both lists from the native debug archive: the
 shared list from the progress run with the provider allowed, then the
@@ -281,16 +283,13 @@ conformance` prints the current one):
 | `wasmtime/async` | 387        | 369    | 95.3   | deferred-feature 14, cascade 4                                         |
 | total            | 2431       | 2320   | 95.4   | deferred-feature 38, substrate 12, validation 20, defect 1, cascade 40 |
 
-The browser runs no guest thread through a provider, so its summary is
-the native one with the provider turned off, which applies
-`expected-failures.no-provider.txt`, and the eleven lines of
+The browser runs its guest threads through the JSPI provider, so its
+summary is the native one, and the eleven lines of
 `expected-failures.web.txt` move eleven passing directives into
-`substrate` on top of that: `cm` passes 1095 (97.2%) with substrate 5,
-`cm/async` 351 (89.3%) with deferred-feature 33, substrate 1, defect 1,
-and cascade 7, `wasmtime` 427 (91.0%) with substrate 15,
-`wasmtime/async` 351 (90.7%) with deferred-feature 30 and substrate 2,
-and the total is 2274 (93.5%) with deferred-feature 66, substrate 23,
-defect 1, and cascade 47. Six of the
+`substrate`: `cm` passes 1095 (97.2%) with substrate 5, `cm/async` 370
+(94.1%) with substrate 1, `wasmtime` 427 (91.0%) with substrate 15,
+`wasmtime/async` 367 (94.8%) with substrate 2, and the total is 2309
+(95.0%) with substrate 23. Six of the
 eleven lines, among them the three in the `async` rows, are the browser
 engine's wording for a trap or a validation error that Wasmtime words
 differently. Two in `wasmtime/big-strings.wast` trap in the adapter
@@ -311,13 +310,13 @@ hold 4 of the 40 cascade lines natively, all in `wasmtime/async`, and
 without a provider `cm/async` adds 7, all in
 `cm/async/during-sync-scheduling-candidates.wast`.
 
-Of the 38 files of `cm/async`, 27 pass whole natively and 23 in the
-browser, where four more hold lines that only the provider serves. Of
-the 54 files of `wasmtime/async`, 47 pass whole natively and 37 in the
-browser, where eight more hold such lines, and `subtask-wait.wast` and
-`sync-call-context-trap.wast` each hold one line of the browser's
-delta. Seven of the nine fixtures
-pass whole.
+Of the 38 files of `cm/async`, 27 pass whole natively and in the
+browser, and 23 without a provider, where four more hold lines that
+only a provider serves. Of the 54 files of `wasmtime/async`, 48 pass
+whole natively and 46 in the browser, where `subtask-wait.wast` and
+`sync-call-context-trap.wast` each hold one line of the browser's delta,
+and 39 without a provider, where nine more hold lines that only a
+provider serves. Seven of the nine fixtures pass whole.
 
 The streams and futures account for 33 of the files that pass whole.
 In `cm/async`: `cancel-stream.wast`, `closed-stream.wast`,
@@ -348,9 +347,8 @@ fails at its call to `subtask.cancel`. The `subtask.cancel` component
 of `wasmtime/async/task-builtins.wast` instantiates.
 
 Seven files that exercise a stream or a future keep lines that pass
-natively under the stack-switching provider and fail without one, in
-the browser and the `no-provider` lanes, where they wait on a stack
-switch. Both
+under a provider and fail without one, in the `no-provider` lanes,
+where they wait on a stack switch. Both
 `sync-streams.wast` and `wasmtime/async/streams-massive-send.wast`
 have a callee that writes synchronously after `task.return` for its
 caller below it to read, the massive send once with a stream and once

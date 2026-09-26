@@ -440,8 +440,26 @@ fn build_suspension<T: 'static>(
             let id = calling_instance(&on_real_stack, instance)?;
             trap_if_cannot_leave(&on_real_stack, id, store.internal().runtime_mut())?;
             let named = named_argument(switch, args)?;
-            suspension(store, id, yielding, switch, named).map_err(suspension_trap)?;
-            Ok(vec![RuntimeVal::I32(0)])
+            if suspension(store, id, yielding, switch, named)
+                .map_err(suspension_trap)?
+                .is_some()
+            {
+                return Ok(Some(vec![RuntimeVal::I32(0)]));
+            }
+            // The rest of the suspension went to the scheduler as a
+            // plan, and the built-in answers what the plan's wait
+            // ended with once the thread resumes.
+            SuspendSeam::park(
+                store,
+                BlockStep::wait(
+                    Readiness::Planned,
+                    |_store: &mut StoreContext<'_, T>, waited| {
+                        waited.map_err(suspension_trap)?;
+                        Ok(vec![RuntimeVal::I32(0)])
+                    },
+                ),
+            )?;
+            Ok(None)
         },
     )
 }
@@ -543,14 +561,15 @@ fn begin_suspension<T: 'static>(
 /// The body of a suspending built-in whose thread cannot suspend its
 /// stack, once the may-leave check has passed: find the thread to
 /// switch to, then suspend or yield through the seam's nested turn
-/// with that switch.
+/// with that switch. It answers `None` when the seam left the rest to
+/// the scheduler as a plan.
 fn suspension<T: 'static>(
     store: &mut StoreContext<'_, T>,
     instance: InstanceId,
     yielding: bool,
     switch: Switch,
     named: Option<u32>,
-) -> Result<()> {
+) -> Result<Option<()>> {
     let current = current_thread(store)?;
     let target = switch_target(store, instance, current, switch, named)?;
     let run = move |store: &mut StoreContext<'_, T>| match target {
@@ -694,6 +713,17 @@ fn start_switched<T: 'static>(
         Some((task, start)) => run_thread(store, other, task, start),
         None => store.internal().run_switched_thread(other),
     }));
+    // A thread this runs that has to resume a thread it cannot resume
+    // from here leaves that to the store, and the switch goes on once
+    // the store has done it. The mark comes off then.
+    if matches!(ran, Ok(Ok(()))) && store.internal().defers_work() {
+        store
+            .internal()
+            .scheduler_mut()
+            .deferred_mut()
+            .ends_thread_switch = true;
+        return Ok(());
+    }
     if let Ok(mut guard) = tables.lock() {
         guard.tasks.end_thread_switch();
     }

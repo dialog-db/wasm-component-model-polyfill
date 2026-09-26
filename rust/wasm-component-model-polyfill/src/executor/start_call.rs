@@ -270,8 +270,10 @@ impl Prepared {
     /// the block: always after an asynchronous lower, and after a
     /// synchronous lower once the callee has resolved. A sync-typed
     /// callee is not a nested start. Its task must not block, so it
-    /// never suspends, and the reference runs it on the caller's
-    /// stack.
+    /// never suspends, and it runs on the caller's stack, except under
+    /// a provider that resumes a thread only where the store runs no
+    /// guest code: its thread starts through that provider then, on a
+    /// stack of its own, as the reference runs every callee's thread.
     ///
     /// The callee's task takes the exclusive thread of its instance
     /// unless it is stackful, which is the reference's
@@ -305,6 +307,17 @@ impl Prepared {
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             store.internal().run_switch_slot()
         }));
+        // A callee that switched to a thread this frame cannot resume
+        // left that to the store, and the start goes on once the store
+        // has done it. The mark comes off then.
+        if matches!(ran, Ok(Ok(()))) && store.internal().defers_work() {
+            store
+                .internal()
+                .scheduler_mut()
+                .deferred_mut()
+                .ends_nested_start = true;
+            return Ok(());
+        }
         if let Ok(mut guard) = tables.lock() {
             guard.tasks.end_nested_start();
         }
@@ -383,7 +396,11 @@ impl StartReport {
 /// What the start does once the core function returns runs when the
 /// entry finishes. A sync-typed callee's task must not block, so its
 /// thread never suspends, and its core function is a direct call on
-/// the caller's stack.
+/// the caller's stack. Under a provider that resumes a thread only
+/// where the store runs no guest code, it starts through the provider
+/// on a stack of its own instead, as the reference runs every
+/// callee's thread: the ready threads its task gives way to while it
+/// waits can then run with its stack set aside.
 fn start_call<T: 'static>(
     store: &mut StoreContext<'_, T>,
     subtask: SubtaskId,
@@ -444,7 +461,18 @@ fn start_call<T: 'static>(
             Err(error) => report.fail(store, error),
         }
     };
-    if !nested {
+    // Under a provider that resumes a thread only where the store runs
+    // no guest code, a sync-typed callee starts through the provider
+    // too, on a stack of its own. It must not block, and its task gives
+    // way to the ready threads of its own instance when it waits, which
+    // such a provider can resume only with the callee's stack set
+    // aside: a callee called from this frame would have a host frame
+    // below it that no suspension may cross.
+    let own_stack = store
+        .internal()
+        .provider()
+        .is_some_and(|provider| provider.resumes_later());
+    if !nested && !own_stack {
         let mut core_results = slots;
         let called = function
             .call(

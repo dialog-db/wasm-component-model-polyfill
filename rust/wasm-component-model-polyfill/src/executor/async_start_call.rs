@@ -49,12 +49,12 @@
 
 use std::sync::{Arc, Mutex};
 
-use wasm_runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
+use wasm_runtime_layer::Val as RuntimeVal;
 use wasmtime_environ::component::START_FLAG_ASYNC_CALLEE;
 
 use crate::abi::instance::BoundaryInstance;
 use crate::abi::runtime_state::AbiRuntimeState;
-use crate::concurrency::{CallStatus, LowerKind, SubtaskId};
+use crate::concurrency::{BlockStep, BlockingBuiltin, CallStatus, LowerKind, Readiness, SubtaskId};
 use crate::error::{Error, Result};
 use crate::executor::AsyncLift;
 use crate::executor::intrinsics::core_func_type;
@@ -72,39 +72,45 @@ use super::start_call::{Prepared, funcref_argument, lock, post_return_at};
 /// lifted callee, and `post_return` the runtime post-return slot of
 /// a synchronously lifted one. The adapter names at most one of the
 /// two, and neither when the callee's lift declares neither.
+///
+/// The intrinsic is a blocking built-in, although it never waits on
+/// a condition: a callee it starts can switch to a suspended thread
+/// before it first suspends, and under the JSPI provider the
+/// intrinsic cannot resume that thread from inside the caller's
+/// call. It then leaves the rest of the start to the scheduler as a
+/// plan, the caller's thread suspends in the intrinsic's shim, and
+/// the status word is read once the scheduler resumes it.
 pub fn build_async_start_call<T: 'static>(
-    store: &mut StoreContext<'_, T>,
+    _store: &mut StoreContext<'_, T>,
     callback: Option<usize>,
     post_return: Option<usize>,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
-    RuntimeFunc::new(
-        store.internal().runtime_mut(),
+) -> BlockingBuiltin<T> {
+    BlockingBuiltin::new(
         core_func_type(signature),
-        move |store_ctx, args, results| {
-            let mut store = StoreContext::new(store_ctx);
-            Ok(async_start_call(
-                &mut store,
+        move |store: &mut StoreContext<'_, T>, args: &[RuntimeVal]| {
+            Ok(begin_async_start_call(
+                store,
                 callback,
                 post_return,
                 &abi_state,
                 args,
-                results,
             )?)
         },
     )
 }
 
-/// The body of one call of the intrinsic.
-fn async_start_call<T: 'static>(
+/// The first part of one call of the intrinsic: start the callee,
+/// and answer with the status word, at once or once the work the
+/// start left to the store is done.
+fn begin_async_start_call<T: 'static>(
     store: &mut StoreContext<'_, T>,
     callback: Option<usize>,
     post_return: Option<usize>,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     args: &[RuntimeVal],
-    results: &mut [RuntimeVal],
-) -> Result<()> {
+) -> Result<BlockStep<T>> {
     let callee_function = funcref_argument(args, 0)?;
     let param_count = u32_argument(args, 1)? as usize;
     let result_count = u32_argument(args, 2)? as usize;
@@ -151,12 +157,26 @@ fn async_start_call<T: 'static>(
         return Err(error);
     }
 
+    // A start that left work to the store answers once that work is
+    // done: the callee may resolve in it, which the word says.
+    if store.internal().defers_work() {
+        return Ok(BlockStep::wait(
+            Readiness::Planned,
+            move |store: &mut StoreContext<'_, T>, waited| {
+                let tables = store.internal().tables_handle();
+                if let Err(error) = waited {
+                    prepared.remove(&tables);
+                    return Err(error.into());
+                }
+                let status = status_word(&tables, subtask, caller_table)?;
+                Ok(vec![RuntimeVal::I32(status.value() as i32)])
+            },
+        ));
+    }
     let status = status_word(&tables, subtask, caller_table)?;
-    let slot = results
-        .first_mut()
-        .ok_or_else(|| Error::internal("the async start intrinsic returns one status word"))?;
-    *slot = RuntimeVal::I32(status.value() as i32);
-    Ok(())
+    Ok(BlockStep::Ready(vec![RuntimeVal::I32(
+        status.value() as i32
+    )]))
 }
 
 /// The status word the lower answers with.

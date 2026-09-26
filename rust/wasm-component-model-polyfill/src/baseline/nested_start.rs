@@ -280,10 +280,10 @@ async fn it_fails_a_callee_that_returned_to_a_sync_lower_and_waits_on_its_caller
     );
 }
 
-/// Whether the native engine runs guest threads through a provider
-/// on this target.
+/// Whether the engine runs guest threads through a provider on this
+/// target.
 fn has_provider() -> bool {
-    Engine::new().expect("engine").suspend_provider() == SuspendProviderKind::StackSwitching
+    Engine::new().expect("engine").suspend_provider() != SuspendProviderKind::None
 }
 
 #[wcmp_macros::test]
