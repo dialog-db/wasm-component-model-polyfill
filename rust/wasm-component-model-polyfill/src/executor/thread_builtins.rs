@@ -94,9 +94,14 @@
 //! built-in of the same task runs inside that task's call, so a trap
 //! of a thread it started there fails the built-in.
 //!
-//! A thread's start is its task's pending work. A task that ends
-//! before a turn runs the start takes the start with it, under the
-//! store's rule for the items of a task that ends.
+//! A task lives until its last thread ends, whether that thread has
+//! started or not. Its implicit thread can return first: the task
+//! then goes on with its explicit threads, one of them may still call
+//! `task.return`, and the end of the last of them ends the task, with
+//! the no-result failure for a task that has not resolved. A task that
+//! fails ends with all its threads, and a start no turn has run yet
+//! goes with it, under the store's rule for the items of a task that
+//! ends.
 
 use std::sync::{Arc, Mutex};
 
@@ -297,10 +302,14 @@ fn start_ready_thread<T: 'static>(store: &mut StoreContext<'_, T>, thread: Threa
 /// its start function returned or trapped: the scope it pushed is
 /// popped, with whatever a failed call left above it, and the thread
 /// leaves its instance's table and its task. A trap comes back to
-/// the caller, which says whose failure it is.
+/// the caller, which says whose failure it is. A thread that returned
+/// and was the last of its task, `task`, after the task's implicit
+/// thread exited, ends the task, and a failure of that end comes back
+/// the same way.
 fn run_thread<T: 'static>(
     store: &mut StoreContext<'_, T>,
     thread: ThreadId,
+    task: TaskId,
     start: ThreadStart,
 ) -> Result<()> {
     store
@@ -318,7 +327,8 @@ fn run_thread<T: 'static>(
         guard.leave_thread(thread);
         guard.tasks.end_thread(thread);
     }
-    outcome
+    outcome?;
+    store.internal().end_last_thread(task)
 }
 
 /// Which thread a suspending built-in switches to.
@@ -671,17 +681,17 @@ fn start_switched<T: 'static>(
         let start = if provider {
             None
         } else {
-            let (_, start) = guard
+            let started = guard
                 .tasks
                 .take_thread_start(other)
                 .ok_or_else(|| Error::internal("a switch named a thread with nothing to start"))?;
-            Some(start)
+            Some(started)
         };
         guard.tasks.begin_thread_switch(switching);
         start
     };
     let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match start {
-        Some(start) => run_thread(store, other, start),
+        Some((task, start)) => run_thread(store, other, task, start),
         None => store.internal().run_switched_thread(other),
     }));
     if let Ok(mut guard) = tables.lock() {

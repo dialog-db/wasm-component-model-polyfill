@@ -299,12 +299,13 @@ const WAITS_ON_AN_EMPTY_SET: &[u8] = component!(
 );
 
 /// A stackful export whose implicit thread starts an explicit thread
-/// that blocks, and then returns while that thread still waits, which
+/// that blocks, and then traps while that thread still waits, which
 /// ends the task with the thread in the middle of a blocking
-/// built-in.
+/// built-in. A task ends with its last thread when nothing fails, so
+/// a trap is what ends a task whose thread still waits.
 ///
 /// Each of `wait`, `read`, and `hold` yields to a new thread with
-/// `thread.yield-then-resume` and returns 7 once it resumes. The new
+/// `thread.yield-then-resume` and traps once it resumes. The new
 /// thread blocks for ever: `wait` on a waitable set nothing fills,
 /// `read` in a synchronous read of a stream nothing writes, and
 /// `hold` in a synchronous lower of the host `async` function
@@ -355,7 +356,7 @@ const ENDS_WITH_A_THREAD_BLOCKED: &[u8] = component!(
         (func $run (param $entry i32)
           (drop (call $yield-then-resume
             (call $new-indirect (local.get $entry) (i32.const 0))))
-          (call $task-return (i32.const 7)))
+          unreachable)
         (func (export "wait")
           (global.set $set (call $set-new))
           (call $run (i32.const 0)))
@@ -1135,13 +1136,13 @@ fn host_tasks(store: &mut Store<()>) -> usize {
 /// Call `name` of [`ENDS_WITH_A_THREAD_BLOCKED`], whose task ends
 /// while a thread it started is blocked, and check how the call went.
 ///
-/// Under a provider the export returns 7: the thread it yielded to
-/// suspended in its blocking built-in, the export's thread resumed
-/// after it and returned, and the blocked thread left the store with
-/// the task. Without a provider the started thread runs on the real
-/// stack above the export's thread, and its block fails with the
-/// stack-switch cause, since the export's thread below it would go on
-/// under a stack switch.
+/// Under a provider the export traps with `unreachable`: the thread it
+/// yielded to suspended in its blocking built-in, the export's thread
+/// resumed after it and trapped, and the blocked thread left the store
+/// with the task the trap ended. Without a provider the started thread
+/// runs on the real stack above the export's thread, and its block
+/// fails with the stack-switch cause, since the export's thread below
+/// it would go on under a stack switch.
 async fn ends_with_a_thread_blocked(
     engine: &Engine,
     store: &mut Store<()>,
@@ -1150,8 +1151,11 @@ async fn ends_with_a_thread_blocked(
 ) {
     let outcome = func(instance, name).call(&mut *store, &[]).await;
     if has_provider(engine) {
-        let result = outcome.expect("the export returns once it resumes");
-        assert_eq!(result.as_ref(), [Val::U32(7)]);
+        let err = outcome.expect_err("the export traps once it resumes");
+        assert!(
+            chain(&err).contains("unreachable"),
+            "expected the export's trap, got {err:?}"
+        );
         assert_eq!(
             parked_threads(store),
             0,
@@ -1222,8 +1226,9 @@ async fn it_withdraws_the_host_task_of_a_thread_whose_task_ended_inside_a_synchr
 }
 
 /// Call `name` of [`SWITCHES`] in a fresh store of `engine`, and
-/// answer its outcome with the number of nested turns the store ran.
-async fn switch(engine: &Engine, name: &str) -> (Result<u32, Error>, u64) {
+/// answer its outcome with the number of nested turns the store ran
+/// and the number of threads left suspended in the provider.
+async fn switch(engine: &Engine, name: &str) -> (Result<u32, Error>, u64, usize) {
     let linker: Linker<()> = Linker::new(engine);
     let (mut store, instance) = instantiate(engine, &linker, SWITCHES).await;
     let outcome = func(&instance, name)
@@ -1233,8 +1238,8 @@ async fn switch(engine: &Engine, name: &str) -> (Result<u32, Error>, u64) {
             Some(Val::U32(log)) => *log,
             other => panic!("`{name}` answered {other:?}"),
         });
-    assert_eq!(parked_threads(&mut store), 0, "no thread is left suspended");
-    (outcome, nested_turns(&mut store))
+    let parked = parked_threads(&mut store);
+    (outcome, nested_turns(&mut store), parked)
 }
 
 #[wcmp_macros::test]
@@ -1248,7 +1253,8 @@ async fn it_resumes_a_thread_suspended_in_the_provider_that_a_switch_names() {
     // nothing above it can resume it: the block fails with the
     // stack-switch cause.
     let engine = engine(true);
-    let (outcome, turns) = switch(&engine, "resume-suspended").await;
+    let (outcome, turns, parked) = switch(&engine, "resume-suspended").await;
+    assert_eq!(parked, 0, "no thread is left suspended");
     if has_provider(&engine) {
         assert_eq!(outcome.expect("the export returns"), 12345);
         assert_eq!(turns, 0, "every suspension went through the provider");
@@ -1270,7 +1276,8 @@ async fn it_switches_to_a_ready_thread_suspended_in_the_provider_that_a_promote_
     // the export's thread, which is not suspended but yielding, so its
     // resume of that thread fails with Wasmtime's message.
     let engine = engine(true);
-    let (outcome, turns) = switch(&engine, "promote-ready").await;
+    let (outcome, turns, parked) = switch(&engine, "promote-ready").await;
+    assert_eq!(parked, 0, "no thread is left suspended");
     if has_provider(&engine) {
         assert_eq!(outcome.expect("the export returns"), 12345);
         assert_eq!(turns, 0, "every suspension went through the provider");
@@ -1288,15 +1295,20 @@ async fn it_runs_a_chain_of_switches_from_the_frame_that_resumed_the_first() {
     // The export's thread switches to a new thread, which switches
     // straight back. Both switches run from the frame that started the
     // export's thread, one after the other, and the export returns
-    // while the new thread stays suspended until the task ends.
+    // while the new thread stays suspended, and the task with it, since
+    // a task lives until its last thread ends.
     // Without a provider the new thread runs above the export's thread
     // on the real stack, and its switch back fails with the
     // stack-switch cause.
     let engine = engine(true);
-    let (outcome, turns) = switch(&engine, "switch-back").await;
+    let (outcome, turns, parked) = switch(&engine, "switch-back").await;
     if has_provider(&engine) {
         assert_eq!(outcome.expect("the export returns"), 123);
         assert_eq!(turns, 0, "every suspension went through the provider");
+        assert_eq!(
+            parked, 1,
+            "the new thread is still suspended after the export returned"
+        );
     } else {
         let err = outcome.expect_err("the export's thread lies below the new thread");
         assert!(

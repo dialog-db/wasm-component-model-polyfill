@@ -76,13 +76,19 @@ pub struct Task {
     /// the call through it. `None` for a call from the host and for
     /// the task an adapter's enter intrinsic pushes.
     pub subtask: Option<SubtaskId>,
-    /// Whether the task's implicit thread has exited. A task of a
+    /// Whether the task has ended with its last thread. A task of a
     /// call the caller still holds a subtask entry for outlives its
-    /// thread: the entry names the record, so the record stays in
+    /// threads: the entry names the record, so the record stays in
     /// the store until `subtask.drop` takes the entry away. The flag
     /// is what the removal of the entry reads to know the record has
     /// nothing left to run.
     pub thread_exited: bool,
+    /// Whether the task's implicit thread has exited while another
+    /// thread of the task was still there. The task goes on with its
+    /// explicit threads, which is the reference's rule that a task
+    /// ends only when its last thread does, and the end of the last
+    /// of them reads this flag to know that it ends the task.
+    pub implicit_thread_exited: bool,
     /// The interned index of the result tuple the callee's lift
     /// declared, as the adapter names it at run time. A prepared
     /// call has no projected function type, so this is what the
@@ -115,6 +121,7 @@ impl Task {
             failure: None,
             subtask: None,
             thread_exited: false,
+            implicit_thread_exited: false,
             result_tuple: None,
         }
     }

@@ -18,16 +18,16 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TaskEnd {
     /// The task ended: its scope was popped, the lends recorded
-    /// against it were undone, and its implicit thread exited. The
+    /// against it were undone, and its last thread ended. The
     /// count is what the borrow check found — the borrows the guest
     /// was lowered and did not drop — and is zero on a path that
     /// makes no such check.
     ///
-    /// The task's record is gone with the thread, save in the one
+    /// The task's record is gone with its threads, save in the one
     /// case the records keep it: a guest callee whose caller still
     /// holds a subtask entry leaves a record behind for that entry
     /// to name, and `subtask.drop` is what finally takes it. Such a
-    /// task has ended all the same — its thread exited — so the
+    /// task has ended all the same — its threads ended — so the
     /// sweep belongs to it too.
     Ended(u32),
     /// Nothing ended: the task named was not one this end could take

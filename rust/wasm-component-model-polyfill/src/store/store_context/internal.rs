@@ -389,6 +389,17 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
         self.context.leave_export_task(task)
     }
 
+    /// End `task`'s implicit thread without ending the task, when the
+    /// task holds an explicit thread, and answer whether it did.
+    pub fn leave_implicit_thread(self, task: TaskId) -> Result<bool> {
+        self.context.leave_implicit_thread(task)
+    }
+
+    /// End `task` when the thread of it that just ended was its last.
+    pub fn end_last_thread(self, task: TaskId) -> Result<()> {
+        self.context.end_last_thread(task)
+    }
+
     /// End `task`.
     pub fn end_export_task(self, task: TaskId) -> Result<core::result::Result<(), u32>> {
         self.context.end_export_task(task)

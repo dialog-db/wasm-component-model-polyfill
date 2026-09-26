@@ -154,6 +154,35 @@ impl HandleTables {
         while !self.unwind_one(Scope::Task(task)) {}
     }
 
+    /// End the implicit thread of `task` without ending the task,
+    /// when the task holds an explicit thread that has not ended, and
+    /// answer whether it did.
+    ///
+    /// This is the reference's `exit_implicit_thread` for a task with
+    /// more than one thread: the implicit thread unregisters, and the
+    /// task ends only when its last thread does. The may-not-suspend
+    /// flag the call held on its instance goes back, because the call
+    /// the implicit thread ran is over. The rest of the task's end
+    /// waits for its last thread: the lends recorded against it, the
+    /// borrow check, the no-result check, and the removal of its
+    /// record.
+    ///
+    /// The task's scope is the caller's to pop. An explicit thread of
+    /// the same task can be running below with the task's scope on the
+    /// stack, so only the caller knows whether the scope on top is the
+    /// implicit thread's.
+    ///
+    /// A task with no explicit thread is left untouched, and its
+    /// caller ends it as a whole.
+    pub fn leave_implicit_thread(&mut self, task: TaskId) -> bool {
+        if !self.tasks.has_explicit_threads(task) {
+            return false;
+        }
+        self.restore_may_not_suspend(task);
+        self.tasks.retire_implicit_thread(task);
+        true
+    }
+
     /// Pop the scope the explicit thread `thread` pushed as it
     /// started, without ending its task, and forget that the thread
     /// is running.

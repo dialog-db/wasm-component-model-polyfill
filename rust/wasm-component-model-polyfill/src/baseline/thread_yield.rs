@@ -44,8 +44,10 @@
 
 #![cfg(test)]
 
+use core::task::Waker;
 use std::sync::{Arc, Mutex};
 
+use crate::concurrency::Outcome;
 use crate::internal::AccessorInternal;
 use crate::internal::FuncInternal;
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
@@ -892,8 +894,10 @@ async fn it_suspends_a_callback_tasks_yield_behind_another_tasks_item_under_the_
     // which suspends that thread too. The first yield's resumption is
     // the older of the two, so the first task logs 3 and returns, and
     // the call's result is in before the second resumption runs. The
-    // second callback logs 4 in the turn of the driver that comes
-    // next.
+    // second resumption waits in the low-priority queue: as in
+    // Wasmtime, a driver whose call is answered at once never reaches
+    // it, so the test runs turns until the store is idle, and the
+    // second callback logs 4 in one of them.
     let engine = Engine::new().expect("engine");
     if engine.suspend_provider() != SuspendProviderKind::StackSwitching {
         return;
@@ -909,6 +913,7 @@ async fn it_suspends_a_callback_tasks_yield_behind_another_tasks_item_under_the_
         vec![1, 2, 3],
         "the other task's item ran while the yield was suspended"
     );
+    while store.internal().turn(Waker::noop()).expect("turn") != Outcome::Idle {}
     assert_eq!(
         call_u32(&mut store, &instance, "nested-word", &[]).await,
         0,

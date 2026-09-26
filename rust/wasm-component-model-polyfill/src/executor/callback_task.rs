@@ -13,10 +13,12 @@
 //! codes are exit, yield, and wait, and a code above two traps with
 //! the unsupported-callback-code cause.
 //!
-//! - **Exit** ends the task's implicit thread. A task that has not
-//!   returned a result fails with the no-result cause; otherwise the
-//!   task's record leaves the store as a synchronous task's does, and
-//!   the instance it held exclusively goes back.
+//! - **Exit** ends the task's implicit thread, and the instance it
+//!   held exclusively goes back. A task that holds an explicit thread
+//!   goes on until its last thread ends. Otherwise the task ends here:
+//!   a task that has not returned a result fails with the no-result
+//!   cause, and the task's record leaves the store as a synchronous
+//!   task's does.
 //! - **Yield** gives way. The instance goes back and a callback item
 //!   carrying the none event joins the low-priority queue, so it runs
 //!   after every other ready item and only once a driver has returned

@@ -11,8 +11,10 @@
 //! the call's result through `task.return`. The task passes the
 //! entry gate of its instance but does not take the instance
 //! exclusively. When the core function returns, the implicit thread
-//! ends, and so does the task: a task that has not resolved by then
-//! fails the call with the no-result cause.
+//! ends, and so does the task when it holds no other thread: a task
+//! that has not resolved by then fails the call with the no-result
+//! cause. A task that holds an explicit thread ends with the last of
+//! its threads instead.
 
 #![cfg(test)]
 

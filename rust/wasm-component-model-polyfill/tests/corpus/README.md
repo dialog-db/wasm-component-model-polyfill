@@ -73,10 +73,10 @@ switch that only a stack switch can serve, such as a callee that can
 be released only by a caller that is on the stack or a thread that
 suspends after its task has resolved, the cancellation of a task or a
 subtask, an error context, or the rules that decide which trap
-poisons an instance. Five directives are `defect` lines instead: a
-task ends when its implicit thread exits and drops an explicit thread
-it has not run, where the reference keeps the task until its last
-thread ends.
+poisons an instance. One directive is a `defect` line instead: a
+sync-typed thread waits in a switch for a thread that suspended in
+the provider, and the nested turn it waits in, held to its instance,
+does not resume that thread.
 Three definitions in the same category fail at link instead, on a
 host item the harness does not provide: the two WASI 0.3 handler
 fixtures import `wasi:http/types`, and
@@ -269,28 +269,28 @@ alike.
 
 ## Baseline
 
-The progress summary on the native target, as of 2026-09-25 (`tests
+The progress summary on the native target, as of 2026-09-26 (`tests
 conformance` prints the current one):
 
 | Corpus           | Directives | Passed | Pass % | Expected failures by category                                          |
 | ---------------- | ---------- | ------ | ------ | ---------------------------------------------------------------------- |
 | `cm`             | 1126       | 1096   | 97.3   | substrate 4, validation 20, cascade 6                                  |
-| `cm/async`       | 393        | 371    | 94.4   | deferred-feature 20, defect 2                                          |
+| `cm/async`       | 393        | 371    | 94.4   | deferred-feature 21, defect 1                                          |
 | `fixtures`       | 56         | 50     | 89.3   | deferred-feature 2, cascade 4                                          |
 | `wasmtime`       | 469        | 434    | 92.5   | deferred-feature 1, substrate 8, cascade 26                            |
-| `wasmtime/async` | 387        | 366    | 94.6   | deferred-feature 14, defect 3, cascade 4                               |
-| total            | 2431       | 2317   | 95.3   | deferred-feature 37, substrate 12, validation 20, defect 5, cascade 40 |
+| `wasmtime/async` | 387        | 369    | 95.3   | deferred-feature 14, cascade 4                                         |
+| total            | 2431       | 2320   | 95.4   | deferred-feature 38, substrate 12, validation 20, defect 1, cascade 40 |
 
 The browser runs no guest thread through a provider, so its summary is
 the native one with the provider turned off, which applies
 `expected-failures.no-provider.txt`, and the eleven lines of
 `expected-failures.web.txt` move eleven passing directives into
 `substrate` on top of that: `cm` passes 1095 (97.2%) with substrate 5,
-`cm/async` 351 (89.3%) with deferred-feature 32, substrate 1, defect 2,
+`cm/async` 351 (89.3%) with deferred-feature 33, substrate 1, defect 1,
 and cascade 7, `wasmtime` 427 (91.0%) with substrate 15,
-`wasmtime/async` 349 (90.2%) with deferred-feature 29 and substrate 2,
-and the total is 2272 (93.5%) with deferred-feature 64, substrate 23,
-and cascade 47. Six of the
+`wasmtime/async` 351 (90.7%) with deferred-feature 30 and substrate 2,
+and the total is 2274 (93.5%) with deferred-feature 66, substrate 23,
+defect 1, and cascade 47. Six of the
 eleven lines, among them the three in the `async` rows, are the browser
 engine's wording for a trap or a validation error that Wasmtime words
 differently. Two in `wasmtime/big-strings.wast` trap in the adapter
@@ -383,9 +383,12 @@ whole, and so do the four stackful components of
 `cm/values/variants.wast`. `thread.index`, `thread.new-indirect`, and
 `thread.resume-later` run too, so the other two components of
 `wasmtime/async/task-return-traps.wast` pass and that file passes
-whole, as do `cm/values/post-return.wast` and, natively,
-`wasmtime/thread-transparency/reentrancy.wast`. The five thread
-built-ins that suspend or switch run too, so
+whole. They pass by the reference's path: the explicit thread each
+one makes ready runs after the implicit thread exits, and the
+no-result failure comes as that thread, the task's last, ends.
+`cm/values/post-return.wast` and, natively,
+`wasmtime/thread-transparency/reentrancy.wast` pass whole too. The five
+thread built-ins that suspend or switch run too, so
 `cm/async/self-switch-traps.wast` and
 `cm/async/during-sync-call-exclusive-resume.wast` pass whole, and most
 of `cm/async/trap-if-block-and-sync.wast`,
@@ -412,15 +415,23 @@ its task resolved, whose host call cannot return while the thread's
 frame is on the stack. `cm/async/switch-to-ready-callback.wast` passes
 whole natively; without a provider two of its directives fail, whose
 test function suspends above the asynchronous lower of its caller
-where the reference deadlocks. One directive each of
+where the reference deadlocks. A task lives until its last thread
+ends, so `wasmtime/async/task-deletion.wast` passes whole natively:
+each explicit thread runs after the implicit thread of its task has
+exited, one of them calls `task.return`, and the others suspend or
+yield for ever in the provider after their calls returned. Without a
+provider its first directive waits on a stack switch, for those
+threads, which start in the nested turns of `run` and stay on the
+stack above it. One directive each of
 `cm/async/during-sync-call-may-block-if-other-ready-threads.wast` and
-`cm/async/during-sync-call-no-sibling-resume.wast`, which switch to an
-explicit thread a finished callback task left suspended, and three
-directives of `wasmtime/async/task-deletion.wast`, whose explicit
-thread calls `task.return` after the implicit thread exits, are the
-five `defect` lines. The rest of `task-deletion.wast` passes, because
-the explicit threads its tasks drop would only suspend or yield for
-ever. The rest of the async rows wait on the other reasons.
+`cm/async/during-sync-call-no-sibling-resume.wast` switches from a
+sync-typed call to an explicit thread that a finished callback task
+left suspended. In the second, the explicit thread suspends so that
+the sync-typed thread below it can go on, which only a stack switch
+serves. The first is the one `defect` line: the explicit thread
+suspends in the provider inside a synchronous call, and the nested
+turn the sync-typed thread waits in, held to its instance, does not
+resume it. The rest of the async rows wait on the other reasons.
 Cancellation holds `cm/async/cancel-delivery.wast`,
 `cm/async/cancel-subtask.wast`, `wasmtime/async/cancel-host.wast`,
 `wasmtime/async/cancel-sibling-subtask.wast`,

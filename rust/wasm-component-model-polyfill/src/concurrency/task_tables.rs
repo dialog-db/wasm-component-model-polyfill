@@ -477,6 +477,44 @@ impl TaskTables {
         }
     }
 
+    /// Whether `task` holds a thread other than its implicit thread:
+    /// an explicit thread that has not ended, whether it has started
+    /// or not. Such a task goes on after its implicit thread exits.
+    pub fn has_explicit_threads(&self, task: TaskId) -> bool {
+        self.task(task).is_some_and(|record| {
+            record
+                .threads
+                .iter()
+                .any(|thread| *thread != record.implicit_thread)
+        })
+    }
+
+    /// End the implicit thread of `task` on its own, which is the
+    /// reference's `unregister_thread` for a task that holds another
+    /// thread: the thread leaves its instance's table and its task's
+    /// list of threads, and its record leaves the store. The task
+    /// stays, marked as one whose implicit thread has exited, and the
+    /// end of its last thread is what ends it.
+    pub fn retire_implicit_thread(&mut self, task: TaskId) {
+        let Some(thread) = self.task(task).map(|record| record.implicit_thread) else {
+            return;
+        };
+        self.waiting.retain(|waiting| *waiting != thread);
+        self.ready.retain(|ready| *ready != thread);
+        self.end_thread(thread);
+        if let Some(record) = self.task_mut(task) {
+            record.implicit_thread_exited = true;
+        }
+    }
+
+    /// Whether `task` has no thread left after its implicit thread
+    /// exited, so that the thread that just ended was its last and the
+    /// task ends now.
+    pub fn outlived_its_threads(&self, task: TaskId) -> bool {
+        self.task(task)
+            .is_some_and(|record| record.implicit_thread_exited && record.threads.is_empty())
+    }
+
     /// Make the explicit thread `thread` the current thread, by
     /// pushing its task as the current scope and remembering that
     /// the push was the thread's. `None` when the thread or its task

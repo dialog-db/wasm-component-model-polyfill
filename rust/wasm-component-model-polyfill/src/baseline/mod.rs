@@ -20,6 +20,7 @@ mod destructor_task;
 mod host_end_lifecycle;
 mod instantiation;
 mod jspi_switch_module;
+mod last_thread;
 mod nested_start;
 mod prepared_call;
 mod provider_threads;

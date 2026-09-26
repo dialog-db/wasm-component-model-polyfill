@@ -15,8 +15,11 @@
 //! it, yield leaves a callback item on the low-priority queue, and
 //! wait parks the task's implicit thread on a waitable set. A task
 //! that yielded or waited outlives the call, so its callback runs in
-//! the turn of whichever driver comes next, and an error it raises
-//! fails that driver rather than the call.
+//! a turn of a later driver, and an error it raises fails that driver
+//! rather than the call. A driver whose own call is answered does not
+//! wait for it: as in Wasmtime, a turn consults the driver's condition
+//! before it takes a resumption after a yield, so the callback runs in
+//! a turn of a driver whose call has to wait itself.
 
 #![cfg(test)]
 
@@ -60,7 +63,10 @@ const RETURNS_AT_ONCE: &[u8] = component!(
 
 /// An export that returns its result and then gives way. Its
 /// callback reads the context slot the export set, records the event
-/// it was given, and exits.
+/// it was given, and exits. `slow` gives way before it returns, and
+/// its callback counts one run and returns 8. `drive` gives way too,
+/// and returns 7 from its callback: its own resumption queues behind
+/// every one already waiting, so a call of it runs those first.
 const YIELDS_THEN_EXITS: &[u8] = component!(
     r#"
     (component
@@ -86,7 +92,21 @@ const YIELDS_THEN_EXITS: &[u8] = component!(
         (func (export "runs") (result i32) (global.get $runs))
         (func (export "code") (result i32) (global.get $code))
         (func (export "slot") (result i32) (global.get $slot))
-        (func (export "drive") (result i32) (i32.const 7)))
+        (func (export "slow") (param i32) (result i32)
+          ;; Yield.
+          (i32.const 1))
+        (func (export "slow-callback") (param i32 i32 i32) (result i32)
+          (global.set $runs (i32.add (global.get $runs) (i32.const 1)))
+          (call $task-return (i32.const 8))
+          ;; Exit.
+          (i32.const 0))
+        (func (export "drive") (result i32)
+          ;; Yield.
+          (i32.const 1))
+        (func (export "drive-callback") (param i32 i32 i32) (result i32)
+          (call $task-return (i32.const 7))
+          ;; Exit.
+          (i32.const 0)))
       (core instance $i (instantiate $m
         (with "" (instance
           (export "task.return" (func $task-return))
@@ -98,12 +118,18 @@ const YIELDS_THEN_EXITS: &[u8] = component!(
       (func (export "runs") (result u32) (canon lift (core func $i "runs")))
       (func (export "code") (result u32) (canon lift (core func $i "code")))
       (func (export "slot") (result u32) (canon lift (core func $i "slot")))
-      (func (export "drive") (result u32) (canon lift (core func $i "drive"))))
+      (func (export "slow") async (param "x" u32) (result u32)
+        (canon lift (core func $i "slow") async
+          (callback (core func $i "slow-callback"))))
+      (func (export "drive") async (result u32)
+        (canon lift (core func $i "drive") async
+          (callback (core func $i "drive-callback")))))
     "#
 );
 
 /// The same shape with a callback that traps, so that a task which
-/// keeps running after its call returned fails the next driver.
+/// keeps running after its call returned fails the next driver that
+/// waits.
 const YIELDS_THEN_TRAPS: &[u8] = component!(
     r#"
     (component
@@ -114,13 +140,21 @@ const YIELDS_THEN_TRAPS: &[u8] = component!(
           (call $task-return (i32.add (local.get 0) (i32.const 1)))
           (i32.const 1))
         (func (export "later-callback") (param i32 i32 i32) (result i32) unreachable)
-        (func (export "drive") (result i32) (i32.const 7)))
+        (func (export "drive") (result i32)
+          ;; Yield.
+          (i32.const 1))
+        (func (export "drive-callback") (param i32 i32 i32) (result i32)
+          (call $task-return (i32.const 7))
+          ;; Exit.
+          (i32.const 0)))
       (core instance $i (instantiate $m
         (with "" (instance (export "task.return" (func $task-return))))))
       (func (export "later") async (param "x" u32) (result u32)
         (canon lift (core func $i "later") async
           (callback (core func $i "later-callback"))))
-      (func (export "drive") (result u32) (canon lift (core func $i "drive"))))
+      (func (export "drive") async (result u32)
+        (canon lift (core func $i "drive") async
+          (callback (core func $i "drive-callback")))))
     "#
 );
 
@@ -505,9 +539,10 @@ async fn it_resumes_the_callback_in_a_later_turn_after_a_yield() {
         "one callback item waits for a driver to return control to the executor"
     );
 
-    // The next driver of the store runs the resumption the yield
-    // left: it sits in the resume-after-yield slot, which a turn
-    // takes before anything else.
+    // The resumption the yield left waits in the low-priority queue.
+    // A driver whose call is answered at once never reaches it, as in
+    // Wasmtime. `drive` gives way itself, so its driver waits, and its
+    // own resumption queues behind this one.
     assert_eq!(call_u32(&mut store, &instance, "drive").await, 7);
     assert_eq!(
         task_count(&store),
@@ -518,7 +553,7 @@ async fn it_resumes_the_callback_in_a_later_turn_after_a_yield() {
     assert_eq!(
         call_u32(&mut store, &instance, "runs").await,
         1,
-        "the callback ran once, in the turn of the driver that came next"
+        "the callback ran once, in a turn of the driver that waited"
     );
     assert_eq!(
         call_u32(&mut store, &instance, "code").await,
@@ -538,10 +573,11 @@ async fn it_leaves_the_task_in_the_store_when_the_calls_future_is_dropped() {
     let (mut store, instance) = instantiate(YIELDS_THEN_EXITS).await;
 
     {
-        // The turn that ran the export ended in a yield, so the
-        // driver returns pending with the callback item still
-        // queued. Dropping the future there cancels nothing.
-        let call = func(&instance, "later");
+        // `slow` gives way before it returns, so its driver goes on to
+        // a turn that ends in a yield and returns pending with the
+        // callback item still queued. Dropping the future there
+        // cancels nothing.
+        let call = func(&instance, "slow");
         let mut abandoned = Box::pin(call.call(&mut store, &[Val::U32(5)]));
         assert!(
             poll_once(&mut abandoned, Waker::noop()).is_pending(),
@@ -553,7 +589,8 @@ async fn it_leaves_the_task_in_the_store_when_the_calls_future_is_dropped() {
     assert_eq!(
         call_u32(&mut store, &instance, "runs").await,
         1,
-        "the task's callback ran in the next turn of another driver"
+        "the task's callback ran in the next turn of another driver, which \
+         takes the resumption the yield deferred before anything else"
     );
     assert_eq!(task_count(&store), 0);
 }

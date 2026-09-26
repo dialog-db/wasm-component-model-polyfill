@@ -243,7 +243,7 @@ impl<T: 'static> HeldCallbacks<T> {
 /// One last removal is not an end at all: the record a caller's
 /// subtask entry keeps alive leaves when `subtask.drop` takes that
 /// entry, and the task it names ended — and was swept — back when
-/// its implicit thread exited.
+/// its last thread ended.
 ///
 /// Beside the host tasks sit the ends the host serves, keyed by the
 /// end's identity: the writable ends it serves through producers and
@@ -1815,8 +1815,9 @@ mod tests {
 
         assert_eq!(
             first,
-            Outcome::Yield,
-            "the low-priority item gives way and the turn ends"
+            Outcome::Progress,
+            "the turn that ran an item ends before it defers the low-priority \
+             item, so the driver consults its condition first"
         );
         assert_eq!(
             entries(&log),
@@ -1826,7 +1827,16 @@ mod tests {
 
         let second = store.internal().turn(Waker::noop()).expect("second turn");
 
-        assert_eq!(second, Outcome::Idle);
+        assert_eq!(
+            second,
+            Outcome::Yield,
+            "the low-priority item gives way and the turn ends"
+        );
+        assert_eq!(entries(&log), vec!["high"]);
+
+        let third = store.internal().turn(Waker::noop()).expect("third turn");
+
+        assert_eq!(third, Outcome::Idle);
         assert_eq!(
             entries(&log),
             vec!["high", "low"],

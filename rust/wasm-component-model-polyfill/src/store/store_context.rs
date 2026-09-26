@@ -19,7 +19,7 @@ use crate::concurrency::{
     SuspendProvider, SuspendSeam, TaskId, TaskState, ThreadId, ThreadStart, TurnGuard,
     WaitableSetId, YieldWake,
 };
-use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
+use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause, TaskCause};
 use crate::executor::ResourceDestructor;
 use crate::executor::ir::CanonOptions;
 use crate::executor::release_subtask;
@@ -761,6 +761,17 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// and a nested turn, which has no control to give back, runs
     /// the resumption itself once nothing else is ready.
     ///
+    /// A driver's turn that has run an item ends with `Progress`
+    /// before it defers a resumption, and the next turn defers it.
+    /// The driver consults its condition in between, so a call whose
+    /// result is in its slot returns and leaves the resumption in the
+    /// low-priority queue, behind the work the next call queues. That
+    /// is Wasmtime's order: it polls the future it was given before it
+    /// takes each work item, and takes a low-priority item only when
+    /// the future is still pending. A thread the call left ready, of
+    /// a task that outlives the call, therefore runs after the start
+    /// of the next call and not before it.
+    ///
     /// `only`, when it names an instance, holds the turn to that
     /// instance's work, which is what a task that must not block
     /// gives way to. Such a turn polls no host task: a task that
@@ -805,13 +816,14 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         only: Option<InstanceId>,
     ) -> Result<Outcome> {
         self.open_entry_gate()?;
+        let mut ran = false;
         if !nested {
             let resumed = self.scheduler_mut().take_resume_after_yield();
             if let Some(item) = resumed {
+                ran = true;
                 self.run_item(item)?;
             }
         }
-        let mut ran = false;
         loop {
             let ready = match only {
                 Some(instance) => self.scheduler_mut().take_ready_in(instance),
@@ -851,7 +863,11 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             if self.open_entry_gate()? {
                 return Ok(Outcome::Progress);
             }
-            if !nested && self.scheduler_mut().defer_low_priority() {
+            if !nested && self.scheduler().has_deferred_item() {
+                if ran {
+                    return Ok(Outcome::Progress);
+                }
+                self.scheduler_mut().defer_low_priority();
                 return Ok(Outcome::Yield);
             }
             break;
@@ -1405,7 +1421,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// thread's task, which reaches the call that started the task
     /// when that call is waiting on it, and fails whatever is running
     /// the task when its scope is on the stack: a switch made in the
-    /// same task fails with it.
+    /// same task fails with it. A thread that returned and was the
+    /// last of a task whose implicit thread has exited ends the task,
+    /// as [`end_last_thread`](Self::end_last_thread) states.
     fn start_explicit_thread(
         &mut self,
         thread: ThreadId,
@@ -1424,7 +1442,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 guard.tasks.end_thread(thread);
             }
             match called {
-                Ok(_) => Ok(()),
+                Ok(_) => store.end_last_thread(task),
                 Err(error) => store.fail_export_task(Some(task), error),
             }
         };
@@ -1833,11 +1851,33 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// above needs no such guard, because it is keyed on the thread
     /// — it gives back only what this task's own thread holds, and a
     /// task that is still parked holds nothing.
+    ///
+    /// A task that holds an explicit thread that has not ended does
+    /// not end here. Only its implicit thread does: its scope is
+    /// popped, and the task goes on with its other threads until the
+    /// last of them ends, as
+    /// [`end_last_thread`](Self::end_last_thread) states. The borrow
+    /// check is the one exception. The reference makes it as the
+    /// result is returned, which for a synchronous lift is the moment
+    /// its implicit thread returns, so a task that still owes a
+    /// borrow here ends here, with all its threads, and the count is
+    /// its failure.
     fn exit_export_task(&mut self, task: TaskId) -> Result<core::result::Result<(), u32>> {
         let tables = self.tables_handle();
         let mut guard = Self::lock(&tables)?;
         self.scheduler_mut()
             .exit_implicit_thread(&mut guard.tasks, task);
+        let goes_on = guard.tasks.scopes().contains(&Scope::Task(task))
+            && guard
+                .tasks
+                .task(task)
+                .is_some_and(|record| record.num_borrows == 0)
+            && guard.tasks.has_explicit_threads(task);
+        if goes_on {
+            guard.leave_task_scope(task);
+            guard.leave_implicit_thread(task);
+            return Ok(Ok(()));
+        }
         let end = guard.exit_task(task);
         let discarded = if end.ended() {
             self.scheduler_mut()
@@ -1848,6 +1888,89 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         drop(guard);
         self.release_discarded_threads(discarded);
         Ok(end.borrows())
+    }
+
+    /// End the implicit thread of an export's task whose scope is
+    /// already off the stack, without ending the task, when the task
+    /// holds an explicit thread that has not ended. Answers whether it
+    /// did; a task with no such thread is untouched, and its caller
+    /// ends it as a whole. Workspace-internal.
+    ///
+    /// This is the reference's `exit_implicit_thread` for a task with
+    /// more than one thread. The instance the implicit thread held
+    /// exclusively goes back, and the thread leaves its instance's
+    /// table and its task. The task's record stays, with everything
+    /// it has queued and every thread it holds, because a task ends
+    /// only when its last thread does: an explicit thread that runs
+    /// later may still call `task.return`.
+    /// [`end_last_thread`](Self::end_last_thread) is the rest of the
+    /// end.
+    fn leave_implicit_thread(&mut self, task: TaskId) -> Result<bool> {
+        let tables = self.tables_handle();
+        let mut guard = Self::lock(&tables)?;
+        if !guard.tasks.has_explicit_threads(task) {
+            return Ok(false);
+        }
+        self.scheduler_mut()
+            .exit_implicit_thread(&mut guard.tasks, task);
+        Ok(guard.leave_implicit_thread(task))
+    }
+
+    /// End `task` when the explicit thread of it that just ended was
+    /// its last, after its implicit thread exited. This is the
+    /// reference's `unregister_thread` for the last thread of a task:
+    /// the task ends, and a task that has not resolved fails with the
+    /// no-result cause, as a borrow the guest did not drop fails one
+    /// that did. A task that still holds a thread, or whose implicit
+    /// thread has not exited, is untouched. Workspace-internal.
+    ///
+    /// The end is the one a task's implicit thread takes when it is
+    /// the last: the record leaves the store, and whatever the task
+    /// still has queued goes with it. The failure is the failure of
+    /// the task, and goes where a trap of its thread would: through
+    /// the channel of the call that started it when that call left
+    /// one, and back to the caller otherwise, which ends the turn. The
+    /// caller's record of a call between two components goes the way
+    /// a trap in the callee sends it.
+    fn end_last_thread(&mut self, task: TaskId) -> Result<()> {
+        let found = {
+            let guard = self.lock_tables()?;
+            if !guard.tasks.outlived_its_threads(task) {
+                return Ok(());
+            }
+            guard.tasks.task(task).map(|record| {
+                (
+                    record.state == TaskState::Resolved,
+                    guard.tasks.failure_channel(task),
+                    record.subtask,
+                )
+            })
+        };
+        let Some((resolved, channel, subtask)) = found else {
+            return Ok(());
+        };
+        let borrows = self.end_export_task(task)?;
+        let error = match (resolved, borrows) {
+            (false, _) => Error::Task(TaskCause::NoResult),
+            (true, Ok(())) => return Ok(()),
+            (true, Err(count)) => Error::from(AbiError {
+                position: AbiPosition::Result,
+                valtype: None,
+                cause: AbiCause::OutstandingBorrows {
+                    count: count as usize,
+                },
+            }),
+        };
+        if let Some(subtask) = subtask {
+            release_subtask(self, subtask);
+        }
+        match channel {
+            Some(channel) => {
+                channel.fill(error);
+                Ok(())
+            }
+            None => Err(error),
+        }
     }
 
     /// Pop the scope of an export's task without ending the task, as

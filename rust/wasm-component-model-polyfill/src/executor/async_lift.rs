@@ -15,16 +15,19 @@
 //!   thread, which is the reference's `exit_implicit_thread` in
 //!   `canon_lift`.
 //!
-//! A task ends when its implicit thread does. A stackful task can hold
-//! explicit threads beside its implicit one, and none of them runs
-//! when its core function returns: an explicit thread whose start has
-//! not run yet, and one suspended in the provider, is the task's
-//! pending work, which leaves with the task. So the return of a
-//! stackful task's core function ends the task. A task that has not
-//! resolved by then fails with the
-//! no-result cause, which is Wasmtime's message "async-lifted export
-//! failed to produce a result". The callback loop's exit code ends
-//! a callback task the same way, through the same function.
+//! A task ends when its last thread does, which is the reference's
+//! `unregister_thread`. A stackful task, like a callback task, can
+//! hold explicit threads beside its implicit one, made by
+//! `thread.new-indirect`, whether they have started or not. When the
+//! core function returns, or the callback loop's exit code ends the
+//! loop, the implicit thread ends, and a task that still holds an
+//! explicit thread goes on: those threads run in later turns, and one
+//! of them may call `task.return`. The task ends when the last of
+//! them ends. Then, or at once when the implicit thread was the last,
+//! a task that has not resolved fails with the no-result cause, which
+//! is Wasmtime's message "async-lifted export failed to produce a
+//! result", and a borrow the guest did not drop fails a task that
+//! did.
 //!
 //! Only the callback form needs the exclusive thread of its
 //! instance: the reference's `needs_exclusive` is `not opts.async or
@@ -94,7 +97,11 @@ impl AsyncLift {
 }
 
 /// End the implicit thread of an `async`-lifted task whose scope is
-/// already off the stack. No other thread of the task runs, so its
+/// already off the stack.
+///
+/// A task that still holds an explicit thread goes on with it, and
+/// neither check runs here: the end of the task's last thread makes
+/// them. Otherwise the implicit thread was the last, so the task's
 /// record leaves the store, and a task that has not resolved fails
 /// with the no-result cause. A borrow the guest did not drop fails a
 /// task that did resolve.
@@ -102,6 +109,9 @@ pub fn exit_implicit_thread<T: 'static>(
     store: &mut StoreContext<'_, T>,
     task: TaskId,
 ) -> Result<()> {
+    if store.internal().leave_implicit_thread(task)? {
+        return Ok(());
+    }
     let resolved = store.internal().export_task_resolved(task)?;
     let borrows = store.internal().end_export_task(task)?;
     if !resolved {
