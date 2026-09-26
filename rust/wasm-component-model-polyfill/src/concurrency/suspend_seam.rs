@@ -71,6 +71,15 @@ type Whole<T> =
 /// thread's stack — the callee of a synchronous call between two
 /// components — or of a task that must not block.
 ///
+/// One thread of an instance that must not suspend still suspends
+/// in the shim: a thread that a block of its own instance's call
+/// started or last resumed, from inside that block. Its suspension
+/// hands control back to the block's frame, which runs the ready
+/// threads of the instance and nothing else, as the reference's
+/// `canon_lift` runs them once a thread of a sync-typed call's
+/// instance blocks. A switch it makes can name the thread of that
+/// block, which the frame then lets go on.
+///
 /// The fallback is a nested turn, run from inside the guest call
 /// that blocked. It runs the guest work of other tasks that is
 /// ready and polls the host tasks the executor woke, with the waker
@@ -108,11 +117,14 @@ type Whole<T> =
 ///   turns cannot progress and the condition is still unmet, the
 ///   built-in traps with the first of four causes that holds:
 ///
-///   1. The cannot-block cause, when any instance of the store has
-///      a synchronous call in progress, which is the may-not-suspend
-///      flag of the instance record. Some call has not returned, and
-///      the callee blocking for ever is that caller failing to
-///      return, so the cause names the caller's rule.
+///   1. The cannot-block cause, when the blocked thread's own
+///      instance must not suspend, which is the may-not-suspend flag
+///      of the instance record, and the turns found no thread of that
+///      instance ready. A block of a thread whose instance may
+///      suspend reads the flag of every instance of the store
+///      instead: some call has not returned, and the callee blocking
+///      for ever is that caller failing to return, so the cause names
+///      the caller's rule.
 ///   2. The stack-switch cause, when a nested start lies between
 ///      the blocked thread and the base of the real stack. A start
 ///      intrinsic ran an `async`-typed callee from inside its own
@@ -141,8 +153,15 @@ type Whole<T> =
 ///   of that instance and nothing else — no item of another
 ///   instance, and no host task but the parked one of its own call
 ///   — and the built-in then fails with the cannot-block cause when
-///   the condition still does not hold. That is the case of a start
-///   function, of a host call into a synchronous export, of a
+///   the condition still does not hold. The ready work of the
+///   instance includes its threads suspended in the provider whose
+///   condition holds: the turn queues their resumptions and resumes
+///   them through the provider, from inside the block. Under the
+///   JSPI provider that resumption is left to the store, as the
+///   paragraph on that provider below states, so the blocked thread
+///   suspends as well, and the scheduler runs the resumption and then
+///   the rest of the wait, held to the instance. That is the case of
+///   a start function, of a host call into a synchronous export, of a
 ///   synchronous call between two components, and of a resource
 ///   destructor. A task that is allowed to block runs every ready
 ///   item and polls every woken host task.
@@ -394,7 +413,10 @@ impl<T: 'static> SuspendSeam<T> {
     /// block must return before it waits on anything but the ready
     /// work of its own instance, and the nested turn serves exactly
     /// that rule. A built-in that brings a `fallback` of its own runs
-    /// that instead.
+    /// that instead. A thread on a stack of its own whose instance may
+    /// not suspend suspends all the same when a block of its own
+    /// instance's call started or last resumed it: the suspension
+    /// returns control to that block, which serves the same rule.
     ///
     /// A first part that leaves work to the store, which a start
     /// intrinsic whose callee switched to a suspended thread does
@@ -414,11 +436,12 @@ impl<T: 'static> SuspendSeam<T> {
         fallback: Option<&Whole<T>>,
         args: &[RuntimeVal],
     ) -> anyhow::Result<bool> {
-        let (thread, own_stack) = {
+        let (thread, own_stack, returns_to) = {
             let guard = store.internal().lock_tables()?;
             let thread = guard.tasks.current_thread();
             let own_stack = thread.is_some_and(|thread| guard.tasks.on_own_stack(thread));
-            (thread, own_stack)
+            let returns_to = thread.and_then(|thread| guard.tasks.returns_to(thread));
+            (thread, own_stack, returns_to)
         };
         if let Some(thread) = thread
             && let Some(block) = store.internal().scheduler_mut().block_mut(thread)
@@ -429,7 +452,8 @@ impl<T: 'static> SuspendSeam<T> {
             let readiness = block.readiness;
             return Ok(Self::holds(store, readiness));
         }
-        let suspends = own_stack && store.internal().must_not_block_instance().is_none();
+        let suspends = own_stack
+            && (store.internal().must_not_block_instance().is_none() || returns_to.is_some());
         let (Some(thread), true) = (thread, suspends) else {
             let done = match fallback {
                 Some(whole) => whole(store, args)?,
@@ -1229,6 +1253,50 @@ mod tests {
             Error::Scheduler(SchedulerCause::CannotBlock).to_string(),
             "the nested turn went idle with the condition unmet, and the \
              reference forbids this task to block"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_reads_the_causes_past_the_cannot_block_rule_when_a_thread_of_its_instance_is_ready_below()
+    {
+        let mut owner = store();
+        let mut store = owner.internal().context();
+        {
+            // A thread of the instance switched to the blocked thread
+            // from a built-in of its own on the real stack, and has
+            // been made ready since: it waits below the blocked thread,
+            // where no nested turn reaches it.
+            let mut guard = store.internal_ref().tables().lock().expect("tables");
+            let instance = guard.tasks.insert_instance();
+            guard
+                .tasks
+                .instance_mut(instance)
+                .expect("instance record")
+                .may_not_suspend = true;
+            let below = guard.tasks.create_task(None, None, instance);
+            let below = guard.tasks.task(below).expect("task").implicit_thread;
+            guard
+                .tasks
+                .start_waiting(below, Readiness::Yielded)
+                .expect("the thread below waits");
+            guard.tasks.begin_thread_switch(below);
+            let task = guard.tasks.create_task(None, None, instance);
+            guard.tasks.push_task_scope(task);
+        }
+
+        let outcome = store
+            .internal()
+            .run_in_turn(Waker::noop(), |store| {
+                SuspendSeam::suspend(store, |_| false)
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            Error::Scheduler(SchedulerCause::StackSwitchNeeded).to_string(),
+            "another thread of the instance is ready, so the cannot-block \
+             rule does not hold, and that thread would go on under a stack \
+             switch"
         );
     }
 

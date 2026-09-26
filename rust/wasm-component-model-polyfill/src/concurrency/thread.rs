@@ -2,6 +2,7 @@
 
 use super::readiness::Readiness;
 use super::task_id::TaskId;
+use super::thread_id::ThreadId;
 use super::thread_start::ThreadStart;
 
 /// The record of one guest execution.
@@ -60,6 +61,15 @@ pub struct Thread {
     /// built-in it reaches suspends its stack in the switch module's
     /// shim rather than waiting in a nested turn.
     pub own_stack: bool,
+    /// The thread of the same instance whose blocked built-in started
+    /// or last resumed this thread through the provider, while that
+    /// instance may not suspend. The thread's suspension hands control
+    /// back to that built-in's frame, which runs the ready threads of
+    /// the instance and nothing else, so the thread may suspend there
+    /// even though its instance may not. `None` when the frame that
+    /// started or resumed it was anything else: a turn of a driver, or
+    /// a thread of another instance or of one that may suspend.
+    pub returns_to: Option<ThreadId>,
 }
 
 impl Thread {
@@ -75,6 +85,7 @@ impl Thread {
             suspended: false,
             start: None,
             own_stack: false,
+            returns_to: None,
         }
     }
 

@@ -215,6 +215,12 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
         self.context.suspend_cause()
     }
 
+    /// The cause a refused suspend of a thread whose instance,
+    /// `instance`, must not suspend reports.
+    pub fn suspend_cause_in(self, instance: InstanceId) -> SchedulerCause {
+        self.context.suspend_cause_in(instance)
+    }
+
     /// Start a host task, polling it once before it is queued.
     pub fn start_host_task(
         self,

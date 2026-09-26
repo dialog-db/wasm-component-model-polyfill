@@ -1515,6 +1515,179 @@ async fn it_resumes_a_thread_of_its_own_instance_from_a_synchronous_export_and_n
     );
 }
 
+/// Two component instances, as in [`WAKES_ITS_OWN_WORKER`], where the
+/// synchronous export blocks rather than switching.
+///
+/// In the first, `setup` starts a worker, which suspends with
+/// `thread.suspend`, and then suspends itself once it has noted `1`
+/// and resolved its task. `wake` notes `2`, makes the worker ready
+/// with `thread.resume-later`, and yields once. The worker runs in
+/// that yield: it notes `3` and ends. `wake` then notes `4` and returns
+/// 7, or traps when the worker has not run.
+///
+/// In the second, the stackful `spin` lowers the host's `tick`
+/// asynchronously and then notes `200` and yields for ever, so its
+/// thread is ready whenever it is suspended. `tick`'s host task notes
+/// `100` on each poll and wakes itself on each poll.
+const YIELDS_TO_ITS_OWN_WORKER: &[u8] = component!(
+    r#"
+    (component
+      (import "note" (func $note (param "step" u32)))
+      (import "tick" (func $tick async))
+      (component $own
+        (import "note" (func $note (param "step" u32)))
+        (core module $libc (table (export "__indirect_function_table") 1 funcref))
+        (core instance $libc (instantiate $libc))
+        (core func $note (canon lower (func $note)))
+        (core func $task-return (canon task.return (result u32)))
+        (core type $start-ty (func (param i32)))
+        (alias core export $libc "__indirect_function_table" (core table $table))
+        (core func $new-indirect (canon thread.new-indirect $start-ty (core table $table)))
+        (core func $resume-later (canon thread.resume-later))
+        (core func $yield (canon thread.yield))
+        (core func $suspend (canon thread.suspend))
+        (core module $m
+          (import "" "note" (func $note (param i32)))
+          (import "" "task.return" (func $task-return (param i32)))
+          (import "" "thread.new-indirect" (func $new-indirect (param i32 i32) (result i32)))
+          (import "" "thread.resume-later" (func $resume-later (param i32)))
+          (import "" "thread.yield" (func $yield (result i32)))
+          (import "" "thread.suspend" (func $suspend (result i32)))
+          (import "libc" "__indirect_function_table" (table 1 funcref))
+          (global $worker (mut i32) (i32.const 0))
+          (global $done (mut i32) (i32.const 0))
+          (func $work (param i32)
+            (drop (call $suspend))
+            (call $note (i32.const 3))
+            (global.set $done (i32.const 1)))
+          (elem (table 0) (i32.const 0) func $work)
+          (func (export "setup")
+            (global.set $worker (call $new-indirect (i32.const 0) (i32.const 0)))
+            (call $resume-later (global.get $worker))
+            (drop (call $yield))
+            (call $note (i32.const 1))
+            (call $task-return (i32.const 0))
+            (drop (call $suspend)))
+          (func (export "wake") (result i32)
+            (call $note (i32.const 2))
+            (call $resume-later (global.get $worker))
+            (drop (call $yield))
+            (if (i32.eqz (global.get $done)) (then unreachable))
+            (call $note (i32.const 4))
+            (i32.const 7)))
+        (core instance $i (instantiate $m
+          (with "" (instance
+            (export "note" (func $note))
+            (export "task.return" (func $task-return))
+            (export "thread.new-indirect" (func $new-indirect))
+            (export "thread.resume-later" (func $resume-later))
+            (export "thread.yield" (func $yield))
+            (export "thread.suspend" (func $suspend))))
+          (with "libc" (instance $libc))))
+        (func (export "setup") async (result u32)
+          (canon lift (core func $i "setup") async))
+        (func (export "wake") (result u32)
+          (canon lift (core func $i "wake"))))
+      (component $other
+        (import "note" (func $note (param "step" u32)))
+        (import "tick" (func $tick async))
+        (core func $note (canon lower (func $note)))
+        (core func $tick (canon lower (func $tick) async))
+        (core func $yield (canon thread.yield))
+        (core module $m
+          (import "" "note" (func $note (param i32)))
+          (import "" "tick" (func $tick (result i32)))
+          (import "" "thread.yield" (func $yield (result i32)))
+          (func (export "spin")
+            (drop (call $tick))
+            (loop $again
+              (call $note (i32.const 200))
+              (drop (call $yield))
+              (br $again))))
+        (core instance $i (instantiate $m
+          (with "" (instance
+            (export "note" (func $note))
+            (export "tick" (func $tick))
+            (export "thread.yield" (func $yield))))))
+        (func (export "spin") async
+          (canon lift (core func $i "spin") async)))
+      (instance $a (instantiate $own (with "note" (func $note))))
+      (instance $b (instantiate $other (with "note" (func $note)) (with "tick" (func $tick))))
+      (export "setup" (func $a "setup"))
+      (export "wake" (func $a "wake"))
+      (export "spin" (func $b "spin")))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_resumes_a_suspended_thread_of_its_own_instance_from_a_blocked_synchronous_export_and_nothing_else()
+ {
+    // `wake`'s task must not block, so its yield takes the nested turn
+    // held to its own instance. The worker is suspended in the
+    // provider and `wake` made it ready, so the turn resumes it
+    // through the provider from inside the yield, as the reference's
+    // `canon_lift` runs a ready thread of the instance once a thread
+    // of a sync-typed call blocks. Under the stack-switching provider
+    // the resume is made in place. The JSPI provider cannot resume a
+    // stack from inside a call, so `wake`'s own thread suspends as
+    // well, and the scheduler resumes the worker, then `wake`. Either
+    // way nothing else runs and no host task is polled in between: the
+    // other instance's thread, suspended in the provider and ready
+    // whenever it yields, and its host task, which wakes itself on
+    // every poll, note nothing between `wake`'s `2` and its `4`.
+    // Without a provider the worker waits on the real stack, and
+    // nothing can resume it from inside the call.
+    let engine = engine(true);
+    if !has_provider(&engine) {
+        return;
+    }
+    let notes: Notes = Arc::default();
+    let mut linker = noting(&engine, &notes);
+    {
+        let notes = notes.clone();
+        linker
+            .root()
+            .func_wrap_concurrent("tick", move |_accessor: &Accessor<()>, (): ()| Ticks {
+                notes: notes.clone(),
+            })
+            .expect("the registration");
+    }
+    let (mut store, instance) = instantiate(&engine, &linker, YIELDS_TO_ITS_OWN_WORKER).await;
+
+    let setup = func(&instance, "setup")
+        .call(&mut store, &[])
+        .await
+        .expect("`setup` returns once its worker has suspended");
+    assert_eq!(setup.as_ref(), [Val::U32(0)]);
+    {
+        // The spinner stays in the store once its call is dropped.
+        let spin = func(&instance, "spin");
+        let mut spin = Box::pin(spin.call(&mut store, &[]));
+        assert!(poll_once(&mut spin).is_pending(), "`spin` never returns");
+    }
+    let woken = func(&instance, "wake")
+        .call(&mut store, &[])
+        .await
+        .expect("`wake` returns once its worker has run");
+
+    assert_eq!(woken.as_ref(), [Val::U32(7)]);
+    let notes = notes.lock().expect("notes").clone();
+    let begun = notes
+        .iter()
+        .position(|note| *note == 2)
+        .unwrap_or_else(|| panic!("`wake` began: {notes:?}"));
+    assert_eq!(
+        notes.get(begun..begun + 3),
+        Some(&[2, 3, 4][..]),
+        "the worker ran inside `wake`'s call, and nothing else ran and no \
+         host task was polled until it ended and `wake` returned: {notes:?}"
+    );
+    assert!(
+        notes[..begun].contains(&100) && notes[..begun].contains(&200),
+        "the other instance was busy before `wake` began: {notes:?}"
+    );
+}
+
 /// Host data that notes `500` when its store frees it.
 #[cfg(target_arch = "wasm32")]
 struct NotesItsDrop(Notes);

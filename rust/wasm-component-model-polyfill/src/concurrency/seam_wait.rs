@@ -343,7 +343,14 @@ impl<T: 'static> SeamWait<T> {
         if past_budget {
             return Some(Err(SuspendSeam::past_budget(store)));
         }
-        Some(Err(Error::Scheduler(store.internal().suspend_cause())))
+        // A wait held to one instance is the block of a thread whose
+        // own instance must not suspend. Its cause is read from that
+        // instance and not from the other instances of the store.
+        let cause = match only {
+            Some(instance) => store.internal().suspend_cause_in(instance),
+            None => store.internal().suspend_cause(),
+        };
+        Some(Err(Error::Scheduler(cause)))
     }
 
     /// The one nested turn a yield runs.

@@ -476,6 +476,10 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// and polls no host task. That is the lazy blocking rule of
     /// the reference for a task that must not block, which gives
     /// way to the ready threads of its own instance and then traps.
+    /// Those threads include the ones suspended in the provider: the
+    /// turn evaluates the waiting threads' conditions itself and
+    /// queues the resumptions of the instance's own threads, which it
+    /// then runs like its other items, through the provider.
     /// Such a turn reports [`Outcome::Progress`] when it ran
     /// something and [`Outcome::Idle`] when that instance had
     /// nothing to run.
@@ -526,6 +530,12 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// failed. Workspace-internal.
     fn suspend_cause(&self) -> SchedulerCause {
         self.store_data().suspend_cause()
+    }
+
+    /// Why a nested turn held to `instance` went idle with its
+    /// condition unmet. Workspace-internal.
+    fn suspend_cause_in(&self, instance: InstanceId) -> SchedulerCause {
+        self.store_data().suspend_cause_in(instance)
     }
 
     /// Start the host task of one call of a host `async` function,
@@ -810,9 +820,10 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     ///
     /// `only`, when it names an instance, holds the turn to that
     /// instance's work, which is what a task that must not block
-    /// gives way to. Such a turn polls no host task: a task that
-    /// must not block must not wait on one, and the cause it fails
-    /// with says so.
+    /// gives way to: its items, and the resumptions of its threads
+    /// suspended in the provider whose condition holds. Such a turn
+    /// polls no host task: a task that must not block must not wait
+    /// on one, and the cause it fails with says so.
     ///
     /// The entry gate is opened at the top of the turn, once the
     /// turn has run everything that was ready, and once more after
@@ -917,6 +928,20 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 }
                 self.scheduler_mut().defer_low_priority();
                 return Ok(Outcome::Yield);
+            }
+            // A turn held to one instance never reaches the evaluation
+            // that follows the poll of the host tasks below, so a
+            // thread of the instance suspended in the provider whose
+            // condition came to hold before the turn, or through what
+            // a thread outside any item did, would never be resumed
+            // from inside the block. The turn evaluates the conditions
+            // here and queues the resumptions of the instance's own
+            // threads, which it then runs like any other item of the
+            // instance: through the provider, from inside the block.
+            if let Some(instance) = only
+                && self.note_ready_threads_in(instance)?
+            {
+                continue;
             }
             break;
         }
@@ -1132,7 +1157,17 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// two items. The evaluation only reads the tables.
     fn note_ready_threads(&mut self) -> Result<()> {
         self.lock_tables()?.tasks.note_ready_threads();
-        self.queue_resumptions()
+        self.queue_resumptions(None).map(|_| ())
+    }
+
+    /// Evaluate the readiness condition of every waiting thread, as
+    /// [`note_ready_threads`](Self::note_ready_threads) does, and
+    /// queue the resumptions of the threads of `instance` alone,
+    /// answering whether it queued any. This is the evaluation of a
+    /// turn held to `instance`.
+    fn note_ready_threads_in(&mut self, instance: InstanceId) -> Result<bool> {
+        self.lock_tables()?.tasks.note_ready_threads();
+        self.queue_resumptions(Some(instance))
     }
 
     /// Run one item of a turn, and evaluate the conditions of the
@@ -1346,6 +1381,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         let task = {
             let mut guard = self.lock_tables()?;
             guard.tasks.set_own_stack(thread, true);
+            guard.tasks.note_returns_to(thread, base);
             guard
                 .tasks
                 .thread(thread)
@@ -1451,6 +1487,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         let base = {
             let mut guard = self.lock_tables()?;
             let base = guard.tasks.scopes().len();
+            guard.tasks.note_returns_to(thread, base);
             let scopes = core::mem::take(&mut parked.scopes);
             let running = core::mem::take(&mut parked.running);
             guard.tasks.restore_scopes(scopes, running);
@@ -1883,7 +1920,10 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// suspends or finishes, and leave a switch it made as it
     /// suspended for the caller. A thread that has never run starts;
     /// one suspended in the provider resumes, and is suspended no
-    /// more, since the switch is the resume that names it.
+    /// more, since the switch is the resume that names it. One that
+    /// waits on the real stack, in the block of the frame this runs
+    /// in, is suspended no more either, and goes on once this returns
+    /// to that block.
     fn enter_switched_thread(&mut self, thread: ThreadId) -> Result<()> {
         let start = self.lock_tables()?.tasks.take_thread_start(thread);
         if let Some((task, start)) = start {
@@ -2056,9 +2096,15 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// readiness. The resumption belongs to the thread's instance, so
     /// a turn held to that instance runs it, and to its task, so it
     /// goes with the task's record.
-    fn queue_resumptions(&mut self) -> Result<()> {
+    ///
+    /// `only`, when it names an instance, queues the resumptions of
+    /// that instance's threads alone, which is all a turn held to the
+    /// instance may run. The threads of other instances stay as they
+    /// are, for the next evaluation of a turn that may run them. It
+    /// answers whether it queued any.
+    fn queue_resumptions(&mut self, only: Option<InstanceId>) -> Result<bool> {
         if self.scheduler().parked_threads() == 0 {
-            return Ok(());
+            return Ok(false);
         }
         let ready = {
             let guard = self.lock_tables()?;
@@ -2075,12 +2121,15 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                         .and_then(|task| task.instance);
                     (thread, yielded, instance)
                 })
+                .filter(|(_, _, instance)| only.is_none() || *instance == only)
                 .collect::<Vec<_>>()
         };
+        let mut queued = false;
         for (thread, yielded, instance) in ready {
             let Some((task, number)) = self.scheduler_mut().queue_resumption(thread) else {
                 continue;
             };
+            queued = true;
             let mut item = Item::new(
                 ItemKind::ThreadResumption,
                 move |store: &mut StoreContext<'_, T>| store.run_queued_resumption(thread, number),
@@ -2095,7 +2144,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 self.scheduler_mut().push_high_priority(item);
             }
         }
-        Ok(())
+        Ok(queued)
     }
 
     /// Give an export's task a channel to resolve through and hand

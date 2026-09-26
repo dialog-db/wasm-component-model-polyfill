@@ -837,6 +837,73 @@ impl TaskTables {
         self.thread(thread).is_some_and(|record| record.own_stack)
     }
 
+    /// Record which thread's frame `thread` goes back to when it
+    /// suspends through the provider, as it starts or resumes there.
+    /// `depth` is how deep the stack of current scopes was before
+    /// `thread`'s own scopes went on it, so the thread current at that
+    /// depth is the one whose frame starts or resumes it.
+    ///
+    /// That thread is recorded only when it belongs to the same
+    /// instance as `thread` and the instance may not suspend. Its
+    /// frame is then a block of the instance's own call, which runs
+    /// the ready threads of the instance and nothing else, as the
+    /// reference's `canon_lift` does once a thread of a sync-typed
+    /// call's instance blocks. Any other frame records nothing.
+    pub fn note_returns_to(&mut self, thread: ThreadId, depth: usize) {
+        let instance = self.thread_instance(thread);
+        let returns_to = self.thread_at_depth(depth).filter(|starter| {
+            *starter != thread
+                && instance.is_some()
+                && self.thread_instance(*starter) == instance
+                && instance
+                    .and_then(|instance| self.instance(instance))
+                    .is_some_and(|record| record.may_not_suspend)
+        });
+        if let Some(record) = self.thread_mut(thread) {
+            record.returns_to = returns_to;
+        }
+    }
+
+    /// The thread `thread` goes back to when it suspends through the
+    /// provider, when that is a block of its own instance's call, as
+    /// [`note_returns_to`](Self::note_returns_to) recorded it.
+    pub fn returns_to(&self, thread: ThreadId) -> Option<ThreadId> {
+        self.thread(thread).and_then(|record| record.returns_to)
+    }
+
+    /// The instance `thread`'s task belongs to.
+    fn thread_instance(&self, thread: ThreadId) -> Option<InstanceId> {
+        let task = self.thread(thread)?.task;
+        self.task(task)?.instance
+    }
+
+    /// The thread that was current while the stack of current scopes
+    /// was `depth` deep, read as [`current_thread`](Self::current_thread)
+    /// reads the whole stack.
+    fn thread_at_depth(&self, depth: usize) -> Option<ThreadId> {
+        let scopes = &self.scopes[..depth.min(self.scopes.len())];
+        let at = scopes
+            .iter()
+            .rposition(|scope| matches!(scope, Scope::Task(_)))?;
+        let Scope::Task(task) = scopes[at] else {
+            return None;
+        };
+        let explicit = self
+            .running_threads
+            .iter()
+            .rev()
+            .find(|(position, _)| *position == at)
+            .map(|(_, thread)| *thread)
+            .filter(|thread| {
+                self.thread(*thread)
+                    .is_some_and(|record| record.task == task)
+            });
+        match explicit {
+            Some(thread) => Some(thread),
+            None => Some(self.task(task)?.implicit_thread),
+        }
+    }
+
     /// The whole stack of current scopes, outermost first.
     pub fn scopes(&self) -> &[Scope] {
         &self.scopes
@@ -1403,6 +1470,18 @@ impl TaskTables {
             .copied()
             .filter(|thread| self.thread_ready(*thread))
             .collect()
+    }
+
+    /// Whether a thread of `instance` other than the current one waits
+    /// on a condition that holds: a thread the reference's `canon_lift`
+    /// could run once a thread of that instance blocks.
+    pub fn other_thread_ready_in(&self, instance: InstanceId) -> bool {
+        let current = self.current_thread();
+        self.waiting.iter().any(|thread| {
+            Some(*thread) != current
+                && self.thread_instance(*thread) == Some(instance)
+                && self.thread_ready(*thread)
+        })
     }
 
     /// The threads that wait, in the order they began to wait.

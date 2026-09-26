@@ -535,7 +535,42 @@ impl<T: 'static> StoreData<T> {
     pub fn suspend_cause(&self) -> SchedulerCause {
         if self.any_must_not_block() {
             SchedulerCause::CannotBlock
-        } else if self.caller_below_goes_on() || self.host_future_pending() {
+        } else {
+            self.cause_past_cannot_block()
+        }
+    }
+
+    /// Why a nested turn held to `instance` went idle with its
+    /// condition unmet: the blocked thread's own instance must not
+    /// suspend, and the turn ran every ready thread of that instance
+    /// it could reach.
+    ///
+    /// The cannot-block cause is read from that instance alone. It
+    /// holds when no other thread of the instance is ready, which is
+    /// where the reference's `canon_lift` traps a sync-typed call
+    /// that blocked. A thread of the instance that is ready and still
+    /// did not run waits on the real stack below the blocked thread,
+    /// where only a stack switch would reach it, and the other causes
+    /// then decide, in the order [`suspend_cause`](Self::suspend_cause)
+    /// states them. Workspace-internal.
+    pub fn suspend_cause_in(&self, instance: InstanceId) -> SchedulerCause {
+        let ready = self
+            .tables
+            .lock()
+            .map(|guard| guard.tasks.other_thread_ready_in(instance))
+            .unwrap_or(false);
+        if ready {
+            self.cause_past_cannot_block()
+        } else {
+            SchedulerCause::CannotBlock
+        }
+    }
+
+    /// The cause of a failed block once the cannot-block rule does not
+    /// hold: the stack-switch cause for a caller below that would go
+    /// on or a pending host task, and the deadlock cause otherwise.
+    fn cause_past_cannot_block(&self) -> SchedulerCause {
+        if self.caller_below_goes_on() || self.host_future_pending() {
             SchedulerCause::StackSwitchNeeded
         } else {
             SchedulerCause::Deadlock

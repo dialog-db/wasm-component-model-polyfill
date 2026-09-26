@@ -10,9 +10,12 @@
 //! the thread it names from inside the built-in. With no provider
 //! that thread runs on the real stack above the built-in. Under the
 //! stack-switching provider it runs on a stack of its own, and the
-//! outcomes the tests read are the same. The two callback exports
-//! run on a stack of their own under that provider, and the one whose
-//! outcome differs says how.
+//! outcomes the tests read are the same but one: a started thread
+//! that switches back to the export's thread suspends through the
+//! provider into the built-in that started it, which lets the
+//! export's thread go on. The two callback exports run on a stack of
+//! their own under that provider. Each test whose outcome differs
+//! says how.
 //!
 //! The component keeps a log in a core global: each step of an export
 //! and of the threads it starts appends one digit, so the number an
@@ -513,8 +516,22 @@ async fn it_fails_a_switch_to_a_thread_that_is_not_suspended_with_wasmtimes_mess
 }
 
 #[wcmp_macros::test]
-async fn it_fails_a_switch_to_a_thread_suspended_below_the_current_frame_with_the_stack_switch_cause()
- {
+async fn it_switches_back_to_the_thread_below_only_where_the_started_thread_can_suspend() {
+    if has_provider() {
+        // The export's switch starts the thread from inside its
+        // built-in, on a stack of its own. The thread's switch names
+        // the export's thread, whose built-in the thread goes back to,
+        // so the thread suspends through the provider and the built-in
+        // lets the export's thread go on, as the reference switches to
+        // it. The started thread stays suspended.
+        assert_eq!(
+            log_of("suspend-then-resume-below").await,
+            123,
+            "the started thread switched back to the export's thread, \
+             which went on"
+        );
+        return;
+    }
     let message = failure_of(THREADS, "suspend-then-resume-below").await;
     assert!(
         message.contains(STACK_SWITCH),

@@ -30,7 +30,12 @@ can. Such a thread waits in a
 nested turn: a suspension waits in turns run from inside the built-in,
 a switch to a thread that never ran starts that thread above the
 built-in, and a switch to a thread suspended below the current frame
-fails with the stack-switch message. A call between two components crosses in all
+fails with the stack-switch message. Under a provider the nested turn
+of a sync-typed call runs the ready threads of the call's own instance,
+its threads suspended in the provider included, and a thread of that
+instance that the turn or a switch of the call started or resumed
+suspends back into it, so it can switch back to the call's thread
+below. A call between two components crosses in all
 four combinations of lift and lower, and the readable end of a stream
 or a future crosses with it. A read and a
 write on the two ends of a stream pair up as the reference's stream
@@ -74,11 +79,7 @@ switch that only a stack switch can serve, such as a callee that can
 be released only by a caller that is on the stack or a thread that
 suspends after its task has resolved, the cancellation of a task or a
 subtask, an error context, or the rules that decide which trap
-poisons an instance. One directive is a `defect` line instead: a
-sync-typed thread waits in a switch for a thread that suspended in
-the provider, and the nested turn it waits in, held to its instance,
-does not resume that thread.
-Three definitions in the same category fail at link instead, on a
+poisons an instance. Three definitions in the same category fail at link instead, on a
 host item the harness does not provide: the two WASI 0.3 handler
 fixtures import `wasi:http/types`, and
 `wasmtime/async/cancel-starting-subtask-does-not-leak.wast` imports
@@ -90,7 +91,7 @@ bookkeeping rather than on its own merits. Several files of
 `cm/async` define a component once and then drive it over dozens of
 directives, so a failure early in one of them cascades over the rest;
 natively that row has no `cascade` line today, and without a provider
-it has seven.
+it has nine.
 
 `expected-failures.txt` lists every directive the polyfill does not pass
 yet, one per line, as `<path>:<line> <category> <reason>`. The harness
@@ -277,19 +278,19 @@ conformance` prints the current one):
 | Corpus           | Directives | Passed | Pass % | Expected failures by category                                          |
 | ---------------- | ---------- | ------ | ------ | ---------------------------------------------------------------------- |
 | `cm`             | 1126       | 1096   | 97.3   | substrate 4, validation 20, cascade 6                                  |
-| `cm/async`       | 393        | 371    | 94.4   | deferred-feature 21, defect 1                                          |
+| `cm/async`       | 393        | 377    | 95.9   | deferred-feature 16                                                    |
 | `fixtures`       | 59         | 53     | 89.8   | deferred-feature 2, cascade 4                                          |
 | `wasmtime`       | 469        | 434    | 92.5   | deferred-feature 1, substrate 8, cascade 26                            |
 | `wasmtime/async` | 387        | 369    | 95.3   | deferred-feature 14, cascade 4                                         |
-| total            | 2434       | 2323   | 95.4   | deferred-feature 38, substrate 12, validation 20, defect 1, cascade 40 |
+| total            | 2434       | 2329   | 95.7   | deferred-feature 33, substrate 12, validation 20, cascade 40           |
 
 The browser runs its guest threads through the JSPI provider, so its
 summary is the native one, and the eleven lines of
 `expected-failures.web.txt` move eleven passing directives into
-`substrate`: `cm` passes 1095 (97.2%) with substrate 5, `cm/async` 370
-(94.1%) with substrate 1, `wasmtime` 427 (91.0%) with substrate 15,
-`wasmtime/async` 367 (94.8%) with substrate 2, and the total is 2312
-(95.0%) with substrate 23. Six of the
+`substrate`: `cm` passes 1095 (97.2%) with substrate 5, `cm/async` 376
+(95.7%) with substrate 1, `wasmtime` 427 (91.0%) with substrate 15,
+`wasmtime/async` 367 (94.8%) with substrate 2, and the total is 2318
+(95.2%) with substrate 23. Six of the
 eleven lines, among them the three in the `async` rows, are the browser
 engine's wording for a trap or a validation error that Wasmtime words
 differently. Two in `wasmtime/big-strings.wast` trap in the adapter
@@ -307,11 +308,11 @@ behind in the same instance, and each such later directive is a
 as under Wasmtime's wast runner, so what an earlier instance left
 behind never runs during a later instance's call. The two async rows
 hold 4 of the 40 cascade lines natively, all in `wasmtime/async`, and
-without a provider `cm/async` adds 7, all in
+without a provider `cm/async` adds 9, all in
 `cm/async/during-sync-scheduling-candidates.wast`.
 
-Of the 38 files of `cm/async`, 27 pass whole natively and in the
-browser, and 23 without a provider, where four more hold lines that
+Of the 38 files of `cm/async`, 30 pass whole natively and in the
+browser, and 23 without a provider, where seven more hold lines that
 only a provider serves. Of the 54 files of `wasmtime/async`, 48 pass
 whole natively and 46 in the browser, where `subtask-wait.wast` and
 `sync-call-context-trap.wast` each hold one line of the browser's delta,
@@ -387,24 +388,29 @@ no-result failure comes as that thread, the task's last, ends.
 `cm/values/post-return.wast` and, natively,
 `wasmtime/thread-transparency/reentrancy.wast` pass whole too. The five
 thread built-ins that suspend or switch run too, so
-`cm/async/self-switch-traps.wast` and
-`cm/async/during-sync-call-exclusive-resume.wast` pass whole, and most
-of `cm/async/trap-if-block-and-sync.wast`,
-`cm/async/switch-to-ready-callback.wast`, and
-`cm/async/during-sync-scheduling-candidates.wast` passes. Natively the
+`cm/async/self-switch-traps.wast`,
+`cm/async/during-sync-call-exclusive-resume.wast`,
+`cm/async/during-sync-call-may-block-if-other-ready-threads.wast`,
+`cm/async/during-sync-call-no-sibling-resume.wast`, and
+`cm/async/during-sync-scheduling-candidates.wast` pass whole
+natively, and most of `cm/async/trap-if-block-and-sync.wast` and
+`cm/async/switch-to-ready-callback.wast` passes. Natively the
 thread lines of `cm/async/trap-if-sync-and-waitable-set.wast` and
 `wasmtime/async/join-during-sync-read.wast` pass too, and so do the
 lines of `during-sync-scheduling-candidates.wast` whose thread
 suspends or yields after its task resolved, because each of those
-threads suspends in the provider. Five lines still wait on a stack
-switch there, each for a thread of a sync-typed call, which cannot
-suspend its stack even under a provider: two of
-`trap-if-block-and-sync.wast` and one of `cm/async/reentrance.wast`
-switch back to such a thread while it waits in a switch below the
-current frame, and two of `during-sync-scheduling-candidates.wast`
-yield in such a thread, whose nested turn, held to its instance, does
-not queue the resumption of a thread that `thread.resume-later` made
-ready in the provider. Without a provider the other lines named here
+threads suspends in the provider. A thread of a sync-typed call cannot
+suspend its stack even under a provider, but its block runs the ready
+threads of its own instance, as the reference's `canon_lift` does: a
+yield of `during-sync-scheduling-candidates.wast` resumes the thread
+`thread.resume-later` made ready in the provider, and in two lines
+each of `trap-if-block-and-sync.wast` and the two `during-sync-call`
+files a thread that the sync-typed thread switched to suspends back
+into its built-in, or switches back to it. One line of
+`cm/async/reentrance.wast` still waits on a stack switch: its
+switching thread is itself the callee of a synchronous call, on its
+caller's stack, and switches back to a sync-typed thread that waits
+below it. Without a provider the other lines named here
 wait on a stack switch as well: a switch back to a thread suspended
 below the current frame, a thread that blocks above a thread that
 yielded to it, a thread that suspends above the asynchronous lower
@@ -420,16 +426,7 @@ exited, one of them calls `task.return`, and the others suspend or
 yield for ever in the provider after their calls returned. Without a
 provider its first directive waits on a stack switch, for those
 threads, which start in the nested turns of `run` and stay on the
-stack above it. One directive each of
-`cm/async/during-sync-call-may-block-if-other-ready-threads.wast` and
-`cm/async/during-sync-call-no-sibling-resume.wast` switches from a
-sync-typed call to an explicit thread that a finished callback task
-left suspended. In the second, the explicit thread suspends so that
-the sync-typed thread below it can go on, which only a stack switch
-serves. The first is the one `defect` line: the explicit thread
-suspends in the provider inside a synchronous call, and the nested
-turn the sync-typed thread waits in, held to its instance, does not
-resume it. The rest of the async rows wait on the other reasons.
+stack above it. The rest of the async rows wait on the other reasons.
 Cancellation holds `cm/async/cancel-delivery.wast`,
 `cm/async/cancel-subtask.wast`, `wasmtime/async/cancel-host.wast`,
 `wasmtime/async/cancel-sibling-subtask.wast`,
@@ -447,10 +444,12 @@ link, before its cancel, on the host item the harness does not
 provide. Eight of the twelve cases of `cm/async/reentrance.wast` pass.
 Of the four that remain, two fail at their call to `subtask.cancel`,
 one needs a stack switch to go back to a thread suspended below it,
-and one suspends in a sync-typed call while the synchronous calls
-below it are in progress, where the reference runs the ready threads
-of the call's own instance from inside the block and the polyfill does
-not yet, so it fails with the cannot-block message. Error contexts hold
+and one suspends in an async-typed callee that an asynchronous lower
+began while synchronous calls below it are in progress. The reference
+lets that callee suspend and hands control back to its caller, but the
+polyfill keeps the may-not-suspend flag of the callee's instance while
+the start intrinsic runs it, so the callee's block, held to that
+instance, fails with the cannot-block message. Error contexts hold
 `wasmtime/async/error-context.wast` and
 `wasmtime/error-context-trap-in-post-return.wast`. Of the three corpus
 files that exercise a host `async` item, `wasmtime/async/lower.wast`

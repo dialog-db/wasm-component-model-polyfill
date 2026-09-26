@@ -48,7 +48,10 @@
 //! The five are blocking built-ins. Under a provider each reaches the
 //! guest as the switch module's shim for it, and a thread that runs
 //! on a stack of its own, of a task that may block, suspends in the
-//! shim through the provider:
+//! shim through the provider. So does such a thread of an instance
+//! that must not suspend when a block of its own instance's call
+//! started or last resumed it, since its suspension hands control
+//! back to that block:
 //!
 //! - A suspending built-in suspends the thread until a resume names
 //!   it. `thread.resume-later` makes it ready, and it resumes in a
@@ -59,7 +62,10 @@
 //!   switching thread has left the real stack: a turn's item, or a
 //!   trampoline that made a nested start. A thread that has never run
 //!   starts, and a thread suspended in the provider resumes, each on
-//!   a stack of its own, and it can switch again in turn.
+//!   a stack of its own, and it can switch again in turn. A switch
+//!   can also name the thread whose block the switching thread hands
+//!   control back to. That thread waits on the real stack in the
+//!   frame that runs the named thread, and the frame lets it go on.
 //!
 //! Every other thread blocks through the seam's nested turn, and a
 //! switch runs from inside the built-in: each thread of a store with
@@ -68,8 +74,9 @@
 //!
 //! - A suspension waits until a nested turn runs the work that
 //!   resumes the thread. A task that must not block runs the ready
-//!   work of its own instance alone, and then fails with the
-//!   cannot-block cause, as for every other block.
+//!   work of its own instance alone, its threads suspended in the
+//!   provider included, and then fails with the cannot-block cause,
+//!   as for every other block.
 //! - A switch to a thread that has never run starts that thread from
 //!   inside the built-in, above it, as a nested start: on the real
 //!   stack with no provider, and on a stack of its own under one. A
@@ -475,16 +482,27 @@ fn named_argument(switch: Switch, args: &[RuntimeVal]) -> anyhow::Result<Option<
 
 /// The thread a suspending built-in switches to, or `None` when it
 /// names none or a promote finds the named thread not ready.
+///
+/// `below` is the thread whose blocked built-in the current thread
+/// goes back to when it suspends through the provider, when that is a
+/// block of its own instance's call. That thread waits on the real
+/// stack, in the frame the switch returns to, so the switch can name
+/// it: the frame runs it once the current thread has suspended. A
+/// switch that runs from inside the built-in, where the current
+/// thread cannot suspend, passes `None`.
 fn switch_target<T: 'static>(
     store: &mut StoreContext<'_, T>,
     instance: InstanceId,
     current: ThreadId,
     switch: Switch,
     named: Option<u32>,
+    below: Option<ThreadId>,
 ) -> Result<Option<ThreadId>> {
     match (switch, named) {
-        (Switch::Resume, Some(index)) => Ok(Some(resume_target(store, instance, index, current)?)),
-        (Switch::Promote, Some(index)) => promote_target(store, instance, index, current),
+        (Switch::Resume, Some(index)) => {
+            Ok(Some(resume_target(store, instance, index, current, below)?))
+        }
+        (Switch::Promote, Some(index)) => promote_target(store, instance, index, current, below),
         _ => Ok(None),
     }
 }
@@ -522,7 +540,9 @@ fn current_thread<T: 'static>(store: &mut StoreContext<'_, T>) -> Result<ThreadI
 ///   thread that has never run, and resumes one suspended in the
 ///   provider. That is the reference's `Thread.resume` loop, and the
 ///   named thread runs on a stack of its own, so it can suspend and
-///   switch in turn.
+///   switch in turn. A switch that names the thread whose block the
+///   switching thread goes back to lets that thread go on instead:
+///   it waits on the real stack, in the frame that runs the switch.
 ///
 /// The finish part answers zero once the thread resumes, and the
 /// trap of a wait that failed otherwise: the deadlock cause when a
@@ -535,7 +555,8 @@ fn begin_suspension<T: 'static>(
     named: Option<u32>,
 ) -> Result<BlockStep<T>> {
     let current = current_thread(store)?;
-    let target = switch_target(store, instance, current, switch, named)?;
+    let below = store.internal().lock_tables()?.tasks.returns_to(current);
+    let target = switch_target(store, instance, current, switch, named, below)?;
     let readiness = if yielding {
         Readiness::Yielded
     } else {
@@ -571,7 +592,7 @@ fn suspension<T: 'static>(
     named: Option<u32>,
 ) -> Result<Option<()>> {
     let current = current_thread(store)?;
-    let target = switch_target(store, instance, current, switch, named)?;
+    let target = switch_target(store, instance, current, switch, named, None)?;
     let run = move |store: &mut StoreContext<'_, T>| match target {
         Some(other) => start_switched(store, current, other),
         None => Ok(()),
@@ -591,14 +612,18 @@ fn suspension<T: 'static>(
 /// A suspended thread that has run is suspended in a built-in of its
 /// own. One suspended in the provider waits on a stack of its own,
 /// and the switch resumes it there. One suspended on the real stack
-/// waits in a frame below the current one, so it cannot run until
-/// the current frame returns, and the switch fails with the
+/// waits in a frame below the current one. When that frame is
+/// `below`, the one the current thread goes back to as it suspends
+/// through the provider, the frame runs the thread once the switch
+/// has suspended the current one. Any other such thread cannot run
+/// until the current frame returns, and the switch fails with the
 /// stack-switch cause.
 fn resume_target<T: 'static>(
     store: &mut StoreContext<'_, T>,
     instance: InstanceId,
     index: u32,
     current: ThreadId,
+    below: Option<ThreadId>,
 ) -> Result<ThreadId> {
     let (thread, never_ran) = {
         let guard = store.internal().lock_tables()?;
@@ -611,7 +636,7 @@ fn resume_target<T: 'static>(
         }
         (thread, record.start.is_some())
     };
-    if !never_ran && !store.internal().scheduler().is_parked(thread) {
+    if !never_ran && !store.internal().scheduler().is_parked(thread) && below != Some(thread) {
         return Err(Error::Scheduler(SchedulerCause::StackSwitchNeeded));
     }
     Ok(thread)
@@ -639,14 +664,18 @@ fn resume_target<T: 'static>(
 ///   say, so the promote suspends or yields instead, and the turns
 ///   of that wait run the callback when it is ready.
 /// - Any other thread that waits is inside a built-in of its own on
-///   the real stack, below the current frame. It cannot run until
-///   the current frame returns, and the promote fails with the
-///   stack-switch cause.
+///   the real stack, below the current frame. When it waits in
+///   `below`, the frame the current thread goes back to as it
+///   suspends through the provider, that frame runs it once the
+///   switch has suspended the current thread. Any other such thread
+///   cannot run until the current frame returns, and the promote
+///   fails with the stack-switch cause.
 fn promote_target<T: 'static>(
     store: &mut StoreContext<'_, T>,
     instance: InstanceId,
     index: u32,
     current: ThreadId,
+    below: Option<ThreadId>,
 ) -> Result<Option<ThreadId>> {
     let (thread, startable, ready) = {
         let guard = store.internal().lock_tables()?;
@@ -660,7 +689,9 @@ fn promote_target<T: 'static>(
         let startable = record.start.is_some() && record.readiness.is_some();
         (thread, startable, guard.tasks.thread_ready(thread))
     };
-    if startable || (ready && store.internal().scheduler().is_parked(thread)) {
+    if startable
+        || (ready && (store.internal().scheduler().is_parked(thread) || below == Some(thread)))
+    {
         return Ok(Some(thread));
     }
     if ready && !store.internal().scheduler().holds_callback_of(thread) {
