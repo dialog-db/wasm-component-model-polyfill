@@ -63,13 +63,12 @@ kanban-plugin: basic
 
 ## In Progress
 
-- [ ] [[ca64c1]]
 - [ ] [[45fae1]]
 
 ## Needs Review
 
 - [ ] [[c723cc]]
-- [ ] [[9e951e]]
+- [ ] [[ca64c1]]
 
 ## Ready
 
@@ -86,6 +85,7 @@ kanban-plugin: basic
 - [ ] [[79456d]]
 - [ ] [[1e133e]]
 - [ ] [[674450]]
+- [ ] [[9e951e]]
 - [ ] [[730c46]]
 - [ ] [[cd850a]]
 - [ ] [[923a21]]
