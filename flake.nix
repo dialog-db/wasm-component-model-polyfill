@@ -573,10 +573,18 @@
         # it and would idle for five minutes on its own, so a browser lane
         # pins its rendezvous directory under the lane workspace and stops
         # it on exit, before the workspace (and the browser's files under
-        # it) goes away.
+        # it) goes away. `--stop` returns before the daemon has finished
+        # removing its own files, so a removal that races it can meet a
+        # directory that is not empty yet; it retries for a few seconds,
+        # and only the last attempt can fail the lane.
         browserPool = ''
           export WBG_POOL_DIR="$workspace/wbg-pool"
-          trap 'wbg-pool daemon --stop >/dev/null 2>&1; rm -rf "$workspace"' EXIT
+          trap 'wbg-pool daemon --stop >/dev/null 2>&1
+            for _ in 1 2 3 4 5; do
+              rm -rf "$workspace" 2>/dev/null && break
+              sleep 1
+            done
+            rm -rf "$workspace"' EXIT
         '';
 
         menuTestCommand =

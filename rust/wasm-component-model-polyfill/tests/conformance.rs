@@ -1415,6 +1415,102 @@ async fn progress(suspend_provider: bool) {
     }
 }
 
+/// The directives whose block only a frame below the blocked thread
+/// can release: a caller that started the blocked callee from inside
+/// its own frame, and that would go on once control returned to it.
+/// A provider runs the callee on a stack of its own, so the caller
+/// gets control back and releases the block. A nested turn runs the
+/// callee above the caller on the one real stack, so the block fails
+/// with the stack-switch cause, and never with the deadlock cause,
+/// because the reference permits it. The entries of one file are
+/// adjacent.
+const FRAME_BELOW_DIRECTIVES: &[(&str, usize)] = &[
+    ("cm/async/async-calls-sync.wast", 250),
+    ("cm/async/async-calls-sync.wast", 251),
+    ("cm/async/cancel-and-exclusive-lock.wast", 196),
+    ("cm/async/sync-streams.wast", 208),
+    ("wasmtime/async/reenter-during-yield.wast", 81),
+    ("wasmtime/async/stream-zero-ops.wast", 201),
+    ("wasmtime/async/streams-massive-send.wast", 238),
+    ("wasmtime/async/streams-massive-send.wast", 240),
+    ("wasmtime/async/sync-streams.wast", 186),
+    ("wasmtime/async/task-builtins.wast", 723),
+    ("wasmtime/async/trap-if-done.wast", 594),
+    ("wasmtime/async/trap-if-done.wast", 596),
+    ("wasmtime/async/trap-if-done.wast", 612),
+    ("wasmtime/async/trap-if-done.wast", 614),
+    ("wasmtime/async/trap-if-done.wast", 623),
+    ("wasmtime/async/trap-if-done.wast", 625),
+    ("wasmtime/async/trap-if-done.wast", 627),
+];
+
+/// The one frame-below directive that also cancels a subtask. Under a
+/// provider its block is served, and it goes on to fail at
+/// `subtask.cancel`, which the polyfill does not build.
+const FRAME_BELOW_CANCEL: (&str, usize) = ("cm/async/cancel-and-exclusive-lock.wast", 196);
+
+/// Every frame-below directive, in both provider states: served where
+/// a provider runs the store's threads, and failed with the
+/// stack-switch cause, not the deadlock cause, where none does. The
+/// corpus tests compare a failure with its list by file and line only,
+/// so this test is what holds each directive to its cause, on both
+/// targets.
+#[wcmp_macros::test]
+async fn it_serves_every_frame_below_block_under_a_provider_and_fails_it_with_the_stack_switch_cause_in_a_nested_turn()
+ {
+    let stack_switch = stack_switch_reason();
+    let deadlock = SchedulerCause::Deadlock.to_string();
+    let mut paths: Vec<&str> = FRAME_BELOW_DIRECTIVES
+        .iter()
+        .map(|(path, _)| *path)
+        .collect();
+    paths.dedup();
+
+    let mut out = String::new();
+    for suspend_provider in [true, false] {
+        for path in &paths {
+            let (_, text) = CORPUS_FILES
+                .iter()
+                .find(|(file, _)| file == path)
+                .unwrap_or_else(|| panic!("{path} is not in the corpus"));
+            let mut config = engine_config(path, text);
+            config.suspend_provider(suspend_provider);
+            let mut runner = Runner::new(&config, path.starts_with("cm/")).await;
+            let threads = runs_threads_through(runner.engine.suspend_provider());
+            let (_, failures) = runner.run(text).await;
+            for (_, line) in FRAME_BELOW_DIRECTIVES
+                .iter()
+                .filter(|(file, _)| file == path)
+            {
+                let reason = failures
+                    .iter()
+                    .find(|failure| failure.line == *line)
+                    .map(|failure| failure.reason.as_str());
+                let state = if threads {
+                    "under a provider"
+                } else {
+                    "in a nested turn"
+                };
+                let held = match reason {
+                    None => threads && (*path, *line) != FRAME_BELOW_CANCEL,
+                    Some(reason) if threads && (*path, *line) == FRAME_BELOW_CANCEL => {
+                        reason.contains("subtask.cancel")
+                            && !reason.contains(&stack_switch)
+                            && !reason.contains(&deadlock)
+                    }
+                    Some(reason) => {
+                        !threads && reason.contains(&stack_switch) && !reason.contains(&deadlock)
+                    }
+                };
+                if !held {
+                    let _ = writeln!(out, "{path}:{line} {state}: {}", reason.unwrap_or("passes"));
+                }
+            }
+        }
+    }
+    assert!(out.is_empty(), "\n{out}");
+}
+
 /// Rewrite an expected-failures list from this run, in place: a
 /// directive that still fails keeps its line's category and any
 /// hand-written parenthetical and takes the run's reason, a directive
