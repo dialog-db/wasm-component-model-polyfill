@@ -49,7 +49,7 @@ mod imp {
 
         /// What the host did while the wait was on.
         pub fn observed(&self) -> Result<String, String> {
-            Ok("the executor's timer ran while nothing polled the entry".to_owned())
+            Ok("the executor's timer ran while nothing polled the store".to_owned())
         }
     }
 }

@@ -25,17 +25,18 @@ A `.wast` here is the final component as a `(component $name binary
 | `wasi-http-same-instance` | as `wasi-http`, as first written                                        | as `wasi-http`                                                                 |
 | `streams`                 | `streams/wit/streams.wit`, one Rust crate                               | as `wasi-http`                                                                 |
 | `stream-composition`      | `stream-composition/wit/stream-composition.wit`, two Rust crates        | `cargo build`, `wasm-tools component new`, then `wac plug`                     |
+| `sync-wait`               | `sync-wait/wit/sync-wait.wit`, one Rust crate                            | as `wasi-http`                                                                 |
 
 `build.sh` records the exact commands. The final `.wasm` of each
 fixture is checked in next to its sources.
 
 ## The Rust fixtures
 
-`rich`, `wasi-http`, `wasi-http-same-instance`, `streams`, and
-`stream-composition` are built by a language toolchain, so the binding
-layer is the one a real guest carries: `cabi_realloc` from the
-allocator, wit-bindgen's lift and lower code, wit-bindgen's async
-runtime for every fixture but `rich`, and — for the two `wasi-http`
+`rich`, `wasi-http`, `wasi-http-same-instance`, `streams`,
+`stream-composition`, and `sync-wait` are built by a language toolchain,
+so the binding layer is the one a real guest carries: `cabi_realloc`
+from the allocator, wit-bindgen's lift and lower code, wit-bindgen's
+async runtime for every fixture but `rich` and `sync-wait`, and — for the two `wasi-http`
 fixtures — a `wasi:` world's imports.
 
 Their cargo metadata is spelled `cargo-workspace.toml`,
@@ -198,6 +199,30 @@ The stream crosses between the two components' memories, so each copy
 is a guest-to-guest copy of a number payload. The composed component
 imports nothing, and `assertions.wast` calls `total`.
 
+### `sync-wait`
+
+One component whose import and export are both `async func`s in the
+WIT, and which the `async` option of wit-bindgen's macro binds
+synchronously on both sides:
+
+- The import `host-echo-u32` is lowered without the `async` option, so
+  a call from the guest returns only once the host has answered.
+- The export `total` is lifted without it, so its core function is
+  plain code on its task's one thread. It calls `host-echo-u32` once
+  per key, in order, and returns the sum of the answers.
+
+An `async` function type lets the task block, and a synchronous lower
+lets the guest wait for a host answer where it stands. A host whose
+answer is not ready at once therefore needs the guest's thread set
+aside until it is, which is what a stack switch does.
+
+The import carries the name of the `async` host function the
+conformance harness registers, which answers with its argument at
+once, so `assertions.wast` calls `total` and no call waits there. The
+smoke test (`rust/wcmp-smoke`) registers its own `host-echo-u32`,
+whose answer comes after a timer, and shows the guest's thread
+waiting for it.
+
 ## What the byte-stability claim covers
 
 Two runs of `fixtures` on the same machine produce identical bytes,
@@ -214,14 +239,16 @@ store hash that differs per platform and per nixpkgs revision, so
 without the remap the same sources would build to different bytes on
 a different machine.
 
-Four families of absolute path survive the remaps, and every Rust
-fixture carries all four:
+Four families of absolute path survive the remaps. Every Rust fixture
+but `sync-wait` carries all four, and `sync-wait` carries the last
+two, because no panic location from the standard library's sources or
+from wit-bindgen survives in so small a guest:
 
 - `/rust/lib/rustlib/src/rust/library/...`, the standard library
   sources the toolchain ships, caught by the sysroot remap.
 - `/cargo/registry/src/index.crates.io-<hash>/<crate>-<version>/...`,
-  caught by the registry remap: `wit-bindgen-0.62.0` in every binary,
-  and `futures-core-0.3.34` and `futures-util-0.3.34` in every binary
+  caught by the registry remap: `wit-bindgen-0.62.0` in every binary
+  but `sync-wait.wasm`, and `futures-core-0.3.34` and `futures-util-0.3.34` in every binary
   built with wit-bindgen's async support as well: both `handler.wasm`
   files, `streams.wasm`, and `stream-composition/composed.wasm`.
 - `/rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/...`, which

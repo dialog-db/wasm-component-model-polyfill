@@ -75,6 +75,7 @@ corpus_test!(it_passes_fixtures_maps, "fixtures/maps.wast");
 corpus_test!(it_passes_fixtures_rich, "fixtures/rich.wast");
 corpus_test!(it_passes_fixtures_stream_composition, "fixtures/stream-composition.wast");
 corpus_test!(it_passes_fixtures_streams, "fixtures/streams.wast");
+corpus_test!(it_passes_fixtures_sync_wait, "fixtures/sync-wait.wast");
 corpus_test!(it_passes_fixtures_wasi_http_same_instance, "fixtures/wasi-http-same-instance.wast");
 corpus_test!(it_passes_fixtures_wasi_http, "fixtures/wasi-http.wast");
 corpus_test!(it_passes_wasmtime_adapter, "wasmtime/adapter.wast");
@@ -244,6 +245,7 @@ const CORPUS_FILES: &[(&str, &str)] = &[
     ("fixtures/rich.wast", include_str!("../corpus/fixtures/rich.wast")),
     ("fixtures/stream-composition.wast", include_str!("../corpus/fixtures/stream-composition.wast")),
     ("fixtures/streams.wast", include_str!("../corpus/fixtures/streams.wast")),
+    ("fixtures/sync-wait.wast", include_str!("../corpus/fixtures/sync-wait.wast")),
     ("fixtures/wasi-http-same-instance.wast", include_str!("../corpus/fixtures/wasi-http-same-instance.wast")),
     ("fixtures/wasi-http.wast", include_str!("../corpus/fixtures/wasi-http.wast")),
     ("wasmtime/adapter.wast", include_str!("../corpus/wasmtime/adapter.wast")),

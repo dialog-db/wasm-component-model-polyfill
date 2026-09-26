@@ -187,6 +187,14 @@ rust_components stream-composition counter summer
 wac plug --plug "$work/stream-composition-counter.wasm" "$work/stream-composition-summer.wasm" -o stream-composition/composed.wasm
 emit_wast stream-composition composed stream-composition/composed.wasm
 
+# sync-wait: one component built by `cargo` and wit-bindgen, whose
+# `async func` import and export are both bound synchronously. `total`
+# calls the host's `host-echo-u32` once per key through a plain call
+# that returns only once the host has answered, and sums the answers.
+rust_components sync-wait waiter
+cp "$work/sync-wait-waiter.wasm" sync-wait/sync-wait.wasm
+emit_wast sync-wait waiter sync-wait/sync-wait.wasm
+
 # The harness manifest: one `corpus_test!` per `.wast` under the corpus
 # and the table the progress summary reads. A fixture's own directory
 # holds only sources (its `assertions.wast` is not a runnable script), so

@@ -20,7 +20,9 @@ tokio = { workspace = true, features = ["rt", "macros", "time"] }
 
 # The browser half of the same wait is a `setTimeout`-backed promise,
 # reached through the global the way the polyfill's own yield wake
-# reaches it, so it works on a page and in a worker alike.
+# reaches it, so it works on a page and in a worker alike. The same
+# crates read the global `WebAssembly` namespace to learn whether the
+# browser ships JavaScript Promise Integration.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = { workspace = true }
 wasm-bindgen = { workspace = true }

@@ -1,0 +1,15 @@
+package wcmp:sync-wait@0.1.0;
+
+world sync-wait {
+  /// A host `async` function whose answer may come later: over the
+  /// network, or after a timer. The conformance harness supplies it
+  /// under this name and answers with the argument at once; the smoke
+  /// test answers with the argument after a timer.
+  import host-echo-u32: async func(v: u32) -> u32;
+
+  /// Asks the host for every key in turn, through a plain call that
+  /// does not return until the host has answered, and returns the sum
+  /// of the answers. The guest's code is synchronous: it neither
+  /// awaits nor polls.
+  export total: async func(keys: list<u32>) -> u32;
+}

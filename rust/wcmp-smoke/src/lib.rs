@@ -9,7 +9,10 @@
 //! opts into a gated feature, awaits outside the store, reads a
 //! stream a guest returns, feeds a guest a stream and awaits the
 //! future it answers with, streams numbers between two composed
-//! components, and learns which host a WASI 0.3 HTTP handler needs.
+//! components, lets synchronous guest code wait for an `async` host
+//! function, runs an export that blocks until its answers arrive,
+//! parks and wakes guest threads, and learns which host a WASI 0.3
+//! HTTP handler needs and why a wait fails once suspending is off.
 //! It runs as a native binary (`tests smoke native`) and as a page in
 //! the browser (`tests smoke web`) from the same source, so a reader
 //! can check the polyfill by reading this file and by running it on
@@ -23,6 +26,7 @@
 
 mod clock;
 mod host_state;
+mod offered;
 mod outcome;
 mod outside;
 mod reporter;
@@ -39,8 +43,8 @@ use std::sync::{Arc, Mutex};
 use wasm_component_model_polyfill::{
     Accessor, Component, ComponentValue, CoreExternType, Destination, Engine, EngineConfig, Error,
     FutureConsumer, FutureReader, HostCall, Instance, InterfaceIdentifier, LinkError, Linker,
-    Source, Store, StoreContext, StreamConsumer, StreamProducer, StreamReader, StreamResult, Val,
-    ValField, ValueType,
+    SchedulerCause, Source, Store, StoreContext, StreamConsumer, StreamProducer, StreamReader,
+    StreamResult, SuspendProviderKind, Val, ValField, ValueType,
 };
 use wcmp_macros::component;
 
@@ -105,6 +109,15 @@ const STREAMS: &[u8] = include_bytes!(
 /// its end, and returns the sum.
 const STREAM_COMPOSITION: &[u8] = include_bytes!(
     "../../wasm-component-model-polyfill/tests/corpus/fixtures/stream-composition/composed.wasm"
+);
+
+/// The `sync-wait` fixture: a component `cargo` and wit-bindgen built
+/// whose `async func` import and export are both bound synchronously.
+/// `total` calls the host's `host-echo-u32` once per key, through a
+/// plain call that returns only once the host has answered, and
+/// returns the sum of the answers.
+const SYNC_WAIT: &[u8] = include_bytes!(
+    "../../wasm-component-model-polyfill/tests/corpus/fixtures/sync-wait/sync-wait.wasm"
 );
 
 /// A component that exports a core module for the host to take: one
@@ -351,6 +364,204 @@ const DROPPER: &[u8] = component!(
     "#
 );
 
+/// A component whose stackful export `both` starts two calls to the
+/// host's `async` function `fetch`, blocks in `waitable-set.wait`
+/// until each has answered, and returns the sum of the answers through
+/// `task.return`. Each time the wait wakes it for an answer, it tells
+/// the host's `tally` which call answered: 1 for the first, 2 for the
+/// second.
+///
+/// A stackful export is an `async` lift with no `callback`: its core
+/// function is plain code that blocks where it stands, and the thread
+/// it runs on is set aside while it waits. wit-bindgen's core ABI
+/// marks this lift as not supported, and no other toolchain the flake
+/// carries emits it, so the component is written here by hand.
+const BLOCKING_EXPORT: &[u8] = component!(
+    r#"
+    (component
+      (type $host (instance
+        (export "tally" (func (param "n" u32)))))
+      (import "wcmp:smoke/host@0.1.0" (instance $host (type $host)))
+      (alias export $host "tally" (func $tally))
+      (import "fetch" (func $fetch async (param "key" u32) (result u32)))
+      (core module $libc (memory (export "memory") 1))
+      (core instance $libc (instantiate $libc))
+      (core func $tally (canon lower (func $tally)))
+      (core func $fetch
+        (canon lower (func $fetch) async (memory (core memory $libc "memory"))))
+      (core func $set-new (canon waitable-set.new))
+      (core func $join (canon waitable.join))
+      (core func $wait (canon waitable-set.wait (memory (core memory $libc "memory"))))
+      (core func $set-drop (canon waitable-set.drop))
+      (core func $subtask-drop (canon subtask.drop))
+      (core func $task-return (canon task.return (result u32)))
+      (core module $m
+        (import "" "memory" (memory 1))
+        (import "" "tally" (func $tally (param i32)))
+        (import "" "fetch" (func $fetch (param i32 i32) (result i32)))
+        (import "" "waitable-set.new" (func $set-new (result i32)))
+        (import "" "waitable.join" (func $join (param i32 i32)))
+        (import "" "waitable-set.wait" (func $wait (param i32 i32) (result i32)))
+        (import "" "waitable-set.drop" (func $set-drop (param i32)))
+        (import "" "subtask.drop" (func $subtask-drop (param i32)))
+        (import "" "task.return" (func $task-return (param i32)))
+        ;; Start one call, whose answer lands at `slot`. A call that
+        ;; answered at once returns 0; any other joins the set and
+        ;; returns its subtask.
+        (func $start (param $key i32) (param $slot i32) (param $set i32) (result i32)
+          (local $status i32)
+          (local $subtask i32)
+          (local.set $status (call $fetch (local.get $key) (local.get $slot)))
+          (if (result i32) (i32.eq (i32.and (local.get $status) (i32.const 15)) (i32.const 2))
+            (then (i32.const 0))
+            (else
+              (local.set $subtask (i32.shr_u (local.get $status) (i32.const 4)))
+              (call $join (local.get $subtask) (local.get $set))
+              (local.get $subtask))))
+        ;; The answers land at 0 and 4, and each event at 16: the
+        ;; subtask at 16 and its new state at 20.
+        (func (export "both") (param $a i32) (param $b i32)
+          (local $set i32)
+          (local $first i32)
+          (local $second i32)
+          (local $pending i32)
+          (local $answered i32)
+          (local.set $set (call $set-new))
+          (local.set $first (call $start (local.get $a) (i32.const 0) (local.get $set)))
+          (local.set $second (call $start (local.get $b) (i32.const 4) (local.get $set)))
+          (local.set $pending
+            (i32.add
+              (i32.ne (local.get $first) (i32.const 0))
+              (i32.ne (local.get $second) (i32.const 0))))
+          (block $all
+            (loop $more
+              (br_if $all (i32.eqz (local.get $pending)))
+              ;; A subtask event whose state is `returned`.
+              (if (i32.and
+                    (i32.eq (call $wait (local.get $set) (i32.const 16)) (i32.const 1))
+                    (i32.eq (i32.load (i32.const 20)) (i32.const 2)))
+                (then
+                  (local.set $answered (i32.load (i32.const 16)))
+                  (call $tally
+                    (select (i32.const 1) (i32.const 2)
+                      (i32.eq (local.get $answered) (local.get $first))))
+                  (call $join (local.get $answered) (i32.const 0))
+                  (call $subtask-drop (local.get $answered))
+                  (local.set $pending (i32.sub (local.get $pending) (i32.const 1)))))
+              (br $more)))
+          (call $set-drop (local.get $set))
+          (call $task-return (i32.add (i32.load (i32.const 0)) (i32.load (i32.const 4))))))
+      (core instance $i (instantiate $m
+        (with "" (instance
+          (export "memory" (memory $libc "memory"))
+          (export "tally" (func $tally))
+          (export "fetch" (func $fetch))
+          (export "waitable-set.new" (func $set-new))
+          (export "waitable.join" (func $join))
+          (export "waitable-set.wait" (func $wait))
+          (export "waitable-set.drop" (func $set-drop))
+          (export "subtask.drop" (func $subtask-drop))
+          (export "task.return" (func $task-return))))))
+      (func (export "both") async (param "a" u32) (param "b" u32) (result u32)
+        (canon lift (core func $i "both") async)))
+    "#
+);
+
+/// A component whose stackful export `run` starts three threads of
+/// its own and parks and wakes them, telling the host's `tally` each
+/// step.
+///
+/// Thread `n` tells `10 + n` as it starts, parks itself with
+/// `thread.suspend`, and tells `20 + n` once another thread woke it;
+/// the last to finish wakes the main thread. The main thread lets each
+/// thread run up to its park, tells `30`, wakes thread 2 and then
+/// thread 1 for later with `thread.resume-later`, switches straight to
+/// thread 0 with `thread.suspend-then-resume`, and tells `40` once the
+/// last thread woke it. It returns the number of threads that
+/// finished.
+///
+/// wit-bindgen's Rust generator exposes no thread built-in. Its C
+/// generator does, but the flake carries no C toolchain, and the
+/// flake's `wasm-tools` encodes the thread built-ins under the names
+/// and opcodes they had before the Component Model renamed them, so a
+/// component it assembled would name other built-ins than the ones the
+/// polyfill decodes. The component is written here by hand.
+const GUEST_THREADS: &[u8] = component!(
+    r#"
+    (component
+      (type $host (instance
+        (export "tally" (func (param "n" u32)))))
+      (import "wcmp:smoke/host@0.1.0" (instance $host (type $host)))
+      (alias export $host "tally" (func $tally))
+      (core module $libc (table (export "__indirect_function_table") 1 funcref))
+      (core instance $libc (instantiate $libc))
+      (core func $tally (canon lower (func $tally)))
+      (core func $task-return (canon task.return (result u32)))
+      (core func $thread-index (canon thread.index))
+      (core type $start-ty (func (param i32)))
+      (alias core export $libc "__indirect_function_table" (core table $table))
+      (core func $new-indirect (canon thread.new-indirect $start-ty (core table $table)))
+      (core func $resume-later (canon thread.resume-later))
+      (core func $suspend (canon thread.suspend))
+      (core func $yield-then-resume (canon thread.yield-then-resume))
+      (core func $suspend-then-resume (canon thread.suspend-then-resume))
+      (core module $m
+        (import "" "tally" (func $tally (param i32)))
+        (import "" "task.return" (func $task-return (param i32)))
+        (import "" "thread.index" (func $thread-index (result i32)))
+        (import "" "thread.new-indirect" (func $new-indirect (param i32 i32) (result i32)))
+        (import "" "thread.resume-later" (func $resume-later (param i32)))
+        (import "" "thread.suspend" (func $suspend (result i32)))
+        (import "" "thread.yield-then-resume" (func $yield-then-resume (param i32) (result i32)))
+        (import "" "thread.suspend-then-resume" (func $suspend-then-resume (param i32) (result i32)))
+        (import "libc" "__indirect_function_table" (table 1 funcref))
+        (global $main (mut i32) (i32.const 0))
+        (global $running (mut i32) (i32.const 0))
+        (global $finished (mut i32) (i32.const 0))
+        (func $worker (param $n i32)
+          (call $tally (i32.add (i32.const 10) (local.get $n)))
+          (drop (call $suspend))
+          (call $tally (i32.add (i32.const 20) (local.get $n)))
+          (global.set $finished (i32.add (global.get $finished) (i32.const 1)))
+          (global.set $running (i32.sub (global.get $running) (i32.const 1)))
+          (if (i32.eqz (global.get $running))
+            (then (call $resume-later (global.get $main)))))
+        (elem (table 0) (i32.const 0) func $worker)
+        (func (export "run")
+          (local $t0 i32)
+          (local $t1 i32)
+          (local $t2 i32)
+          (global.set $main (call $thread-index))
+          (global.set $running (i32.const 3))
+          (global.set $finished (i32.const 0))
+          (local.set $t0 (call $new-indirect (i32.const 0) (i32.const 0)))
+          (local.set $t1 (call $new-indirect (i32.const 0) (i32.const 1)))
+          (local.set $t2 (call $new-indirect (i32.const 0) (i32.const 2)))
+          (drop (call $yield-then-resume (local.get $t0)))
+          (drop (call $yield-then-resume (local.get $t1)))
+          (drop (call $yield-then-resume (local.get $t2)))
+          (call $tally (i32.const 30))
+          (call $resume-later (local.get $t2))
+          (call $resume-later (local.get $t1))
+          (drop (call $suspend-then-resume (local.get $t0)))
+          (call $tally (i32.const 40))
+          (call $task-return (global.get $finished))))
+      (core instance $i (instantiate $m
+        (with "" (instance
+          (export "tally" (func $tally))
+          (export "task.return" (func $task-return))
+          (export "thread.index" (func $thread-index))
+          (export "thread.new-indirect" (func $new-indirect))
+          (export "thread.resume-later" (func $resume-later))
+          (export "thread.suspend" (func $suspend))
+          (export "thread.yield-then-resume" (func $yield-then-resume))
+          (export "thread.suspend-then-resume" (func $suspend-then-resume))))
+        (with "libc" (instance $libc))))
+      (func (export "run") async (result u32)
+        (canon lift (core func $i "run") async)))
+    "#
+);
+
 /// A story's body: what it does against the engine, and the evidence
 /// it returns or the reason it failed.
 type Body<'a> = Pin<Box<dyn Future<Output = Result<String, String>> + 'a>>;
@@ -449,6 +660,16 @@ pub static ENGINE_CONFIGURATION: Story = Story {
            accepts it.",
 };
 
+pub static SUSPEND_PROVIDER: Story = Story {
+    chapter: "Introspection and configuration",
+    title: "Learn how the engine sets a waiting guest aside",
+    goal: "A guest that waits needs its stack set aside until it can go on. You ask the \
+           engine how it does that here: with WebAssembly's stack-switching instructions \
+           natively on x86_64 Linux, with JavaScript Promise Integration in the browser, or \
+           not at all, as in a browser without it such as Safari before 27. An engine you \
+           configure with suspending turned off answers that it has no way.",
+};
+
 pub static RUN_CONCURRENT: Story = Story {
     chapter: "Asynchronous hosts",
     title: "Await outside the store without blocking it",
@@ -484,12 +705,57 @@ pub static STREAM_BETWEEN_COMPONENTS: Story = Story {
            the other's through the adapter the polyfill supplies, and you see only the sum.",
 };
 
+pub static WAIT_FOR_THE_HOST: Story = Story {
+    chapter: "Suspending guests",
+    title: "Let synchronous guest code wait for an `async` host function",
+    goal: "A component that `cargo` and wit-bindgen built calls your `async` host function \
+           through a plain call that returns only once you answer, the way code that \
+           fetches over the network is written. Your answer waits on a timer the store \
+           knows nothing about. The guest is set aside while it waits, your program keeps \
+           running, and the call returns your answers once the timer fires. In a browser \
+           without JavaScript Promise Integration, such as Safari before 27, the call fails \
+           instead and names the missing stack switch as its cause.",
+};
+
+pub static BLOCK_AND_RESUME: Story = Story {
+    chapter: "Suspending guests",
+    title: "Run an export that blocks until its answers arrive",
+    goal: "A component's export starts two calls to your `async` host function and then \
+           blocks until each has answered, written in a blocking style with no callback to \
+           return to. You answer the second call first. The export wakes once per answer, \
+           in the order you answered, and returns the sum of both. In a browser without \
+           JavaScript Promise Integration the wait fails instead and names the missing \
+           stack switch as its cause.",
+};
+
+pub static GUEST_THREADS_STORY: Story = Story {
+    chapter: "Suspending guests",
+    title: "Park and wake guest threads",
+    goal: "A component starts three threads of its own, the way a C library starts \
+           pthreads, and each thread parks itself until another wakes it. The main thread \
+           wakes two of them for later, switches straight to the third, and parks until the \
+           last one finishes. You watch every thread start, park, and wake in exactly that \
+           order. In a browser without JavaScript Promise Integration the first park that \
+           only another thread can end fails instead and names the missing stack switch as \
+           its cause.",
+};
+
 pub static WASI_HTTP_STORY: Story = Story {
     chapter: "Known limits",
     title: "Learn which host a WASI 0.3 HTTP handler needs",
     goal: "You try a `wasi:http` 0.3 handler whose request and response carry streams and \
            futures. The polyfill translates it, and without a host for `wasi:http/types` \
            it stops at link and names that import instead of failing somewhere inside.",
+};
+
+pub static SUSPENDING_OFF: Story = Story {
+    chapter: "Known limits",
+    title: "Turn suspending off and see why a wait fails",
+    goal: "You configure an engine with suspending turned off, as a host might to keep the \
+           order of a fallback that runs everything on one stack. The synchronous call to \
+           your timer-backed `async` host function then fails and names the missing stack \
+           switch as its cause, rather than returning a wrong answer or hanging. The \
+           blocking export and the guest threads fail the same way.",
 };
 
 /// Every story in the order the report tells them, each with its
@@ -511,6 +777,7 @@ fn stories(engine: &Engine) -> Vec<(&'static Story, Body<'_>)> {
         (&MEMORY64, Box::pin(memory64(engine))),
         (&NAVIGATION, Box::pin(navigation(engine))),
         (&ENGINE_CONFIGURATION, Box::pin(engine_configuration())),
+        (&SUSPEND_PROVIDER, Box::pin(suspend_provider(engine))),
         (&RUN_CONCURRENT, Box::pin(run_concurrent_outside(engine))),
         (&READ_A_GUEST_STREAM, Box::pin(read_a_guest_stream(engine))),
         (
@@ -521,7 +788,11 @@ fn stories(engine: &Engine) -> Vec<(&'static Story, Body<'_>)> {
             &STREAM_BETWEEN_COMPONENTS,
             Box::pin(stream_between_components(engine)),
         ),
+        (&WAIT_FOR_THE_HOST, Box::pin(wait_for_the_host_here(engine))),
+        (&BLOCK_AND_RESUME, Box::pin(block_and_resume())),
+        (&GUEST_THREADS_STORY, Box::pin(guest_threads())),
         (&WASI_HTTP_STORY, Box::pin(wasi_http(engine))),
+        (&SUSPENDING_OFF, Box::pin(suspending_off())),
     ]
 }
 
@@ -1079,6 +1350,45 @@ async fn engine_configuration() -> Result<String, String> {
     Ok(format!(
         "the default engine rejected an `implements` import ({rejection}); an engine that opts \
          in accepted it"
+    ))
+}
+
+/// A suspend provider as the report names it.
+fn provider_name(kind: SuspendProviderKind) -> &'static str {
+    match kind {
+        SuspendProviderKind::StackSwitching => {
+            "the stack-switching provider, WebAssembly's own stack-switching instructions"
+        }
+        SuspendProviderKind::Jspi => "the JSPI provider, JavaScript Promise Integration",
+        SuspendProviderKind::None => {
+            "no provider, so a wait runs the store's work on the one stack above it"
+        }
+        _ => "a provider this smoke test does not know",
+    }
+}
+
+/// The engine selected the provider this target offers when it was
+/// constructed, and an engine configured with suspending off answers
+/// that it has none, whatever the target offers.
+async fn suspend_provider(engine: &Engine) -> Result<String, String> {
+    let selected = engine.suspend_provider();
+    expect(
+        "the provider this target offers",
+        selected,
+        offered::offered(),
+    )?;
+    let mut config = EngineConfig::new();
+    config.suspend_provider(false);
+    let off = Engine::with_config(&config).map_err(fail)?;
+    expect(
+        "the provider of an engine with suspending off",
+        off.suspend_provider(),
+        SuspendProviderKind::None,
+    )?;
+    Ok(format!(
+        "this engine selected {}; an engine configured with suspending off answers {}",
+        provider_name(selected),
+        provider_name(off.suspend_provider())
     ))
 }
 
@@ -1672,6 +1982,364 @@ async fn stream_between_components(engine: &Engine) -> Result<String, String> {
          other as a `stream<u32>`, and total({NUMBERS}) = {sum}; an empty stream summed to \
          {empty}",
         STREAM_COMPOSITION.len()
+    ))
+}
+
+/// The keys the `sync-wait` story hands `total`, which asks the host
+/// for each in turn.
+const KEYS: [u32; 3] = [1, 2, 39];
+
+/// An engine that accepts stackful exports and the thread built-ins,
+/// whose feature gates are off by default, with suspending allowed or
+/// turned off.
+fn suspending_engine(suspending: bool) -> Result<Engine, String> {
+    let mut config = EngineConfig::new();
+    config.wasm_component_model_async_stackful(true);
+    config.wasm_component_model_threading(true);
+    config.suspend_provider(suspending);
+    Engine::with_config(&config).map_err(fail)
+}
+
+/// A linker whose `tally` records each value the guest hands it.
+fn tallying(engine: &Engine) -> Result<Linker<HostState>, String> {
+    let mut linker: Linker<HostState> = Linker::new(engine);
+    let host: InterfaceIdentifier = "wcmp:smoke/host@0.1.0".parse().map_err(fail)?;
+    linker
+        .instance(&host)
+        .func_wrap(
+            "tally",
+            |mut state: HostCall<'_, HostState>,
+             (n,): (u32,)|
+             -> wasm_component_model_polyfill::Result<()> {
+                state.data_mut().tallies.push(n);
+                Ok(())
+            },
+        )
+        .map_err(fail)?;
+    Ok(linker)
+}
+
+/// Whether `error`, or an error it carries, is the stack-switch
+/// cause: the guest waited where only setting its stack aside would
+/// have let it go on, and the engine has no way to do that.
+///
+/// A wait that fails inside a built-in or a lowered import the guest
+/// called traps the guest, and the trap carries the cause as its
+/// message rather than as a value: the error the call returns is the
+/// trap, and the cause is the text inside it. So a link of the chain
+/// matches either as the cause itself or by carrying the cause's own
+/// message, which is how the conformance corpora match it too.
+fn needs_stack_switch(error: &Error) -> bool {
+    let message = SchedulerCause::StackSwitchNeeded.to_string();
+    let mut link: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(current) = link {
+        if matches!(
+            current.downcast_ref::<SchedulerCause>(),
+            Some(SchedulerCause::StackSwitchNeeded)
+        ) || current.to_string().contains(&message)
+        {
+            return true;
+        }
+        link = current.source();
+    }
+    false
+}
+
+/// Every message in an error's chain, on one line.
+fn chain(error: &Error) -> String {
+    let mut messages = Vec::new();
+    let mut link: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(current) = link {
+        messages.push(current.to_string());
+        link = current.source();
+    }
+    messages
+        .join(": ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// What a call that has to wait does on an engine with no suspend
+/// provider: it fails with the stack-switch cause, rather than
+/// returning or hanging. Returns the evidence when it did.
+fn refused_for_a_stack_switch<T: std::fmt::Debug>(
+    what: &str,
+    outcome: Result<T, Error>,
+) -> Result<String, String> {
+    match outcome {
+        Ok(value) => Err(format!(
+            "{what} returned {value:?} on an engine with no way to set the guest aside"
+        )),
+        Err(error) if needs_stack_switch(&error) => {
+            Ok(format!("{what} failed with the stack-switch cause"))
+        }
+        Err(error) => Err(format!(
+            "{what} failed, but not with the stack-switch cause: {}",
+            chain(&error)
+        )),
+    }
+}
+
+/// The evidence of a suspending story on an engine with no provider,
+/// which is the outcome its goal documents for a browser without
+/// JavaScript Promise Integration.
+fn without_a_provider(refusal: String) -> String {
+    format!(
+        "this engine has {}, so {refusal}, \"{}\", as documented",
+        provider_name(SuspendProviderKind::None),
+        SchedulerCause::StackSwitchNeeded
+    )
+}
+
+/// The `sync-wait` fixture's `total` asks the host's `host-echo-u32`
+/// for each key through a synchronous lower, and the host answers
+/// each only once a timer outside the store has fired.
+///
+/// Under a provider the guest's thread is set aside at each call: the
+/// lower parks the host's future among the store's host tasks and
+/// suspends the thread, and the driver returns pending. The step polls
+/// the call by hand once to see that, then waits twice as long with
+/// nothing polling it, so the timer's wake lands on the waker the hand
+/// poll gave it. Each later key suspends the thread the same way, and
+/// the call returns the sum of the host's answers. With no provider
+/// the first call fails with the stack-switch cause, because only a
+/// suspension can wait for something outside the store.
+async fn wait_for_the_host(engine: &Engine) -> Result<String, String> {
+    let component = Component::new(engine, SYNC_WAIT).await.map_err(fail)?;
+    let mut linker: Linker<HostState> = Linker::new(engine);
+    linker
+        .root()
+        .func_wrap_concurrent(
+            "host-echo-u32",
+            |accessor: &Accessor<HostState>, (key,): (u32,)| {
+                let asked = accessor.with(|store| store.data_mut().tallies.push(key));
+                async move {
+                    asked?;
+                    // Nothing the store owns can resolve this.
+                    Outside::pause(WAIT_MILLIS).await;
+                    Ok(key)
+                }
+            },
+        )
+        .map_err(fail)?;
+    let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .map_err(fail)?;
+    let total = instance
+        .get_func("total")
+        .ok_or("no `total` export")?
+        .typed::<(Vec<u32>,), u32>()
+        .map_err(fail)?;
+
+    if engine.suspend_provider() == SuspendProviderKind::None {
+        let outcome = total.call(&mut store, (KEYS.to_vec(),)).await;
+        return refused_for_a_stack_switch("`total`", outcome);
+    }
+
+    // What the host does while the guest waits: in the browser, a
+    // `setTimeout` of zero asked for now, which only a page still
+    // delivering callbacks will run.
+    let outside = Outside::watching();
+    let wakes = Arc::new(Wakes::default());
+    let waker = Waker::from(wakes.clone());
+    let (sum, woken) = {
+        let mut call = Box::pin(total.call(&mut store, (KEYS.to_vec(),)));
+        match poll_once(&mut call, &waker) {
+            Poll::Pending => (),
+            Poll::Ready(Ok(sum)) => {
+                return Err(format!(
+                    "`total` returned {sum} without waiting for the timer"
+                ));
+            }
+            Poll::Ready(Err(error)) => {
+                return Err(format!("`total` failed instead of waiting: {error}"));
+            }
+        }
+        Outside::pause(2 * WAIT_MILLIS).await;
+        let woken = wakes.count();
+        (call.await.map_err(fail)?, woken)
+    };
+    expect("the timer woke the waiting call", woken > 0, true)?;
+    let watched = outside.observed()?;
+    expect(
+        "the keys the host was asked for, in order",
+        store.data().tallies.as_slice(),
+        &KEYS,
+    )?;
+    expect("total(1, 2, 39)", sum, KEYS.iter().sum())?;
+    Ok(format!(
+        "a hand poll found `total` pending while the guest's thread waited in its call to the \
+         host; {watched}; the timer woke the call {woken} time(s) with nothing polling it; the \
+         host was asked for {:?} in order, each answer {WAIT_MILLIS} ms late, and `total` \
+         returned {sum}",
+        store.data().tallies
+    ))
+}
+
+/// The same story on an engine selected for this target, with a
+/// provider where the target offers one.
+async fn wait_for_the_host_here(engine: &Engine) -> Result<String, String> {
+    let evidence = wait_for_the_host(engine).await?;
+    Ok(if engine.suspend_provider() == SuspendProviderKind::None {
+        without_a_provider(evidence)
+    } else {
+        evidence
+    })
+}
+
+/// The stackful export `both` starts two calls to the host's `fetch`
+/// and blocks in `waitable-set.wait` until each has answered. The host
+/// answers each with twice its key, the first after three times as
+/// long as the second, so the second answers first. The export tells
+/// `tally` which call each wake was for, so the tallies read `[2, 1]`
+/// only when the export woke once per answer, in the order the host
+/// answered. With no provider the wait fails with the stack-switch
+/// cause, because only a suspension can wait for the host's timers.
+async fn block_and_resume_on(engine: &Engine) -> Result<String, String> {
+    let component = Component::new(engine, BLOCKING_EXPORT)
+        .await
+        .map_err(fail)?;
+    let mut linker = tallying(engine)?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    linker
+        .root()
+        .func_wrap_concurrent(
+            "fetch",
+            move |_accessor: &Accessor<HostState>, (key,): (u32,)| {
+                let first = calls.fetch_add(1, Ordering::Relaxed) == 0;
+                async move {
+                    Outside::pause(if first { 3 * WAIT_MILLIS } else { WAIT_MILLIS }).await;
+                    Ok(key * 2)
+                }
+            },
+        )
+        .map_err(fail)?;
+    let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .map_err(fail)?;
+    let both = instance
+        .get_func("both")
+        .ok_or("no `both` export")?
+        .typed::<(u32, u32), u32>()
+        .map_err(fail)?;
+
+    let outcome = both.call(&mut store, (20, 1)).await;
+    if engine.suspend_provider() == SuspendProviderKind::None {
+        return refused_for_a_stack_switch("`both`", outcome);
+    }
+    let sum = outcome.map_err(fail)?;
+    expect(
+        "the calls the export woke for, in order",
+        store.data().tallies.as_slice(),
+        &[2, 1],
+    )?;
+    expect("both(20, 1)", sum, 42)?;
+    Ok(format!(
+        "`both` started two calls and blocked; the host answered the second after \
+         {WAIT_MILLIS} ms and the first after {} ms; the export woke for call 2 and then call \
+         1, and returned {sum} through `task.return`",
+        3 * WAIT_MILLIS
+    ))
+}
+
+/// The blocking export on an engine that accepts it, with a provider
+/// where the target offers one.
+async fn block_and_resume() -> Result<String, String> {
+    let engine = suspending_engine(true)?;
+    let evidence = block_and_resume_on(&engine).await?;
+    Ok(if engine.suspend_provider() == SuspendProviderKind::None {
+        without_a_provider(evidence)
+    } else {
+        evidence
+    })
+}
+
+/// The order in which the guest's threads and its main thread tell
+/// the host what they did: each of threads 0, 1, and 2 starts and
+/// parks, the main thread says all three are parked, thread 0 runs
+/// first because the main thread switched straight to it, threads 2
+/// and 1 run in the order the main thread woke them, and the main
+/// thread goes on last.
+const THREAD_ORDER: [u32; 8] = [10, 11, 12, 30, 20, 22, 21, 40];
+
+/// The stackful export `run` of [`GUEST_THREADS`] starts three
+/// threads, lets each run up to where it parks itself, wakes them in
+/// an order of its own, and parks until the last one finishes. Every
+/// step tells the host's `tally`, so the tallies are the order in
+/// which the threads ran. With no provider the first thread's park
+/// fails with the stack-switch cause: the thread runs on the one
+/// stack above the main thread, and only the main thread below it can
+/// wake it.
+async fn park_and_wake(engine: &Engine) -> Result<String, String> {
+    let component = Component::new(engine, GUEST_THREADS).await.map_err(fail)?;
+    let linker = tallying(engine)?;
+    let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .map_err(fail)?;
+    let run = instance
+        .get_func("run")
+        .ok_or("no `run` export")?
+        .typed::<(), u32>()
+        .map_err(fail)?;
+
+    let outcome = run.call(&mut store, ()).await;
+    if engine.suspend_provider() == SuspendProviderKind::None {
+        return refused_for_a_stack_switch("`run`", outcome);
+    }
+    let finished = outcome.map_err(fail)?;
+    expect("threads that finished", finished, 3)?;
+    expect(
+        "the order the threads ran in",
+        store.data().tallies.as_slice(),
+        &THREAD_ORDER,
+    )?;
+    Ok(format!(
+        "three threads each started and parked; the main thread woke threads 2 and 1 for \
+         later and switched straight to thread 0; they woke in the order 0, 2, 1, and the last \
+         woke the main thread, which returned {finished}; the host saw {:?}",
+        store.data().tallies
+    ))
+}
+
+/// The guest threads on an engine that accepts them, with a provider
+/// where the target offers one.
+async fn guest_threads() -> Result<String, String> {
+    let engine = suspending_engine(true)?;
+    let evidence = park_and_wake(&engine).await?;
+    Ok(if engine.suspend_provider() == SuspendProviderKind::None {
+        without_a_provider(evidence)
+    } else {
+        evidence
+    })
+}
+
+/// Each suspending story on an engine configured with suspending off:
+/// every call that has to wait fails with the stack-switch cause, on
+/// every target, rather than returning a wrong answer or hanging.
+async fn suspending_off() -> Result<String, String> {
+    let mut config = EngineConfig::new();
+    config.suspend_provider(false);
+    let plain = Engine::with_config(&config).map_err(fail)?;
+    expect(
+        "the provider of an engine with suspending off",
+        plain.suspend_provider(),
+        SuspendProviderKind::None,
+    )?;
+    let wait = wait_for_the_host(&plain).await?;
+    let gated = suspending_engine(false)?;
+    let blocking = block_and_resume_on(&gated).await?;
+    let threads = park_and_wake(&gated).await?;
+    Ok(format!(
+        "with suspending off, {wait}, {blocking}, and {threads}: \"{}\"; none returned \
+         a value or hung",
+        SchedulerCause::StackSwitchNeeded
     ))
 }
 

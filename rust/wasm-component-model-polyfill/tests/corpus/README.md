@@ -247,8 +247,8 @@ test), and writes both as JSON to `$CARGO_TARGET_DIR/conformance/`.
 
 `fixtures/` holds components built with the component toolchain rather
 than written as `.wast` by hand: four from a core module in WAT, and
-five — `rich`, `streams`, `stream-composition`, `wasi-http`, and
-`wasi-http-same-instance` — from Rust crates that `cargo` and
+six — `rich`, `streams`, `stream-composition`, `sync-wait`,
+`wasi-http`, and `wasi-http-same-instance` — from Rust crates that `cargo` and
 wit-bindgen build, so the binding layer is the one a real guest
 carries. `wasi-http-same-instance` is the WASI 0.3
 handler as first written. Its `drain` copies a non-number payload
@@ -278,17 +278,17 @@ conformance` prints the current one):
 | ---------------- | ---------- | ------ | ------ | ---------------------------------------------------------------------- |
 | `cm`             | 1126       | 1096   | 97.3   | substrate 4, validation 20, cascade 6                                  |
 | `cm/async`       | 393        | 371    | 94.4   | deferred-feature 21, defect 1                                          |
-| `fixtures`       | 56         | 50     | 89.3   | deferred-feature 2, cascade 4                                          |
+| `fixtures`       | 59         | 53     | 89.8   | deferred-feature 2, cascade 4                                          |
 | `wasmtime`       | 469        | 434    | 92.5   | deferred-feature 1, substrate 8, cascade 26                            |
 | `wasmtime/async` | 387        | 369    | 95.3   | deferred-feature 14, cascade 4                                         |
-| total            | 2431       | 2320   | 95.4   | deferred-feature 38, substrate 12, validation 20, defect 1, cascade 40 |
+| total            | 2434       | 2323   | 95.4   | deferred-feature 38, substrate 12, validation 20, defect 1, cascade 40 |
 
 The browser runs its guest threads through the JSPI provider, so its
 summary is the native one, and the eleven lines of
 `expected-failures.web.txt` move eleven passing directives into
 `substrate`: `cm` passes 1095 (97.2%) with substrate 5, `cm/async` 370
 (94.1%) with substrate 1, `wasmtime` 427 (91.0%) with substrate 15,
-`wasmtime/async` 367 (94.8%) with substrate 2, and the total is 2309
+`wasmtime/async` 367 (94.8%) with substrate 2, and the total is 2312
 (95.0%) with substrate 23. Six of the
 eleven lines, among them the three in the `async` rows, are the browser
 engine's wording for a trap or a validation error that Wasmtime words
@@ -316,7 +316,7 @@ only a provider serves. Of the 54 files of `wasmtime/async`, 48 pass
 whole natively and 46 in the browser, where `subtask-wait.wast` and
 `sync-call-context-trap.wast` each hold one line of the browser's delta,
 and 39 without a provider, where nine more hold lines that only a
-provider serves. Seven of the nine fixtures pass whole.
+provider serves. Eight of the ten fixtures pass whole.
 
 The streams and futures account for 33 of the files that pass whole.
 In `cm/async`: `cancel-stream.wast`, `closed-stream.wast`,

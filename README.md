@@ -96,8 +96,10 @@ async fn run(wasm: &[u8]) -> Result<String> {
 The end-to-end smoke test under `rust/wcmp-smoke` tells the rest of the story
 chapter by chapter: a `wac` composition, host resources, a lent core module,
 maps and fixed-length lists, a wit-bindgen world, a 64-bit memory, export
-introspection, a gated feature, awaiting outside the store, and streams and
-futures between a host and components. It runs as a native binary and as a
+introspection, a gated feature, awaiting outside the store, streams and futures
+between a host and components, and guests that suspend: synchronous code waiting
+for an `async` host function, an export that blocks until its answers arrive,
+and guest threads that park and wake. It runs as a native binary and as a
 browser page from one source.
 
 ## Feature support
