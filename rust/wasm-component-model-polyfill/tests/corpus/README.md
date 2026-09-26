@@ -276,8 +276,14 @@ alike.
 
 ## Baseline
 
-The progress summary on the native target, as of 2026-09-26 (`tests
-conformance` prints the current one):
+The corpus runs in four states: each target with the suspend provider
+and without one. The figures below come from one `tests all` run of
+2026-09-26, and the provider-off tables from the `tests regenerate
+--dry-run` of the same tree, which left both lists as they were
+(`tests conformance` prints the current provider tables).
+
+The progress summary on the native target, with the stack-switching
+provider:
 
 | Corpus           | Directives | Passed | Pass % | Expected failures by category                                          |
 | ---------------- | ---------- | ------ | ------ | ---------------------------------------------------------------------- |
@@ -303,6 +309,27 @@ before the bounds check Wasmtime reaches, and three in
 in the browser cannot address. No line of the delta is a difference
 of the polyfill.
 
+Without a provider, the 44 lines of `expected-failures.no-provider.txt`
+fail beyond the shared list, 28 in `cm/async` and 16 in
+`wasmtime/async`, and every one of them carries the stack-switch
+reason. The other three rows do not change. The native summary with
+the provider turned off:
+
+| Corpus           | Directives | Passed | Pass % | Expected failures by category                                          |
+| ---------------- | ---------- | ------ | ------ | ---------------------------------------------------------------------- |
+| `cm`             | 1126       | 1096   | 97.3   | substrate 4, validation 20, cascade 6                                  |
+| `cm/async`       | 393        | 351    | 89.3   | deferred-feature 33, cascade 9                                         |
+| `fixtures`       | 59         | 53     | 89.8   | deferred-feature 2, cascade 4                                          |
+| `wasmtime`       | 469        | 434    | 92.5   | deferred-feature 1, substrate 8, cascade 26                            |
+| `wasmtime/async` | 387        | 353    | 91.2   | deferred-feature 30, cascade 4                                         |
+| total            | 2434       | 2287   | 94.0   | deferred-feature 66, substrate 12, validation 20, cascade 49           |
+
+No line of the web delta names a directive of the overlay, so the
+browser without a provider moves the same eleven directives into
+`substrate`: `cm` passes 1095 (97.2%), `cm/async` 350 (89.1%),
+`wasmtime` 427 (91.0%), `wasmtime/async` 351 (90.7%), and the total is
+2276 (93.5%) with substrate 23.
+
 The `async` rows still hold the pass rate down, and the four reasons
 above cover what those directories still exercise. A directive that
 fails on one of them can leave a later directive of the same file
@@ -320,8 +347,8 @@ browser, and 23 without a provider, where seven more hold lines that
 only a provider serves. Of the 54 files of `wasmtime/async`, 48 pass
 whole natively and 46 in the browser, where `subtask-wait.wast` and
 `sync-call-context-trap.wast` each hold one line of the browser's delta,
-and 39 without a provider, where nine more hold lines that only a
-provider serves. Eight of the ten fixtures pass whole.
+and 39 natively without a provider, where nine more hold lines that
+only a provider serves, and 37 in the browser without one. Eight of the ten fixtures pass whole.
 
 The streams and futures account for 33 of the files that pass whole.
 In `cm/async`: `cancel-stream.wast`, `closed-stream.wast`,
