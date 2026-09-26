@@ -3,18 +3,21 @@
 //! `thread.yield-then-resume`, `thread.suspend-then-promote`, and
 //! `thread.yield-then-promote`.
 //!
-//! Most exports here are synchronous, and a task that must not block
-//! never suspends its stack, so each of their built-ins runs on the
-//! nested turn whatever provider the engine selected: a suspension
-//! waits in turns run from inside the built-in, and a switch starts
-//! the thread it names from inside the built-in. With no provider
-//! that thread runs on the real stack above the built-in. Under the
-//! stack-switching provider it runs on a stack of its own, and the
-//! outcomes the tests read are the same but one: a started thread
-//! that switches back to the export's thread suspends through the
-//! provider into the built-in that started it, which lets the
-//! export's thread go on. The two callback exports run on a stack of
-//! their own under that provider. Each test whose outcome differs
+//! Most exports here are synchronous. A task that must not block
+//! waits on the nested turn: a suspension waits in turns run from
+//! inside the built-in. With no provider, a switch it makes starts
+//! the thread it names from inside the built-in, on the real stack
+//! above the built-in. Under a provider the export's thread, the
+//! thread of a host call, runs on a stack of its own, and a switch
+//! suspends it there, as the reference suspends it. The frame that
+//! started it runs the named thread, and resumes the export's thread
+//! once that thread stops, if it is ready. A thread that a built-in
+//! of such a task starts from inside itself, as a nested turn does,
+//! suspends back into that built-in. The outcomes the tests read are
+//! the same either way, except where a thread switches back to the
+//! export's thread: only a provider can resume that thread then. The
+//! two callback exports run on a stack of their own under a provider.
+//! Each test whose outcome differs
 //! says how.
 //!
 //! The component keeps a log in a core global: each step of an export
@@ -518,17 +521,15 @@ async fn it_fails_a_switch_to_a_thread_that_is_not_suspended_with_wasmtimes_mess
 #[wcmp_macros::test]
 async fn it_switches_back_to_the_thread_below_only_where_the_started_thread_can_suspend() {
     if has_provider() {
-        // The export's switch starts the thread from inside its
-        // built-in, on a stack of its own. The thread's switch names
-        // the export's thread, whose built-in the thread goes back to,
-        // so the thread suspends through the provider and the built-in
-        // lets the export's thread go on, as the reference switches to
-        // it. The started thread stays suspended.
+        // The export's thread runs on a stack of its own, so its
+        // switch suspends it in the provider even though its task must
+        // not block. The started thread's switch back resumes it, as
+        // the reference resumes it.
         assert_eq!(
             log_of("suspend-then-resume-below").await,
             123,
-            "the started thread switched back to the export's thread, \
-             which went on"
+            "the started thread ran, switched back to the export's \
+             thread, and that thread went on"
         );
         return;
     }

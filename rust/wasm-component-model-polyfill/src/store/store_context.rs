@@ -1346,8 +1346,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         finish: impl EntryFinish<T>,
     ) -> Result<()> {
         let ty = entry.ty(self.runtime());
+        let mark = self.scheduler().switcher_mark();
         self.start_thread_entry(thread, base, entry, &ty, args, results, finish)?;
-        self.follow_switches()
+        self.follow_switches(mark)
     }
 
     /// Run `entry` as [`run_thread_entry`](Self::run_thread_entry)
@@ -1437,8 +1438,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// [`follow_switches`](Self::follow_switches) states.
     /// Workspace-internal.
     fn resume_parked_thread(&mut self, thread: ThreadId) -> Result<()> {
+        let mark = self.scheduler().switcher_mark();
         self.resume_thread_once(thread)?;
-        self.follow_switches()
+        self.follow_switches(mark)
     }
 
     /// Run the resumption a turn queued for `thread`, which resumes
@@ -1652,7 +1654,8 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// The order is fixed: the thread a turn resumed, then the plans
     /// that stops left, the outermost first so that the innermost runs
     /// first, then the failure of a start, then the thread named to run
-    /// next, then the innermost plan.
+    /// next, then a switcher recorded at the level the store runs now,
+    /// then the innermost plan.
     fn step_deferred_work(&mut self, waker: &Waker) -> Result<Option<bool>> {
         match self.take_stop(waker, false)? {
             Some(true) => return Ok(Some(true)),
@@ -1673,6 +1676,10 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         }
         if let Some(next) = self.scheduler_mut().take_next_thread() {
             self.enter_switched_thread(next)?;
+            return Ok(Some(true));
+        }
+        if let Some(switcher) = self.scheduler_mut().pop_switcher_at_level() {
+            self.take_back_switcher(switcher)?;
             return Ok(Some(true));
         }
         if self.scheduler().deferred().plans.is_empty() {
@@ -1903,15 +1910,41 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// frame, so a chain of switches of any length adds no depth to
     /// the real stack.
     ///
+    /// A thread of a task that must not block that suspended to
+    /// switch, since the frame read `mark`, comes back to this frame
+    /// once the chain stops. The frame resumes it at once when it is
+    /// ready then, and follows its switches in turn. That is the loop
+    /// of the reference's `canon_lift` for a sync-typed task, which
+    /// runs the ready threads of the task's instance, and nothing
+    /// else, until the task resolves. A switcher that is not ready is
+    /// left to the scheduler.
+    ///
     /// Under a provider that resumes a thread on a microtask, the loop
     /// stops as soon as a thread it runs leaves work to the store, and
     /// the store goes on with the loop once that work is done.
-    fn follow_switches(&mut self) -> Result<()> {
+    fn follow_switches(&mut self, mark: usize) -> Result<()> {
         while !self.defers_work() {
-            let Some(next) = self.scheduler_mut().take_next_thread() else {
+            if let Some(next) = self.scheduler_mut().take_next_thread() {
+                self.enter_switched_thread(next)?;
+                continue;
+            }
+            let Some(switcher) = self.scheduler_mut().pop_switcher_above(mark) else {
                 break;
             };
-            self.enter_switched_thread(next)?;
+            self.take_back_switcher(switcher)?;
+        }
+        Ok(())
+    }
+
+    /// Take back `switcher`, a thread of a task that must not block
+    /// that suspended in the provider to switch, once the threads its
+    /// switch ran have stopped: resume it when it is ready, and leave
+    /// it to the scheduler otherwise.
+    fn take_back_switcher(&mut self, switcher: ThreadId) -> Result<()> {
+        let ready = self.scheduler().is_parked(switcher)
+            && self.lock_tables()?.tasks.thread_ready(switcher);
+        if ready {
+            self.resume_thread_once(switcher)?;
         }
         Ok(())
     }
@@ -1941,8 +1974,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// then run whatever it switches to in turn. It returns once the
     /// chain of threads suspends or finishes. Workspace-internal.
     fn run_switched_thread(&mut self, thread: ThreadId) -> Result<()> {
+        let mark = self.scheduler().switcher_mark();
         self.enter_switched_thread(thread)?;
-        self.follow_switches()
+        self.follow_switches(mark)
     }
 
     /// Start the explicit thread `thread`, which `thread.resume-later`
@@ -1954,8 +1988,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         let Some((task, start)) = self.lock_tables()?.tasks.take_thread_start(thread) else {
             return Ok(());
         };
+        let mark = self.scheduler().switcher_mark();
         self.start_explicit_thread(thread, task, start)?;
-        self.follow_switches()
+        self.follow_switches(mark)
     }
 
     /// Start the explicit thread `thread` of `task`, whose start

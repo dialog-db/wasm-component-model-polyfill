@@ -482,58 +482,25 @@ impl<T: 'static> StoreData<T> {
     }
 
     /// Why a suspension whose nested turns gave up with the
-    /// condition unmet failed. Four rules, in this order.
+    /// condition unmet failed. Five rules, in this order.
     ///
-    /// Any instance of the store with a synchronous call in
-    /// progress gives the cannot-block cause. The flag is the
-    /// may-not-suspend flag of the instance record, read across
-    /// every instance rather than on the blocked task's own: a
-    /// synchronous caller reaches an `async`-typed callee through a
-    /// synchronous call, and the callee is allowed to block while
-    /// its caller is not, so the callee blocking for ever is the
-    /// caller failing to return and the cause names the caller's
-    /// rule. It is also the reference's own rule for the blocked
-    /// task itself, which was given the ready work of its instance
-    /// and found the condition still unmet. This is what Wasmtime
-    /// reports where it would otherwise raise its deadlock trap.
+    /// The blocked task's own instance, with a synchronous call in
+    /// progress, gives the cannot-block cause. The flag is the
+    /// may-not-suspend flag of the instance record. The task was
+    /// given the ready work of its instance and found the condition
+    /// still unmet, which is the reference's rule for it. A start
+    /// intrinsic clears the flag on an `async`-typed callee's
+    /// instance while it runs the callee, as Wasmtime does, so a
+    /// callee that reenters an instance with a synchronous call in
+    /// progress is not held to that call's rule. A nested turn held
+    /// to one instance reads this rule through
+    /// [`suspend_cause_in`](Self::suspend_cause_in) instead.
     ///
-    /// A nested start between the blocked thread and the base of the
-    /// real stack gives the stack-switch cause. A start intrinsic
-    /// ran an `async`-typed callee from inside its own frame, and
-    /// the blocked thread runs above that frame. The reference runs
-    /// the callee on a stack of its own and returns to the
-    /// trampoline when it blocks, so the caller that started the
-    /// callee would go on and could still meet the condition. The
-    /// store cannot see that work, because it is guest code on the
-    /// real stack rather than an item or a host task, so an idle
-    /// store here does not mean nothing can move. Only the target's
-    /// capability is missing. Wasmtime runs such a callee on a
-    /// fiber of its own, and the same shapes do not fail there.
-    ///
-    /// The rule reads the nested starts whose caller would go on: an
-    /// asynchronous lower's, and a synchronous lower's once the
-    /// callee has resolved and the lower would return its result.
-    /// Before that, a synchronous lower's caller would get control
-    /// back only to wait for the callee's result. That wait runs the
-    /// ready work the callee's own block already ran, so it releases
-    /// nothing, and a block above such a start alone is a deadlock,
-    /// as Wasmtime reports it.
-    ///
-    /// A host task that has not resolved gives the stack-switch
-    /// cause, because the reference permits that block and only the
-    /// target has no provider to serve it. The rule reads the
-    /// store's host tasks and nothing else. The future of a
-    /// synchronous lower counts through them: the lower parks its
-    /// future there for as long as the call waits on it.
-    ///
-    /// Otherwise the store is idle and no frame below the block can
-    /// move, which gives the deadlock cause: nothing left can ever
-    /// meet the condition. An item a turn is still holding back does
-    /// not change that answer: a nested turn runs every item it is
-    /// allowed to run, so an item left over is one no turn of this
-    /// store can release. Workspace-internal.
+    /// The other four rules are
+    /// [`cause_past_cannot_block`](Self::cause_past_cannot_block).
+    /// Workspace-internal.
     pub fn suspend_cause(&self) -> SchedulerCause {
-        if self.any_must_not_block() {
+        if self.must_not_block_instance().is_some() {
             SchedulerCause::CannotBlock
         } else {
             self.cause_past_cannot_block()
@@ -566,28 +533,70 @@ impl<T: 'static> StoreData<T> {
         }
     }
 
-    /// The cause of a failed block once the cannot-block rule does not
-    /// hold: the stack-switch cause for a caller below that would go
-    /// on or a pending host task, and the deadlock cause otherwise.
+    /// The cause of a failed block once the blocked thread's own
+    /// instance does not give the cannot-block cause. Four rules, in
+    /// this order.
+    ///
+    /// A nested start between the blocked thread and the base of the
+    /// real stack gives the stack-switch cause. A start intrinsic
+    /// ran an `async`-typed callee from inside its own frame, and
+    /// the blocked thread runs above that frame. The reference runs
+    /// the callee on a stack of its own and returns to the
+    /// trampoline when it blocks, so the caller that started the
+    /// callee would go on and could still meet the condition. The
+    /// store cannot see that work, because it is guest code on the
+    /// real stack rather than an item or a host task, so an idle
+    /// store here does not mean nothing can move. Only the target's
+    /// capability is missing. Wasmtime runs such a callee on a
+    /// fiber of its own, and the same shapes do not fail there.
+    ///
+    /// The rule reads the nested starts whose caller would go on: an
+    /// asynchronous lower's, and a synchronous lower's once the
+    /// callee has resolved and the lower would return its result.
+    /// Before that, a synchronous lower's caller would get control
+    /// back only to wait for the callee's result.
+    ///
+    /// That wait is the next rule. A caller below that waits for the
+    /// blocked callee, through a synchronous lower or a fused adapter's
+    /// direct call, in an instance that must not suspend, with no other
+    /// thread of that instance ready, gives the cannot-block cause:
+    /// its wait is a block of its own instance, which the reference's
+    /// `canon_lift` traps.
+    ///
+    /// A host task that has not resolved gives the stack-switch
+    /// cause, because the reference permits that block and only the
+    /// target has no provider to serve it. The rule reads the
+    /// store's host tasks and nothing else. The future of a
+    /// synchronous lower counts through them: the lower parks its
+    /// future there for as long as the call waits on it.
+    ///
+    /// Otherwise the store is idle and no frame below the block can
+    /// move: nothing left can ever meet the condition. An item a turn
+    /// is still holding back does not change that answer: a nested
+    /// turn runs every item it is allowed to run, so an item left over
+    /// is one no turn of this store can release. That gives the deadlock
+    /// cause. A synchronous call into an instance that no caller below
+    /// waits in does not change it.
     fn cause_past_cannot_block(&self) -> SchedulerCause {
-        if self.caller_below_goes_on() || self.host_future_pending() {
+        let (goes_on, cannot_block) = self
+            .tables
+            .lock()
+            .map(|guard| {
+                (
+                    guard.tasks.caller_below_goes_on(),
+                    guard.tasks.caller_below_cannot_block(),
+                )
+            })
+            .unwrap_or((false, false));
+        if goes_on {
+            SchedulerCause::StackSwitchNeeded
+        } else if cannot_block {
+            SchedulerCause::CannotBlock
+        } else if self.host_future_pending() {
             SchedulerCause::StackSwitchNeeded
         } else {
             SchedulerCause::Deadlock
         }
-    }
-
-    /// Whether the stack of current scopes carries a nested-start
-    /// mark whose caller would go on under a stack switch: a thread a
-    /// start intrinsic ran from inside its own frame is still
-    /// running, and the caller below it would run its own code once
-    /// control came back. A store whose tables are unreachable
-    /// answers `false`, as the cannot-block rule does.
-    fn caller_below_goes_on(&self) -> bool {
-        self.tables
-            .lock()
-            .map(|guard| guard.tasks.caller_below_goes_on())
-            .unwrap_or(false)
     }
 
     /// Whether a host future that can still resolve is pending: the
@@ -630,20 +639,5 @@ impl<T: 'static> StoreData<T> {
             .and_then(|instance| guard.tasks.instance(instance))
             .map(|record| record.may_not_suspend)
             .unwrap_or(false)
-    }
-
-    /// Whether any instance of the store forbids its threads to
-    /// suspend, which says that some call in flight must return
-    /// before the store may block. A store whose tables are
-    /// unreachable answers `false`, as `must_not_block` does.
-    fn any_must_not_block(&self) -> bool {
-        let Ok(guard) = self.tables.lock() else {
-            return false;
-        };
-        guard
-            .tasks
-            .instances()
-            .iter()
-            .any(|record| record.may_not_suspend)
     }
 }

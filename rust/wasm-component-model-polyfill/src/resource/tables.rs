@@ -150,8 +150,21 @@ impl HandleTables {
     /// when core code returns. Every scope the core code left above
     /// the task is discarded with it, under the rule
     /// [`exit_task`](Self::exit_task) states.
+    ///
+    /// Only the innermost scope of the task comes off. An explicit
+    /// thread of the same task can run below with the task's scope on
+    /// the stack, and the scopes from there down stay that thread's.
     pub fn leave_task_scope(&mut self, task: TaskId) {
-        while !self.unwind_one(Scope::Task(task)) {}
+        let scope = Scope::Task(task);
+        if !self.tasks.scopes().contains(&scope) {
+            return;
+        }
+        while let Some(top) = self.tasks.pop_scope() {
+            if top == scope {
+                break;
+            }
+            self.discard_scope(top);
+        }
     }
 
     /// End the implicit thread of `task` without ending the task,
@@ -1392,6 +1405,30 @@ mod tests {
             tables.tasks.current_scope(),
             Some(Scope::Task(outer)),
             "the caller's task is still current"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_leaves_only_the_innermost_scope_of_a_task_whose_scope_is_on_the_stack_twice() {
+        // An explicit thread of the task runs below with the task's
+        // scope, and a synchronous call it made is above that. The
+        // task's implicit thread resumed on top and leaves its scope.
+        let mut tables = HandleTables::new();
+        let instance = tables.tasks.insert_instance();
+        let task = tables.tasks.push_task(None, None, instance);
+        let callee = tables.tasks.push_task(None, None, instance);
+        tables.tasks.push_task_scope(task);
+
+        tables.leave_task_scope(task);
+
+        assert_eq!(
+            tables.tasks.scopes(),
+            [Scope::Task(task), Scope::Task(callee)],
+            "the scopes of the explicit thread below stay on the stack"
+        );
+        assert!(
+            tables.tasks.task(callee).is_some(),
+            "the callee's task is not discarded"
         );
     }
 

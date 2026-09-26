@@ -28,6 +28,10 @@ type Begin<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> anyhow::Resul
 type Whole<T> =
     dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> anyhow::Result<Option<Vec<RuntimeVal>>>;
 
+/// Whether one call of a blocking built-in names a thread to switch
+/// to.
+type Switches<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> bool;
+
 /// The scheduler's one suspend capability.
 ///
 /// A blocking built-in splits into a try part and a finish part, as
@@ -115,16 +119,12 @@ type Whole<T> =
 ///   the nested turn runs the item where it stands.
 /// - **The cause says why the wait cannot end.** When the nested
 ///   turns cannot progress and the condition is still unmet, the
-///   built-in traps with the first of four causes that holds:
+///   built-in traps with the first of five causes that holds:
 ///
 ///   1. The cannot-block cause, when the blocked thread's own
 ///      instance must not suspend, which is the may-not-suspend flag
 ///      of the instance record, and the turns found no thread of that
-///      instance ready. A block of a thread whose instance may
-///      suspend reads the flag of every instance of the store
-///      instead: some call has not returned, and the callee blocking
-///      for ever is that caller failing to return, so the cause names
-///      the caller's rule.
+///      instance ready.
 ///   2. The stack-switch cause, when a nested start lies between
 ///      the blocked thread and the base of the real stack. A start
 ///      intrinsic ran an `async`-typed callee from inside its own
@@ -140,11 +140,19 @@ type Whole<T> =
 ///      that, a synchronous lower's caller would get control back
 ///      only to wait for the callee, which runs the ready work this
 ///      block already ran, so that caller can release nothing.
-///   3. The stack-switch cause, when the store holds a host task
+///   3. The cannot-block cause, when no caller below goes on and a
+///      caller below waits for the blocked callee, through a
+///      synchronous lower or a fused adapter's direct call, in an
+///      instance that must not suspend, with no other thread of that
+///      instance ready. That caller's wait is a block of its own
+///      instance, which the reference's `canon_lift` traps. A
+///      synchronous call into an instance no caller below waits in
+///      does not count.
+///   4. The stack-switch cause, when the store holds a host task
 ///      that has not resolved — the parked future of a synchronous
 ///      lower included — because the reference permits that block
 ///      and only the target has no provider to serve it.
-///   4. The deadlock cause in every other case. Then no frame below
+///   5. The deadlock cause in every other case. Then no frame below
 ///      can move, and nothing left in the store can ever meet the
 ///      condition.
 /// - **A task that must not block gives way to its own instance
@@ -418,6 +426,22 @@ impl<T: 'static> SuspendSeam<T> {
     /// instance's call started or last resumed it: the suspension
     /// returns control to that block, which serves the same rule.
     ///
+    /// A call that `switches` says names a thread to switch to is the
+    /// other exception for a task that must not block, where no block
+    /// of its own instance's call lies below: the thread of a host call
+    /// into a sync-typed export. Its thread suspends in the shim when
+    /// it runs on a stack of its own, and the frame that started or
+    /// resumed it runs the named thread. A switch waits on
+    /// nothing, so it blocks nothing. Wasmtime makes the same
+    /// exception: its suspension intrinsic reads the may-not-suspend
+    /// flag only when the call names no thread to switch to. The
+    /// scheduler records such a thread as a switcher, and the frame
+    /// that started or resumed it resumes it before anything else once
+    /// the threads the switch ran have stopped, if it is ready then.
+    /// That is the reference's `canon_lift`, which runs the ready
+    /// threads of a sync-typed task's own instance until the task
+    /// resolves.
+    ///
     /// A first part that leaves work to the store, which a start
     /// intrinsic whose callee switched to a suspended thread does
     /// under the JSPI provider, leaves a plan for the thread: the
@@ -434,6 +458,7 @@ impl<T: 'static> SuspendSeam<T> {
         store: &mut StoreContext<'_, T>,
         begin: &Begin<T>,
         fallback: Option<&Whole<T>>,
+        switches: Option<&Switches<T>>,
         args: &[RuntimeVal],
     ) -> anyhow::Result<bool> {
         let (thread, own_stack, returns_to) = {
@@ -452,8 +477,16 @@ impl<T: 'static> SuspendSeam<T> {
             let readiness = block.readiness;
             return Ok(Self::holds(store, readiness));
         }
-        let suspends = own_stack
-            && (store.internal().must_not_block_instance().is_none() || returns_to.is_some());
+        let must_not_block = store.internal().must_not_block_instance().is_some();
+        // A thread whose instance must not suspend suspends only when a
+        // block of its own instance's call started or last resumed it,
+        // or, with no such block below, when the call names a thread to
+        // switch to. The second is a switcher its frame takes back.
+        let switcher = own_stack
+            && must_not_block
+            && returns_to.is_none()
+            && switches.is_some_and(|switches| switches(store, args));
+        let suspends = own_stack && (!must_not_block || returns_to.is_some() || switcher);
         let (Some(thread), true) = (thread, suspends) else {
             let done = match fallback {
                 Some(whole) => whole(store, args)?,
@@ -503,6 +536,9 @@ impl<T: 'static> SuspendSeam<T> {
             .internal()
             .scheduler_mut()
             .begin_block(thread, PendingBlock::new(readiness, previous, step));
+        if switcher {
+            store.internal().scheduler_mut().push_switcher(thread);
+        }
         Ok(readiness != Readiness::Yielded && Self::holds(store, readiness))
     }
 
@@ -1410,6 +1446,32 @@ mod tests {
     }
 
     #[wcmp_macros::test]
+    fn it_traps_with_the_stack_switch_cause_above_an_asynchronous_start_while_the_caller_is_inside_a_synchronous_call()
+     {
+        let mut owner = store();
+        let mut store = owner.internal().context();
+        // The caller's instance is inside a synchronous call, and the
+        // callee's instance, where the block is, is not.
+        current_task(&store, true);
+        let _ = nested_start(&store, LowerKind::Async, false);
+
+        let outcome = store
+            .internal()
+            .run_in_turn(Waker::noop(), |store| {
+                SuspendSeam::suspend(store, |_| false)
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            Error::Scheduler(SchedulerCause::StackSwitchNeeded).to_string(),
+            "the caller below the asynchronous start would go on once a \
+             provider returned control to it, so its synchronous call does \
+             not make this block fail with the cannot-block cause"
+        );
+    }
+
+    #[wcmp_macros::test]
     fn it_traps_with_the_deadlock_cause_above_a_synchronous_start_whose_callee_has_not_resolved() {
         let mut owner = store();
         let mut store = owner.internal().context();
@@ -1429,6 +1491,57 @@ mod tests {
             "a synchronous lower's caller would only wait for its callee, \
              which runs the work this block already ran, so no frame below \
              can move"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_traps_with_the_cannot_block_cause_above_a_synchronous_start_whose_caller_must_not_block()
+    {
+        let mut owner = store();
+        let mut store = owner.internal().context();
+        // The caller's instance is inside a synchronous call, and the
+        // callee's instance, where the block is, is not.
+        current_task(&store, true);
+        let _ = nested_start(&store, LowerKind::Sync, false);
+
+        let outcome = store
+            .internal()
+            .run_in_turn(Waker::noop(), |store| {
+                SuspendSeam::suspend(store, |_| false)
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            Error::Scheduler(SchedulerCause::CannotBlock).to_string(),
+            "the synchronous lower's caller would wait for the callee in an \
+             instance that must not suspend, and that wait traps"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_traps_with_the_cannot_block_cause_above_a_direct_call_whose_caller_must_not_block() {
+        let mut owner = store();
+        let mut store = owner.internal().context();
+        // A fused adapter called the blocked callee directly: its task
+        // scope lies right above its caller's, with no mark between.
+        // The caller's instance is inside a synchronous call, and the
+        // callee's, an `async`-typed callee lifted synchronously, is not.
+        current_task(&store, true);
+        current_task(&store, false);
+
+        let outcome = store
+            .internal()
+            .run_in_turn(Waker::noop(), |store| {
+                SuspendSeam::suspend(store, |_| false)
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            Error::Scheduler(SchedulerCause::CannotBlock).to_string(),
+            "the caller would wait for the callee it called directly in an \
+             instance that must not suspend, and that wait traps"
         );
     }
 
@@ -1468,8 +1581,8 @@ mod tests {
      {
         let mut owner = store();
         let mut store = owner.internal().context();
-        current_task(&store, true);
-        let _ = nested_start(&store, LowerKind::Async, false);
+        current_task(&store, false);
+        let _ = nested_start(&store, LowerKind::Async, true);
 
         let outcome = store
             .internal()
@@ -1481,9 +1594,9 @@ mod tests {
         assert_eq!(
             cause(outcome),
             Error::Scheduler(SchedulerCause::CannotBlock).to_string(),
-            "the cannot-block rule comes before the nested start: some \
-             synchronous call has not returned, and the reference forbids \
-             that on every target"
+            "the cannot-block rule comes before the nested start: a \
+             synchronous call into the blocked task's own instance has not \
+             returned, and the reference forbids that on every target"
         );
     }
 
@@ -1837,7 +1950,7 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    fn it_traps_with_the_cannot_block_cause_while_another_instance_is_inside_a_synchronous_call() {
+    fn it_traps_with_the_deadlock_cause_while_only_another_instance_is_inside_a_synchronous_call() {
         let mut owner = store();
         let mut store = owner.internal().context();
         // The task that blocks is one the reference allows to
@@ -1862,10 +1975,10 @@ mod tests {
 
         assert_eq!(
             cause(outcome),
-            Error::Scheduler(SchedulerCause::CannotBlock).to_string(),
-            "the flag of every instance is read, not the blocked task's \
-             alone: the callee blocking for ever is the caller failing to \
-             return, so the cause names the caller's rule"
+            Error::Scheduler(SchedulerCause::Deadlock).to_string(),
+            "only the blocked thread's own instance and the instances of \
+             the callers below it that wait are read: a synchronous call \
+             into another instance does not make this block fail"
         );
     }
 

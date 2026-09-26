@@ -299,6 +299,10 @@ pub struct Scheduler<T: 'static> {
     /// to run next, from the try part of its switch to the frame that
     /// resumed it.
     next_thread: Option<ThreadId>,
+    /// The threads of tasks that must not block that suspended in the
+    /// provider to switch, the latest last, until the frame that
+    /// started or resumed each takes it back.
+    switchers: Vec<(ThreadId, usize)>,
     /// What the scheduler has to do before a turn goes on, under a
     /// provider that resumes a thread only where the store runs no
     /// guest code.
@@ -351,6 +355,7 @@ impl<T: 'static> Scheduler<T> {
             blocks: HashMap::new(),
             ready_block: None,
             next_thread: None,
+            switchers: Vec::new(),
             deferred: DeferredWork::default(),
         }
     }
@@ -465,6 +470,49 @@ impl<T: 'static> Scheduler<T> {
     pub fn take_next_thread(&mut self) -> Option<ThreadId> {
         self.deferred.next_left = false;
         self.next_thread.take()
+    }
+
+    /// Record `thread`, of a task that must not block, as one that
+    /// suspended in the provider to switch. The frame that started or
+    /// resumed it takes it back once the threads the switch ran have
+    /// stopped, as the reference's `canon_lift` goes on running the
+    /// ready threads of a sync-typed task's instance until the task
+    /// resolves. The record keeps how many plans the store was running
+    /// then, which is the level of deferred work that takes it back
+    /// under a provider that resumes a thread on a microtask.
+    pub fn push_switcher(&mut self, thread: ThreadId) {
+        let level = self.deferred.plans.len();
+        self.switchers.push((thread, level));
+    }
+
+    /// How many switchers are recorded, which a frame reads before it
+    /// runs a thread, so that it takes back only the switchers that
+    /// thread recorded.
+    pub fn switcher_mark(&self) -> usize {
+        self.switchers.len()
+    }
+
+    /// Take the switcher recorded last, when it was recorded after
+    /// `mark`.
+    pub fn pop_switcher_above(&mut self, mark: usize) -> Option<ThreadId> {
+        if self.switchers.len() > mark {
+            self.switchers.pop().map(|(thread, _)| thread)
+        } else {
+            None
+        }
+    }
+
+    /// Take the switcher recorded last, when it was recorded at the
+    /// level of deferred work the store runs now.
+    pub fn pop_switcher_at_level(&mut self) -> Option<ThreadId> {
+        let level = self.deferred.plans.len();
+        match self.switchers.last() {
+            Some(&(thread, at)) if at == level => {
+                self.switchers.pop();
+                Some(thread)
+            }
+            _ => None,
+        }
     }
 
     /// Leave the resumption of the parked `thread` to the store, under

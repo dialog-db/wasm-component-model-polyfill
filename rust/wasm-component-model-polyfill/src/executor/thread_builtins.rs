@@ -51,7 +51,14 @@
 //! shim through the provider. So does such a thread of an instance
 //! that must not suspend when a block of its own instance's call
 //! started or last resumed it, since its suspension hands control
-//! back to that block:
+//! back to that block. A thread of an instance that must not suspend
+//! whose frame below is no such block, the thread of a host call into
+//! a sync-typed export, suspends there too when the call names a
+//! thread to switch to: a resume, or a promote whose thread is ready.
+//! A switch waits on nothing, so the reference and Wasmtime suspend
+//! that thread as well, and the frame that started or resumed it
+//! takes it back once the thread it switched to stops. The shim
+//! serves each kind of call this way:
 //!
 //! - A suspending built-in suspends the thread until a resume names
 //!   it. `thread.resume-later` makes it ready, and it resumes in a
@@ -70,7 +77,8 @@
 //! Every other thread blocks through the seam's nested turn, and a
 //! switch runs from inside the built-in: each thread of a store with
 //! no provider, and under a provider a thread that runs on another
-//! thread's stack or of a task that must not block.
+//! thread's stack, or a thread of a task that must not block that
+//! neither of the two cases above covers.
 //!
 //! - A suspension waits until a nested turn runs the work that
 //!   resumes the thread. A task that must not block runs the ready
@@ -422,10 +430,10 @@ pub fn build_thread_yield_then_promote<T: 'static>(
 /// cancellation.
 ///
 /// The built-in has two bodies. A thread that runs on a stack of its
-/// own, of a task that may block, suspends in the built-in's shim,
-/// through [`begin_suspension`]. Any other thread, and every thread
-/// of a store with no provider, runs [`suspension`] on the real
-/// stack.
+/// own suspends in the built-in's shim, through [`begin_suspension`],
+/// when its task may block or when the call names a thread to switch
+/// to. Any other thread, and every thread of a store with no provider,
+/// runs [`suspension`] on the real stack.
 fn build_suspension<T: 'static>(
     _store: &mut StoreContext<'_, T>,
     instance: usize,
@@ -435,7 +443,8 @@ fn build_suspension<T: 'static>(
     switch: Switch,
 ) -> BlockingBuiltin<T> {
     let on_real_stack = abi_state.clone();
-    BlockingBuiltin::with_fallback(
+    let switching = abi_state.clone();
+    let builtin = BlockingBuiltin::with_fallback(
         core_func_type(signature),
         move |store: &mut StoreContext<'_, T>, args: &[RuntimeVal]| {
             let id = calling_instance(&abi_state, instance)?;
@@ -468,6 +477,47 @@ fn build_suspension<T: 'static>(
             )?;
             Ok(None)
         },
+    );
+    if matches!(switch, Switch::None) {
+        return builtin;
+    }
+    builtin.switching(
+        move |store: &mut StoreContext<'_, T>, args: &[RuntimeVal]| {
+            names_switch(store, &switching, instance, switch, args)
+        },
+    )
+}
+
+/// Whether one call of a switching built-in names a thread to switch
+/// to: a resume, and a promote whose thread is ready. A call that
+/// fails to find its thread answers `false`, and the fallback then
+/// fails it with the cause it finds.
+fn names_switch<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    abi_state: &Arc<Mutex<AbiRuntimeState>>,
+    instance: usize,
+    switch: Switch,
+    args: &[RuntimeVal],
+) -> bool {
+    let (Ok(id), Ok(named)) = (
+        calling_instance(abi_state, instance),
+        named_argument(switch, args),
+    ) else {
+        return false;
+    };
+    let Ok(current) = current_thread(store) else {
+        return false;
+    };
+    let Ok(below) = store
+        .internal()
+        .lock_tables()
+        .map(|guard| guard.tasks.returns_to(current))
+    else {
+        return false;
+    };
+    matches!(
+        switch_target(store, id, current, switch, named, below),
+        Ok(Some(_))
     )
 }
 

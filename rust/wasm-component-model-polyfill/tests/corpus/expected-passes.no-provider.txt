@@ -6,5 +6,3 @@
 # name a directive the shared list names. `tests regenerate` neither
 # reads nor writes this list, so a line is written and removed by
 # hand.
-
-cm/async/trap-if-block-and-sync.wast:352 without a provider the callee the sync-typed export lowers asynchronously blocks on the real stack while that export's call is in progress, so the block traps with the cannot-block message the directive expects before `subtask.cancel` is reached; under a provider the callee suspends, the lower answers `STARTED`, and the export reaches `subtask.cancel`, which is not built

@@ -302,11 +302,25 @@ impl Prepared {
         // The mark comes back off through an unwind too. One a panic
         // left on the stack would turn every later deadlock under
         // this caller into a stack switch.
+        //
+        // The callee may suspend while it runs from here, whatever
+        // call into its instance is in progress below, because its
+        // suspension hands control back to this frame and the caller
+        // goes on without a block. Its instance's may-not-suspend flag
+        // is clear until the callee returns or suspends, and then goes
+        // back to what it was, as Wasmtime's start intrinsic does.
         let tables = store.internal().tables_handle();
-        lock(&tables)?.tasks.begin_nested_start(self.subtask, lower);
+        let may_not_suspend = {
+            let mut guard = lock(&tables)?;
+            guard.tasks.begin_nested_start(self.subtask, lower);
+            guard.tasks.set_may_not_suspend(self.instance, false)
+        };
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             store.internal().run_switch_slot()
         }));
+        if let (Some(old), Ok(mut guard)) = (may_not_suspend, tables.lock()) {
+            guard.tasks.set_may_not_suspend(self.instance, old);
+        }
         // A callee that switched to a thread this frame cannot resume
         // left that to the store, and the start goes on once the store
         // has done it. The mark comes off then.

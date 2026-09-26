@@ -25,6 +25,10 @@ type Whole<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> anyhow::Resul
     + Sync
     + 'static;
 
+/// Whether one call of a built-in names a thread to switch to, as a
+/// host function body.
+type Switches<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> bool + Send + Sync + 'static;
+
 /// A built-in that the reference lets wait inside a guest call:
 /// `waitable-set.wait`, a synchronous stream or future copy or
 /// cancel, the synchronous start of a call into another component,
@@ -57,10 +61,19 @@ type Whole<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> anyhow::Resul
 /// switch are such built-ins, because a switch made where the thread
 /// cannot suspend runs the thread it names from inside itself, rather
 /// than leaving it to the frame that resumed the switching thread.
+///
+/// A built-in made [`switching`](Self::switching) also answers, for
+/// one call, whether that call names a thread to switch to. Under a
+/// provider, a thread of a task that must not block suspends in the
+/// shim for such a call if it runs on a stack of its own. It does not
+/// take the fallback. The switch hands control to the named thread
+/// and waits on nothing, so it blocks nothing, and Wasmtime suspends
+/// the thread there too.
 pub struct BlockingBuiltin<T: 'static> {
     ty: FuncType,
     begin: Arc<Begin<T>>,
     fallback: Option<Arc<Whole<T>>>,
+    switches: Option<Arc<Switches<T>>>,
 }
 
 impl<T: 'static> Clone for BlockingBuiltin<T> {
@@ -69,6 +82,7 @@ impl<T: 'static> Clone for BlockingBuiltin<T> {
             ty: self.ty.clone(),
             begin: self.begin.clone(),
             fallback: self.fallback.clone(),
+            switches: self.switches.clone(),
         }
     }
 }
@@ -87,6 +101,7 @@ impl<T: 'static> BlockingBuiltin<T> {
             ty,
             begin: Arc::new(begin),
             fallback: None,
+            switches: None,
         }
     }
 
@@ -113,7 +128,18 @@ impl<T: 'static> BlockingBuiltin<T> {
             ty,
             begin: Arc::new(begin),
             fallback: Some(Arc::new(fallback)),
+            switches: None,
         }
+    }
+
+    /// The same built-in, where `switches` answers whether one call of
+    /// it names a thread to switch to.
+    pub fn switching(
+        mut self,
+        switches: impl Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.switches = Some(Arc::new(switches));
+        self
     }
 
     /// The built-in's core type, which is its shim's type too.
@@ -147,6 +173,7 @@ impl<T: 'static> BlockingBuiltin<T> {
     pub fn parts(&self, store: &mut StoreContext<'_, T>) -> (RuntimeFunc, RuntimeFunc) {
         let begin = self.begin.clone();
         let fallback = self.fallback.clone();
+        let switches = self.switches.clone();
         let try_part = RuntimeFunc::new(
             store.internal().runtime_mut(),
             FuncType::new(self.ty.params().iter().copied(), [ValType::I32]),
@@ -168,6 +195,7 @@ impl<T: 'static> BlockingBuiltin<T> {
                     &mut store,
                     &*begin,
                     fallback.as_ref().map(|whole| &**whole as _),
+                    switches.as_ref().map(|switches| &**switches as _),
                     args,
                 )?;
                 results[0] = RuntimeVal::I32(i32::from(ready));

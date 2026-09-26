@@ -686,6 +686,59 @@ impl TaskTables {
         })
     }
 
+    /// Whether a caller below waits for the blocked callee in an
+    /// instance that must not suspend, with no other thread of that
+    /// instance ready.
+    ///
+    /// A caller below waits for the call above it when it made that
+    /// call synchronously and the call has not resolved: a fused
+    /// adapter's direct call, which leaves the callee's task scope
+    /// right above the caller's, or a synchronous lower whose start
+    /// intrinsic left a nested-start mark between the two. That wait
+    /// is a block of the caller's own instance. In the reference every
+    /// call runs as a thread of its own, so the blocked callee hands
+    /// control back to the caller's lower, whose thread then blocks,
+    /// and a sync-typed caller's `canon_lift` traps when no thread of
+    /// its instance is ready. Wasmtime traps there too, through
+    /// `switch_or_trap_if_may_not_suspend` on the caller's instance
+    /// after a start intrinsic's callee suspended.
+    ///
+    /// The callers are read from the innermost out. A caller whose
+    /// instance may suspend waits in turn, so its own caller decides.
+    /// The search ends at a frame that would go on, which
+    /// [`caller_below_goes_on`](Self::caller_below_goes_on) reads, and
+    /// at a frame that is no synchronous call between two guests: a
+    /// host call's subtask, or a thread built-in's switch.
+    pub fn caller_below_cannot_block(&self) -> bool {
+        let mut blocked_seen = false;
+        for (position, scope) in self.scopes.iter().enumerate().rev() {
+            match *scope {
+                Scope::Task(_) if !blocked_seen => blocked_seen = true,
+                Scope::Task(_) => {
+                    let instance = self
+                        .thread_at_depth(position + 1)
+                        .and_then(|caller| self.thread_instance(caller));
+                    let must_not_suspend = instance
+                        .and_then(|instance| self.instance(instance))
+                        .is_some_and(|record| record.may_not_suspend);
+                    if let (true, Some(instance)) = (must_not_suspend, instance) {
+                        return !self.other_thread_ready_in(instance);
+                    }
+                }
+                Scope::NestedStart {
+                    subtask,
+                    lower: LowerKind::Sync,
+                } if self
+                    .subtask(subtask)
+                    .is_some_and(|record| !record.state.resolved()) => {}
+                Scope::NestedStart { .. } | Scope::ThreadSwitch { .. } | Scope::Subtask(_) => {
+                    return false;
+                }
+            }
+        }
+        false
+    }
+
     /// The scope an operation counts against when the crossing that
     /// asks for it names `scope`: the scope it named, or the current
     /// scope when it named none. This is the one rule for the scope
