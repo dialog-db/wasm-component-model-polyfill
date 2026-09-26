@@ -268,13 +268,15 @@
 
         # Markdown helpers: one Prettier configuration drives the `markdown`
         # menu command (`format` / `lint` subcommands) and the check below.
-        # Scoped to the design corpus and the board README; the board file
-        # itself is machine-managed and stays out of the gate.
+        # Scoped to the top-level README, CLAUDE.md, the design corpus, the
+        # board README, and the benchmark README; the board file itself is
+        # machine-managed and stays out of the gate.
         markdown = katsuobushi.lib.markdown {
           inherit pkgs;
           workspaceRoot = ./.;
           include = [
             "CLAUDE.md"
+            "README.md"
             "project/design/**/*.md"
             "project/kanban/README.md"
             "rust/wcmp-bench/README.md"
