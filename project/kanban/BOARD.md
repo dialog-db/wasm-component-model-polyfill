@@ -65,20 +65,21 @@ kanban-plugin: basic
 - [ ] [[fed20f]]
 - [ ] [[7c4deb]]
 - [ ] [[32bc36]]
+- [ ] [[5cddf6]]
 
 ## In Progress
 
-- [ ] [[b6a68d]]
+- [ ] [[727b97]]
 
 ## Needs Review
 
 - [ ] [[c723cc]]
-- [ ] [[2170bc]]
-- [ ] [[727b97]]
+- [ ] [[b6a68d]]
 
 ## Ready
 
 - [ ] [[05862b]]
+- [ ] [[2170bc]]
 - [ ] [[dd3ad3]]
 
 ---
