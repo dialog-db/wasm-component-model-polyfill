@@ -335,7 +335,8 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
         self.context.mark_dropped();
     }
 
-    /// Record that a trap happened in the store.
+    /// Record that a trap happened in the store, and discard the
+    /// work it holds.
     pub fn poison(self) {
         self.context.poison();
     }

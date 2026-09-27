@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicUsize;
 
 use super::SuspendSeam;
 use super::deferred_work::DeferredWork;
+use super::discarded_work::DiscardedWork;
 use super::end_id::EndId;
 use super::event_slot::EventSlot;
 use super::host_reader::HostReader;
@@ -696,6 +697,15 @@ impl<T: 'static> Scheduler<T> {
     /// Let go of a host task that completed.
     pub fn complete_host_task(&mut self, key: u64) {
         self.host_tasks.complete(key);
+    }
+
+    /// Whether the host task handed out under `key` was out being
+    /// polled when [`discard_all_work`](Self::discard_all_work) let
+    /// go of every other: the turn that has it lets it go through
+    /// [`complete_host_task`](Self::complete_host_task) rather than
+    /// putting it back.
+    pub fn host_task_retired(&self, key: u64) -> bool {
+        self.host_tasks.is_retired(key)
     }
 
     /// Take every host task out, woken or not.
@@ -1398,6 +1408,67 @@ impl<T: 'static> Scheduler<T> {
                 Some((thread, parked, self.blocks.remove(&thread)))
             })
             .collect()
+    }
+
+    /// Let go of every piece of work the store holds, for a store a
+    /// trap poisoned: every guest work item wherever it waits, every
+    /// host task, and every producer and consumer of an end the host
+    /// serves. What comes back is the caller's to drop, where it
+    /// holds no lock, because dropping a host task or an end runs
+    /// host code.
+    ///
+    /// Nothing is given back the way
+    /// [`discard_task_items`](Self::discard_task_items) gives it
+    /// back. The tally of tasks waiting at an entry gate and the
+    /// waiters on a set stay as the trap left them, with every task
+    /// and subtask record, until the store drops: they are guest
+    /// state, and no guest code of the store runs again to read them.
+    ///
+    /// A host task a turn has out being polled is not here. Its key is
+    /// retired, and the turn that has it out lets it go when the poll
+    /// returns, as [`host_task_retired`](Self::host_task_retired)
+    /// tells it. A producer or consumer a poll has out is not here
+    /// either: the poll hands it back to the store, and it drops with
+    /// the store. A thread suspended in the provider stays parked: its
+    /// resumption is an item, which no turn of a poisoned store runs.
+    ///
+    /// The work the JSPI provider leaves to the store, in the browser,
+    /// is not let go of: a resume already issued, a failed start, the
+    /// thread named to run next, the switchers, and the plans. A later
+    /// driver's turn carries that work forward before it runs any item,
+    /// so it can still resume a guest thread of a poisoned store. Every
+    /// other provider, and none, leaves no such work.
+    ///
+    /// Work that reaches the store after this is kept. Only the host
+    /// can make any, because no guest code runs, and host work that
+    /// touches no guest still runs in a poisoned store.
+    pub fn discard_all_work(&mut self) -> DiscardedWork<T> {
+        let mut items: Vec<Item<T>> = Vec::new();
+        items.extend(self.switch_slot.take());
+        items.extend(self.high_priority.drain(..));
+        items.extend(self.low_priority.drain(..));
+        items.extend(self.resume_after_yield.take());
+        items.extend(self.entry_gate.drain(..).map(|entry| entry.item));
+        let held = core::mem::replace(&mut self.held_callbacks, HeldCallbacks::new());
+        items.extend(held.entries.into_values().map(|entry| entry.item));
+        let mut host_tasks = self.host_tasks.retire_all();
+        self.parked_calls.clear();
+        host_tasks.extend(self.settled_calls.drain().map(|(_, (task, _))| task));
+        self.host_end_wakers.clear();
+        DiscardedWork {
+            items,
+            host_tasks,
+            host_writers: self
+                .host_writers
+                .drain()
+                .map(|(_, writer)| writer)
+                .collect(),
+            host_readers: self
+                .host_readers
+                .drain()
+                .map(|(_, reader)| reader)
+                .collect(),
+        }
     }
 
     /// The reference's `has_backpressure`, for one waiting task.
@@ -2941,12 +3012,24 @@ mod tests {
             guard.tasks.drop_waitable_set(set).expect("drop the set");
         }
 
-        store
-            .internal()
-            .turn(Waker::noop())
-            .expect_err("the set the held item named is gone");
+        // The release is asked for on its own rather than through a
+        // turn. A turn that fails is a trap, and a trap poisons the
+        // store and discards every item it holds, so a turn would
+        // leave nothing to read back.
+        {
+            let tables = store.internal().tables_handle();
+            let mut guard = tables.lock().expect("tables");
+            store
+                .internal()
+                .scheduler_mut()
+                .release_held_callbacks(&mut guard)
+                .expect_err("the set the held item named is gone");
+        }
 
-        assert!(entries(&log).is_empty(), "the turn failed before it ran");
+        assert!(
+            entries(&log).is_empty(),
+            "the release failed before anything ran"
+        );
         assert_eq!(
             store.internal().scheduler().held_callbacks(),
             2,

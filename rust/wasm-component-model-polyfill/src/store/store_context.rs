@@ -652,6 +652,10 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 self.lock_tables()?.abandon_subtask(subtask);
                 Err(error)
             }
+            // The poll itself poisoned the store, after the trap had
+            // let go of every host task the store held, so the task
+            // goes as they went rather than joining the store.
+            Poll::Pending if self.poisoned() => self.abandon_poisoned_call(subtask, task),
             Poll::Pending => {
                 let (task_id, index) = {
                     let mut guard = self.lock_tables()?;
@@ -730,6 +734,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 self.lock_tables()?.abandon_subtask(subtask);
                 Err(error)
             }
+            // The poll poisoned the store, and the task is not
+            // parked, as no host task outlives the trap.
+            Poll::Pending if self.poisoned() => self.abandon_poisoned_call(subtask, task),
             Poll::Pending => {
                 // The host task joins the store's records here, so a
                 // call past the cap on them fails as one whose body
@@ -791,6 +798,21 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 Err(Error::Scheduler(cause))
             }
         }
+    }
+
+    /// Let go of the host task of the call `subtask` records, whose
+    /// first poll poisoned the store while its guest caller was on
+    /// the stack. The trap already let go of every other host task,
+    /// and this one goes the same way, its future dropped with no
+    /// lock held. The call never returned, so its subtask resolves as
+    /// a cancellation and the handles the guest lent for it go back.
+    /// The guest's call fails with the cannot-enter cause: a poisoned
+    /// store runs no more guest code, and the caller's code is the
+    /// guest code that would run next.
+    fn abandon_poisoned_call<R>(&mut self, subtask: SubtaskId, task: HostTask<T>) -> Result<R> {
+        drop(task);
+        self.lock_tables()?.abandon_subtask(subtask);
+        Err(Error::Task(TaskCause::CannotEnter))
     }
 
     /// Block the guest thread on a host task, where it stands, which
@@ -1107,7 +1129,26 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         }
         let mut completed = Vec::new();
         for (key, task_waker, mut task) in woken {
-            match task.poll(self, &task_waker) {
+            // A poll before this one can have poisoned the store: its
+            // body reached the store and ran a destructor that
+            // trapped. The trap let go of every host task the store
+            // held but the ones this turn has out, and those go here,
+            // unpolled.
+            if self.scheduler().host_task_retired(key) {
+                self.scheduler_mut().complete_host_task(key);
+                drop(task);
+                continue;
+            }
+            let outcome = task.poll(self, &task_waker);
+            // The poll itself poisoned the store, and the task goes
+            // the way of every other the trap let go of, whatever the
+            // poll answered: what it produced crosses into no guest.
+            if self.scheduler().host_task_retired(key) {
+                self.scheduler_mut().complete_host_task(key);
+                drop(task);
+                continue;
+            }
+            match outcome {
                 Poll::Ready(value) => {
                     self.scheduler_mut().complete_host_task(key);
                     completed.push((task, value));
@@ -1181,7 +1222,17 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         let Some((key, waker, mut task)) = self.scheduler_mut().take_parked_call(subtask) else {
             return Ok(());
         };
-        match task.poll(self, &waker) {
+        let outcome = task.poll(self, &waker);
+        // A poll that poisoned the store lets the task go, as the trap
+        // let go of every other host task, whatever the poll answered:
+        // a call settled now would hand its result to guest code a
+        // poisoned store never runs.
+        if self.scheduler().host_task_retired(key) {
+            self.scheduler_mut().complete_host_task(key);
+            drop(task);
+            return Ok(());
+        }
+        match outcome {
             Poll::Ready(value) => {
                 self.scheduler_mut().complete_host_task(key);
                 self.settle_call(subtask, task, value)
@@ -1214,6 +1265,14 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Run one item of a turn, and evaluate the conditions of the
     /// waiting threads after it, since the item can have met them.
     fn run_item(&mut self, item: Item<T>) -> Result<()> {
+        // A guest work item queued after a trap, by guest code that
+        // was unwinding from it, is dropped rather than run: a
+        // poisoned store runs no more guest code. The host's own work
+        // still runs.
+        if self.poisoned() && !item.is_host_only() {
+            drop(item);
+            return Ok(());
+        }
         self.scheduler_mut().note_item_run();
         item.run(self)?;
         if self.defers_work() {
@@ -1338,9 +1397,38 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     }
 
     /// Record that a trap happened in the store, so that no guest
-    /// code of it runs again. Workspace-internal.
+    /// code of it runs again, and discard the work it holds.
+    ///
+    /// Every queued guest work item goes, wherever it waits, and so
+    /// does every host task, producer, and consumer, each future
+    /// dropped here. The task and subtask records stay until the
+    /// store drops. A later driver therefore meets no stale work, and
+    /// fails only for an entry it makes itself. The one exception is
+    /// the work the JSPI provider leaves to the store in the browser,
+    /// which the discard does not reach and a later turn still
+    /// carries forward. Wasmtime keeps its
+    /// queued items and host futures, and a later `run_concurrent`
+    /// runs them; the polyfill discards them, because the Component
+    /// Model runs no guest code after a trap.
+    ///
+    /// Every caller holds no lock on the handle tables, so a future's
+    /// `Drop` that reaches the store runs where host code may run: an
+    /// accessor it reaches through fails with the store-not-in-poll
+    /// or the recursive-driver cause, as it would anywhere else a
+    /// poll of the store is not lending it. Workspace-internal.
     fn poison(&mut self) {
+        // The work goes at the moment the store is poisoned, and only
+        // then. What reaches a poisoned store afterwards is the
+        // host's own work, which still runs, or an item that guest
+        // code unwinding from the trap queued, which no turn runs.
+        if self.poisoned() {
+            return;
+        }
         self.store_data_mut().poison();
+        let discarded = self.scheduler_mut().discard_all_work();
+        // The borrow of the scheduler has ended, and no lock is held,
+        // so the host code a drop runs meets neither.
+        drop(discarded);
     }
 
     /// Refuse a host entry into a guest of a store a trap poisoned,
@@ -2784,7 +2872,8 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Entering it while another driver of the same store is inside
     /// a turn fails with the recursive-driver cause. Dropping the
     /// returned future cancels nothing: whatever the driver queued
-    /// stays in the store and runs in the next turn of any driver.
+    /// stays in the store and runs in the next turn of any driver,
+    /// unless a trap poisons the store first and discards it.
     ///
     /// A turn that finds nothing ready and no host task pending
     /// leaves this entry pending rather than failing with the

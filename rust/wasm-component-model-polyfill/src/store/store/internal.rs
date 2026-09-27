@@ -34,6 +34,7 @@ use crate::error::{Error, Result, TaskCause};
 use crate::resource::HandleTables;
 
 use super::super::store_context::StoreContext;
+use super::super::store_context::internal::StoreContextInternalExt;
 use super::super::store_data::StoreData;
 use super::super::store_id::StoreId;
 use super::Store;
@@ -102,9 +103,11 @@ impl<'a, T: 'static> StoreInternal<'a, T> {
         self.store.inner_mut()
     }
 
-    /// Record that a trap happened in the store.
+    /// Record that a trap happened in the store, and discard the
+    /// work it holds.
     pub fn poison(self) {
-        self.store.store_data_mut().poison();
+        let mut context = self.store.context();
+        context.internal().poison();
     }
 
     /// Refuse a host entry into a guest of a poisoned store, with the

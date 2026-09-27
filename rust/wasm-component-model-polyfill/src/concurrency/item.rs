@@ -35,6 +35,9 @@ pub struct Item<T: 'static> {
     kind: ItemKind,
     instance: Option<InstanceId>,
     task: Option<TaskId>,
+    /// Whether the item is the host's own work, which touches no
+    /// guest.
+    host_only: bool,
     action: BoxedAction<T>,
 }
 
@@ -49,8 +52,25 @@ impl<T: 'static> Item<T> {
             kind,
             instance: None,
             task: None,
+            host_only: false,
             action: Box::new(action),
         }
+    }
+
+    /// Say that this item is the host's own work, which touches no
+    /// guest: the end of a pipe from a producer of the host's to a
+    /// consumer of the host's. A store a trap poisoned runs no guest
+    /// work item, and still runs this one, because host work that
+    /// touches no guest still runs there.
+    pub fn host_only(mut self) -> Self {
+        self.host_only = true;
+        self
+    }
+
+    /// Whether this item is the host's own work, which touches no
+    /// guest.
+    pub fn is_host_only(&self) -> bool {
+        self.host_only
     }
 
     /// Say which component instance this item's work belongs to.

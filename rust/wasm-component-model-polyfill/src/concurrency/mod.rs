@@ -175,6 +175,7 @@ mod copy_result;
 mod copy_state;
 mod deferred_work;
 mod destination;
+mod discarded_work;
 mod driver;
 mod end_direction;
 mod end_id;

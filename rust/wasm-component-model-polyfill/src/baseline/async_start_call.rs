@@ -836,27 +836,25 @@ async fn it_fails_the_driver_that_ran_the_callback_when_the_callee_throws_after_
         !any_instance_is_held(&store),
         "the exclusive thread the callback took is released by the failure"
     );
-    // Nothing of the callee's is left for a driver to run. The one
-    // item the store still holds is the other half of the parked
-    // task the count above names: the caller's own callback, held
-    // for an event on the set it joined the subtask to. A held item
-    // is not a ready one, and the callee's callback item — the one
-    // the failure came out of — went with the record it named.
+    // Nothing is left for a driver to run. The failure is a trap, and
+    // a trap poisons the store and discards every item it holds: the
+    // callee's callback item — the one the failure came out of — and
+    // the caller's own callback, held for an event on the set it
+    // joined the subtask to. The caller's task record stays, as the
+    // count above says, and nothing of it will run again.
     assert_eq!(
         store.internal().scheduler().held_callbacks(),
-        1,
-        "the caller's callback waits for an event on its own set"
+        0,
+        "the trap discarded the caller's held callback"
     );
     assert_eq!(
         store.internal().scheduler().queued_items(),
-        1,
-        "and that held item is the whole of what the store still holds"
+        0,
+        "the store holds no item at all"
     );
 
-    // The turn the next driver takes. The callee's items are swept,
-    // and the caller's is held for an event nothing will deliver, so
-    // the turn finds nothing ready and goes idle rather than running
-    // an item against a record the failure removed.
+    // The turn the next driver takes finds nothing ready and goes
+    // idle rather than running an item of a poisoned store.
     assert_eq!(turn(&mut store), "Idle");
 
     // And the borrow the caller lent for the call is back. The

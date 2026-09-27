@@ -58,6 +58,9 @@ pub struct HostTask<T: 'static> {
     caller_task: Option<TaskId>,
     caller_table: Option<TableId>,
     handle_index: u32,
+    /// Whether the task is the host's own work, which touches no
+    /// guest.
+    host_only: bool,
 }
 
 impl<T: 'static> HostTask<T> {
@@ -75,6 +78,7 @@ impl<T: 'static> HostTask<T> {
             caller_task: None,
             caller_table: None,
             handle_index: 0,
+            host_only: false,
         }
     }
 
@@ -106,7 +110,17 @@ impl<T: 'static> HostTask<T> {
             caller_task,
             caller_table: None,
             handle_index: 0,
+            host_only: false,
         }
+    }
+
+    /// Mark the task as the host's own work, which touches no guest:
+    /// a pipe from a producer of the host's to a consumer of the
+    /// host's. What its completion queues is host work too, and runs
+    /// in a store a trap poisoned, where no guest work item runs.
+    pub fn host_only(mut self) -> Self {
+        self.host_only = true;
+        self
     }
 
     /// The subtask this host task resolves, or `None` for the task of
@@ -195,16 +209,18 @@ impl<T: 'static> HostTask<T> {
             caller_task,
             caller_table,
             handle_index,
+            host_only,
             ..
         } = self;
         let Some(subtask) = subtask else {
-            return Item::new(
+            let item = Item::new(
                 ItemKind::HostCopyDelivery,
                 move |store: &mut StoreContext<'_, T>| match lowering(store, outcome) {
                     Ok(()) => Ok(()),
                     Err(error) => store.internal().fail_export_task(caller_task, error),
                 },
             );
+            return if host_only { item.host_only() } else { item };
         };
         Item::new(
             ItemKind::HostResultLowering,

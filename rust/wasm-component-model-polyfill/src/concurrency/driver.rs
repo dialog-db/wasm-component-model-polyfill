@@ -36,7 +36,8 @@ use super::yield_wake::YieldWake;
 ///   own, and the call decides whether it was a trap.
 /// - Dropping the future cancels nothing. Whatever the driver
 ///   queued stays in the store and runs in the next turn of any
-///   driver.
+///   driver, unless a trap poisons the store first: the trap
+///   discards every queued item and drops every host task.
 /// - Dropping the store drops every task, host task, and suspended
 ///   thread, and no destructor runs.
 ///

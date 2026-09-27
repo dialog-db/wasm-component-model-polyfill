@@ -1109,18 +1109,19 @@ async fn it_refuses_a_copy_the_lower_of_an_end_another_copy_piped() {
         .try_into_stream_any(&mut store.as_context_mut())
         .expect("a conversion checks only that the end is in the store");
     assert_eq!(write(&mut store, &instance).await, BLOCKED);
+    assert!(
+        counts.polls() > 0 && counts.drops() == 0,
+        "the first consumer serves the writer"
+    );
 
     // The refused lower is a trap of the call, and a trap poisons the
-    // store, so it is the last guest entry. What it leaves is read
-    // from the consumer.
+    // store, so it is the last guest entry. The poisoned store drops
+    // the consumer with the rest of its host work.
     let lowered = take(&mut store, &instance, &kept)
         .await
         .expect_err("a consumer reads the end");
     assert!(invalid_handle(&lowered, NOT_HELD), "{lowered:?}");
-    assert!(
-        counts.polls() > 0 && counts.drops() == 0,
-        "the first consumer still serves the writer"
-    );
+    assert_eq!(counts.drops(), 1, "the trap dropped the first consumer");
 }
 
 #[wcmp_macros::test]
@@ -1308,10 +1309,6 @@ async fn it_refuses_every_copy_of_a_stream_the_host_created_and_piped_to_itself(
     let kept = piped.clone();
     pipe(&mut store, &piped, Counted(counts.clone())).expect("the host pipes its own stream");
 
-    let lowered = take(&mut store, &instance, &kept)
-        .await
-        .expect_err("the host's pipe reads the end");
-    assert!(invalid_handle(&lowered, NOT_HELD), "{lowered:?}");
     let refused = Arc::new(Counts::default());
     let again =
         pipe(&mut store, &kept, Counted(refused.clone())).expect_err("the end has a consumer");
@@ -1326,6 +1323,20 @@ async fn it_refuses_every_copy_of_a_stream_the_host_created_and_piped_to_itself(
         "the pipe keeps its producer and consumer"
     );
     assert_eq!(store.internal().scheduler().host_task_count(), 1);
+
+    // The refused lower is a trap of the call, and a trap poisons the
+    // store, which drops the pipe's producer and consumer with the
+    // host task that runs them.
+    let lowered = take(&mut store, &instance, &kept)
+        .await
+        .expect_err("the host's pipe reads the end");
+    assert!(invalid_handle(&lowered, NOT_HELD), "{lowered:?}");
+    assert_eq!(
+        counts.drops(),
+        2,
+        "the trap dropped the pipe's producer and consumer"
+    );
+    assert_eq!(store.internal().scheduler().host_task_count(), 0);
 }
 
 #[wcmp_macros::test]

@@ -53,7 +53,8 @@ pub fn start_host_pipe<T: 'static, H: HostConsumer<T>>(
         None,
         |_store: &mut StoreContext<'_, T>, outcome: Result<Vec<Val>>| outcome.map(drop),
         body,
-    );
+    )
+    .host_only();
     store.internal().push_host_task(task);
 }
 

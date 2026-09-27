@@ -68,6 +68,27 @@ pub mod internal;
 /// functions of its core modules, and the Component Model runs no
 /// guest code after a trap.
 ///
+/// At the moment of the trap the store discards its work. Every
+/// queued guest work item goes — a callback, the start of a task, a
+/// thread that was ready to resume — and so does every pending host
+/// future: the future of a host `async` function, a stream or future
+/// producer, and a consumer, each dropped there. Host work that
+/// starts after the trap, such as a pipe of the host's own stream to
+/// a consumer of its own, touches no guest and runs. The records of
+/// the store's tasks and subtasks stay until the store drops. A later
+/// driver therefore meets no stale work, and fails only for an entry
+/// it makes itself; a call future whose task was discarded never
+/// resolves. Wasmtime keeps its queued items and host futures, and a
+/// later `run_concurrent` runs them. The polyfill discards them,
+/// because the Component Model runs no guest code after a trap.
+///
+/// A discarded future is dropped where host code may run: no lock of
+/// the store is held, and the store is not lent to a poll. A `Drop`
+/// that reaches the store through its [`Accessor`] therefore neither
+/// deadlocks nor panics. The reach fails with the store-not-in-poll
+/// cause, or with the recursive-driver cause inside another reach,
+/// as it would anywhere else the store is not lent.
+///
 /// [`Func::call`]: crate::Func::call
 /// [`Func::call_concurrent`]: crate::Func::call_concurrent
 /// [`TaskCause::CannotEnter`]: crate::TaskCause::CannotEnter
@@ -411,7 +432,7 @@ impl<T: 'static> Store<T> {
     /// inside a turn fails with the recursive-driver cause. Dropping
     /// the returned future cancels nothing: whatever the driver
     /// queued stays in the store and runs in the next turn of any
-    /// driver.
+    /// driver, unless a trap poisons the store first and discards it.
     ///
     /// A turn that finds nothing ready and no host task pending
     /// leaves this entry pending rather than failing with the

@@ -11,15 +11,26 @@
 //! The tests drive one component with an export for each trigger and
 //! read the poison back through the one entry every test shares, a
 //! call of `ok`, which returns 7 in a store no trap has poisoned.
+//!
+//! At the moment of the trap the store also discards its work: every
+//! queued guest work item, and every pending host future, each of
+//! which is dropped there. Two tests read that back: one through a
+//! component of its own, whose tasks leave both kinds of work behind,
+//! and one through a pipe of the host's own that starts after the
+//! trap, which touches no guest and still runs.
 
 #![cfg(test)]
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use core::future::{Future, poll_fn};
+use core::pin::{Pin, pin};
+use core::task::{Context, Poll, Waker};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use wasm_component_model_polyfill::{
-    Component, Engine, Error, FunctionType, HostCall, Instance, Linker, Module, ResourceHandle,
-    ResourceTypeId, Store, TaskCause, Val,
+    Accessor, Component, Engine, Error, FunctionType, FutureConsumer, FutureReader, HostCall,
+    Instance, Linker, Module, ResourceHandle, ResourceTypeId, SchedulerCause, Source, Store,
+    StoreContext, TaskCause, Val,
 };
 use wcmp_macros::{component, wasm};
 
@@ -477,5 +488,313 @@ async fn it_refuses_every_guest_entry_of_a_poisoned_store() {
         fixture.store.data().0.load(Ordering::Relaxed),
         2,
         "the host data is read and written as before"
+    );
+}
+
+/// A component with three exports, each the whole of one task of the
+/// test that follows.
+///
+/// - `hold` is lifted `async` with a callback. It calls the host
+///   `async` function `pend` through an asynchronous lower, joins the
+///   subtask to a set, and waits on the set. Its callback calls `tick`
+///   with 2 and would end the task.
+/// - `spin` is lifted `async` with a callback. It and its callback
+///   each call `tick` with 1 and give way, so a callback of its task
+///   is always queued.
+/// - `trap` traps in its own core code.
+const DISCARDS: &[u8] = component!(
+    r#"
+    (component
+      (import "pend" (func $pend async))
+      (import "tick" (func $tick (param "who" u32)))
+      (core func $pend' (canon lower (func $pend) async))
+      (core func $tick' (canon lower (func $tick)))
+      (core func $task-return (canon task.return))
+      (core func $set-new (canon waitable-set.new))
+      (core func $join (canon waitable.join))
+      (core module $M
+        (import "" "pend" (func $pend (result i32)))
+        (import "" "tick" (func $tick (param i32)))
+        (import "" "task.return" (func $task-return))
+        (import "" "waitable-set.new" (func $set-new (result i32)))
+        (import "" "waitable.join" (func $join (param i32 i32)))
+        (func (export "hold") (result i32)
+          (local $status i32)
+          (local $set i32)
+          (local.set $status (call $pend))
+          (local.set $set (call $set-new))
+          (call $join
+            (i32.shr_u (local.get $status) (i32.const 4))
+            (local.get $set))
+          (i32.or (i32.shl (local.get $set) (i32.const 4)) (i32.const 2)))
+        (func (export "hold-callback") (param i32 i32 i32) (result i32)
+          (call $tick (i32.const 2))
+          (call $task-return)
+          (i32.const 0))
+        (func (export "spin") (result i32)
+          (call $tick (i32.const 1))
+          (i32.const 1))
+        (func (export "spin-callback") (param i32 i32 i32) (result i32)
+          (call $tick (i32.const 1))
+          (i32.const 1))
+        (func (export "trap") unreachable))
+      (core instance $m (instantiate $M (with "" (instance
+        (export "pend" (func $pend'))
+        (export "tick" (func $tick'))
+        (export "task.return" (func $task-return))
+        (export "waitable-set.new" (func $set-new))
+        (export "waitable.join" (func $join))))))
+      (func (export "hold") async
+        (canon lift (core func $m "hold") async
+          (callback (core func $m "hold-callback"))))
+      (func (export "spin") async
+        (canon lift (core func $m "spin") async
+          (callback (core func $m "spin-callback"))))
+      (func (export "trap")
+        (canon lift (core func $m "trap"))))
+    "#
+);
+
+/// What the host saw of the guest's work and of its own future.
+#[derive(Clone, Default)]
+struct Seen {
+    /// How many times `spin`'s task called `tick`.
+    spins: Arc<AtomicU32>,
+    /// How many times `hold`'s callback called `tick`.
+    holds: Arc<AtomicU32>,
+    /// Whether the future of `pend` was polled.
+    started: Arc<AtomicBool>,
+    /// Whether the future of `pend` may complete, which it does on
+    /// the first poll after this is set.
+    release: Arc<AtomicBool>,
+    /// The waker the future of `pend` was last polled with.
+    waker: Arc<Mutex<Option<Waker>>>,
+    /// Whether the future of `pend` was dropped.
+    dropped: Arc<AtomicBool>,
+    /// What the future's reach into the store answered as it dropped,
+    /// once it has dropped.
+    reach: Arc<Mutex<Option<Result<(), String>>>>,
+}
+
+/// The future of `pend`: pending until the test releases it, and
+/// noting its drop.
+///
+/// Its `Drop` reaches the store through the accessor it was handed,
+/// as a future that closes a stream as it drops does, and records
+/// what the reach answered.
+struct Pend {
+    accessor: Accessor<()>,
+    seen: Seen,
+}
+
+impl Future for Pend {
+    type Output = Result<(), Error>;
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        self.seen.started.store(true, Ordering::Relaxed);
+        if self.seen.release.load(Ordering::Relaxed) {
+            return Poll::Ready(Ok(()));
+        }
+        *self.seen.waker.lock().expect("the waker") = Some(context.waker().clone());
+        Poll::Pending
+    }
+}
+
+impl Drop for Pend {
+    fn drop(&mut self) {
+        let reach = self
+            .accessor
+            .with(|_store| ())
+            .map_err(|error| error.to_string());
+        if let Ok(mut slot) = self.seen.reach.lock() {
+            *slot = Some(reach);
+        }
+        self.seen.dropped.store(true, Ordering::Relaxed);
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_discards_queued_guest_work_and_drops_host_futures_when_a_trap_poisons_the_store() {
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, DISCARDS)
+        .await
+        .expect("component parses");
+    let seen = Seen::default();
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let mut root = linker.root();
+    let ticks = seen.clone();
+    root.func_wrap("tick", move |_call: HostCall<'_, ()>, (who,): (u32,)| {
+        match who {
+            1 => ticks.spins.fetch_add(1, Ordering::Relaxed),
+            _ => ticks.holds.fetch_add(1, Ordering::Relaxed),
+        };
+        Ok(())
+    })
+    .expect("the registration of `tick`");
+    let pends = seen.clone();
+    root.func_wrap_concurrent("pend", move |accessor: &Accessor<()>, (): ()| Pend {
+        accessor: accessor.clone(),
+        seen: pends.clone(),
+    })
+    .expect("the registration of `pend`");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the component instantiates");
+    let hold = instance.get_func("hold").expect("`hold` is exported");
+    let spin = instance.get_func("spin").expect("`spin` is exported");
+    let trap = instance.get_func("trap").expect("`trap` is exported");
+
+    let (trapped, dropped_at_trap, spins_at_trap) = store
+        .run_concurrent(async |accessor| {
+            // The first task starts the host call and waits on it, and
+            // the second gives way for good. Neither call ever
+            // returns, so each is polled until the host future has
+            // started and the second task has run its callback.
+            let mut held = pin!(hold.call_concurrent(accessor, &[]));
+            let mut spun = pin!(spin.call_concurrent(accessor, &[]));
+            poll_fn(|context| {
+                assert!(held.as_mut().poll(context).is_pending(), "`hold` waits");
+                assert!(spun.as_mut().poll(context).is_pending(), "`spin` gives way");
+                if seen.started.load(Ordering::Relaxed) && seen.spins.load(Ordering::Relaxed) >= 2 {
+                    return Poll::Ready(());
+                }
+                context.waker().wake_by_ref();
+                Poll::Pending
+            })
+            .await;
+            assert!(
+                !seen.dropped.load(Ordering::Relaxed),
+                "the host future is alive before the trap"
+            );
+
+            // The third task traps, which poisons the store.
+            let trapped = trap.call_concurrent(accessor, &[]).await;
+            (
+                trapped,
+                seen.dropped.load(Ordering::Relaxed),
+                seen.spins.load(Ordering::Relaxed),
+            )
+        })
+        .await
+        .expect("the entry around the calls returns");
+
+    let error = trapped.expect_err("the third task traps");
+    assert!(
+        !matches!(error, Error::Task(TaskCause::CannotEnter)),
+        "the third task entered the store and trapped there, got {error:?}"
+    );
+    assert!(
+        dropped_at_trap,
+        "the host future was dropped by the time the trapping call returned"
+    );
+    // The trap drops the future inside the turn that ran the trapping
+    // task, where no poll of the store is lending it.
+    let reach = seen.reach.lock().expect("reach").clone();
+    assert_eq!(
+        reach,
+        Some(Err(
+            Error::Scheduler(SchedulerCause::StoreNotInPoll).to_string()
+        )),
+        "the future's drop reached for the store and was refused, rather than deadlocking \
+         or lending the store"
+    );
+
+    // A later driver meets no stale work: it runs no callback of
+    // either task, however many turns it runs. The host future is
+    // released and woken, so a store that still held it would poll it
+    // to its end and run the first task's callback.
+    seen.release.store(true, Ordering::Relaxed);
+    if let Some(waker) = seen.waker.lock().expect("the waker").take() {
+        waker.wake();
+    }
+    let polls = store
+        .run_concurrent(async |_accessor| {
+            let mut polls = 0;
+            poll_fn(|context| {
+                polls += 1;
+                if polls == 16 {
+                    return Poll::Ready(());
+                }
+                context.waker().wake_by_ref();
+                Poll::Pending
+            })
+            .await;
+            polls
+        })
+        .await
+        .expect("a closure that does only host work runs in a poisoned store");
+    assert_eq!(polls, 16, "the later driver ran its closure to the end");
+    assert_eq!(
+        seen.spins.load(Ordering::Relaxed),
+        spins_at_trap,
+        "the second task's guest code never ran again"
+    );
+    assert_eq!(
+        seen.holds.load(Ordering::Relaxed),
+        0,
+        "the first task's callback never ran, as the host future it waited on was gone"
+    );
+}
+
+/// A consumer of the host's own future that keeps the value it takes.
+struct Keeps(Arc<Mutex<Option<u32>>>);
+
+impl FutureConsumer<Drops> for Keeps {
+    type Item = u32;
+
+    fn poll_consume(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        store: &mut StoreContext<'_, Drops>,
+        mut source: Source<'_, u32>,
+        _finish: bool,
+    ) -> Poll<Result<(), Error>> {
+        let mut value = Vec::new();
+        source.read(store, &mut value, 1)?;
+        *self.0.lock().expect("the kept value") = value.pop();
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_runs_a_pipe_of_the_hosts_own_that_starts_after_the_trap() {
+    // The trap discards the work the store held at that moment. Host
+    // work that starts afterwards touches no guest, and runs.
+    let mut fixture = Fixture::new().await;
+    fixture
+        .call("unreachable", &[])
+        .await
+        .expect_err("the guest traps");
+
+    let kept = Arc::new(Mutex::new(None));
+    FutureReader::new(&mut fixture.store.as_context_mut(), async {
+        Ok::<_, Error>(5u32)
+    })
+    .expect("a future the host writes")
+    .pipe(&mut fixture.store.as_context_mut(), Keeps(kept.clone()))
+    .expect("the host pipes its own future");
+
+    fixture
+        .store
+        .run_concurrent(async |_accessor| {
+            let mut polls = 0;
+            poll_fn(|context| {
+                polls += 1;
+                if kept.lock().expect("the kept value").is_some() || polls == 64 {
+                    return Poll::Ready(());
+                }
+                context.waker().wake_by_ref();
+                Poll::Pending
+            })
+            .await;
+        })
+        .await
+        .expect("a closure that does only host work runs in a poisoned store");
+    assert_eq!(
+        *kept.lock().expect("the kept value"),
+        Some(5),
+        "the pipe handed the host's value to the host's consumer"
     );
 }

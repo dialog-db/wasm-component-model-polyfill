@@ -48,6 +48,10 @@ pub struct HostTaskSet<T: 'static> {
     /// How many entries have their task out being polled.
     out: usize,
     next_key: u64,
+    /// The keys below this one are retired: the set let go of every
+    /// task under them at once, and a task a turn had out then does
+    /// not come back when its poll returns.
+    retired_below: u64,
     queue: Arc<ReadyQueue>,
 }
 
@@ -116,6 +120,7 @@ impl<T: 'static> HostTaskSet<T> {
             calls: Arc::new(AtomicUsize::new(0)),
             out: 0,
             next_key: 0,
+            retired_below: 0,
             queue: Arc::new(ReadyQueue::default()),
         }
     }
@@ -310,6 +315,23 @@ impl<T: 'static> HostTaskSet<T> {
             None => true,
         });
         taken
+    }
+
+    /// Take every task the set holds out, as
+    /// [`take_all`](Self::take_all) does, and retire every key given
+    /// out so far. A task a turn has out being polled stays out: the
+    /// turn finds its key retired when the poll returns, and lets the
+    /// task go rather than putting it back. A task that joins after
+    /// this is held as any other.
+    pub fn retire_all(&mut self) -> Vec<HostTask<T>> {
+        self.retired_below = self.next_key;
+        self.take_all()
+    }
+
+    /// Whether the task given out under `key` was retired by
+    /// [`retire_all`](Self::retire_all).
+    pub fn is_retired(&self, key: u64) -> bool {
+        key < self.retired_below
     }
 
     /// How many host tasks the set holds, woken or not. A task that

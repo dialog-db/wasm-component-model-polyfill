@@ -363,7 +363,9 @@ impl Func {
     ///
     /// The future is spawn-like. Dropping it cancels nothing: the
     /// task stays in the store and runs on in the next turn of any
-    /// driver. The task progresses only while a driver runs turns,
+    /// driver, unless a trap poisons the store first and discards
+    /// the task's queued work, which leaves this future pending for
+    /// good. The task progresses only while a driver runs turns,
     /// which in practice means while the future is awaited inside
     /// the `run_concurrent` closure. This entry is not itself a
     /// driver, and [`Self::call`], which is one, cannot be entered
