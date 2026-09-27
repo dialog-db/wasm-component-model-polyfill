@@ -471,6 +471,19 @@ impl<T: 'static> Scheduler<T> {
         Some((parked.task, parked.number))
     }
 
+    /// The task of the parked `thread` and the number of the
+    /// suspension it is parked in, for a resumption that runs it out
+    /// of turn. `None` when the thread is not parked, or when a plan
+    /// it left holds it. A resumption a turn queued for it already is
+    /// spent once this one runs.
+    pub fn resumption_of(&self, thread: ThreadId) -> Option<(TaskId, u64)> {
+        let parked = self.parked.get(&thread)?;
+        if parked.held {
+            return None;
+        }
+        Some((parked.task, parked.number))
+    }
+
     /// The number of the suspension `thread` is parked in, when it is
     /// parked.
     pub fn parked_number(&self, thread: ThreadId) -> Option<u64> {

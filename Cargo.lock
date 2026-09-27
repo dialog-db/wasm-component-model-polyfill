@@ -1447,6 +1447,7 @@ dependencies = [
  "wasm-component-model-polyfill",
  "wasm-encoder 0.258.0",
  "wasm_runtime_layer",
+ "wasmparser 0.258.0",
  "wasmtime",
  "wasmtime-environ",
  "wasmtime_runtime_layer",

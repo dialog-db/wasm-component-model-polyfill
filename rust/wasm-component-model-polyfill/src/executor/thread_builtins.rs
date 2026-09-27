@@ -118,6 +118,29 @@
 //! fails ends with all its threads, and a start no turn has run yet
 //! goes with it, under the store's rule for the items of a task that
 //! ends.
+//!
+//! The five that suspend or switch can carry the `cancellable`
+//! immediate. The reference removed it, but Wasmtime 49 still reads
+//! it and honors it, and the C generator of wit-bindgen still emits
+//! `[cancellable][thread-suspend]` and the four cancellable switches,
+//! so the polyfill honors it as Wasmtime does. Each answers zero
+//! without it, and never takes a cancellation request. With it:
+//!
+//! - The built-in first takes a request pending for the current
+//!   thread's task, and answers 1 at once, before it reads the thread
+//!   it names, suspends, or yields.
+//! - Otherwise it goes on as it would, and answers 1 when a request is
+//!   pending once the thread goes on, which it then takes.
+//! - A thread that yields — a built-in that yields and then switches,
+//!   or a promote that yields because the thread it names is not
+//!   ready — is run first by `subtask.cancel` of its task while it is
+//!   suspended in the provider, as Wasmtime runs a thread in a
+//!   cancellable yield.
+//! - A thread that suspends is not woken by `subtask.cancel`. It
+//!   answers 1 when another thread resumes it while a request is still
+//!   pending.
+//!
+//! Taking a request moves the task to cancel-delivered.
 
 use std::sync::{Arc, Mutex};
 
@@ -365,14 +388,21 @@ enum Switch {
 }
 
 /// Build the `thread.suspend` built-in for `instance`: the current
-/// thread suspends until a resume names it.
+/// thread suspends until a resume names it. `cancellable` is the
+/// built-in's `cancellable` immediate.
 pub fn build_thread_suspend<T: 'static>(
     store: &mut StoreContext<'_, T>,
     instance: usize,
+    cancellable: bool,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> BlockingBuiltin<T> {
-    build_suspension(store, instance, signature, abi_state, false, Switch::None)
+    let form = Suspension {
+        yielding: false,
+        switch: Switch::None,
+        cancellable,
+    };
+    build_suspension(store, instance, signature, abi_state, form)
 }
 
 /// Build the `thread.suspend-then-resume` built-in for `instance`:
@@ -381,10 +411,16 @@ pub fn build_thread_suspend<T: 'static>(
 pub fn build_thread_suspend_then_resume<T: 'static>(
     store: &mut StoreContext<'_, T>,
     instance: usize,
+    cancellable: bool,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> BlockingBuiltin<T> {
-    build_suspension(store, instance, signature, abi_state, false, Switch::Resume)
+    let form = Suspension {
+        yielding: false,
+        switch: Switch::Resume,
+        cancellable,
+    };
+    build_suspension(store, instance, signature, abi_state, form)
 }
 
 /// Build the `thread.yield-then-resume` built-in for `instance`: the
@@ -393,10 +429,16 @@ pub fn build_thread_suspend_then_resume<T: 'static>(
 pub fn build_thread_yield_then_resume<T: 'static>(
     store: &mut StoreContext<'_, T>,
     instance: usize,
+    cancellable: bool,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> BlockingBuiltin<T> {
-    build_suspension(store, instance, signature, abi_state, true, Switch::Resume)
+    let form = Suspension {
+        yielding: true,
+        switch: Switch::Resume,
+        cancellable,
+    };
+    build_suspension(store, instance, signature, abi_state, form)
 }
 
 /// Build the `thread.suspend-then-promote` built-in for `instance`:
@@ -405,17 +447,16 @@ pub fn build_thread_yield_then_resume<T: 'static>(
 pub fn build_thread_suspend_then_promote<T: 'static>(
     store: &mut StoreContext<'_, T>,
     instance: usize,
+    cancellable: bool,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> BlockingBuiltin<T> {
-    build_suspension(
-        store,
-        instance,
-        signature,
-        abi_state,
-        false,
-        Switch::Promote,
-    )
+    let form = Suspension {
+        yielding: false,
+        switch: Switch::Promote,
+        cancellable,
+    };
+    build_suspension(store, instance, signature, abi_state, form)
 }
 
 /// Build the `thread.yield-then-promote` built-in for `instance`: the
@@ -424,17 +465,41 @@ pub fn build_thread_suspend_then_promote<T: 'static>(
 pub fn build_thread_yield_then_promote<T: 'static>(
     store: &mut StoreContext<'_, T>,
     instance: usize,
+    cancellable: bool,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> BlockingBuiltin<T> {
-    build_suspension(store, instance, signature, abi_state, true, Switch::Promote)
+    let form = Suspension {
+        yielding: true,
+        switch: Switch::Promote,
+        cancellable,
+    };
+    build_suspension(store, instance, signature, abi_state, form)
 }
 
-/// Build one of the five suspending built-ins. `yielding` says
-/// whether the current thread stays ready rather than suspended, and
-/// `switch` which thread it names. Each answers zero, as the
-/// reference's built-ins do: none of them takes a pending
-/// cancellation request.
+/// Which of the five suspending built-ins one is.
+#[derive(Clone, Copy)]
+struct Suspension {
+    /// Whether the current thread stays ready rather than suspended.
+    yielding: bool,
+    /// Which thread the built-in names.
+    switch: Switch,
+    /// Whether the built-in carries the `cancellable` immediate.
+    cancellable: bool,
+}
+
+/// What a suspending built-in answers when it took no cancellation
+/// request, which is Wasmtime's `WaitResult::Completed`.
+const COMPLETED: i32 = 0;
+
+/// What a cancellable suspending built-in answers when it took a
+/// cancellation request, which is Wasmtime's `WaitResult::Cancelled`.
+const CANCELLED: i32 = 1;
+
+/// Build one of the five suspending built-ins, of the `form` given.
+/// Each answers zero, as the reference's built-ins do, unless it
+/// carries the `cancellable` immediate and takes a cancellation
+/// request, as the module documentation states.
 ///
 /// The built-in has two bodies. A thread that runs on a stack of its
 /// own suspends in the built-in's shim, through [`begin_suspension`],
@@ -446,28 +511,41 @@ fn build_suspension<T: 'static>(
     instance: usize,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-    yielding: bool,
-    switch: Switch,
+    form: Suspension,
 ) -> BlockingBuiltin<T> {
     let on_real_stack = abi_state.clone();
     let switching = abi_state.clone();
+    let switch = form.switch;
     let builtin = BlockingBuiltin::with_fallback(
         core_func_type(signature),
         move |store: &mut StoreContext<'_, T>, args: &[RuntimeVal]| {
             let id = calling_instance(&abi_state, instance)?;
             trap_if_cannot_leave(&abi_state, id, store.internal().runtime_mut())?;
-            let named = named_argument(switch, args)?;
-            begin_suspension(store, id, yielding, switch, named).map_err(suspension_trap)
+            let Some(cancel) = cancel_first(store, form)? else {
+                return Ok(BlockStep::Ready(vec![RuntimeVal::I32(CANCELLED)]));
+            };
+            let named = named_argument(switch, args);
+            let begun = named.and_then(|named| {
+                begin_suspension(store, id, form, cancel, named).map_err(suspension_trap)
+            });
+            if begun.is_err() {
+                // The thread never suspended, and is in no yield.
+                answer(store, cancel, false)?;
+            }
+            begun
         },
         move |store: &mut StoreContext<'_, T>, args: &[RuntimeVal]| {
             let id = calling_instance(&on_real_stack, instance)?;
             trap_if_cannot_leave(&on_real_stack, id, store.internal().runtime_mut())?;
-            let named = named_argument(switch, args)?;
-            if suspension(store, id, yielding, switch, named)
-                .map_err(suspension_trap)?
-                .is_some()
-            {
-                return Ok(Some(vec![RuntimeVal::I32(0)]));
+            let Some(cancel) = cancel_first(store, form)? else {
+                return Ok(Some(vec![RuntimeVal::I32(CANCELLED)]));
+            };
+            let suspended = named_argument(switch, args)
+                .and_then(|named| suspension(store, id, form, named).map_err(suspension_trap));
+            if !matches!(suspended, Ok(None)) {
+                let answer = answer(store, cancel, suspended.is_ok())?;
+                suspended?;
+                return Ok(Some(vec![RuntimeVal::I32(answer)]));
             }
             // The rest of the suspension went to the scheduler as a
             // plan, and the built-in answers what the plan's wait
@@ -476,9 +554,10 @@ fn build_suspension<T: 'static>(
                 store,
                 BlockStep::wait(
                     Readiness::Planned,
-                    |_store: &mut StoreContext<'_, T>, waited| {
+                    move |store: &mut StoreContext<'_, T>, waited| {
+                        let answer = answer(store, cancel, waited.is_ok())?;
                         waited.map_err(suspension_trap)?;
-                        Ok(vec![RuntimeVal::I32(0)])
+                        Ok(vec![RuntimeVal::I32(answer)])
                     },
                 ),
             )?;
@@ -493,6 +572,54 @@ fn build_suspension<T: 'static>(
             names_switch(store, &switching, instance, switch, args)
         },
     )
+}
+
+/// The cancellation part of a suspending built-in, before it reads
+/// the thread it names: a cancellable built-in takes a request pending
+/// for the current thread's task, and `None` then says it answers 1 at
+/// once. Otherwise it answers the thread whose task a request is taken
+/// for once the thread goes on — `None` inside for a built-in without
+/// the immediate, which never takes one — and a cancellable yield
+/// marks the thread, so that `subtask.cancel` runs it first.
+fn cancel_first<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    form: Suspension,
+) -> anyhow::Result<Option<Option<ThreadId>>> {
+    if !form.cancellable {
+        return Ok(Some(None));
+    }
+    let mut guard = store.internal().lock_tables()?;
+    let Some(thread) = guard.tasks.current_thread() else {
+        return Ok(Some(None));
+    };
+    if guard.tasks.take_pending_cancel_of(thread) {
+        return Ok(None);
+    }
+    if form.yielding {
+        guard.tasks.set_cancellable_yield(thread, true);
+    }
+    Ok(Some(Some(thread)))
+}
+
+/// What a suspending built-in answers once its thread goes on, as
+/// [`cancel_first`] prepared it: `cancel` names the thread of a
+/// cancellable built-in, which stops being marked as in a cancellable
+/// yield, and takes a request still pending when `went_on` says the
+/// wait did not fail.
+fn answer<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    cancel: Option<ThreadId>,
+    went_on: bool,
+) -> anyhow::Result<i32> {
+    let Some(thread) = cancel else {
+        return Ok(COMPLETED);
+    };
+    let mut guard = store.internal().lock_tables()?;
+    guard.tasks.set_cancellable_yield(thread, false);
+    if went_on && guard.tasks.take_pending_cancel_of(thread) {
+        return Ok(CANCELLED);
+    }
+    Ok(COMPLETED)
 }
 
 /// Whether one call of a switching built-in names a thread to switch
@@ -601,20 +728,22 @@ fn current_thread<T: 'static>(store: &mut StoreContext<'_, T>) -> Result<ThreadI
 ///   switching thread goes back to lets that thread go on instead:
 ///   it waits on the real stack, in the frame that runs the switch.
 ///
-/// The finish part answers zero once the thread resumes, and the
-/// trap of a wait that failed otherwise: the deadlock cause when a
-/// driver found the store idle while the thread was suspended.
+/// The finish part answers zero once the thread resumes, or 1 when
+/// `cancel` names the thread of a cancellable built-in and a request
+/// is pending then, and the trap of a wait that failed otherwise: the
+/// deadlock cause when a driver found the store idle while the thread
+/// was suspended.
 fn begin_suspension<T: 'static>(
     store: &mut StoreContext<'_, T>,
     instance: InstanceId,
-    yielding: bool,
-    switch: Switch,
+    form: Suspension,
+    cancel: Option<ThreadId>,
     named: Option<u32>,
 ) -> Result<BlockStep<T>> {
     let current = current_thread(store)?;
     let below = store.internal().lock_tables()?.tasks.returns_to(current);
-    let target = switch_target(store, instance, current, switch, named, below)?;
-    let readiness = if yielding {
+    let target = switch_target(store, instance, current, form.switch, named, below)?;
+    let readiness = if form.yielding {
         Readiness::Yielded
     } else {
         store
@@ -629,9 +758,10 @@ fn begin_suspension<T: 'static>(
     }
     Ok(BlockStep::wait(
         readiness,
-        |_store: &mut StoreContext<'_, T>, waited| {
+        move |store: &mut StoreContext<'_, T>, waited| {
+            let answer = answer(store, cancel, waited.is_ok())?;
             waited.map_err(suspension_trap)?;
-            Ok(vec![RuntimeVal::I32(0)])
+            Ok(vec![RuntimeVal::I32(answer)])
         },
     ))
 }
@@ -644,17 +774,16 @@ fn begin_suspension<T: 'static>(
 fn suspension<T: 'static>(
     store: &mut StoreContext<'_, T>,
     instance: InstanceId,
-    yielding: bool,
-    switch: Switch,
+    form: Suspension,
     named: Option<u32>,
 ) -> Result<Option<()>> {
     let current = current_thread(store)?;
-    let target = switch_target(store, instance, current, switch, named, None)?;
+    let target = switch_target(store, instance, current, form.switch, named, None)?;
     let run = move |store: &mut StoreContext<'_, T>| match target {
         Some(other) => start_switched(store, current, other),
         None => Ok(()),
     };
-    match (yielding, target) {
+    match (form.yielding, target) {
         (true, Some(_)) => SuspendSeam::yield_to(store, run),
         (true, None) => SuspendSeam::give_way(store),
         (false, _) => SuspendSeam::suspend_current(store, run),

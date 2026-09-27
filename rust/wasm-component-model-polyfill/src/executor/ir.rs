@@ -656,6 +656,11 @@ pub enum TrampolineSpec {
         /// component instance and the memory the payloads are
         /// written through.
         options: CanonOptions,
+        /// The built-in's `cancellable` immediate, which its canon
+        /// options carry: whether it takes a pending cancellation
+        /// request and delivers the task-cancelled event for it, as
+        /// Wasmtime 49 does.
+        cancellable: bool,
         /// The core signature the guest imports.
         signature: CoreSignature,
     },
@@ -664,6 +669,11 @@ pub enum TrampolineSpec {
     WaitableSetPoll {
         /// The canon options the built-in declared.
         options: CanonOptions,
+        /// The built-in's `cancellable` immediate, which its canon
+        /// options carry: whether it takes a pending cancellation
+        /// request and delivers the task-cancelled event for it, as
+        /// Wasmtime 49 does.
+        cancellable: bool,
         /// The core signature the guest imports.
         signature: CoreSignature,
     },
@@ -827,10 +837,14 @@ pub enum TrampolineSpec {
     },
     /// The `thread.yield` built-in: the calling thread gives way to
     /// the work the store already holds, and the built-in returns
-    /// zero.
+    /// zero, or 1 for a pending request it took.
     ThreadYield {
         /// The component instance that calls the built-in.
         instance: usize,
+        /// The built-in's `cancellable` immediate: whether it takes a
+        /// pending cancellation request and answers 1 for it, as
+        /// Wasmtime 49 does.
+        cancellable: bool,
         /// The core signature the guest imports: no parameters and
         /// one `i32` result.
         signature: CoreSignature,
@@ -868,10 +882,15 @@ pub enum TrampolineSpec {
         signature: CoreSignature,
     },
     /// The `thread.suspend` built-in: the calling thread suspends
-    /// until a resume names it, and the built-in returns zero.
+    /// until a resume names it, and the built-in returns zero, or 1
+    /// for a pending request it took.
     ThreadSuspend {
         /// The component instance that calls the built-in.
         instance: usize,
+        /// The built-in's `cancellable` immediate: whether it takes a
+        /// pending cancellation request and answers 1 for it, as
+        /// Wasmtime 49 does.
+        cancellable: bool,
         /// The core signature the guest imports: no parameters and
         /// one `i32` result.
         signature: CoreSignature,
@@ -881,6 +900,10 @@ pub enum TrampolineSpec {
     ThreadSuspendThenResume {
         /// The component instance that calls the built-in.
         instance: usize,
+        /// The built-in's `cancellable` immediate: whether it takes a
+        /// pending cancellation request and answers 1 for it, as
+        /// Wasmtime 49 does.
+        cancellable: bool,
         /// The core signature the guest imports: the thread's index
         /// in and one `i32` result.
         signature: CoreSignature,
@@ -890,6 +913,10 @@ pub enum TrampolineSpec {
     ThreadYieldThenResume {
         /// The component instance that calls the built-in.
         instance: usize,
+        /// The built-in's `cancellable` immediate: whether it takes a
+        /// pending cancellation request and answers 1 for it, as
+        /// Wasmtime 49 does.
+        cancellable: bool,
         /// The core signature the guest imports: the thread's index
         /// in and one `i32` result.
         signature: CoreSignature,
@@ -900,6 +927,10 @@ pub enum TrampolineSpec {
     ThreadSuspendThenPromote {
         /// The component instance that calls the built-in.
         instance: usize,
+        /// The built-in's `cancellable` immediate: whether it takes a
+        /// pending cancellation request and answers 1 for it, as
+        /// Wasmtime 49 does.
+        cancellable: bool,
         /// The core signature the guest imports: the thread's index
         /// in and one `i32` result.
         signature: CoreSignature,
@@ -910,6 +941,10 @@ pub enum TrampolineSpec {
     ThreadYieldThenPromote {
         /// The component instance that calls the built-in.
         instance: usize,
+        /// The built-in's `cancellable` immediate: whether it takes a
+        /// pending cancellation request and answers 1 for it, as
+        /// Wasmtime 49 does.
+        cancellable: bool,
         /// The core signature the guest imports: the thread's index
         /// in and one `i32` result.
         signature: CoreSignature,

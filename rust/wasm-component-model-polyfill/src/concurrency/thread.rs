@@ -79,6 +79,13 @@ pub struct Thread {
     /// counts the waiter until it takes its event. `None` when no
     /// such item is queued.
     pub queued_wait: Option<WaitableSetId>,
+    /// Whether the thread gives way in a yield that carries the
+    /// `cancellable` immediate: `thread.yield`, or a built-in that
+    /// yields and then switches. While it is set and the thread is
+    /// suspended in the provider, `subtask.cancel` of the thread's
+    /// task runs the thread before anything else, as Wasmtime runs a
+    /// thread in a cancellable yield.
+    pub cancellable_yield: bool,
 }
 
 impl Thread {
@@ -96,6 +103,7 @@ impl Thread {
             own_stack: false,
             returns_to: None,
             queued_wait: None,
+            cancellable_yield: false,
         }
     }
 

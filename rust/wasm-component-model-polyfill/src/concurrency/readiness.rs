@@ -1,6 +1,7 @@
 //! What a suspended guest thread is waiting for.
 
 use super::subtask_id::SubtaskId;
+use super::task_id::TaskId;
 use super::thread_id::ThreadId;
 use super::waitable_id::WaitableId;
 use super::waitable_set_id::WaitableSetId;
@@ -31,6 +32,19 @@ pub enum Readiness {
     WaitableSet {
         /// The set the thread waits on.
         set: WaitableSetId,
+    },
+    /// The thread waits for an event on a waitable set or for a
+    /// cancellation request to its task, which is what a
+    /// `waitable-set.wait` that carries the `cancellable` immediate
+    /// waits for. A request that arrives while the thread waits ends
+    /// the wait as an event would, and the built-in then delivers the
+    /// task-cancelled event in place of the set's.
+    WaitableSetOrCancel {
+        /// The set the thread waits on.
+        set: WaitableSetId,
+        /// The task the thread belongs to, whose pending request also
+        /// ends the wait.
+        task: TaskId,
     },
     /// The thread waits for one waitable to hold an event of its
     /// own, which is what a synchronous stream or future copy or

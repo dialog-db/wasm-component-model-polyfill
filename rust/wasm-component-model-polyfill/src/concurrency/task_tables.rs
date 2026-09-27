@@ -1490,6 +1490,46 @@ impl TaskTables {
         true
     }
 
+    /// Deliver the cancellation request that waits for the task of
+    /// `thread`, which is what a built-in that carries the
+    /// `cancellable` immediate does before anything else, and again
+    /// once its thread resumes. Answers whether a request was
+    /// delivered, as [`deliver_pending_cancel`](Self::deliver_pending_cancel)
+    /// does.
+    pub fn take_pending_cancel_of(&mut self, thread: ThreadId) -> bool {
+        match self.thread(thread).map(|record| record.task) {
+            Some(task) => self.deliver_pending_cancel(task),
+            None => false,
+        }
+    }
+
+    /// Mark whether `thread` gives way in a cancellable yield, which
+    /// is what lets `subtask.cancel` run it first.
+    pub fn set_cancellable_yield(&mut self, thread: ThreadId, cancellable: bool) {
+        if let Some(record) = self.thread_mut(thread) {
+            record.cancellable_yield = cancellable;
+        }
+    }
+
+    /// Whether `thread` blocks where a cancellation request to its
+    /// task reaches it at once: in a `waitable-set.wait` that carries
+    /// the `cancellable` immediate, or in a cancellable yield. These
+    /// are the threads Wasmtime's `subtask.cancel` wakes or runs
+    /// first. A thread in a cancellable suspension is not among them,
+    /// and neither is a cancellable wait whose set already holds an
+    /// event: the event made it ready, which in Wasmtime takes it out
+    /// of the cancel's reach, and it runs in its turn.
+    pub fn takes_cancel_at_once(&self, thread: ThreadId) -> bool {
+        self.thread(thread)
+            .is_some_and(|record| match record.readiness {
+                Some(Readiness::WaitableSetOrCancel { set, .. }) => {
+                    !self.set_has_pending_event(set).unwrap_or(false)
+                }
+                Some(Readiness::Yielded) => record.cancellable_yield,
+                _ => false,
+            })
+    }
+
     /// Record readiness on `subtask` by filling its pending event
     /// slot with the subtask event: `handle_index` is the subtask's
     /// index in the caller instance's handle table, and the second
@@ -1638,6 +1678,18 @@ impl TaskTables {
     /// [`end_wait`](Self::end_wait) undoes it when the thread runs
     /// again.
     pub fn begin_wait(&mut self, set: WaitableSetId, thread: ThreadId) -> Result<()> {
+        self.begin_wait_until(set, thread, Readiness::WaitableSet { set })
+    }
+
+    /// Park `thread` on `set` as [`begin_wait`](Self::begin_wait)
+    /// does, waiting on `readiness`, which names the set: a
+    /// cancellable wait also ends on a request to the thread's task.
+    pub fn begin_wait_until(
+        &mut self,
+        set: WaitableSetId,
+        thread: ThreadId,
+        readiness: Readiness,
+    ) -> Result<()> {
         // The thread is looked up before the count rises. A count
         // raised by a wait that then failed is never lowered again,
         // and every later drop of the set traps on a waiter that is
@@ -1646,7 +1698,7 @@ impl TaskTables {
             return Err(Error::internal("waiting thread is not in the store"));
         }
         self.waitable_set_record_mut(set)?.num_waiting += 1;
-        self.start_waiting(thread, Readiness::WaitableSet { set })?;
+        self.start_waiting(thread, readiness)?;
         Ok(())
     }
 
@@ -1756,6 +1808,9 @@ impl TaskTables {
     pub fn readiness_holds(&self, readiness: Readiness) -> bool {
         match readiness {
             Readiness::WaitableSet { set } => self.set_has_pending_event(set).unwrap_or(false),
+            Readiness::WaitableSetOrCancel { set, task } => {
+                self.has_pending_cancel(task) || self.set_has_pending_event(set).unwrap_or(false)
+            }
             Readiness::Waitable { waitable } => self.has_pending_event(waitable).unwrap_or(false),
             Readiness::Subtask { subtask } => self
                 .subtask(subtask)

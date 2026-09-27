@@ -40,6 +40,10 @@ wasm-bindgen-test = "0.3"
 # version is the one `wasmtime-environ` already links, so the graph keeps one.
 wasm-encoder = { version = "0.258", default-features = false, features = ["std"] }
 wasm_runtime_layer = "0.7"
+# Reads the canonical section of a test fixture to set the vestigial byte the
+# text format no longer spells. The version is the one `wasmtime-environ`
+# already links, so the graph keeps one.
+wasmparser = { version = "0.258", default-features = false, features = ["std", "component-model"] }
 wast = "259"
 # Wasmtime 49 removed the rule that compiled a fused adapter between a lift
 # and a lower of one component instance to an unconditional trap. 49 is a

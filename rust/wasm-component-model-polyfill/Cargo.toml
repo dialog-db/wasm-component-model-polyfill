@@ -59,6 +59,9 @@ wasm-bindgen = { workspace = true }
 wasm-component-model-polyfill = { workspace = true, features = ["wast-runner"] }
 tokio = { workspace = true, features = ["rt", "macros"] }
 wast = { workspace = true }
+# Sets the `cancellable` immediate in a test fixture, which the text format
+# no longer spells.
+wasmparser = { workspace = true }
 wcmp-macros = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]

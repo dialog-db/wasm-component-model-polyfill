@@ -301,6 +301,11 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
         self.context.run_switch_slot()
     }
 
+    /// Put the resumption of the parked `thread` in the switch slot.
+    pub fn switch_to_parked_thread(self, thread: ThreadId) -> Result<bool> {
+        self.context.switch_to_parked_thread(thread)
+    }
+
     /// How deep the stack of current scopes is.
     pub fn scope_depth(self) -> Result<usize> {
         self.context.scope_depth()

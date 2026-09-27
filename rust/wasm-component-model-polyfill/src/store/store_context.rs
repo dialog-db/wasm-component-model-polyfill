@@ -2404,6 +2404,33 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         Ok(queued)
     }
 
+    /// Put the resumption of the parked `thread` in the switch slot,
+    /// so that the frame that runs the slot resumes the thread before
+    /// anything else. Answers `false`, and changes nothing, when the
+    /// thread is not suspended in the provider or a plan it left holds
+    /// it. A resumption a turn queued for the thread already is spent
+    /// by then, as one a switch overtook is. Workspace-internal.
+    fn switch_to_parked_thread(&mut self, thread: ThreadId) -> Result<bool> {
+        let Some((task, number)) = self.scheduler().resumption_of(thread) else {
+            return Ok(false);
+        };
+        let instance = self
+            .lock_tables()?
+            .tasks
+            .task(task)
+            .and_then(|record| record.instance);
+        let mut item = Item::new(
+            ItemKind::ThreadResumption,
+            move |store: &mut StoreContext<'_, T>| store.run_queued_resumption(thread, number),
+        )
+        .for_task(task);
+        if let Some(instance) = instance {
+            item = item.in_instance(instance);
+        }
+        self.scheduler_mut().switch_to(item);
+        Ok(true)
+    }
+
     /// Give an export's task a channel to resolve through and hand
     /// the caller its half.
     ///
