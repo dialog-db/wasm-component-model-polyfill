@@ -1,0 +1,4 @@
+# The Wasmtime run passes only when it captured both lines.
+call printer greet() -> 2s32
+output "hello"
+output "world"

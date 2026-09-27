@@ -340,6 +340,107 @@
             touch "$out"
           '';
 
+        # The Wasmtime run of the scenarios (`rust/wcmp-wasmtime`): a
+        # native program built against this workspace's Wasmtime, the one
+        # the polyfill's native backend links, with `wasmtime-wasi` at the
+        # same version. Zena's own flake pins another Wasmtime, which only
+        # the compile step above runs, inside Zena's command; it never
+        # runs a scenario.
+        wasmtimeRunner = buildCrate {
+          pname = "wcmp-wasmtime";
+          version = "0.1.0";
+          cargoExtraArgs = "--package wcmp-wasmtime";
+        };
+
+        # Runs every compiled scenario through Wasmtime, before either
+        # polyfill subject, and writes `$out/<scenario>/observations.txt`:
+        # the Wasmtime stage on the first line, then each call with its
+        # outcome and each line the scenario printed. The derivation
+        # succeeds when a scenario stops before `pass`: that is the
+        # scenario's Wasmtime stage. `scenarios` holds each scenario's
+        # `expectations.txt`, and `compiled` is `buildZenaScenarios`'s
+        # output for the same directory. Nothing here is committed.
+        runScenariosUnderWasmtime =
+          {
+            name,
+            scenarios,
+            compiled,
+          }:
+          pkgs.runCommand name { } ''
+            ${wasmtimeRunner}/bin/wcmp-wasmtime ${scenarios} ${compiled} "$out"
+          '';
+
+        zenaWasmtime = runScenariosUnderWasmtime {
+          name = "zena-wasmtime";
+          scenarios = ./rust/wasm-component-model-polyfill/tests/zena/scenarios;
+          compiled = zenaScenarios;
+        };
+
+        # The Wasmtime run against its own cases, compiled with the pinned
+        # toolchain like any scenario, failing the check when one does not
+        # hold:
+        #
+        # - A program that prints two lines passes only when both are
+        #   captured in memory and match the expected lines, and the
+        #   observations keep them.
+        # - The same program against other expected lines, a wrong
+        #   result, and a call to a missing export each stop before `pass`.
+        # - A program Zena refuses stops at `compile` and makes no call.
+        zenaWasmtimeCheck =
+          let
+            cases = ./rust/wasm-component-model-polyfill/tests/zena/wasmtime-check;
+            observed = runScenariosUnderWasmtime {
+              name = "zena-wasmtime-cases";
+              scenarios = cases;
+              compiled = buildZenaScenarios {
+                name = "zena-wasmtime-case-programs";
+                scenarios = cases;
+              };
+            };
+          in
+          pkgs.runCommand "zena-wasmtime-check" { } ''
+            stage() { head -n 1 ${observed}/$1/observations.txt; }
+
+            test "$(stage prints)" = "stage pass"
+            test "$(grep '^output ' ${observed}/prints/observations.txt)" = \
+              "$(printf 'output "hello"\noutput "world"')"
+
+            test "$(stage prints-other-lines)" = \
+              'stage mismatch "output line 2 is \"world\" where \"there\" was expected"'
+            test "$(stage returns-other-result)" = \
+              'stage mismatch "call 1 `scalar add(1s32, 2s32)` returned 3s32 where 4s32 was expected"'
+            stage calls-a-missing-export | grep -q '^stage call "call 1 .*has no function export subtract"$'
+
+            stage refused | grep -q '^stage compile "program refused did not compile (exit 1): '
+            test "$(grep -c '^call ' ${observed}/refused/observations.txt)" = 0
+
+            touch "$out"
+          '';
+
+        # The one Wasmtime of the workspace: `Cargo.lock` resolves
+        # `wasmtime` to a single version, the one `Cargo.toml` pins, and
+        # `wasmtime-wasi` to that same version, so the Wasmtime run and the
+        # polyfill's native backend link the same Wasmtime.
+        wasmtimeVersionCheck =
+          let
+            lock = builtins.fromTOML (builtins.readFile ./Cargo.lock);
+            manifest = builtins.fromTOML (builtins.readFile ./Cargo.toml);
+            pinned = pkgs.lib.removePrefix "=" manifest.workspace.dependencies.wasmtime;
+            versions =
+              name: map (package: package.version) (builtins.filter (package: package.name == name) lock.package);
+            wasmtime = versions "wasmtime";
+            wasi = versions "wasmtime-wasi";
+          in
+          pkgs.runCommand "wasmtime-version-check" { } (
+            if wasmtime == [ pinned ] && wasi == [ pinned ] then
+              ''touch "$out"''
+            else
+              ''
+                echo "Cargo.lock resolves wasmtime to [${toString wasmtime}] and wasmtime-wasi to [${toString wasi}]; the workspace pins ${pinned} for both" >&2
+                exit 1
+              ''
+          );
+
         # The wasm32 test runner (see `.cargo/config.toml`). nextest runs
         # each browser test in its own runner process, and the stock
         # `wasm-bindgen-test-runner` boots a ChromeDriver and a headless
@@ -1136,6 +1237,10 @@
           # it. Neither enters the development shell.
           zena = zenaToolchain;
           zena-scenarios = zenaScenarios;
+          # Every Zena scenario run through Wasmtime: each scenario's
+          # observations and Wasmtime stage, which the polyfill subjects
+          # read.
+          zena-wasmtime = zenaWasmtime;
 
           smoke-native = smokeNative;
           smoke-web = smokeWeb;
@@ -1202,6 +1307,13 @@
             # its output: see `buildZenaScenarios`.
             zena-scenarios = zenaScenarios;
             zena-scenario-build = zenaScenarioBuildCheck;
+            # Every Zena scenario runs through Wasmtime and writes its
+            # observations, whatever its stage; the Wasmtime run holds
+            # against its own cases; and it links the workspace's one
+            # Wasmtime. See `runScenariosUnderWasmtime`.
+            zena-wasmtime = zenaWasmtime;
+            zena-wasmtime-run = zenaWasmtimeCheck;
+            wasmtime-version = wasmtimeVersionCheck;
             # The doctests are not in a nextest archive (nextest does not run
             # them), so they get a derivation of their own: the workspace's
             # `cargo test --doc` against the `dev` dependency bundle.

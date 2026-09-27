@@ -1,0 +1,3 @@
+# Scenario 1: the smallest program with an export, called untyped. It
+# prints nothing.
+call scalar add(1s32, 2s32) -> 3s32

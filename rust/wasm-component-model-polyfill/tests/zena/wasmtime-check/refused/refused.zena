@@ -1,0 +1,5 @@
+// Zena refuses this program: it returns a string where it declares an
+// `i32`. The build keeps the refusal instead of failing.
+export let refused = (): i32 => {
+  return "not a number";
+};

@@ -5,6 +5,7 @@ members = [
   "rust/wcmp-macros",
   "rust/wcmp-scenario",
   "rust/wcmp-smoke",
+  "rust/wcmp-wasmtime",
 ]
 # Each vendored backend keeps its own dependency table (it is upstream's
 # crate with local patches), so neither is a member.
@@ -52,6 +53,10 @@ wast = "259"
 # publishes.
 wasmtime = "=49.0.0-rc.1"
 wasmtime-environ = { version = "=49.0.0-rc.1", default-features = false, features = ["component-model"] }
+# The WASI imports of the Wasmtime run of the toolchain compatibility
+# scenarios. It moves with `wasmtime`: one Wasmtime runs the scenarios,
+# and it is this workspace's. Only the p2 and p3 interfaces are linked.
+wasmtime-wasi = { version = "=49.0.0-rc.1", default-features = false, features = ["p2", "p3"] }
 # The Wasmtime backend of the runtime layer has no 49 release. The version
 # requirement stays at the vendored crate's own 48, which the patch below
 # redirects to a copy built against Wasmtime 49.

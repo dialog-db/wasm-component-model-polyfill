@@ -1,0 +1,4 @@
+# The program prints "world" second, so the run stops at `mismatch`.
+call printer greet() -> 2s32
+output "hello"
+output "there"

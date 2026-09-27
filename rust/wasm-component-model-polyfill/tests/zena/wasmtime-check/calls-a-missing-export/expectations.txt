@@ -1,0 +1,3 @@
+# The program exports no `subtract`, so the call fails where a result is
+# expected and the run stops at `call`.
+call scalar subtract(1s32, 2s32) -> -1s32

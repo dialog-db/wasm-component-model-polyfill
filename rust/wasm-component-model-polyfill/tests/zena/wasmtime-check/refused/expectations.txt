@@ -1,0 +1,3 @@
+# Zena refuses the program, so the run stops at `compile` and makes no
+# call.
+call refused refused() -> 0s32

@@ -1,0 +1,2 @@
+# `add` returns 3, so the run stops at `mismatch`.
+call scalar add(1s32, 2s32) -> 4s32

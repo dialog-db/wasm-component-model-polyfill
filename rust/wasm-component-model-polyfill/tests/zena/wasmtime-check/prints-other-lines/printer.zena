@@ -1,0 +1,6 @@
+// Prints two lines through Zena's console, then returns.
+export let greet = (): i32 => {
+  console.log("hello");
+  console.log("world");
+  return 2;
+};
