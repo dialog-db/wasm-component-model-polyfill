@@ -40,6 +40,9 @@ use super::build_sync_start_call;
 use super::build_task_cancel;
 use super::build_task_return;
 use super::build_thread_yield;
+use super::error_context_builtins::{
+    build_error_context_debug_message, build_error_context_drop, build_error_context_new,
+};
 use super::intrinsics::{
     build_backpressure_dec, build_backpressure_inc, build_context_get, build_context_set,
     build_end_transfer, build_enter_sync_call, build_exit_sync_call, build_resource_transfer,
@@ -1024,6 +1027,24 @@ fn build_runtime_trampoline<T: 'static>(
                 abi_state.clone(),
             )));
         }
+        TrampolineSpec::ErrorContextNew { options, signature } => Ok(build_error_context_new(
+            store,
+            options,
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::ErrorContextDebugMessage { options, signature } => Ok(
+            build_error_context_debug_message(store, options, signature, abi_state.clone()),
+        ),
+        TrampolineSpec::ErrorContextDrop {
+            instance,
+            signature,
+        } => Ok(build_error_context_drop(
+            store,
+            *instance,
+            signature,
+            abi_state.clone(),
+        )),
         TrampolineSpec::TaskCancel {
             instance,
             signature,

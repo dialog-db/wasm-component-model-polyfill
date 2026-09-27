@@ -1,6 +1,6 @@
 //! What a handle-table entry names, for every kind a guest can hold.
 
-use crate::concurrency::{EndId, EndKind, SubtaskId, TaskId, WaitableSetId};
+use crate::concurrency::{EndId, EndKind, ErrorContextId, SubtaskId, TaskId, WaitableSetId};
 
 use super::identity::ResourceTypeId;
 
@@ -83,10 +83,13 @@ pub enum HandleKind {
         /// The end the entry names.
         end: EndId,
     },
-    /// An error context. Reserved for the feature that defines error
-    /// contexts; nothing constructs this variant yet.
-    #[allow(dead_code)]
-    ErrorContext,
+    /// An error context: the identity of its record in the store's
+    /// table of error contexts, under the same rule as the identity a
+    /// subtask entry carries.
+    ErrorContext {
+        /// The error context the entry names.
+        context: ErrorContextId,
+    },
 }
 
 impl HandleKind {

@@ -96,6 +96,7 @@ pub wasm_component_model_polyfill::Error::Abi(alloc::boxed::Box<wasm_component_m
 pub wasm_component_model_polyfill::Error::BackendEngineConstruction(anyhow::Error)
 pub wasm_component_model_polyfill::Error::BackendStoreCreation(anyhow::Error)
 pub wasm_component_model_polyfill::Error::Copy(wasm_component_model_polyfill::CopyCause)
+pub wasm_component_model_polyfill::Error::ErrorContext(wasm_component_model_polyfill::ErrorContextCause)
 pub wasm_component_model_polyfill::Error::Instantiation(alloc::boxed::Box<wasm_component_model_polyfill::InstantiationError>)
 pub wasm_component_model_polyfill::Error::Internal
 pub wasm_component_model_polyfill::Error::Internal::message: alloc::string::String
@@ -125,6 +126,10 @@ impl core::convert::From<wasm_component_model_polyfill::LinkError> for wasm_comp
 pub fn wasm_component_model_polyfill::Error::from(value: wasm_component_model_polyfill::LinkError) -> Self
 impl core::convert::From<wasm_component_model_polyfill::TypeMismatch> for wasm_component_model_polyfill::Error
 pub fn wasm_component_model_polyfill::Error::from(value: wasm_component_model_polyfill::TypeMismatch) -> Self
+#[non_exhaustive] pub enum wasm_component_model_polyfill::ErrorContextCause
+pub wasm_component_model_polyfill::ErrorContextCause::DebugMessagePointerOutOfBounds
+pub wasm_component_model_polyfill::ErrorContextCause::NotAnErrorContext
+pub wasm_component_model_polyfill::ErrorContextCause::NotAnErrorContext::index: u32
 pub enum wasm_component_model_polyfill::ExternType
 pub wasm_component_model_polyfill::ExternType::Component
 pub wasm_component_model_polyfill::ExternType::Function(wasm_component_model_polyfill::FunctionType)

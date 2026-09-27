@@ -1,5 +1,6 @@
 //! The store's tables of task, subtask, thread, waitable set, end,
-//! shared, and instance records, with the stack of current scopes.
+//! shared, error-context, and instance records, with the stack of
+//! current scopes.
 
 use std::sync::Arc;
 
@@ -17,6 +18,8 @@ use super::copy_state::CopyState;
 use super::end_direction::EndDirection;
 use super::end_id::EndId;
 use super::end_kind::EndKind;
+use super::error_context_id::ErrorContextId;
+use super::error_context_record::ErrorContextRecord;
 use super::event::Event;
 use super::event_code::EventCode;
 use super::failure_channel::FailureChannel;
@@ -44,7 +47,8 @@ use super::waitable_set_id::WaitableSetId;
 use super::waitable_state::WaitableState;
 
 /// The store's tables of task, subtask, thread, waitable set, end,
-/// shared, and instance records, with the stack of current scopes.
+/// shared, error-context, and instance records, with the stack of
+/// current scopes.
 ///
 /// A scope is a task record or a subtask record, and the innermost
 /// of them on the stack is the current scope. The stack also carries
@@ -84,6 +88,7 @@ pub struct TaskTables {
     waitable_sets: RecordTable<WaitableSet>,
     ends: RecordTable<CopyEnd>,
     shared_records: RecordTable<SharedRecord>,
+    error_contexts: RecordTable<ErrorContextRecord>,
     instances: Vec<InstanceRecord>,
     scopes: Vec<Scope>,
     prepared_call: Option<SubtaskId>,
@@ -103,6 +108,7 @@ impl TaskTables {
             waitable_sets: RecordTable::new(),
             ends: RecordTable::new(),
             shared_records: RecordTable::new(),
+            error_contexts: RecordTable::new(),
             instances: Vec::new(),
             scopes: Vec::new(),
             prepared_call: None,
@@ -1155,6 +1161,60 @@ impl TaskTables {
             self.waiting.retain(|waiting| *waiting != thread);
             self.ready.retain(|ready| *ready != thread);
         }
+    }
+
+    // ---- error contexts ----
+
+    /// Create an error-context record holding `debug_message`, named
+    /// by one handle, and return its identity. The
+    /// `error-context.new` built-in calls this and puts the
+    /// identity's index in a handle-table entry for the guest.
+    pub fn insert_error_context(&mut self, debug_message: String) -> ErrorContextId {
+        let (index, generation) = self
+            .error_contexts
+            .insert_with_generation(ErrorContextRecord::new(debug_message));
+        ErrorContextId::new(index, generation)
+    }
+
+    /// One error-context record. `None` once the record the identity
+    /// was minted for is gone, under the rule
+    /// [`task_index`](Self::task_index) states.
+    pub fn error_context(&self, context: ErrorContextId) -> Option<&ErrorContextRecord> {
+        self.error_contexts.get(self.error_context_index(context)?)
+    }
+
+    /// Take one handle away from the error context `context`: its
+    /// count drops by one, and the record leaves the store when the
+    /// count reaches zero. A handle-table entry names a live record,
+    /// so an identity that names none is an internal failure.
+    pub fn release_error_context(&mut self, context: ErrorContextId) -> Result<()> {
+        let index = self
+            .error_context_index(context)
+            .ok_or_else(|| Error::internal("an error-context handle named no record"))?;
+        let record = self
+            .error_contexts
+            .get_mut(index)
+            .ok_or_else(|| Error::internal("an error-context handle named no record"))?;
+        record.handle_count = record
+            .handle_count
+            .checked_sub(1)
+            .ok_or_else(|| Error::internal("an error-context record counted no handle"))?;
+        if record.handle_count == 0 {
+            self.error_contexts.remove(index);
+        }
+        Ok(())
+    }
+
+    /// How many error-context records the store holds.
+    pub fn error_context_count(&self) -> usize {
+        self.error_contexts.len()
+    }
+
+    /// The index `context` names, under the rule
+    /// [`task_index`](Self::task_index) states.
+    fn error_context_index(&self, context: ErrorContextId) -> Option<u32> {
+        (self.error_contexts.generation(context.index()) == context.generation())
+            .then_some(context.index())
     }
 
     // ---- waitables and waitable sets ----

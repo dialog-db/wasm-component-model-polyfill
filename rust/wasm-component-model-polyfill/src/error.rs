@@ -160,6 +160,12 @@ pub enum Error {
     #[error("copy error: {0}")]
     Copy(#[source] CopyCause),
 
+    /// A guest broke one of the rules that govern error contexts and
+    /// the error-context built-ins. The carried [`ErrorContextCause`]
+    /// names which rule.
+    #[error("error-context error: {0}")]
+    ErrorContext(#[source] ErrorContextCause),
+
     /// The component uses a Component Model feature the polyfill
     /// does not implement yet. The feature is named so a caller can
     /// tell "not built yet" from "broken". Reaching this variant is
@@ -1457,6 +1463,35 @@ impl CopyCause {
     }
 }
 
+/// The structured reason an error-context built-in failed.
+///
+/// Carried by [`Error::ErrorContext`]. Each cause is a trap, so a
+/// built-in that meets one fails the guest's call. The messages are
+/// the ones Wasmtime raises for the same misuse, so the conformance
+/// corpora can match them by substring.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum ErrorContextCause {
+    /// `error-context.debug-message` named an address where the
+    /// pointer and the length of the message do not fit inside the
+    /// memory. The built-in checks the eight bytes before it calls
+    /// `realloc`, which is Wasmtime's order, so a failing call
+    /// allocates nothing. The message is the one Wasmtime's
+    /// `error_context_debug_message` raises.
+    #[error("invalid debug message pointer: out of bounds")]
+    DebugMessagePointerOutOfBounds,
+
+    /// `error-context.debug-message` or `error-context.drop` named a
+    /// handle that is not an error context. The message opens with
+    /// the one Wasmtime's handle table raises, and names the index
+    /// after it, as the waitable causes do.
+    #[error("handle is not an error-context (handle index {index})")]
+    NotAnErrorContext {
+        /// The index the guest named.
+        index: u32,
+    },
+}
+
 /// A `Result` whose error variant is the polyfill's [`Error`].
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -2021,6 +2056,28 @@ mod tests {
                  `CopyCause` message {cause:?}; the conformance corpus matches these \
                  traps by substring, so the messages have to follow the traps"
             );
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_renders_the_error_context_causes_with_wasmtimes_messages() {
+        // Wasmtime raises both as plain strings: the first from
+        // `error_context_debug_message` in
+        // `src/runtime/component/concurrent/futures_and_streams.rs`,
+        // the second from its handle table in
+        // `src/runtime/vm/component/handle_table.rs`. The corpus
+        // matches them by substring.
+        for (cause, rendered) in [
+            (
+                ErrorContextCause::DebugMessagePointerOutOfBounds,
+                "error-context error: invalid debug message pointer: out of bounds",
+            ),
+            (
+                ErrorContextCause::NotAnErrorContext { index: 3 },
+                "error-context error: handle is not an error-context (handle index 3)",
+            ),
+        ] {
+            assert_eq!(Error::ErrorContext(cause).to_string(), rendered);
         }
     }
 }

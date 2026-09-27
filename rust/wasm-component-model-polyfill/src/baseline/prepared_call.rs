@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::concurrency::{InstanceId, Item, ItemKind, Readiness};
 use crate::store::{StoreContext, StoreContextInternalExt, StoreInternalExt};
-use crate::{Component, Engine, EngineConfig, Error, Instance, Linker, SchedulerCause, Store, Val};
+use crate::{Component, Engine, Error, Instance, Linker, SchedulerCause, Store, Val};
 use wcmp_macros::component;
 
 /// A callee that returns its result and exits in its first call,
@@ -331,18 +331,6 @@ const TRAPS_AFTER_THE_GATE_UNDER_AN_ASYNC_CALLER: &[u8] = component!(
     "#
 );
 
-/// A component that declares `canon error-context.drop`, one of the
-/// error-context built-ins, which stay refused.
-const ERROR_CONTEXT_DROP: &[u8] = component!(
-    r#"
-    (component
-      (core func $error-context-drop (canon error-context.drop))
-      (core module $m (import "" "error-context.drop" (func $error-context-drop (param i32))))
-      (core instance $i (instantiate $m
-        (with "" (instance (export "error-context.drop" (func $error-context-drop)))))))
-    "#
-);
-
 async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, bytes)
@@ -355,16 +343,6 @@ async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
         .await
         .expect("instantiate");
     (store, instance)
-}
-
-/// Parse with the error-context built-ins allowed past validation, so
-/// that the refusal a test reads is the polyfill's own and not the
-/// validator's feature gate.
-async fn parse_with_error_context(bytes: &[u8]) -> Result<Component, Error> {
-    let mut config = EngineConfig::new();
-    config.wasm_component_model_error_context(true);
-    let engine = Engine::with_config(&config).expect("engine");
-    Component::new(&engine, bytes).await
 }
 
 /// The whole message of an error and everything under it, on one
@@ -857,22 +835,6 @@ async fn it_ends_the_callers_wait_when_the_callees_start_fails() {
     );
     assert_eq!(task_count(&store), 0, "neither task is left in the store");
     assert_eq!(subtask_count(&store), 0, "the subtask left the store");
-}
-
-#[wcmp_macros::test]
-async fn it_still_refuses_the_built_ins_this_design_does_not_own() {
-    // The error-context built-ins stay refused at translation, under
-    // the name the translator gives each, which the conformance
-    // corpus records file by file. They are behind a validator gate
-    // of their own, so the refusal a component that opts into them
-    // reads is the polyfill's rather than the validator's.
-    let err = parse_with_error_context(ERROR_CONTEXT_DROP)
-        .await
-        .expect_err("the error-context built-in is refused");
-    assert!(
-        matches!(&err, Error::Unsupported { feature } if feature.contains("error-context-drop")),
-        "expected `error-context-drop` to be refused, got {err:?}"
-    );
 }
 
 #[cfg(target_arch = "wasm32")]

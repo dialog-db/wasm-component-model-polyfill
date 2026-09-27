@@ -96,21 +96,7 @@ wasmtime/async/cancel-sibling-subtask.wast:150 deferred-feature instantiation er
 wasmtime/async/cancel-starting-subtask-does-not-leak.wast:9 deferred-feature instantiation failed: link error: import `wasmtime`: instance export `set-max-table-capacity` has the wrong type: no registered linker instance satisfies import `wasmtime`: import `wasmtime`: instance export `set-max-table-capacity` has the wrong type: no registered linker instance satisfies import `wasmtime` (the harness registers only `gc` in the `wasmtime` instance, so the file stops at link before its `subtask.cancel` call)
 wasmtime/async/cancel-starting-subtask-does-not-leak.wast:103 cascade no instance to invoke
 wasmtime/async/cancel-sync-and-waitable.wast:301 deferred-feature expected a trap `waitable cannot be used synchronously while added to a waitable set`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x7f - m!<wasm function 5>: unsupported component feature: subtask cancellation (`subtask.cancel`)`
-wasmtime/async/error-context.wast:5 deferred-feature component rejected: unsupported component feature: the `error-context-new` trampoline
-wasmtime/async/error-context.wast:16 deferred-feature component rejected: unsupported component feature: the `error-context-debug-message` trampoline
-wasmtime/async/error-context.wast:30 deferred-feature component rejected: unsupported component feature: the `error-context-drop` trampoline
-wasmtime/async/error-context.wast:39 deferred-feature component rejected: unsupported component feature: the `error-context-new` trampoline
-wasmtime/async/error-context.wast:84 cascade no definition named `A`
-wasmtime/async/error-context.wast:85 cascade no instance to invoke
-wasmtime/async/error-context.wast:86 cascade expected a trap `invalid debug message pointer`, got `no instance to invoke`
 wasmtime/async/yield-when-cancelled.wast:97 deferred-feature instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: error while executing at wasm backtrace: 0: 0x62 - m!<wasm function 2>: unsupported component feature: subtask cancellation (`subtask.cancel`)
-wasmtime/error-context-trap-in-post-return.wast:3 deferred-feature component rejected: unsupported component feature: the `error-context-new` trampoline
-wasmtime/error-context-trap-in-post-return.wast:45 cascade no definition named `Tester`
-wasmtime/error-context-trap-in-post-return.wast:46 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-wasmtime/error-context-trap-in-post-return.wast:47 cascade no definition named `Tester`
-wasmtime/error-context-trap-in-post-return.wast:48 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
-wasmtime/error-context-trap-in-post-return.wast:49 cascade no definition named `Tester`
-wasmtime/error-context-trap-in-post-return.wast:50 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
 wasmtime/exceptions.wast:168 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref (concrete func VMSharedTypeIndex(5))) is not supported in the wasm_runtime_layer
 wasmtime/exceptions.wast:237 cascade expected a trap `uncaught exception propagated out of component`, got `no instance to invoke`
 wasmtime/modules.wast:482 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer

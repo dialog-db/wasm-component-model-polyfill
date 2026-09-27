@@ -17,6 +17,7 @@ mod callback_export;
 mod canonical_abi;
 mod compile_modules;
 mod destructor_task;
+mod error_context;
 mod host_end_lifecycle;
 mod instantiation;
 mod jspi_switch_module;

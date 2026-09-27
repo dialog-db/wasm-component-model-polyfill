@@ -559,6 +559,29 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                     signature: core_signature(&component_types, &translation, trampoline_idx)?,
                 }
             }
+            // The three error-context built-ins. The validator admits
+            // them only under the engine's error-context gate, so a
+            // component that reaches these arms opted in. The two
+            // that move a debug message carry their canon options,
+            // which name the calling instance, the memory, and the
+            // string encoding, and for `debug-message` the `realloc`.
+            // The type index each names is dropped: an error context
+            // has no type beyond its kind, and the entry lives in
+            // the instance's one handle table.
+            Trampoline::ErrorContextNew { options, .. } => TrampolineSpec::ErrorContextNew {
+                options: trampoline_options(&translation, *options)?,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            Trampoline::ErrorContextDebugMessage { options, .. } => {
+                TrampolineSpec::ErrorContextDebugMessage {
+                    options: trampoline_options(&translation, *options)?,
+                    signature: core_signature(&component_types, &translation, trampoline_idx)?,
+                }
+            }
+            Trampoline::ErrorContextDrop { instance, .. } => TrampolineSpec::ErrorContextDrop {
+                instance: instance.as_u32() as usize,
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
             // The two cancellation built-ins are the one exception to
             // refusing what is not built. The binding layer of the
             // Rust toolchain links `task.cancel` in every `async`
@@ -1320,10 +1343,11 @@ fn lift_entity_index(idx: EnvironEntityIndex) -> EntityIndex {
 ///
 /// The stackful gate covers the stackful lift and nothing else, so
 /// its refusal names that lift. The threading gate covers every
-/// thread built-in, and the validator words its refusal the same way
-/// for each, naming the built-in; that refusal keeps the validator's
-/// message whole inside the feature, so a reader matching the
-/// validator's text still finds it.
+/// thread built-in, and the error-context gate every error-context
+/// built-in and the `error-context` type. The validator words each
+/// of those refusals the same way for every item, naming it; such a
+/// refusal keeps the validator's message whole inside the feature,
+/// so a reader matching the validator's text still finds it.
 const GATE_REFUSALS: &[(&str, Option<&str>)] = &[
     (
         "requires the component model async stackful feature",
@@ -1333,6 +1357,7 @@ const GATE_REFUSALS: &[(&str, Option<&str>)] = &[
         ),
     ),
     ("requires the component model threading feature", None),
+    ("requires the component model error-context feature", None),
 ];
 
 /// Map a translator failure onto the polyfill's error model. A

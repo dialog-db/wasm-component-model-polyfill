@@ -31,8 +31,8 @@
 use std::collections::HashMap;
 
 use crate::concurrency::{
-    EndId, EndKind, Event, SchedulerState, Scope, SubtaskId, SubtaskState, TaskId, TaskTables,
-    ThreadId, WaitableId, WaitableSetId,
+    EndId, EndKind, ErrorContextId, Event, SchedulerState, Scope, SubtaskId, SubtaskState, TaskId,
+    TaskTables, ThreadId, WaitableId, WaitableSetId,
 };
 use crate::error::Error;
 use crate::internal::ErrorInternal;
@@ -760,6 +760,13 @@ impl HandleTables {
     pub fn insert_waitable_set(&mut self, table: TableId, set: WaitableSetId) -> u32 {
         self.for_table_mut(table)
             .insert_entry(HandleKind::WaitableSet { set })
+    }
+
+    /// Insert an error-context entry that names the error-context
+    /// record `context`, and return the handle-table index.
+    pub fn insert_error_context(&mut self, table: TableId, context: ErrorContextId) -> u32 {
+        self.for_table_mut(table)
+            .insert_entry(HandleKind::ErrorContext { context })
     }
 
     /// Insert an entry of kind `kind` that names the end record

@@ -904,6 +904,39 @@ pub enum TrampolineSpec {
         /// in and one `i32` result.
         signature: CoreSignature,
     },
+    /// The `error-context.new` built-in: an error-context record
+    /// holding the debug message the guest passes enters the store,
+    /// and its index in the calling instance's handle table is
+    /// returned.
+    ErrorContextNew {
+        /// The canon options the built-in declared, which name the
+        /// component instance, the memory the message is read from,
+        /// and its string encoding.
+        options: CanonOptions,
+        /// The core signature the guest imports.
+        signature: CoreSignature,
+    },
+    /// The `error-context.debug-message` built-in: the named error
+    /// context's debug message is written into the guest's memory
+    /// through `realloc`, and its pointer and length are stored at
+    /// the address the guest passes.
+    ErrorContextDebugMessage {
+        /// The canon options the built-in declared, which name the
+        /// component instance, the memory and the `realloc` the
+        /// message is written through, and its string encoding.
+        options: CanonOptions,
+        /// The core signature the guest imports.
+        signature: CoreSignature,
+    },
+    /// The `error-context.drop` built-in: the named entry leaves the
+    /// calling instance's handle table, and the record it named
+    /// loses one handle.
+    ErrorContextDrop {
+        /// The component instance that calls the built-in.
+        instance: usize,
+        /// The core signature the guest imports.
+        signature: CoreSignature,
+    },
     /// The `task.cancel` built-in. Cancellation is not built, so a
     /// call fails with [`Error::Unsupported`](crate::Error) once the
     /// may-leave check has passed. The built-in is accepted so that

@@ -28,6 +28,7 @@ mod cancel;
 mod compile_module;
 mod copy;
 mod end_builtins;
+mod error_context_builtins;
 mod host_close;
 mod host_consume;
 mod host_copy;

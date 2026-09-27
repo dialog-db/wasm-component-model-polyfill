@@ -114,6 +114,10 @@
 //!   future end, named by an [`EndId`] and of one [`EndKind`], and
 //!   [`SharedRecord`](shared_record::SharedRecord) is the state its
 //!   two ends share. The store keeps one table of each.
+//! - [`ErrorContextRecord`](error_context_record::ErrorContextRecord)
+//!   is the record of one error context, named by an
+//!   [`ErrorContextId`]: the debug message and the count of the
+//!   guest handles that name it. The store keeps one table of them.
 //!
 //! A host writes a stream or a future through a producer: a
 //! [`StreamProducer`] or a [`FutureProducer`], handed to
@@ -177,6 +181,8 @@ mod end_id;
 mod end_kind;
 mod entry_finish;
 mod entry_status;
+mod error_context_id;
+mod error_context_record;
 mod event;
 mod event_code;
 mod event_slot;
@@ -268,6 +274,7 @@ pub use end_id::EndId;
 pub use end_kind::EndKind;
 pub use entry_finish::EntryFinish;
 pub use entry_status::EntryStatus;
+pub use error_context_id::ErrorContextId;
 pub use event::Event;
 // An event code is spelled outside this module only by the tests that
 // leave a copy event on an end by hand; the built-ins that finish a
