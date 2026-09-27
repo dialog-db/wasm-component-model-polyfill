@@ -3,6 +3,7 @@ members = [
   "rust/wasm-component-model-polyfill",
   "rust/wcmp-bench",
   "rust/wcmp-macros",
+  "rust/wcmp-scenario",
   "rust/wcmp-smoke",
 ]
 # Each vendored backend keeps its own dependency table (it is upstream's
@@ -63,6 +64,9 @@ path = "./rust/wasm-component-model-polyfill"
 
 [workspace.dependencies.wcmp-macros]
 path = "./rust/wcmp-macros"
+
+[workspace.dependencies.wcmp-scenario]
+path = "./rust/wcmp-scenario"
 
 [profile.dev]
 opt-level = 1

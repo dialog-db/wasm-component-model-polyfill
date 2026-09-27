@@ -1,0 +1,20 @@
+[package]
+name = "wcmp-scenario"
+description = "The scenario model of the toolchain compatibility tests: expectations, observations, stages, and judging"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+thiserror = { workspace = true }
+
+[dev-dependencies]
+wcmp-macros = { workspace = true }
+
+# The model's own tests run on both targets through
+# `#[wcmp_macros::test]`, which needs the browser runner on the web.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = { workspace = true }
