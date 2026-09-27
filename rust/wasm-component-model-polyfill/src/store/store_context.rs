@@ -1164,6 +1164,14 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 drop(task);
                 continue;
             }
+            // The failure of an abort ends the turn as a failed call
+            // does, once every other task this turn took is back.
+            if self.scheduler().host_task_aborted(key) {
+                if let Err(error) = self.abort_host_task(key, &task_waker, task) {
+                    failed.get_or_insert(error);
+                }
+                continue;
+            }
             let outcome = task.poll(self, &task_waker);
             // The poll itself poisoned the store, and the task goes
             // the way of every other the trap let go of, whatever the
@@ -1219,6 +1227,31 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             }
             self.scheduler_mut()
                 .push_high_priority(task.lowering_item(value));
+        }
+        Ok(())
+    }
+
+    /// End the host task handed out under `key`, whose caller
+    /// cancelled the call: the task leaves the store, its body is
+    /// dropped unpolled, and the subtask resolves as cancelled before
+    /// it returned, which takes on the subtask event the caller waits
+    /// for. Nothing crosses into the guest.
+    ///
+    /// The drop happens here, in the turn, never in the built-in that
+    /// asked for it: a body's `Drop` can reach the store through its
+    /// accessor, and it reaches it as a poll would. A drop that
+    /// poisoned the store resolves nothing, as a poll that poisoned it
+    /// crosses nothing.
+    fn abort_host_task(&mut self, key: u64, waker: &Waker, task: HostTask<T>) -> Result<()> {
+        self.scheduler_mut().complete_host_task(key);
+        let subtask = task.abort(self, waker);
+        if self.poisoned() {
+            return Ok(());
+        }
+        if let Some(subtask) = subtask {
+            self.lock_tables()?
+                .tasks
+                .subtask_cancelled_by_callee(subtask)?;
         }
         Ok(())
     }

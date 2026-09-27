@@ -1438,7 +1438,9 @@ impl TaskTables {
     /// `task.cancel`: the subtask moves to cancelled-before-returned
     /// and, like a return, takes on the subtask event when the caller
     /// holds a handle for it, which is what a caller waiting for the
-    /// cancellation to finish waits for.
+    /// cancellation to finish waits for. A host callee resolves the
+    /// same way when a turn drops the future of a call its caller
+    /// cancelled.
     pub fn subtask_cancelled_by_callee(&mut self, subtask: SubtaskId) -> Result<()> {
         self.subtask_mut(subtask)
             .ok_or_else(|| Error::internal("subtask record is not in the store"))?

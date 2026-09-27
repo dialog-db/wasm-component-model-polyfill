@@ -702,6 +702,22 @@ impl<T: 'static> Scheduler<T> {
         self.host_tasks.holds(subtask)
     }
 
+    /// Mark the host task of the call `subtask` records as aborted,
+    /// so the next turn that polls the host tasks drops its future
+    /// rather than polling it. Answers whether the store still held
+    /// the task: one that completed has left, and its lowering is
+    /// queued or done.
+    pub fn abort_host_task(&mut self, subtask: SubtaskId) -> bool {
+        self.host_tasks.abort(subtask)
+    }
+
+    /// Whether the host task handed out under `key` was marked by
+    /// [`abort_host_task`](Self::abort_host_task): the turn that has
+    /// it drops it rather than polling it.
+    pub fn host_task_aborted(&self, key: u64) -> bool {
+        self.host_tasks.is_aborted(key)
+    }
+
     /// Record `waker`, the waker of the driver polling the store, as
     /// the one a host task's wake is passed on to.
     pub fn watch_host_tasks(&self, waker: &Waker) {

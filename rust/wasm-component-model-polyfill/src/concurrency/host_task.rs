@@ -43,6 +43,13 @@ type BoxedLowering<T> =
 /// When the body completes, the turn queues the lowering of the
 /// result into the subtask that awaits it.
 ///
+/// A call can also end through cancellation. `subtask.cancel` marks
+/// the task as aborted and drops nothing. The next turn that polls
+/// the host tasks drops the body without polling it, and the subtask
+/// resolves as cancelled before it returned. A body that completed
+/// before the abort has left the store already, and its result lowers
+/// as usual.
+///
 /// A guest's copy against an end the host serves runs as a host task
 /// too. Its body polls the host's producer, and what the turn queues
 /// when the body completes is the delivery of what the producer
@@ -152,6 +159,24 @@ impl<T: 'static> HostTask<T> {
         let mut context = Context::from_waker(waker);
         let _poll = PollScope::enter(store, waker);
         self.body.poll(&accessor, &mut context)
+    }
+
+    /// Drop the task's body, which is how a call its caller cancelled
+    /// ends, and answer the subtask the call resolves. Nothing
+    /// crosses: the host is given no way to return a value after the
+    /// drop.
+    ///
+    /// The drop runs inside a [`PollScope`], with `waker` as the
+    /// waker of the turn that is running, as a poll does. A body's
+    /// `Drop` can reach the store through an accessor it kept, and it
+    /// reaches it here as it would in a poll. The turn that polls the
+    /// host tasks is the only caller, so the drop always happens in a
+    /// turn.
+    pub fn abort(self, store: &mut StoreContext<'_, T>, waker: &Waker) -> Option<SubtaskId> {
+        let Self { body, subtask, .. } = self;
+        let _poll = PollScope::enter(store, waker);
+        drop(body);
+        subtask
     }
 
     /// Lower `outcome` into the subtask that awaits it, here and

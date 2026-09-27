@@ -60,8 +60,15 @@
 
 #![cfg(test)]
 
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use wasm_component_model_polyfill::{
-    Component, Engine, EngineConfig, Error, Instance, Linker, Store, TaskCause, Val, WaitableCause,
+    Accessor, Component, Engine, EngineConfig, Error, Instance, Linker, Store, TaskCause, Val,
+    WaitableCause,
 };
 use wcmp_macros::component;
 
@@ -74,6 +81,9 @@ const RETURNED: u32 = 2;
 const CANCELLED_BEFORE_STARTED: u32 = 3;
 /// The subtask state of a callee that confirmed its cancellation.
 const CANCELLED_BEFORE_RETURNED: u32 = 4;
+/// What an asynchronous cancel answers when the callee has not
+/// resolved.
+const BLOCKED: u32 = 0xffff_ffff;
 
 /// Which built-in the `post-return` of `run` calls, chosen by the
 /// `select` export before the call. Zero calls neither.
@@ -1246,6 +1256,127 @@ const LENDS: &[u8] = component!(
     "#
 );
 
+/// A component that calls three host `async` functions and cancels
+/// the calls.
+///
+/// `never` stays pending for ever, `echo` is pending once and then
+/// answers its argument, and `dropped` is synchronous and answers how
+/// many futures of `never` the host has seen dropped. Each export
+/// writes what it saw at address 64 and answers that address, which
+/// the lift reads as a tuple:
+///
+/// - `cancel-async` cancels a call of `never` asynchronously, asks
+///   `dropped` at once, and then waits for the subtask event, whose
+///   state it keeps.
+/// - `cancel-sync` cancels a call of `never` synchronously, and asks
+///   `dropped` once the cancel returned.
+/// - `cancel-returned` starts two calls of `echo`, waits for the
+///   second one's event, and then cancels the first, whose future
+///   completed in the same poll as the second's. It keeps the state
+///   the wait carried, what the cancel answered, and what the first
+///   call left at its result address.
+const HOST_CALLS: &[u8] = component!(
+    r#"
+    (component
+      (import "never" (func $never async (result u32)))
+      (import "echo" (func $echo async (param "v" u32) (result u32)))
+      (import "dropped" (func $dropped (result u32)))
+      (core module $Memory (memory (export "mem") 1))
+      (core instance $memory (instantiate $Memory))
+      (core func $never' (canon lower (func $never) async (memory (core memory $memory "mem"))))
+      (core func $echo' (canon lower (func $echo) async (memory (core memory $memory "mem"))))
+      (core func $dropped' (canon lower (func $dropped)))
+      (core func $cancel-sync (canon subtask.cancel))
+      (core func $cancel-async (canon subtask.cancel async))
+      (core func $subtask.drop (canon subtask.drop))
+      (core func $waitable-set.new (canon waitable-set.new))
+      (core func $waitable.join (canon waitable.join))
+      (core func $waitable-set.wait
+        (canon waitable-set.wait (memory (core memory $memory "mem"))))
+      (core func $waitable-set.drop (canon waitable-set.drop))
+      (core module $M
+        (import "" "mem" (memory 1))
+        (import "" "never" (func $never (param i32) (result i32)))
+        (import "" "echo" (func $echo (param i32 i32) (result i32)))
+        (import "" "dropped" (func $dropped (result i32)))
+        (import "" "cancel-sync" (func $cancel-sync (param i32) (result i32)))
+        (import "" "cancel-async" (func $cancel-async (param i32) (result i32)))
+        (import "" "subtask.drop" (func $subtask.drop (param i32)))
+        (import "" "waitable-set.new" (func $waitable-set.new (result i32)))
+        (import "" "waitable.join" (func $waitable.join (param i32 i32)))
+        (import "" "waitable-set.wait" (func $waitable-set.wait (param i32 i32) (result i32)))
+        (import "" "waitable-set.drop" (func $waitable-set.drop (param i32)))
+
+        ;; The subtask index a lower's status word carries, once the
+        ;; state in its low bits is STARTED.
+        (func $started (param $status i32) (result i32)
+          (if (i32.ne (i32.and (local.get $status) (i32.const 0xf)) (i32.const 1 (; STARTED ;)))
+            (then unreachable))
+          (i32.shr_u (local.get $status) (i32.const 4)))
+
+        ;; Wait for the subtask event of `sub`, and answer the state it
+        ;; carries.
+        (func $wait-for (param $sub i32) (result i32)
+          (local $ws i32)
+          (local.set $ws (call $waitable-set.new))
+          (call $waitable.join (local.get $sub) (local.get $ws))
+          (if (i32.ne (call $waitable-set.wait (local.get $ws) (i32.const 0))
+                      (i32.const 1 (; SUBTASK ;)))
+            (then unreachable))
+          (if (i32.ne (i32.load (i32.const 0)) (local.get $sub))
+            (then unreachable))
+          (call $waitable.join (local.get $sub) (i32.const 0))
+          (call $waitable-set.drop (local.get $ws))
+          (i32.load (i32.const 4)))
+
+        (func (export "cancel-async") (result i32)
+          (local $sub i32)
+          (local.set $sub (call $started (call $never (i32.const 16))))
+          (i32.store (i32.const 64) (call $cancel-async (local.get $sub)))
+          (i32.store (i32.const 68) (call $dropped))
+          (i32.store (i32.const 72) (call $wait-for (local.get $sub)))
+          (call $subtask.drop (local.get $sub))
+          (i32.const 64))
+
+        (func (export "cancel-sync") (result i32)
+          (local $sub i32)
+          (local.set $sub (call $started (call $never (i32.const 16))))
+          (i32.store (i32.const 64) (call $cancel-sync (local.get $sub)))
+          (i32.store (i32.const 68) (call $dropped))
+          (call $subtask.drop (local.get $sub))
+          (i32.const 64))
+
+        (func (export "cancel-returned") (result i32)
+          (local $first i32) (local $second i32)
+          (local.set $first (call $started (call $echo (i32.const 7) (i32.const 16))))
+          (local.set $second (call $started (call $echo (i32.const 9) (i32.const 20))))
+          (i32.store (i32.const 64) (call $wait-for (local.get $second)))
+          (i32.store (i32.const 68) (call $cancel-async (local.get $first)))
+          (i32.store (i32.const 72) (i32.load (i32.const 16)))
+          (call $subtask.drop (local.get $first))
+          (call $subtask.drop (local.get $second))
+          (i32.const 64)))
+      (core instance $i (instantiate $M (with "" (instance
+        (export "mem" (memory $memory "mem"))
+        (export "never" (func $never'))
+        (export "echo" (func $echo'))
+        (export "dropped" (func $dropped'))
+        (export "cancel-sync" (func $cancel-sync))
+        (export "cancel-async" (func $cancel-async))
+        (export "subtask.drop" (func $subtask.drop))
+        (export "waitable-set.new" (func $waitable-set.new))
+        (export "waitable.join" (func $waitable.join))
+        (export "waitable-set.wait" (func $waitable-set.wait))
+        (export "waitable-set.drop" (func $waitable-set.drop))))))
+      (func (export "cancel-async") async (result (tuple u32 u32 u32))
+        (canon lift (core func $i "cancel-async") (memory (core memory $memory "mem"))))
+      (func (export "cancel-sync") async (result (tuple u32 u32))
+        (canon lift (core func $i "cancel-sync") (memory (core memory $memory "mem"))))
+      (func (export "cancel-returned") async (result (tuple u32 u32 u32))
+        (canon lift (core func $i "cancel-returned") (memory (core memory $memory "mem")))))
+    "#
+);
+
 /// Instantiate `binary` in a store of its own. The engine accepts the
 /// stackful form of `canon lift async`, which the stackful callee is
 /// lifted in, the thread built-ins, which a callee that switches
@@ -1581,4 +1712,202 @@ async fn it_does_not_lend_the_handle_to_a_call_the_gate_holds() {
         CANCELLED_BEFORE_STARTED,
         "the gated call has not lifted its borrow, so the handle drops before the cancel"
     );
+}
+
+/// Whether each host-callee test runs with the suspend provider on,
+/// and then with it off. With it on, a blocked thread suspends through
+/// the provider the target has; with it off, a block runs a nested
+/// turn above the blocked call. Either way the future is dropped in a
+/// turn's poll of the host tasks.
+const PROVIDERS: [bool; 2] = [true, false];
+
+/// What the host side of [`HOST_CALLS`] saw of the futures of `never`
+/// it dropped.
+#[derive(Default)]
+struct Drops {
+    /// How many were dropped.
+    dropped: AtomicU32,
+    /// How many of those drops reached the store through the accessor
+    /// the future kept.
+    reached: AtomicU32,
+}
+
+/// The future of one call of `never`: pending for ever, holding the
+/// accessor its call was handed.
+///
+/// Its drop reaches the store through that accessor and counts the
+/// reach in the host data. The reach succeeds only where the store is
+/// lent to a poll of the host tasks, which is inside a turn. A drop
+/// inside the built-in finds no store lent, and the reach fails.
+struct Never {
+    accessor: Accessor<u32>,
+    drops: Arc<Drops>,
+}
+
+impl Future for Never {
+    type Output = Result<u32, Error>;
+
+    fn poll(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Pending
+    }
+}
+
+impl Drop for Never {
+    fn drop(&mut self) {
+        if self.accessor.with(|store| *store.data_mut() += 1).is_ok() {
+            self.drops.reached.fetch_add(1, Ordering::SeqCst);
+        }
+        self.drops.dropped.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// The future of one call of `echo`: pending once, having asked to be
+/// polled again, and then its argument.
+struct EchoOnce {
+    value: u32,
+    polled: bool,
+}
+
+impl Future for EchoOnce {
+    type Output = Result<u32, Error>;
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.polled {
+            return Poll::Ready(Ok(self.value));
+        }
+        self.polled = true;
+        context.waker().wake_by_ref();
+        Poll::Pending
+    }
+}
+
+/// Instantiate [`HOST_CALLS`] in a store of its own, whose host data
+/// counts the drops that reached it, with the suspend provider on or
+/// off as `provider` says. The host functions report to `drops`.
+async fn instantiate_host_calls(provider: bool, drops: &Arc<Drops>) -> (Store<u32>, Instance) {
+    let mut config = EngineConfig::new();
+    config
+        .suspend_provider(provider)
+        .wasm_component_model_more_async_builtins(true);
+    let engine = Engine::with_config(&config).expect("engine");
+    let component = Component::new(&engine, HOST_CALLS)
+        .await
+        .expect("the component translates");
+    let mut linker: Linker<u32> = Linker::new(&engine);
+    let mut root = linker.root();
+    root.func_wrap_concurrent("never", {
+        let drops = drops.clone();
+        move |accessor: &Accessor<u32>, (): ()| Never {
+            accessor: accessor.clone(),
+            drops: drops.clone(),
+        }
+    })
+    .expect("the registration of `never`");
+    root.func_wrap_concurrent("echo", |_: &Accessor<u32>, (value,): (u32,)| EchoOnce {
+        value,
+        polled: false,
+    })
+    .expect("the registration of `echo`");
+    root.func_wrap("dropped", {
+        let drops = drops.clone();
+        move |_, (): ()| Ok(drops.dropped.load(Ordering::SeqCst))
+    })
+    .expect("the registration of `dropped`");
+    let mut store: Store<u32> = Store::new(&engine, 0).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the component instantiates");
+    (store, instance)
+}
+
+/// Call the export `name` of a fresh instance of [`HOST_CALLS`] and
+/// answer the `u32` fields of the tuple it returned, with the store.
+async fn host_cancel(provider: bool, drops: &Arc<Drops>, name: &str) -> (Vec<u32>, Store<u32>) {
+    let (mut store, instance) = instantiate_host_calls(provider, drops).await;
+    let func = instance.get_func(name).expect("the export is declared");
+    let values = func
+        .call(&mut store, &[])
+        .await
+        .unwrap_or_else(|error| panic!("{name} failed: {}", chain(&error)))
+        .into_vec();
+    let [Val::Tuple(fields)] = values.as_slice() else {
+        panic!("{name} answered {values:?} rather than one tuple");
+    };
+    let fields = fields
+        .iter()
+        .map(|field| match field {
+            Val::U32(value) => *value,
+            other => panic!("{name} answered a field {other:?} rather than a u32"),
+        })
+        .collect();
+    (fields, store)
+}
+
+#[wcmp_macros::test]
+async fn it_answers_blocked_to_an_asynchronous_cancel_of_a_host_callee_then_drops_in_a_turn() {
+    for provider in PROVIDERS {
+        let drops = Arc::new(Drops::default());
+        let (fields, store) = host_cancel(provider, &drops, "cancel-async").await;
+        assert_eq!(
+            fields,
+            [BLOCKED, 0, CANCELLED_BEFORE_RETURNED],
+            "provider {provider}: the cancel answers BLOCKED and drops nothing, and the \
+             subtask event then carries CANCELLED_BEFORE_RETURNED"
+        );
+        assert_eq!(
+            drops.dropped.load(Ordering::SeqCst),
+            1,
+            "provider {provider}"
+        );
+        assert_eq!(
+            drops.reached.load(Ordering::SeqCst),
+            1,
+            "provider {provider}: the drop reached the store, so it ran in a turn's poll of \
+             the host tasks and not inside the built-in"
+        );
+        assert_eq!(
+            *store.data(),
+            1,
+            "provider {provider}: the reach ran against this store"
+        );
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_blocks_a_synchronous_cancel_of_a_host_callee_until_a_turn_drops_its_future() {
+    for provider in PROVIDERS {
+        let drops = Arc::new(Drops::default());
+        let (fields, store) = host_cancel(provider, &drops, "cancel-sync").await;
+        assert_eq!(
+            fields,
+            [CANCELLED_BEFORE_RETURNED, 1],
+            "provider {provider}: the cancel returns once the future is dropped"
+        );
+        assert_eq!(
+            drops.reached.load(Ordering::SeqCst),
+            1,
+            "provider {provider}: the drop reached the store, so it ran in a turn's poll of \
+             the host tasks and not inside the built-in"
+        );
+        assert_eq!(
+            *store.data(),
+            1,
+            "provider {provider}: the reach ran against this store"
+        );
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_resolves_a_host_callee_whose_future_completed_before_the_cancel_as_returned() {
+    for provider in PROVIDERS {
+        let drops = Arc::new(Drops::default());
+        let (fields, _store) = host_cancel(provider, &drops, "cancel-returned").await;
+        assert_eq!(
+            fields,
+            [RETURNED, RETURNED, 7],
+            "provider {provider}: the first call returned with the second, so the cancel \
+             answers RETURNED at once and the call's result lowered as usual"
+        );
+    }
 }

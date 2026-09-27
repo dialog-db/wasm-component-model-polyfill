@@ -10,7 +10,7 @@
 //! clear, when the index names no subtask, when the subtask's
 //! resolution was already delivered, when cancellation was already
 //! requested, and when the subtask is in a waitable set. It then asks
-//! the callee to stop:
+//! a guest callee to stop:
 //!
 //! - A callee its entry gate still holds never runs. Its task is
 //!   given up where it waits, and the subtask resolves to
@@ -47,9 +47,21 @@
 //! `CANCELLED_BEFORE_RETURNED` when it confirmed, and
 //! `CANCELLED_BEFORE_STARTED` for a callee the gate held.
 //!
-//! The cancellation of a host callee is not built. A subtask of a
-//! call into a host function passes the traps above and then fails
-//! with [`Error::Unsupported`].
+//! A host callee is cancelled by dropping its future, which is the one
+//! thing the host sees: it gets no signal before the drop and no way
+//! to return a value after it, as Wasmtime gives none. The built-in
+//! marks the call's host task as aborted and drops nothing. The next
+//! turn that polls the host tasks drops the future, as Wasmtime's
+//! abort handle does, and the subtask resolves to
+//! `CANCELLED_BEFORE_RETURNED`. A future's `Drop` can reach the store
+//! through its accessor, so it runs in the turn, where host code is
+//! allowed to run, and never inside the built-in. A future that
+//! completed before the abort resolves the subtask to `RETURNED`, and
+//! its result lowers as usual. An asynchronous cancel of a host callee
+//! that has not resolved answers `BLOCKED` at once, without giving
+//! way, as Wasmtime answers it. A synchronous one blocks until the
+//! turn that drops the future, or lowers its result, resolves the
+//! call.
 //!
 //! `task.cancel` resolves the current task as cancelled, following
 //! the reference's `Task.cancel` with Wasmtime's messages. The
@@ -183,6 +195,10 @@ fn begin_subtask_cancel<T: 'static>(
 
     // From here the subtask is waited on synchronously, and a failure
     // ends that wait before it travels out.
+    let Some(callee) = callee else {
+        let step = abort_host_callee(store, &tables, subtask, async_);
+        return Ok(ending_wait_on_failure(&tables, subtask, step)?);
+    };
     let woken = resolved(&tables, subtask).and_then(|resolved| {
         if resolved {
             Ok(None)
@@ -242,12 +258,13 @@ fn begin_subtask_cancel<T: 'static>(
 /// Look up the subtask at `index` of `table` and make the traps that
 /// come before the request, in the reference's order. A subtask that
 /// passes them is waited on synchronously from here on and marked as
-/// asked to cancel, and its callee's task comes back with it.
+/// asked to cancel, and its callee's task comes back with it, or
+/// `None` when the callee is a host function.
 fn claim(
     tables: &Arc<Mutex<HandleTables>>,
     table: TableId,
     index: u32,
-) -> crate::error::Result<(SubtaskId, TaskId)> {
+) -> crate::error::Result<(SubtaskId, Option<TaskId>)> {
     let mut guard = lock(tables)?;
     let subtask = guard.subtask_from_handle(table, index).map_err(|err| {
         Error::from(AbiError {
@@ -273,11 +290,6 @@ fn claim(
     if guard.tasks.waitable_set_of(waitable)?.is_some() {
         return Err(Error::Waitable(WaitableCause::SyncAndAsync));
     }
-    let Some(callee) = callee else {
-        return Err(Error::unsupported(
-            "cancellation of a call into a host function (`subtask.cancel`)",
-        ));
-    };
     guard.tasks.begin_synchronous_wait(waitable)?;
     if let Some(record) = guard.tasks.subtask_mut(subtask) {
         record.cancel_requested = true;
@@ -363,6 +375,29 @@ fn request_cancellation<T: 'static>(
     }
 }
 
+/// Cancel a call into a host function, which is Wasmtime's abort of
+/// the host task: mark the call's host task as aborted, and answer
+/// or wait as the module documentation states. The future is not
+/// dropped here. The next turn that polls the host tasks drops it.
+///
+/// A call that resolved is left alone, and the cancel delivers its
+/// resolution at once. A call whose future completed but whose result
+/// has not lowered yet is no longer among the host tasks, so the mark
+/// finds nothing, and the lowering resolves the call as returned.
+/// An asynchronous cancel of a call that has not resolved answers
+/// `BLOCKED` without giving way, as Wasmtime answers it.
+fn abort_host_callee<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    tables: &Arc<Mutex<HandleTables>>,
+    subtask: SubtaskId,
+    async_: bool,
+) -> crate::error::Result<BlockStep<T>> {
+    if !resolved(tables, subtask)? {
+        store.internal().scheduler_mut().abort_host_task(subtask);
+    }
+    after_request(tables, subtask, async_, true)
+}
+
 /// Give up a callee the entry gate still holds, which is the
 /// reference's delivery of a request at `enter_implicit_thread`: the
 /// subtask resolves to `CANCELLED_BEFORE_STARTED`, and the task ends
@@ -392,7 +427,8 @@ fn cancel_before_start<T: 'static>(
 /// The rest of `subtask.cancel` once the request was made: answer at
 /// once when the callee resolved, and otherwise give way once or
 /// block, as the module documentation states. `gave_way` says the
-/// cancel already gave way to a callee it woke.
+/// cancel already gave way to a callee it woke, or that it does not
+/// give way at all, as the cancel of a host callee does not.
 fn after_request<T: 'static>(
     tables: &Arc<Mutex<HandleTables>>,
     subtask: SubtaskId,

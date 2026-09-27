@@ -34,6 +34,11 @@ use super::subtask_id::SubtaskId;
 /// turn makes carries the task's own waker, and every poll after it
 /// does too.
 ///
+/// A call its caller cancelled is marked as aborted and woken, and
+/// the turn that takes it next drops it without polling it. The mark
+/// is all the cancel does to the set, so the drop always happens in a
+/// turn.
+///
 /// The task of each call the set holds, out being polled or not, is
 /// a record against the store's cap on its live records, as the host
 /// task of a call is an entry of Wasmtime's table. The task of a copy
@@ -59,8 +64,13 @@ pub struct HostTaskSet<T: 'static> {
 struct Entry<T: 'static> {
     /// The task, or `None` while a turn has it out to poll.
     task: Option<HostTask<T>>,
-    /// Whether the task is a call's rather than a copy's.
-    call: bool,
+    /// The subtask the task resolves when it is a call's, or `None`
+    /// when it is a copy's. It stays while a turn has the task out,
+    /// so an abort finds the entry either way.
+    subtask: Option<SubtaskId>,
+    /// Whether the caller cancelled the call, so the next turn that
+    /// takes the task drops it rather than polling it.
+    aborted: bool,
     wake: Arc<TaskWake>,
     waker: Waker,
 }
@@ -137,20 +147,49 @@ impl<T: 'static> HostTaskSet<T> {
         });
         wake.enqueue();
         let waker = Waker::from(wake.clone());
-        let call = task.subtask().is_some();
-        if call {
+        let subtask = task.subtask();
+        if subtask.is_some() {
             self.calls.fetch_add(1, Ordering::AcqRel);
         }
         self.tasks.insert(
             key,
             Entry {
-                call,
+                subtask,
+                aborted: false,
                 task: Some(task),
                 wake,
                 waker,
             },
         );
         key
+    }
+
+    /// Mark the host task of the call `subtask` records as aborted,
+    /// and wake it, so the next take hands it out and the turn that
+    /// took it drops it unpolled. Answers whether the set holds the
+    /// task, out being polled or not. A task that completed has left
+    /// the set, and there is nothing left to abort.
+    ///
+    /// The mark drops nothing. A task a turn has out is marked too,
+    /// and the first take that finds it back hands it out, as it
+    /// hands out any task woken while out.
+    pub fn abort(&mut self, subtask: SubtaskId) -> bool {
+        let Some(entry) = self
+            .tasks
+            .values_mut()
+            .find(|entry| entry.subtask == Some(subtask))
+        else {
+            return false;
+        };
+        entry.aborted = true;
+        entry.waker.wake_by_ref();
+        true
+    }
+
+    /// Whether the task given out under `key` was marked by
+    /// [`abort`](Self::abort).
+    pub fn is_aborted(&self, key: u64) -> bool {
+        self.tasks.get(&key).is_some_and(|entry| entry.aborted)
     }
 
     /// The number of calls the set holds, out being polled or not,
@@ -163,7 +202,7 @@ impl<T: 'static> HostTaskSet<T> {
     /// Take `entry`, which has left the set, off the shared number
     /// of calls when it is a call's.
     fn forget(&self, entry: &Entry<T>) {
-        if entry.call {
+        if entry.subtask.is_some() {
             self.calls.fetch_sub(1, Ordering::AcqRel);
         }
     }
@@ -306,7 +345,7 @@ impl<T: 'static> HostTaskSet<T> {
         let calls = &self.calls;
         self.tasks.retain(|_, entry| match entry.task.take() {
             Some(task) => {
-                if entry.call {
+                if entry.subtask.is_some() {
                     calls.fetch_sub(1, Ordering::AcqRel);
                 }
                 taken.push(task);
@@ -460,5 +499,33 @@ mod tests {
             vec![first, second],
             "the key the nested take kept went back ahead of the later wake"
         );
+    }
+
+    #[wcmp_macros::test]
+    fn it_marks_and_wakes_an_aborted_task_and_drops_nothing_itself() {
+        let mut set = HostTaskSet::new();
+        set.push(parked(0));
+        set.push(parked(1));
+        let taken = take_and_restore(&mut set);
+        let second = taken[1].0;
+
+        assert!(
+            !set.abort(SubtaskId::new(7, 0)),
+            "a call the set does not hold has nothing to abort"
+        );
+        assert!(set.abort(SubtaskId::new(1, 0)));
+        assert_eq!(set.len(), 2, "the abort left the task in the set");
+
+        let woken = set.take_woken();
+        assert_eq!(
+            woken.iter().map(|(key, _, _)| *key).collect::<Vec<_>>(),
+            vec![second],
+            "the abort woke the task, so the next take hands it out"
+        );
+        assert!(set.is_aborted(second), "the take found the mark");
+        assert!(!set.is_aborted(taken[0].0), "the other task is not marked");
+        for (key, _, task) in woken {
+            set.restore(key, task);
+        }
     }
 }

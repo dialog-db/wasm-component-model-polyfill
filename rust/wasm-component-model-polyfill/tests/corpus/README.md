@@ -52,9 +52,12 @@ traps there with Wasmtime's refusal. A caller cancels a call into
 another component with `subtask.cancel`: a callee the entry gate holds
 never runs, a callback callee takes the request as the task-cancelled
 event and confirms it with `task.cancel` or returns all the same, and a
-stackful callee is never told, so the cancel waits for its return. The
-cancellation of a call into a host function is not built, and fails as
-unsupported. The asynchronous lower answers
+stackful callee is never told, so the cancel waits for its return. A
+call into a host function is cancelled by dropping its future: the
+cancel marks the call's host task as aborted, the next turn that polls
+the host tasks drops the future, and the call resolves as cancelled
+before it returned, or as returned when its future completed first. The
+asynchronous lower answers
 with the status word, the subtask enters the caller's handle table
 when the call does not resolve at once, and the callee's start and
 resolution reach the caller as subtask events; the synchronous lower
@@ -81,11 +84,11 @@ callee returned. An exception thrown in a callee reaches the host as the
 trap the synchronous baseline gives it.
 
 The directive that first meets what is missing is an expected failure
-of category `deferred-feature`, for one of two reasons: a block or a
+of category `deferred-feature`, for one reason: a block or a
 switch that only a stack switch can serve, such as a callee that can
 be released only by a caller that is on the stack or a thread that
-suspends after its task has resolved, or the cancellation of a call
-into a host function. Two definitions in the same category fail at link instead, on a
+suspends after its task has resolved. Two definitions in the same
+category fail at link instead, on a
 host item the harness does not provide: the two WASI 0.3 handler
 fixtures import `wasi:http/types`. Most of the rest
 is `cascade`: a component definition that fails leaves its name
@@ -129,10 +132,8 @@ against an unchanged tree rewrites the list byte for byte.
 Two kinds of hand-written text survive the rewrite. A trailing
 parenthetical is a note a person appended, and the rewrite restores it
 after the run's reason, unless the run's reason already ends with the
-same group, which is how the runtime's own wording — ``unsupported
-component feature: cancellation of a call into a host function
-(`subtask.cancel`)`` — is told
-apart from a note. When the runtime's wording drops such a group, the
+same group, which is how a runtime wording that ends in a group of its
+own is told apart from a note. When the runtime's wording drops such a group, the
 rewrite reads the old group as a note and restores it after the new
 reason, so that line needs a person to strike the group. A reason
 that ends in the run's cause behind other leading text is a sentence
@@ -495,8 +496,12 @@ the lower answers `STARTED`, and the export's synchronous
 provider that callee blocks on the real stack above the asynchronous
 lower, which a stack switch would let go on, so the block fails with
 the stack-switch message before the cancel.
-`wasmtime/async/cancel-host.wast` fails at its first cancel of a call
-into a host function. The twelve cases of
+`wasmtime/async/cancel-host.wast` passes whole natively and in the
+browser, with a provider and without one: a cancel of a call into a
+host function drops the call's future in the next turn that polls the host
+tasks, and the borrow the call held comes back when the resolution is
+delivered.
+The twelve cases of
 `cm/async/reentrance.wast` pass, two of them by cancelling a callee
 parked in its callback loop, which `subtask.cancel` wakes and gives
 way to from inside its own frame, as Wasmtime does. The
@@ -509,6 +514,6 @@ suspends above the asynchronous lower that started it, and a thread
 switches back to a thread suspended below it. The error-context
 built-ins run, so `wasmtime/async/error-context.wast` and
 `wasmtime/error-context-trap-in-post-return.wast` pass whole. Of the three corpus
-files that exercise a host `async` item, `wasmtime/async/lower.wast`
-and `wasmtime/async/drop-host.wast` pass whole, and
-`wasmtime/async/cancel-host.wast` is held up by the cancellation of a host callee.
+files that exercise a host `async` item, `wasmtime/async/lower.wast`,
+`wasmtime/async/drop-host.wast`, and `wasmtime/async/cancel-host.wast`
+pass whole.
