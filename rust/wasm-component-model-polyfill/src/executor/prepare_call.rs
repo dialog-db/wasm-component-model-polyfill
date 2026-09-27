@@ -121,9 +121,13 @@ fn prepare_call(
         .tasks
         .current_thread()
         .ok_or_else(|| Error::internal("an adapter prepared a call with no task on the stack"))?;
+    // The callee's task, its implicit thread, and the caller's
+    // subtask are three records against the store's cap, and the cap
+    // is asked for all three at once, so a call past it creates none.
+    guard.tasks.admit_records(3)?;
     let task = guard
         .tasks
-        .create_task(None, Some(Arc::new(options)), callee);
+        .create_task(None, Some(Arc::new(options)), callee)?;
     if let Some(record) = guard.tasks.task_mut(task) {
         record.result_tuple = Some(result_tuple);
     }
@@ -131,7 +135,7 @@ fn prepare_call(
     // pushed as a scope: a synchronous lower keeps its own task on
     // the stack while the callee runs, and an asynchronous lower
     // hands the record back to the caller to wait on.
-    let subtask: SubtaskId = guard.tasks.insert_subtask();
+    let subtask: SubtaskId = guard.tasks.insert_subtask()?;
     if let Some(record) = guard.tasks.subtask_mut(subtask) {
         record.callee = Some(task);
         record.bridge = Some(CallBridge {

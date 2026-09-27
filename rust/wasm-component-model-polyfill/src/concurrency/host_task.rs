@@ -341,7 +341,8 @@ mod tests {
             .lock()
             .expect("tables")
             .tasks
-            .push_subtask();
+            .push_subtask()
+            .expect("room under the record cap");
         let seen = Arc::new(Mutex::new(None));
         let lowered = Arc::new(Mutex::new(None));
         let slot = lowered.clone();
@@ -472,7 +473,8 @@ mod tests {
             .lock()
             .expect("tables")
             .tasks
-            .push_subtask();
+            .push_subtask()
+            .expect("room under the record cap");
         let seen = Arc::new(Mutex::new(None));
         let lowered = Arc::new(Mutex::new(None));
         let slot = lowered.clone();

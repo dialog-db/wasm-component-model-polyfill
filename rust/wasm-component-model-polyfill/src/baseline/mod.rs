@@ -27,6 +27,7 @@ mod poisoned_store;
 mod prepared_call;
 mod provider_threads;
 mod realloc_task;
+mod record_cap;
 mod resources;
 mod run_concurrent;
 mod stackful_export;

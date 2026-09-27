@@ -93,6 +93,18 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
         self.context.lock_tables()
     }
 
+    /// Set the most records the store holds live before a new one
+    /// fails. A cap below the records live now removes none of them;
+    /// only the records created after it fail. Nothing public sets
+    /// the cap: this entry is the only way to it, and only the
+    /// crate's tests and the conformance harness's entry call it, so
+    /// it is compiled for them alone.
+    #[cfg(any(test, feature = "wast-runner"))]
+    pub fn set_max_records(self, max: usize) -> Result<()> {
+        self.context.lock_tables()?.tasks.set_max_records(max);
+        Ok(())
+    }
+
     /// The store's cooperative scheduler.
     pub fn scheduler(self) -> &'b Scheduler<T> {
         self.context.scheduler()

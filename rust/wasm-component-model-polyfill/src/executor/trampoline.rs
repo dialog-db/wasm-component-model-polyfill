@@ -645,7 +645,7 @@ fn invoke_trampoline<T: 'static>(
     // the stack of current scopes and stays there while the host side
     // runs. Borrows the guest lends in are recorded against it, and
     // are given back when the subtask's resolution is delivered.
-    let subtask = lock_tables(tables)?.tasks.push_subtask();
+    let subtask = lock_tables(tables)?.tasks.push_subtask()?;
 
     // Lifting the parameters and running the host function both
     // happen with the subtask on the stack, and either can fail. The

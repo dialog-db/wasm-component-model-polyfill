@@ -54,7 +54,7 @@ impl StartTask {
         let mut guard = tables
             .lock()
             .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
-        let task = guard.tasks.push_task(None, None, instance);
+        let task = guard.tasks.push_task(None, None, instance)?;
         guard.tasks.start_task(task);
         guard.tasks.hold_may_not_suspend(task).ok_or_else(|| {
             Error::internal("a core instantiation named an instance the store does not hold")

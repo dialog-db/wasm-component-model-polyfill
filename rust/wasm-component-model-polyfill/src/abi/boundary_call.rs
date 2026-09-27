@@ -107,8 +107,8 @@ impl BoundaryCall {
             .lock()
             .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
         let task = match instance {
-            Some(instance) => guard.tasks.push_task(None, None, instance),
-            None => guard.tasks.push_task_without_instance(),
+            Some(instance) => guard.tasks.push_task(None, None, instance)?,
+            None => guard.tasks.push_task_without_instance()?,
         };
         guard.tasks.start_task(task);
         let held = instance.is_none() || guard.tasks.hold_may_not_suspend(task).is_some();
@@ -181,7 +181,7 @@ impl BoundaryCall {
         let old = flags.set_may_leave(store.as_context_mut(), false)?;
         call.may_leave = Some((flags.clone(), old));
         if let Some(guard) = records.as_mut() {
-            let task = guard.tasks.push_task(None, None, id);
+            let task = guard.tasks.push_task(None, None, id)?;
             guard.tasks.start_task(task);
             call.task = Some(task);
         }
@@ -458,7 +458,8 @@ mod tests {
             .lock_tables()
             .expect("handle tables")
             .tasks
-            .push_task(None, None, instance);
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
 
         let call = BoundaryCall::post_return(
             &boundary,

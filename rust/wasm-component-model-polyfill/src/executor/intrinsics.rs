@@ -242,7 +242,7 @@ fn enter_sync_call(
     callee_async: bool,
 ) -> anyhow::Result<()> {
     let mut guard = lock_tables(tables)?;
-    let task = guard.tasks.push_task(None, None, callee);
+    let task = guard.tasks.push_task(None, None, callee)?;
     guard.tasks.start_task(task);
     if callee_async {
         return Ok(());
@@ -687,7 +687,10 @@ mod tests {
             let mut guard = tables.lock().unwrap();
             let index = guard.insert_own(src_table, type_id, true, 7);
             let instance = guard.tasks.insert_instance();
-            let task = guard.tasks.push_task(None, None, instance);
+            let task = guard
+                .tasks
+                .push_task(None, None, instance)
+                .expect("room under the record cap");
             (index, task)
         };
 
@@ -744,7 +747,10 @@ mod tests {
             let mut guard = tables.lock().unwrap();
             let index = guard.insert_own(src_table, type_id, true, 7);
             let instance = guard.tasks.insert_instance();
-            guard.tasks.push_task(None, None, instance);
+            guard
+                .tasks
+                .push_task(None, None, instance)
+                .expect("room under the record cap");
             index
         };
         transfer_borrow(&tables, src, dst, index).expect("the entry is lent to the call");
@@ -876,7 +882,12 @@ mod tests {
             "there is no thread to address with no task on the stack"
         );
 
-        let caller = tables.lock().unwrap().tasks.push_task(None, None, instance);
+        let caller = tables
+            .lock()
+            .unwrap()
+            .tasks
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
         context_set(&tables, 0, 7).expect("the caller writes its first slot");
         context_set(&tables, 1, 8).expect("the caller writes its second slot");
         assert!(
@@ -884,7 +895,12 @@ mod tests {
             "a thread has two context slots and no more"
         );
 
-        let callee = tables.lock().unwrap().tasks.push_task(None, None, instance);
+        let callee = tables
+            .lock()
+            .unwrap()
+            .tasks
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
         assert_eq!(
             (
                 context_get(&tables, 0).unwrap(),
@@ -922,7 +938,10 @@ mod tests {
         let (caller, callee) = {
             let mut guard = tables.lock().unwrap();
             let instance = guard.tasks.insert_instance();
-            let caller = guard.tasks.push_task(None, None, instance);
+            let caller = guard
+                .tasks
+                .push_task(None, None, instance)
+                .expect("room under the record cap");
             (caller, instance)
         };
 
@@ -1028,7 +1047,8 @@ mod tests {
             .lock()
             .expect("tables")
             .tasks
-            .create_task(None, None, instance);
+            .create_task(None, None, instance)
+            .expect("room under the record cap");
         store
             .internal()
             .start_export_thread(task, instance, async_function, false, item)

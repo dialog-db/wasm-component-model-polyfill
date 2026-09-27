@@ -82,11 +82,9 @@ of category `deferred-feature`, for one of three reasons: a block or a
 switch that only a stack switch can serve, such as a callee that can
 be released only by a caller that is on the stack or a thread that
 suspends after its task has resolved, the cancellation of a task or a
-subtask, or an error context. Three definitions in the same category fail at link instead, on a
+subtask, or an error context. Two definitions in the same category fail at link instead, on a
 host item the harness does not provide: the two WASI 0.3 handler
-fixtures import `wasi:http/types`, and
-`wasmtime/async/cancel-starting-subtask-does-not-leak.wast` imports
-`set-max-table-capacity` from the `wasmtime` instance. Most of the rest
+fixtures import `wasi:http/types`. Most of the rest
 is `cascade`: a component definition that fails leaves its name
 unbound and no instance current, so every later directive in the file
 that names the definition or invokes the instance fails as
@@ -219,11 +217,14 @@ same reason the synchronous methods of that resource are registered
 untyped.
 
 The harness also registers the `wasmtime` instance the runner provides
-beside the spectest for its own misc tests, with one item: `gc`, whose
-function does nothing, because the polyfill's substrate collects its
-own garbage. A file of the corpus also imports
-`set-max-table-capacity` from it, which the harness does not register,
-so that file stops at link.
+beside the spectest for its own misc tests, with two items. `gc` does
+nothing, because the polyfill's substrate collects its own garbage.
+`set-max-table-capacity` sets the cap on the store's live records, as
+the runner sets the capacity of the store's concurrent table. The cap
+is set only through the store's internal API, which an integration
+test cannot see, so the crate exports the one entry the item calls
+under its `wast-runner` feature, and only the crate's own tests turn
+the feature on, through a dev-dependency on the crate itself.
 
 An `assert_trap` passes when the trap's message contains the expected
 text, as in Wasmtime's runner. In a file of `cm/` it also passes when
@@ -476,9 +477,10 @@ the export reaches `subtask.cancel`. Without a provider that callee
 blocks on the real stack above the asynchronous lower, which a stack
 switch would let go on, so the block fails with the stack-switch
 message.
-`wasmtime/async/cancel-starting-subtask-does-not-leak.wast` stops at
-link, before its cancel, on the host item the harness does not
-provide. Ten of the twelve cases of `cm/async/reentrance.wast` pass,
+`wasmtime/async/cancel-starting-subtask-does-not-leak.wast` links
+against the harness's `wasmtime.set-max-table-capacity`, which lowers
+the cap on the store's live records to 100, and its one invoke fails
+at the first of its 1,000 calls to `subtask.cancel`. Ten of the twelve cases of `cm/async/reentrance.wast` pass,
 and the two that remain fail at their call to `subtask.cancel`. The
 start intrinsic clears the may-not-suspend flag of an `async`-typed
 callee's instance while it runs the callee, as Wasmtime does, so a

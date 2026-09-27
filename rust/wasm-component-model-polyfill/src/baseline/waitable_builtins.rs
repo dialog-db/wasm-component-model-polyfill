@@ -227,7 +227,10 @@ macro_rules! handle_table {
 fn subtask_in_table(store: &mut Store<()>, instance: &Instance) -> u32 {
     let table = handle_table!(instance);
     let mut guard = store.internal().tables().lock().expect("handle tables");
-    let subtask = guard.tasks.insert_subtask();
+    let subtask = guard
+        .tasks
+        .insert_subtask()
+        .expect("room under the record cap");
     guard.insert_subtask(table, subtask)
 }
 
@@ -244,7 +247,10 @@ fn ready_subtask_in_set(store: &mut Store<()>, instance: &Instance, set_index: u
     let set = guard
         .waitable_set_from_handle(table, set_index)
         .expect("the guest's index names the set it created");
-    let subtask = guard.tasks.insert_subtask();
+    let subtask = guard
+        .tasks
+        .insert_subtask()
+        .expect("room under the record cap");
     let waitable = guard.tasks.subtask_waitable(subtask);
     let subtask_index = guard.insert_subtask(table, subtask);
     guard
@@ -396,7 +402,10 @@ async fn it_refuses_to_drop_a_set_that_still_holds_a_waitable() {
         let set = guard
             .waitable_set_from_handle(table, set_index)
             .expect("the set the guest created");
-        let subtask = guard.tasks.insert_subtask();
+        let subtask = guard
+            .tasks
+            .insert_subtask()
+            .expect("room under the record cap");
         let waitable = guard.tasks.subtask_waitable(subtask);
         guard
             .tasks
@@ -425,7 +434,10 @@ async fn it_refuses_to_drop_a_set_a_thread_waits_on() {
         // A thread of another task, parked on the set: what a
         // blocking wait leaves behind while it is suspended.
         let other = guard.tasks.insert_instance();
-        let task = guard.tasks.create_task(None, None, other);
+        let task = guard
+            .tasks
+            .create_task(None, None, other)
+            .expect("room under the record cap");
         let thread = guard
             .tasks
             .task(task)
@@ -474,7 +486,10 @@ async fn it_removes_a_waitable_from_its_set_when_the_set_index_is_zero() {
     let subtask_index = {
         let table = handle_table!(&instance);
         let mut guard = store.internal().tables().lock().expect("handle tables");
-        let subtask = guard.tasks.insert_subtask();
+        let subtask = guard
+            .tasks
+            .insert_subtask()
+            .expect("room under the record cap");
         guard.insert_subtask(table, subtask)
     };
 
@@ -672,7 +687,10 @@ async fn it_traps_a_join_of_a_waitable_that_has_a_synchronous_waiter() {
     let subtask_index = {
         let table = handle_table!(&instance);
         let mut guard = store.internal().tables().lock().expect("handle tables");
-        let subtask = guard.tasks.insert_subtask();
+        let subtask = guard
+            .tasks
+            .insert_subtask()
+            .expect("room under the record cap");
         let waitable = guard.tasks.subtask_waitable(subtask);
         let index = guard.insert_subtask(table, subtask);
         guard

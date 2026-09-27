@@ -105,13 +105,18 @@ impl<T: 'static> StoreData<T> {
     /// nothing queued. Workspace-internal; not re-exported by
     /// `lib.rs`.
     pub fn new(data: T) -> Self {
+        let scheduler = Scheduler::new();
+        let mut tables = HandleTables::new();
+        tables
+            .tasks
+            .count_host_tasks(scheduler.shared_host_call_count());
         Self {
             data,
             id: StoreId::fresh(),
-            tables: Arc::new(Mutex::new(HandleTables::new())),
+            tables: Arc::new(Mutex::new(tables)),
             destructors: HashMap::new(),
             resource_types: HashMap::new(),
-            scheduler: Scheduler::new(),
+            scheduler,
             provider: None,
             dropped: false,
             poisoned: false,

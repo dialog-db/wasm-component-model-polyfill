@@ -1038,7 +1038,8 @@ mod tests {
             .lock()
             .expect("tables")
             .tasks
-            .insert_subtask();
+            .insert_subtask()
+            .expect("room under the record cap");
         let slot: Slot = Arc::new(Mutex::new(None));
         let polls: Polls = Arc::new(Mutex::new(Vec::new()));
         let filled = slot.clone();
@@ -1069,7 +1070,10 @@ mod tests {
             .instance_mut(instance)
             .expect("instance record")
             .may_not_suspend = may_not_suspend;
-        let task = guard.tasks.create_task(None, None, instance);
+        let task = guard
+            .tasks
+            .create_task(None, None, instance)
+            .expect("room under the record cap");
         guard.tasks.push_task_scope(task);
         instance
     }
@@ -1084,7 +1088,8 @@ mod tests {
             .lock()
             .expect("tables")
             .tasks
-            .create_task(None, None, instance);
+            .create_task(None, None, instance)
+            .expect("room under the record cap");
         store
             .internal()
             .start_export_thread(task, instance, false, true, item)
@@ -1309,14 +1314,20 @@ mod tests {
                 .instance_mut(instance)
                 .expect("instance record")
                 .may_not_suspend = true;
-            let below = guard.tasks.create_task(None, None, instance);
+            let below = guard
+                .tasks
+                .create_task(None, None, instance)
+                .expect("room under the record cap");
             let below = guard.tasks.task(below).expect("task").implicit_thread;
             guard
                 .tasks
                 .start_waiting(below, Readiness::Yielded)
                 .expect("the thread below waits");
             guard.tasks.begin_thread_switch(below);
-            let task = guard.tasks.create_task(None, None, instance);
+            let task = guard
+                .tasks
+                .create_task(None, None, instance)
+                .expect("room under the record cap");
             guard.tasks.push_task_scope(task);
         }
 
@@ -1413,7 +1424,10 @@ mod tests {
     ) -> SubtaskId {
         let subtask = {
             let mut guard = store.internal_ref().tables().lock().expect("tables");
-            let subtask = guard.tasks.insert_subtask();
+            let subtask = guard
+                .tasks
+                .insert_subtask()
+                .expect("room under the record cap");
             guard.tasks.begin_nested_start(subtask, lower);
             subtask
         };
@@ -2040,7 +2054,8 @@ mod tests {
             .lock()
             .expect("tables")
             .tasks
-            .insert_subtask();
+            .insert_subtask()
+            .expect("room under the record cap");
         let polls: Polls = Arc::new(Mutex::new(Vec::new()));
         store
             .internal()
@@ -2077,13 +2092,19 @@ mod tests {
         instance: InstanceId,
     ) -> (ThreadId, SubtaskId) {
         let mut guard = store.internal_ref().tables().lock().expect("tables");
-        let task = guard.tasks.create_task(None, None, instance);
+        let task = guard
+            .tasks
+            .create_task(None, None, instance)
+            .expect("room under the record cap");
         let thread = guard
             .tasks
             .task(task)
             .expect("the task record")
             .implicit_thread;
-        let subtask = guard.tasks.insert_subtask();
+        let subtask = guard
+            .tasks
+            .insert_subtask()
+            .expect("room under the record cap");
         guard
             .tasks
             .start_waiting(thread, Readiness::Subtask { subtask })
@@ -2303,7 +2324,8 @@ mod tests {
             .lock_tables()
             .expect("tables")
             .tasks
-            .insert_subtask();
+            .insert_subtask()
+            .expect("room under the record cap");
         // What the thread's record held while the thread waited, read
         // by the item that then resolves the call.
         let seen: Seen<Vec<ThreadId>> = Arc::new(Mutex::new(None));
@@ -2360,7 +2382,10 @@ mod tests {
         let thread = current_thread(&store);
         let subtask = {
             let mut guard = store.internal().lock_tables().expect("tables");
-            let subtask = guard.tasks.insert_subtask();
+            let subtask = guard
+                .tasks
+                .insert_subtask()
+                .expect("room under the record cap");
             guard
                 .tasks
                 .subtask_returned(subtask)
@@ -2568,7 +2593,12 @@ mod tests {
                     // is inside is synchronous.
                     let slot: Slot = Arc::new(Mutex::new(None));
                     let filled = slot.clone();
-                    let subtask = store.internal().lock_tables()?.tasks.insert_subtask();
+                    let subtask = store
+                        .internal()
+                        .lock_tables()?
+                        .tasks
+                        .insert_subtask()
+                        .expect("room under the record cap");
                     store.internal().push_host_task(HostTask::from_future(
                         subtask,
                         move |_store: &mut StoreContext<'_, ()>, outcome: Result<Vec<Val>>| {
@@ -2662,7 +2692,12 @@ mod tests {
                     // what the suspension has to wait for.
                     let slot: Slot = Arc::new(Mutex::new(None));
                     let filled = slot.clone();
-                    let subtask = store.internal().lock_tables()?.tasks.insert_subtask();
+                    let subtask = store
+                        .internal()
+                        .lock_tables()?
+                        .tasks
+                        .insert_subtask()
+                        .expect("room under the record cap");
                     store.internal().push_host_task(HostTask::from_future(
                         subtask,
                         move |_store: &mut StoreContext<'_, ()>, outcome: Result<Vec<Val>>| {

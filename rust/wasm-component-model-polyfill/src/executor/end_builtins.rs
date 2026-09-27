@@ -177,7 +177,7 @@ fn build_new<T: 'static>(
             let (id, table) = calling_instance(&abi_state, instance)?;
             trap_if_cannot_leave(&abi_state, id, &mut store_ctx)?;
             let mut guard = lock_tables(&tables)?;
-            let (readable, writable) = guard.tasks.insert_ends(payload.clone());
+            let (readable, writable) = guard.tasks.insert_ends(payload.clone()).map_err(trap)?;
             let readable = guard.insert_end(table, kinds[0], readable);
             let writable = guard.insert_end(table, kinds[1], writable);
             results[0] = RuntimeVal::I64(pack_indices(readable, writable));

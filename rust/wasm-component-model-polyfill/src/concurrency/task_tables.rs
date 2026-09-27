@@ -3,9 +3,10 @@
 //! current scopes.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::abi::signature::Signature;
-use crate::error::{CopyCause, Error, Result, ThreadCause, WaitableCause};
+use crate::error::{CopyCause, Error, Result, SchedulerCause, ThreadCause, WaitableCause};
 use crate::executor::ir::CanonOptions;
 use crate::internal::ErrorInternal;
 use crate::resource::TableId;
@@ -81,6 +82,16 @@ use super::waitable_state::WaitableState;
 /// record holds its readiness condition, and two lists name the
 /// waiting threads: one in the order they began to wait, and one in
 /// the order the scheduler found their conditions holding.
+///
+/// The tables cap how many records the store holds live. The records
+/// that count are tasks, subtasks, threads, waitable sets, the shared
+/// records of streams and futures, and the host tasks of calls the
+/// scheduler holds, whose number the scheduler shares with the
+/// tables. A record
+/// that would take the count past the cap is not created, and its
+/// creation fails with Wasmtime's full-table cause. Lowering the cap
+/// below the count removes nothing; only the records created after
+/// it fail.
 pub struct TaskTables {
     tasks: RecordTable<Task>,
     subtasks: RecordTable<Subtask>,
@@ -96,7 +107,13 @@ pub struct TaskTables {
     running_threads: Vec<(usize, ThreadId)>,
     waiting: Vec<ThreadId>,
     ready: Vec<ThreadId>,
+    max_records: usize,
+    host_tasks: Arc<AtomicUsize>,
 }
+
+/// The cap on the store's live records unless it is set to another:
+/// 1,000,000, the default capacity of Wasmtime's resource table.
+const DEFAULT_MAX_RECORDS: usize = 1_000_000;
 
 impl TaskTables {
     /// Construct empty tables with no scope in flight.
@@ -116,7 +133,50 @@ impl TaskTables {
             running_threads: Vec::new(),
             waiting: Vec::new(),
             ready: Vec::new(),
+            max_records: DEFAULT_MAX_RECORDS,
+            host_tasks: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Count the host tasks of calls whose number `host_tasks` holds
+    /// against the cap. The scheduler keeps the number as its set of
+    /// host tasks changes.
+    pub fn count_host_tasks(&mut self, host_tasks: Arc<AtomicUsize>) {
+        self.host_tasks = host_tasks;
+    }
+
+    /// The most records the store holds live before a new one fails.
+    pub fn max_records(&self) -> usize {
+        self.max_records
+    }
+
+    /// Set the most records the store holds live before a new one
+    /// fails. A cap below the records live now removes none of them.
+    /// The store's internal entry for the cap is its one caller.
+    #[cfg(any(test, feature = "wast-runner"))]
+    pub fn set_max_records(&mut self, max: usize) {
+        self.max_records = max;
+    }
+
+    /// How many records count against the cap now.
+    pub fn record_count(&self) -> usize {
+        self.tasks.len()
+            + self.subtasks.len()
+            + self.threads.len()
+            + self.waitable_sets.len()
+            + self.shared_records.len()
+            + self.host_tasks.load(Ordering::Acquire)
+    }
+
+    /// Fail with Wasmtime's full-table cause unless `count` more
+    /// records fit under the cap. Every creation of a record that
+    /// counts asks this first, so a creation that fails leaves the
+    /// tables as they were.
+    pub fn admit_records(&self, count: usize) -> Result<()> {
+        if self.record_count().saturating_add(count) > self.max_records() {
+            return Err(Error::Scheduler(SchedulerCause::TableFull));
+        }
+        Ok(())
     }
 
     /// Hold `subtask` as the call the prepare intrinsic just set up,
@@ -226,18 +286,20 @@ impl TaskTables {
         function: Option<Arc<Signature>>,
         options: Option<Arc<CanonOptions>>,
         instance: InstanceId,
-    ) -> TaskId {
+    ) -> Result<TaskId> {
         self.create(function, options, Some(instance))
     }
 
     /// Create a task, whether or not it belongs to a component
-    /// instance, with its implicit thread.
+    /// instance, with its implicit thread. The two are two records
+    /// against the cap.
     fn create(
         &mut self,
         function: Option<Arc<Signature>>,
         options: Option<Arc<CanonOptions>>,
         instance: Option<InstanceId>,
-    ) -> TaskId {
+    ) -> Result<TaskId> {
+        self.admit_records(2)?;
         let index = self.tasks.next_index();
         let task = TaskId::new(index, self.tasks.generation(index));
         let (thread_index, thread_generation) =
@@ -250,7 +312,7 @@ impl TaskTables {
             inserted, index,
             "the task took the index its identity was minted against"
         );
-        task
+        Ok(task)
     }
 
     /// Give `task` a channel to resolve through and hand the caller
@@ -303,10 +365,10 @@ impl TaskTables {
         function: Option<Arc<Signature>>,
         options: Option<Arc<CanonOptions>>,
         instance: InstanceId,
-    ) -> TaskId {
-        let task = self.create_task(function, options, instance);
+    ) -> Result<TaskId> {
+        let task = self.create_task(function, options, instance)?;
         self.scopes.push(Scope::Task(task));
-        task
+        Ok(task)
     }
 
     /// Create a task that belongs to no component instance and push
@@ -316,10 +378,10 @@ impl TaskTables {
     /// implements: the host releases the handle with no guest on the
     /// stack, and the destructor is a closure of its own rather than
     /// a core function of some instance.
-    pub fn push_task_without_instance(&mut self) -> TaskId {
-        let task = self.create(None, None, None);
+    pub fn push_task_without_instance(&mut self) -> Result<TaskId> {
+        let task = self.create(None, None, None)?;
         self.scopes.push(Scope::Task(task));
-        task
+        Ok(task)
     }
 
     /// Create a subtask record for a call out through an import.
@@ -327,17 +389,18 @@ impl TaskTables {
     /// delivered, which is not always the call that is on the stack:
     /// an asynchronous lower leaves the subtask behind for a guest
     /// to wait on.
-    pub fn insert_subtask(&mut self) -> SubtaskId {
+    pub fn insert_subtask(&mut self) -> Result<SubtaskId> {
+        self.admit_records(1)?;
         let (index, generation) = self.subtasks.insert_with_generation(Subtask::new());
-        SubtaskId::new(index, generation)
+        Ok(SubtaskId::new(index, generation))
     }
 
     /// Create a subtask for a call out through an import and push it
     /// as the current scope.
-    pub fn push_subtask(&mut self) -> SubtaskId {
-        let subtask = self.insert_subtask();
+    pub fn push_subtask(&mut self) -> Result<SubtaskId> {
+        let subtask = self.insert_subtask()?;
         self.scopes.push(Scope::Subtask(subtask));
-        subtask
+        Ok(subtask)
     }
 
     /// Move a task to its started state: its thread is running.
@@ -395,21 +458,29 @@ impl TaskTables {
     /// thread table of the task's instance. This is the record half
     /// of `thread.new-indirect`. `None` when the task is gone, when
     /// it belongs to no instance, or when the instance's table has
-    /// no index left; the thread is not created then.
-    pub fn create_thread(&mut self, task: TaskId, start: ThreadStart) -> Option<(ThreadId, u32)> {
-        self.task(task)?.instance?;
+    /// no index left; the thread is not created then. A thread past
+    /// the cap on the store's records fails instead.
+    pub fn create_thread(
+        &mut self,
+        task: TaskId,
+        start: ThreadStart,
+    ) -> Result<Option<(ThreadId, u32)>> {
+        if self.task(task).and_then(|record| record.instance).is_none() {
+            return Ok(None);
+        }
+        self.admit_records(1)?;
         let (index, generation) = self
             .threads
             .insert_with_generation(Thread::explicit(task, start));
         let thread = ThreadId::new(index, generation);
         let Some(table_index) = self.register_thread(thread) else {
             self.threads.remove(index);
-            return None;
+            return Ok(None);
         };
         if let Some(record) = self.task_mut(task) {
             record.threads.push(thread);
         }
-        Some((thread, table_index))
+        Ok(Some((thread, table_index)))
     }
 
     /// The thread at `index` of `instance`'s thread table.
@@ -1222,11 +1293,12 @@ impl TaskTables {
     /// Create a waitable set record and return its identity. The
     /// `waitable-set.new` built-in calls this and puts the identity's
     /// index in a handle-table entry for the guest.
-    pub fn insert_waitable_set(&mut self) -> WaitableSetId {
+    pub fn insert_waitable_set(&mut self) -> Result<WaitableSetId> {
+        self.admit_records(1)?;
         let (index, generation) = self
             .waitable_sets
             .insert_with_generation(WaitableSet::new());
-        WaitableSetId::new(index, generation)
+        Ok(WaitableSetId::new(index, generation))
     }
 
     /// One waitable set record.
@@ -1681,7 +1753,11 @@ impl TaskTables {
     ///
     /// The `stream.new` and `future.new` built-ins call this and put
     /// the two identities in handle-table entries for the guest.
-    pub fn insert_ends(&mut self, payload: Option<ValueType>) -> (EndId, EndId) {
+    ///
+    /// Of the three records, the shared record is the one the cap
+    /// counts.
+    pub fn insert_ends(&mut self, payload: Option<ValueType>) -> Result<(EndId, EndId)> {
+        self.admit_records(1)?;
         // Each end names the shared record by its index, and the
         // shared record names both ends, so the shared record is
         // built against the index it is about to take.
@@ -1701,7 +1777,7 @@ impl TaskTables {
             inserted, shared,
             "the shared record took the index its ends were built against"
         );
-        (readable, writable)
+        Ok((readable, writable))
     }
 
     /// Create one stream or future whose writable end the host serves,
@@ -1718,8 +1794,8 @@ impl TaskTables {
         &mut self,
         payload: Option<ValueType>,
         host: EndKind,
-    ) -> (EndId, EndId) {
-        let (readable, writable) = self.insert_ends(payload);
+    ) -> Result<(EndId, EndId)> {
+        let (readable, writable) = self.insert_ends(payload)?;
         let shared = self.end_mut(readable).map(|record| {
             record.held_by_host = true;
             record.shared
@@ -1729,7 +1805,7 @@ impl TaskTables {
         {
             record.host = Some(host);
         }
-        (readable, writable)
+        Ok((readable, writable))
     }
 
     /// Whether `end` is a readable end the host holds: one it created
@@ -2621,14 +2697,18 @@ mod tests {
         // still what borrows and lends count against.
         let mut tables = TaskTables::new();
         let instance = tables.insert_instance();
-        let caller = tables.push_task(None, None, instance);
-        let subtask = tables.insert_subtask();
+        let caller = tables
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
+        let subtask = tables.insert_subtask().expect("room under the record cap");
         tables.begin_nested_start(subtask, LowerKind::Async);
 
         assert_eq!(tables.current_scope(), Some(Scope::Task(caller)));
         assert_eq!(tables.current_task(), Some(caller));
 
-        let callee = tables.push_task(None, None, instance);
+        let callee = tables
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
         assert_eq!(tables.current_task(), Some(callee));
         assert_eq!(
             tables.scopes(),
@@ -2649,7 +2729,7 @@ mod tests {
         // code runs on whatever the callee has done.
         let mut tables = TaskTables::new();
         assert!(!tables.caller_below_goes_on());
-        let subtask = tables.insert_subtask();
+        let subtask = tables.insert_subtask().expect("room under the record cap");
         tables.begin_nested_start(subtask, LowerKind::Async);
         assert!(tables.caller_below_goes_on());
     }
@@ -2660,7 +2740,7 @@ mod tests {
         // it. Once it has, the lower returns the result and the
         // caller's own code goes on.
         let mut tables = TaskTables::new();
-        let subtask = tables.insert_subtask();
+        let subtask = tables.insert_subtask().expect("room under the record cap");
         tables.begin_nested_start(subtask, LowerKind::Sync);
         assert!(!tables.caller_below_goes_on());
 
@@ -2677,7 +2757,9 @@ mod tests {
         // until a resume made it ready again.
         let mut tables = TaskTables::new();
         let instance = tables.insert_instance();
-        let task = tables.push_task(None, None, instance);
+        let task = tables
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
         tables.start_task(task);
         let thread = tables.current_thread().expect("the task's implicit thread");
 
@@ -2705,8 +2787,8 @@ mod tests {
     fn it_counts_an_asynchronous_lower_below_a_synchronous_one() {
         // A frame further down that would go on has a mark of its own.
         let mut tables = TaskTables::new();
-        let outer = tables.insert_subtask();
-        let inner = tables.insert_subtask();
+        let outer = tables.insert_subtask().expect("room under the record cap");
+        let inner = tables.insert_subtask().expect("room under the record cap");
         tables.begin_nested_start(outer, LowerKind::Async);
         tables.begin_nested_start(inner, LowerKind::Sync);
         assert!(tables.caller_below_goes_on());
@@ -2720,12 +2802,16 @@ mod tests {
         // finds it.
         let mut tables = TaskTables::new();
         let instance = tables.insert_instance();
-        let caller = tables.push_task(None, None, instance);
-        let outer = tables.insert_subtask();
-        let inner = tables.insert_subtask();
+        let caller = tables
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
+        let outer = tables.insert_subtask().expect("room under the record cap");
+        let inner = tables.insert_subtask().expect("room under the record cap");
         tables.begin_nested_start(outer, LowerKind::Async);
         tables.begin_nested_start(inner, LowerKind::Sync);
-        let stranded = tables.push_task(None, None, instance);
+        let stranded = tables
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
 
         tables.end_nested_start();
         assert_eq!(
@@ -2760,10 +2846,10 @@ mod tests {
         // with must not reach the call that took the index, because
         // a subtask is the scope a lend is recorded against.
         let mut tables = TaskTables::new();
-        let ended = tables.insert_subtask();
+        let ended = tables.insert_subtask().expect("room under the record cap");
         assert!(tables.remove_subtask(ended).is_some(), "the call ends");
 
-        let later = tables.insert_subtask();
+        let later = tables.insert_subtask().expect("room under the record cap");
         assert_eq!(
             later.index(),
             ended.index(),
@@ -2796,11 +2882,15 @@ mod tests {
         // must not address the later thread's context slots.
         let mut tables = TaskTables::new();
         let instance = tables.insert_instance();
-        let ended = tables.create_task(None, None, instance);
+        let ended = tables
+            .create_task(None, None, instance)
+            .expect("room under the record cap");
         let ended_thread = tables.task(ended).expect("the task").implicit_thread;
         assert!(tables.remove_task(ended).is_some(), "the task ends");
 
-        let later = tables.create_task(None, None, instance);
+        let later = tables
+            .create_task(None, None, instance)
+            .expect("room under the record cap");
         let later_thread = tables.task(later).expect("the task").implicit_thread;
         assert_eq!(
             later_thread.index(),
@@ -2833,10 +2923,14 @@ mod tests {
     #[wcmp_macros::test]
     fn it_strikes_a_dropped_set_from_the_signalled_sets() {
         let mut tables = TaskTables::new();
-        let kept = tables.insert_waitable_set();
-        let dropped = tables.insert_waitable_set();
+        let kept = tables
+            .insert_waitable_set()
+            .expect("room under the record cap");
+        let dropped = tables
+            .insert_waitable_set()
+            .expect("room under the record cap");
         for set in [kept, dropped] {
-            let subtask = tables.insert_subtask();
+            let subtask = tables.insert_subtask().expect("room under the record cap");
             let waitable = tables.subtask_waitable(subtask);
             tables
                 .join_waitable_set(waitable, Some(set))
@@ -2869,12 +2963,16 @@ mod tests {
         // set's identity must not name the set that took it, or a
         // waitable left naming the old set would join the new one.
         let mut tables = TaskTables::new();
-        let dropped = tables.insert_waitable_set();
+        let dropped = tables
+            .insert_waitable_set()
+            .expect("room under the record cap");
         tables
             .drop_waitable_set(dropped)
             .expect("a set nothing is in drops");
 
-        let later = tables.insert_waitable_set();
+        let later = tables
+            .insert_waitable_set()
+            .expect("room under the record cap");
         assert_eq!(
             later.index(),
             dropped.index(),
@@ -2886,7 +2984,7 @@ mod tests {
             tables.waitable_set(dropped).is_none(),
             "the dropped set's identity names no record"
         );
-        let subtask = tables.insert_subtask();
+        let subtask = tables.insert_subtask().expect("room under the record cap");
         let waitable = tables.subtask_waitable(subtask);
         assert!(
             tables.join_waitable_set(waitable, Some(dropped)).is_err(),
@@ -2912,8 +3010,10 @@ mod tests {
     /// pointing at each other.
     fn prepared_call(tables: &mut TaskTables) -> (TaskId, SubtaskId) {
         let instance = tables.insert_instance();
-        let task = tables.create_task(None, None, instance);
-        let subtask = tables.insert_subtask();
+        let task = tables
+            .create_task(None, None, instance)
+            .expect("room under the record cap");
+        let subtask = tables.insert_subtask().expect("room under the record cap");
         if let Some(record) = tables.subtask_mut(subtask) {
             record.callee = Some(task);
         }
@@ -2995,7 +3095,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_keeps_both_ends_until_the_second_one_drops() {
         let mut tables = TaskTables::new();
-        let (readable, writable) = tables.insert_ends(None);
+        let (readable, writable) = tables.insert_ends(None).expect("room under the record cap");
         assert_eq!(tables.end_count(), 2);
         assert_eq!(tables.shared_record_count(), 1);
         assert_eq!(
@@ -3029,8 +3129,10 @@ mod tests {
     #[wcmp_macros::test]
     fn it_takes_an_end_out_of_its_set_when_the_end_drops() {
         let mut tables = TaskTables::new();
-        let set = tables.insert_waitable_set();
-        let (readable, _) = tables.insert_ends(None);
+        let set = tables
+            .insert_waitable_set()
+            .expect("room under the record cap");
+        let (readable, _) = tables.insert_ends(None).expect("room under the record cap");
         let waitable = WaitableId::from_end(EndKind::FutureReadable, readable);
         tables
             .join_waitable_set(waitable, Some(set))
@@ -3106,7 +3208,7 @@ mod tests {
             (EndKind::StreamReadable, 2, EndKind::StreamWritable, 2),
         ] {
             let mut tables = TaskTables::new();
-            let (readable, writable) = tables.insert_ends(None);
+            let (readable, writable) = tables.insert_ends(None).expect("room under the record cap");
             let end_of = |kind| match kind {
                 EndKind::StreamReadable => readable,
                 _ => writable,
@@ -3136,7 +3238,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_lets_a_zero_length_copy_of_a_non_number_payload_probe_another_instance() {
         let mut tables = TaskTables::new();
-        let (readable, writable) = tables.insert_ends(None);
+        let (readable, writable) = tables.insert_ends(None).expect("room under the record cap");
         tables
             .start_copy(EndKind::StreamReadable, readable, text_buffer(3, 1))
             .expect("the read starts");
@@ -3151,7 +3253,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_lets_a_same_instance_copy_of_a_number_payload_meet_a_pending_one() {
         let mut tables = TaskTables::new();
-        let (readable, writable) = tables.insert_ends(None);
+        let (readable, writable) = tables.insert_ends(None).expect("room under the record cap");
         tables
             .start_copy(EndKind::StreamReadable, readable, empty_buffer(1))
             .expect("the read starts");
@@ -3179,7 +3281,9 @@ mod tests {
         ] {
             for buffer in [empty_buffer(4), text_buffer(3, 0), text_buffer(3, 4)] {
                 let mut tables = TaskTables::new();
-                let (readable, writable) = tables.insert_host_ends(buffer.payload.clone(), host);
+                let (readable, writable) = tables
+                    .insert_host_ends(buffer.payload.clone(), host)
+                    .expect("room under the record cap");
                 let (host_end, guest_end) = match host {
                     EndKind::StreamWritable => (writable, readable),
                     _ => (readable, writable),
@@ -3218,7 +3322,7 @@ mod tests {
         // the end a drop reaches holds an event without being the
         // pending side.
         let mut tables = TaskTables::new();
-        let (readable, writable) = tables.insert_ends(None);
+        let (readable, writable) = tables.insert_ends(None).expect("room under the record cap");
         let read = WaitableId::from_end(EndKind::StreamReadable, readable);
         let write = WaitableId::from_end(EndKind::StreamWritable, writable);
         assert_eq!(

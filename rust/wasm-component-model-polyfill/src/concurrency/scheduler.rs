@@ -2,6 +2,8 @@
 
 use core::task::Waker;
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 use super::SuspendSeam;
 use super::deferred_work::DeferredWork;
@@ -585,6 +587,13 @@ impl<T: 'static> Scheduler<T> {
     /// serve.
     pub fn suspend_seam_mut(&mut self) -> &mut SuspendSeam<T> {
         &mut self.suspend_seam
+    }
+
+    /// The number of host tasks of calls the store holds, kept as it
+    /// changes, which the store's record tables count against the cap
+    /// on live records.
+    pub fn shared_host_call_count(&self) -> Arc<AtomicUsize> {
+        self.host_tasks.call_count()
     }
 
     /// Give `task` to the store. A host task that joined since the
@@ -1572,7 +1581,8 @@ mod tests {
             .lock()
             .expect("tables")
             .tasks
-            .create_task(None, None, instance);
+            .create_task(None, None, instance)
+            .expect("room under the record cap");
         store
             .internal()
             .start_export_thread(task, instance, async_function, needs_exclusive, build(task))
@@ -1608,7 +1618,8 @@ mod tests {
             .lock()
             .expect("tables")
             .tasks
-            .create_task(None, None, instance);
+            .create_task(None, None, instance)
+            .expect("room under the record cap");
         store.internal().scheduler_mut().switch_to(item);
         store
             .internal()
@@ -2330,8 +2341,14 @@ mod tests {
         instance: InstanceId,
     ) -> (TaskId, WaitableSetId, ThreadId) {
         let mut guard = store.internal_ref().tables().lock().expect("tables");
-        let set = guard.tasks.insert_waitable_set();
-        let task = guard.tasks.create_task(None, None, instance);
+        let set = guard
+            .tasks
+            .insert_waitable_set()
+            .expect("room under the record cap");
+        let task = guard
+            .tasks
+            .create_task(None, None, instance)
+            .expect("room under the record cap");
         let thread = guard.tasks.task(task).expect("task record").implicit_thread;
         guard
             .tasks
@@ -2349,6 +2366,7 @@ mod tests {
             .expect("tables")
             .tasks
             .create_task(None, None, instance)
+            .expect("room under the record cap")
     }
 
     /// How many tasks of `instance` the entry gate counts as waiting
@@ -2592,7 +2610,10 @@ mod tests {
     /// than out of the slot.
     fn fill_event(store: &Store<()>, set: WaitableSetId) {
         let mut guard = store.internal_ref().tables().lock().expect("tables");
-        let subtask = guard.tasks.insert_subtask();
+        let subtask = guard
+            .tasks
+            .insert_subtask()
+            .expect("room under the record cap");
         let waitable = guard.tasks.subtask_waitable(subtask);
         guard
             .tasks
@@ -2667,7 +2688,10 @@ mod tests {
     /// event.
     fn join_with_event(store: &Store<()>, set: WaitableSetId) {
         let mut guard = store.internal_ref().tables().lock().expect("tables");
-        let subtask = guard.tasks.insert_subtask();
+        let subtask = guard
+            .tasks
+            .insert_subtask()
+            .expect("room under the record cap");
         let waitable = guard.tasks.subtask_waitable(subtask);
         guard.tasks.start_subtask(subtask);
         guard
@@ -2966,7 +2990,8 @@ mod tests {
             .lock()
             .expect("tables")
             .tasks
-            .insert_subtask();
+            .insert_subtask()
+            .expect("room under the record cap");
         store.internal().push_host_task(HostTask::from_future(
             subtask,
             |_store: &mut StoreContext<'_, ()>, _outcome: Result<Vec<Val>>| Ok(()),
@@ -3008,7 +3033,8 @@ mod tests {
             .lock()
             .expect("tables")
             .tasks
-            .insert_subtask();
+            .insert_subtask()
+            .expect("room under the record cap");
 
         store
             .internal()

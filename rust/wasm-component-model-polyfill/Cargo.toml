@@ -11,6 +11,11 @@ repository.workspace = true
 default = []
 # Integration tests that drive a real browser via WebDriver.
 web-integration-tests = []
+# The entry the conformance harness lowers the store's record cap
+# through, as Wasmtime's wast runner does. Only the crate's own tests
+# turn it on, through the dev-dependency on the crate below; it is not
+# part of the public API.
+wast-runner = []
 
 [dependencies]
 anyhow = { workspace = true }
@@ -50,6 +55,8 @@ js-sys = { workspace = true }
 wasm-bindgen = { workspace = true }
 
 [dev-dependencies]
+# The crate itself, with the entry its conformance harness needs.
+wasm-component-model-polyfill = { workspace = true, features = ["wast-runner"] }
 tokio = { workspace = true, features = ["rt", "macros"] }
 wast = { workspace = true }
 wcmp-macros = { workspace = true }

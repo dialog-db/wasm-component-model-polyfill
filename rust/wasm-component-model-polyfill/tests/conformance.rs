@@ -60,7 +60,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use wasm_component_model_polyfill::{
     Accessor, Component, Engine, EngineConfig, Error, ExternType, ExternalName, FunctionParameter,
     FunctionType, HostResource, Instance, Linker, Module, PrimitiveType, ResourceType,
-    SchedulerCause, Store, SuspendProviderKind, Val, ValField, ValueType,
+    SchedulerCause, Store, SuspendProviderKind, Val, ValField, ValueType, set_max_table_capacity,
 };
 use wast::component::WastVal;
 use wast::parser::{self, ParseBuffer};
@@ -933,11 +933,19 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
     // engine's garbage, which the polyfill's substrate does on its
     // own, so the function is here to be called and does nothing. A
     // file imports it to force a destructor's deferred thread into a
-    // real one partway through.
-    linker
-        .root()
-        .instance("wasmtime")
+    // real one partway through. Its `set-max-table-capacity` lowers
+    // the cap on the store's live records, which a file sets below
+    // the number of calls it cancels to prove that none of them
+    // leaves a record behind.
+    let mut root = linker.root();
+    let mut wasmtime = root.instance("wasmtime");
+    wasmtime
         .func_wrap("gc", |_, (): ()| Ok(()))
+        .expect("the registration");
+    wasmtime
+        .func_wrap("set-max-table-capacity", |mut call, (capacity,): (u32,)| {
+            set_max_table_capacity(call.store(), capacity)
+        })
         .expect("the registration");
 }
 

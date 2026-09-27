@@ -948,6 +948,18 @@ pub enum SchedulerCause {
     /// [`SchedulerCause::RecursiveDriver`] instead.
     #[error("an accessor reached its store outside a poll of that store")]
     StoreNotInPoll,
+
+    /// A new record would have taken the store past the cap on its
+    /// live records. The records that count are tasks, subtasks,
+    /// threads, host tasks, waitable sets, and the shared records of
+    /// streams and futures. The cap is 1,000,000 records unless it
+    /// was lowered, and a cap lowered below the records already live
+    /// removes none of them: only the records created after it fail.
+    /// The message is that of Wasmtime's `ResourceTableError::Full`,
+    /// in `src/runtime/component/resource_table.rs`, so the
+    /// conformance corpus can match it by substring.
+    #[error("resource table has no free keys")]
+    TableFull,
 }
 
 /// The structured reason a waitable operation failed.

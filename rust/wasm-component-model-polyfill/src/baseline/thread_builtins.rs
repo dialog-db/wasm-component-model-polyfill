@@ -486,7 +486,10 @@ async fn it_starts_a_thread_whose_start_function_takes_an_i64_in_a_64_bit_memory
     // guest's own call ran the built-ins.
     let task = {
         let mut guard = store.internal().tables().lock().expect("handle tables");
-        let task = guard.tasks.push_task(None, None, instance_id);
+        let task = guard
+            .tasks
+            .push_task(None, None, instance_id)
+            .expect("room under the record cap");
         guard.tasks.start_task(task);
         task
     };

@@ -27,9 +27,18 @@ async fn it_delivers_the_events_of_one_set_in_join_order() {
     let mut guard = store.internal_ref().tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
-    let set = tables.tasks.insert_waitable_set();
-    let first = tables.tasks.insert_subtask();
-    let second = tables.tasks.insert_subtask();
+    let set = tables
+        .tasks
+        .insert_waitable_set()
+        .expect("room under the record cap");
+    let first = tables
+        .tasks
+        .insert_subtask()
+        .expect("room under the record cap");
+    let second = tables
+        .tasks
+        .insert_subtask()
+        .expect("room under the record cap");
     let first_waitable = tables.tasks.subtask_waitable(first);
     let second_waitable = tables.tasks.subtask_waitable(second);
     tables
@@ -82,10 +91,19 @@ async fn it_returns_at_once_from_a_wait_on_a_set_that_already_holds_an_event() {
     let tables = &mut *guard;
 
     let instance = tables.tasks.insert_instance();
-    let task = tables.tasks.push_task(None, None, instance);
+    let task = tables
+        .tasks
+        .push_task(None, None, instance)
+        .expect("room under the record cap");
     let thread = tables.tasks.current_thread().expect("the task's thread");
-    let set = tables.tasks.insert_waitable_set();
-    let subtask = tables.tasks.insert_subtask();
+    let set = tables
+        .tasks
+        .insert_waitable_set()
+        .expect("room under the record cap");
+    let subtask = tables
+        .tasks
+        .insert_subtask()
+        .expect("room under the record cap");
     let waitable = tables.tasks.subtask_waitable(subtask);
     tables
         .tasks
@@ -155,9 +173,18 @@ async fn it_moves_a_waitable_out_of_its_previous_set_when_it_joins_another() {
     let mut guard = store.internal_ref().tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
-    let first = tables.tasks.insert_waitable_set();
-    let second = tables.tasks.insert_waitable_set();
-    let subtask = tables.tasks.insert_subtask();
+    let first = tables
+        .tasks
+        .insert_waitable_set()
+        .expect("room under the record cap");
+    let second = tables
+        .tasks
+        .insert_waitable_set()
+        .expect("room under the record cap");
+    let subtask = tables
+        .tasks
+        .insert_subtask()
+        .expect("room under the record cap");
     let waitable = tables.tasks.subtask_waitable(subtask);
 
     tables
@@ -212,8 +239,14 @@ async fn it_traps_when_a_waitable_with_a_synchronous_waiter_joins_a_set() {
     let mut guard = store.internal_ref().tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
-    let set = tables.tasks.insert_waitable_set();
-    let subtask = tables.tasks.insert_subtask();
+    let set = tables
+        .tasks
+        .insert_waitable_set()
+        .expect("room under the record cap");
+    let subtask = tables
+        .tasks
+        .insert_subtask()
+        .expect("room under the record cap");
     let waitable = tables.tasks.subtask_waitable(subtask);
     tables
         .tasks
@@ -259,8 +292,14 @@ async fn it_traps_when_a_set_that_still_holds_waitables_is_dropped() {
     let mut guard = store.internal_ref().tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
-    let set = tables.tasks.insert_waitable_set();
-    let subtask = tables.tasks.insert_subtask();
+    let set = tables
+        .tasks
+        .insert_waitable_set()
+        .expect("room under the record cap");
+    let subtask = tables
+        .tasks
+        .insert_subtask()
+        .expect("room under the record cap");
     let waitable = tables.tasks.subtask_waitable(subtask);
     tables
         .tasks
@@ -302,9 +341,15 @@ async fn it_traps_when_a_set_a_thread_is_waiting_on_is_dropped() {
     let tables = &mut *guard;
 
     let instance = tables.tasks.insert_instance();
-    let task = tables.tasks.push_task(None, None, instance);
+    let task = tables
+        .tasks
+        .push_task(None, None, instance)
+        .expect("room under the record cap");
     let thread = tables.tasks.current_thread().expect("the task's thread");
-    let set = tables.tasks.insert_waitable_set();
+    let set = tables
+        .tasks
+        .insert_waitable_set()
+        .expect("room under the record cap");
     assert!(
         tables
             .wait_on_waitable_set(set, thread)
@@ -343,8 +388,14 @@ async fn it_traps_when_a_subtask_whose_resolution_was_not_delivered_is_dropped()
     let mut guard = store.internal_ref().tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
-    let set = tables.tasks.insert_waitable_set();
-    let subtask = tables.tasks.insert_subtask();
+    let set = tables
+        .tasks
+        .insert_waitable_set()
+        .expect("room under the record cap");
+    let subtask = tables
+        .tasks
+        .insert_subtask()
+        .expect("room under the record cap");
     let waitable = tables.tasks.subtask_waitable(subtask);
     tables
         .tasks
@@ -413,7 +464,10 @@ async fn it_decrements_the_lenders_of_a_subtask_when_its_resolution_is_delivered
     // The call lends the owned handle while it lifts its parameters,
     // and then leaves the stack: an asynchronous call outlives the
     // scope that started it.
-    let subtask = tables.tasks.push_subtask();
+    let subtask = tables
+        .tasks
+        .push_subtask()
+        .expect("room under the record cap");
     assert_eq!(tables.lend(table, owned), Ok(()), "the borrow lifts out");
     let _ = tables.tasks.pop_scope();
     assert!(
@@ -421,7 +475,10 @@ async fn it_decrements_the_lenders_of_a_subtask_when_its_resolution_is_delivered
         "the handle is lent while the call is in flight"
     );
 
-    let set = tables.tasks.insert_waitable_set();
+    let set = tables
+        .tasks
+        .insert_waitable_set()
+        .expect("room under the record cap");
     let waitable = tables.tasks.subtask_waitable(subtask);
     tables
         .tasks
@@ -458,8 +515,14 @@ async fn it_finds_a_waitable_and_a_waitable_set_through_their_handles() {
 
     let ty = ResourceTypeId::fresh();
     let table = tables.host_table(ty);
-    let subtask = tables.tasks.insert_subtask();
-    let set = tables.tasks.insert_waitable_set();
+    let subtask = tables
+        .tasks
+        .insert_subtask()
+        .expect("room under the record cap");
+    let set = tables
+        .tasks
+        .insert_waitable_set()
+        .expect("room under the record cap");
     let subtask_handle = tables.insert_subtask(table, subtask);
     let set_handle = tables.insert_waitable_set(table, set);
 
@@ -493,9 +556,18 @@ async fn it_leaves_a_waitable_in_its_set_when_a_join_names_a_set_that_is_gone() 
     let mut guard = store.internal_ref().tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
-    let joined = tables.tasks.insert_waitable_set();
-    let gone = tables.tasks.insert_waitable_set();
-    let subtask = tables.tasks.insert_subtask();
+    let joined = tables
+        .tasks
+        .insert_waitable_set()
+        .expect("room under the record cap");
+    let gone = tables
+        .tasks
+        .insert_waitable_set()
+        .expect("room under the record cap");
+    let subtask = tables
+        .tasks
+        .insert_subtask()
+        .expect("room under the record cap");
     let waitable = tables.tasks.subtask_waitable(subtask);
     tables
         .tasks
@@ -540,9 +612,15 @@ async fn it_leaves_the_waiter_count_alone_when_a_wait_names_a_thread_that_is_gon
     let tables = &mut *guard;
 
     let instance = tables.tasks.insert_instance();
-    let task = tables.tasks.push_task(None, None, instance);
+    let task = tables
+        .tasks
+        .push_task(None, None, instance)
+        .expect("room under the record cap");
     let thread = tables.tasks.current_thread().expect("the task's thread");
-    let set = tables.tasks.insert_waitable_set();
+    let set = tables
+        .tasks
+        .insert_waitable_set()
+        .expect("room under the record cap");
     let _ = tables.exit_task(task);
 
     let error = tables
@@ -570,8 +648,14 @@ async fn it_refuses_to_take_a_subtask_event_before_its_resolution_is_delivered()
     let mut guard = store.internal_ref().tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
-    let set = tables.tasks.insert_waitable_set();
-    let subtask = tables.tasks.insert_subtask();
+    let set = tables
+        .tasks
+        .insert_waitable_set()
+        .expect("room under the record cap");
+    let subtask = tables
+        .tasks
+        .insert_subtask()
+        .expect("room under the record cap");
     let waitable = tables.tasks.subtask_waitable(subtask);
     tables
         .tasks
@@ -627,8 +711,14 @@ async fn it_leaves_the_set_of_a_subtask_its_own_exit_removed() {
     let mut guard = store.internal_ref().tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
-    let set = tables.tasks.insert_waitable_set();
-    let subtask = tables.tasks.push_subtask();
+    let set = tables
+        .tasks
+        .insert_waitable_set()
+        .expect("room under the record cap");
+    let subtask = tables
+        .tasks
+        .push_subtask()
+        .expect("room under the record cap");
     let waitable = tables.tasks.subtask_waitable(subtask);
     tables
         .tasks
@@ -642,7 +732,10 @@ async fn it_leaves_the_set_of_a_subtask_its_own_exit_removed() {
         "the exit took the subtask's record with it"
     );
 
-    let reused = tables.tasks.insert_subtask();
+    let reused = tables
+        .tasks
+        .insert_subtask()
+        .expect("room under the record cap");
     assert_eq!(
         reused.index(),
         subtask.index(),
@@ -677,10 +770,19 @@ async fn it_leaves_the_set_of_a_subtask_a_discarded_scope_removed() {
     let mut guard = store.internal_ref().tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
-    let set = tables.tasks.insert_waitable_set();
+    let set = tables
+        .tasks
+        .insert_waitable_set()
+        .expect("room under the record cap");
     let instance = tables.tasks.insert_instance();
-    let task = tables.tasks.push_task(None, None, instance);
-    let subtask = tables.tasks.push_subtask();
+    let task = tables
+        .tasks
+        .push_task(None, None, instance)
+        .expect("room under the record cap");
+    let subtask = tables
+        .tasks
+        .push_subtask()
+        .expect("room under the record cap");
     let waitable = tables.tasks.subtask_waitable(subtask);
     tables
         .tasks
@@ -697,7 +799,10 @@ async fn it_leaves_the_set_of_a_subtask_a_discarded_scope_removed() {
         "the discarded scope took the subtask's record with it"
     );
 
-    let reused = tables.tasks.insert_subtask();
+    let reused = tables
+        .tasks
+        .insert_subtask()
+        .expect("room under the record cap");
     assert_eq!(
         reused.index(),
         subtask.index(),

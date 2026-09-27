@@ -2,7 +2,7 @@
 
 use core::task::Waker;
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Wake;
 
@@ -33,8 +33,18 @@ use super::subtask_id::SubtaskId;
 /// either would otherwise never mark the task. The poll the next
 /// turn makes carries the task's own waker, and every poll after it
 /// does too.
+///
+/// The task of each call the set holds, out being polled or not, is
+/// a record against the store's cap on its live records, as the host
+/// task of a call is an entry of Wasmtime's table. The task of a copy
+/// is not, as Wasmtime's host side of a copy is not. The set keeps
+/// how many calls it holds in a number it shares with the store's
+/// record tables, which count it with their own records.
 pub struct HostTaskSet<T: 'static> {
     tasks: BTreeMap<u64, Entry<T>>,
+    /// How many calls the set holds, shared with the store's record
+    /// tables.
+    calls: Arc<AtomicUsize>,
     /// How many entries have their task out being polled.
     out: usize,
     next_key: u64,
@@ -45,6 +55,8 @@ pub struct HostTaskSet<T: 'static> {
 struct Entry<T: 'static> {
     /// The task, or `None` while a turn has it out to poll.
     task: Option<HostTask<T>>,
+    /// Whether the task is a call's rather than a copy's.
+    call: bool,
     wake: Arc<TaskWake>,
     waker: Waker,
 }
@@ -101,6 +113,7 @@ impl<T: 'static> HostTaskSet<T> {
     pub fn new() -> Self {
         Self {
             tasks: BTreeMap::new(),
+            calls: Arc::new(AtomicUsize::new(0)),
             out: 0,
             next_key: 0,
             queue: Arc::new(ReadyQueue::default()),
@@ -119,15 +132,35 @@ impl<T: 'static> HostTaskSet<T> {
         });
         wake.enqueue();
         let waker = Waker::from(wake.clone());
+        let call = task.subtask().is_some();
+        if call {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+        }
         self.tasks.insert(
             key,
             Entry {
+                call,
                 task: Some(task),
                 wake,
                 waker,
             },
         );
         key
+    }
+
+    /// The number of calls the set holds, out being polled or not,
+    /// which the set keeps as it changes. The store's record tables
+    /// hold it to count the calls against the cap on live records.
+    pub fn call_count(&self) -> Arc<AtomicUsize> {
+        self.calls.clone()
+    }
+
+    /// Take `entry`, which has left the set, off the shared number
+    /// of calls when it is a call's.
+    fn forget(&self, entry: &Entry<T>) {
+        if entry.call {
+            self.calls.fetch_sub(1, Ordering::AcqRel);
+        }
     }
 
     /// Record `waker` as the waker of the driver that polls the
@@ -206,9 +239,11 @@ impl<T: 'static> HostTaskSet<T> {
     /// Let go of the task [`take_woken`](Self::take_woken) handed out
     /// under `key`, which has completed.
     pub fn complete(&mut self, key: u64) {
-        if let Some(entry) = self.tasks.remove(&key)
-            && entry.task.is_none()
-        {
+        let Some(entry) = self.tasks.remove(&key) else {
+            return;
+        };
+        self.forget(&entry);
+        if entry.task.is_none() {
             self.out = self.out.saturating_sub(1);
         }
     }
@@ -242,7 +277,9 @@ impl<T: 'static> HostTaskSet<T> {
         // A task a turn has out stays: the turn puts it back or lets
         // it go itself.
         self.tasks.get(&key)?.task.as_ref()?;
-        self.tasks.remove(&key).and_then(|entry| entry.task)
+        let entry = self.tasks.remove(&key)?;
+        self.forget(&entry);
+        entry.task
     }
 
     /// Whether the set holds the host task of `subtask`, woken or not.
@@ -261,8 +298,12 @@ impl<T: 'static> HostTaskSet<T> {
     /// they joined.
     pub fn take_all(&mut self) -> Vec<HostTask<T>> {
         let mut taken = Vec::with_capacity(self.len());
+        let calls = &self.calls;
         self.tasks.retain(|_, entry| match entry.task.take() {
             Some(task) => {
+                if entry.call {
+                    calls.fetch_sub(1, Ordering::AcqRel);
+                }
                 taken.push(task);
                 false
             }

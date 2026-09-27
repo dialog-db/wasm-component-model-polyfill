@@ -558,15 +558,20 @@ mod tests {
         /// result is `result` and whose lift declared `lift`, and
         /// push it as the current scope.
         fn push_task(&self, result: Option<ValueType>, lift: CanonOptions) -> TaskId {
-            self.tables.lock().expect("records").tasks.push_task(
-                Some(Arc::new(Signature::new(FunctionType {
-                    parameters: Vec::new(),
-                    result,
-                    async_: true,
-                }))),
-                Some(Arc::new(lift)),
-                self.instance,
-            )
+            self.tables
+                .lock()
+                .expect("records")
+                .tasks
+                .push_task(
+                    Some(Arc::new(Signature::new(FunctionType {
+                        parameters: Vec::new(),
+                        result,
+                        async_: true,
+                    }))),
+                    Some(Arc::new(lift)),
+                    self.instance,
+                )
+                .expect("room under the record cap")
         }
 
         /// Build the built-in a `canon task.return (result $result)`

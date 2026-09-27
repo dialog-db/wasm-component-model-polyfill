@@ -627,7 +627,8 @@ mod tests {
             let declared = canon(DataModel::LinearMemory);
             let task = guard
                 .tasks
-                .push_task(Some(signature()), Some(declared), instance);
+                .push_task(Some(signature()), Some(declared), instance)
+                .expect("room under the record cap");
             (instance, task)
         };
         let declared = canon(DataModel::LinearMemory);

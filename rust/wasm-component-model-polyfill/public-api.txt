@@ -224,6 +224,7 @@ pub wasm_component_model_polyfill::SchedulerCause::Deadlock
 pub wasm_component_model_polyfill::SchedulerCause::RecursiveDriver
 pub wasm_component_model_polyfill::SchedulerCause::StackSwitchNeeded
 pub wasm_component_model_polyfill::SchedulerCause::StoreNotInPoll
+pub wasm_component_model_polyfill::SchedulerCause::TableFull
 pub enum wasm_component_model_polyfill::StreamResult
 pub wasm_component_model_polyfill::StreamResult::Cancelled
 pub wasm_component_model_polyfill::StreamResult::Completed

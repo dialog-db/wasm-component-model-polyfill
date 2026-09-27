@@ -544,7 +544,12 @@ mod tests {
                 Ok(())
             },
         ));
-        let subtask = store.lock_tables().expect("tables").tasks.push_subtask();
+        let subtask = store
+            .lock_tables()
+            .expect("tables")
+            .tasks
+            .push_subtask()
+            .expect("room under the record cap");
         store.scheduler_mut().push_host_task(HostTask::from_future(
             subtask,
             |_store: &mut StoreContext<'_, ()>, _outcome: Result<Vec<Val>>| Ok(()),

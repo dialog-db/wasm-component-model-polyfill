@@ -219,6 +219,7 @@ pub fn build_thread_new_indirect<T: 'static>(
             let (_, index) = guard
                 .tasks
                 .create_thread(task, ThreadStart { function, context })
+                .map_err(trap)?
                 .ok_or_else(|| {
                     anyhow!("`thread.new-indirect` found no thread table for the current task")
                 })?;

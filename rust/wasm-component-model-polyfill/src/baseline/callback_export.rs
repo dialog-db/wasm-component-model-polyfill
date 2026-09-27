@@ -378,7 +378,10 @@ fn ready_subtask_in_set(store: &mut Store<()>, instance: &Instance, set_index: u
     let set = guard
         .waitable_set_from_handle(table, set_index)
         .expect("the guest's index names the set it created");
-    let subtask = guard.tasks.insert_subtask();
+    let subtask = guard
+        .tasks
+        .insert_subtask()
+        .expect("room under the record cap");
     let waitable = guard.tasks.subtask_waitable(subtask);
     let subtask_index = guard.insert_subtask(table, subtask);
     guard
@@ -403,7 +406,10 @@ fn ready_subtask_in_set(store: &mut Store<()>, instance: &Instance, set_index: u
 fn subtask_not_in_a_set(store: &mut Store<()>, instance: &Instance) -> u32 {
     let table = handle_table!(instance, "elsewhere");
     let mut guard = store.internal().tables().lock().expect("handle tables");
-    let subtask = guard.tasks.insert_subtask();
+    let subtask = guard
+        .tasks
+        .insert_subtask()
+        .expect("room under the record cap");
     guard.insert_subtask(table, subtask)
 }
 

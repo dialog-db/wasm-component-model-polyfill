@@ -1236,8 +1236,14 @@ mod tests {
     fn it_inserts_looks_up_and_removes_a_subtask_and_a_waitable_set_entry() {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
-        let subtask = tables.tasks.insert_subtask();
-        let set = tables.tasks.insert_waitable_set();
+        let subtask = tables
+            .tasks
+            .insert_subtask()
+            .expect("room under the record cap");
+        let set = tables
+            .tasks
+            .insert_waitable_set()
+            .expect("room under the record cap");
         let subtask_index = tables.insert_subtask(table, subtask);
         let set_index = tables.insert_waitable_set(table, set);
         assert_ne!(subtask_index, set_index);
@@ -1281,7 +1287,10 @@ mod tests {
         let ty = ResourceTypeId::fresh();
         let index = tables.insert_own(table, ty, false, 3);
         let instance = tables.tasks.insert_instance();
-        let task = tables.tasks.push_task(None, None, instance);
+        let task = tables
+            .tasks
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
         assert_eq!(tables.lend(table, index), Ok(()));
         assert_eq!(
             tables.remove_own(table, index, ty, false),
@@ -1301,7 +1310,10 @@ mod tests {
         let table = TableId::fresh();
         let ty = ResourceTypeId::fresh();
         let instance = tables.tasks.insert_instance();
-        let task = tables.tasks.push_task(None, None, instance);
+        let task = tables
+            .tasks
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
         let index = tables
             .insert_borrow(table, ty, false, 11)
             .expect("a task is in flight");
@@ -1334,7 +1346,10 @@ mod tests {
 
         // A task that sees every borrow it was lowered dropped owes
         // nothing at its exit.
-        let task = tables.tasks.push_task(None, None, instance);
+        let task = tables
+            .tasks
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
         tables
             .insert_borrow(table, ty, false, 13)
             .expect("a task is in flight");
@@ -1365,8 +1380,14 @@ mod tests {
         let ty = ResourceTypeId::fresh();
         let index = tables.insert_own(table, ty, false, 4);
         let instance = tables.tasks.insert_instance();
-        let task = tables.tasks.push_task(None, None, instance);
-        let subtask = tables.tasks.push_subtask();
+        let task = tables
+            .tasks
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
+        let subtask = tables
+            .tasks
+            .push_subtask()
+            .expect("room under the record cap");
         assert_eq!(tables.lend(table, index), Ok(()), "the borrow lifts out");
         assert_eq!(
             tables.remove_own(table, index, ty, false),
@@ -1397,8 +1418,14 @@ mod tests {
         // ending it a second time must not eat the scope below it.
         let mut tables = HandleTables::new();
         let instance = tables.tasks.insert_instance();
-        let outer = tables.tasks.push_task(None, None, instance);
-        let inner = tables.tasks.push_task(None, None, instance);
+        let outer = tables
+            .tasks
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
+        let inner = tables
+            .tasks
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
         assert_eq!(tables.exit_task(inner), TaskEnd::Ended(0));
 
         assert_eq!(
@@ -1422,8 +1449,14 @@ mod tests {
         // task's implicit thread resumed on top and leaves its scope.
         let mut tables = HandleTables::new();
         let instance = tables.tasks.insert_instance();
-        let task = tables.tasks.push_task(None, None, instance);
-        let callee = tables.tasks.push_task(None, None, instance);
+        let task = tables
+            .tasks
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
+        let callee = tables
+            .tasks
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
         tables.tasks.push_task_scope(task);
 
         tables.leave_task_scope(task);
@@ -1450,13 +1483,19 @@ mod tests {
         let ty = ResourceTypeId::fresh();
         let instance = tables.tasks.insert_instance();
 
-        let failed = tables.tasks.push_task(None, None, instance);
+        let failed = tables
+            .tasks
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
         let stale_entry = tables
             .insert_borrow(table, ty, false, 21)
             .expect("a task is in flight");
         tables.abandon_task(failed);
 
-        let later = tables.tasks.push_task(None, None, instance);
+        let later = tables
+            .tasks
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
         assert_eq!(
             later.index(),
             failed.index(),
@@ -1494,9 +1533,15 @@ mod tests {
         let ty = ResourceTypeId::fresh();
         let index = tables.insert_own(table, ty, false, 4);
 
-        let failed = tables.tasks.push_subtask();
+        let failed = tables
+            .tasks
+            .push_subtask()
+            .expect("room under the record cap");
         tables.abandon_subtask(failed);
-        let later = tables.tasks.push_subtask();
+        let later = tables
+            .tasks
+            .push_subtask()
+            .expect("room under the record cap");
         assert_eq!(
             later.index(),
             failed.index(),
@@ -1554,7 +1599,10 @@ mod tests {
         let ty = ResourceTypeId::fresh();
         let index = tables.insert_own(table, ty, false, 6);
         let instance = tables.tasks.insert_instance();
-        let task = tables.tasks.push_task(None, None, instance);
+        let task = tables
+            .tasks
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
         assert_eq!(tables.exit_task(task).borrows(), Ok(()));
 
         assert_eq!(
@@ -1582,9 +1630,18 @@ mod tests {
         let ty = ResourceTypeId::fresh();
         let owned = tables.insert_own(table, ty, false, 4);
         let instance = tables.tasks.insert_instance();
-        let caller = tables.tasks.push_task(None, None, instance);
-        let subtask = tables.tasks.push_subtask();
-        let nested = tables.tasks.push_task(None, None, instance);
+        let caller = tables
+            .tasks
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
+        let subtask = tables
+            .tasks
+            .push_subtask()
+            .expect("room under the record cap");
+        let nested = tables
+            .tasks
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
 
         let scope = Some(Scope::Subtask(subtask));
         assert_eq!(tables.lend_to(scope, table, owned), Ok(()));
@@ -1662,9 +1719,15 @@ mod tests {
         let ty = ResourceTypeId::fresh();
         let index = tables.insert_own(table, ty, false, 8);
         let instance = tables.tasks.insert_instance();
-        let task = tables.tasks.push_task(None, None, instance);
+        let task = tables
+            .tasks
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
         assert_eq!(tables.lend(table, index), Ok(()), "the borrow lifts out");
-        let subtask = tables.tasks.push_subtask();
+        let subtask = tables
+            .tasks
+            .push_subtask()
+            .expect("room under the record cap");
 
         // The panic is inside a step, which is where the double
         // panic used to come from: the guard had not moved past the
@@ -1710,7 +1773,10 @@ mod tests {
         let ty = ResourceTypeId::fresh();
         let index = tables.insert_own(table, ty, false, 8);
         let instance = tables.tasks.insert_instance();
-        let task = tables.tasks.push_task(None, None, instance);
+        let task = tables
+            .tasks
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
         assert_eq!(tables.lend(table, index), Ok(()), "the borrow lifts out");
 
         // A panic in a step past the lends: every step before it
@@ -1746,8 +1812,14 @@ mod tests {
         let ty = ResourceTypeId::fresh();
         let index = tables.insert_own(table, ty, false, 4);
         let instance = tables.tasks.insert_instance();
-        let task = tables.tasks.push_task(None, None, instance);
-        let subtask = tables.tasks.push_subtask();
+        let task = tables
+            .tasks
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
+        let subtask = tables
+            .tasks
+            .push_subtask()
+            .expect("room under the record cap");
         assert_eq!(tables.lend(table, index), Ok(()), "the borrow lifts out");
 
         panic_in("subtask exit's set-state");
@@ -1787,8 +1859,14 @@ mod tests {
         let ty = ResourceTypeId::fresh();
         let index = tables.insert_own(table, ty, false, 8);
         let instance = tables.tasks.insert_instance();
-        let task = tables.tasks.push_task(None, None, instance);
-        let subtask = tables.tasks.push_subtask();
+        let task = tables
+            .tasks
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
+        let subtask = tables
+            .tasks
+            .push_subtask()
+            .expect("room under the record cap");
         assert_eq!(tables.lend(table, index), Ok(()), "the borrow lifts out");
 
         panic_in("subtask discard's undo-lends");
@@ -1826,7 +1904,10 @@ mod tests {
         let table = TableId::fresh();
         let ty = ResourceTypeId::fresh();
         let instance = tables.tasks.insert_instance();
-        tables.tasks.push_task(None, None, instance);
+        tables
+            .tasks
+            .push_task(None, None, instance)
+            .expect("room under the record cap");
         let borrow = tables
             .insert_borrow(table, ty, false, 7)
             .expect("a task is in flight");

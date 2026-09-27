@@ -655,6 +655,13 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             Poll::Pending => {
                 let (task_id, index) = {
                     let mut guard = self.lock_tables()?;
+                    // The host task joins the store's records here,
+                    // so a call past the cap on them fails as one
+                    // whose body failed would.
+                    if let Err(error) = guard.tasks.admit_records(1) {
+                        guard.abandon_subtask(subtask);
+                        return Err(error);
+                    }
                     // The guest task that made the call, read while
                     // its subtask is still the current scope. A body
                     // that fails after this poll is the trap of that
@@ -724,6 +731,15 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 Err(error)
             }
             Poll::Pending => {
+                // The host task joins the store's records here, so a
+                // call past the cap on them fails as one whose body
+                // failed would.
+                let mut guard = self.lock_tables()?;
+                if let Err(error) = guard.tasks.admit_records(1) {
+                    guard.abandon_subtask(subtask);
+                    return Err(error);
+                }
+                drop(guard);
                 self.scheduler_mut().park_call(task);
                 Ok(Some(subtask))
             }
@@ -1228,10 +1244,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         options: Arc<CanonOptions>,
         instance: InstanceId,
     ) -> Result<TaskId> {
-        Ok(self
-            .lock_tables()?
+        self.lock_tables()?
             .tasks
-            .create_task(Some(function), Some(options), instance))
+            .create_task(Some(function), Some(options), instance)
     }
 
     /// Queue `item` as the start of `task`'s implicit thread, past
@@ -3071,8 +3086,12 @@ mod tests {
                     let counted = lowered.clone();
                     accessor
                         .with(|store: &mut StoreContext<'_, ()>| {
-                            let subtask =
-                                store.lock_tables().expect("tables").tasks.insert_subtask();
+                            let subtask = store
+                                .lock_tables()
+                                .expect("tables")
+                                .tasks
+                                .insert_subtask()
+                                .expect("room under the record cap");
                             store.scheduler_mut().push_host_task(HostTask::from_future(
                                 subtask,
                                 move |_store: &mut StoreContext<'_, ()>,
@@ -3115,7 +3134,8 @@ mod tests {
             .lock_tables()
             .expect("tables")
             .tasks
-            .insert_subtask();
+            .insert_subtask()
+            .expect("room under the record cap");
         store
             .internal()
             .scheduler_mut()
@@ -3176,7 +3196,8 @@ mod tests {
             .lock_tables()
             .expect("tables")
             .tasks
-            .insert_subtask();
+            .insert_subtask()
+            .expect("room under the record cap");
         store
             .internal()
             .scheduler_mut()
@@ -3498,7 +3519,8 @@ mod tests {
             .lock_tables()
             .expect("tables")
             .tasks
-            .push_subtask();
+            .push_subtask()
+            .expect("room under the record cap");
         (store, TableId::fresh(), subtask)
     }
 
@@ -3762,7 +3784,8 @@ mod tests {
                     .lock_tables()
                     .expect("tables")
                     .tasks
-                    .insert_subtask();
+                    .insert_subtask()
+                    .expect("room under the record cap");
                 let waker = Arc::new(Mutex::new(None));
                 store
                     .internal()
@@ -3953,7 +3976,8 @@ mod tests {
             .lock()
             .expect("tables")
             .tasks
-            .create_task(None, None, instance);
+            .create_task(None, None, instance)
+            .expect("room under the record cap");
         store
             .start_export_thread(task, instance, true, true, build(task))
             .expect("queue the task's start");
@@ -3986,7 +4010,8 @@ mod tests {
             .lock_tables()
             .expect("tables")
             .tasks
-            .create_task(None, None, instance);
+            .create_task(None, None, instance)
+            .expect("room under the record cap");
         store
             .internal()
             .context()
@@ -4005,7 +4030,8 @@ mod tests {
             .lock_tables()
             .expect("tables")
             .tasks
-            .push_subtask();
+            .push_subtask()
+            .expect("room under the record cap");
         let accessor: Accessor<()> = Accessor::new(store.internal().id());
         let queued = log.clone();
         let mut reached = false;
@@ -4051,7 +4077,8 @@ mod tests {
             .lock_tables()
             .expect("tables")
             .tasks
-            .push_subtask();
+            .push_subtask()
+            .expect("room under the record cap");
         let lowered = log.clone();
         store
             .internal()
@@ -4189,7 +4216,8 @@ mod tests {
             .lock_tables()
             .expect("tables")
             .tasks
-            .push_subtask();
+            .push_subtask()
+            .expect("room under the record cap");
         let error = store
             .internal()
             .context()
@@ -4484,7 +4512,11 @@ mod tests {
                 "probe",
                 move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
                     let store = call.store();
-                    let subtask = store.lock_tables()?.tasks.push_subtask();
+                    let subtask = store
+                        .lock_tables()?
+                        .tasks
+                        .push_subtask()
+                        .expect("room under the record cap");
                     let lowering = filled.clone();
                     let before = store.scheduler().items_run();
                     let status = store
@@ -4572,7 +4604,11 @@ mod tests {
                 "probe",
                 move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
                     let store = call.store();
-                    let subtask = store.lock_tables()?.tasks.push_subtask();
+                    let subtask = store
+                        .lock_tables()?
+                        .tasks
+                        .push_subtask()
+                        .expect("room under the record cap");
                     let lowering = filled.clone();
                     let status = store.start_host_task(
                         HostTask::from_future(
@@ -4681,7 +4717,11 @@ mod tests {
                     "probe",
                     move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
                         let store = call.store();
-                        let subtask = store.lock_tables()?.tasks.push_subtask();
+                        let subtask = store
+                            .lock_tables()?
+                            .tasks
+                            .push_subtask()
+                            .expect("room under the record cap");
 
                         // Ready work of the store, which the block's
                         // nested turn runs while the call waits. It
@@ -4787,10 +4827,19 @@ mod tests {
     fn a_call_of_the_current_task(store: &StoreContext<'_, ()>) -> (ThreadId, SubtaskId) {
         let mut guard = store.lock_tables().expect("tables");
         let instance = guard.tasks.insert_instance();
-        let task = guard.tasks.create_task(None, None, instance);
+        let task = guard
+            .tasks
+            .create_task(None, None, instance)
+            .expect("room under the record cap");
         guard.tasks.push_task_scope(task);
         let thread = guard.tasks.current_thread().expect("the task's thread");
-        (thread, guard.tasks.push_subtask())
+        (
+            thread,
+            guard
+                .tasks
+                .push_subtask()
+                .expect("room under the record cap"),
+        )
     }
 
     /// Lower the call `subtask` records synchronously, with a body

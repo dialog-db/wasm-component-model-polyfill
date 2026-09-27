@@ -1444,6 +1444,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
+ "wasm-component-model-polyfill",
  "wasm-encoder 0.258.0",
  "wasm_runtime_layer",
  "wasmtime",

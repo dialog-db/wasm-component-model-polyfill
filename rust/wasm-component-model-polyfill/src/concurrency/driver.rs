@@ -274,7 +274,8 @@ mod tests {
             .lock()
             .expect("tables")
             .tasks
-            .insert_subtask();
+            .insert_subtask()
+            .expect("room under the record cap");
         store.internal().push_host_task(HostTask::from_future(
             subtask,
             |_store: &mut StoreContext<'_, ()>, _outcome: Result<Vec<Val>>| Ok(()),
@@ -363,7 +364,10 @@ mod tests {
                 .instance_mut(instance)
                 .expect("instance record")
                 .may_not_suspend = true;
-            guard.tasks.create_task(None, None, instance)
+            guard
+                .tasks
+                .create_task(None, None, instance)
+                .expect("room under the record cap")
         };
         let mut driver = Box::pin(Driver::new(store.internal().context(), Some(task), never));
 

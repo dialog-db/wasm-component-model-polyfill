@@ -244,6 +244,8 @@ mod store;
 mod suspend_provider_kind;
 mod types;
 mod value;
+#[cfg(feature = "wast-runner")]
+mod wast_runner;
 
 pub use crate::component::{
     Component, ComponentExport, ComponentImport, ExternType, ExternalName, FunctionParameter,
@@ -281,6 +283,15 @@ pub use crate::types::{
     ValueType, VariantCase, VariantType,
 };
 pub use crate::value::{Val, ValField};
+
+// The crate's own conformance harness registers the item Wasmtime's
+// wast runner lowers the store's record cap through. The harness is
+// an integration test and reaches the crate only through what is
+// exported here, so the one entry it needs is exported under a
+// feature only the crate's own tests turn on.
+#[cfg(feature = "wast-runner")]
+#[doc(hidden)]
+pub use crate::wast_runner::set_max_table_capacity;
 
 // The crate's own unit tests reach a browser in the web lane, where
 // the scheduler's per-target wake after a yield is what they measure.

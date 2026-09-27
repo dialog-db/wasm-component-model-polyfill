@@ -108,7 +108,7 @@ impl<T: ComponentValue> StreamReader<T> {
             .internal()
             .lock_tables()?
             .tasks
-            .insert_host_ends(Some(T::value_type()), EndKind::StreamWritable);
+            .insert_host_ends(Some(T::value_type()), EndKind::StreamWritable)?;
         store.internal().scheduler_mut().insert_host_writer(
             writable,
             Box::new(ProducerEnd {
