@@ -1,0 +1,5 @@
+// Scenario 1: the smallest program with an export. One core module, no
+// memory, no strings, no exceptions: scalars in and a scalar out.
+export let add = (a: i32, b: i32): i32 => {
+  return a + b;
+};

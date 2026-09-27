@@ -1,0 +1,6 @@
+// Compiled against the world `undeclared-export` in `wit/`, which
+// declares an export `missing` this program lacks. Zena refuses it only
+// when the build passes the world: on its own the program compiles.
+export let present = (): i32 => {
+  return 1;
+};

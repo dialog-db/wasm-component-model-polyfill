@@ -1,0 +1,8 @@
+// Compiled against the world `declared` in `wit/`. It imports `base`
+// from the world's `host` interface, so it compiles only when the build
+// passes the world to Zena: without it, Zena finds no such module.
+import { base } from 'wcmp:zena-build-check/host';
+
+export let addBase = (a: i32): i32 => {
+  return a + base();
+};

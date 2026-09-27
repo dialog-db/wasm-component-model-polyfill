@@ -46,6 +46,15 @@
       url = "github:dialog-db/dialog-db/7b84dcac9520f368b6c0714c6e2785e5740f28c7";
       flake = false;
     };
+
+    # The Zena toolchain the Zena scenarios compile with. It tracks Zena's
+    # `main`, since Zena has no releases, and the lock holds the pin; `nix
+    # flake update zena` moves it. It keeps its own nixpkgs, as Zena's author
+    # builds and tests it: a different Node.js or Rust can break its build
+    # for reasons unrelated to Zena. Only its `zena` command is used, and
+    # only inside the scenario build (see `buildZenaScenarios` below); it
+    # never enters the development shell.
+    zena.url = "github:elematic/zena";
   };
 
   outputs =
@@ -59,6 +68,7 @@
       wasmtime-src,
       nixos-config,
       wbg-pool-src,
+      zena,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -215,6 +225,120 @@
           cargoHash = "sha256-seLmdg6p644E/XqyCqTGjufMuXkR9PBtoEvjrp664Go=";
           meta.mainProgram = "wac";
         });
+
+        # The Zena toolchain at the pin, as Zena's own flake builds it. The
+        # public binary cache does not hold it, so a cold store builds the
+        # whole Zena monorepo once per pin.
+        zenaToolchain = zena.packages.${system}.zena;
+
+        # The revision of the `zena` input, which later steps compare with
+        # the pin the Zena record names. An input with no revision, such
+        # as a `path:` override onto a local checkout, has no pin to
+        # compare, so evaluation stops and says so.
+        zenaRevision =
+          zena.rev or (throw ''
+            The zena input has no revision, so the Zena scenarios have no pin to
+            record. Override it with a committed Git revision, for example
+            --override-input zena git+file:///path/to/zena?rev=<commit>, rather
+            than a path: or a dirty tree.
+          '');
+
+        # The revision `flake.lock` pins the `zena` input at.
+        zenaLockedRevision =
+          let
+            lock = builtins.fromJSON (builtins.readFile ./flake.lock);
+          in
+          lock.nodes.${lock.nodes.${lock.root}.inputs.zena}.locked.rev;
+
+        # The script that compiles a directory of scenarios. Its header
+        # states the layout of a scenario and of the output.
+        zenaScenarioBuilder = pkgs.writeShellApplication {
+          name = "zena-build-scenarios";
+          runtimeInputs = [
+            pkgs.coreutils
+            pkgs.gnused
+          ];
+          text = builtins.readFile ./rust/wasm-component-model-polyfill/tests/zena/build.sh;
+        };
+
+        # Compiles every scenario under `scenarios` with the `zena` command
+        # of the pinned toolchain, and nothing else from its package. The
+        # derivation succeeds when Zena refuses a program: it keeps Zena's
+        # exit status and output instead. `$out/zena-revision` and the
+        # `zenaRevision` attribute carry the input's revision to the steps
+        # that read the output.
+        buildZenaScenarios =
+          { name, scenarios }:
+          pkgs.runCommand name
+            {
+              ZENA = pkgs.lib.getExe zenaToolchain;
+              passthru = { inherit zenaRevision; };
+            }
+            ''
+              # zena-cli runs the compiler under Wasmtime, which looks for a
+              # cache directory under $HOME.
+              export HOME=$TMPDIR
+              ${pkgs.lib.getExe zenaScenarioBuilder} ${scenarios} "$out"
+              echo ${zenaRevision} > "$out/zena-revision"
+            '';
+
+        zenaScenarios = buildZenaScenarios {
+          name = "zena-scenarios";
+          scenarios = ./rust/wasm-component-model-polyfill/tests/zena/scenarios;
+        };
+
+        # The scenario build against its own cases, failing the check when
+        # one does not hold:
+        #
+        # - A program Zena refuses still builds, and keeps a non-zero
+        #   status and Zena's error output but no component.
+        # - The build passes a scenario's `wit/` world to Zena. One program
+        #   imports a function only its world declares, so it compiles only
+        #   with the world. Another lacks an export its world declares, so
+        #   Zena refuses it only with the world.
+        # - The recorded revision is the one `flake.lock` pins.
+        # - A directory with no scenario, or a scenario with no program,
+        #   fails the build instead of yielding an empty output. These run
+        #   the script alone, with a stand-in for Zena that never runs.
+        zenaScenarioBuildCheck =
+          let
+            built = buildZenaScenarios {
+              name = "zena-scenario-build-cases";
+              scenarios = ./rust/wasm-component-model-polyfill/tests/zena/build-check;
+            };
+          in
+          pkgs.runCommand "zena-scenario-build-check" { } ''
+            refused=${built}/refused-program
+            test "$(cat $refused/refused.status)" != 0
+            grep -q '^refused.zena:[0-9]*:[0-9]* - Error' $refused/refused.log
+            test ! -e $refused/refused.wasm
+
+            declared=${built}/declared-world
+            test "$(cat $declared/declared.status)" = 0
+            test -s $declared/declared.wasm
+            test "$(cat $declared/undeclared-export.status)" != 0
+            grep -q "The declared world exports 'missing'" \
+              $declared/undeclared-export.log
+            test ! -e $declared/undeclared-export.wasm
+
+            test "$(cat ${built}/zena-revision)" = ${zenaLockedRevision}
+
+            export ZENA=${pkgs.coreutils}/bin/false
+            mkdir -p no-scenario no-program/empty
+            touch no-scenario/README.md no-program/empty/README.md
+            for layout in no-scenario no-program; do
+              if ${pkgs.lib.getExe zenaScenarioBuilder} $layout $layout.out \
+                2>$layout.err; then
+                echo "the build accepted a directory with $layout" >&2
+                exit 1
+              fi
+            done
+            grep -q 'no-scenario holds no scenario directory' no-scenario.err
+            test ! -e no-scenario.out
+            grep -q 'scenario empty holds no .zena program' no-program.err
+
+            touch "$out"
+          '';
 
         # The wasm32 test runner (see `.cargo/config.toml`). nextest runs
         # each browser test in its own runner process, and the stock
@@ -1008,6 +1132,10 @@
           # The browser test runner, exposed so its build is one `nix build`
           # away when its pin or the `wasm-bindgen` version moves.
           inherit wbg-pool;
+          # The pinned Zena toolchain, and every Zena scenario compiled with
+          # it. Neither enters the development shell.
+          zena = zenaToolchain;
+          zena-scenarios = zenaScenarios;
 
           smoke-native = smokeNative;
           smoke-web = smokeWeb;
@@ -1069,6 +1197,11 @@
             # The crate's public surface must still be the checked-in one:
             # see `publicApiCheck`.
             public-api = publicApiCheck;
+            # Every Zena scenario compiles, or keeps Zena's refusal, with the
+            # pinned toolchain; and the scenario build keeps a refusal as
+            # its output: see `buildZenaScenarios`.
+            zena-scenarios = zenaScenarios;
+            zena-scenario-build = zenaScenarioBuildCheck;
             # The doctests are not in a nextest archive (nextest does not run
             # them), so they get a derivation of their own: the workspace's
             # `cargo test --doc` against the `dev` dependency bundle.

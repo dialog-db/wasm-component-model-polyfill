@@ -1,0 +1,17 @@
+package wcmp:zena-build-check;
+
+interface host {
+  base: func() -> s32;
+}
+
+// The world of `declared.zena`.
+world declared {
+  import host;
+  export add-base: func(a: s32) -> s32;
+}
+
+// The world of `undeclared-export.zena`, which declares an export the
+// program lacks.
+world undeclared-export {
+  export missing: func() -> s32;
+}
