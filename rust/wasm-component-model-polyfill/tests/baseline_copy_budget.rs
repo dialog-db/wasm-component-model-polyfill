@@ -342,7 +342,9 @@ async fn it_charges_a_string_the_bytes_of_its_range_under_the_default_budget() {
 async fn it_gives_each_crossing_the_hostcall_fuel_the_store_holds() {
     // A string alone, against a budget the host lowered: exactly the
     // fuel lifts, a byte more does not, and raising the fuel again
-    // lets that string through.
+    // lets that string through. The refused lift is a trap, and a trap
+    // poisons the store, so the raised fuel is tried in a store of its
+    // own.
     let (mut store, instance) = instantiate(VALUES).await;
     store.set_hostcall_fuel(1000);
     assert_eq!(store.hostcall_fuel(), 1000);
@@ -355,6 +357,7 @@ async fn it_gives_each_crossing_the_hostcall_fuel_the_store_holds() {
         .expect_err("a string one byte past the fuel is refused");
     assert_budget_spent(&error);
 
+    let (mut store, instance) = instantiate(VALUES).await;
     store.set_hostcall_fuel(1001);
     call(&mut store, &instance, "string", &[1001])
         .await

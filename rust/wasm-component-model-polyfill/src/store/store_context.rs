@@ -333,8 +333,12 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 body(self.data_mut(), rep)
             }
             ResourceDestructor::Local { function: slot, .. } => {
+                // The handle is gone either way, as in Wasmtime: the
+                // store's own table lets go of it before the entry
+                // into the guest is refused.
+                self.enter_guest()?;
                 let waker = self.active_waker();
-                self.run_in_turn(&waker, move |store| {
+                let released = self.run_in_turn(&waker, move |store| {
                     let _call = BoundaryCall::destructor(&tables, instance)?;
                     let function = slot
                         .lock()
@@ -358,7 +362,13 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                             })
                         })?;
                     Ok(())
-                })?
+                })?;
+                // A destructor that failed is a trap of guest code,
+                // and a trap poisons the store.
+                if released.is_err() {
+                    self.poison();
+                }
+                released
             }
         }
     }
@@ -383,8 +393,23 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     ///
     /// [`Yield`]: Outcome::Yield
     ///
+    /// A failure that ends a turn is a trap: guest code, a built-in,
+    /// or the store's work on a guest's behalf failed, and nothing
+    /// took the failure as a call's own. It poisons the store before
+    /// the driver reports it.
+    ///
     /// Workspace-internal; not re-exported by `lib.rs`.
     fn turn(&mut self, waker: &Waker) -> Result<Outcome> {
+        let outcome = self.run_driver_turn(waker);
+        if outcome.is_err() {
+            self.poison();
+        }
+        outcome
+    }
+
+    /// The body of [`turn`](Self::turn), which poisons the store when
+    /// this fails. Workspace-internal.
+    fn run_driver_turn(&mut self, waker: &Waker) -> Result<Outcome> {
         let _turn = TurnGuard::enter(self.tables(), waker);
         self.scheduler().watch_host_tasks(waker);
         loop {
@@ -1292,6 +1317,27 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         self.store_data_mut().mark_dropped();
     }
 
+    /// Whether a trap poisoned the store. Workspace-internal.
+    fn poisoned(&self) -> bool {
+        self.store_data().poisoned()
+    }
+
+    /// Record that a trap happened in the store, so that no guest
+    /// code of it runs again. Workspace-internal.
+    fn poison(&mut self) {
+        self.store_data_mut().poison();
+    }
+
+    /// Refuse a host entry into a guest of a store a trap poisoned,
+    /// with the cannot-enter cause. Every entry that would run guest
+    /// code asks this before it changes anything. Workspace-internal.
+    fn enter_guest(&self) -> Result<()> {
+        if self.poisoned() {
+            return Err(Error::Task(TaskCause::CannotEnter));
+        }
+        Ok(())
+    }
+
     /// How deep the stack of current scopes is, which is where the
     /// scopes of a thread entry about to start begin.
     /// Workspace-internal.
@@ -2025,7 +2071,12 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             }
             match called {
                 Ok(_) => store.end_last_thread(task),
-                Err(error) => store.fail_export_task(Some(task), error),
+                // A trap of the thread poisons the store, wherever
+                // the failure goes from here.
+                Err(error) => {
+                    store.poison();
+                    store.fail_export_task(Some(task), error)
+                }
             }
         };
         // A thread's start function takes its context, an `i32` or an
@@ -2558,6 +2609,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 },
             }),
         };
+        // The failure is a trap of the task, which poisons the store
+        // wherever it goes.
+        self.poison();
         if let Some(subtask) = subtask {
             release_subtask(self, subtask);
         }

@@ -19,11 +19,14 @@
 
 #![cfg(test)]
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::concurrency::{InstanceId, Item, ItemKind, Readiness};
 use crate::store::{StoreContext, StoreContextInternalExt, StoreInternalExt};
-use crate::{Component, Engine, Error, Instance, Linker, SchedulerCause, Store, Val};
+use crate::{
+    Component, Engine, Error, HostCall, Instance, Linker, SchedulerCause, Store, TaskCause, Val,
+};
 use wcmp_macros::component;
 
 /// A callee that returns its result and exits in its first call,
@@ -169,30 +172,32 @@ const YIELDS_FIRST: &[u8] = component!(
 );
 
 /// The same shape as the callee that yields first, with a callback
-/// that returns the exit word rather than trapping and records in a
-/// global that it ran.
+/// that returns the exit word rather than trapping and tells the host
+/// through `ran` that it ran.
 ///
 /// The exit word is the one word a callback run for a task the store
 /// no longer holds would fail on the polyfill's own invariant: the
 /// exit reads the task's record to ask whether the task resolved,
 /// and a record that is gone is the internal error. Running the
-/// callback at all is the failure the global catches, and the error
+/// callback at all is the failure the host's `ran` catches, and the error
 /// the call reports is what says the invariant was never reached.
 const EXITS_FROM_ITS_CALLBACK_AFTER_A_YIELD: &[u8] = component!(
     r#"
     (component
+      (import "ran" (func $ran))
       (component $callee
+        (import "ran" (func $ran))
+        (core func $ran' (canon lower (func $ran)))
         (core module $m
-          (global $ran (mut i32) (i32.const 0))
+          (import "" "ran" (func $ran))
           (func (export "cb") (param i32 i32 i32) (result i32)
-            (global.set $ran (i32.const 1))
+            (call $ran)
             (i32.const 0))
-          (func (export "answer") (param i32) (result i32) (i32.const 1))
-          (func (export "ran") (result i32) (global.get $ran)))
-        (core instance $i (instantiate $m))
+          (func (export "answer") (param i32) (result i32) (i32.const 1)))
+        (core instance $i (instantiate $m
+          (with "" (instance (export "ran" (func $ran'))))))
         (func (export "answer") async (param "x" u32) (result u32)
-          (canon lift (core func $i "answer") async (callback (core func $i "cb"))))
-        (func (export "ran") (result u32) (canon lift (core func $i "ran"))))
+          (canon lift (core func $i "answer") async (callback (core func $i "cb")))))
       (component $caller
         (import "answer" (func $answer async (param "x" u32) (result u32)))
         (core func $lowered (canon lower (func $answer)))
@@ -204,10 +209,9 @@ const EXITS_FROM_ITS_CALLBACK_AFTER_A_YIELD: &[u8] = component!(
           (with "" (instance (export "answer" (func $lowered))))))
         (func (export "run") (param "x" u32) (result u32)
           (canon lift (core func $i "run"))))
-      (instance $a (instantiate $callee))
+      (instance $a (instantiate $callee (with "ran" (func $ran))))
       (instance $b (instantiate $caller (with "answer" (func $a "answer"))))
-      (export "run" (func $b "run"))
-      (export "ran" (func $a "ran")))
+      (export "run" (func $b "run")))
     "#
 );
 
@@ -565,7 +569,25 @@ async fn it_runs_no_callback_of_a_dead_callee_whose_word_would_be_the_exit_word(
     // no longer holds would fail with the polyfill's own invariant
     // cause there, and would have run guest code for a dead task
     // first. The item goes with the record, so neither happens.
-    let (mut store, instance) = instantiate(EXITS_FROM_ITS_CALLBACK_AFTER_A_YIELD).await;
+    let engine = Engine::new().expect("engine");
+    let component = Component::new(&engine, EXITS_FROM_ITS_CALLBACK_AFTER_A_YIELD)
+        .await
+        .expect("component parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let ran = Arc::new(AtomicU32::new(0));
+    let counted = ran.clone();
+    linker
+        .root()
+        .func_wrap("ran", move |_: HostCall<'_, ()>, (): ()| {
+            counted.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        })
+        .expect("the registration of `ran`");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
     let run = instance.get_func("run").expect("the caller's export");
     let err = run
         .call(&mut store, &[Val::U32(1)])
@@ -589,16 +611,9 @@ async fn it_runs_no_callback_of_a_dead_callee_whose_word_would_be_the_exit_word(
 
     assert_eq!(turn(&mut store), "Idle");
 
-    let ran = instance
-        .get_func("ran")
-        .expect("the callee's witness export");
-    let witness = ran
-        .call(&mut store, &[])
-        .await
-        .expect("the witness export returns");
     assert_eq!(
-        witness.as_ref(),
-        &[Val::U32(0)],
+        ran.load(Ordering::Relaxed),
+        0,
         "the callee's callback never ran for the task the failure ended"
     );
 }
@@ -676,20 +691,20 @@ async fn it_drops_the_callees_start_item_when_the_wait_fails_at_the_entry_gate()
         "and nothing else of the callee's is queued"
     );
 
-    // The gate opens again with nothing behind it. An orphaned start
-    // item would never reach the callee's core function: the failure
-    // took the subtask record out of the store, and `start_call`
-    // fails on the missing record while it lowers the arguments. A
-    // synchronous lower's start item reports such a failure into a
-    // slot nobody is left to read rather than failing the turn, so
-    // what proves the item went is the turn finding nothing to run
-    // at all.
-    instance
+    // The cannot-block failure is a trap, and a trap poisons the
+    // store, so the callee cannot lower its backpressure again: the
+    // store refuses the call. What proves the start item went is the
+    // count above and a turn finding nothing to run at all.
+    let refused = instance
         .get_func("unblock")
         .expect("the callee's backpressure export")
         .call(&mut store, &[])
         .await
-        .expect("the callee lowers its own backpressure");
+        .expect_err("a poisoned store refuses the call");
+    assert!(
+        matches!(refused, Error::Task(TaskCause::CannotEnter)),
+        "expected the cannot-enter cause, got {refused:?}"
+    );
     assert_eq!(turn(&mut store), "Idle");
 }
 

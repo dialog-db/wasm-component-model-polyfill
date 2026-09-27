@@ -29,8 +29,9 @@
 
 #![cfg(test)]
 
+use crate::internal::FuncInternal;
 use crate::store::StoreInternalExt;
-use crate::{Component, Engine, HostCall, Linker, Result, Store, Val};
+use crate::{Component, Engine, Error, HostCall, Linker, Result, Store, TaskCause, Val};
 use wcmp_macros::component;
 
 /// A component whose `cabi_realloc` reads its context slot, writes
@@ -280,11 +281,13 @@ const PING: u32 = 9;
 /// other half of the same property: `check` is an ordinary export,
 /// and the `ping` import it calls leaves the instance, so it
 /// returns only if the flag the polyfill cleared around its own
-/// call has come back.
+/// call has come back. A `run` that trapped poisoned the store, which
+/// then refuses `check`, so the flag is also answered as the store
+/// holds it: whether every instance may be left.
 async fn run_and_read_records(
     bytes: &[u8],
     arguments: Vec<Val>,
-) -> (Result<Box<[Val]>>, Seen, Result<Box<[Val]>>) {
+) -> (Result<Box<[Val]>>, Seen, bool, Result<Box<[Val]>>) {
     let engine = Engine::new().expect("engine");
     let component = Component::new(&engine, bytes)
         .await
@@ -317,13 +320,23 @@ async fn run_and_read_records(
     };
 
     let check = instance.get_func("check").expect("check export");
+    let flags = check
+        .abi_state()
+        .lock()
+        .expect("ABI runtime state")
+        .instance_flags
+        .clone();
+    let may_leave = flags.iter().all(|flag| {
+        flag.may_leave(store.internal().inner_mut())
+            .expect("the may-leave flag reads")
+    });
     let reached = check.call(&mut store, &[]).await;
-    (result, after, reached)
+    (result, after, may_leave, reached)
 }
 
 #[wcmp_macros::test]
 async fn it_ends_the_realloc_task_when_the_realloc_traps() {
-    let (result, after, reached) =
+    let (result, after, may_leave, reached) =
         run_and_read_records(REALLOC_TRAPS, vec![Val::String("hi".into())]).await;
     assert!(
         result.is_err(),
@@ -334,17 +347,19 @@ async fn it_ends_the_realloc_task_when_the_realloc_traps() {
         Seen::default(),
         "the trap left no task, no thread, and no scope behind"
     );
-    assert_eq!(
-        reached.expect("the check export returned").first().cloned(),
-        Some(Val::U32(PING)),
-        "the trap gave back the may-leave flag the realloc call had cleared, \
-         so an ordinary export of the same instance reaches the host again"
+    assert!(
+        may_leave,
+        "the trap gave back the may-leave flag the realloc call had cleared"
+    );
+    assert!(
+        matches!(reached, Err(Error::Task(TaskCause::CannotEnter))),
+        "the trap poisoned the store, which refuses the check export, got {reached:?}"
     );
 }
 
 #[wcmp_macros::test]
 async fn it_ends_the_export_task_when_the_post_return_has_run() {
-    let (result, after, reached) =
+    let (result, after, _, reached) =
         run_and_read_records(POST_RETURN_WRITES_A_SLOT, Vec::new()).await;
     assert_eq!(
         result.expect("the call returned").first().cloned(),

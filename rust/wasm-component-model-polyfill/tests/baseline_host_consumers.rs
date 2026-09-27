@@ -904,14 +904,6 @@ async fn it_returns_a_stream_reader_from_a_typed_call_and_takes_the_guests_entry
     let reader = make(&mut store, &instance).await;
     let index = call_u32(&mut store, &instance, "last-readable", &[]).await;
 
-    let failure = call(&mut store, &instance, "drop-readable", &[index])
-        .await
-        .expect_err("the guest's entry for the readable end is gone");
-    assert!(
-        failure.contains(&format!("unknown handle index {index}")),
-        "{failure}"
-    );
-
     let (consumer, log) = Scripted::new([Take::All]);
     reader
         .pipe(&mut store.as_context_mut(), consumer)
@@ -921,6 +913,15 @@ async fn it_returns_a_stream_reader_from_a_typed_call_and_takes_the_guests_entry
         packed(COMPLETED, 2)
     );
     assert_eq!(lock(&log).taken, b"ok");
+
+    // The drop traps, and a trap poisons the store, so it comes last.
+    let failure = call(&mut store, &instance, "drop-readable", &[index])
+        .await
+        .expect_err("the guest's entry for the readable end is gone");
+    assert!(
+        failure.contains(&format!("unknown handle index {index}")),
+        "{failure}"
+    );
 }
 
 #[wcmp_macros::test]
@@ -930,6 +931,14 @@ async fn it_hands_a_typed_host_function_a_stream_reader_for_a_parameter() {
     call_ok(&mut store, &instance, "hand-over", &[]).await;
     let index = call_u32(&mut store, &instance, "last-readable", &[]).await;
 
+    assert_eq!(
+        write(&mut store, &instance, b"param").await,
+        packed(COMPLETED, 5),
+        "the host function piped the reader it received"
+    );
+    assert_eq!(lock(&log).taken, b"param");
+
+    // The drop traps, and a trap poisons the store, so it comes last.
     let failure = call(&mut store, &instance, "drop-readable", &[index])
         .await
         .expect_err("the guest's entry for the readable end is gone");
@@ -937,12 +946,6 @@ async fn it_hands_a_typed_host_function_a_stream_reader_for_a_parameter() {
         failure.contains(&format!("unknown handle index {index}")),
         "{failure}"
     );
-    assert_eq!(
-        write(&mut store, &instance, b"param").await,
-        packed(COMPLETED, 5),
-        "the host function piped the reader it received"
-    );
-    assert_eq!(lock(&log).taken, b"param");
 }
 
 #[wcmp_macros::test]
@@ -1324,14 +1327,6 @@ async fn it_returns_a_val_stream_from_an_untyped_call_and_takes_the_guests_entry
     let stream = make_untyped(&mut store, &instance).await;
     let index = call_u32(&mut store, &instance, "last-readable", &[]).await;
 
-    let failure = call(&mut store, &instance, "drop-readable", &[index])
-        .await
-        .expect_err("the guest's entry for the readable end is gone");
-    assert!(
-        failure.contains(&format!("unknown handle index {index}")),
-        "{failure}"
-    );
-
     // The host holds the end: its typed reader reads the guest's
     // writes.
     let (consumer, log) = Scripted::new([Take::All]);
@@ -1344,6 +1339,15 @@ async fn it_returns_a_val_stream_from_an_untyped_call_and_takes_the_guests_entry
         packed(COMPLETED, 3)
     );
     assert_eq!(lock(&log).taken, b"any");
+
+    // The drop traps, and a trap poisons the store, so it comes last.
+    let failure = call(&mut store, &instance, "drop-readable", &[index])
+        .await
+        .expect_err("the guest's entry for the readable end is gone");
+    assert!(
+        failure.contains(&format!("unknown handle index {index}")),
+        "{failure}"
+    );
 }
 
 #[wcmp_macros::test]
@@ -1356,14 +1360,6 @@ async fn it_hands_an_untyped_host_function_a_val_future_for_a_parameter() {
         other => panic!("the host function received {other:?}"),
     };
 
-    let failure = call(&mut store, &instance, "drop-future-readable", &[index])
-        .await
-        .expect_err("the guest's entry for the readable end is gone");
-    assert!(
-        failure.contains(&format!("unknown handle index {index}")),
-        "{failure}"
-    );
-
     let (consumer, log) = Receives::new([Receive::Take]);
     FutureReader::<u32>::try_from_future_any(future)
         .expect("the future carries `u32`")
@@ -1375,6 +1371,15 @@ async fn it_hands_an_untyped_host_function_a_val_future_for_a_parameter() {
         packed(COMPLETED, 0)
     );
     assert_eq!(log.lock().expect("the consumer's log").value, Some(7));
+
+    // The drop traps, and a trap poisons the store, so it comes last.
+    let failure = call(&mut store, &instance, "drop-future-readable", &[index])
+        .await
+        .expect_err("the guest's entry for the readable end is gone");
+    assert!(
+        failure.contains(&format!("unknown handle index {index}")),
+        "{failure}"
+    );
 }
 
 #[wcmp_macros::test]
@@ -1597,8 +1602,17 @@ async fn it_lowers_an_untyped_stream_into_a_guest_of_its_payload_type_only() {
         "{failure:?}"
     );
 
-    // The refused lower left the end with the host, and a guest of the
-    // same payload type takes it into its table.
+    // The refused lower left the end with the host, which can still
+    // close it. The refusal is a trap, and a trap poisons the store,
+    // so a guest of the same payload type takes an end into its table
+    // in a store of its own.
+    let mut closed = stream.clone();
+    closed
+        .close(&mut store.as_context_mut())
+        .expect("the host still holds the end");
+
+    let (mut store, instance) = instantiate(None).await;
+    let stream = make_untyped(&mut store, &instance).await;
     let adopted = instance
         .get_func("adopt")
         .expect("the component exports `adopt`")
@@ -1621,6 +1635,18 @@ async fn it_refuses_to_lower_a_clone_of_a_stream_the_host_piped_or_close_it_mid_
         .pipe(&mut store.as_context_mut(), consumer)
         .expect("the host pipes the end");
 
+    assert_eq!(
+        write(&mut store, &instance, b"held").await,
+        BLOCKED,
+        "the consumer holds the write in flight"
+    );
+    let refused = stream
+        .close(&mut store.as_context_mut())
+        .expect_err("a write is in flight");
+    assert!(not_held(&refused, EndKind::StreamReadable), "{refused:?}");
+
+    // The refused lower is a trap, and a trap poisons the store, so it
+    // comes last.
     let failure = instance
         .get_func("adopt")
         .expect("the component exports `adopt`")
@@ -1631,15 +1657,6 @@ async fn it_refuses_to_lower_a_clone_of_a_stream_the_host_piped_or_close_it_mid_
         matches!(&failure, Error::Abi(abi) if matches!(abi.cause, AbiCause::InvalidHandle { .. })),
         "{failure:?}"
     );
-    assert_eq!(
-        write(&mut store, &instance, b"held").await,
-        BLOCKED,
-        "the consumer holds the write in flight"
-    );
-    let refused = stream
-        .close(&mut store.as_context_mut())
-        .expect_err("a write is in flight");
-    assert!(not_held(&refused, EndKind::StreamReadable), "{refused:?}");
 }
 
 /// A component that writes the readable ends of two streams of bytes
@@ -1747,13 +1764,6 @@ async fn it_moves_out_of_the_writers_table_only_the_inner_ends_a_consumer_takes(
         "the consumer took one of the two inner ends"
     );
     let first = call_u32(&mut store, &instance, "item", &[0]).await;
-    let failure = call(&mut store, &instance, "drop-readable", &[first])
-        .await
-        .expect_err("the taken inner end left the writer's table");
-    assert!(
-        failure.contains(&format!("unknown handle index {first}")),
-        "{failure}"
-    );
     let second = call_u32(&mut store, &instance, "item", &[1]).await;
     call_ok(&mut store, &instance, "drop-readable", &[second]).await;
 
@@ -1767,4 +1777,13 @@ async fn it_moves_out_of_the_writers_table_only_the_inner_ends_a_consumer_takes(
         .expect("the host holds the inner end it took")
         .close(&mut store.as_context_mut())
         .expect("the host closes it");
+
+    // The drop traps, and a trap poisons the store, so it comes last.
+    let failure = call(&mut store, &instance, "drop-readable", &[first])
+        .await
+        .expect_err("the taken inner end left the writer's table");
+    assert!(
+        failure.contains(&format!("unknown handle index {first}")),
+        "{failure}"
+    );
 }

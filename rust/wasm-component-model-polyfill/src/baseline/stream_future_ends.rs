@@ -571,10 +571,17 @@ async fn it_traps_a_drop_of_a_busy_end_with_the_message_of_its_kind() {
 
 #[wcmp_macros::test]
 async fn it_traps_a_drop_of_an_end_of_another_kind() {
-    let (mut store, instance) = instantiate(END_BUILTINS).await;
-    let (readable, writable) = new_ends(&mut store, &instance, "new-stream").await;
-    let set = call_u32(&mut store, &instance, "new-set", &[]).await;
+    /// A store with a stream's two ends and a waitable set in it, and
+    /// their indices: readable, writable, and the set. A trap poisons
+    /// the store, so each drop below runs in a store of its own.
+    async fn ends_and_a_set() -> (Store<()>, Instance, [u32; 3]) {
+        let (mut store, instance) = instantiate(END_BUILTINS).await;
+        let (readable, writable) = new_ends(&mut store, &instance, "new-stream").await;
+        let set = call_u32(&mut store, &instance, "new-set", &[]).await;
+        (store, instance, [readable, writable, set])
+    }
 
+    let (mut store, instance, [_, writable, _]) = ends_and_a_set().await;
     let message = call_trap(
         &mut store,
         &instance,
@@ -589,6 +596,7 @@ async fn it_traps_a_drop_of_an_end_of_another_kind() {
         "a writable end is not a readable one: {message}"
     );
 
+    let (mut store, instance, [readable, _, _]) = ends_and_a_set().await;
     let message = call_trap(
         &mut store,
         &instance,
@@ -601,6 +609,7 @@ async fn it_traps_a_drop_of_an_end_of_another_kind() {
         "a stream end is not a future end: {message}"
     );
 
+    let (mut store, instance, [_, _, set]) = ends_and_a_set().await;
     let message = call_trap(
         &mut store,
         &instance,
@@ -613,6 +622,7 @@ async fn it_traps_a_drop_of_an_end_of_another_kind() {
         "a waitable set is not an end: {message}"
     );
 
+    let (mut store, instance, _) = ends_and_a_set().await;
     let message = call_trap(
         &mut store,
         &instance,
@@ -673,12 +683,6 @@ async fn it_joins_an_end_to_a_set_and_takes_it_out_when_the_end_drops() {
             "the end joined the set"
         );
     }
-    let message = call_trap(&mut store, &instance, "drop-set", &[Val::U32(set)]).await;
-    assert!(
-        message.contains("cannot drop waitable set with waitables in it"),
-        "the set holds the end: {message}"
-    );
-
     call_ok(
         &mut store,
         &instance,
@@ -688,6 +692,24 @@ async fn it_joins_an_end_to_a_set_and_takes_it_out_when_the_end_drops() {
     .await;
 
     call_ok(&mut store, &instance, "drop-set", &[Val::U32(set)]).await;
+
+    // A drop of the set while the end is in it traps, and a trap
+    // poisons the store, so that drop runs in a store of its own.
+    let (mut store, instance) = instantiate(END_BUILTINS).await;
+    let (readable, _) = new_ends(&mut store, &instance, "new-stream").await;
+    let set = call_u32(&mut store, &instance, "new-set", &[]).await;
+    call_ok(
+        &mut store,
+        &instance,
+        "join",
+        &[Val::U32(readable), Val::U32(set)],
+    )
+    .await;
+    let message = call_trap(&mut store, &instance, "drop-set", &[Val::U32(set)]).await;
+    assert!(
+        message.contains("cannot drop waitable set with waitables in it"),
+        "the set holds the end: {message}"
+    );
 }
 
 #[wcmp_macros::test]

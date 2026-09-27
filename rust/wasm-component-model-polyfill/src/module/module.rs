@@ -37,6 +37,8 @@ pub struct Module {
     inner: RuntimeModule,
     imports: Arc<[ModuleImport]>,
     exports: Arc<[ModuleExport]>,
+    /// Whether the module declares a `start` function.
+    start: bool,
 }
 
 impl Module {
@@ -75,11 +77,17 @@ impl Module {
     /// type, and a start function that traps, surface as the runtime
     /// substrate's failure under [`Error::Instantiation`].
     ///
+    /// The start function is guest code. One that traps poisons the
+    /// store, and a store a trap poisoned refuses the instantiation
+    /// with the cannot-enter cause, [`TaskCause::CannotEnter`], whether
+    /// or not the module declares a start function.
+    ///
     /// The future completes without suspending on both targets today;
     /// it is awaited so that a module whose instantiation must yield
     /// to the host can do so without a change of signature.
     ///
     /// [`Error::Instantiation`]: crate::Error::Instantiation
+    /// [`TaskCause::CannotEnter`]: crate::TaskCause::CannotEnter
     pub async fn instantiate<T: 'static>(
         &self,
         store: &mut Store<T>,
@@ -97,13 +105,24 @@ impl Module {
         {
             return Err(Error::from(InstantiationError::WrongStore));
         }
+        store.internal().enter_guest()?;
         let mut runtime_imports = RuntimeImports::default();
         for (declared, supplied) in self.imports.iter().zip(imports) {
             runtime_imports.define(&declared.module, &declared.name, supplied.inner().clone());
         }
         let inner =
-            RuntimeInstance::new(store.internal().inner_mut(), &self.inner, &runtime_imports)
-                .map_err(InstantiationError::SubstrateFailure)?;
+            match RuntimeInstance::new(store.internal().inner_mut(), &self.inner, &runtime_imports)
+            {
+                Ok(inner) => inner,
+                Err(error) => {
+                    // The module's `start` function is guest code, and
+                    // its failure is a trap, which poisons the store.
+                    if self.start {
+                        store.internal().poison();
+                    }
+                    return Err(Error::from(InstantiationError::SubstrateFailure(error)));
+                }
+            };
         Ok(CoreInstanceParts {
             inner,
             store_id: store.internal().id(),
@@ -119,11 +138,16 @@ impl ModuleInternal for Module {
             inner,
             imports: shape.imports.into(),
             exports: shape.exports.into(),
+            start: shape.start,
         })
     }
 
     fn inner(&self) -> &RuntimeModule {
         &self.inner
+    }
+
+    fn has_start(&self) -> bool {
+        self.start
     }
 }
 

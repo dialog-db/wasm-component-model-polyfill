@@ -63,6 +63,10 @@ pub struct StoreData<T: 'static> {
     /// allocated for that thread. The thread's shim reads the flag,
     /// has the store freed, and runs nothing else in it.
     dropped: bool,
+    /// Whether a trap happened in the store. A poisoned store runs no
+    /// more guest code: every host entry into a guest fails with the
+    /// cannot-enter cause. Nothing clears the flag.
+    poisoned: bool,
     /// The copy budget each crossing starts with, in bytes of host
     /// values: what Wasmtime calls the store's hostcall fuel.
     hostcall_fuel: usize,
@@ -110,6 +114,7 @@ impl<T: 'static> StoreData<T> {
             scheduler: Scheduler::new(),
             provider: None,
             dropped: false,
+            poisoned: false,
             hostcall_fuel: DEFAULT_HOSTCALL_FUEL,
         }
     }
@@ -198,6 +203,17 @@ impl<T: 'static> StoreData<T> {
     #[cfg(target_arch = "wasm32")]
     pub fn mark_dropped(&mut self) {
         self.dropped = true;
+    }
+
+    /// Whether a trap happened in the store. Workspace-internal.
+    pub fn poisoned(&self) -> bool {
+        self.poisoned
+    }
+
+    /// Record that a trap happened in the store. From here on no
+    /// guest code of the store runs again. Workspace-internal.
+    pub fn poison(&mut self) {
+        self.poisoned = true;
     }
 
     /// Record what the store knows about a resource type an

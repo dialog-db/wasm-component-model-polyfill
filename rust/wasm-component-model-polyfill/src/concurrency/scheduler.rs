@@ -797,11 +797,14 @@ impl<T: 'static> Scheduler<T> {
     ///
     /// This is the whole of the polyfill's reentrance rule, because
     /// the gate is the only thing a call into an instance that is
-    /// already on the stack meets. No call traps for reentrance:
-    /// nothing here raises `CannotEnterComponent`, and the fused
+    /// already on the stack meets. No call traps for reentrance: the
+    /// gate never raises `CannotEnterComponent`, and the fused
     /// adapters of Wasmtime 49 emit none either, for a call between
     /// a parent and a child or into the caller's own instance. The
-    /// five rules the gate carries:
+    /// one place the polyfill raises it is a host entry into a store
+    /// a trap poisoned, and that entry is refused before it creates a
+    /// task, so it never reaches the gate. The five rules the gate
+    /// carries:
     ///
     /// - A sync-typed callee can be entered at any depth — from a
     ///   child, a parent, a sibling, a destructor, or the host. Its
@@ -821,11 +824,10 @@ impl<T: 'static> Scheduler<T> {
     ///   that subtask with nothing else ready fails with the
     ///   deadlock cause too. Backpressure holds a task the same way
     ///   and reads the same.
-    /// - The host can always enter. From the host, reentrance while
-    ///   an instance is on the stack is reachable only through
-    ///   `call_concurrent`, and the gate treats it like any other
-    ///   call. Wasmtime refuses a host entry only into a store a
-    ///   trap poisoned, which is not a rule the gate carries.
+    /// - The host can always enter a store no trap has poisoned. From
+    ///   the host, reentrance while an instance is on the stack is
+    ///   reachable only through `call_concurrent`, and the gate
+    ///   treats it like any other call.
     ///
     /// The may-leave flag is a separate thing and unchanged by any
     /// of this: a lowered import called from a `realloc` or a

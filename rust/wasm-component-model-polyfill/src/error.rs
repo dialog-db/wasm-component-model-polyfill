@@ -1053,6 +1053,15 @@ pub enum TaskCause {
     /// same rule as [`TaskCause::NoResult`].
     #[error("cannot leave component instance")]
     CannotLeave,
+
+    /// The host entered a guest of a store a trap poisoned: a call, a
+    /// concurrent call, an instantiation, or the release of a
+    /// resource a guest defines. After a trap no guest code of the
+    /// store runs again. The message is Wasmtime's trap,
+    /// `Trap::CannotEnterComponent`, under the same rule as
+    /// [`TaskCause::NoResult`].
+    #[error("cannot enter component instance")]
+    CannotEnter,
 }
 
 /// The structured reason a thread built-in failed.
@@ -1795,6 +1804,10 @@ mod tests {
                 TaskCause::CannotLeave,
                 "task error: cannot leave component instance",
             ),
+            (
+                TaskCause::CannotEnter,
+                "task error: cannot enter component instance",
+            ),
         ] {
             assert_eq!(Error::Task(cause).to_string(), rendered);
         }
@@ -1884,6 +1897,10 @@ mod tests {
             (
                 Trap::CannotLeaveComponent,
                 TaskCause::CannotLeave.to_string(),
+            ),
+            (
+                Trap::CannotEnterComponent,
+                TaskCause::CannotEnter.to_string(),
             ),
         ] {
             let rendered = trap.to_string();

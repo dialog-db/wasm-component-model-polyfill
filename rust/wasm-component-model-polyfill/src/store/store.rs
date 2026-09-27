@@ -49,6 +49,29 @@ pub mod internal;
 /// which is what makes the scheduler and its suspend seam reachable
 /// from inside a guest call.
 ///
+/// # A trap poisons the store
+///
+/// A trap anywhere in the store poisons it, as Wasmtime keeps one
+/// trapped flag per store, and a poisoned store runs no more guest
+/// code. [`Func::call`], [`Func::call_concurrent`], their typed
+/// counterparts, every instantiation into the store, and
+/// [`Store::resource_drop`] of a resource a guest defines fail with
+/// the cannot-enter cause, [`TaskCause::CannotEnter`]. What runs no
+/// guest code still works: the release of a resource the host
+/// defines, [`Store::run_concurrent`] whose closure does only host
+/// work, the host data, and dropping the store. Nothing clears the
+/// flag, and nothing answers whether it is set, as in Wasmtime; a
+/// host that meets a trap drops the store and builds a new one.
+///
+/// Wasmtime lets an instantiation into a poisoned store run. The
+/// polyfill refuses it, because an instantiation runs the `start`
+/// functions of its core modules, and the Component Model runs no
+/// guest code after a trap.
+///
+/// [`Func::call`]: crate::Func::call
+/// [`Func::call_concurrent`]: crate::Func::call_concurrent
+/// [`TaskCause::CannotEnter`]: crate::TaskCause::CannotEnter
+///
 /// # What the store does not lend
 ///
 /// The scheduler, the handle tables, and the runtime-layer store are
@@ -334,6 +357,14 @@ impl<T: 'static> Store<T> {
     /// A host resource's destructor is the host's own closure and
     /// not guest code, so it runs outside a turn, as the call that
     /// released the handle does.
+    ///
+    /// A locally-defined resource's destructor that fails is a trap,
+    /// and poisons the store. A poisoned store refuses the release of
+    /// a resource a guest defines with the cannot-enter cause, after
+    /// the handle has left the host's table, as in Wasmtime: the
+    /// destructor is guest code, and no guest code runs in the store
+    /// again. The release of a resource the host defines still runs,
+    /// because its destructor is the host's own.
     ///
     /// Dropping the store instead runs no destructor: a handle the
     /// host never released is leaked, as in Wasmtime.

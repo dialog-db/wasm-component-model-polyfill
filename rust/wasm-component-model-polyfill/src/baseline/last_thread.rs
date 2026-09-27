@@ -18,17 +18,21 @@
 
 #![cfg(test)]
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use crate::store::StoreInternalExt;
 use crate::{
-    Component, Engine, EngineConfig, Error, Func, HostResource, Instance, InterfaceIdentifier,
-    Linker, ResourceTypeId, Result, Store, Val,
+    Component, Engine, EngineConfig, Error, Func, HostCall, HostResource, Instance,
+    InterfaceIdentifier, Linker, ResourceTypeId, Result, Store, TaskCause, Val,
 };
 use wcmp_macros::component;
 
 /// One component instance whose table holds three thread start
 /// functions:
 ///
-/// - 0, `record`, writes its context to `work`.
+/// - 0, `record`, writes its context to `work` and notes it to the
+///   host through `note`.
 /// - 1, `return`, writes its context to `work` and returns it through
 ///   `task.return`.
 /// - 2, `drop-and-return`, drops the borrow the task was handed and
@@ -55,8 +59,10 @@ const LAST_THREAD: &[u8] = component!(
     r#"
     (component
       (import "wcmp-tests:host/things@0.1.0" (instance $i
-        (export "thing" (type $thing (sub resource)))))
+        (export "thing" (type $thing (sub resource)))
+        (export "note" (func (param "work" u32)))))
       (alias export $i "thing" (type $thing))
+      (alias export $i "note" (func $note))
 
       (core module $libc
         (table (export "__indirect_function_table") 3 funcref))
@@ -68,19 +74,22 @@ const LAST_THREAD: &[u8] = component!(
       (core func $new-indirect (canon thread.new-indirect $start-ty (core table $table)))
       (core func $resume-later (canon thread.resume-later))
       (core func $drop-thing (canon resource.drop $thing))
+      (core func $note' (canon lower (func $note)))
 
       (core module $m
         (import "" "task.return" (func $task-return (param i32)))
         (import "" "thread.new-indirect" (func $new-indirect (param i32 i32) (result i32)))
         (import "" "thread.resume-later" (func $resume-later (param i32)))
         (import "" "drop-thing" (func $drop-thing (param i32)))
+        (import "" "note" (func $note (param i32)))
         (import "libc" "__indirect_function_table" (table 3 funcref))
 
         (global $work (mut i32) (i32.const 0))
         (global $held (mut i32) (i32.const 0))
 
         (func $record (param i32)
-          (global.set $work (local.get 0)))
+          (global.set $work (local.get 0))
+          (call $note (local.get 0)))
         (func $return (param i32)
           (global.set $work (local.get 0))
           (call $task-return (local.get 0)))
@@ -128,7 +137,8 @@ const LAST_THREAD: &[u8] = component!(
           (export "task.return" (func $task-return))
           (export "thread.new-indirect" (func $new-indirect))
           (export "thread.resume-later" (func $resume-later))
-          (export "drop-thing" (func $drop-thing))))
+          (export "drop-thing" (func $drop-thing))
+          (export "note" (func $note'))))
         (with "libc" (instance $libc))))
 
       (func (export "resolve-then-spawn") async (result u32)
@@ -164,9 +174,13 @@ fn threading_engine() -> Engine {
 }
 
 /// Instantiate [`LAST_THREAD`] in a fresh store, with the host's
-/// `thing` registered, and answer the resource type the host mints
-/// handles of.
-async fn instantiate() -> (Store<()>, Instance, ResourceTypeId) {
+/// `thing` and `note` registered, and answer the resource type the
+/// host mints handles of and the last value a `record` thread noted.
+///
+/// What `record` noted is read on the host, so a test can read it
+/// after a trap poisoned the store and the store refuses every call
+/// into the guest, `work` among them.
+async fn instantiate() -> (Store<()>, Instance, ResourceTypeId, Arc<AtomicU32>) {
     let engine = threading_engine();
     let component = Component::new(&engine, LAST_THREAD)
         .await
@@ -182,11 +196,20 @@ async fn instantiate() -> (Store<()>, Instance, ResourceTypeId) {
             HostResource::new(|_: &mut (), _: u32| -> Result<()> { Ok(()) }),
         )
         .expect("the registration");
+    let noted = Arc::new(AtomicU32::new(0));
+    let noting = noted.clone();
+    linker
+        .instance(&interface)
+        .func_wrap("note", move |_: HostCall<'_, ()>, (work,): (u32,)| {
+            noting.store(work, Ordering::Relaxed);
+            Ok(())
+        })
+        .expect("the registration of `note`");
     let instance = linker
         .instantiate(&mut store, &component)
         .await
         .expect("instantiate");
-    (store, instance, thing)
+    (store, instance, thing, noted)
 }
 
 /// One export of the instance, by name.
@@ -241,7 +264,7 @@ async fn call_expecting_a_trap(store: &mut Store<()>, instance: &Instance, name:
 
 #[wcmp_macros::test]
 async fn it_runs_a_ready_thread_of_a_task_whose_implicit_thread_exited() {
-    let (mut store, instance, _) = instantiate().await;
+    let (mut store, instance, _, _) = instantiate().await;
 
     assert_eq!(
         call_u32(&mut store, &instance, "resolve-then-spawn", &[]).await,
@@ -258,7 +281,7 @@ async fn it_runs_a_ready_thread_of_a_task_whose_implicit_thread_exited() {
 
 #[wcmp_macros::test]
 async fn it_resolves_a_stackful_task_through_a_thread_that_runs_after_the_implicit_thread_exits() {
-    let (mut store, instance, _) = instantiate().await;
+    let (mut store, instance, _, _) = instantiate().await;
 
     assert_eq!(
         call_u32(&mut store, &instance, "spawn-returner", &[]).await,
@@ -271,7 +294,7 @@ async fn it_resolves_a_stackful_task_through_a_thread_that_runs_after_the_implic
 
 #[wcmp_macros::test]
 async fn it_resolves_a_callback_task_through_a_thread_that_runs_after_the_callback_exits() {
-    let (mut store, instance, _) = instantiate().await;
+    let (mut store, instance, _, _) = instantiate().await;
 
     assert_eq!(
         call_u32(&mut store, &instance, "spawn-returner-callback", &[]).await,
@@ -284,7 +307,7 @@ async fn it_resolves_a_callback_task_through_a_thread_that_runs_after_the_callba
 
 #[wcmp_macros::test]
 async fn it_fails_a_stackful_task_with_no_result_once_its_last_thread_has_run() {
-    let (mut store, instance, _) = instantiate().await;
+    let (mut store, instance, _, noted) = instantiate().await;
 
     let message = call_expecting_a_trap(&mut store, &instance, "spawn-recorder").await;
     assert!(
@@ -292,17 +315,22 @@ async fn it_fails_a_stackful_task_with_no_result_once_its_last_thread_has_run() 
         "expected the no-result cause, got {message}"
     );
     assert_eq!(
-        call_u32(&mut store, &instance, "work", &[]).await,
+        noted.load(Ordering::Relaxed),
         3,
         "the explicit thread ran before the task failed, so the failure \
          came as its last thread ended and not as its implicit thread exited"
     );
+    // The no-result failure is a trap, and a trap poisons the store.
+    assert!(matches!(
+        func(&instance, "work").call(&mut store, &[]).await,
+        Err(Error::Task(TaskCause::CannotEnter))
+    ));
     assert_eq!(task_count(&store), 0, "the failed task left the store");
 }
 
 #[wcmp_macros::test]
 async fn it_fails_a_callback_task_with_no_result_once_its_last_thread_has_run() {
-    let (mut store, instance, _) = instantiate().await;
+    let (mut store, instance, _, noted) = instantiate().await;
 
     let message = call_expecting_a_trap(&mut store, &instance, "spawn-recorder-callback").await;
     assert!(
@@ -310,17 +338,22 @@ async fn it_fails_a_callback_task_with_no_result_once_its_last_thread_has_run() 
         "expected the no-result cause, got {message}"
     );
     assert_eq!(
-        call_u32(&mut store, &instance, "work", &[]).await,
+        noted.load(Ordering::Relaxed),
         4,
         "the explicit thread ran before the task failed, so the failure \
          came as its last thread ended and not at the exit code"
     );
+    // The no-result failure is a trap, and a trap poisons the store.
+    assert!(matches!(
+        func(&instance, "work").call(&mut store, &[]).await,
+        Err(Error::Task(TaskCause::CannotEnter))
+    ));
     assert_eq!(task_count(&store), 0, "the failed task left the store");
 }
 
 #[wcmp_macros::test]
 async fn it_checks_the_borrows_of_a_task_when_its_last_thread_ends() {
-    let (mut store, instance, thing) = instantiate().await;
+    let (mut store, instance, thing, _) = instantiate().await;
     let handle = store.resource_new(thing, 5).expect("mint an own handle");
 
     assert_eq!(
@@ -340,7 +373,7 @@ async fn it_checks_the_borrows_of_a_task_when_its_last_thread_ends() {
 
 #[wcmp_macros::test]
 async fn it_keeps_a_task_and_its_thread_index_while_a_thread_it_made_has_not_run() {
-    let (mut store, instance, _) = instantiate().await;
+    let (mut store, instance, _, _) = instantiate().await;
 
     let first = call_u32(&mut store, &instance, "leave-suspended", &[]).await;
     let second = call_u32(&mut store, &instance, "leave-suspended", &[]).await;

@@ -1245,6 +1245,24 @@ impl TaskTables {
         self.waitable_sets.len()
     }
 
+    /// How many threads wait on a waitable set, over every set the
+    /// store holds.
+    pub fn set_waiters(&self) -> u32 {
+        self.waitable_sets
+            .records()
+            .map(|set| set.num_waiting)
+            .sum()
+    }
+
+    /// How many stream and future ends a thread waits on
+    /// synchronously.
+    pub fn synchronous_end_waiters(&self) -> usize {
+        self.ends
+            .records()
+            .filter(|end| end.waitable.synchronous_waiter)
+            .count()
+    }
+
     /// How many waitable sets are on the list of sets signalled since
     /// the scheduler last looked.
     pub fn signalled_set_count(&self) -> usize {

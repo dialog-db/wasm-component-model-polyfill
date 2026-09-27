@@ -323,6 +323,17 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
         self.context.mark_dropped();
     }
 
+    /// Record that a trap happened in the store.
+    pub fn poison(self) {
+        self.context.poison();
+    }
+
+    /// Refuse a host entry into a guest of a poisoned store, with the
+    /// cannot-enter cause.
+    pub fn enter_guest(self) -> Result<()> {
+        self.context.enter_guest()
+    }
+
     /// Run a thread entry, through the provider when the store has
     /// one, and hand what it produced to `finish`.
     pub fn run_thread_entry(

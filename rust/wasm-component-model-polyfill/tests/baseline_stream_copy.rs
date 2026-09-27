@@ -847,6 +847,16 @@ async fn it_gives_an_idle_readable_end_the_dropped_result_when_the_writable_end_
         message.contains("cannot read after being notified that the writable end dropped"),
         "{message}"
     );
+
+    // The read traps, and a trap poisons the store, so the drop of an
+    // end that was told of the drop runs in a store of its own.
+    let (mut store, instance) = instantiate(STREAM_COPIES).await;
+    let (readable, writable) = new_ends(&mut store, &instance, "new-stream").await;
+    call_ok(&mut store, &instance, "drop-writable", &[writable]).await;
+    assert_eq!(
+        wait_on(&mut store, &instance, readable).await,
+        (STREAM_READ, readable, packed(1, 0))
+    );
     call_ok(&mut store, &instance, "drop-readable", &[readable]).await;
 }
 
@@ -1002,27 +1012,36 @@ async fn it_traps_a_count_of_two_to_the_twenty_eighth() {
 
 #[wcmp_macros::test]
 async fn it_traps_a_buffer_that_is_misaligned_or_leaves_the_memory_with_wasmtimes_messages() {
+    // A trap poisons the store, so each copy that traps runs against
+    // ends of a store of its own. Wasmtime's bounds check when a copy
+    // starts names the read pointer for a read and a write alike.
+    for (name, readable_end, pointer, count, expected) in [
+        ("wide-read", true, 2, 1, "read pointer not aligned"),
+        ("wide-write", false, 2, 1, "write pointer not aligned"),
+        (
+            "wide-write",
+            false,
+            65532,
+            2,
+            "read pointer out of bounds of memory",
+        ),
+        (
+            "wide-read",
+            true,
+            65532,
+            2,
+            "read pointer out of bounds of memory",
+        ),
+    ] {
+        let (mut store, instance) = instantiate(STREAM_COPIES).await;
+        let (readable, writable) = new_ends(&mut store, &instance, "new-wide").await;
+        let end = if readable_end { readable } else { writable };
+        let message = call_trap(&mut store, &instance, name, &[end, pointer, count]).await;
+        assert!(message.contains(expected), "`{name}`: {message}");
+    }
+
     let (mut store, instance) = instantiate(STREAM_COPIES).await;
-    let (readable, writable) = new_ends(&mut store, &instance, "new-wide").await;
-
-    let message = call_trap(&mut store, &instance, "wide-read", &[readable, 2, 1]).await;
-    assert!(message.contains("read pointer not aligned"), "{message}");
-    let message = call_trap(&mut store, &instance, "wide-write", &[writable, 2, 1]).await;
-    assert!(message.contains("write pointer not aligned"), "{message}");
-
-    // Wasmtime's bounds check when a copy starts names the read
-    // pointer for a read and a write alike.
-    let message = call_trap(&mut store, &instance, "wide-write", &[writable, 65532, 2]).await;
-    assert!(
-        message.contains("read pointer out of bounds of memory"),
-        "{message}"
-    );
-    let message = call_trap(&mut store, &instance, "wide-read", &[readable, 65532, 2]).await;
-    assert!(
-        message.contains("read pointer out of bounds of memory"),
-        "{message}"
-    );
-
+    let (readable, _) = new_ends(&mut store, &instance, "new-wide").await;
     assert_eq!(
         call_u32(&mut store, &instance, "wide-read", &[readable, 3, 0]).await,
         BLOCKED,
@@ -1311,11 +1330,13 @@ async fn it_moves_an_inner_readable_end_from_the_writers_table_into_the_readers(
     );
 
     let sent = call_u32(&mut store, &instance, "sent", &[]).await;
+    let received = call_u32(&mut store, &instance, "received", &[]).await;
+    call_ok(&mut store, &instance, "drop-received", &[received]).await;
+
+    // The drop traps, and a trap poisons the store, so it comes last.
     let failure = call_trap(&mut store, &instance, "drop-sent", &[sent]).await;
     assert!(
         failure.contains(&format!("unknown handle index {sent}")),
         "the inner end left the writer's table: {failure}"
     );
-    let received = call_u32(&mut store, &instance, "received", &[]).await;
-    call_ok(&mut store, &instance, "drop-received", &[received]).await;
 }

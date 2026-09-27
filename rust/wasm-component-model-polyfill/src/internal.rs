@@ -292,6 +292,10 @@ pub trait ModuleInternal {
 
     /// Borrow the wrapped runtime-layer module.
     fn inner(&self) -> &RuntimeModule;
+
+    /// Whether the module declares a `start` function, which is
+    /// guest code its instantiation runs.
+    fn has_start(&self) -> bool;
 }
 
 /// The parts a [`CoreInstance`](crate::CoreInstance) is built from.

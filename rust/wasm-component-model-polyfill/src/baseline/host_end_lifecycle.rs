@@ -1021,10 +1021,6 @@ async fn it_refuses_a_copy_the_lower_or_pipe_of_an_end_another_copy_closed() {
         .close(&mut store.as_context_mut())
         .expect("the first copy closes the stream");
 
-    let lowered = take(&mut store, &instance, &second)
-        .await
-        .expect_err("a dropped end enters no guest's table");
-    assert!(invalid_handle(&lowered, NOT_HELD), "{lowered:?}");
     let counts = Arc::new(Counts::default());
     let piped = pipe(&mut store, &second, Counted(counts.clone()))
         .expect_err("a dropped end does not open again for a consumer");
@@ -1034,7 +1030,7 @@ async fn it_refuses_a_copy_the_lower_or_pipe_of_an_end_another_copy_closed() {
         (0, 1),
         "the refused consumer is dropped unpolled"
     );
-    StreamReader::<u8>::try_from_stream_any(second)
+    StreamReader::<u8>::try_from_stream_any(second.clone())
         .expect("the payload type still matches")
         .try_into_stream_any(&mut store.as_context_mut())
         .expect("a conversion checks only that the end is in the store");
@@ -1043,6 +1039,13 @@ async fn it_refuses_a_copy_the_lower_or_pipe_of_an_end_another_copy_closed() {
         DROPPED,
         "the writer still sees the close"
     );
+
+    // The refused lower is a trap of the call, and a trap poisons the
+    // store, so it is the last guest entry.
+    let lowered = take(&mut store, &instance, &second)
+        .await
+        .expect_err("a dropped end enters no guest's table");
+    assert!(invalid_handle(&lowered, NOT_HELD), "{lowered:?}");
 }
 
 #[wcmp_macros::test]
@@ -1101,16 +1104,19 @@ async fn it_refuses_a_copy_the_lower_of_an_end_another_copy_piped() {
     let counts = Arc::new(Counts::default());
     pipe(&mut store, &piped, Counted(counts.clone())).expect("the first copy pipes the end");
 
+    StreamReader::<u8>::try_from_stream_any(kept.clone())
+        .expect("the payload type still matches")
+        .try_into_stream_any(&mut store.as_context_mut())
+        .expect("a conversion checks only that the end is in the store");
+    assert_eq!(write(&mut store, &instance).await, BLOCKED);
+
+    // The refused lower is a trap of the call, and a trap poisons the
+    // store, so it is the last guest entry. What it leaves is read
+    // from the consumer.
     let lowered = take(&mut store, &instance, &kept)
         .await
         .expect_err("a consumer reads the end");
     assert!(invalid_handle(&lowered, NOT_HELD), "{lowered:?}");
-    StreamReader::<u8>::try_from_stream_any(kept)
-        .expect("the payload type still matches")
-        .try_into_stream_any(&mut store.as_context_mut())
-        .expect("a conversion checks only that the end is in the store");
-
-    assert_eq!(write(&mut store, &instance).await, BLOCKED);
     assert!(
         counts.polls() > 0 && counts.drops() == 0,
         "the first consumer still serves the writer"

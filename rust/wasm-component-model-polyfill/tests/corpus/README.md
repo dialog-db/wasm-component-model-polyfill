@@ -78,12 +78,11 @@ callee returned. An exception thrown in a callee reaches the host as the
 trap the synchronous baseline gives it.
 
 The directive that first meets what is missing is an expected failure
-of category `deferred-feature`, for one of four reasons: a block or a
+of category `deferred-feature`, for one of three reasons: a block or a
 switch that only a stack switch can serve, such as a callee that can
 be released only by a caller that is on the stack or a thread that
 suspends after its task has resolved, the cancellation of a task or a
-subtask, an error context, or the rules that decide which trap
-poisons an instance. Three definitions in the same category fail at link instead, on a
+subtask, or an error context. Three definitions in the same category fail at link instead, on a
 host item the harness does not provide: the two WASI 0.3 handler
 fixtures import `wasi:http/types`, and
 `wasmtime/async/cancel-starting-subtask-does-not-leak.wast` imports
@@ -91,11 +90,14 @@ fixtures import `wasi:http/types`, and
 is `cascade`: a component definition that fails leaves its name
 unbound and no instance current, so every later directive in the file
 that names the definition or invokes the instance fails as
-bookkeeping rather than on its own merits. Several files of
+bookkeeping rather than on its own merits. A trap poisons the store the
+instance runs in, as in Wasmtime, so a later directive that invokes an
+instance a trap ended fails with `cannot enter component instance`, and
+is a `cascade` line too. Several files of
 `cm/async` define a component once and then drive it over dozens of
 directives, so a failure early in one of them cascades over the rest;
 natively that row has no `cascade` line today, and without a provider
-it has nine.
+it has ten.
 
 `expected-failures.txt` lists every directive the polyfill does not pass
 yet, one per line, as `<path>:<line> <category> <reason>`. The harness
@@ -278,7 +280,7 @@ alike.
 
 The corpus runs in four states: each target with the suspend provider
 and without one. The figures below come from one `tests all` run of
-2026-09-26, and the provider-off tables from the `tests regenerate
+2026-09-27, and the provider-off tables from the `tests regenerate
 --dry-run` of the same tree, which left both lists as they were
 (`tests conformance` prints the current provider tables).
 
@@ -288,19 +290,19 @@ provider:
 | Corpus           | Directives | Passed | Pass % | Expected failures by category                                          |
 | ---------------- | ---------- | ------ | ------ | ---------------------------------------------------------------------- |
 | `cm`             | 1126       | 1096   | 97.3   | substrate 4, validation 20, cascade 6                                  |
-| `cm/async`       | 393        | 379    | 96.4   | deferred-feature 14                                                    |
+| `cm/async`       | 393        | 381    | 96.9   | deferred-feature 12                                                    |
 | `fixtures`       | 59         | 53     | 89.8   | deferred-feature 2, cascade 4                                          |
 | `wasmtime`       | 469        | 434    | 92.5   | deferred-feature 1, substrate 8, cascade 26                            |
 | `wasmtime/async` | 387        | 369    | 95.3   | deferred-feature 14, cascade 4                                         |
-| total            | 2434       | 2331   | 95.8   | deferred-feature 31, substrate 12, validation 20, cascade 40           |
+| total            | 2434       | 2333   | 95.9   | deferred-feature 29, substrate 12, validation 20, cascade 40           |
 
 The browser runs its guest threads through the JSPI provider, so its
 summary is the native one, and the eleven lines of
 `expected-failures.web.txt` move eleven passing directives into
-`substrate`: `cm` passes 1095 (97.2%) with substrate 5, `cm/async` 378
-(96.2%) with substrate 1, `wasmtime` 427 (91.0%) with substrate 15,
-`wasmtime/async` 367 (94.8%) with substrate 2, and the total is 2320
-(95.3%) with substrate 23. Six of the
+`substrate`: `cm` passes 1095 (97.2%) with substrate 5, `cm/async` 380
+(96.7%) with substrate 1, `wasmtime` 427 (91.0%) with substrate 15,
+`wasmtime/async` 367 (94.8%) with substrate 2, and the total is 2322
+(95.4%) with substrate 23. Six of the
 eleven lines, among them the three in the `async` rows, are the browser
 engine's wording for a trap or a validation error that Wasmtime words
 differently. Two in `wasmtime/big-strings.wast` trap in the adapter
@@ -309,8 +311,8 @@ before the bounds check Wasmtime reaches, and three in
 in the browser cannot address. No line of the delta is a difference
 of the polyfill.
 
-Without a provider, the 44 lines of `expected-failures.no-provider.txt`
-fail beyond the shared list, 28 in `cm/async` and 16 in
+Without a provider, the 52 lines of `expected-failures.no-provider.txt`
+fail beyond the shared list, 28 in `cm/async` and 24 in
 `wasmtime/async`, and every one of them carries the stack-switch
 reason. The other three rows do not change. The native summary with
 the provider turned off:
@@ -318,19 +320,19 @@ the provider turned off:
 | Corpus           | Directives | Passed | Pass % | Expected failures by category                                          |
 | ---------------- | ---------- | ------ | ------ | ---------------------------------------------------------------------- |
 | `cm`             | 1126       | 1096   | 97.3   | substrate 4, validation 20, cascade 6                                  |
-| `cm/async`       | 393        | 351    | 89.3   | deferred-feature 33, cascade 9                                         |
+| `cm/async`       | 393        | 353    | 89.8   | deferred-feature 30, cascade 10                                        |
 | `fixtures`       | 59         | 53     | 89.8   | deferred-feature 2, cascade 4                                          |
 | `wasmtime`       | 469        | 434    | 92.5   | deferred-feature 1, substrate 8, cascade 26                            |
-| `wasmtime/async` | 387        | 353    | 91.2   | deferred-feature 30, cascade 4                                         |
-| total            | 2434       | 2287   | 94.0   | deferred-feature 66, substrate 12, validation 20, cascade 49           |
+| `wasmtime/async` | 387        | 345    | 89.1   | deferred-feature 30, cascade 12                                        |
+| total            | 2434       | 2281   | 93.7   | deferred-feature 63, substrate 12, validation 20, cascade 58           |
 
 No line of the web delta names a directive of the overlay, so the
 browser without a provider moves the same eleven directives into
-`substrate`: `cm` passes 1095 (97.2%), `cm/async` 350 (89.1%),
-`wasmtime` 427 (91.0%), `wasmtime/async` 351 (90.7%), and the total is
-2276 (93.5%) with substrate 23.
+`substrate`: `cm` passes 1095 (97.2%), `cm/async` 352 (89.6%),
+`wasmtime` 427 (91.0%), `wasmtime/async` 343 (88.6%), and the total is
+2270 (93.3%) with substrate 23.
 
-The `async` rows still hold the pass rate down, and the four reasons
+The `async` rows still hold the pass rate down, and the three reasons
 above cover what those directories still exercise. A directive that
 fails on one of them can leave a later directive of the same file
 without its instance, or with a thread or a callee the failure left
@@ -339,11 +341,15 @@ behind in the same instance, and each such later directive is a
 as under Wasmtime's wast runner, so what an earlier instance left
 behind never runs during a later instance's call. The two async rows
 hold 4 of the 40 cascade lines natively, all in `wasmtime/async`, and
-without a provider `cm/async` adds 9, all in
-`cm/async/during-sync-scheduling-candidates.wast`.
+without a provider `cm/async` adds 10, nine in
+`cm/async/during-sync-scheduling-candidates.wast` and one in
+`cm/async/async-calls-sync.wast`, and `wasmtime/async` adds 8, all in
+`wasmtime/async/task-deletion.wast`, each after a directive whose
+stack-switch failure poisoned the store.
 
-Of the 38 files of `cm/async`, 30 pass whole natively and in the
-browser, and 23 without a provider, where seven more hold lines that
+Of the 38 files of `cm/async`, 31 pass whole natively and 30 in the
+browser, where `builtin-trap-poisons-instance.wast` holds one line of the
+browser's delta, and 24 without a provider, where seven more hold lines that
 only a provider serves. Of the 54 files of `wasmtime/async`, 48 pass
 whole natively and 46 in the browser, where `subtask-wait.wast` and
 `sync-call-context-trap.wast` each hold one line of the browser's delta,
@@ -370,10 +376,9 @@ In `cm/async`: `cancel-stream.wast`, `closed-stream.wast`,
 `sync-and-async-waitable.wast`, `trap-if-transfer-in-waitable-set.wast`,
 and `waitable-set-stale-entry.wast`. `cm/async/trap-if-done.wast`
 passes five of its directives by the wording rule the harness takes
-from Wasmtime's runner. The busy-drop directive of
-`cm/async/builtin-trap-poisons-instance.wast` passes too, and its two
-directives that expect the poisoning trap stay deferred on the trap
-rules. The first four components of
+from Wasmtime's runner. `cm/async/builtin-trap-poisons-instance.wast`
+passes whole natively: each of its two traps poisons the store, and the
+call after it fails with the cannot-enter trap. The first four components of
 `wasmtime/async/cancel-sync-and-waitable.wast` pass, and its fifth
 fails at its call to `subtask.cancel`. The `subtask.cancel` component
 of `wasmtime/async/task-builtins.wast` instantiates.

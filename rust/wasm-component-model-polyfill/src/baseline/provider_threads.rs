@@ -1185,11 +1185,19 @@ async fn it_gives_back_the_wait_of_a_thread_whose_task_ended_while_it_waited_on_
 
     ends_with_a_thread_blocked(&engine, &mut store, &instance, "wait").await;
 
-    let dropped = func(&instance, "drop-set")
-        .call(&mut store, &[])
-        .await
-        .expect("the set has no waiter left, so it drops");
-    assert_eq!(dropped.as_ref(), [Val::U32(0)]);
+    // The trap poisoned the store, so the tally is read from the
+    // store's records rather than through a drop of the set.
+    assert_eq!(
+        store
+            .internal_ref()
+            .tables()
+            .lock()
+            .expect("handle tables")
+            .tasks
+            .set_waiters(),
+        0,
+        "the set has no waiter left"
+    );
 }
 
 #[wcmp_macros::test]
@@ -1204,11 +1212,19 @@ async fn it_gives_back_the_synchronous_wait_of_a_thread_whose_task_ended_while_i
 
     ends_with_a_thread_blocked(&engine, &mut store, &instance, "read").await;
 
-    let joined = func(&instance, "join-end")
-        .call(&mut store, &[])
-        .await
-        .expect("no thread waits on the end synchronously, so it joins a set");
-    assert_eq!(joined.as_ref(), [Val::U32(0)]);
+    // The trap poisoned the store, so the mark is read from the
+    // store's records rather than through a join of the end.
+    assert_eq!(
+        store
+            .internal_ref()
+            .tables()
+            .lock()
+            .expect("handle tables")
+            .tasks
+            .synchronous_end_waiters(),
+        0,
+        "no thread waits on the end synchronously"
+    );
 }
 
 #[wcmp_macros::test]
@@ -1904,7 +1920,8 @@ async fn it_fails_a_thread_with_its_own_trap_or_host_error_before_and_after_it_s
     // the scheduler waits for it rather than reporting the start's
     // failure without its reason. A host import's error is the failure
     // either way, and one thread's host error does not leak into
-    // another's failure.
+    // another's failure. A failure is a trap, and a trap poisons the
+    // store, so each call runs in a store of its own.
     let engine = engine(true);
     let mut linker: Linker<()> = Linker::new(&engine);
     linker
@@ -1915,15 +1932,14 @@ async fn it_fails_a_thread_with_its_own_trap_or_host_error_before_and_after_it_s
             })
         })
         .expect("the registration");
-    let (mut store, instance) = instantiate(&engine, &linker, FAILS_AROUND_A_SUSPENSION).await;
 
     for (name, expected) in [
         ("trap-early", "unreachable"),
         ("fail-early", "the host refused"),
         ("trap-late", "unreachable"),
         ("fail-late", "the host refused"),
-        ("trap-early", "unreachable"),
     ] {
+        let (mut store, instance) = instantiate(&engine, &linker, FAILS_AROUND_A_SUSPENSION).await;
         let err = func(&instance, name)
             .call(&mut store, &[])
             .await
@@ -1936,12 +1952,12 @@ async fn it_fails_a_thread_with_its_own_trap_or_host_error_before_and_after_it_s
         if expected == "unreachable" {
             assert!(
                 !message.contains("the host refused"),
-                "`{name}` fails with its own trap, not an earlier call's host error: {message}"
+                "`{name}` fails with its own trap, not a host error: {message}"
             );
         }
-    }
-    if has_provider(&engine) {
-        assert_eq!(parked_threads(&mut store), 0, "no thread is left suspended");
+        if has_provider(&engine) {
+            assert_eq!(parked_threads(&mut store), 0, "no thread is left suspended");
+        }
     }
 }
 

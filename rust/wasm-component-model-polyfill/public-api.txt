@@ -234,6 +234,7 @@ pub wasm_component_model_polyfill::SuspendProviderKind::None
 pub wasm_component_model_polyfill::SuspendProviderKind::StackSwitching
 #[non_exhaustive] pub enum wasm_component_model_polyfill::TaskCause
 pub wasm_component_model_polyfill::TaskCause::BackpressureOverflow
+pub wasm_component_model_polyfill::TaskCause::CannotEnter
 pub wasm_component_model_polyfill::TaskCause::CannotLeave
 pub wasm_component_model_polyfill::TaskCause::NoResult
 pub wasm_component_model_polyfill::TaskCause::ReturnFromSynchronousTask

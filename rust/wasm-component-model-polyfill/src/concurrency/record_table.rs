@@ -117,6 +117,11 @@ impl<T> RecordTable<T> {
         Some(record)
     }
 
+    /// Every record live in the slab, in index order.
+    pub fn records(&self) -> impl Iterator<Item = &T> {
+        self.slots.iter().filter_map(|slot| slot.record.as_ref())
+    }
+
     /// The number of records currently live in the slab.
     pub fn len(&self) -> usize {
         self.slots.len() - self.free.len()

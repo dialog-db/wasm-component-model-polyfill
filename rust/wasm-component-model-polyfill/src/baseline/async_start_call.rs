@@ -44,8 +44,10 @@
 
 #![cfg(test)]
 
+use crate::internal::FuncInternal;
+use crate::resource::HandleKind;
 use crate::store::StoreInternalExt;
-use crate::{Component, Engine, Instance, Linker, Store, Val};
+use crate::{Component, Engine, Error, Instance, Linker, Store, TaskCause, Val};
 use wcmp_macros::component;
 
 /// A caller that reads `STARTED`, joins the subtask to a waitable
@@ -382,8 +384,9 @@ const TRAPS: &[u8] = component!(
 /// The caller mints an owning handle of the callee's resource type
 /// and keeps the index in a global; `drop-now` drops that handle
 /// where it stands, which traps while the borrow is still lent and
-/// succeeds once the lend is undone. Calling it after the failure is
-/// how the caller says whether the failed call gave the handle back.
+/// succeeds once the lend is undone. The failure poisons the store,
+/// so a test reads the lend from the caller's table rather than
+/// calling it.
 const THROWS_AFTER_YIELD: &[u8] = component!(
     r#"
     (component
@@ -857,15 +860,40 @@ async fn it_fails_the_driver_that_ran_the_callback_when_the_callee_throws_after_
     assert_eq!(turn(&mut store), "Idle");
 
     // And the borrow the caller lent for the call is back. The
-    // handle it lent from is still in the caller's table, so the
-    // drop that traps while a lend is outstanding is the caller's
-    // own answer to whether the cancellation gave the lend back.
-    instance
+    // failure is a trap, and a trap poisons the store, so the caller
+    // cannot drop the handle it lent from any more: the lend is read
+    // from the caller's table instead, where that handle is the first
+    // entry, at index 1.
+    let drop_now = instance
         .get_func("drop-now")
-        .expect("the caller's drop export")
+        .expect("the caller's drop export");
+    let table = {
+        let state = drop_now
+            .abi_state()
+            .lock()
+            .expect("the instance's ABI state");
+        state.handle_tables[drop_now.options().instance]
+    };
+    assert!(
+        matches!(
+            store
+                .internal()
+                .tables()
+                .lock()
+                .expect("handle tables")
+                .entry(table, 1),
+            Some(HandleKind::Own { lend_count: 0, .. })
+        ),
+        "the owning handle is no longer lent"
+    );
+    let refused = drop_now
         .call(&mut store, &[])
         .await
-        .expect("the owning handle drops, so the borrow is no longer lent");
+        .expect_err("a poisoned store refuses the call");
+    assert!(
+        matches!(refused, Error::Task(TaskCause::CannotEnter)),
+        "expected the cannot-enter cause, got {refused:?}"
+    );
 }
 
 #[wcmp_macros::test]

@@ -199,6 +199,17 @@ impl<T: 'static> Linker<T> {
     /// is inside a turn fails with the recursive-driver cause, and a
     /// turn that goes idle with the plan unfinished fails with the
     /// deadlock cause.
+    ///
+    /// A core `start` function that traps poisons the store. A store
+    /// a trap poisoned refuses the instantiation with the
+    /// cannot-enter cause, [`TaskCause::CannotEnter`], once the
+    /// imports have resolved. Wasmtime lets such an instantiation
+    /// run; the polyfill refuses it, because it runs `start`
+    /// functions, and no guest code runs in a store after a trap. A
+    /// link error does not poison the store, because it is raised
+    /// before any guest code runs.
+    ///
+    /// [`TaskCause::CannotEnter`]: crate::TaskCause::CannotEnter
     pub async fn instantiate(
         &self,
         store: &mut Store<T>,
@@ -209,6 +220,10 @@ impl<T: 'static> Linker<T> {
         if store.internal().turn_in_flight() {
             return Err(Error::Scheduler(SchedulerCause::RecursiveDriver));
         }
+        // An instantiation runs the `start` functions of its core
+        // modules, which is guest code, so a store a trap poisoned
+        // refuses it.
+        store.internal().enter_guest()?;
         let mut plan = Some(());
         Driver::new(
             store,

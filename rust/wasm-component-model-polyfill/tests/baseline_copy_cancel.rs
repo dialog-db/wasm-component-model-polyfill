@@ -248,19 +248,20 @@ const NO_WRITE_PENDING: &str = "stream or future write cancelled when no write i
 
 #[wcmp_macros::test]
 async fn it_traps_a_cancel_on_an_end_that_is_not_copying() {
-    let (mut store, instance) = instantiate(COPY_CANCELS).await;
-    let (readable, writable) = new_ends(&mut store, &instance, "new-stream").await;
-
-    let message = call_trap(&mut store, &instance, "cancel-read", &[readable]).await;
-    assert!(message.contains(NO_READ_PENDING), "{message}");
-    let message = call_trap(&mut store, &instance, "cancel-write-sync", &[writable]).await;
-    assert!(message.contains(NO_WRITE_PENDING), "{message}");
-
-    let (readable, writable) = new_ends(&mut store, &instance, "new-future").await;
-    let message = call_trap(&mut store, &instance, "future-cancel-read", &[readable]).await;
-    assert!(message.contains(NO_READ_PENDING), "{message}");
-    let message = call_trap(&mut store, &instance, "future-cancel-write", &[writable]).await;
-    assert!(message.contains(NO_WRITE_PENDING), "{message}");
+    // A trap poisons the store, so each cancel runs against ends of a
+    // store of its own.
+    for (new, cancel, readable_end, expected) in [
+        ("new-stream", "cancel-read", true, NO_READ_PENDING),
+        ("new-stream", "cancel-write-sync", false, NO_WRITE_PENDING),
+        ("new-future", "future-cancel-read", true, NO_READ_PENDING),
+        ("new-future", "future-cancel-write", false, NO_WRITE_PENDING),
+    ] {
+        let (mut store, instance) = instantiate(COPY_CANCELS).await;
+        let (readable, writable) = new_ends(&mut store, &instance, new).await;
+        let end = if readable_end { readable } else { writable };
+        let message = call_trap(&mut store, &instance, cancel, &[end]).await;
+        assert!(message.contains(expected), "`{cancel}`: {message}");
+    }
 }
 
 #[wcmp_macros::test]

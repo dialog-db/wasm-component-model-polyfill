@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::backend::Backend;
 use crate::concurrency::{Outcome, Scheduler};
-use crate::error::Result;
+use crate::error::{Error, Result, TaskCause};
 use crate::resource::HandleTables;
 
 use super::super::store_context::StoreContext;
@@ -100,6 +100,20 @@ impl<'a, T: 'static> StoreInternal<'a, T> {
     /// Mutably borrow the wrapped runtime-layer store.
     pub fn inner_mut(self) -> &'a mut wasm_runtime_layer::Store<StoreData<T>, Backend> {
         self.store.inner_mut()
+    }
+
+    /// Record that a trap happened in the store.
+    pub fn poison(self) {
+        self.store.store_data_mut().poison();
+    }
+
+    /// Refuse a host entry into a guest of a poisoned store, with the
+    /// cannot-enter cause.
+    pub fn enter_guest(self) -> Result<()> {
+        if self.store.store_data().poisoned() {
+            return Err(Error::Task(TaskCause::CannotEnter));
+        }
+        Ok(())
     }
 }
 

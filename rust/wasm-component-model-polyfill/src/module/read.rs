@@ -29,6 +29,9 @@ pub struct ModuleShape {
     pub imports: Vec<ModuleImport>,
     /// The exports, in declaration order.
     pub exports: Vec<ModuleExport>,
+    /// Whether the module declares a `start` function, which its
+    /// instantiation runs.
+    pub start: bool,
 }
 
 /// The index spaces a module's export section refers into.
@@ -53,6 +56,7 @@ pub fn read_shape(bytes: &[u8]) -> Result<ModuleShape> {
     let mut spaces = IndexSpaces::default();
     let mut imports = Vec::new();
     let mut raw_exports = Vec::new();
+    let mut start = false;
     for payload in Parser::new(0).parse_all(bytes) {
         match payload.map_err(parse_error)? {
             Payload::TypeSection(reader) => {
@@ -103,6 +107,7 @@ pub fn read_shape(bytes: &[u8]) -> Result<ModuleShape> {
                     raw_exports.push(export.map_err(parse_error)?);
                 }
             }
+            Payload::StartSection { .. } => start = true,
             _ => {}
         }
     }
@@ -135,7 +140,11 @@ pub fn read_shape(bytes: &[u8]) -> Result<ModuleShape> {
             ty,
         });
     }
-    Ok(ModuleShape { imports, exports })
+    Ok(ModuleShape {
+        imports,
+        exports,
+        start,
+    })
 }
 
 /// Record one import in the index spaces and project its type.

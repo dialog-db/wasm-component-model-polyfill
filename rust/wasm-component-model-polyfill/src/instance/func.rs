@@ -178,6 +178,22 @@ impl Func {
     /// deadlock cause, or with the cannot-block cause when the task
     /// must not block.
     ///
+    /// # A trap poisons the store
+    ///
+    /// A trap poisons the store, and a poisoned store runs no more
+    /// guest code: this call, [`Self::call_concurrent`], an
+    /// instantiation, and the release of a resource a guest defines
+    /// all fail with the cannot-enter cause, [`TaskCause::CannotEnter`],
+    /// before they change anything. A trap is a failure of the
+    /// export's core code, or of a built-in, a host function, a lift,
+    /// or a lower that code reached, a deadlock, or a [`Val`] of the
+    /// wrong type for a parameter, which this call finds as it lowers
+    /// the arguments. An arity mismatch, a call through another
+    /// store, and the recursive-driver cause do not poison the store,
+    /// because each is refused before anything changes.
+    ///
+    /// [`TaskCause::CannotEnter`]: crate::TaskCause::CannotEnter
+    ///
     /// # Where a failure surfaces
     ///
     /// A failure the store raises while this call runs turns
@@ -227,6 +243,11 @@ impl Func {
         if store.internal().turn_in_flight() {
             return Err(Error::Scheduler(SchedulerCause::RecursiveDriver));
         }
+
+        // A store a trap poisoned runs no more guest code, and the
+        // refusal, like the ones above, comes before the call has
+        // changed anything.
+        store.internal().enter_guest()?;
 
         // The canon options of the export's lift and the instance
         // they name, read out of the instance's runtime state once
@@ -363,6 +384,11 @@ impl Func {
     /// call; a host that wants a bound on the wait bounds the whole
     /// entry with a timeout.
     ///
+    /// A store a trap poisoned refuses the call with the cannot-enter
+    /// cause before it creates a task, as [`Self::call`] states. A
+    /// trap of the task this call started poisons the store, so a
+    /// later call from the same closure is refused.
+    ///
     /// [`Store`]: crate::Store
     pub async fn call_concurrent<T: 'static>(
         &self,
@@ -433,6 +459,7 @@ impl Func {
             return Err(Error::from(InstantiationError::WrongStore));
         }
         values.check_arity(self.ty())?;
+        store.internal().enter_guest()?;
 
         let (options, instance) = BoundaryInstance::resolve(
             &self.export.options,
@@ -655,7 +682,7 @@ impl Func {
     ) -> Result<()> {
         let base = store.internal().scope_depth()?;
         if let Err(error) = store.internal().enter_export_task(task) {
-            failure.fill(error);
+            trap(store, &failure, error);
             return Ok(());
         }
         let started = self
@@ -669,7 +696,8 @@ impl Func {
         let core_args = match started {
             Ok(core_args) => core_args,
             Err(error) => {
-                failure.fill(abandoned(store, task, error));
+                let error = abandoned(store, task, error);
+                trap(store, &failure, error);
                 return Ok(());
             }
         };
@@ -684,7 +712,7 @@ impl Func {
                 Err(error) => Err(abandoned(store, task, error)),
             };
             if let Err(error) = outcome {
-                failure.fill(error);
+                trap(store, &failure, error);
             }
             Ok(())
         };
@@ -751,7 +779,7 @@ impl Func {
     ) -> Result<()> {
         let base = store.internal().scope_depth()?;
         if let Err(error) = store.internal().enter_export_task(task) {
-            delivery.deliver(Err(error));
+            delivery.deliver(store, Err(error));
             return Ok(());
         }
         // A host call into a sync-typed export must return before its
@@ -778,7 +806,8 @@ impl Func {
         let core_args = match started {
             Ok(core_args) => core_args,
             Err(error) => {
-                delivery.deliver(Err(abandoned(store, task, error)));
+                let error = abandoned(store, task, error);
+                delivery.deliver(store, Err(error));
                 return Ok(());
             }
         };
@@ -800,7 +829,7 @@ impl Func {
                 Ok(result) => replica.end_task::<T, C>(store, task, result),
                 Err(error) => Err(abandoned(store, task, error)),
             };
-            delivery.deliver(result);
+            delivery.deliver(store, result);
             Ok(())
         };
         store.internal().run_thread_entry(
@@ -894,6 +923,15 @@ fn abandoned<T: 'static>(store: &mut StoreContext<'_, T>, task: TaskId, error: E
     }
 }
 
+/// Leave `error` where the caller of an asynchronous export's task
+/// watches. The failure of the task is a trap: its lowering, its core
+/// code, a built-in that code called, or what it returned failed. A
+/// trap poisons the store, so no guest code of it runs again.
+fn trap<T: 'static>(store: &mut StoreContext<'_, T>, failure: &CallFailure, error: Error) {
+    store.internal().poison();
+    failure.fill(error);
+}
+
 /// Where a synchronous export's task leaves what its call produced.
 enum SyncDelivery<O> {
     /// The slot the driver of one call watches.
@@ -909,8 +947,14 @@ enum SyncDelivery<O> {
 }
 
 impl<O> SyncDelivery<O> {
-    /// Leave what the call produced where its caller watches.
-    fn deliver(self, result: Result<O>) {
+    /// Leave what the call produced where its caller watches. A
+    /// failure is a trap of the call's task — its lowering, its core
+    /// code, a built-in that code called, its lift, or the borrows it
+    /// still owed — and poisons the store.
+    fn deliver<T: 'static>(self, store: &mut StoreContext<'_, T>, result: Result<O>) {
+        if result.is_err() {
+            store.internal().poison();
+        }
         match self {
             Self::Outcome(slot) => {
                 if let Ok(mut slot) = slot.lock() {

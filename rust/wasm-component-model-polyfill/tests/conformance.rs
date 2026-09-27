@@ -1449,6 +1449,13 @@ const FRAME_BELOW_DIRECTIVES: &[(&str, usize)] = &[
 /// `subtask.cancel`, which the polyfill does not build.
 const FRAME_BELOW_CANCEL: (&str, usize) = ("cm/async/cancel-and-exclusive-lock.wast", 196);
 
+/// The frame-below directive that invokes the instance the directive
+/// before it blocked in. In a nested turn that earlier block fails
+/// with the stack-switch cause, which is a trap and poisons the
+/// store, so this one is refused with the cannot-enter cause before
+/// it runs any guest code.
+const FRAME_BELOW_AFTER_A_TRAP: (&str, usize) = ("cm/async/async-calls-sync.wast", 251);
+
 /// Every frame-below directive, in both provider states: served where
 /// a provider runs the store's threads, and failed with the
 /// stack-switch cause, not the deadlock cause, where none does. The
@@ -1497,6 +1504,9 @@ async fn it_serves_every_frame_below_block_under_a_provider_and_fails_it_with_th
                         reason.contains("subtask.cancel")
                             && !reason.contains(&stack_switch)
                             && !reason.contains(&deadlock)
+                    }
+                    Some(reason) if !threads && (*path, *line) == FRAME_BELOW_AFTER_A_TRAP => {
+                        reason.contains("cannot enter component instance")
                     }
                     Some(reason) => {
                         !threads && reason.contains(&stack_switch) && !reason.contains(&deadlock)

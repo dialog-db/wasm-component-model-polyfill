@@ -23,7 +23,7 @@ use super::yield_wake::YieldWake;
 ///
 /// A driver has a condition. It polls turns until the condition
 /// holds, and the value the condition yields is what the future
-/// resolves to. Four rules hold for every driver:
+/// resolves to. Five rules hold for every driver:
 ///
 /// - A driver entered while another driver of the same store is
 ///   inside a turn fails with the recursive-driver cause.
@@ -31,6 +31,9 @@ use super::yield_wake::YieldWake;
 ///   condition unmet, the driver fails with the deadlock cause, or
 ///   with the cannot-block cause when the task it waits on must not
 ///   block.
+/// - A failure of a turn, and the idle failure above, are traps, and
+///   each poisons the store. What the condition yields is the call's
+///   own, and the call decides whether it was a trap.
 /// - Dropping the future cancels nothing. Whatever the driver
 ///   queued stays in the store and runs in the next turn of any
 ///   driver.
@@ -156,8 +159,15 @@ where
                             }
                         }
                         Ok(false) => {}
-                        Err(error) => return Poll::Ready(Err(error)),
+                        Err(error) => {
+                            this.store.internal().poison();
+                            return Poll::Ready(Err(error));
+                        }
                     }
+                    // A store that went idle under the call is the
+                    // deadlock trap, or the cannot-block trap, and a
+                    // trap poisons the store.
+                    this.store.internal().poison();
                     return Poll::Ready(Err(Error::Scheduler(cause)));
                 }
             }

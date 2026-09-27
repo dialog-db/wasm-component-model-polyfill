@@ -180,7 +180,11 @@ async fn it_rejects_a_wrong_length() {
         other => panic!("expected an ABI error, got {other:?}"),
     }
 
-    // A variable-length list is not a fixed-length one.
+    // A variable-length list is not a fixed-length one. The refused
+    // lower above is a trap, and a trap poisons the store, so this one
+    // runs in a store of its own.
+    let (mut store, instance) = instantiate().await;
+    let sum = instance.get_func("sum").expect("`sum` is exported");
     let err = sum
         .call(
             &mut store,

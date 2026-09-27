@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::executor::ir::CanonOptions;
 use crate::internal::FuncInternal;
+use crate::resource::HandleKind;
 use crate::store::StoreInternalExt;
 use crate::{
     Component, Engine, FunctionParameter, FunctionType, HostCall, InterfaceIdentifier, Linker,
@@ -406,14 +407,32 @@ async fn it_gives_back_a_borrow_lent_to_a_host_call_whose_parameter_lift_failed(
         assert_eq!(guard.tasks.thread_count(), 0, "nor any thread record");
     }
 
-    let release = instance.get_func("release").expect("release export");
-    release
-        .call(&mut store, &[])
-        .await
-        .expect("the owning handle is no longer lent, so the guest can drop it");
-    assert_eq!(
-        dropped.lock().expect("record").as_slice(),
-        &[13],
-        "the destructor ran for the handle the failed call had lent"
+    // The failed lift is a trap, and a trap poisons the store, so the
+    // guest cannot drop the handle any more. The lend is read from
+    // the guest's own table instead: its first handle is the one it
+    // lent, at index 1.
+    let table = {
+        let state = lend.abi_state().lock().expect("the instance's ABI state");
+        state.handle_tables[lend.options().instance]
+    };
+    assert!(
+        matches!(
+            store
+                .internal()
+                .tables()
+                .lock()
+                .expect("handle tables")
+                .entry(table, 1),
+            Some(HandleKind::Own {
+                lend_count: 0,
+                rep: 13,
+                ..
+            })
+        ),
+        "the owning handle is no longer lent"
+    );
+    assert!(
+        dropped.lock().expect("record").is_empty(),
+        "no destructor ran for the handle"
     );
 }

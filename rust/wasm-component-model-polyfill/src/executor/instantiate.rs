@@ -479,16 +479,8 @@ fn run_plan<T: 'static>(
                     Some(index) => Some(instance_id_at(&abi_state, *index)?),
                     None => None,
                 };
-                let start = StartTask::enter(store.internal().tables(), owner)?;
-                let instance = RuntimeInstance::new(
-                    store.internal().runtime_mut(),
-                    entry.module.inner(),
-                    &runtime_imports,
-                )
-                .map_err(InstantiationError::SubstrateFailure)
-                .map_err(Error::from);
-                drop(start);
-                items.core_instances.push(instance?);
+                let instance = instantiate_core(store, &entry.module, &runtime_imports, owner)?;
+                items.core_instances.push(instance);
             }
             Initializer::InstantiateImportedModule {
                 source,
@@ -509,16 +501,8 @@ fn run_plan<T: 'static>(
                     Some(index) => Some(instance_id_at(&abi_state, *index)?),
                     None => None,
                 };
-                let start = StartTask::enter(store.internal().tables(), owner)?;
-                let instance = RuntimeInstance::new(
-                    store.internal().runtime_mut(),
-                    module.inner(),
-                    &runtime_imports,
-                )
-                .map_err(InstantiationError::SubstrateFailure)
-                .map_err(Error::from);
-                drop(start);
-                items.core_instances.push(instance?);
+                let instance = instantiate_core(store, &module, &runtime_imports, owner)?;
+                items.core_instances.push(instance);
             }
             Initializer::ExtractMemory { slot, source } => {
                 let extern_value = resolve_source(ir, &items, store, source)?;
@@ -654,6 +638,30 @@ fn run_plan<T: 'static>(
         store_id: store.internal().id(),
     }
     .into())
+}
+
+/// Instantiate one core module of the plan, in the task its `start`
+/// function runs in when it belongs to `owner`.
+///
+/// The `start` function is guest code, so its failure is a trap and
+/// poisons the store. A module that declares none runs no guest code
+/// here, and a failure of its instantiation — an import the substrate
+/// refuses, a feature it lacks — leaves the store as it was.
+fn instantiate_core<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    module: &Module,
+    imports: &Imports,
+    owner: Option<InstanceId>,
+) -> Result<RuntimeInstance> {
+    let start = StartTask::enter(store.internal().tables(), owner)?;
+    let instance = RuntimeInstance::new(store.internal().runtime_mut(), module.inner(), imports);
+    drop(start);
+    instance.map_err(|error| {
+        if module.has_start() {
+            store.internal().poison();
+        }
+        Error::from(InstantiationError::SubstrateFailure(error))
+    })
 }
 
 /// Build the runtime-layer trampoline for one entry in
