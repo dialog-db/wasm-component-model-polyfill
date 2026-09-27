@@ -45,16 +45,17 @@ kanban-plugin: basic
 - [ ] [[8ba35a]]
 - [ ] [[2103de]]
 - [ ] [[0ea332]]
+- [ ] [[105aab]]
 
 ## In Progress
 
-- [ ] [[f3f4c8]]
-
 ## Needs Review
 
-- [ ] [[31e29c]]
+- [ ] [[f3f4c8]]
 
 ## Ready
+
+- [ ] [[31e29c]]
 
 ---
 
