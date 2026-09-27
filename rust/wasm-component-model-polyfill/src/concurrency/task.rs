@@ -48,6 +48,11 @@ pub struct Task {
     pub instance: Option<InstanceId>,
     /// How far the call has got.
     pub state: TaskState,
+    /// Whether a cancellation request was delivered to the task. It
+    /// stays set once the task resolves, which is what tells a
+    /// second resolution of a cancelled task from a `task.cancel` in
+    /// a task that was never cancelled.
+    pub cancel_delivered: bool,
     /// The borrows the task received and has not yet seen dropped.
     /// The reference names this count `num_borrows`.
     pub num_borrows: u32,
@@ -113,6 +118,7 @@ impl Task {
             options,
             instance,
             state: TaskState::Initial,
+            cancel_delivered: false,
             num_borrows: 0,
             implicit_thread,
             threads: vec![implicit_thread],

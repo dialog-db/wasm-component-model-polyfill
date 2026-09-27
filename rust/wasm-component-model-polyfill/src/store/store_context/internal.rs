@@ -27,6 +27,7 @@ use crate::backend::Backend;
 use crate::concurrency::{
     Accessor, CallStatus, EntryFinish, EventSlot, FailureChannel, HostTask, InstanceId, Item,
     LowerKind, Outcome, Plan, ResultChannel, Scheduler, StoreProvider, SubtaskId, TaskId, ThreadId,
+    WaitableSetId,
 };
 use crate::error::{Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
@@ -421,6 +422,20 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
     ) -> Result<()> {
         self.context
             .wait_callback_on_set(task, instance, table, set_index, slot, item)
+    }
+
+    /// Queue or hold `task`'s callback item, whose callback waits on
+    /// `set`.
+    pub fn park_callback_on_set(
+        self,
+        task: TaskId,
+        instance: InstanceId,
+        set: WaitableSetId,
+        slot: EventSlot,
+        item: Item<T>,
+    ) -> Result<()> {
+        self.context
+            .park_callback_on_set(task, instance, set, slot, item)
     }
 
     /// Enter `task`, which is what a call of an export does.

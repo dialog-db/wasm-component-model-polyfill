@@ -36,9 +36,8 @@ pub struct Subtask {
     /// The waitable state: what a thread waiting on this subtask
     /// consults.
     pub waitable: WaitableState,
-    /// Whether the caller asked for the call to be cancelled.
-    /// Nothing requests cancellation yet.
-    #[allow(dead_code)]
+    /// Whether the caller asked for the call to be cancelled, with
+    /// `subtask.cancel`. A second request traps.
     pub cancel_requested: bool,
     /// The subtask's index in the caller instance's handle table,
     /// while the caller holds an entry for it. A call that resolves

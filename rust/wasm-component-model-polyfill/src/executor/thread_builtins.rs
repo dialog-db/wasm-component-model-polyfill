@@ -427,8 +427,8 @@ pub fn build_thread_yield_then_promote<T: 'static>(
 /// Build one of the five suspending built-ins. `yielding` says
 /// whether the current thread stays ready rather than suspended, and
 /// `switch` which thread it names. Each answers zero, as the
-/// reference's built-ins do: nothing in this design delivers a
-/// cancellation.
+/// reference's built-ins do: none of them takes a pending
+/// cancellation request.
 ///
 /// The built-in has two bodies. A thread that runs on a stack of its
 /// own suspends in the built-in's shim, through [`begin_suspension`],

@@ -63,7 +63,7 @@ struct HeldCallback<T: 'static> {
 enum HeldFor {
     /// An event on the waitable set the task's implicit thread is
     /// parked on. The item is queued when a waitable of the set
-    /// holds an event, carrying that event.
+    /// holds an event, and takes that event as it runs.
     Event {
         /// The thread parked on the set, whose wait ends as the item
         /// is queued.
@@ -1185,6 +1185,34 @@ impl<T: 'static> Scheduler<T> {
         })
     }
 
+    /// Take the callback item held for an event on behalf of
+    /// `thread` out of the held items, with the set the thread waits
+    /// on and the slot the item's event goes in. `None` when no such
+    /// item is held.
+    ///
+    /// This is how `subtask.cancel` wakes a callback task waiting in
+    /// its loop: the wait on the set is the caller's to end, and the
+    /// item runs next, where the pending request is delivered before
+    /// any event of the set.
+    pub fn take_held_callback_of(
+        &mut self,
+        thread: ThreadId,
+    ) -> Option<(WaitableSetId, EventSlot, Item<T>)> {
+        let number = self
+            .held_callbacks
+            .entries
+            .iter()
+            .find(|(_, entry)| {
+                matches!(entry.condition, HeldFor::Event { thread: held, .. } if held == thread)
+            })
+            .map(|(number, _)| *number)?;
+        let entry = self.held_callbacks.remove(number)?;
+        let HeldFor::Event { set, .. } = entry.condition else {
+            return None;
+        };
+        Some((set, entry.slot, entry.item))
+    }
+
     /// Hold `item` until a waitable of `set` holds an event. `thread`
     /// is the task's implicit thread, which the caller parked on the
     /// set; the wait ends when the item is queued.
@@ -1192,7 +1220,7 @@ impl<T: 'static> Scheduler<T> {
     /// This is the second half of the wait status word: a callback
     /// task that returned it with a set holding no event leaves the
     /// item here, and the turn that finds the set filled queues it
-    /// with the event the set delivers.
+    /// to take the event the set delivers.
     pub fn hold_for_event(
         &mut self,
         instance: InstanceId,
@@ -1228,10 +1256,12 @@ impl<T: 'static> Scheduler<T> {
     /// Queue every held callback item whose condition now holds, in
     /// the order the items were held.
     ///
-    /// An item held for an event is queued with the event the set
-    /// delivers, and the wait its thread began ends as it is queued.
-    /// An item held for the exclusive thread is queued with the event
-    /// it already carries. Both go on the high-priority queue: the
+    /// An item held for an event is queued with the set in its slot,
+    /// and the wait its thread began ends as it is queued. The item
+    /// takes the set's event only when it runs, so a cancellation
+    /// request that arrives meanwhile is delivered first. An item
+    /// held for the exclusive thread is queued with what its slot
+    /// already holds. Both go on the high-priority queue: the
     /// readiness is fresh, and a yield that gave way has given way
     /// already.
     ///
@@ -1273,7 +1303,9 @@ impl<T: 'static> Scheduler<T> {
     }
 
     /// Queue the item held under `number` when its condition holds,
-    /// and leave it held when it does not.
+    /// and leave it held when it does not. The thread of an item held
+    /// for an event stops waiting as it is queued, and the set counts
+    /// it as a waiter until the item runs.
     fn release_one(&mut self, number: u64, tables: &mut HandleTables) -> Result<()> {
         let Some(entry) = self.held_callbacks.entries.get(&number) else {
             return Ok(());
@@ -1299,9 +1331,9 @@ impl<T: 'static> Scheduler<T> {
             return Ok(());
         };
         if let HeldFor::Event { thread, set } = condition {
-            entry
-                .slot
-                .fill(tables.finish_wait_on_waitable_set(set, thread)?);
+            tables.tasks.end_wait(set, thread)?;
+            tables.tasks.queue_wait(set, thread)?;
+            entry.slot.fill_from(set);
         }
         self.high_priority.push_back(entry.item);
         Ok(())
@@ -1321,7 +1353,11 @@ impl<T: 'static> Scheduler<T> {
     ///
     /// - The switch slot, the two ready queues, and the
     ///   resume-after-yield slot hold items that are ready or nearly
-    ///   so. Dropping one reserves nothing to give back.
+    ///   so. Dropping one reserves nothing to give back here. A queued
+    ///   callback item that would take its event from a set is
+    ///   counted among the set's waiters, but on the task's implicit
+    ///   thread, and the thread's record gave the count back as the
+    ///   task ended.
     /// - The entry gate holds the start of a task that has not run.
     ///   The count of the tasks waiting to enter the instance falls
     ///   with the entry, or the gate would stay shut against every
@@ -2735,9 +2771,20 @@ mod tests {
         assert_eq!(entries(&log), vec!["resumed"]);
         assert_eq!(store.internal().scheduler().held_callbacks(), 0);
         assert_eq!(
-            slot.take().triple(),
-            (1, 3, 1),
-            "the item was queued with the event the set delivered"
+            slot.take_set(),
+            Some(set),
+            "the item was queued to take its event from the set"
+        );
+        assert!(
+            store
+                .internal()
+                .tables()
+                .lock()
+                .expect("tables")
+                .tasks
+                .set_has_pending_event(set)
+                .expect("set record"),
+            "the set keeps its event until the item takes it as it runs"
         );
         assert_eq!(
             store
@@ -2749,8 +2796,21 @@ mod tests {
                 .waitable_set(set)
                 .expect("set record")
                 .num_waiting,
-            0,
-            "the wait ended as the item was queued"
+            1,
+            "the set counts the waiter until the item takes its event"
+        );
+        assert_eq!(
+            store
+                .internal()
+                .tables()
+                .lock()
+                .expect("tables")
+                .tasks
+                .thread(thread)
+                .expect("thread record")
+                .readiness,
+            None,
+            "the thread stopped waiting as the item was queued"
         );
     }
 
@@ -2797,9 +2857,9 @@ mod tests {
 
         assert_eq!(entries(&log), vec!["resumed"]);
         assert_eq!(
-            slot.take().triple(),
-            (1, 4, 1),
-            "the join filled the set, and the item was queued with its event"
+            slot.take_set(),
+            Some(set),
+            "the join filled the set, and the item was queued to take its event"
         );
     }
 

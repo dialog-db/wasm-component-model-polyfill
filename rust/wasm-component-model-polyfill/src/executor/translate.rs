@@ -494,9 +494,9 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
             // trampoline IR's own and not the reference's: `canon
             // thread.yield` carries no such immediate, and the
             // release after this one drops the field. It marks a
-            // caller that may be told a cancellation is pending,
-            // and nothing in this design makes one pending, so the
-            // built-in answers zero either way.
+            // caller that may be told a cancellation is pending. The
+            // built-in never takes a pending request, so it answers
+            // zero either way.
             Trampoline::ThreadYield { instance, .. } => TrampolineSpec::ThreadYield {
                 instance: instance.as_u32() as usize,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
@@ -582,21 +582,16 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 instance: instance.as_u32() as usize,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
-            // The two cancellation built-ins are the one exception to
-            // refusing what is not built. The binding layer of the
-            // Rust toolchain links `task.cancel` in every `async`
-            // export and `subtask.cancel` in every awaited import, so
-            // refusing them here would refuse every such guest,
-            // including the paths that never cancel. Each is accepted
-            // and fails with `Error::Unsupported` when a guest calls
-            // it. The `async` immediate of `subtask.cancel` is
-            // dropped, because the call fails either way.
+            // The two cancellation built-ins. Each names the instance
+            // that calls it, and `subtask.cancel` keeps its `async`
+            // immediate, which decides whether it blocks.
             Trampoline::TaskCancel { instance } => TrampolineSpec::TaskCancel {
                 instance: instance.as_u32() as usize,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
-            Trampoline::SubtaskCancel { instance, .. } => TrampolineSpec::SubtaskCancel {
+            Trampoline::SubtaskCancel { instance, async_ } => TrampolineSpec::SubtaskCancel {
                 instance: instance.as_u32() as usize,
+                async_: *async_,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
             // Concurrency built-ins and the rest are not built. A

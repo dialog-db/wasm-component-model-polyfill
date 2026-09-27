@@ -59,8 +59,9 @@
 //! revision. The immediate is a field of the trampoline IR of the
 //! Wasmtime release this crate reads components with, where it
 //! marks a caller that may be told a cancellation is pending, and
-//! the release after it has dropped the field. Nothing in this
-//! design makes a cancellation pending either way.
+//! the release after it has dropped the field. The built-in never
+//! takes a pending cancellation request, so the immediate changes
+//! nothing it answers.
 
 use std::sync::{Arc, Mutex};
 

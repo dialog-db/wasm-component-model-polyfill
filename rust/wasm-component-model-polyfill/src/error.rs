@@ -1001,6 +1001,21 @@ pub enum WaitableCause {
     /// [`WaitableCause::SetHasWaiters`].
     #[error("waitable cannot be used synchronously while added to a waitable set")]
     SyncAndAsync,
+
+    /// A guest ran `subtask.cancel` on a subtask whose resolution had
+    /// already been delivered. The message is Wasmtime's trap,
+    /// `Trap::SubtaskCancelAfterTerminal`, under the same rule as
+    /// [`WaitableCause::SetHasWaiters`].
+    #[error("`subtask.cancel` called after terminal status delivered")]
+    SubtaskCancelAfterTerminal,
+
+    /// A guest ran `subtask.cancel` a second time on a subtask whose
+    /// resolution had not been delivered yet. The reference traps on
+    /// the same condition; Wasmtime has no trap of its own for it, so
+    /// the message is the polyfill's own, written to read like the
+    /// one beside it.
+    #[error("`subtask.cancel` called twice for the same subtask")]
+    SubtaskCancelledTwice,
 }
 
 /// The structured reason a task operation failed.
@@ -1026,6 +1041,14 @@ pub enum TaskCause {
     /// [`TaskCause::NoResult`].
     #[error("`task.return` or `task.cancel` called more than once for current task")]
     ReturnedTwice,
+
+    /// A guest ran `task.cancel` in a task no cancellation request
+    /// was delivered to, which includes every task whose lift is not
+    /// `async`. The message is Wasmtime's trap,
+    /// `Trap::TaskCancelNotCancelled`, under the same rule as
+    /// [`TaskCause::NoResult`].
+    #[error("`task.cancel` called by task which has not been cancelled")]
+    CancelNotDelivered,
 
     /// The result type or the options of a `task.return` differ from
     /// the ones the task's function was lifted with. The message

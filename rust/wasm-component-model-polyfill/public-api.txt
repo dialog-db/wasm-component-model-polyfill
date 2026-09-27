@@ -235,6 +235,7 @@ pub wasm_component_model_polyfill::SuspendProviderKind::None
 pub wasm_component_model_polyfill::SuspendProviderKind::StackSwitching
 #[non_exhaustive] pub enum wasm_component_model_polyfill::TaskCause
 pub wasm_component_model_polyfill::TaskCause::BackpressureOverflow
+pub wasm_component_model_polyfill::TaskCause::CancelNotDelivered
 pub wasm_component_model_polyfill::TaskCause::CannotEnter
 pub wasm_component_model_polyfill::TaskCause::CannotLeave
 pub wasm_component_model_polyfill::TaskCause::NoResult
@@ -320,6 +321,8 @@ pub wasm_component_model_polyfill::ValueType::Variant(wasm_component_model_polyf
 #[non_exhaustive] pub enum wasm_component_model_polyfill::WaitableCause
 pub wasm_component_model_polyfill::WaitableCause::SetHasWaitables
 pub wasm_component_model_polyfill::WaitableCause::SetHasWaiters
+pub wasm_component_model_polyfill::WaitableCause::SubtaskCancelAfterTerminal
+pub wasm_component_model_polyfill::WaitableCause::SubtaskCancelledTwice
 pub wasm_component_model_polyfill::WaitableCause::SubtaskNotResolved
 pub wasm_component_model_polyfill::WaitableCause::SyncAndAsync
 pub struct wasm_component_model_polyfill::AbiError

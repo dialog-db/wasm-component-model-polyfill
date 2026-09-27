@@ -48,10 +48,8 @@ impl Event {
         }
     }
 
-    /// The event a cancelled task's waiting thread receives. Both
-    /// payloads are zero. Nothing constructs one yet; the feature
-    /// that adds cancellation does.
-    #[allow(dead_code)]
+    /// The event a cancelled task receives when the request is
+    /// delivered to it. Both payloads are zero.
     pub fn task_cancelled() -> Self {
         Self {
             code: EventCode::TaskCancelled,

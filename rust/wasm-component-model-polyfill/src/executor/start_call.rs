@@ -299,43 +299,7 @@ impl Prepared {
         if !self.callee_async_typed {
             return store.internal().run_switch_slot();
         }
-        // The mark comes back off through an unwind too. One a panic
-        // left on the stack would turn every later deadlock under
-        // this caller into a stack switch.
-        //
-        // The callee may suspend while it runs from here, whatever
-        // call into its instance is in progress below, because its
-        // suspension hands control back to this frame and the caller
-        // goes on without a block. Its instance's may-not-suspend flag
-        // is clear until the callee returns or suspends, and then goes
-        // back to what it was, as Wasmtime's start intrinsic does.
-        let tables = store.internal().tables_handle();
-        let may_not_suspend = {
-            let mut guard = lock(&tables)?;
-            guard.tasks.begin_nested_start(self.subtask, lower);
-            guard.tasks.set_may_not_suspend(self.instance, false)
-        };
-        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            store.internal().run_switch_slot()
-        }));
-        if let (Some(old), Ok(mut guard)) = (may_not_suspend, tables.lock()) {
-            guard.tasks.set_may_not_suspend(self.instance, old);
-        }
-        // A callee that switched to a thread this frame cannot resume
-        // left that to the store, and the start goes on once the store
-        // has done it. The mark comes off then.
-        if matches!(ran, Ok(Ok(()))) && store.internal().defers_work() {
-            store
-                .internal()
-                .scheduler_mut()
-                .deferred_mut()
-                .ends_nested_start = true;
-            return Ok(());
-        }
-        if let Ok(mut guard) = tables.lock() {
-            guard.tasks.end_nested_start();
-        }
-        ran.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        run_nested_start(store, self.subtask, self.instance, lower)
     }
 
     /// Remove the subtask record of a call that failed, once the
@@ -646,6 +610,60 @@ pub fn release_subtask<T: 'static>(store: &mut StoreContext<'_, T>, subtask: Sub
         guard.remove(table, index);
     }
     guard.tasks.remove_subtask(subtask);
+}
+
+/// Run the item the switch slot holds from inside the current frame,
+/// as a nested start: the thread it starts or resumes, of a task of
+/// `instance`, runs above a mark that names `subtask`, the caller's
+/// record of the call, and `lower`, how the caller would go on once
+/// control came back to it.
+///
+/// This is how a start intrinsic runs an `async`-typed callee, and
+/// how `subtask.cancel` gives way to the callee it woke. The
+/// documentation of [`Prepared::run_start`] states the rules.
+pub fn run_nested_start<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    subtask: SubtaskId,
+    instance: InstanceId,
+    lower: LowerKind,
+) -> Result<()> {
+    // The mark comes back off through an unwind too. One a panic
+    // left on the stack would turn every later deadlock under this
+    // caller into a stack switch.
+    //
+    // The thread may suspend while it runs from here, whatever call
+    // into its instance is in progress below, because its suspension
+    // hands control back to this frame and the caller goes on
+    // without a block. Its instance's may-not-suspend flag is clear
+    // until the thread returns or suspends, and then goes back to
+    // what it was, as Wasmtime's start intrinsic does.
+    let tables = store.internal().tables_handle();
+    let may_not_suspend = {
+        let mut guard = lock(&tables)?;
+        guard.tasks.begin_nested_start(subtask, lower);
+        guard.tasks.set_may_not_suspend(instance, false)
+    };
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        store.internal().run_switch_slot()
+    }));
+    if let (Some(old), Ok(mut guard)) = (may_not_suspend, tables.lock()) {
+        guard.tasks.set_may_not_suspend(instance, old);
+    }
+    // A thread that switched to a thread this frame cannot resume
+    // left that to the store, and the frame goes on once the store
+    // has done it. The mark comes off then.
+    if matches!(ran, Ok(Ok(()))) && store.internal().defers_work() {
+        store
+            .internal()
+            .scheduler_mut()
+            .deferred_mut()
+            .ends_nested_start = true;
+        return Ok(());
+    }
+    if let Ok(mut guard) = tables.lock() {
+        guard.tasks.end_nested_start();
+    }
+    ran.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
 /// One `funcref` argument, which an adapter never passes as null.

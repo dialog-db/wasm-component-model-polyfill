@@ -4,6 +4,7 @@ use super::readiness::Readiness;
 use super::task_id::TaskId;
 use super::thread_id::ThreadId;
 use super::thread_start::ThreadStart;
+use super::waitable_set_id::WaitableSetId;
 
 /// The record of one guest execution.
 ///
@@ -70,6 +71,14 @@ pub struct Thread {
     /// started or resumed it was anything else: a turn of a driver, or
     /// a thread of another instance or of one that may suspend.
     pub returns_to: Option<ThreadId>,
+    /// The waitable set the callback item of this thread's task
+    /// takes its event from, while the item is queued to run and
+    /// has not taken it. The thread no longer waits then, but the set
+    /// still counts it among its waiters, so the set cannot be
+    /// dropped under the item, as the reference's callback loop
+    /// counts the waiter until it takes its event. `None` when no
+    /// such item is queued.
+    pub queued_wait: Option<WaitableSetId>,
 }
 
 impl Thread {
@@ -86,6 +95,7 @@ impl Thread {
             start: None,
             own_stack: false,
             returns_to: None,
+            queued_wait: None,
         }
     }
 

@@ -25,11 +25,13 @@
 //!   control to the host executor.
 //! - **Wait** names a waitable set in the instance's handle table.
 //!   The instance goes back, and a set that already holds an event
-//!   queues the callback item with it at once. A set that holds none
-//!   parks the task's implicit thread on the set, and the item waits
-//!   with it until a later turn finds the set filled. When no turn
-//!   ever does, the call's driver goes idle and fails with the
-//!   deadlock cause.
+//!   queues the callback item at once. A set that holds none parks
+//!   the task's implicit thread on the set, and the item waits with
+//!   it until a later turn finds the set filled. When no turn ever
+//!   does, the call's driver goes idle and fails with the deadlock
+//!   cause. Either way the item takes the set's event only when it
+//!   runs, which is where the reference takes it, and a set that lost
+//!   its event by then parks the task again.
 //!
 //! A callback item checks the instance before it runs: the exclusive
 //! thread is one task's at a time, so an item that finds it taken
@@ -37,6 +39,16 @@
 //! instance, pushes the task as the current scope, calls the callback
 //! with the event's three numbers, pops the scope, and hands the word
 //! it returned back to this loop.
+//!
+//! A cancellation request reaches the task through this loop, once,
+//! and only while the instance is free for the callback to run. It
+//! comes before any other event: an item that runs while a request
+//! waits delivers the task-cancelled event in place of the none event
+//! a yield left, and in place of the event of the set it waited on,
+//! which the set keeps for the next wait. A task waiting on a set
+//! takes the request at once, because `subtask.cancel` queues its
+//! waiting item, and a task that returns the wait code with a request
+//! pending waits for nothing.
 //!
 //! An error the item raises fails the driver whose turn ran it, not
 //! the call that started the task. That is Wasmtime's rule for a task
@@ -149,9 +161,11 @@ impl CallbackTask {
     }
 
     /// Wait on the waitable set `set_index` names, which is the wait
-    /// code. A set that already holds an event queues the callback
-    /// item with it; a set that holds none parks the task's implicit
-    /// thread and the item waits with it.
+    /// code. A set that already holds an event, or a task a
+    /// cancellation request waits for, queues the callback item at
+    /// once, and the item takes its event as it runs; a set that
+    /// holds none parks the task's implicit thread and the item waits
+    /// with it.
     fn wait<T: 'static>(&self, store: &mut StoreContext<'_, T>, set_index: u32) -> Result<()> {
         let slot = EventSlot::new();
         let item = self.item(slot.clone());
@@ -205,10 +219,12 @@ impl CallbackTask {
                 .hold_for_exclusive(self.instance, slot, item);
             return Ok(());
         }
+        let Some(event) = self.take_event(store, &slot)? else {
+            return Ok(());
+        };
         store
             .internal()
             .take_exclusive_thread(self.task, self.instance)?;
-        let event = slot.take();
         let base = store.internal().scope_depth()?;
         store.internal().enter_export_task(self.task)?;
         // The callback is an entry of the task's implicit thread, so
@@ -243,6 +259,60 @@ impl CallbackTask {
             vec![RuntimeVal::I32(0)],
             finish,
         )
+    }
+
+    /// The event the callback receives on this run, taken as the item
+    /// runs, which is where the reference's callback loop takes it.
+    ///
+    /// A cancellation request the task has not been told of comes
+    /// first: the callback receives the task-cancelled event, and a
+    /// set the item was queued to take from keeps its event for the
+    /// next wait. Otherwise the item takes the next event of that set,
+    /// or the event its slot holds. A set that lost its event before
+    /// the item ran, because a waitable left it or was dropped, parks
+    /// the task on the set again, as the reference's wait goes on
+    /// waiting, and `None` says the callback does not run this time.
+    /// The set itself cannot go: it counts the task's implicit thread
+    /// as a waiter from the moment the item is queued until here, so
+    /// `waitable-set.drop` traps in the meantime, as the reference's
+    /// does on a set its callback loop still waits on.
+    fn take_event<T: 'static>(
+        &self,
+        store: &mut StoreContext<'_, T>,
+        slot: &EventSlot,
+    ) -> Result<Option<Event>> {
+        let set = slot.take_set();
+        let emptied = {
+            let mut tables = store.internal().lock_tables()?;
+            // The item runs, so the set stops counting the waiter it
+            // counted while the item was queued. A set that holds no
+            // event below counts it again as the task parks.
+            let thread = tables
+                .tasks
+                .task(self.task)
+                .map(|record| record.implicit_thread)
+                .ok_or_else(|| Error::internal("a callback task is not in the store"))?;
+            tables.tasks.end_queued_wait(thread);
+            if tables.tasks.deliver_pending_cancel(self.task) {
+                return Ok(Some(Event::task_cancelled()));
+            }
+            match set {
+                None => return Ok(Some(slot.take())),
+                Some(set) if tables.tasks.set_has_pending_event(set)? => {
+                    return Ok(Some(tables.poll_waitable_set(set)?));
+                }
+                Some(set) => set,
+            }
+        };
+        let item = self.item(slot.clone());
+        store.internal().park_callback_on_set(
+            self.task,
+            self.instance,
+            emptied,
+            slot.clone(),
+            item,
+        )?;
+        Ok(None)
     }
 
     /// Give back what a callee whose callback failed still holds.

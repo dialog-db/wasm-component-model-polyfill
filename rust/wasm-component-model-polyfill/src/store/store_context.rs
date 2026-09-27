@@ -2480,12 +2480,10 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Deliver the wait a callback task's status word asked for.
     ///
     /// The set is looked up in `table`, the instance's own handle
-    /// table, and the task's exclusive hold on the instance is
-    /// released either way. A set that already holds an event
-    /// delivers it and `item` is queued at once, with that event in
-    /// `slot`. A set that holds none parks the task's implicit thread
-    /// on it and the item waits with it, until a later turn finds the
-    /// set filled. Workspace-internal.
+    /// table, the task's exclusive hold on the instance is released,
+    /// and the item goes where
+    /// [`park_callback_on_set`](Self::park_callback_on_set) sends it.
+    /// Workspace-internal.
     fn wait_callback_on_set(
         &mut self,
         task: TaskId,
@@ -2495,24 +2493,53 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         slot: EventSlot,
         item: Item<T>,
     ) -> Result<()> {
+        let set = {
+            let tables = self.tables_handle();
+            let mut guard = Self::lock(&tables)?;
+            let set = Self::waitable_set_at(&guard, table, set_index)?;
+            self.scheduler()
+                .release_exclusive_thread(&mut guard.tasks, task);
+            set
+        };
+        self.park_callback_on_set(task, instance, set, slot, item)
+    }
+
+    /// Queue or hold the callback item of `task`, whose callback
+    /// waits on `set`.
+    ///
+    /// A set that already holds an event, or a task a cancellation
+    /// request waits for, queues `item` at once, with the set in
+    /// `slot`: the item takes the request or the set's event as it
+    /// runs, the request first. The set counts the task's implicit
+    /// thread as a waiter until then. Otherwise the task's implicit thread
+    /// is parked on the set and the item waits with it, until a later
+    /// turn finds the set filled or `subtask.cancel` wakes it.
+    /// Workspace-internal.
+    fn park_callback_on_set(
+        &mut self,
+        task: TaskId,
+        instance: InstanceId,
+        set: WaitableSetId,
+        slot: EventSlot,
+        item: Item<T>,
+    ) -> Result<()> {
         let tables = self.tables_handle();
         let mut guard = Self::lock(&tables)?;
-        let set = Self::waitable_set_at(&guard, table, set_index)?;
         let thread = guard
             .tasks
             .task(task)
             .map(|record| record.implicit_thread)
             .ok_or_else(|| Error::internal("an export's task is not in the store"))?;
-        self.scheduler()
-            .release_exclusive_thread(&mut guard.tasks, task);
-        match guard.wait_on_waitable_set(set, thread)? {
-            Some(event) => {
-                slot.fill(event);
-                self.scheduler_mut().push_high_priority(item);
-            }
-            None => self
-                .scheduler_mut()
-                .hold_for_event(instance, thread, set, slot, item),
+        let ready =
+            guard.tasks.has_pending_cancel(task) || guard.tasks.set_has_pending_event(set)?;
+        if ready {
+            guard.tasks.queue_wait(set, thread)?;
+            slot.fill_from(set);
+            self.scheduler_mut().push_high_priority(item);
+        } else {
+            guard.tasks.begin_wait(set, thread)?;
+            self.scheduler_mut()
+                .hold_for_event(instance, thread, set, slot, item);
         }
         Ok(())
     }

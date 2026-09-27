@@ -1436,7 +1436,10 @@ const FRAME_BELOW_DIRECTIVES: &[(&str, usize)] = &[
     ("cm/async/async-calls-sync.wast", 250),
     ("cm/async/async-calls-sync.wast", 251),
     ("cm/async/cancel-and-exclusive-lock.wast", 196),
+    ("cm/async/cancel-delivery.wast", 278),
+    ("cm/async/cancel-subtask.wast", 217),
     ("cm/async/sync-streams.wast", 208),
+    ("cm/async/trap-if-block-and-sync.wast", 352),
     ("wasmtime/async/reenter-during-yield.wast", 81),
     ("wasmtime/async/stream-zero-ops.wast", 201),
     ("wasmtime/async/streams-massive-send.wast", 238),
@@ -1451,11 +1454,6 @@ const FRAME_BELOW_DIRECTIVES: &[(&str, usize)] = &[
     ("wasmtime/async/trap-if-done.wast", 625),
     ("wasmtime/async/trap-if-done.wast", 627),
 ];
-
-/// The one frame-below directive that also cancels a subtask. Under a
-/// provider its block is served, and it goes on to fail at
-/// `subtask.cancel`, which the polyfill does not build.
-const FRAME_BELOW_CANCEL: (&str, usize) = ("cm/async/cancel-and-exclusive-lock.wast", 196);
 
 /// The frame-below directive that invokes the instance the directive
 /// before it blocked in. In a nested turn that earlier block fails
@@ -1507,12 +1505,7 @@ async fn it_serves_every_frame_below_block_under_a_provider_and_fails_it_with_th
                     "in a nested turn"
                 };
                 let held = match reason {
-                    None => threads && (*path, *line) != FRAME_BELOW_CANCEL,
-                    Some(reason) if threads && (*path, *line) == FRAME_BELOW_CANCEL => {
-                        reason.contains("subtask.cancel")
-                            && !reason.contains(&stack_switch)
-                            && !reason.contains(&deadlock)
-                    }
+                    None => threads,
                     Some(reason) if !threads && (*path, *line) == FRAME_BELOW_AFTER_A_TRAP => {
                         reason.contains("cannot enter component instance")
                     }

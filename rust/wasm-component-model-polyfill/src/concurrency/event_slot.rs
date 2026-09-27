@@ -3,6 +3,16 @@
 use std::sync::{Arc, Mutex};
 
 use super::event::Event;
+use super::waitable_set_id::WaitableSetId;
+
+/// What a slot holds for the item: an event, or the waitable set the
+/// item takes its event from when it runs.
+enum Content {
+    /// The event itself.
+    Event(Event),
+    /// The set whose next event the item takes as it runs.
+    Set(WaitableSetId),
+}
 
 /// The one event a queued callback item receives when it runs.
 ///
@@ -14,7 +24,11 @@ use super::event::Event;
 /// queues the item, and the item takes the event out as it runs.
 ///
 /// A yield fills the slot at once, with the none event, because the
-/// event a yield delivers is known before the item is queued.
+/// event a yield delivers is known before the item is queued. A wait
+/// fills it with the set instead, and the item takes the set's event
+/// only as it runs. That is where the reference and Wasmtime take it,
+/// so a cancellation request that arrives while the item is queued
+/// is delivered first, and the set keeps its event for the next wait.
 ///
 /// An item that finds the slot empty receives the none event. That is
 /// the event a thread resumed for a reason other than its own
@@ -22,7 +36,7 @@ use super::event::Event;
 /// ends with nothing in the set.
 #[derive(Clone)]
 pub struct EventSlot {
-    slot: Arc<Mutex<Option<Event>>>,
+    slot: Arc<Mutex<Option<Content>>>,
 }
 
 impl EventSlot {
@@ -42,22 +56,46 @@ impl EventSlot {
     }
 
     /// Leave `event` for the item that holds the other half of this
-    /// slot. A slot that already held an event keeps the later one,
+    /// slot. A slot that already held something keeps the later one,
     /// which is the rule a waitable's own pending event slot follows.
     pub fn fill(&self, event: Event) {
-        if let Ok(mut slot) = self.slot.lock() {
-            *slot = Some(event);
+        self.put(Content::Event(event));
+    }
+
+    /// Leave `set` for the item that holds the other half of this
+    /// slot: the item takes the set's next event when it runs.
+    pub fn fill_from(&self, set: WaitableSetId) {
+        self.put(Content::Set(set));
+    }
+
+    /// Take the set the slot was filled from, leaving the slot empty.
+    /// `None`, and the slot untouched, when it holds an event or
+    /// nothing.
+    pub fn take_set(&self) -> Option<WaitableSetId> {
+        let mut slot = self.slot.lock().ok()?;
+        match *slot {
+            Some(Content::Set(set)) => {
+                *slot = None;
+                Some(set)
+            }
+            _ => None,
         }
     }
 
     /// Take the event out, leaving the slot empty. A slot that holds
-    /// nothing answers with the none event.
+    /// nothing, or a set, answers with the none event.
     pub fn take(&self) -> Event {
-        self.slot
-            .lock()
-            .ok()
-            .and_then(|mut slot| slot.take())
-            .unwrap_or_else(Event::none)
+        match self.slot.lock().ok().and_then(|mut slot| slot.take()) {
+            Some(Content::Event(event)) => event,
+            _ => Event::none(),
+        }
+    }
+
+    /// Replace what the slot holds with `content`.
+    fn put(&self, content: Content) {
+        if let Ok(mut slot) = self.slot.lock() {
+            *slot = Some(content);
+        }
     }
 }
 

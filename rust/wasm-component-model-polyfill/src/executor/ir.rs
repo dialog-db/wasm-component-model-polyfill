@@ -937,11 +937,8 @@ pub enum TrampolineSpec {
         /// The core signature the guest imports.
         signature: CoreSignature,
     },
-    /// The `task.cancel` built-in. Cancellation is not built, so a
-    /// call fails with [`Error::Unsupported`](crate::Error) once the
-    /// may-leave check has passed. The built-in is accepted so that
-    /// a guest whose binding layer links it runs every path that
-    /// does not cancel.
+    /// The `task.cancel` built-in: the current task, which a
+    /// cancellation request was delivered to, resolves as cancelled.
     TaskCancel {
         /// The component instance that calls the built-in.
         instance: usize,
@@ -949,11 +946,15 @@ pub enum TrampolineSpec {
         /// no results.
         signature: CoreSignature,
     },
-    /// The `subtask.cancel` built-in, accepted and failing at the
-    /// call as [`TrampolineSpec::TaskCancel`] does.
+    /// The `subtask.cancel` built-in: the caller asks the subtask it
+    /// names to stop, and answers its resolution or `BLOCKED`.
     SubtaskCancel {
         /// The component instance that calls the built-in.
         instance: usize,
+        /// The built-in's `async` option: whether it answers
+        /// `BLOCKED` after one give-way rather than blocking until
+        /// the callee resolves.
+        async_: bool,
         /// The core signature the guest imports: the subtask index
         /// in and the subtask's state out.
         signature: CoreSignature,

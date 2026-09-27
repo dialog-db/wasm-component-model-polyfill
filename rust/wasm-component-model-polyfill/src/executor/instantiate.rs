@@ -1064,13 +1064,17 @@ fn build_runtime_trampoline<T: 'static>(
         )),
         TrampolineSpec::SubtaskCancel {
             instance,
+            async_,
             signature,
-        } => Ok(build_subtask_cancel(
-            store,
-            *instance,
-            signature,
-            abi_state.clone(),
-        )),
+        } => {
+            return Ok(Trampoline::Blocking(build_subtask_cancel(
+                store,
+                *instance,
+                *async_,
+                signature,
+                abi_state.clone(),
+            )));
+        }
     };
     Ok(Trampoline::Plain(plain?))
 }

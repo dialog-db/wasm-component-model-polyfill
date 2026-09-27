@@ -540,9 +540,11 @@ impl TaskTables {
     /// End `thread` on its own: it leaves its instance's thread table
     /// and its task's list of threads, and its record leaves the
     /// store. The task itself stays. This is the end of an explicit
-    /// thread whose start function returned or failed.
+    /// thread whose start function returned or failed. A set the
+    /// thread counted as a queued waiter on loses the waiter.
     pub fn end_thread(&mut self, thread: ThreadId) {
         self.unregister_thread(thread);
+        self.end_queued_wait(thread);
         let Some(task) = self.thread(thread).map(|record| record.task) else {
             return;
         };
@@ -1216,7 +1218,8 @@ impl TaskTables {
     }
 
     /// Remove every thread record `task` contains, and empty its
-    /// list of them.
+    /// list of them. A set a queued callback item of the task would
+    /// have taken its event from loses the waiter it counted.
     fn end_threads_of(&mut self, task: TaskId) {
         let Some(threads) = self
             .task_mut(task)
@@ -1226,6 +1229,7 @@ impl TaskTables {
         };
         for thread in threads {
             self.unregister_thread(thread);
+            self.end_queued_wait(thread);
             if let Some(index) = self.thread_index(thread) {
                 self.threads.remove(index);
             }
@@ -1373,8 +1377,10 @@ impl TaskTables {
     /// cancelled-before-started when the callee had not read its
     /// parameters yet, and to cancelled-before-returned when it had.
     /// A host task whose body failed after the call returned to the
-    /// guest reaches this; the cancellation built-ins that also will
-    /// are not built yet.
+    /// guest reaches this, and so does `subtask.cancel` of a callee
+    /// its entry gate still holds. Neither fills the subtask's event
+    /// slot: the one delivers nothing, and the other delivers the
+    /// resolution itself, in the same breath.
     pub fn subtask_cancelled(&mut self, subtask: SubtaskId) -> Result<()> {
         let record = self
             .subtask_mut(subtask)
@@ -1384,6 +1390,62 @@ impl TaskTables {
             _ => SubtaskState::CancelledBeforeReturned,
         };
         Ok(())
+    }
+
+    /// The callee of `subtask` confirmed its cancellation with
+    /// `task.cancel`: the subtask moves to cancelled-before-returned
+    /// and, like a return, takes on the subtask event when the caller
+    /// holds a handle for it, which is what a caller waiting for the
+    /// cancellation to finish waits for.
+    pub fn subtask_cancelled_by_callee(&mut self, subtask: SubtaskId) -> Result<()> {
+        self.subtask_mut(subtask)
+            .ok_or_else(|| Error::internal("subtask record is not in the store"))?
+            .state = SubtaskState::CancelledBeforeReturned;
+        if let Some(index) = self.subtask_handle(subtask) {
+            self.record_subtask_event(subtask, index)?;
+        }
+        Ok(())
+    }
+
+    /// Mark a started `task` as asked to cancel, which is the
+    /// reference's `request_cancellation` for a task past its entry
+    /// gate. Answers the state the task was in. Only a started task
+    /// moves: a task that has not started is cancelled before it runs
+    /// instead, and a task that resolved has nothing left to cancel.
+    pub fn request_cancellation(&mut self, task: TaskId) -> Option<TaskState> {
+        let record = self.task_mut(task)?;
+        let state = record.state;
+        if state == TaskState::Started {
+            record.state = TaskState::PendingCancel;
+        }
+        Some(state)
+    }
+
+    /// Whether a cancellation request waits to be delivered to
+    /// `task`.
+    pub fn has_pending_cancel(&self, task: TaskId) -> bool {
+        self.task(task)
+            .is_some_and(|record| record.state == TaskState::PendingCancel)
+    }
+
+    /// Deliver the cancellation request that waits for `task`, which
+    /// is the reference's `deliver_pending_cancel` where the callback
+    /// loop consults it. Answers whether a request was delivered: the
+    /// task was pending-cancel and moves to cancel-delivered, and its
+    /// callback receives the task-cancelled event in place of whatever
+    /// else it would have received. A task that is not pending-cancel,
+    /// because nothing asked it to stop or because it resolved first,
+    /// is left alone.
+    pub fn deliver_pending_cancel(&mut self, task: TaskId) -> bool {
+        let Some(record) = self.task_mut(task) else {
+            return false;
+        };
+        if record.state != TaskState::PendingCancel {
+            return false;
+        }
+        record.state = TaskState::CancelDelivered;
+        record.cancel_delivered = true;
+        true
     }
 
     /// Record readiness on `subtask` by filling its pending event
@@ -1554,6 +1616,49 @@ impl TaskTables {
         record.num_waiting = record.num_waiting.saturating_sub(1);
         self.stop_waiting(thread, None);
         Ok(())
+    }
+
+    /// Count `thread` as a waiter on `set` while its task's callback
+    /// item is queued to take the set's event. The thread does not
+    /// wait: the item is ready to run. The count rises, so a
+    /// `waitable-set.drop` in the meantime traps on the waiter, and
+    /// [`end_queued_wait`](Self::end_queued_wait) lowers it again when
+    /// the item runs. A thread whose wait on the set ends as its item
+    /// is queued calls [`end_wait`](Self::end_wait) first.
+    pub fn queue_wait(&mut self, set: WaitableSetId, thread: ThreadId) -> Result<()> {
+        // The thread is looked up before the count rises, for the
+        // reason `begin_wait` states.
+        if self.thread(thread).is_none() {
+            return Err(Error::internal("waiting thread is not in the store"));
+        }
+        self.waitable_set_record_mut(set)?.num_waiting += 1;
+        let previous = self
+            .thread_mut(thread)
+            .and_then(|record| record.queued_wait.replace(set));
+        if let Some(previous) = previous {
+            self.lower_waiters(previous);
+        }
+        Ok(())
+    }
+
+    /// The queued callback item of `thread`'s task runs, and the wait
+    /// [`queue_wait`](Self::queue_wait) counted is over: the set's
+    /// waiter count falls. Nothing changes when no wait is queued.
+    pub fn end_queued_wait(&mut self, thread: ThreadId) {
+        if let Some(set) = self
+            .thread_mut(thread)
+            .and_then(|record| record.queued_wait.take())
+        {
+            self.lower_waiters(set);
+        }
+    }
+
+    /// Lower the waiter count of `set`, which is still in the store
+    /// unless its instance went first.
+    fn lower_waiters(&mut self, set: WaitableSetId) {
+        if let Some(record) = self.waitable_set_mut(set) {
+            record.num_waiting = record.num_waiting.saturating_sub(1);
+        }
     }
 
     // ---- waiting threads ----
