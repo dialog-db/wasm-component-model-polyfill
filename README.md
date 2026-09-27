@@ -29,8 +29,8 @@ provides:
   `cabi_realloc`), one handle table per component instance for resources and
   waitables, the adapter intrinsics, and a cooperative scheduler per `Store`
   that runs guest tasks, host `async` functions, and the concurrency built-ins.
-  A [suspend provider](#suspend-providers) gives each guest thread a stack of
-  its own, so a guest can block where it stands.
+  A [suspend provider](#blocking-needs-a-suspend-provider) gives each guest
+  thread a stack of its own, so a guest can block where it stands.
 
 The polyfill implements no Wasm Core proposal and no WASI world. A WASI world is
 a consumer of the polyfill and links into a `Linker` like any other import.
@@ -95,18 +95,10 @@ async fn run(wasm: &[u8]) -> Result<String> {
 }
 ```
 
-The end-to-end smoke test under `rust/wcmp-smoke` tells the rest of the story
-chapter by chapter: a `wac` composition, host resources, a lent core module,
-maps and fixed-length lists, a wit-bindgen world, a 64-bit memory, export
-introspection, a gated feature, awaiting outside the store, streams and futures
-between a host and components, and guests that suspend: synchronous code waiting
-for an `async` host function, an export that blocks until its answers arrive,
-guest threads that park and wake, and the cause each of those three fails with
-when suspending is turned off. A chapter on failure and cancellation shows a
-guest that cancels a slow host call when its deadline passes, a trap that loses
-the store, an error context passed from one component to another through the
-host, and a guest thread that stops when its caller cancels. It runs as a native
-binary and as a browser page from one source.
+The smoke test in `rust/wcmp-smoke` walks through the rest: compositions,
+resources, streams and futures, guests that block, cancellation, and traps. It
+runs natively (`tests smoke native`) and as a browser page (`tests smoke web`).
+Open the page to check whether the polyfill works in a given browser.
 
 ## Feature support
 
@@ -135,7 +127,8 @@ The notes use these terms:
 - Waitable: a handle that a guest can wait on. A subtask, a stream end, and a
   future end are waitables.
 - Suspend provider: the mechanism that pauses a guest thread and resumes it
-  later. [Suspend providers](#suspend-providers) describes it.
+  later. [Blocking needs a suspend provider](#blocking-needs-a-suspend-provider)
+  describes it.
 - Nested turns: the fallback when no suspend provider is available. The blocked
   call runs the scheduler inside itself until the call can continue.
 - `StackSwitchNeeded`: short for `SchedulerCause::StackSwitchNeeded`, the error
@@ -202,7 +195,7 @@ The notes use these terms:
 | Export navigation (`Instance::exports`, `ExportInstance`)                                                                              | ✅     | Finds functions inside an exported interface.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | Untyped calls (`Func::call` over `Val`) and typed (`TypedFunc::call`)                                                                  | ✅     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Concurrent calls (`call_concurrent`, `Store::run_concurrent`)                                                                          | ✅     | An `Accessor` lets a future use the store's host data without holding a borrow of the store.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Traps at the host boundary                                                                                                             | ✅     | The first trap ends the driver that is polling the store and poisons the store. The next entry fails with "cannot enter component instance". [Traps and the poisoned store](#traps-and-the-poisoned-store) says where a trap surfaces.                                                                                                                                                                                                                                                                                                                                                                                          |
+| Traps at the host boundary                                                                                                             | ✅     | The first trap ends the driver that is polling the store and poisons the store. The next entry fails with "cannot enter component instance". [A trap poisons the store](#a-trap-poisons-the-store) describes it.                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Cap on the store's live records                                                                                                        | ✅     | 1,000,000 records, the default capacity of Wasmtime's resource table. A record past the cap fails with Wasmtime's "resource table has no free keys".                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | Composition with `wac`                                                                                                                 | ✅     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Host binding generation (a `bindgen!` equivalent)                                                                                      | ❌     | Planned. A design card is on the project board.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -219,8 +212,8 @@ The notes use these terms:
 | `thread.suspend`, `thread.suspend-then-resume`, `thread.yield-then-resume`, `thread.suspend-then-promote`, `thread.yield-then-promote` | 🔒     | Turn on with `wasm_component_model_threading`. With a suspend provider, each one pauses the current thread or switches to the thread it names. Without a provider, a pause waits in nested turns, and a switch to a thread that paused lower on the same stack fails with `StackSwitchNeeded`.                                                                                                                                                                                                                                                                                                                                  |
 | Event codes and callback status words                                                                                                  | ✅     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Reentrance rules                                                                                                                       | ✅     | No call traps because it enters an instance again. The entry gate of the instance is the only thing that makes calls wait for each other.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| Trap poisoning of an instance                                                                                                          | ✅     | A trap poisons the whole store, as in Wasmtime, and the store then refuses every entry into guest code. [Traps and the poisoned store](#traps-and-the-poisoned-store) lists the entries and the two ways the polyfill departs from Wasmtime.                                                                                                                                                                                                                                                                                                                                                                                    |
-| Suspending a guest thread (stack switching, JSPI)                                                                                      | 🟡     | Uses the [suspend provider](#suspend-providers) that the engine selects: stack switching natively on x86_64 Linux, and JSPI in the browser. On other platforms, or with the provider off, a blocking built-in runs nested turns.                                                                                                                                                                                                                                                                                                                                                                                                |
+| Trap poisoning of an instance                                                                                                          | ✅     | A trap poisons the whole store, as in Wasmtime, and the store then refuses every entry into guest code. [A trap poisons the store](#a-trap-poisons-the-store) lists the two ways the polyfill departs from Wasmtime.                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Suspending a guest thread (stack switching, JSPI)                                                                                      | 🟡     | Uses the [suspend provider](#blocking-needs-a-suspend-provider) that the engine selects: stack switching natively on x86_64 Linux, and JSPI in the browser. On other platforms, or with the provider off, a blocking built-in runs nested turns.                                                                                                                                                                                                                                                                                                                                                                                |
 | Cancellation                                                                                                                           | ✅     | Cooperative, as the spec states. A caller cancels a guest callee or a host callee with `subtask.cancel`. A guest callee learns of the request at the entry gate, in its callback loop, or in a built-in that carries the `cancellable` immediate, and confirms it with `task.cancel`. The polyfill honors the `cancellable` immediate on `waitable-set.wait`, `waitable-set.poll`, `thread.yield`, and the thread built-ins that suspend or switch, as Wasmtime 49 does, although the reference removed it. Without a suspend provider, a synchronous cancel that only a stack switch can serve fails with `StackSwitchNeeded`. |
 | **Subtasks and the asynchronous import**                                                                                               |        |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Subtask records and supertasks                                                                                                         | ✅     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -235,7 +228,7 @@ The notes use these terms:
 | `future.new`, `future.read`, `future.write`                                                                                            | ✅     | Each end can be used one time only.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `future.cancel-read`, `future.cancel-write`, `future.drop-readable`, `future.drop-writable`                                            | ✅     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Stream readiness, partial copies, and drop notification                                                                                | ✅     | When one end is dropped, the other end gets a notification, whether it is idle or waiting. The current spec and Wasmtime do the same.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| A synchronous copy                                                                                                                     | ✅     | With a suspend provider, the guest thread pauses until the copy completes. Without one (Safari 26, or a native host other than x86_64 Linux), it waits in nested turns. If the store cannot complete the copy that way, the copy fails with one of the causes in [Suspend providers](#suspend-providers).                                                                                                                                                                                                                                                                                                                       |
+| A synchronous copy                                                                                                                     | ✅     | With a suspend provider, the guest thread pauses until the copy completes. Without one (Safari 26, or a native host other than x86_64 Linux), it waits in nested turns. If the store cannot complete the copy that way, the copy fails with a `SchedulerCause`.                                                                                                                                                                                                                                                                                                                                                                 |
 | Byte copy of a number payload, and the same-instance rule                                                                              | ✅     | A payload of a number type, or no payload, copies as raw bytes. A read and a write from the same instance must use such a payload. This is a temporary rule of the spec.                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | Transfer of a stream or future end between components                                                                                  | ✅     | Ends move through the adapters and through `task.return`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | Host-side stream and future types                                                                                                      | ✅     | A `StreamReader` or `FutureReader` gets its data from a `StreamProducer` or `FutureProducer` and pipes it to a `StreamConsumer` or `FutureConsumer`. They support `close`, `close_with`, and `guard`. The names match Wasmtime 49.                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -255,183 +248,60 @@ the lazy ABI, multivalue returns at the C ABI level, an `error-context` in every
 `result` carries one only where its type says so. The lift and lower strategy
 sits behind one seam so that a second ABI can sit beside the eager one.
 
-## Suspend providers
+## Differences from Wasmtime
 
-A guest thread may block where it stands: in a synchronous call to an `async`
-function, the synchronous start of a call into another component, a synchronous
-stream or future copy or cancel, `waitable-set.wait`, `thread.yield`, a stackful
-export, or a thread built-in that suspends or switches. Wasmtime serves such a
-block by switching fibers. The polyfill runs a guest on the one real stack of
-its target, so it needs a suspend provider to set that stack aside and resume it
-later. The engine selects the provider once, when it is constructed, and
-`Engine::suspend_provider()` answers which one it selected, as a
-`SuspendProviderKind`:
+The polyfill mirrors Wasmtime's component API and runs Wasmtime's own component
+tests. A host can notice these differences.
 
-| Target                                                                                    | Provider                                                        | Answer           |
-| ----------------------------------------------------------------------------------------- | --------------------------------------------------------------- | ---------------- |
-| Native, on an engine that implements the stack-switching proposal                         | Stack switching. Under Wasmtime 49, x86_64 Linux only.          | `StackSwitching` |
-| A browser that ships JSPI (`WebAssembly.Suspending` and `WebAssembly.promising`)          | JavaScript Promise Integration. Every current browser ships it. | `Jspi`           |
-| Every other native platform, an older browser such as Safari 26, or a host that opted out | None                                                            | `None`           |
+### Blocking needs a suspend provider
 
-Under a provider, each guest thread starts on a stack of its own, and a blocking
-built-in suspends that stack until the scheduler resumes it. The stack-switching
-provider resumes a thread synchronously and the JSPI provider resumes it on a
-microtask. The scheduler runs nothing else until the thread stops again, so a
-guest sees the same order under both.
+Wasmtime runs each guest on a fiber, so a guest can always block where it
+stands. The polyfill runs on the one stack its target gives it, so it needs a
+suspend provider to pause a guest and resume it later. The engine picks one when
+it is built, and `Engine::suspend_provider()` says which:
 
-Without a provider, a blocking built-in runs the waiting work in nested
-scheduler turns above the blocked call. That serves every block whose releasing
-work the store holds. When the store goes idle under a block, the block fails.
-Its cause depends on what could still release it, checked in this order:
+| Target                                                                                 | Provider                                |
+| -------------------------------------------------------------------------------------- | --------------------------------------- |
+| Native x86_64 Linux                                                                    | Stack switching (`StackSwitching`)      |
+| A browser with JSPI: every current browser                                             | JavaScript Promise Integration (`Jspi`) |
+| Other native platforms, older browsers such as Safari 26, or `suspend_provider(false)` | None (`None`)                           |
 
-- The blocked thread's own instance has a synchronous call in progress, so it
-  must not suspend, and no other thread of that instance is ready. The block
-  fails with the cannot-block cause, `SchedulerCause::CannotBlock`.
-- A frame below it would go on under a stack switch. That frame is either a
-  nested start, where a start intrinsic ran an `async`-typed callee inside its
-  own frame and the caller of that start would go on, or a thread built-in's
-  switch whose switching thread is not suspended. The block fails with the
-  stack-switch cause, `SchedulerCause::StackSwitchNeeded`: "blocking here
-  requires a stack switch, but this thread cannot switch its stack".
-- A caller below it waits for the blocked callee through a synchronous call, in
-  an instance that must not suspend and has no other thread ready. The block
-  fails with the cannot-block cause.
-- A host future that can still resolve is pending. The block fails with the
-  stack-switch cause.
-- None of these. Nothing left can meet the block's condition, and the block
-  fails with `SchedulerCause::Deadlock`: "deadlock detected: event loop cannot
-  make further progress".
+Without a provider, a blocked guest runs the store's other work in nested turns
+until it can go on. That serves most blocks. A block that only a stack switch
+can serve, such as a synchronous call to a host `async` function whose future is
+still pending, fails with `SchedulerCause::StackSwitchNeeded` instead of
+hanging. The [conformance](#conformance) table shows what that costs.
 
-Nested turns also keep a budget. They count the turns in a row that run nothing,
-or nothing but a resumption after a yield, against a store with no host future
-that can still resolve. Past the budget, the blocked call fails with the
-stack-switch cause, because only a stack switch could reach the frame that would
-release it. The budget applies under a provider too, to a thread that runs on
-another thread's stack and so waits in nested turns.
+Under JSPI, two rare shapes fail that pass natively: a host function used as a
+guest thread's start function, and a guest that blocks inside a destructor, a
+`post-return` function, or a core start function. No test in the corpora reaches
+either.
 
-A host reads `Engine::suspend_provider()` to explain a stack-switch failure. A
-failure raised inside a guest call reaches the host today as an error whose text
-carries that message, not as the typed cause.
+### A trap poisons the store
 
-`EngineConfig::suspend_provider(false)` turns the provider off, and the engine
-then answers `None` whatever its probes would find. A host turns it off to keep
-the order of nested turns, or to avoid a provider that fails on one engine
-version. Wasmtime has no counterpart, because its fibers always exist.
+As in Wasmtime, one trap poisons the whole store. Every later call into guest
+code fails with "cannot enter component instance", and a host recovers by
+building a new store. Work that runs no guest code, such as reading host data or
+dropping the store, still works. The polyfill is stricter than Wasmtime in two
+ways:
 
-### Target differences
-
-The provider is a difference between the targets. Natively the stack-switching
-provider runs only on x86_64 Linux, and every other native platform runs nested
-turns. In the browser the JSPI provider runs in every browser that ships JSPI,
-and an older browser runs nested turns. Two shapes pass natively and fail in the
-browser under the JSPI provider:
-
-- A host function as a thread's entry, such as an imported function that
-  `thread.new-indirect` names as its start function. The JSPI provider hands the
-  entry to its start as a function reference, and such an entry cannot start
-  there.
-- A resumption needed while a host frame lies below the suspending thread: in a
-  guest destructor, a `post-return` function, or a core start function during
-  instantiation. The JSPI provider cannot resume a stack there, and the block
-  fails with the stack-switch cause instead.
-
-No test of the corpora reaches either shape.
-
-## Traps and the poisoned store
-
-A trap anywhere in a store poisons the whole store, as Wasmtime keeps one
-trapped flag per store. A trap is a failure of a guest's core code, or of a
-built-in, a host function, a lift, or a lower that the code reached. A host
-`async` function whose future fails, a deadlock, and a `Val` of the wrong type
-for a parameter are traps too. A call that is refused before anything changes
-does not poison the store: an arity mismatch, a call through another store, a
-second driver of the same store, or a link error.
-
-A poisoned store runs no more guest code. Each of these entries fails with the
-cannot-enter cause, `TaskCause::CannotEnter`, whose message is Wasmtime's
-"cannot enter component instance":
-
-- `Func::call`, `Func::call_concurrent`, and their typed counterparts on
-  `TypedFunc`.
-- Every instantiation into the store, through `Linker::instantiate` or
-  `Module::instantiate`.
-- `Store::resource_drop` of a resource that a guest defines.
-
-What runs no guest code still works: the release of a resource the host defines,
-a `Store::run_concurrent` whose closure does only host work, the host data, and
-dropping the store. Nothing clears the flag, and no method answers whether it is
-set, as in Wasmtime. A host that meets a trap drops the store and builds a new
-one.
-
-The polyfill departs from Wasmtime in two ways, both because the Component Model
-runs no guest code after a trap:
-
-- **Instantiation is refused.** Wasmtime lets an instantiation into a poisoned
-  store run. The polyfill refuses it, because an instantiation runs the `start`
-  functions of its core modules.
-- **Queued work is discarded at the moment of poison.** Every queued guest work
-  item goes: a callback, the start of a task, and a thread that was ready to
-  resume. Every pending host future goes too: the future of a host `async`
-  function, a stream or future producer, and a consumer. Wasmtime keeps them,
-  and a later `run_concurrent` runs them. The polyfill drops each future with no
-  lock of the store held, so a `Drop` that reaches the store through its
-  `Accessor` fails with a cause rather than deadlocking.
-
-### Where a trap surfaces
-
-The first trap ends the driver that is polling the store, with that trap, and
-poisons the store in the same step. A driver is a `Func::call`, a
-`TypedFunc::call`, or a `Store::run_concurrent`, and while it runs turns it
-reports whichever trap its turns meet: a trap in its own task, in work that
-another task left after it resolved, or in a host future a guest task awaits. A
-`run_concurrent` that returns a trap drops its closure with every call future
-inside it. The trap is never held for a caller that already has its result. The
-next entry into the store fails with the cannot-enter trap.
-
-### The record cap
-
-The store caps its live records at 1,000,000, the default capacity of Wasmtime's
-resource table. The records it counts are tasks, subtasks, threads, host tasks,
-waitable sets, the shared records of streams and futures, and error contexts. A
-new record past the cap fails with Wasmtime's message, "resource table has no
-free keys". No public method changes the cap. The conformance harness lowers it
-through the store's internal API, to run the `set-max-table-capacity` item that
-Wasmtime's test runner provides.
+- It refuses to instantiate into a poisoned store, because instantiation runs
+  guest start functions.
+- It drops all queued guest work and pending host futures at the moment of the
+  trap. Wasmtime keeps them for a later `run_concurrent`.
 
 ## Conformance
 
-The test suite vendors two `.wast` corpora and runs every file on both targets:
-the [Component Model test corpus] and the [Wasmtime component tests]. Every
-directive the polyfill does not pass is recorded, with a reason, in
-`rust/wasm-component-model-polyfill/tests/corpus/expected-failures.txt`. The
-harness fails when a listed directive starts to pass, or an unlisted one fails,
-so the list stays current.
+The test suite runs two `.wast` corpora on both targets: the [Component Model
+test corpus] and the [Wasmtime component tests]. Every directive the polyfill
+does not pass is listed, with a reason, in
+`rust/wasm-component-model-polyfill/tests/corpus/expected-failures.txt` and two
+overlays beside it, one for the browser and one for running without a suspend
+provider. The harness fails when a listed directive starts to pass or an
+unlisted one fails, so the lists stay current.
 
-The corpus runs in four states: each target with its suspend provider, and each
-target with the provider turned off through `EngineConfig`. `tests all` runs all
-four. The shared list records the failures under a provider. Two overlays sit
-beside it in the same directory. `expected-failures.web.txt` holds the eleven
-directives the browser's engine fails where Wasmtime passes, such as a trap that
-V8 words differently. `expected-failures.no-provider.txt` holds the 56
-directives that fail only without a provider. Thirty-eight of them need a stack
-switch, and each such line's reason names the switch it needs. Thirty-six of
-those fail with the stack-switch cause. Two fail with the deadlock cause,
-because no nested start and no host task lies below the block:
-`cm/async/during-sync-scheduling-candidates.wast` line 304 and
-`wasmtime/async/task-deletion.wast` line 311. The other 18 are cascades. Sixteen
-fail with "cannot enter component instance", because the failure before them
-poisoned the store, and two call the same export again and fail as it did. The
-harness applies the overlay whenever no provider runs the store's guest threads:
-with the provider turned off, natively off x86_64 Linux, and in a browser
-without JSPI.
-
-The progress summary as of the closing corpus run of 2026-09-27, as directives
-passed and pass percentage (`tests conformance` prints the current tables for
-the two provider states). Each state passes against its lists with no unexpected
-and no stale line, so each count is the corpus less the lines that apply to that
-state. The two fixtures of the failure and cancellation chapter of the smoke
-test, `stats.wast` and `error-reporter.wast`, landed after that run and pass in
-all four states, and the `fixtures` row counts them.
+Directives passed, with pass percentage, as of 2026-09-27. `tests conformance`
+prints the current numbers.
 
 | Corpus           | Directives | Native, stack switching | Browser, JSPI | Native, no provider | Browser, no provider |
 | ---------------- | ---------- | ----------------------- | ------------- | ------------------- | -------------------- |
@@ -442,25 +312,25 @@ all four states, and the `fixtures` row counts them.
 | `wasmtime/async` | 387        | 387 (100.0)             | 385 (99.5)    | 363 (93.8)          | 361 (93.3)           |
 | total            | 2440       | 2376 (97.4)             | 2365 (96.9)   | 2320 (95.1)         | 2309 (94.6)          |
 
-Under a provider the `async` rows pass every directive natively, and in the
-browser all but the three that the browser's engine words differently.
-Cancellation, error contexts, and the poisoned store run as the corpora expect.
-The two WASI 0.3 handler fixtures stop at link, because the harness provides no
-`wasi:http/types`. Without a provider the `async` rows fail every block that
-only a stack switch can serve, and most directives after such a failure in the
-same file fail with the cannot-enter trap.
+- With a suspend provider, the `async` corpora pass every directive natively and
+  all but three in the browser.
+- The browser trails native by eleven directives, where V8 fails a directive or
+  words a trap differently from Wasmtime.
+- Without a provider, the extra failures are blocks that only a stack switch can
+  serve, plus later directives in the same file that then meet a poisoned store.
+- The two WASI 0.3 HTTP fixtures stop at link, because the harness provides no
+  `wasi:http/types` host.
 
 ## Targets and requirements
 
 - **Native.** Any target Wasmtime 49 supports. The runtime layer's Wasmtime
   backend is the core engine. `tokio` supplies the executor in the tests, but
-  the library itself is executor-agnostic. Guest threads suspend through the
-  stack-switching provider on x86_64 Linux. On every other platform a blocking
-  built-in runs nested turns instead.
+  the library itself is executor-agnostic. The stack-switching suspend provider
+  runs on x86_64 Linux only; see
+  [Blocking needs a suspend provider](#blocking-needs-a-suspend-provider).
 - **Web.** `wasm32-unknown-unknown` with `wasm-bindgen`. The browser's
-  `WebAssembly` API is the core engine. Guest threads suspend through JSPI,
-  which every current browser ships. In an older browser a blocking built-in
-  runs nested turns instead. The test suites run in headless Chrome.
+  `WebAssembly` API is the core engine. The JSPI suspend provider runs in every
+  current browser. The test suites run in headless Chrome.
 - **Rust.** Stable, edition 2024, with the `wasm32-unknown-unknown` target
   installed. The `rust-toolchain.toml` pins the channel.
 
