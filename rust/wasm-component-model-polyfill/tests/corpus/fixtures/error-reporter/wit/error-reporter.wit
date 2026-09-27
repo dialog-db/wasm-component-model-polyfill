@@ -1,0 +1,7 @@
+package wcmp:error-reporter@0.1.0;
+
+world reporter {
+  /// The debug message of `error`, read with
+  /// `error-context.debug-message`.
+  export describe: func(error: error-context) -> string;
+}

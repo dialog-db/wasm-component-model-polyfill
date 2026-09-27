@@ -1,0 +1,11 @@
+package wcmp:stats@0.1.0;
+
+world stats {
+  /// The sum of `values`, wrapping on overflow.
+  export sum: func(values: list<u32>) -> u32;
+
+  /// The mean of `values`, rounded down. It divides by the number of
+  /// values without checking it first, so an empty list divides by
+  /// zero and the component traps.
+  export average: func(values: list<u32>) -> u32;
+}

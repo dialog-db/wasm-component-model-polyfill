@@ -69,10 +69,12 @@ corpus_test!(it_passes_cm_values_strings, "cm/values/strings.wast");
 corpus_test!(it_passes_cm_values_transcode, "cm/values/transcode.wast");
 corpus_test!(it_passes_cm_values_variants, "cm/values/variants.wast");
 corpus_test!(it_passes_fixtures_composition, "fixtures/composition.wast");
+corpus_test!(it_passes_fixtures_error_reporter, "fixtures/error-reporter.wast");
 corpus_test!(it_passes_fixtures_fixed_lists, "fixtures/fixed-lists.wast");
 corpus_test!(it_passes_fixtures_guest, "fixtures/guest.wast");
 corpus_test!(it_passes_fixtures_maps, "fixtures/maps.wast");
 corpus_test!(it_passes_fixtures_rich, "fixtures/rich.wast");
+corpus_test!(it_passes_fixtures_stats, "fixtures/stats.wast");
 corpus_test!(it_passes_fixtures_stream_composition, "fixtures/stream-composition.wast");
 corpus_test!(it_passes_fixtures_streams, "fixtures/streams.wast");
 corpus_test!(it_passes_fixtures_sync_wait, "fixtures/sync-wait.wast");
@@ -239,10 +241,12 @@ const CORPUS_FILES: &[(&str, &str)] = &[
     ("cm/values/transcode.wast", include_str!("../corpus/cm/values/transcode.wast")),
     ("cm/values/variants.wast", include_str!("../corpus/cm/values/variants.wast")),
     ("fixtures/composition.wast", include_str!("../corpus/fixtures/composition.wast")),
+    ("fixtures/error-reporter.wast", include_str!("../corpus/fixtures/error-reporter.wast")),
     ("fixtures/fixed-lists.wast", include_str!("../corpus/fixtures/fixed-lists.wast")),
     ("fixtures/guest.wast", include_str!("../corpus/fixtures/guest.wast")),
     ("fixtures/maps.wast", include_str!("../corpus/fixtures/maps.wast")),
     ("fixtures/rich.wast", include_str!("../corpus/fixtures/rich.wast")),
+    ("fixtures/stats.wast", include_str!("../corpus/fixtures/stats.wast")),
     ("fixtures/stream-composition.wast", include_str!("../corpus/fixtures/stream-composition.wast")),
     ("fixtures/streams.wast", include_str!("../corpus/fixtures/streams.wast")),
     ("fixtures/sync-wait.wast", include_str!("../corpus/fixtures/sync-wait.wast")),

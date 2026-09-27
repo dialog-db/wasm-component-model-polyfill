@@ -11,6 +11,10 @@ publish = false
 [dependencies]
 wasm-component-model-polyfill = { workspace = true }
 wcmp-macros = { workspace = true }
+# `wasmparser` finds the `thread.yield` built-in whose `cancellable`
+# immediate the cancelled-thread story sets: the text format no longer
+# spells the immediate, so the component is assembled without it.
+wasmparser = { workspace = true }
 
 # `time` supplies the timer the `run_concurrent` step waits on: the
 # entry has to be pending on something the store cannot resolve, and

@@ -1,0 +1,34 @@
+package wcmp:deadline@0.1.0;
+
+/// What the host lends the handler: a request to send upstream, a
+/// call that sends it, and a timer.
+interface upstream {
+  /// A request the host created and owns the representation of.
+  resource request;
+
+  /// Sends the request upstream and answers with the response body.
+  /// The handler lends the request for the length of the call.
+  fetch: async func(req: borrow<request>) -> string;
+
+  /// Resolves once `millis` milliseconds have passed.
+  sleep: async func(millis: u32);
+}
+
+/// The handler, exported as an interface so that the request type it
+/// uses comes from the imported `upstream` rather than from a type
+/// import of the component's own.
+interface handler {
+  use upstream.{request};
+
+  /// Sends `req` upstream and answers with the response body, or with
+  /// `timeout` when `deadline-millis` pass first. On a timeout the
+  /// handler drops the pending call, which cancels it, and then drops
+  /// `req`, which it can do only once the borrow it lent the call has
+  /// come back.
+  handle: async func(req: request, deadline-millis: u32) -> string;
+}
+
+world deadline {
+  import upstream;
+  export handler;
+}

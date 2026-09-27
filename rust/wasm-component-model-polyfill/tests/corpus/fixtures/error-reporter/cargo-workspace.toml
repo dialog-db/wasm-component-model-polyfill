@@ -1,0 +1,22 @@
+# Copied to `Cargo.toml` by `build.sh`, which assembles this fixture's
+# crates into a workspace under `$TMPDIR`. The cargo metadata is not
+# named `Cargo.toml`/`Cargo.lock` in the tree because the Nix source
+# filter carries everything under `rust/` into the polyfill workspace's
+# dependency bundle, and a manifest it finds there invalidates that
+# bundle on every rebuild.
+[workspace]
+members = ["reporter"]
+resolver = "2"
+
+[workspace.dependencies]
+wit-bindgen = "=0.62.0"
+
+# Small and deterministic: no debug information, no panic machinery,
+# and nothing the linker can order differently between two runs.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = 0

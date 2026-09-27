@@ -7,7 +7,8 @@ with the flake's pinned tools and regenerates every output, including
 same bytes, and "What the byte-stability claim covers" below says how
 far that reaches. Each fixture directory holds only sources; the
 `<fixture>.wast` beside it is generated, and the conformance harness
-runs it like the vendored corpora.
+runs it like the vendored corpora. `deadline` is the one fixture with
+no `.wast`, for the reason its section gives.
 
 A `.wast` here is the final component as a `(component $name binary
 ...)` directive followed by that fixture's `assertions.wast`.
@@ -25,7 +26,10 @@ A `.wast` here is the final component as a `(component $name binary
 | `wasi-http-same-instance` | as `wasi-http`, as first written                                        | as `wasi-http`                                                                 |
 | `streams`                 | `streams/wit/streams.wit`, one Rust crate                               | as `wasi-http`                                                                 |
 | `stream-composition`      | `stream-composition/wit/stream-composition.wit`, two Rust crates        | `cargo build`, `wasm-tools component new`, then `wac plug`                     |
-| `sync-wait`               | `sync-wait/wit/sync-wait.wit`, one Rust crate                            | as `wasi-http`                                                                 |
+| `sync-wait`               | `sync-wait/wit/sync-wait.wit`, one Rust crate                           | as `wasi-http`                                                                 |
+| `stats`                   | `stats/wit/stats.wit`, one Rust crate                                   | as `wasi-http`                                                                 |
+| `error-reporter`          | `error-reporter/wit/error-reporter.wit`, one Rust crate                 | as `wasi-http`                                                                 |
+| `deadline`                | `deadline/wit/deadline.wit`, one Rust crate                             | as `wasi-http`, with no `.wast`                                                |
 
 `build.sh` records the exact commands. The final `.wasm` of each
 fixture is checked in next to its sources.
@@ -33,10 +37,12 @@ fixture is checked in next to its sources.
 ## The Rust fixtures
 
 `rich`, `wasi-http`, `wasi-http-same-instance`, `streams`,
-`stream-composition`, and `sync-wait` are built by a language toolchain,
-so the binding layer is the one a real guest carries: `cabi_realloc`
-from the allocator, wit-bindgen's lift and lower code, wit-bindgen's
-async runtime for every fixture but `rich` and `sync-wait`, and — for the two `wasi-http`
+`stream-composition`, `sync-wait`, `stats`, `error-reporter`, and
+`deadline` are built by a language toolchain, so the binding layer is
+the one a real guest carries: `cabi_realloc` from the allocator,
+wit-bindgen's lift and lower code, wit-bindgen's async runtime for
+`wasi-http`, `wasi-http-same-instance`, `streams`,
+`stream-composition`, and `deadline`, and — for the two `wasi-http`
 fixtures — a `wasi:` world's imports.
 
 Their cargo metadata is spelled `cargo-workspace.toml`,
@@ -51,10 +57,10 @@ and the tree stays free of cargo metadata.
 
 `wit-bindgen`'s macro writes the component type into a custom section,
 so `wasm-tools component new` needs no `embed` step. It validates its
-output against the WebAssembly proposals at phase 4 and later; the
-asynchronous component model is not one of them, so `build.sh` skips
-that check and validates each component separately with the feature
-turned on.
+output against the WebAssembly proposals at phase 4 and later; neither
+the asynchronous component model nor the `error-context` type is one of
+them, so `build.sh` skips that check and validates each component
+separately with both turned on.
 
 The guests build for `wasm32-unknown-unknown` rather than for a
 `wasip2` or `wasip3` target. What they exercise is the canonical ABI,
@@ -223,6 +229,61 @@ smoke test (`rust/wcmp-smoke`) registers its own `host-echo-u32`,
 whose answer comes after a timer, and shows the guest's thread
 waiting for it.
 
+### `stats`
+
+One component with a bug. `sum` adds up a list of numbers, and
+`average` divides that sum by the number of values without checking
+that there are any. Rust turns the divide by zero into a panic, and
+the release profile aborts on a panic, which in a WebAssembly guest is
+an `unreachable` trap. `assertions.wast` calls both, then `average` of
+an empty list, which traps, and then `sum`, which the poisoned store
+refuses with "cannot enter component instance". The smoke test tells
+the same story and then calls `sum` in a new store.
+
+### `error-reporter`
+
+One component whose `describe` takes an `error-context` and answers
+its debug message, which wit-bindgen's `ErrorContext` reads with
+`error-context.debug-message`. The type sits behind a gate that is off
+by default, so `features.wast` holds the header line that turns it on,
+and `build.sh` copies it to the top of `error-reporter.wast`. `wast`
+has no syntax for an error context, so `assertions.wast` holds no
+directive, and the harness checks only that the component translates
+and instantiates. The smoke test hands `describe` an error context
+another component returned to the host.
+
+No fixture here returns an `error-context` from Rust. wit-bindgen
+0.62's Rust generator, and its `main` branch as of this writing, lower
+an `error-context` by borrowing the value's handle, and the value drops
+the handle with `error-context.drop` when it goes out of scope. For a
+synchronous export that is before the canonical ABI lifts the result,
+and for a payload of a `result` or a `variant` it is at the end of the
+`match` arm, before `task.return`, so the lift finds no handle and the
+guest traps with "unknown handle index". The smoke test writes the two
+components that return an error context by hand.
+
+### `deadline`
+
+One component whose `handle` sends a request upstream with a deadline.
+It imports `wcmp:deadline/upstream@0.1.0`: a `request` resource the
+host defines, `fetch`, an `async func` that takes a `borrow<request>`,
+and `sleep`, an `async func` timer. `handle` races `fetch` against
+`sleep`. When the timer wins, it drops the pending `fetch`, which
+wit-bindgen's runtime cancels with `subtask.cancel`, and then drops
+the request, which traps while the borrow it lent is out.
+
+`handle` is exported inside `wcmp:deadline/handler@0.1.0` rather than
+at the root of the world. A root-level export that names `request`
+needs a world-level `use`, which wit-component encodes as a root-level
+type import, `(import "request" (type (eq ...)))`, and the polyfill's
+linker refuses that import with "no registered linker instance
+satisfies import `request`".
+
+Only a host supplies the upstream interface, so the harness would stop
+at link, and `build.sh` writes no `.wast` for this fixture. The smoke
+test supplies the host, with a `fetch` that answers only after a timer
+far longer than the deadline.
+
 ## What the byte-stability claim covers
 
 Two runs of `fixtures` on the same machine produce identical bytes,
@@ -240,17 +301,20 @@ without the remap the same sources would build to different bytes on
 a different machine.
 
 Four families of absolute path survive the remaps. Every Rust fixture
-but `sync-wait` carries all four, and `sync-wait` carries the last
-two, because no panic location from the standard library's sources or
-from wit-bindgen survives in so small a guest:
+but `sync-wait`, `stats`, and `error-reporter` carries all four, and
+those three carry the last two, because no panic location from the
+standard library's sources or from wit-bindgen survives in so small a
+guest:
 
 - `/rust/lib/rustlib/src/rust/library/...`, the standard library
   sources the toolchain ships, caught by the sysroot remap.
 - `/cargo/registry/src/index.crates.io-<hash>/<crate>-<version>/...`,
   caught by the registry remap: `wit-bindgen-0.62.0` in every binary
-  but `sync-wait.wasm`, and `futures-core-0.3.34` and `futures-util-0.3.34` in every binary
-  built with wit-bindgen's async support as well: both `handler.wasm`
-  files, `streams.wasm`, and `stream-composition/composed.wasm`.
+  but `sync-wait.wasm`, `stats.wasm`, and `error-reporter.wasm`, and
+  `futures-core-0.3.34` and `futures-util-0.3.34` in every binary whose
+  crates turn on wit-bindgen's `async-spawn` feature as well: both
+  `handler.wasm` files, `streams.wasm`, and
+  `stream-composition/composed.wasm`.
 - `/rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/...`, which
   no remap here touches. The precompiled standard library the
   toolchain ships was built with that remap already applied upstream,

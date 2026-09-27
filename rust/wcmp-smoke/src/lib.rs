@@ -11,8 +11,11 @@
 //! future it answers with, streams numbers between two composed
 //! components, lets synchronous guest code wait for an `async` host
 //! function, runs an export that blocks until its answers arrive,
-//! parks and wakes guest threads, and learns which host a WASI 0.3
-//! HTTP handler needs and why a wait fails once suspending is off.
+//! parks and wakes guest threads, lets a guest cancel a slow host call,
+//! loses a store to a trap and starts again, passes an error context
+//! from one component to another through the host, stops a guest
+//! thread its caller cancels, and learns which host a WASI 0.3 HTTP
+//! handler needs and why a wait fails once suspending is off.
 //! It runs as a native binary (`tests smoke native`) and as a page in
 //! the browser (`tests smoke web`) from the same source, so a reader
 //! can check the polyfill by reading this file and by running it on
@@ -42,9 +45,10 @@ use std::sync::{Arc, Mutex};
 
 use wasm_component_model_polyfill::{
     Accessor, Component, ComponentValue, CoreExternType, Destination, Engine, EngineConfig, Error,
-    FutureConsumer, FutureReader, HostCall, Instance, InterfaceIdentifier, LinkError, Linker,
-    SchedulerCause, Source, Store, StoreContext, StreamConsumer, StreamProducer, StreamReader,
-    StreamResult, SuspendProviderKind, Val, ValField, ValueType,
+    FunctionParameter, FunctionType, FutureConsumer, FutureReader, HostCall, Instance,
+    InterfaceIdentifier, LinkError, Linker, PrimitiveType, ResourceType, SchedulerCause, Source,
+    Store, StoreContext, StreamConsumer, StreamProducer, StreamReader, StreamResult,
+    SuspendProviderKind, TaskCause, Val, ValField, ValueType,
 };
 use wcmp_macros::component;
 
@@ -118,6 +122,163 @@ const STREAM_COMPOSITION: &[u8] = include_bytes!(
 /// returns the sum of the answers.
 const SYNC_WAIT: &[u8] = include_bytes!(
     "../../wasm-component-model-polyfill/tests/corpus/fixtures/sync-wait/sync-wait.wasm"
+);
+
+/// The `deadline` fixture: an HTTP-style handler `cargo` and
+/// wit-bindgen's async support built. `handle` sends the request the
+/// host hands it upstream through the host's `fetch`, lending a borrow
+/// of it for the call, and races that call against the host's `sleep`.
+/// When the timer wins it drops the pending call, which wit-bindgen's
+/// runtime cancels with `subtask.cancel`, then drops the request and
+/// answers `timeout`.
+const DEADLINE: &[u8] = include_bytes!(
+    "../../wasm-component-model-polyfill/tests/corpus/fixtures/deadline/deadline.wasm"
+);
+
+/// The `stats` fixture: a component the same toolchain built, with a
+/// bug. `average` divides by the number of values without checking
+/// it, so an empty list divides by zero and the guest traps. `sum`
+/// has no bug.
+const STATS: &[u8] =
+    include_bytes!("../../wasm-component-model-polyfill/tests/corpus/fixtures/stats/stats.wasm");
+
+/// Two components that pass an `error-context` along: a store whose
+/// `put` fails a value over 16 bytes with an error context saying so,
+/// and a caller whose `save` writes through the store and, when the
+/// store fails the write, reads the error's debug message with
+/// `error-context.debug-message` and returns the message and the same
+/// error context.
+///
+/// wit-bindgen's Rust generator lowers an `error-context` that an
+/// export returns by borrowing the value's handle, and the value drops
+/// its handle with `error-context.drop` before the canonical ABI lifts
+/// the export's result, so the lift finds no handle and the guest
+/// traps. Both of these components return one, and the flake carries
+/// no other toolchain that emits the error-context built-ins, so they
+/// are written here by hand. Each keeps its handle; an error context
+/// is copied, not moved, when it crosses to another component.
+const STORE_AND_CALLER: &[u8] = component!(
+    r#"
+    (component
+      (component $store
+        (core module $libc
+          (memory (export "memory") 1)
+          (global $bump (mut i32) (i32.const 4096))
+          (func (export "realloc")
+            (param $old i32) (param $old-size i32) (param $align i32) (param $size i32)
+            (result i32)
+            (local $ptr i32)
+            (local.set $ptr
+              (i32.and
+                (i32.add (global.get $bump) (i32.sub (local.get $align) (i32.const 1)))
+                (i32.sub (i32.const 0) (local.get $align))))
+            (global.set $bump (i32.add (local.get $ptr) (local.get $size)))
+            (local.get $ptr)))
+        (core instance $libc (instantiate $libc))
+        (core func $new
+          (canon error-context.new (memory (core memory $libc "memory"))))
+        (core module $m
+          (import "libc" "memory" (memory 1))
+          (import "" "error-context.new" (func $new (param i32 i32) (result i32)))
+          (data (i32.const 0) "cannot write `")
+          (data (i32.const 16) "`: the value is over the 16-byte limit")
+          ;; The answer lands at 64: the discriminant, then the error
+          ;; context's handle at 68. The message is put together at
+          ;; 1024 from the two pieces above with the key between.
+          (func (export "put")
+            (param $key i32) (param $key-len i32) (param $value i32) (param $value-len i32)
+            (result i32)
+            (if (i32.le_u (local.get $value-len) (i32.const 16))
+              (then
+                (i32.store8 (i32.const 64) (i32.const 0))
+                (return (i32.const 64))))
+            (memory.copy (i32.const 1024) (i32.const 0) (i32.const 14))
+            (memory.copy (i32.const 1038) (local.get $key) (local.get $key-len))
+            (memory.copy
+              (i32.add (i32.const 1038) (local.get $key-len)) (i32.const 16) (i32.const 38))
+            (i32.store8 (i32.const 64) (i32.const 1))
+            (i32.store (i32.const 68)
+              (call $new (i32.const 1024) (i32.add (local.get $key-len) (i32.const 52))))
+            (i32.const 64)))
+        (core instance $m (instantiate $m
+          (with "libc" (instance $libc))
+          (with "" (instance (export "error-context.new" (func $new))))))
+        (func (export "put")
+          (param "key" string) (param "value" string) (result (result (error error-context)))
+          (canon lift (core func $m "put")
+            (memory (core memory $libc "memory"))
+            (realloc (core func $libc "realloc")))))
+      (instance $store (instantiate $store))
+
+      (component $caller
+        (import "put" (func $put
+          (param "key" string) (param "value" string) (result (result (error error-context)))))
+        (core module $libc
+          (memory (export "memory") 1)
+          (global $bump (mut i32) (i32.const 4096))
+          (func (export "realloc")
+            (param $old i32) (param $old-size i32) (param $align i32) (param $size i32)
+            (result i32)
+            (local $ptr i32)
+            (local.set $ptr
+              (i32.and
+                (i32.add (global.get $bump) (i32.sub (local.get $align) (i32.const 1)))
+                (i32.sub (i32.const 0) (local.get $align))))
+            (global.set $bump (i32.add (local.get $ptr) (local.get $size)))
+            (local.get $ptr)))
+        (core instance $libc (instantiate $libc))
+        (core func $put (canon lower (func $put) (memory (core memory $libc "memory"))))
+        (core func $debug-message
+          (canon error-context.debug-message
+            (memory (core memory $libc "memory"))
+            (realloc (core func $libc "realloc"))))
+        (core module $m
+          (import "libc" "memory" (memory 1))
+          (import "" "put" (func $put (param i32 i32 i32 i32 i32)))
+          (import "" "error-context.debug-message" (func $debug-message (param i32 i32)))
+          ;; The store's answer lands at 64: the discriminant, then the
+          ;; handle at 68. The message's pointer and length land at 72.
+          ;; The answer to the host is at 128: the discriminant, then
+          ;; the message's pointer at 132, its length at 136, and the
+          ;; error context's handle at 140.
+          (func (export "save")
+            (param $key i32) (param $key-len i32) (param $value i32) (param $value-len i32)
+            (result i32)
+            (call $put
+              (local.get $key) (local.get $key-len)
+              (local.get $value) (local.get $value-len)
+              (i32.const 64))
+            (if (i32.eqz (i32.load8_u (i32.const 64)))
+              (then
+                (i32.store8 (i32.const 128) (i32.const 0))
+                (return (i32.const 128))))
+            (call $debug-message (i32.load (i32.const 68)) (i32.const 72))
+            (i32.store8 (i32.const 128) (i32.const 1))
+            (i32.store (i32.const 132) (i32.load (i32.const 72)))
+            (i32.store (i32.const 136) (i32.load (i32.const 76)))
+            (i32.store (i32.const 140) (i32.load (i32.const 68)))
+            (i32.const 128)))
+        (core instance $m (instantiate $m
+          (with "libc" (instance $libc))
+          (with "" (instance
+            (export "put" (func $put))
+            (export "error-context.debug-message" (func $debug-message))))))
+        (func (export "save")
+          (param "key" string) (param "value" string)
+          (result (result (error (tuple string error-context))))
+          (canon lift (core func $m "save")
+            (memory (core memory $libc "memory"))
+            (realloc (core func $libc "realloc")))))
+      (instance $caller (instantiate $caller (with "put" (func $store "put"))))
+      (export "save" (func $caller "save")))
+    "#
+);
+
+/// The `error-reporter` fixture: a third component, which `cargo` and
+/// wit-bindgen built, whose `describe` answers the debug message of
+/// the `error-context` it is handed.
+const REPORTER: &[u8] = include_bytes!(
+    "../../wasm-component-model-polyfill/tests/corpus/fixtures/error-reporter/error-reporter.wasm"
 );
 
 /// A component that exports a core module for the host to take: one
@@ -562,6 +723,170 @@ const GUEST_THREADS: &[u8] = component!(
     "#
 );
 
+/// Two components, as a C library that uses pthreads and the program
+/// that calls it would be.
+///
+/// The library's stackful export `work` starts a worker thread and
+/// returns, leaving the worker to finish the call. The worker yields
+/// with the cancellable form of `thread.yield` and tells the host's
+/// `tally` what each yield answered: 0 while nothing has asked it to
+/// stop, and 1 once its caller has. On 1 it confirms with
+/// `task.cancel`. It gives up after `rounds` yields and returns how
+/// many it made.
+///
+/// The program's export `run` is lifted with a callback, as
+/// wit-bindgen lifts an `async` export. It calls `work` through an
+/// asynchronous lower and gives way `yields` times, answering its
+/// callback loop with a yield, so the worker runs. Then it tells the
+/// host 50, cancels the call with the asynchronous `subtask.cancel`,
+/// waits for the call to resolve if the cancel answered that it has
+/// not yet, and returns the state the call resolved to: 4,
+/// `CANCELLED_BEFORE_RETURNED`, when the worker confirmed, and 2,
+/// `RETURNED`, when it gave up first.
+///
+/// wit-bindgen's C generator emits the cancellable yield, but the
+/// flake carries no C toolchain, and its Rust generator exposes no
+/// thread built-in. So the component is written here by hand. The
+/// text format no longer spells the `cancellable` immediate, so it is
+/// assembled with the yield's immediate byte zero, and
+/// [`with_cancellable_yield`] sets it, as a toolchain that emits the
+/// immediate encodes it. The worker's yield is the only `thread.yield`
+/// in the binary.
+const CANCELLED_WORKER: &[u8] = component!(
+    r#"
+    (component
+      (type $host (instance
+        (export "tally" (func (param "n" u32)))))
+      (import "wcmp:smoke/host@0.1.0" (instance $host (type $host)))
+      (alias export $host "tally" (func $tally))
+
+      (component $library
+        (import "tally" (func $tally (param "n" u32)))
+        (core module $libc (table (export "table") 1 funcref))
+        (core instance $libc (instantiate $libc))
+        (alias core export $libc "table" (core table $table))
+        (core type $start-ty (func (param i32)))
+        (core func $tally (canon lower (func $tally)))
+        (core func $yield (canon thread.yield))
+        (core func $task-cancel (canon task.cancel))
+        (core func $task-return (canon task.return (result u32)))
+        (core func $new-indirect (canon thread.new-indirect $start-ty (core table $table)))
+        (core func $resume-later (canon thread.resume-later))
+        (core module $m
+          (import "" "tally" (func $tally (param i32)))
+          (import "" "thread.yield" (func $yield (result i32)))
+          (import "" "task.cancel" (func $task-cancel))
+          (import "" "task.return" (func $task-return (param i32)))
+          (import "" "thread.new-indirect" (func $new-indirect (param i32 i32) (result i32)))
+          (import "" "thread.resume-later" (func $resume-later (param i32)))
+          (import "libc" "table" (table 1 funcref))
+          (func $worker (param $rounds i32)
+            (local $made i32)
+            (local $answer i32)
+            (block $gave-up
+              (loop $more
+                (br_if $gave-up (i32.ge_u (local.get $made) (local.get $rounds)))
+                (local.set $answer (call $yield))
+                (call $tally (local.get $answer))
+                (if (local.get $answer)
+                  (then
+                    (call $task-cancel)
+                    (return)))
+                (local.set $made (i32.add (local.get $made) (i32.const 1)))
+                (br $more)))
+            (call $task-return (local.get $made)))
+          (elem (table 0) (i32.const 0) func $worker)
+          (func (export "work") (param $rounds i32)
+            (call $resume-later (call $new-indirect (i32.const 0) (local.get $rounds)))))
+        (core instance $m (instantiate $m
+          (with "" (instance
+            (export "tally" (func $tally))
+            (export "thread.yield" (func $yield))
+            (export "task.cancel" (func $task-cancel))
+            (export "task.return" (func $task-return))
+            (export "thread.new-indirect" (func $new-indirect))
+            (export "thread.resume-later" (func $resume-later))))
+          (with "libc" (instance $libc))))
+        (func (export "work") async (param "rounds" u32) (result u32)
+          (canon lift (core func $m "work") async)))
+      (instance $library (instantiate $library (with "tally" (func $tally))))
+
+      (component $program
+        (import "tally" (func $tally (param "n" u32)))
+        (import "work" (func $work async (param "rounds" u32) (result u32)))
+        (core module $libc (memory (export "memory") 1))
+        (core instance $libc (instantiate $libc))
+        (core func $tally (canon lower (func $tally)))
+        (core func $work
+          (canon lower (func $work) async (memory (core memory $libc "memory"))))
+        (core func $cancel (canon subtask.cancel async))
+        (core func $subtask-drop (canon subtask.drop))
+        (core func $set-new (canon waitable-set.new))
+        (core func $join (canon waitable.join))
+        (core func $set-drop (canon waitable-set.drop))
+        (core func $task-return (canon task.return (result u32)))
+        (core module $m
+          (import "" "tally" (func $tally (param i32)))
+          (import "" "work" (func $work (param i32 i32) (result i32)))
+          (import "" "subtask.cancel" (func $cancel (param i32) (result i32)))
+          (import "" "subtask.drop" (func $subtask-drop (param i32)))
+          (import "" "waitable-set.new" (func $set-new (result i32)))
+          (import "" "waitable.join" (func $join (param i32 i32)))
+          (import "" "waitable-set.drop" (func $set-drop (param i32)))
+          (import "" "task.return" (func $task-return (param i32)))
+          (global $subtask (mut i32) (i32.const 0))
+          (global $yields (mut i32) (i32.const 0))
+          (global $set (mut i32) (i32.const 0))
+          ;; The call has started once `work` returns: the worker runs
+          ;; on, and the answer would land at 0. Give way.
+          (func (export "run") (param $yields i32) (result i32)
+            (global.set $yields (local.get $yields))
+            (global.set $subtask
+              (i32.shr_u (call $work (i32.const 1000) (i32.const 0)) (i32.const 4)))
+            (i32.const 1 (; YIELD ;)))
+          ;; Give way until the yields run out, then cancel. A subtask
+          ;; event is the cancelled call resolving.
+          (func (export "run-callback") (param $event i32) (param $index i32) (param $state i32)
+            (result i32)
+            (if (i32.eq (local.get $event) (i32.const 1 (; SUBTASK ;)))
+              (then
+                (call $join (global.get $subtask) (i32.const 0))
+                (call $set-drop (global.get $set))
+                (return (call $finish (local.get $state)))))
+            (if (global.get $yields)
+              (then
+                (global.set $yields (i32.sub (global.get $yields) (i32.const 1)))
+                (return (i32.const 1 (; YIELD ;)))))
+            (call $tally (i32.const 50))
+            (local.set $state (call $cancel (global.get $subtask)))
+            (if (i32.ne (local.get $state) (i32.const -1 (; BLOCKED ;)))
+              (then (return (call $finish (local.get $state)))))
+            (global.set $set (call $set-new))
+            (call $join (global.get $subtask) (global.get $set))
+            (i32.or (i32.const 2 (; WAIT ;)) (i32.shl (global.get $set) (i32.const 4))))
+          (func $finish (param $state i32) (result i32)
+            (call $subtask-drop (global.get $subtask))
+            (call $task-return (local.get $state))
+            (i32.const 0 (; EXIT ;))))
+        (core instance $m (instantiate $m
+          (with "" (instance
+            (export "tally" (func $tally))
+            (export "work" (func $work))
+            (export "subtask.cancel" (func $cancel))
+            (export "subtask.drop" (func $subtask-drop))
+            (export "waitable-set.new" (func $set-new))
+            (export "waitable.join" (func $join))
+            (export "waitable-set.drop" (func $set-drop))
+            (export "task.return" (func $task-return))))))
+        (func (export "run") async (param "yields" u32) (result u32)
+          (canon lift (core func $m "run") async (callback (core func $m "run-callback")))))
+      (instance $program (instantiate $program
+        (with "tally" (func $tally))
+        (with "work" (func $library "work"))))
+      (export "run" (func $program "run")))
+    "#
+);
+
 /// A story's body: what it does against the engine, and the evidence
 /// it returns or the reason it failed.
 type Body<'a> = Pin<Box<dyn Future<Output = Result<String, String>> + 'a>>;
@@ -740,6 +1065,51 @@ pub static GUEST_THREADS_STORY: Story = Story {
            its cause.",
 };
 
+pub static CANCEL_A_SLOW_HOST_CALL: Story = Story {
+    chapter: "Failure and cancellation",
+    title: "Let a guest give up on a slow host call",
+    goal: "A handler that `cargo` and wit-bindgen built sends a request upstream through your \
+           `async` host function, lending you the request for the call, and gives the call a \
+           deadline. Your answer waits on a timer the store knows nothing about, and the \
+           deadline passes first. The handler drops the call, which cancels it: the store \
+           drops your future before it answers, the request comes back to the handler so it \
+           can let it go, and the handler answers that it timed out. Nothing here sets a guest's \
+           stack aside, so it goes the same way with suspending turned off or in a browser \
+           without JavaScript Promise Integration.",
+};
+
+pub static TRAP_LOSES_THE_STORE: Story = Story {
+    chapter: "Failure and cancellation",
+    title: "Lose a store to a trap and start again",
+    goal: "A component that `cargo` and wit-bindgen built has a bug: its `average` divides \
+           by zero when the list is empty. Your call returns the trap. From then on every call \
+           into that store fails with \"cannot enter component instance\", so no guest code \
+           runs on the state the bug left behind. You build a new store, and the component \
+           answers there.",
+};
+
+pub static ERROR_BETWEEN_COMPONENTS: Story = Story {
+    chapter: "Failure and cancellation",
+    title: "Pass an error from one component to another",
+    goal: "A storage component fails a write and answers with an `error-context` whose message \
+           says why. The component that called it reads the message and hands you the same \
+           error. You pass it on to a third component, which reads the same message. Error \
+           contexts sit behind a feature gate that is off by default, so an engine you have \
+           not configured refuses these components and names the gate; you turn it on.",
+};
+
+pub static STOP_A_GUEST_THREAD: Story = Story {
+    chapter: "Failure and cancellation",
+    title: "Stop a guest thread when its caller cancels",
+    goal: "A library starts a worker thread, the way a C library starts a pthread, and the \
+           worker yields in a form that lets it stop early. The program that called the \
+           library lets the worker run a while and then cancels the call. The worker's yield \
+           reports the cancellation, the worker confirms it, and the program reads that the \
+           call was cancelled before it returned. The program gives way through its callback \
+           rather than by setting its stack aside, so it goes the same way with suspending \
+           turned off or in a browser without JavaScript Promise Integration.",
+};
+
 pub static WASI_HTTP_STORY: Story = Story {
     chapter: "Known limits",
     title: "Learn which host a WASI 0.3 HTTP handler needs",
@@ -791,6 +1161,19 @@ fn stories(engine: &Engine) -> Vec<(&'static Story, Body<'_>)> {
         (&WAIT_FOR_THE_HOST, Box::pin(wait_for_the_host_here(engine))),
         (&BLOCK_AND_RESUME, Box::pin(block_and_resume())),
         (&GUEST_THREADS_STORY, Box::pin(guest_threads())),
+        (
+            &CANCEL_A_SLOW_HOST_CALL,
+            Box::pin(cancel_a_slow_host_call(engine)),
+        ),
+        (
+            &TRAP_LOSES_THE_STORE,
+            Box::pin(trap_loses_the_store(engine)),
+        ),
+        (
+            &ERROR_BETWEEN_COMPONENTS,
+            Box::pin(error_between_components(engine)),
+        ),
+        (&STOP_A_GUEST_THREAD, Box::pin(stop_a_guest_thread())),
         (&WASI_HTTP_STORY, Box::pin(wasi_http(engine))),
         (&SUSPENDING_OFF, Box::pin(suspending_off())),
     ]
@@ -2340,6 +2723,513 @@ async fn suspending_off() -> Result<String, String> {
         "with suspending off, {wait}, {blocking}, and {threads}: \"{}\"; none returned \
          a value or hung",
         SchedulerCause::StackSwitchNeeded
+    ))
+}
+
+/// How long the host's `fetch` takes to answer, in milliseconds: far
+/// past the handler's deadline, so only a cancellation ends the call
+/// in time.
+const SLOW_FETCH_MILLIS: u32 = 10_000;
+
+/// The representation of the request the host hands the handler.
+const REQUEST_REP: u32 = 7;
+
+/// What became of the host's `fetch` call.
+#[derive(Debug, Default)]
+struct FetchWatch {
+    /// The representation of the request the call was lent.
+    lent: Option<u32>,
+    /// Whether the call answered.
+    answered: bool,
+    /// Whether the store dropped the call's future.
+    dropped: bool,
+    /// Whether the drop could reach the store, which it can only
+    /// inside a turn of the store.
+    dropped_in_a_turn: bool,
+}
+
+/// Held by the future of a `fetch` call, so its drop tells the host
+/// that the store let the future go, and whether that happened inside
+/// a turn.
+struct WatchDrop {
+    accessor: Accessor<HostState>,
+    watch: Arc<Mutex<FetchWatch>>,
+}
+
+impl Drop for WatchDrop {
+    fn drop(&mut self) {
+        let in_a_turn = self.accessor.with(|_store| ()).is_ok();
+        if let Ok(mut watch) = self.watch.lock() {
+            watch.dropped = true;
+            watch.dropped_in_a_turn = in_a_turn;
+        }
+    }
+}
+
+/// The deadline story on `engine`, and again on an engine with
+/// suspending turned off. Nothing in it needs a stack switch: the
+/// handler is lifted with a callback, and the cancel it makes waits
+/// only for the store's next turn to drop the host's future, which a
+/// turn nested on the one stack does as well.
+async fn cancel_a_slow_host_call(engine: &Engine) -> Result<String, String> {
+    let evidence = cancel_a_slow_host_call_on(engine).await?;
+    let mut config = EngineConfig::new();
+    config.suspend_provider(false);
+    let off = Engine::with_config(&config).map_err(fail)?;
+    let again = cancel_a_slow_host_call_on(&off).await?;
+    expect(
+        "the story with suspending turned off",
+        again.as_str(),
+        evidence.as_str(),
+    )?;
+    Ok(format!(
+        "{evidence}; the same happened with suspending turned off"
+    ))
+}
+
+/// The `deadline` fixture's `handle` races the host's `fetch` against
+/// the host's `sleep`. `fetch` answers only after
+/// [`SLOW_FETCH_MILLIS`], and the handler's deadline is
+/// [`WAIT_MILLIS`], so the timer wins. The handler drops the pending
+/// call, and wit-bindgen's runtime cancels it with `subtask.cancel`.
+/// The store drops the host's future in its next turn, the call
+/// resolves as cancelled before it returned, and the borrow of the
+/// request the handler lent comes back. The handler then drops the
+/// request, which traps while a borrow is out, so the host's
+/// destructor running is the evidence the borrow came back.
+async fn cancel_a_slow_host_call_on(engine: &Engine) -> Result<String, String> {
+    let component = Component::new(engine, DEADLINE).await.map_err(fail)?;
+    let mut linker: Linker<HostState> = Linker::new(engine);
+    let upstream_id: InterfaceIdentifier = "wcmp:deadline/upstream@0.1.0".parse().map_err(fail)?;
+    let watch = Arc::new(Mutex::new(FetchWatch::default()));
+    let request = {
+        let mut upstream = linker.instance(&upstream_id);
+        let request = upstream
+            .resource(
+                "request",
+                |state: &mut HostState, rep: u32| -> wasm_component_model_polyfill::Result<()> {
+                    state.dropped.push(rep);
+                    Ok(())
+                },
+            )
+            .map_err(fail)?;
+        let fetch_type = FunctionType {
+            parameters: vec![FunctionParameter {
+                name: "req".to_owned(),
+                ty: ValueType::Borrow(ResourceType::new("request")),
+            }],
+            result: Some(ValueType::Primitive(PrimitiveType::String)),
+            async_: true,
+        };
+        let watched = watch.clone();
+        upstream
+            .func_new_concurrent(
+                "fetch",
+                fetch_type,
+                move |accessor: &Accessor<HostState>, args: Vec<Val>| {
+                    let lent = match args.first() {
+                        Some(Val::Borrow(request)) => Some(request.rep()),
+                        _ => None,
+                    };
+                    let guard = WatchDrop {
+                        accessor: accessor.clone(),
+                        watch: watched.clone(),
+                    };
+                    async move {
+                        if let Ok(mut watch) = guard.watch.lock() {
+                            watch.lent = lent;
+                        }
+                        // Nothing the store owns can resolve this.
+                        Outside::pause(SLOW_FETCH_MILLIS).await;
+                        if let Ok(mut watch) = guard.watch.lock() {
+                            watch.answered = true;
+                        }
+                        Ok(vec![Val::String("the upstream body".to_owned())])
+                    }
+                },
+            )
+            .map_err(fail)?;
+        upstream
+            .func_wrap_concurrent(
+                "sleep",
+                |_accessor: &Accessor<HostState>, (millis,): (u32,)| async move {
+                    Outside::pause(millis).await;
+                    Ok(())
+                },
+            )
+            .map_err(fail)?;
+        request
+    };
+    let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .map_err(fail)?;
+    let handle = instance
+        .exports()
+        .instance("wcmp:deadline/handler@0.1.0")
+        .ok_or("no `wcmp:deadline/handler` export")?
+        .func("handle")
+        .ok_or("no `handle` export")?;
+    let request = store.resource_new(request, REQUEST_REP).map_err(fail)?;
+
+    let answer = handle
+        .call(&mut store, &[Val::Own(request), Val::U32(WAIT_MILLIS)])
+        .await
+        .map_err(fail)?;
+    expect(
+        "the handler's answer",
+        answer.as_ref(),
+        &[Val::String("timeout".to_owned())],
+    )?;
+    let watch = watch.lock().map_err(fail)?;
+    expect("the request lent to `fetch`", watch.lent, Some(REQUEST_REP))?;
+    expect("`fetch` answered", watch.answered, false)?;
+    expect(
+        "the store dropped the future of `fetch`",
+        watch.dropped,
+        true,
+    )?;
+    expect(
+        "the drop ran inside a turn of the store",
+        watch.dropped_in_a_turn,
+        true,
+    )?;
+    expect(
+        "the requests the handler let go",
+        store.data().dropped.as_slice(),
+        &[REQUEST_REP],
+    )?;
+    Ok(format!(
+        "`handle` lent request {REQUEST_REP} to `fetch` and gave it {WAIT_MILLIS} ms; the \
+         deadline passed first, so the guest dropped the call and wit-bindgen cancelled it; \
+         the store dropped the host's future, which would have answered after \
+         {SLOW_FETCH_MILLIS} ms, unanswered and inside a turn; the borrow came back, so the \
+         handler let the request go and the host's destructor ran for it; `handle` answered \
+         \"timeout\""
+    ))
+}
+
+/// The `stats` fixture's `average` of an empty list divides by zero,
+/// which the guest's Rust turns into a panic and its release profile
+/// into an `unreachable` trap. The trap is what the call returns, and
+/// it poisons the store: a call of `sum`, which has no bug, then fails
+/// with the cannot-enter trap before any guest code runs. A new store
+/// instantiates the same component, and `sum` answers there.
+async fn trap_loses_the_store(engine: &Engine) -> Result<String, String> {
+    let component = Component::new(engine, STATS).await.map_err(fail)?;
+    let linker: Linker<HostState> = Linker::new(engine);
+    let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .map_err(fail)?;
+    let average = instance
+        .get_func("average")
+        .ok_or("no `average` export")?
+        .typed::<(Vec<u32>,), u32>()
+        .map_err(fail)?;
+    let sum = instance
+        .get_func("sum")
+        .ok_or("no `sum` export")?
+        .typed::<(Vec<u32>,), u32>()
+        .map_err(fail)?;
+    let mean = average
+        .call(&mut store, (vec![2, 4],))
+        .await
+        .map_err(fail)?;
+    expect("average([2, 4])", mean, 3)?;
+
+    let trap = match average.call(&mut store, (Vec::new(),)).await {
+        Ok(value) => return Err(format!("average([]) returned {value} instead of trapping")),
+        Err(Error::Task(TaskCause::CannotEnter)) => {
+            return Err("average([]) was refused before it ran".to_owned());
+        }
+        Err(trap) => trap,
+    };
+    match sum.call(&mut store, (KEYS.to_vec(),)).await {
+        Err(Error::Task(TaskCause::CannotEnter)) => (),
+        Ok(value) => {
+            return Err(format!(
+                "sum returned {value} in a store a trap had poisoned"
+            ));
+        }
+        Err(other) => {
+            return Err(format!(
+                "sum failed in the poisoned store, but not with the cannot-enter trap: {}",
+                chain(&other)
+            ));
+        }
+    }
+
+    let mut fresh = Store::new(engine, HostState::default()).map_err(fail)?;
+    let instance = linker
+        .instantiate(&mut fresh, &component)
+        .await
+        .map_err(fail)?;
+    let total = instance
+        .get_func("sum")
+        .ok_or("no `sum` export")?
+        .typed::<(Vec<u32>,), u32>()
+        .map_err(fail)?
+        .call(&mut fresh, (KEYS.to_vec(),))
+        .await
+        .map_err(fail)?;
+    expect("sum([1, 2, 39]) in a new store", total, KEYS.iter().sum())?;
+    Ok(format!(
+        "average([2, 4]) = {mean}; average([]) trapped ({}); `sum` in the same store then \
+         failed with \"{}\"; in a new store sum([1, 2, 39]) = {total}",
+        root_cause(&trap),
+        TaskCause::CannotEnter
+    ))
+}
+
+/// The innermost message of an error's chain, which for a trap is the
+/// runtime's own words for it, without a backtrace the runtime may
+/// add around it.
+fn root_cause(error: &Error) -> String {
+    let mut link: &(dyn std::error::Error + 'static) = error;
+    while let Some(source) = link.source() {
+        link = source;
+    }
+    link.to_string()
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// A write [`STORE_AND_CALLER`]'s store accepts: a key and a value
+/// within its 16-byte limit.
+const FITS: (&str, &str) = ("name", "polyfill");
+
+/// A write the store fails: the value is over its 16-byte limit.
+const TOO_LONG: (&str, &str) = ("motto", "errors cross components as values");
+
+/// Every message in an error's chain, as a failed story reports it,
+/// so a trap inside a guest names its cause.
+fn traced(error: Error) -> String {
+    chain(&error)
+}
+
+/// The default engine refuses [`STORE_AND_CALLER`] and names the gate.
+/// An engine with the gate on instantiates it and the `error-reporter`
+/// fixture in one store. `save` of a value that fits succeeds; `save`
+/// of one that does not comes back with the message the caller read
+/// from the store's error context and that same error context, which
+/// the host takes as a `Val::ErrorContext`. The host hands it to the
+/// reporter, a component of its own, whose `describe` reads the same
+/// message and drops its handle. The host still holds the error, so it
+/// hands it over a second time, and the reporter reads it again.
+async fn error_between_components(engine: &Engine) -> Result<String, String> {
+    let refusal = match Component::new(engine, STORE_AND_CALLER).await {
+        Ok(_) => return Err("the default engine accepted an `error-context`".to_owned()),
+        Err(error) if error.to_string().contains("error-context feature") => error.to_string(),
+        Err(other) => return Err(format!("unexpected rejection: {other}")),
+    };
+    let mut config = EngineConfig::new();
+    config.wasm_component_model_error_context(true);
+    let engine = Engine::with_config(&config).map_err(traced)?;
+    let saving = Component::new(&engine, STORE_AND_CALLER)
+        .await
+        .map_err(traced)?;
+    let reporting = Component::new(&engine, REPORTER).await.map_err(traced)?;
+    let linker: Linker<HostState> = Linker::new(&engine);
+    let mut store = Store::new(&engine, HostState::default()).map_err(traced)?;
+    let saving = linker
+        .instantiate(&mut store, &saving)
+        .await
+        .map_err(traced)?;
+    let reporting = linker
+        .instantiate(&mut store, &reporting)
+        .await
+        .map_err(traced)?;
+    let save = saving.get_func("save").ok_or("no `save` export")?;
+    let describe = reporting
+        .get_func("describe")
+        .ok_or("no `describe` export")?;
+
+    let saved = save
+        .call(
+            &mut store,
+            &[
+                Val::String(FITS.0.to_owned()),
+                Val::String(FITS.1.to_owned()),
+            ],
+        )
+        .await
+        .map_err(traced)?;
+    expect(
+        "a write that fits",
+        saved.as_ref(),
+        &[Val::Result(Ok(None))],
+    )?;
+
+    let failed = save
+        .call(
+            &mut store,
+            &[
+                Val::String(TOO_LONG.0.to_owned()),
+                Val::String(TOO_LONG.1.to_owned()),
+            ],
+        )
+        .await
+        .map_err(traced)?;
+    let [Val::Result(Err(Some(failure)))] = failed.as_ref() else {
+        return Err(format!("a write over the limit answered {failed:?}"));
+    };
+    let Val::Tuple(parts) = failure.as_ref() else {
+        return Err(format!("the failure is not a tuple: {failure:?}"));
+    };
+    let [Val::String(logged), Val::ErrorContext(error)] = parts.as_ref() else {
+        return Err(format!("the failure carries {parts:?}"));
+    };
+    let wanted = format!(
+        "cannot write `{}`: the value is over the 16-byte limit",
+        TOO_LONG.0
+    );
+    expect(
+        "the message the caller read",
+        logged.as_str(),
+        wanted.as_str(),
+    )?;
+
+    let mut described = Vec::new();
+    for _ in 0..2 {
+        let answer = describe
+            .call(&mut store, &[Val::ErrorContext(error.clone())])
+            .await
+            .map_err(traced)?;
+        let [Val::String(message)] = answer.as_ref() else {
+            return Err(format!("`describe` answered {answer:?}"));
+        };
+        described.push(message.clone());
+    }
+    expect(
+        "the message the reporter read, each time",
+        described.as_slice(),
+        &[wanted.clone(), wanted.clone()],
+    )?;
+    Ok(format!(
+        "the default engine refused the components ({}); with the gate on, the store failed \
+         the write of `{}` with an error context, the caller read {wanted:?} from it and \
+         handed it to the host as `Val::ErrorContext`, and a third component, which `cargo` \
+         and wit-bindgen built, read the same message from it each of the two times the host \
+         passed it on",
+        refusal.lines().next().unwrap_or_default(),
+        TOO_LONG.0
+    ))
+}
+
+/// How many times the program in [`CANCELLED_WORKER`] gives way before
+/// it cancels, which is how many turns the worker gets.
+const PROGRAM_YIELDS: u32 = 3;
+
+/// What the host is told in [`CANCELLED_WORKER`]: the worker's yield
+/// answers 0 on each of the turns the program gives it, the program
+/// says 50 as it cancels, and the worker's next yield answers 1.
+const WORKER_TALLIES: [u32; 5] = [0, 0, 0, 50, 1];
+
+/// The state of a subtask whose callee confirmed a cancellation.
+const CANCELLED_BEFORE_RETURNED: u32 = 4;
+
+/// `binary` with the `cancellable` immediate of its first
+/// `thread.yield` set, as a toolchain that emits the immediate encodes
+/// it. The text format no longer spells the immediate, so the
+/// component is assembled with the byte zero.
+fn with_cancellable_yield(binary: &[u8]) -> Result<Vec<u8>, String> {
+    for payload in wasmparser::Parser::new(0).parse_all(binary) {
+        let wasmparser::Payload::ComponentCanonicalSection(section) = payload.map_err(fail)? else {
+            continue;
+        };
+        for entry in section.into_iter_with_offsets() {
+            let (offset, function) = entry.map_err(fail)?;
+            if let wasmparser::CanonicalFunction::ThreadYield { .. } = function {
+                let immediate = usize::try_from(offset).map_err(fail)? + 1;
+                let mut patched = binary.to_vec();
+                expect(
+                    "the immediate of the assembled `thread.yield`",
+                    patched[immediate],
+                    0,
+                )?;
+                patched[immediate] = 1;
+                return Ok(patched);
+            }
+        }
+    }
+    Err("the component defines no `thread.yield`".to_owned())
+}
+
+/// An engine that accepts [`CANCELLED_WORKER`]: stackful exports and
+/// the thread built-ins, as [`suspending_engine`] allows them, and the
+/// asynchronous form of `subtask.cancel`. Wasmtime keeps each behind a
+/// feature gate that is off by default.
+fn cancelling_engine(suspending: bool) -> Result<Engine, String> {
+    let mut config = EngineConfig::new();
+    config.wasm_component_model_async_stackful(true);
+    config.wasm_component_model_threading(true);
+    config.wasm_component_model_more_async_builtins(true);
+    config.suspend_provider(suspending);
+    Engine::with_config(&config).map_err(fail)
+}
+
+/// The program in [`CANCELLED_WORKER`] calls the library's `work`,
+/// gives way so the worker it started runs, and cancels the call. The
+/// worker's cancellable yield answers 0 on each turn it gets and 1
+/// once the program has cancelled, the worker confirms with
+/// `task.cancel`, and the program reads `CANCELLED_BEFORE_RETURNED`.
+/// Answers what the host was told: each answer of the worker's yields,
+/// with the program's 50 where it cancelled.
+///
+/// Nothing in it needs a stack switch. The program gives way through
+/// its callback loop rather than by setting its stack aside, so with
+/// no provider the worker's yield runs the program in a turn nested
+/// above it on the one stack, and the program's cancel reaches the
+/// worker's yield when that turn ends.
+async fn cancelled_worker_on(engine: &Engine) -> Result<Vec<u32>, String> {
+    let binary = with_cancellable_yield(CANCELLED_WORKER)?;
+    let component = Component::new(engine, &binary).await.map_err(fail)?;
+    let linker = tallying(engine)?;
+    let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .map_err(fail)?;
+    let run = instance
+        .get_func("run")
+        .ok_or("no `run` export")?
+        .typed::<(u32,), u32>()
+        .map_err(fail)?;
+
+    let state = run
+        .call(&mut store, (PROGRAM_YIELDS,))
+        .await
+        .map_err(fail)?;
+    let tallies = store.data().tallies.clone();
+    expect(
+        "the state the cancelled call resolved to",
+        state,
+        CANCELLED_BEFORE_RETURNED,
+    )?;
+    expect(
+        "what the worker's yields answered, and where the program cancelled",
+        tallies.as_slice(),
+        &WORKER_TALLIES,
+    )?;
+    Ok(tallies)
+}
+
+/// The cancelled worker on an engine with a provider where the target
+/// offers one, and on an engine with suspending turned off.
+async fn stop_a_guest_thread() -> Result<String, String> {
+    let here = cancelled_worker_on(&cancelling_engine(true)?).await?;
+    let off = cancelled_worker_on(&cancelling_engine(false)?).await?;
+    Ok(format!(
+        "the worker's first {} yields answered 0; the program cancelled, the worker's next \
+         yield answered 1, the worker confirmed, and the program read \
+         {CANCELLED_BEFORE_RETURNED}, cancelled before it returned; the host saw {here:?}, \
+         and {off:?} again with suspending turned off",
+        here.len() - 2
     ))
 }
 

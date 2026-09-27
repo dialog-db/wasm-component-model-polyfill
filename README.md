@@ -102,8 +102,11 @@ introspection, a gated feature, awaiting outside the store, streams and futures
 between a host and components, and guests that suspend: synchronous code waiting
 for an `async` host function, an export that blocks until its answers arrive,
 guest threads that park and wake, and the cause each of those three fails with
-when suspending is turned off. It runs as a native binary and as a browser page
-from one source.
+when suspending is turned off. A chapter on failure and cancellation shows a
+guest that cancels a slow host call when its deadline passes, a trap that loses
+the store, an error context passed from one component to another through the
+host, and a guest thread that stops when its caller cancels. It runs as a native
+binary and as a browser page from one source.
 
 ## Feature support
 

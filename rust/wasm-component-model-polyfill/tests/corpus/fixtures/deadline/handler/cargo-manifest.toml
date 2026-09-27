@@ -1,0 +1,15 @@
+# Copied to `Cargo.toml` by `build.sh`. See `../cargo-workspace.toml`
+# for why the file is not named `Cargo.toml` in the tree.
+[package]
+name = "wcmp-deadline-handler"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "handler"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { workspace = true }

@@ -1889,6 +1889,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-component-model-polyfill",
+ "wasmparser 0.258.0",
  "wcmp-macros",
 ]
 
