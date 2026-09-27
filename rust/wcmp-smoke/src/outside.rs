@@ -49,7 +49,7 @@ mod imp {
 
         /// What the host did while the wait was on.
         pub fn observed(&self) -> Result<String, String> {
-            Ok("the executor's timer ran while nothing polled the store".to_owned())
+            Ok("the program kept running".to_owned())
         }
     }
 }
@@ -107,11 +107,7 @@ mod imp {
                     "the page never ran the `setTimeout` asked for before the wait".to_owned(),
                 );
             }
-            Ok(
-                "the `setTimeout` of zero asked for before the wait ran, so the page kept \
-                delivering callbacks across it"
-                    .to_owned(),
-            )
+            Ok("the page stayed responsive".to_owned())
         }
     }
 

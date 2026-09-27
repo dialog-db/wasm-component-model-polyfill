@@ -1,21 +1,10 @@
-//! The smoke test: one host program that tells, chapter by chapter,
-//! what a developer does with the polyfill in a project of their own,
-//! and reports how each story went. It sets up an engine and a store,
-//! loads a component a real toolchain built and calls it, runs a
-//! `wac` composition, lends the guest host functions, host resources,
-//! and a core module, moves maps, fixed-length lists, and a
-//! wit-bindgen world of records, variants, and resources across the
-//! boundary, crosses into a 64-bit memory, walks exports by name,
-//! opts into a gated feature, awaits outside the store, reads a
-//! stream a guest returns, feeds a guest a stream and awaits the
-//! future it answers with, streams numbers between two composed
-//! components, lets synchronous guest code wait for an `async` host
-//! function, runs an export that blocks until its answers arrive,
-//! parks and wakes guest threads, lets a guest cancel a slow host call,
-//! loses a store to a trap and starts again, passes an error context
-//! from one component to another through the host, stops a guest
-//! thread its caller cancels, and learns which host a WASI 0.3 HTTP
-//! handler needs and why a wait fails once suspending is off.
+//! The smoke test: one host program that walks through what a
+//! developer does with the polyfill, story by story, and reports how
+//! each went. A story is a short title, a short goal, and the
+//! few values that show it worked, so a reader new to the project, or
+//! to a browser, can tell at a glance whether the major features work.
+//! `stories` lists them in the order the report tells them.
+//!
 //! It runs as a native binary (`tests smoke native`) and as a page in
 //! the browser (`tests smoke web`) from the same source, so a reader
 //! can check the polyfill by reading this file and by running it on
@@ -894,238 +883,168 @@ type Body<'a> = Pin<Box<dyn Future<Output = Result<String, String>> + 'a>>;
 pub static ENGINE_AND_STORE: Story = Story {
     chapter: "Getting started",
     title: "Create an engine and a store",
-    goal: "You embed the polyfill in a program of your own. An engine compiles components, \
-           and a store carries your host state next to every instance it holds, readable and \
-           writable from your side.",
+    goal: "Set up the polyfill and keep your own state in the store.",
 };
 
 pub static LOAD_AND_CALL: Story = Story {
     chapter: "Getting started",
-    title: "Load a component and call a typed export",
-    goal: "You have a component that `wasm-tools component new` built from a core module and \
-           its WIT. You load it, instantiate it, and call its `double` export with Rust types \
-           on both sides.",
+    title: "Load a component and call it",
+    goal: "Load a component that `wasm-tools` built and call an export with Rust types.",
 };
 
 pub static COMPOSITION_STORY: Story = Story {
     chapter: "Getting started",
     title: "Run a `wac` composition",
-    goal: "You joined two components with `wac plug`. The result is one component, and the \
-           polyfill supplies the adapter that carries a call from the socket into the plug \
-           and back.",
+    goal: "Two components joined by `wac plug` run as one, and a call passes between them.",
 };
 
 pub static HOST_FUNCTION: Story = Story {
     chapter: "Host integration",
-    title: "Provide a host function and pass strings and lists",
-    goal: "Your guest needs something only the host can do. You register a typed host \
-           function in the linker, and strings and a list cross the canonical ABI into guest \
-           memory and back out.",
+    title: "Pass strings and lists, and provide a host function",
+    goal: "Send strings and lists into a guest, and let it call a Rust function you provide.",
 };
 
 pub static HOST_RESOURCE: Story = Story {
     chapter: "Host integration",
     title: "Hand the guest a host resource",
-    goal: "You define a resource whose representation lives on your side. When the guest \
-           drops a handle, your destructor runs, once per handle and in drop order.",
+    goal: "The guest drops handles to a resource you own, and your destructor runs for each.",
 };
 
 pub static DISPOSAL: Story = Story {
     chapter: "Host integration",
-    title: "Release handles and tear everything down",
-    goal: "You release a handle you never gave the guest, a second release is refused, and \
-           the instance and the store go away without running a destructor for a handle you \
-           still held.",
+    title: "Clean up handles, instances, and stores",
+    goal: "Release a handle yourself, then drop the instance and the store.",
 };
 
 pub static CORE_MODULES: Story = Story {
     chapter: "Host integration",
-    title: "Lend a core module between components",
-    goal: "A component exports a plain core module. You read its shape, instantiate it \
-           yourself, and register it in a linker so a second component can instantiate it \
-           too.",
+    title: "Share a core module between components",
+    goal: "Instantiate a core module that one component exports, and hand it to another.",
 };
 
 pub static MAPS_AND_FIXED_LISTS: Story = Story {
     chapter: "Real toolchains, real types",
     title: "Pass maps and fixed-length lists",
-    goal: "Your WIT uses `map<string, u32>`, `list<u32, 4>`, and `list<u8, 16>`. Each \
-           crosses into a component `wasm-tools` built and back, as a Rust `HashMap` or \
-           array and as an untyped `Val`.",
+    goal: "A `map<string, u32>` and fixed-length lists go into a component and come back.",
 };
 
 pub static RICH_WORLD: Story = Story {
     chapter: "Real toolchains, real types",
-    title: "Drive a wit-bindgen world with records, variants, and resources",
-    goal: "Three components that `cargo` and wit-bindgen built share one world of records, \
-           variants, enums, flags, options, results, nested lists, strings, and resources. \
-           Every call crosses all three and comes back.",
+    title: "Use records, variants, and resources from wit-bindgen",
+    goal: "Call three `cargo`-built components that pass every kind of WIT type between \
+           them.",
 };
 
 pub static MEMORY64: Story = Story {
     chapter: "Real toolchains, real types",
     title: "Cross into a 64-bit memory",
-    goal: "One of your components uses a 64-bit memory. A string goes from the host into a \
-           32-bit component, through an adapter into an `i64`-addressed memory, and back \
-           unchanged.",
+    goal: "Pass a string to a component that uses 64-bit memory, and get it back.",
 };
 
 pub static NAVIGATION: Story = Story {
     chapter: "Introspection and configuration",
     title: "Find exports by name and read their signatures",
-    goal: "Your component nests functions under instance exports. You walk to `a.b.g` by \
-           name and read its parameter and result types before you call it.",
+    goal: "Walk to a nested export by name and read its types before you call it.",
 };
 
 pub static ENGINE_CONFIGURATION: Story = Story {
     chapter: "Introspection and configuration",
-    title: "Opt into a gated feature",
-    goal: "A component uses the `implements` annotation, which sits behind a feature gate. \
-           The default engine refuses it and names the gate; an engine you configure \
+    title: "Turn on an off-by-default feature",
+    goal: "The default engine refuses a gated feature and names it; a configured engine \
            accepts it.",
 };
 
 pub static SUSPEND_PROVIDER: Story = Story {
     chapter: "Introspection and configuration",
-    title: "Learn how the engine sets a waiting guest aside",
-    goal: "A guest that waits needs its stack set aside until it can go on. You ask the \
-           engine how it does that here: with WebAssembly's stack-switching instructions \
-           natively on x86_64 Linux, with JavaScript Promise Integration in the browser, or \
-           not at all, as in a browser without it such as Safari before 27. An engine you \
-           configure with suspending turned off answers that it has no way.",
+    title: "Check how this engine pauses a waiting guest",
+    goal: "Ask the engine how it pauses a waiting guest: stack switching natively, JSPI in a \
+           browser, or not at all.",
 };
 
 pub static RUN_CONCURRENT: Story = Story {
-    chapter: "Asynchronous hosts",
+    chapter: "Async hosts",
     title: "Await outside the store without blocking it",
-    goal: "Inside a `run_concurrent` entry your closure reads host state, awaits a timer the \
-           store knows nothing about, and writes host state when it resumes. The store sits \
-           idle in between rather than reporting a deadlock.",
+    goal: "Your async host code awaits a timer, and the store waits instead of reporting a \
+           deadlock.",
 };
 
 pub static READ_A_GUEST_STREAM: Story = Story {
     chapter: "Streams and futures",
     title: "Read a stream a guest returns",
-    goal: "A component that `cargo` and wit-bindgen built answers your call with a \
-           `stream<string>` and keeps writing words into it after the call has returned. \
-           You read it through a consumer of your own, and every word arrives in order \
-           before the stream ends.",
+    goal: "A guest returns a `stream<string>` and keeps writing to it; you read every word.",
 };
 
 pub static STREAM_IN_FUTURE_OUT: Story = Story {
     chapter: "Streams and futures",
     title: "Feed a guest a stream and await its future",
-    goal: "You hand the same component a `stream<u32>` that your own producer writes a batch \
-           at a time. It answers with a `future<u64>` at once, reads your numbers, and \
-           resolves the future, once your stream has ended, with a checksum that weights each \
-           number by its position, which comes out right only if every number arrived once \
-           and in order.",
+    goal: "Send a guest a `stream<u32>` and await the `future<u64>` it answers with.",
 };
 
 pub static STREAM_BETWEEN_COMPONENTS: Story = Story {
     chapter: "Streams and futures",
     title: "Stream numbers from one component to another",
-    goal: "You joined two such components with `wac plug`: one streams the numbers 1 to \
-           1000, the other adds them up. The numbers cross from one component's memory into \
-           the other's through the adapter the polyfill supplies, and you see only the sum.",
+    goal: "One component streams 1 to 1000 to another, which adds them up.",
 };
 
 pub static WAIT_FOR_THE_HOST: Story = Story {
-    chapter: "Suspending guests",
+    chapter: "Guests that wait",
     title: "Let synchronous guest code wait for an `async` host function",
-    goal: "A component that `cargo` and wit-bindgen built calls your `async` host function \
-           through a plain call that returns only once you answer, the way code that \
-           fetches over the network is written. Your answer waits on a timer the store \
-           knows nothing about. The guest is set aside while it waits, your program keeps \
-           running, and the call returns your answers once the timer fires. In a browser \
-           without JavaScript Promise Integration, such as Safari before 27, the call fails \
-           instead and names the missing stack switch as its cause.",
+    goal: "A guest makes a plain blocking call to your `async` host function and pauses until \
+           you answer. Without JSPI it fails cleanly instead.",
 };
 
 pub static BLOCK_AND_RESUME: Story = Story {
-    chapter: "Suspending guests",
+    chapter: "Guests that wait",
     title: "Run an export that blocks until its answers arrive",
-    goal: "A component's export starts two calls to your `async` host function and then \
-           blocks until each has answered, written in a blocking style with no callback to \
-           return to. You answer the second call first. The export wakes once per answer, \
-           in the order you answered, and returns the sum of both. In a browser without \
-           JavaScript Promise Integration the wait fails instead and names the missing \
-           stack switch as its cause.",
+    goal: "A guest export starts two host calls and blocks until both answer. Without JSPI it \
+           fails cleanly instead.",
 };
 
 pub static GUEST_THREADS_STORY: Story = Story {
-    chapter: "Suspending guests",
+    chapter: "Guests that wait",
     title: "Park and wake guest threads",
-    goal: "A component starts three threads of its own, the way a C library starts \
-           pthreads, and each thread parks itself until another wakes it. The main thread \
-           wakes two of them for later, switches straight to the third, and parks until the \
-           last one finishes. You watch every thread start, park, and wake in exactly that \
-           order. In a browser without JavaScript Promise Integration the first park that \
-           only another thread can end fails instead and names the missing stack switch as \
-           its cause.",
+    goal: "A guest starts three threads that park and wake each other, like pthreads. Without \
+           JSPI it fails cleanly instead.",
 };
 
 pub static CANCEL_A_SLOW_HOST_CALL: Story = Story {
     chapter: "Failure and cancellation",
     title: "Let a guest give up on a slow host call",
-    goal: "A handler that `cargo` and wit-bindgen built sends a request upstream through your \
-           `async` host function, lending you the request for the call, and gives the call a \
-           deadline. Your answer waits on a timer the store knows nothing about, and the \
-           deadline passes first. The handler drops the call, which cancels it: the store \
-           drops your future before it answers, the request comes back to the handler so it \
-           can let it go, and the handler answers that it timed out. Nothing here sets a guest's \
-           stack aside, so it goes the same way with suspending turned off or in a browser \
-           without JavaScript Promise Integration.",
+    goal: "A guest gives a host call a deadline and cancels it when the deadline passes. Works \
+           without JSPI too.",
 };
 
 pub static TRAP_LOSES_THE_STORE: Story = Story {
     chapter: "Failure and cancellation",
-    title: "Lose a store to a trap and start again",
-    goal: "A component that `cargo` and wit-bindgen built has a bug: its `average` divides \
-           by zero when the list is empty. Your call returns the trap. From then on every call \
-           into that store fails with \"cannot enter component instance\", so no guest code \
-           runs on the state the bug left behind. You build a new store, and the component \
-           answers there.",
+    title: "Recover from a trap with a new store",
+    goal: "A guest bug traps. That store refuses further calls, and a new store works.",
 };
 
 pub static ERROR_BETWEEN_COMPONENTS: Story = Story {
     chapter: "Failure and cancellation",
     title: "Pass an error from one component to another",
-    goal: "A storage component fails a write and answers with an `error-context` whose message \
-           says why. The component that called it reads the message and hands you the same \
-           error. You pass it on to a third component, which reads the same message. Error \
-           contexts sit behind a feature gate that is off by default, so an engine you have \
-           not configured refuses these components and names the gate; you turn it on.",
+    goal: "Turn on `error-context`, and an error's message travels between components intact.",
 };
 
 pub static STOP_A_GUEST_THREAD: Story = Story {
     chapter: "Failure and cancellation",
     title: "Stop a guest thread when its caller cancels",
-    goal: "A library starts a worker thread, the way a C library starts a pthread, and the \
-           worker yields in a form that lets it stop early. The program that called the \
-           library lets the worker run a while and then cancels the call. The worker's yield \
-           reports the cancellation, the worker confirms it, and the program reads that the \
-           call was cancelled before it returned. The program gives way through its callback \
-           rather than by setting its stack aside, so it goes the same way with suspending \
-           turned off or in a browser without JavaScript Promise Integration.",
+    goal: "Cancel a call, and the worker thread it started sees the cancel and stops. Works \
+           without JSPI too.",
 };
 
 pub static WASI_HTTP_STORY: Story = Story {
     chapter: "Known limits",
-    title: "Learn which host a WASI 0.3 HTTP handler needs",
-    goal: "You try a `wasi:http` 0.3 handler whose request and response carry streams and \
-           futures. The polyfill translates it, and without a host for `wasi:http/types` \
-           it stops at link and names that import instead of failing somewhere inside.",
+    title: "Get a clear error for a missing `wasi:http` host",
+    goal: "Load a `wasi:http` 0.3 handler without a `wasi:http/types` host, and see which \
+           import is missing.",
 };
 
 pub static SUSPENDING_OFF: Story = Story {
     chapter: "Known limits",
     title: "Turn suspending off and see why a wait fails",
-    goal: "You configure an engine with suspending turned off, as a host might to keep the \
-           order of a fallback that runs everything on one stack. The synchronous call to \
-           your timer-backed `async` host function then fails and names the missing stack \
-           switch as its cause, rather than returning a wrong answer or hanging. The \
-           blocking export and the guest threads fail the same way.",
+    goal: "With suspending off, calls that must wait fail with a clear error instead of \
+           hanging.",
 };
 
 /// Every story in the order the report tells them, each with its
@@ -1262,7 +1181,7 @@ async fn engine_and_store(engine: &Engine) -> Result<String, String> {
     let mut store: Store<HostState> = Store::new(engine, HostState::default()).map_err(fail)?;
     store.data_mut().tallies.push(7);
     expect("store data", store.data().tallies.as_slice(), &[7])?;
-    Ok("engine and store constructed; store data readable and writable".to_owned())
+    Ok("wrote host state into the store and read it back".to_owned())
 }
 
 /// A component built by a real toolchain loads, instantiates, and
@@ -1282,10 +1201,7 @@ async fn load_and_call(engine: &Engine) -> Result<String, String> {
         .map_err(fail)?;
     let result = double.call(&mut store, (21,)).await.map_err(fail)?;
     expect("double(21)", result, 42)?;
-    Ok(format!(
-        "{} bytes of wasm-tools output; double(21) = {result}",
-        GUEST.len()
-    ))
+    Ok(format!("double(21) = {result}"))
 }
 
 /// Strings and a list lower into guest memory, a string lifts back
@@ -1354,7 +1270,8 @@ async fn host_function(engine: &Engine) -> Result<String, String> {
     expect("tallies", store.data().tallies.as_slice(), &[42])?;
 
     Ok(format!(
-        "len = {length}, echo = {echoed:?}, sum = {total}, host saw tally({})",
+        "len(\"héllo\") = {length}, echo(\"round trip\") = {echoed:?}, sum([1..5]) = {total}; \
+         the guest called the host's tally({})",
         store.data().tallies[0]
     ))
 }
@@ -1393,7 +1310,7 @@ async fn host_resource(engine: &Engine) -> Result<String, String> {
         &[11, 22],
     )?;
     Ok(format!(
-        "destructor ran for reps {:?}, in drop order",
+        "your destructor ran for {:?}, in drop order",
         store.data().dropped
     ))
 }
@@ -1441,8 +1358,8 @@ async fn disposal(engine: &Engine) -> Result<String, String> {
         &[33],
     )?;
     Ok(
-        "release ran the destructor once; a second release was refused; the store dropped \
-        with one leaked handle and ran nothing"
+        "release ran the destructor once; a second release was refused; dropping the store \
+         ran no destructors"
             .to_owned(),
     )
 }
@@ -1465,8 +1382,7 @@ async fn composition(engine: &Engine) -> Result<String, String> {
     let result = run.call(&mut store, (20,)).await.map_err(fail)?;
     expect("run(20) = double(20) + 1", result, 41)?;
     Ok(format!(
-        "{} bytes of wac output; socket.run(20) -> plug.double -> {result}",
-        COMPOSITION.len()
+        "run(20) calls double(20) in the other component and returns {result}"
     ))
 }
 
@@ -1551,10 +1467,8 @@ async fn maps_and_fixed_lists(engine: &Engine) -> Result<String, String> {
     expect("identity(0..16)", same.as_ref(), &[bytes])?;
 
     Ok(format!(
-        "maps.wasm ({} bytes): sum = {total}, keys = [x, y], identity kept 2 entries; \
-         fixed-lists.wasm ({} bytes): sum = {total4}, double(0..16) ends in {}, identity kept 16 bytes",
-        MAPS.len(),
-        FIXED_LISTS.len(),
+        "sum({{a: 1, b: 2, c: 39}}) = {total}, keys({{x: 7, y: 8}}) = [x, y]; \
+         sum([1, 2, 3, 36]) = {total4}, double([0..16]) ends in {}",
         doubled[15]
     ))
 }
@@ -1619,9 +1533,7 @@ async fn core_modules(engine: &Engine) -> Result<String, String> {
     let total = sum.call(&mut store, ()).await.map_err(fail)?;
     expect("f() + g", total, 201)?;
     Ok(format!(
-        "exported module m has {} imports and exports {}; the host instantiated it, then a \
-         second component instantiated it through the linker: f() + g = {total}",
-        module.imports().len(),
+        "module exports {}; a second component used it: f() + g = {total}",
         shape.join(", ")
     ))
 }
@@ -1659,7 +1571,7 @@ async fn navigation(engine: &Engine) -> Result<String, String> {
     let result = g.call(&mut store, (41,)).await.map_err(fail)?;
     expect("a.b.g(41)", result, 42)?;
     Ok(format!(
-        "a.f() = 42, a.b.g(41) = {result}, a.b.g takes ({}) and returns {}",
+        "a.f() = 42; a.b.g({}) -> {}; a.b.g(41) = {result}",
         parameters.join(", "),
         signature
             .result
@@ -1701,11 +1613,7 @@ async fn memory64(engine: &Engine) -> Result<String, String> {
         .await
         .map_err(fail)?;
     expect("roundtrip", back.as_str(), text)?;
-    Ok(format!(
-        "{:?} crossed into an i64 memory and back, {} bytes each way",
-        text,
-        text.len()
-    ))
+    Ok(format!("{text:?} came back unchanged"))
 }
 
 /// The default engine validates with Wasmtime's feature gates, and a
@@ -1731,22 +1639,17 @@ async fn engine_configuration() -> Result<String, String> {
         1,
     )?;
     Ok(format!(
-        "the default engine rejected an `implements` import ({rejection}); an engine that opts \
-         in accepted it"
+        "default engine: \"{rejection}\"; configured engine: accepted"
     ))
 }
 
 /// A suspend provider as the report names it.
 fn provider_name(kind: SuspendProviderKind) -> &'static str {
     match kind {
-        SuspendProviderKind::StackSwitching => {
-            "the stack-switching provider, WebAssembly's own stack-switching instructions"
-        }
-        SuspendProviderKind::Jspi => "the JSPI provider, JavaScript Promise Integration",
-        SuspendProviderKind::None => {
-            "no provider, so a wait runs the store's work on the one stack above it"
-        }
-        _ => "a provider this smoke test does not know",
+        SuspendProviderKind::StackSwitching => "stack switching",
+        SuspendProviderKind::Jspi => "JSPI (JavaScript Promise Integration)",
+        SuspendProviderKind::None => "none",
+        _ => "unknown",
     }
 }
 
@@ -1769,7 +1672,7 @@ async fn suspend_provider(engine: &Engine) -> Result<String, String> {
         SuspendProviderKind::None,
     )?;
     Ok(format!(
-        "this engine selected {}; an engine configured with suspending off answers {}",
+        "this engine: {}; with suspending off: {}",
         provider_name(selected),
         provider_name(off.suspend_provider())
     ))
@@ -1864,10 +1767,8 @@ async fn run_concurrent_outside(engine: &Engine) -> Result<String, String> {
     )?;
 
     Ok(format!(
-        "a hand poll found the entry pending, not deadlocked, while the closure waited \
-         {WAIT_MILLIS} ms outside the store; {watched}; the timer woke the entry {woken} \
-         time(s) with nothing polling it; the entry returned {value:?}, and the host data the \
-         closure wrote stayed in the store as {:?}",
+        "pending, not deadlocked, during a {WAIT_MILLIS} ms wait; {watched}; returned \
+         {value:?} with host state {:?}",
         store.data().tallies
     ))
 }
@@ -2009,9 +1910,10 @@ async fn rich_world(engine: &Engine) -> Result<String, String> {
         .map_err(fail)?;
     expect("counter-drops", counter_drops.as_ref(), &[Val::U32(2)])?;
 
-    Ok("every shape crossed three component boundaries; both \
-        destructors ran twice"
-        .to_owned())
+    Ok(
+        "every type crossed three components and back; both resource destructors ran twice"
+            .to_owned(),
+    )
 }
 
 /// The sentence the `words` story hands the guest.
@@ -2265,8 +2167,7 @@ async fn read_a_guest_stream(engine: &Engine) -> Result<String, String> {
     expect("the words, in order", got, wanted.clone())?;
     expect("one copy per word", taken.copies, wanted.len())?;
     Ok(format!(
-        "`words` returned a `stream<string>` and wrote into it after returning; all {} \
-         words arrived in order, one copy each, and the stream ended",
+        "all {} words arrived in order, then the stream ended",
         taken.items.len()
     ))
 }
@@ -2334,9 +2235,8 @@ async fn stream_in_future_out(engine: &Engine) -> Result<String, String> {
         NUMBERS.div_ceil(BATCH) as usize,
     )?;
     Ok(format!(
-        "the host's producer wrote 1..={NUMBERS} into a `stream<u32>` in {batches} batches, \
-         a turn apart; `checksum` answered with a `future<u64>` and resolved it with \
-         {wanted}, the sum of each number times its position"
+        "sent 1..={NUMBERS} in {batches} batches; the future resolved to {wanted}, the \
+         expected checksum"
     ))
 }
 
@@ -2361,10 +2261,7 @@ async fn stream_between_components(engine: &Engine) -> Result<String, String> {
     let empty = total.call(&mut store, (0,)).await.map_err(fail)?;
     expect("total(0)", empty, 0)?;
     Ok(format!(
-        "{} bytes of `wac plug` output; 1..={NUMBERS} crossed from one component to the \
-         other as a `stream<u32>`, and total({NUMBERS}) = {sum}; an empty stream summed to \
-         {empty}",
-        STREAM_COMPOSITION.len()
+        "total({NUMBERS}) = {sum}; an empty stream sums to {empty}"
     ))
 }
 
@@ -2454,9 +2351,10 @@ fn refused_for_a_stack_switch<T: std::fmt::Debug>(
         Ok(value) => Err(format!(
             "{what} returned {value:?} on an engine with no way to set the guest aside"
         )),
-        Err(error) if needs_stack_switch(&error) => {
-            Ok(format!("{what} failed with the stack-switch cause"))
-        }
+        Err(error) if needs_stack_switch(&error) => Ok(format!(
+            "{what} failed with \"{}\"",
+            SchedulerCause::StackSwitchNeeded
+        )),
         Err(error) => Err(format!(
             "{what} failed, but not with the stack-switch cause: {}",
             chain(&error)
@@ -2468,11 +2366,7 @@ fn refused_for_a_stack_switch<T: std::fmt::Debug>(
 /// which is the outcome its goal documents for a browser without
 /// JavaScript Promise Integration.
 fn without_a_provider(refusal: String) -> String {
-    format!(
-        "this engine has {}, so {refusal}, \"{}\", as documented",
-        provider_name(SuspendProviderKind::None),
-        SchedulerCause::StackSwitchNeeded
-    )
+    format!("this engine cannot pause a guest, so {refusal}, as expected")
 }
 
 /// The `sync-wait` fixture's `total` asks the host's `host-echo-u32`
@@ -2554,10 +2448,8 @@ async fn wait_for_the_host(engine: &Engine) -> Result<String, String> {
     )?;
     expect("total(1, 2, 39)", sum, KEYS.iter().sum())?;
     Ok(format!(
-        "a hand poll found `total` pending while the guest's thread waited in its call to the \
-         host; {watched}; the timer woke the call {woken} time(s) with nothing polling it; the \
-         host was asked for {:?} in order, each answer {WAIT_MILLIS} ms late, and `total` \
-         returned {sum}",
+        "the guest waited on the host for keys {:?}, {WAIT_MILLIS} ms each; {watched}; \
+         `total` returned {sum}",
         store.data().tallies
     ))
 }
@@ -2623,9 +2515,8 @@ async fn block_and_resume_on(engine: &Engine) -> Result<String, String> {
     )?;
     expect("both(20, 1)", sum, 42)?;
     Ok(format!(
-        "`both` started two calls and blocked; the host answered the second after \
-         {WAIT_MILLIS} ms and the first after {} ms; the export woke for call 2 and then call \
-         1, and returned {sum} through `task.return`",
+        "the host answered call 2 after {WAIT_MILLIS} ms and call 1 after {} ms; the export \
+         woke in that order and returned {sum}",
         3 * WAIT_MILLIS
     ))
 }
@@ -2684,10 +2575,8 @@ async fn park_and_wake(engine: &Engine) -> Result<String, String> {
         &THREAD_ORDER,
     )?;
     Ok(format!(
-        "three threads each started and parked; the main thread woke threads 2 and 1 for \
-         later and switched straight to thread 0; they woke in the order 0, 2, 1, and the last \
-         woke the main thread, which returned {finished}; the host saw {:?}",
-        store.data().tallies
+        "{finished} threads started and parked, woke in the order 0, 2, 1, and then woke the \
+         main thread"
     ))
 }
 
@@ -2715,13 +2604,12 @@ async fn suspending_off() -> Result<String, String> {
         plain.suspend_provider(),
         SuspendProviderKind::None,
     )?;
-    let wait = wait_for_the_host(&plain).await?;
+    wait_for_the_host(&plain).await?;
     let gated = suspending_engine(false)?;
-    let blocking = block_and_resume_on(&gated).await?;
-    let threads = park_and_wake(&gated).await?;
+    block_and_resume_on(&gated).await?;
+    park_and_wake(&gated).await?;
     Ok(format!(
-        "with suspending off, {wait}, {blocking}, and {threads}: \"{}\"; none returned \
-         a value or hung",
+        "`total`, `both`, and `run` each failed with \"{}\"; none hung",
         SchedulerCause::StackSwitchNeeded
     ))
 }
@@ -2782,9 +2670,7 @@ async fn cancel_a_slow_host_call(engine: &Engine) -> Result<String, String> {
         again.as_str(),
         evidence.as_str(),
     )?;
-    Ok(format!(
-        "{evidence}; the same happened with suspending turned off"
-    ))
+    Ok(format!("{evidence}; same with suspending off"))
 }
 
 /// The `deadline` fixture's `handle` races the host's `fetch` against
@@ -2901,12 +2787,8 @@ async fn cancel_a_slow_host_call_on(engine: &Engine) -> Result<String, String> {
         &[REQUEST_REP],
     )?;
     Ok(format!(
-        "`handle` lent request {REQUEST_REP} to `fetch` and gave it {WAIT_MILLIS} ms; the \
-         deadline passed first, so the guest dropped the call and wit-bindgen cancelled it; \
-         the store dropped the host's future, which would have answered after \
-         {SLOW_FETCH_MILLIS} ms, unanswered and inside a turn; the borrow came back, so the \
-         handler let the request go and the host's destructor ran for it; `handle` answered \
-         \"timeout\""
+        "the {WAIT_MILLIS} ms deadline beat the {SLOW_FETCH_MILLIS} ms host call; the call \
+         was cancelled, the lent request came back, and `handle` answered \"timeout\""
     ))
 }
 
@@ -2977,8 +2859,8 @@ async fn trap_loses_the_store(engine: &Engine) -> Result<String, String> {
         .map_err(fail)?;
     expect("sum([1, 2, 39]) in a new store", total, KEYS.iter().sum())?;
     Ok(format!(
-        "average([2, 4]) = {mean}; average([]) trapped ({}); `sum` in the same store then \
-         failed with \"{}\"; in a new store sum([1, 2, 39]) = {total}",
+        "average([2, 4]) = {mean}; average([]) trapped ({}); the next call failed with \
+         \"{}\"; a new store answered sum([1, 2, 39]) = {total}",
         root_cause(&trap),
         TaskCause::CannotEnter
     ))
@@ -3022,11 +2904,11 @@ fn traced(error: Error) -> String {
 /// message and drops its handle. The host still holds the error, so it
 /// hands it over a second time, and the reporter reads it again.
 async fn error_between_components(engine: &Engine) -> Result<String, String> {
-    let refusal = match Component::new(engine, STORE_AND_CALLER).await {
+    match Component::new(engine, STORE_AND_CALLER).await {
         Ok(_) => return Err("the default engine accepted an `error-context`".to_owned()),
-        Err(error) if error.to_string().contains("error-context feature") => error.to_string(),
+        Err(error) if error.to_string().contains("error-context feature") => (),
         Err(other) => return Err(format!("unexpected rejection: {other}")),
-    };
+    }
     let mut config = EngineConfig::new();
     config.wasm_component_model_error_context(true);
     let engine = Engine::with_config(&config).map_err(traced)?;
@@ -3111,13 +2993,8 @@ async fn error_between_components(engine: &Engine) -> Result<String, String> {
         &[wanted.clone(), wanted.clone()],
     )?;
     Ok(format!(
-        "the default engine refused the components ({}); with the gate on, the store failed \
-         the write of `{}` with an error context, the caller read {wanted:?} from it and \
-         handed it to the host as `Val::ErrorContext`, and a third component, which `cargo` \
-         and wit-bindgen built, read the same message from it each of the two times the host \
-         passed it on",
-        refusal.lines().next().unwrap_or_default(),
-        TOO_LONG.0
+        "refused while off; with it on, {wanted:?} reached the host and a third component \
+         intact"
     ))
 }
 
@@ -3223,12 +3100,10 @@ async fn cancelled_worker_on(engine: &Engine) -> Result<Vec<u32>, String> {
 /// offers one, and on an engine with suspending turned off.
 async fn stop_a_guest_thread() -> Result<String, String> {
     let here = cancelled_worker_on(&cancelling_engine(true)?).await?;
-    let off = cancelled_worker_on(&cancelling_engine(false)?).await?;
+    cancelled_worker_on(&cancelling_engine(false)?).await?;
     Ok(format!(
-        "the worker's first {} yields answered 0; the program cancelled, the worker's next \
-         yield answered 1, the worker confirmed, and the program read \
-         {CANCELLED_BEFORE_RETURNED}, cancelled before it returned; the host saw {here:?}, \
-         and {off:?} again with suspending turned off",
+        "the worker yielded {} times, saw the cancel on the next yield, and stopped; the \
+         caller saw the call cancelled before it returned; same with suspending off",
         here.len() - 2
     ))
 }
@@ -3269,9 +3144,7 @@ async fn wasi_http(engine: &Engine) -> Result<String, String> {
             ) =>
         {
             Ok(format!(
-                "the polyfill translates the handler, and instantiating it with no \
-                 host for {WASI_HTTP_TYPES} stops at link and names that import, as \
-                 the fixture's expected failure records"
+                "the handler loaded; linking stopped and named {WASI_HTTP_TYPES}"
             ))
         }
         Err(other) => Err(format!(

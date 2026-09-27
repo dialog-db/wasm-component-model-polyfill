@@ -7,7 +7,8 @@ pub struct Story {
     pub chapter: &'static str,
     /// What the developer sets out to do, as an imperative phrase.
     pub title: &'static str,
-    /// The situation the developer is in and what they expect of the
-    /// polyfill, in a sentence or two.
+    /// What the developer does and what they expect, in one short
+    /// sentence. A second short sentence may say how the story goes
+    /// in a browser without JavaScript Promise Integration (JSPI).
     pub goal: &'static str,
 }
