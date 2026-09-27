@@ -6,6 +6,7 @@ use crate::entry::Entry;
 use crate::error::{Error, Result};
 use crate::outcome::Outcome;
 use crate::stage::Stage;
+use crate::subject::Subject;
 use crate::value::Value;
 use crate::verdict::Verdict;
 
@@ -90,6 +91,21 @@ pub fn quote(text: &str, delimiter: char) -> String {
     }
     quoted.push(delimiter);
     quoted
+}
+
+/// A report line: `<scenario> <subject> <stage> ["<reason>"]`.
+pub fn report(line: &str) -> core::result::Result<(String, Subject, Verdict), String> {
+    let mut cursor = Cursor { rest: line };
+    let scenario = cursor.word();
+    if scenario.is_empty() {
+        return Err("expected a scenario, found the end of the line".to_string());
+    }
+    let subject = cursor
+        .word()
+        .parse()
+        .map_err(|error: Error| error.to_string())?;
+    let verdict = cursor.verdict()?;
+    Ok((scenario, subject, verdict))
 }
 
 /// The unread part of one line. Each method reads one piece of the

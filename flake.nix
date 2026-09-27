@@ -376,6 +376,34 @@
           compiled = zenaScenarios;
         };
 
+        # Packs each scenario's expectations, compiled programs, and
+        # Wasmtime observations into `$out/scenarios.bundle`, one file the
+        # polyfill's `zena` test embeds at compile time: the browser lane
+        # has no file system to read the build's directories from. The
+        # script's header states the format.
+        zenaBundler = pkgs.writeShellApplication {
+          name = "zena-bundle-scenarios";
+          runtimeInputs = [ pkgs.coreutils ];
+          text = builtins.readFile ./rust/wasm-component-model-polyfill/tests/zena/bundle.sh;
+        };
+
+        zenaTestScenarios = pkgs.runCommand "zena-test-scenarios" { } ''
+          mkdir -p "$out"
+          ${pkgs.lib.getExe zenaBundler} \
+            ${./rust/wasm-component-model-polyfill/tests/zena/scenarios} \
+            ${zenaScenarios} ${zenaWasmtime} "$out/scenarios.bundle"
+        '';
+
+        # A build that compiles the polyfill's tests: the test archives
+        # and the clippy check. The `zena` test runs each scenario through
+        # the polyfill, in the browser and natively, and reads them from
+        # the bundle this variable names.
+        withZenaScenarios =
+          derivation:
+          derivation.overrideAttrs {
+            WCMP_ZENA_SCENARIOS = "${zenaTestScenarios}/scenarios.bundle";
+          };
+
         # The Wasmtime run against its own cases, compiled with the pinned
         # toolchain like any scenario, failing the check when one does not
         # hold:
@@ -1187,10 +1215,10 @@
 
         # Bound here so the `workspace-deps-dev` package below can name the
         # same derivation the archive builds against.
-        testsNativeDebug = buildTestArchive {
+        testsNativeDebug = withZenaScenarios (buildTestArchive {
           name = "native-debug";
           profile = "dev";
-        };
+        });
 
         menu = makeMenu {
           title = "WCMP";
@@ -1265,20 +1293,20 @@
           # profile) so they are what their names promise.
           tests-native-debug = testsNativeDebug;
 
-          tests-native-release = buildTestArchive {
+          tests-native-release = withZenaScenarios (buildTestArchive {
             name = "native-release";
-          };
+          });
 
-          tests-web-debug = buildTestArchive {
+          tests-web-debug = withZenaScenarios (buildTestArchive {
             name = "web-debug";
             target = "wasm32-unknown-unknown";
             profile = "dev";
-          };
+          });
 
-          tests-web-release = buildTestArchive {
+          tests-web-release = withZenaScenarios (buildTestArchive {
             name = "web-release";
             target = "wasm32-unknown-unknown";
-          };
+          });
 
           # The host-target `dev` dependency closure the debug archive and
           # every other `dev` build compile against. Named so the alignment
@@ -1292,6 +1320,9 @@
           // markdown.checks
           // project.checks
           // {
+            # Clippy compiles every target, the `zena` test included, and
+            # that test embeds the Zena scenarios at compile time.
+            clippy = withZenaScenarios cargoChecks.clippy;
             # The web smoke page must still run, and report what the native
             # binary reports: see `smokeWebCheck`.
             smoke-web = smokeWebCheck;

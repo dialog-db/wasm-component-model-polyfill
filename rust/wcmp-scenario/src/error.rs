@@ -23,6 +23,9 @@ pub enum Error {
     /// A name that is not the name of a stage.
     #[error("`{0}` is not a stage")]
     UnknownStage(String),
+    /// A name that is not the name of a subject.
+    #[error("`{0}` is not a subject")]
+    UnknownSubject(String),
     /// An observations file has no `stage` line.
     #[error("the observations have no `stage` line")]
     MissingStage,

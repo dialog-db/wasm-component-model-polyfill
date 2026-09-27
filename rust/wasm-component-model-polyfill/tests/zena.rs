@@ -1,0 +1,555 @@
+//! The polyfill subjects of the Zena toolchain compatibility tests: each
+//! compiled Zena scenario run through the polyfill, in the browser on
+//! `wasm32-unknown-unknown` (the `web` subject) and natively (the
+//! `native` subject).
+//!
+//! The build compiles every scenario under `tests/zena/scenarios` with
+//! the pinned Zena toolchain, runs each one through Wasmtime, and packs
+//! the expectations, the compiled programs, and the Wasmtime run's
+//! observations into one bundle. `WCMP_ZENA_SCENARIOS` names the bundle
+//! when the tests compile, and the tests embed it, so the browser lane
+//! reads the same bytes as the native one. The scenarios are found in
+//! the bundle, so a new scenario needs no code here.
+//!
+//! For each scenario the runner (`zena/runner.rs`) parses every
+//! component with `Component::new`, links and instantiates it through
+//! the polyfill's `Linker` with the test host functions
+//! (`zena/host.rs`), and makes each call of the expectations through
+//! `Func::call` with `Val` arguments, keeping the lines the scenario
+//! prints. The scenario model judges the subject: against the Wasmtime
+//! run's observations when that run passed, and against the
+//! expectations otherwise. Each subject reports a stage and the text
+//! that says why, as a `Report` whose line is the scenario, the
+//! subject, the stage, and the reason.
+//!
+//! The tests do not assert that a scenario passes: where a subject
+//! stops is an outcome, not a failure. They fail when the bundle or a
+//! scenario cannot be read or judged, which is a fault of the build or
+//! of the runner. The engine has the default configuration, so the
+//! suspend provider is on.
+
+#![cfg(test)]
+
+#[path = "zena/bundle.rs"]
+mod bundle;
+#[path = "zena/host.rs"]
+mod host;
+#[path = "zena/runner.rs"]
+mod runner;
+
+use wcmp_macros::component;
+use wcmp_scenario::{Observations, Outcome, Report, Stage, Subject, Value, Verdict};
+
+use bundle::{Program, Scenario};
+use runner::PolyfillRun;
+
+#[cfg(target_arch = "wasm32")]
+wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
+/// Every Zena scenario, as the build left it. The flake's test archives
+/// set the variable; see `tests/zena/bundle.sh` for the format.
+const BUNDLE: &[u8] = include_bytes!(env!(
+    "WCMP_ZENA_SCENARIOS",
+    "the Zena scenario tests embed the bundle the build writes; run them through `tests native` or `tests web`"
+));
+
+/// The name of scenario 1, the smallest program with an export.
+const SCALAR_EXPORT: &str = "scalar-export";
+
+/// Every Zena scenario in the bundle.
+fn zena_scenarios() -> Vec<Scenario> {
+    bundle::scenarios(BUNDLE).unwrap_or_else(|error| panic!("the Zena bundle: {error}"))
+}
+
+fn polyfill() -> PolyfillRun {
+    PolyfillRun::new().unwrap_or_else(|error| panic!("the polyfill run: {error}"))
+}
+
+/// Run `scenario` through the polyfill on this target and report where
+/// it stopped.
+async fn report(polyfill: &PolyfillRun, scenario: &Scenario) -> Report {
+    let verdict = polyfill
+        .run(scenario)
+        .await
+        .unwrap_or_else(|error| panic!("scenario {}: {error}", scenario.name));
+    Report {
+        scenario: scenario.name.clone(),
+        subject: Subject::polyfill(),
+        verdict,
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_runs_every_zena_scenario_and_reports_a_stage_and_its_reason() {
+    let polyfill = polyfill();
+    let mut reports = Vec::new();
+    for scenario in zena_scenarios() {
+        let report = report(&polyfill, &scenario).await;
+        println!("{report}");
+        reports.push(report);
+    }
+    assert!(
+        reports
+            .iter()
+            .any(|report| report.scenario == SCALAR_EXPORT),
+        "scenario 1, `{SCALAR_EXPORT}`, is not in the bundle"
+    );
+    for report in &reports {
+        assert_eq!(report.to_string().parse::<Report>().as_ref(), Ok(report));
+        assert!(
+            report.verdict.passed() || !report.verdict.reason.is_empty(),
+            "`{report}` stopped before `pass` and gives no reason"
+        );
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_reports_a_mismatch_when_one_result_of_a_passing_scenario_changes() {
+    let polyfill = polyfill();
+    let mut tampered = Vec::new();
+    for scenario in zena_scenarios() {
+        if !scenario.observations.verdict.passed()
+            || !report(&polyfill, &scenario).await.verdict.passed()
+        {
+            continue;
+        }
+        let Some(changed) = with_one_result_changed(&scenario.observations) else {
+            continue;
+        };
+        let scenario = Scenario {
+            observations: changed,
+            ..scenario
+        };
+        let report = report(&polyfill, &scenario).await;
+        assert_eq!(report.verdict.stage, Stage::Mismatch, "{report}");
+        tampered.push(scenario.name);
+    }
+    if tampered.is_empty() {
+        println!(
+            "no Zena scenario passes on `{}` with a result to change",
+            Subject::polyfill()
+        );
+    } else {
+        println!(
+            "`{}` reports `mismatch` for changed observations of: {}",
+            Subject::polyfill(),
+            tampered.join(", ")
+        );
+    }
+}
+
+/// `observations` with the first result of the first call that returned
+/// one changed to another value of the same type, or `None` when no
+/// call returned a result.
+fn with_one_result_changed(observations: &Observations) -> Option<Observations> {
+    let mut changed = observations.clone();
+    let result =
+        changed
+            .calls
+            .iter_mut()
+            .find_map(|observation| match &mut observation.outcome {
+                Outcome::Results(results) => results.first_mut(),
+                Outcome::Failure(_) => None,
+            })?;
+    let other = match &*result {
+        Value::Bool(value) => Value::Bool(!*value),
+        Value::S8(value) => Value::S8(value.wrapping_add(1)),
+        Value::U8(value) => Value::U8(value.wrapping_add(1)),
+        Value::S16(value) => Value::S16(value.wrapping_add(1)),
+        Value::U16(value) => Value::U16(value.wrapping_add(1)),
+        Value::S32(value) => Value::S32(value.wrapping_add(1)),
+        Value::U32(value) => Value::U32(value.wrapping_add(1)),
+        Value::S64(value) => Value::S64(value.wrapping_add(1)),
+        Value::U64(value) => Value::U64(value.wrapping_add(1)),
+        Value::F32(value) if value.is_nan() => Value::F32(0.0),
+        Value::F32(value) => Value::F32(f32::NAN.copysign(*value)),
+        Value::F64(value) if value.is_nan() => Value::F64(0.0),
+        Value::F64(value) => Value::F64(f64::NAN.copysign(*value)),
+        Value::Char(value) => Value::Char(if *value == 'a' { 'b' } else { 'a' }),
+        Value::String(value) => Value::String(format!("{value}!")),
+    };
+    *result = other;
+    Some(changed)
+}
+
+/// A component with a scalar export at its root, the same function
+/// inside an exported interface, and an export that traps.
+const CALCULATOR: &[u8] = component!(
+    r#"
+    (component
+      (core module $m
+        (func (export "add") (param i32 i32) (result i32)
+          local.get 0
+          local.get 1
+          i32.add)
+        (func (export "boom") unreachable))
+      (core instance $i (instantiate $m))
+      (func $add (param "a" s32) (param "b" s32) (result s32)
+        (canon lift (core func $i "add")))
+      (func $boom (canon lift (core func $i "boom")))
+      (export "add" (func $add))
+      (export "boom" (func $boom))
+      (instance $api (export "add" (func $add)))
+      (export "local:demo/api" (instance $api)))
+    "#
+);
+
+/// A component whose `greet` prints `hello` and `world` through
+/// `wasi:cli/stdout@0.3.0`, as the pinned Zena's console does, and
+/// returns 2. It creates a `stream<u8>`, hands the readable end to
+/// `write-via-stream`, writes both lines in one write, which the host
+/// takes whole before the write returns, and drops the writable end.
+const PRINTER: &[u8] = component!(
+    r#"
+    (component
+      (type (instance
+        (type (enum "io" "illegal-byte-sequence" "pipe"))
+        (export "error-code" (type (eq 0)))))
+      (import "wasi:cli/types@0.3.0" (instance $types (type 0)))
+      (alias export $types "error-code" (type))
+      (type (instance
+        (alias outer 1 1 (type))
+        (export "error-code" (type (eq 0)))
+        (type (stream u8))
+        (type (result (error 1)))
+        (type (future 3))
+        (type (func (param "data" 2) (result 4)))
+        (export "write-via-stream" (func (type 5)))))
+      (import "wasi:cli/stdout@0.3.0" (instance $stdout (type 2)))
+      (type $bytes (stream u8))
+      (core module $libc
+        (memory (export "memory") 1)
+        (data (i32.const 0) "hello\nworld\n"))
+      (core instance $libc (instantiate $libc))
+      (alias export $stdout "write-via-stream" (func $write-via-stream))
+      (core func $write-via-stream (canon lower (func $write-via-stream)))
+      (core func $stream-new (canon stream.new $bytes))
+      (core func $write
+        (canon stream.write $bytes async (memory (core memory $libc "memory"))))
+      (core func $drop-writable (canon stream.drop-writable $bytes))
+      (core module $main
+        (import "" "write-via-stream" (func $write-via-stream (param i32) (result i32)))
+        (import "" "stream.new" (func $stream-new (result i64)))
+        (import "" "stream.write" (func $write (param i32 i32 i32) (result i32)))
+        (import "" "stream.drop-writable" (func $drop-writable (param i32)))
+        (func (export "greet") (result i32)
+          (local $pair i64)
+          (local $writable i32)
+          (local.set $pair (call $stream-new))
+          (local.set $writable (i32.wrap_i64 (i64.shr_u (local.get $pair) (i64.const 32))))
+          (drop (call $write-via-stream (i32.wrap_i64 (local.get $pair))))
+          ;; Twelve bytes, completed: 12 << 4.
+          (if (i32.ne (call $write (local.get $writable) (i32.const 0) (i32.const 12))
+                (i32.const 192))
+            (then unreachable))
+          (call $drop-writable (local.get $writable))
+          (i32.const 2)))
+      (core instance $main (instantiate $main (with "" (instance
+        (export "write-via-stream" (func $write-via-stream))
+        (export "stream.new" (func $stream-new))
+        (export "stream.write" (func $write))
+        (export "stream.drop-writable" (func $drop-writable))))))
+      (func (export "greet") (result s32) (canon lift (core func $main "greet"))))
+    "#
+);
+
+/// A component whose `shout` passes its string through the test
+/// interface's `echo` and returns what `echo` returned.
+const ECHOER: &[u8] = component!(
+    r#"
+    (component
+      (import "wcmp:scenario/host" (instance $host
+        (export "echo" (func (param "text" string) (result string)))))
+      (core module $memory
+        (memory (export "memory") 1)
+        (global $next (mut i32) (i32.const 1024))
+        (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+          (local $pointer i32)
+          global.get $next
+          local.get 2
+          i32.const 1
+          i32.sub
+          i32.add
+          i32.const 0
+          local.get 2
+          i32.sub
+          i32.and
+          local.tee $pointer
+          local.get 3
+          i32.add
+          global.set $next
+          local.get $pointer))
+      (core instance $memory (instantiate $memory))
+      (alias core export $memory "memory" (core memory $mem))
+      (alias core export $memory "realloc" (core func $realloc))
+      (alias export $host "echo" (func $echo))
+      (core func $echo_lowered
+        (canon lower (func $echo) (memory $mem) (realloc $realloc)))
+      (core module $main
+        (import "host" "echo" (func $echo (param i32 i32 i32)))
+        (func (export "shout") (param i32 i32) (result i32)
+          local.get 0
+          local.get 1
+          i32.const 16
+          call $echo
+          i32.const 16))
+      (core instance $main (instantiate $main
+        (with "host" (instance (export "echo" (func $echo_lowered))))))
+      (func (export "shout") (param "text" string) (result string)
+        (canon lift (core func $main "shout") (memory $mem) (realloc $realloc))))
+    "#
+);
+
+/// A component that imports a function no linker here supplies.
+const UNLINKABLE: &[u8] = component!(
+    r#"
+    (component
+      (import "wcmp:scenario/missing" (instance
+        (export "nothing" (func)))))
+    "#
+);
+
+/// A component whose core module traps in its start function.
+const TRAPS_ON_START: &[u8] = component!(
+    r#"
+    (component
+      (core module $m
+        (func $start unreachable)
+        (start $start))
+      (core instance (instantiate $m)))
+    "#
+);
+
+/// A scenario of `programs`, with `expectations` and the Wasmtime run's
+/// `observations` in the text format of the scenario model.
+fn scenario(programs: Vec<Program>, expectations: &str, observations: &str) -> Scenario {
+    Scenario {
+        name: "test".to_string(),
+        expectations: expectations.parse().unwrap(),
+        observations: observations.parse().unwrap(),
+        programs,
+    }
+}
+
+/// Run `programs` through the polyfill and judge them.
+async fn run(programs: Vec<Program>, expectations: &str, observations: &str) -> Verdict {
+    polyfill()
+        .run(&scenario(programs, expectations, observations))
+        .await
+        .unwrap()
+}
+
+/// Run [`CALCULATOR`] and judge it.
+async fn calculate(expectations: &str, observations: &str) -> Verdict {
+    run(
+        vec![Program::compiled("calc", CALCULATOR)],
+        expectations,
+        observations,
+    )
+    .await
+}
+
+/// Observations of a Wasmtime run that stopped before its calls, so a
+/// subject is judged against the expectations alone.
+const WASMTIME_STOPPED: &str = r#"stage instantiate "component calc: refused""#;
+
+#[wcmp_macros::test]
+async fn it_passes_a_scenario_whose_calls_end_as_the_wasmtime_run_saw() {
+    let verdict = calculate(
+        "
+        call calc add(1s32, 2s32) -> 3s32
+        call calc local:demo/api#add(2s32, 2s32) -> 4s32
+        call calc boom()
+        ",
+        r#"
+        stage pass
+        call calc add(1s32, 2s32) -> 3s32
+        call calc local:demo/api#add(2s32, 2s32) -> 4s32
+        call calc boom() -> fail "wasm trap: unreachable"
+        "#,
+    )
+    .await;
+    assert_eq!(verdict, Verdict::pass());
+}
+
+#[wcmp_macros::test]
+async fn it_reports_a_mismatch_when_the_observations_hold_another_result() {
+    let verdict = calculate(
+        "call calc add(1s32, 2s32) -> 3s32",
+        "stage pass\ncall calc add(1s32, 2s32) -> 4s32",
+    )
+    .await;
+    assert_eq!(
+        verdict,
+        Verdict::new(
+            Stage::Mismatch,
+            "call 1 `calc add(1s32, 2s32)` returned 3s32 where 4s32 was expected"
+        )
+    );
+    // An entry with no outcome is held to what the Wasmtime run saw.
+    let succeeded = calculate("call calc boom()", "stage pass\ncall calc boom() -> ()").await;
+    assert_eq!(succeeded.stage, Stage::Call, "{}", succeeded.reason);
+}
+
+#[wcmp_macros::test]
+async fn it_judges_against_the_expectations_when_the_wasmtime_run_did_not_pass() {
+    let passes = calculate(
+        "call calc add(1s32, 2s32) -> 3s32\ncall calc boom()",
+        WASMTIME_STOPPED,
+    )
+    .await;
+    assert_eq!(passes, Verdict::pass());
+    let differs = calculate("call calc add(1s32, 2s32) -> 4s32", WASMTIME_STOPPED).await;
+    assert_eq!(differs.stage, Stage::Mismatch);
+    let traps = calculate("call calc boom() -> ()", WASMTIME_STOPPED).await;
+    assert_eq!(traps.stage, Stage::Call);
+    assert!(
+        traps.reason.starts_with("call 1 `calc boom()` failed: "),
+        "{}",
+        traps.reason
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_captures_the_lines_a_scenario_prints_through_p3_standard_output() {
+    let expectations = "call printer greet() -> 2s32\noutput \"hello\"\noutput \"world\"";
+    let printer = || vec![Program::compiled("printer", PRINTER)];
+    let same = run(
+        printer(),
+        expectations,
+        "stage pass\ncall printer greet() -> 2s32\noutput \"hello\"\noutput \"world\"",
+    )
+    .await;
+    assert_eq!(same, Verdict::pass());
+    let other = run(
+        printer(),
+        expectations,
+        "stage pass\ncall printer greet() -> 2s32\noutput \"hello\"\noutput \"there\"",
+    )
+    .await;
+    assert_eq!(
+        other,
+        Verdict::new(
+            Stage::Mismatch,
+            r#"output line 2 is "world" where "there" was expected"#
+        )
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_supplies_the_test_interface_that_returns_its_string() {
+    let verdict = run(
+        vec![Program::compiled("echoer", ECHOER)],
+        r#"call echoer shout("hello, polyfill") -> "hello, polyfill""#,
+        r#"stage pass
+        call echoer shout("hello, polyfill") -> "hello, polyfill""#,
+    )
+    .await;
+    assert_eq!(verdict, Verdict::pass());
+}
+
+#[wcmp_macros::test]
+async fn it_fails_a_call_to_a_missing_component_or_export_or_a_typed_call() {
+    let verdict = calculate(
+        "
+        call other add(1s32, 2s32) -> 3s32
+        call calc subtract(1s32, 2s32) -> 3s32
+        call calc local:demo/other#add(1s32, 2s32) -> 3s32
+        call typed calc add(1s32, 2s32) -> 3s32
+        ",
+        WASMTIME_STOPPED,
+    )
+    .await;
+    assert_eq!(
+        verdict,
+        Verdict::new(
+            Stage::Call,
+            "call 1 `other add(1s32, 2s32)` failed: the scenario has no component other"
+        )
+    );
+    for (expectations, reason) in [
+        (
+            "call calc subtract(1s32, 2s32) -> 3s32",
+            "component calc has no function export subtract",
+        ),
+        (
+            "call calc local:demo/other#add(1s32, 2s32) -> 3s32",
+            "component calc has no function export local:demo/other#add",
+        ),
+        (
+            "call typed calc add(1s32, 2s32) -> 3s32",
+            "the polyfill run does not make typed calls yet",
+        ),
+    ] {
+        let verdict = calculate(expectations, WASMTIME_STOPPED).await;
+        assert_eq!(verdict.stage, Stage::Call);
+        assert!(verdict.reason.ends_with(reason), "{}", verdict.reason);
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_stops_at_the_first_step_that_fails() {
+    let refused = Program {
+        name: "refused".to_string(),
+        status: 1,
+        log: "refused.zena:4:3 - Error: Type mismatch\n".to_string(),
+        component: None,
+    };
+    let compile = run(
+        vec![Program::compiled("calc", CALCULATOR), refused],
+        "call calc add(1s32, 2s32) -> 3s32",
+        r#"stage compile "program refused did not compile (exit 1): refused.zena:4:3 - Error: Type mismatch""#,
+    )
+    .await;
+    assert_eq!(
+        compile,
+        Verdict::new(
+            Stage::Compile,
+            "program refused did not compile (exit 1): refused.zena:4:3 - Error: Type mismatch"
+        )
+    );
+
+    let parse = run(
+        vec![Program::compiled("bad", b"\0asm not a component")],
+        "",
+        WASMTIME_STOPPED,
+    )
+    .await;
+    assert_eq!(parse.stage, Stage::Parse);
+    assert!(
+        parse.reason.starts_with("component bad: "),
+        "{}",
+        parse.reason
+    );
+
+    let link = run(
+        vec![Program::compiled("unlinkable", UNLINKABLE)],
+        "",
+        WASMTIME_STOPPED,
+    )
+    .await;
+    assert_eq!(link.stage, Stage::Link, "{}", link.reason);
+    assert!(
+        link.reason.contains("wcmp:scenario/missing"),
+        "{}",
+        link.reason
+    );
+
+    let instantiate = run(
+        vec![Program::compiled("traps", TRAPS_ON_START)],
+        "",
+        WASMTIME_STOPPED,
+    )
+    .await;
+    assert_eq!(
+        instantiate.stage,
+        Stage::Instantiate,
+        "{}",
+        instantiate.reason
+    );
+    assert!(
+        instantiate.reason.starts_with("component traps: "),
+        "{}",
+        instantiate.reason
+    );
+}

@@ -1828,6 +1828,7 @@ dependencies = [
  "wasmtime_runtime_layer",
  "wast",
  "wcmp-macros",
+ "wcmp-scenario",
 ]
 
 [[package]]

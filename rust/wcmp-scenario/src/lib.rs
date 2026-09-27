@@ -9,7 +9,8 @@
 //! behavior the polyfill must match. The polyfill then runs the same
 //! scenario in the browser and natively. Each subject stops at one
 //! [`Stage`], and a [`Verdict`] pairs that stage with the text a person
-//! reads to learn why.
+//! reads to learn why. A [`Report`] puts one [`Subject`]'s verdict on
+//! one scenario on one line.
 //!
 //! A contributor writes the [`Expectations`] by hand: the calls in
 //! order, each with the results it returns, a failure, or no outcome at
@@ -62,8 +63,10 @@ mod judge;
 mod observation;
 mod observations;
 mod outcome;
+mod report;
 mod run;
 mod stage;
+mod subject;
 mod syntax;
 mod value;
 mod verdict;
@@ -75,10 +78,20 @@ pub use crate::expectations::Expectations;
 pub use crate::observation::Observation;
 pub use crate::observations::Observations;
 pub use crate::outcome::Outcome;
+pub use crate::report::Report;
 pub use crate::run::Run;
 pub use crate::stage::Stage;
+pub use crate::subject::Subject;
 pub use crate::value::Value;
 pub use crate::verdict::Verdict;
+
+/// The fixed test interface every subject supplies to a scenario. Its
+/// one function, [`TEST_FUNCTION`], takes a string and returns it.
+pub const TEST_INTERFACE: &str = "wcmp:scenario/host";
+
+/// The function of [`TEST_INTERFACE`]: `echo: func(text: string) ->
+/// string`.
+pub const TEST_FUNCTION: &str = "echo";
 
 // The model's own unit tests reach a browser in the web lane.
 #[cfg(all(test, target_arch = "wasm32"))]

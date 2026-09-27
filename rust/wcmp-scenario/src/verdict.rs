@@ -30,6 +30,20 @@ impl Verdict {
         Self::new(Stage::Pass, "")
     }
 
+    /// A subject that stopped at `compile` because the toolchain
+    /// refused the program `program`: it exited with `status` and
+    /// printed `log`. Every subject gives this same verdict, since none
+    /// of them runs anything.
+    pub fn not_compiled(program: &str, status: i32, log: &str) -> Self {
+        let log = log.trim();
+        let reason = if log.is_empty() {
+            format!("program {program} did not compile (exit {status})")
+        } else {
+            format!("program {program} did not compile (exit {status}): {log}")
+        };
+        Self::new(Stage::Compile, reason)
+    }
+
     /// Whether the subject met every expectation.
     pub fn passed(&self) -> bool {
         self.stage == Stage::Pass

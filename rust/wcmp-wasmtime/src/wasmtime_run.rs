@@ -30,11 +30,11 @@ pub struct WasmtimeRun {
 impl WasmtimeRun {
     /// The fixed test interface a scenario can import. Its one function,
     /// [`WasmtimeRun::TEST_FUNCTION`], takes a string and returns it.
-    pub const TEST_INTERFACE: &str = "wcmp:scenario/host";
+    pub const TEST_INTERFACE: &str = wcmp_scenario::TEST_INTERFACE;
 
     /// The function of [`WasmtimeRun::TEST_INTERFACE`]:
     /// `echo: func(text: string) -> string`.
-    pub const TEST_FUNCTION: &str = "echo";
+    pub const TEST_FUNCTION: &str = wcmp_scenario::TEST_FUNCTION;
 
     /// An engine with Wasmtime's default configuration, and a linker
     /// with the WASI imports and the test interface.
@@ -89,7 +89,7 @@ impl WasmtimeRun {
         for program in &scenario.programs {
             match program.compiled() {
                 Ok(bytes) => compiled.push((program.name.as_str(), bytes)),
-                Err(reason) => return stopped(Stage::Compile, reason),
+                Err(verdict) => return stopped(verdict.stage, verdict.reason),
             }
         }
 

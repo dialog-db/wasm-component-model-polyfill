@@ -2,6 +2,8 @@
 
 use std::path::Path;
 
+use wcmp_scenario::Verdict;
+
 use crate::error::{Error, Result};
 
 /// One program of a scenario, as the build compiled it.
@@ -53,24 +55,13 @@ impl Program {
         })
     }
 
-    /// The component, or why the program stops its scenario at
-    /// `compile`: the compiler's exit status and output.
-    pub fn compiled(&self) -> core::result::Result<&[u8], String> {
-        if let Some(component) = &self.component {
-            return Ok(component);
+    /// The component, or the verdict of a scenario the program stops at
+    /// `compile`, which names the compiler's exit status and output.
+    pub fn compiled(&self) -> core::result::Result<&[u8], Verdict> {
+        match &self.component {
+            Some(component) => Ok(component),
+            None => Err(Verdict::not_compiled(&self.name, self.status, &self.log)),
         }
-        let log = self.log.trim();
-        Err(if log.is_empty() {
-            format!(
-                "program {} did not compile (exit {})",
-                self.name, self.status
-            )
-        } else {
-            format!(
-                "program {} did not compile (exit {}): {log}",
-                self.name, self.status
-            )
-        })
     }
 }
 
