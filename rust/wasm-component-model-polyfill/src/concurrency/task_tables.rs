@@ -1258,11 +1258,12 @@ impl TaskTables {
     }
 
     /// Add one handle to the error context `context`, for the handle
-    /// a crossing into another instance gives it: its count rises by
-    /// one. A count past `u32::MAX` fails with Wasmtime's
-    /// reference-count cause and leaves the count as it was. A
-    /// crossing only ever copies a handle that names a live record,
-    /// so an identity that names none is an internal failure.
+    /// a crossing into an instance gives it: its count rises by one.
+    /// A count past `u32::MAX` fails with Wasmtime's reference-count
+    /// cause and leaves the count as it was. A crossing only ever
+    /// copies a handle that names a live record, or a value the host
+    /// holds, whose record stays, so an identity that names none is an
+    /// internal failure.
     pub fn retain_error_context(&mut self, context: ErrorContextId) -> Result<()> {
         let index = self
             .error_context_index(context)
@@ -1277,6 +1278,24 @@ impl TaskTables {
             .ok_or(Error::ErrorContext(
                 ErrorContextCause::ReferenceCountOverflow,
             ))?;
+        Ok(())
+    }
+
+    /// Mark the error context `context` as held by the host, for the
+    /// value a lift to the host hands it. The host cannot drop an
+    /// error context, so from now on the record stays in the store
+    /// whatever its count. A lift only ever reads a handle that names
+    /// a live record, so an identity that names none is an internal
+    /// failure.
+    pub fn hold_error_context(&mut self, context: ErrorContextId) -> Result<()> {
+        let index = self
+            .error_context_index(context)
+            .ok_or_else(|| Error::internal("an error-context handle named no record"))?;
+        let record = self
+            .error_contexts
+            .get_mut(index)
+            .ok_or_else(|| Error::internal("an error-context handle named no record"))?;
+        record.host_held = true;
         Ok(())
     }
 
@@ -1302,8 +1321,9 @@ impl TaskTables {
 
     /// Take one handle away from the error context `context`: its
     /// count drops by one, and the record leaves the store when the
-    /// count reaches zero. A handle-table entry names a live record,
-    /// so an identity that names none is an internal failure.
+    /// count reaches zero and the host does not hold it. A
+    /// handle-table entry names a live record, so an identity that
+    /// names none is an internal failure.
     pub fn release_error_context(&mut self, context: ErrorContextId) -> Result<()> {
         let index = self
             .error_context_index(context)
@@ -1316,7 +1336,7 @@ impl TaskTables {
             .handle_count
             .checked_sub(1)
             .ok_or_else(|| Error::internal("an error-context record counted no handle"))?;
-        if record.handle_count == 0 {
+        if record.handle_count == 0 && !record.host_held {
             self.error_contexts.remove(index);
         }
         Ok(())

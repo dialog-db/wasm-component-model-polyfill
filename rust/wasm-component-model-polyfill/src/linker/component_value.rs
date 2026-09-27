@@ -43,13 +43,16 @@ use crate::abi::{
     write_pointer_pair,
 };
 use crate::component::{FunctionParameter, FunctionType};
-use crate::concurrency::{FutureAny, FutureReader, StreamAny, StreamReader};
+use crate::concurrency::{
+    ErrorContext, ErrorContextAny, FutureAny, FutureReader, StreamAny, StreamReader,
+};
 use crate::error::{
     AbiCause, AbiError, AbiPosition, Error, Result, TypeMismatch, TypeMismatchPosition,
     TypeRendering,
 };
 use crate::internal::{
-    FutureAnyInternal, FutureReaderInternal, StreamAnyInternal, StreamReaderInternal,
+    ErrorContextAnyInternal, ErrorContextInternal, FutureAnyInternal, FutureReaderInternal,
+    StreamAnyInternal, StreamReaderInternal,
 };
 use crate::types::{
     FixedLengthListType, FutureType, ListType, MapType, OptionType, PrimitiveType, StreamType,
@@ -577,6 +580,48 @@ impl<T: ComponentValue> ComponentValue for FutureReader<T> {
     }
     fn to_val(self) -> Val {
         Val::Future(FutureAny::new(self.end(), Some(T::value_type())))
+    }
+    fn lift_flat<D: 'static>(
+        cx: &mut BoundaryContext<'_, D>,
+        slots: &[RuntimeVal],
+        cursor: &mut usize,
+        ty: &ValueType,
+        position: AbiPosition,
+    ) -> Result<Self> {
+        expect_declared::<Self>(ty, position)?;
+        let val = lift_from_flat_slots(cx, slots, cursor, ty, position)?;
+        <Self as ComponentValue>::from_val(&val).map_err(|error| at_position(error, position))
+    }
+    fn load<D: 'static>(
+        cx: &mut BoundaryContext<'_, D>,
+        offset: usize,
+        ty: &ValueType,
+        position: AbiPosition,
+    ) -> Result<Self> {
+        expect_declared::<Self>(ty, position)?;
+        let val = lift(cx, offset, ty, position)?;
+        <Self as ComponentValue>::from_val(&val).map_err(|error| at_position(error, position))
+    }
+}
+
+/// An error context, as Wasmtime maps `error-context`. It crosses as a
+/// [`Val::ErrorContext`]. Lifting one out of a guest leaves the guest's
+/// handle where it was and marks the record host-held, and lowering
+/// one into a guest gives the guest a handle of its own. A declared
+/// type other than `error-context` does not cross: a direct lift checks
+/// it before it reads the guest, so a refused lift marks nothing.
+impl ComponentValue for ErrorContext {
+    fn value_type() -> ValueType {
+        ValueType::ErrorContext
+    }
+    fn from_val(val: &Val) -> Result<Self> {
+        match val {
+            Val::ErrorContext(context) => Ok(ErrorContext::new(context.context())),
+            _ => Err(value_mismatch(val)),
+        }
+    }
+    fn to_val(self) -> Val {
+        Val::ErrorContext(ErrorContextAny::new(self.context()))
     }
     fn lift_flat<D: 'static>(
         cx: &mut BoundaryContext<'_, D>,

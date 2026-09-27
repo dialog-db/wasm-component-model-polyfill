@@ -102,8 +102,9 @@ pub struct BoundaryContext<'a, T: 'static> {
     budget_left: usize,
     /// Whether the values of the crossing come from one guest and go
     /// to another, as they do in a copy through a stream or a future
-    /// whose two ends two components hold. An error context crosses
-    /// only there.
+    /// whose two ends two components hold. An error context lifted
+    /// anywhere else goes to the host, and its lift marks the record
+    /// host-held.
     between_guests: bool,
 }
 

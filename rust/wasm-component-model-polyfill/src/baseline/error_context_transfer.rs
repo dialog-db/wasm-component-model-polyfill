@@ -1,5 +1,5 @@
 //! Baseline tests for an error context that crosses between two
-//! components.
+//! components, directly or through the host.
 //!
 //! `error-context` is a value type: four bytes in memory with an
 //! alignment of four, and one `i32` in the flat form, as a handle is.
@@ -9,13 +9,17 @@
 //! Either way the sender keeps its handle, the receiver gains one of
 //! its own over the same record, and the record's count of handles
 //! rises by one. The record leaves the store when the last handle,
-//! wherever it is, drops.
+//! wherever it is, drops, unless the host holds it: a lift to the
+//! host marks the record host-held, and the host cannot drop an
+//! error context, so that record stays until the store drops.
 //!
 //! The tests compose a sender with a receiver. The sender creates
 //! each error context and hands it to the receiver in a parameter,
 //! inside a record, inside a list, and through two streams: one of
-//! error contexts and one of records that hold one. The receiver
-//! reads each debug message back and drops each handle.
+//! error contexts and one of records that hold one. It also returns
+//! one to the host, which lowers it into the receiver as a `Val` and
+//! as a typed `ErrorContext`. The receiver reads each debug message
+//! back and drops each handle.
 
 #![cfg(test)]
 
@@ -23,7 +27,10 @@ use crate::concurrency::ErrorContextId;
 use crate::internal::FuncInternal;
 use crate::resource::TableId;
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
-use crate::{Component, Engine, EngineConfig, Error, Func, Instance, Linker, Store, Val};
+use crate::{
+    Component, ComponentValue, Engine, EngineConfig, Error, ErrorContext, Func, Instance, Linker,
+    Store, Val,
+};
 use wcmp_macros::component;
 
 /// The word a copy returns when it has not finished.
@@ -267,6 +274,7 @@ const COMPOSED: &[u8] = component!(
         (with "take-list" (func $r "take-list"))
         (with "take-stream" (func $r "take-stream"))
         (with "take-records" (func $r "take-records"))))
+      (export "take-one" (func $r "take-one"))
       (export "message" (func $r "message"))
       (export "drop" (func $r "drop"))
       (export "read" (func $r "read"))
@@ -693,12 +701,78 @@ async fn it_counts_error_context_records_toward_the_record_cap() {
 }
 
 #[wcmp_macros::test]
-async fn it_refuses_an_error_context_that_crosses_to_the_host() {
+async fn it_passes_an_error_context_through_the_host_as_a_val() {
     let (mut store, instance) = instantiate().await;
-    let handle = new_context(&mut store, &instance, "private").await;
-    let message = call_trap(&mut store, &instance, "leak", &[handle]).await;
-    assert!(
-        message.contains("`error-context` values that cross between the host and a guest"),
-        "the host sees no error context, got {message}"
+    let sender = handle_table(&instance, "new");
+    let handle = new_context(&mut store, &instance, "disk full").await;
+    let context = context_at(&mut store, sender, handle);
+
+    let held = match call(&mut store, &instance, "leak", &[handle]).await {
+        Some(held @ Val::ErrorContext(_)) => held,
+        other => panic!("leak answered {other:?}"),
+    };
+    assert_eq!(
+        handle_count(&mut store, context),
+        Some(1),
+        "the lift to the host left the sender's handle and added none"
     );
+
+    // The sender drops its only handle. The host still holds the
+    // value, so the record stays.
+    call(&mut store, &instance, "release", &[handle]).await;
+    assert_eq!(handle_count(&mut store, context), Some(0));
+
+    let received = match func(&instance, "take-one")
+        .call(&mut store, &[held])
+        .await
+        .map_err(|error| chain(&error))
+        .expect("take-one")
+        .first()
+    {
+        Some(Val::U32(index)) => *index,
+        other => panic!("take-one answered {other:?}"),
+    };
+    assert_eq!(
+        handle_count(&mut store, context),
+        Some(1),
+        "the lower from the host added the receiver's handle"
+    );
+    assert_eq!(message(&mut store, &instance, received).await, "disk full");
+
+    call(&mut store, &instance, "drop", &[received]).await;
+    assert_eq!(
+        error_context_count(&mut store),
+        1,
+        "the host cannot drop an error context, so its record stays until the store drops"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_passes_an_error_context_through_the_host_as_a_typed_error_context() {
+    let (mut store, instance) = instantiate().await;
+    let sender = handle_table(&instance, "new");
+    let handle = new_context(&mut store, &instance, "timeout").await;
+    let context = context_at(&mut store, sender, handle);
+
+    let leak = func(&instance, "leak")
+        .typed::<(u32,), ErrorContext>()
+        .expect("leak is typed");
+    let held = leak.call(&mut store, (handle,)).await.expect("leak");
+    assert_eq!(handle_count(&mut store, context), Some(1));
+
+    // The typed value converts to a `Val` and back.
+    let held = ErrorContext::from_val(&held.to_val()).expect("an error context");
+
+    call(&mut store, &instance, "release", &[handle]).await;
+    assert_eq!(handle_count(&mut store, context), Some(0));
+
+    let take = func(&instance, "take-one")
+        .typed::<(ErrorContext,), u32>()
+        .expect("take-one is typed");
+    let received = take.call(&mut store, (held,)).await.expect("take-one");
+    assert_eq!(handle_count(&mut store, context), Some(1));
+    assert_eq!(message(&mut store, &instance, received).await, "timeout");
+
+    call(&mut store, &instance, "drop", &[received]).await;
+    assert_eq!(error_context_count(&mut store), 1);
 }

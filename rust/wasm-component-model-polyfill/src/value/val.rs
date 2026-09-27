@@ -126,10 +126,10 @@ pub enum Val {
     Future(FutureAny),
     /// An error context (`error-context`).
     ///
-    /// One carries an error context between two components, as the
-    /// payload of a stream or a future a copy moves. A lift or a
-    /// lower of one between the host and a guest fails with
-    /// [`Error::Unsupported`](crate::Error::Unsupported).
+    /// A lift of one to the host marks its record host-held, so the
+    /// record stays until the store drops. Lowering one into a guest
+    /// gives the guest a handle of its own. A typed
+    /// [`ErrorContext`](crate::ErrorContext) crosses as one of these.
     ErrorContext(ErrorContextAny),
 }
 

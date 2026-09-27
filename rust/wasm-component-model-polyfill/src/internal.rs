@@ -153,6 +153,14 @@ pub trait ErrorContextAnyInternal {
     fn context(&self) -> ErrorContextId;
 }
 
+/// The crate-internal face of [`ErrorContext`](crate::ErrorContext).
+pub trait ErrorContextInternal {
+    /// The typed value of the error context `context`.
+    fn new(context: ErrorContextId) -> Self;
+    /// The error context the value names.
+    fn context(&self) -> ErrorContextId;
+}
+
 /// The crate-internal face of [`FutureAny`](crate::FutureAny).
 pub trait FutureAnyInternal {
     /// The untyped value of the readable end `end`, whose future

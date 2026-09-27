@@ -116,8 +116,11 @@
 //!   two ends share. The store keeps one table of each.
 //! - [`ErrorContextRecord`](error_context_record::ErrorContextRecord)
 //!   is the record of one error context, named by an
-//!   [`ErrorContextId`]: the debug message and the count of the
-//!   guest handles that name it. The store keeps one table of them.
+//!   [`ErrorContextId`]: the debug message, the count of the guest
+//!   handles that name it, and whether the host holds it. The store
+//!   keeps one table of them. [`ErrorContextAny`] and
+//!   [`ErrorContext`] are the untyped and the typed value the host
+//!   holds one through; neither has an operation.
 //!
 //! A host writes a stream or a future through a producer: a
 //! [`StreamProducer`] or a [`FutureProducer`], handed to
@@ -182,6 +185,7 @@ mod end_id;
 mod end_kind;
 mod entry_finish;
 mod entry_status;
+mod error_context;
 mod error_context_any;
 mod error_context_id;
 mod error_context_record;
@@ -276,6 +280,7 @@ pub use end_id::EndId;
 pub use end_kind::EndKind;
 pub use entry_finish::EntryFinish;
 pub use entry_status::EntryStatus;
+pub use error_context::ErrorContext;
 pub use error_context_any::ErrorContextAny;
 pub use error_context_id::ErrorContextId;
 pub use event::Event;

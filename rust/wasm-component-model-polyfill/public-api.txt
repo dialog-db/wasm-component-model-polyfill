@@ -393,6 +393,11 @@ pub struct wasm_component_model_polyfill::EnumType
 impl wasm_component_model_polyfill::EnumType
 pub fn wasm_component_model_polyfill::EnumType::cases(&self) -> &[alloc::string::String]
 pub fn wasm_component_model_polyfill::EnumType::new(cases: impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> Self
+pub struct wasm_component_model_polyfill::ErrorContext
+impl wasm_component_model_polyfill::ComponentValue for wasm_component_model_polyfill::ErrorContext
+pub fn wasm_component_model_polyfill::ErrorContext::from_val(val: &wasm_component_model_polyfill::Val) -> wasm_component_model_polyfill::Result<Self>
+pub fn wasm_component_model_polyfill::ErrorContext::to_val(self) -> wasm_component_model_polyfill::Val
+pub fn wasm_component_model_polyfill::ErrorContext::value_type() -> wasm_component_model_polyfill::ValueType
 pub struct wasm_component_model_polyfill::ErrorContextAny
 pub struct wasm_component_model_polyfill::ExportInstance<'a>
 impl<'a> wasm_component_model_polyfill::ExportInstance<'a>
@@ -776,6 +781,10 @@ impl wasm_component_model_polyfill::ComponentValue for u8
 pub fn u8::from_val(val: &wasm_component_model_polyfill::Val) -> wasm_component_model_polyfill::Result<Self>
 pub fn u8::to_val(self) -> wasm_component_model_polyfill::Val
 pub fn u8::value_type() -> wasm_component_model_polyfill::ValueType
+impl wasm_component_model_polyfill::ComponentValue for wasm_component_model_polyfill::ErrorContext
+pub fn wasm_component_model_polyfill::ErrorContext::from_val(val: &wasm_component_model_polyfill::Val) -> wasm_component_model_polyfill::Result<Self>
+pub fn wasm_component_model_polyfill::ErrorContext::to_val(self) -> wasm_component_model_polyfill::Val
+pub fn wasm_component_model_polyfill::ErrorContext::value_type() -> wasm_component_model_polyfill::ValueType
 impl<K: wasm_component_model_polyfill::ComponentValue + core::cmp::Eq + core::hash::Hash, V: wasm_component_model_polyfill::ComponentValue> wasm_component_model_polyfill::ComponentValue for std::collections::hash::map::HashMap<K, V>
 pub fn std::collections::hash::map::HashMap<K, V>::from_val(val: &wasm_component_model_polyfill::Val) -> wasm_component_model_polyfill::Result<Self>
 pub fn std::collections::hash::map::HashMap<K, V>::to_val(self) -> wasm_component_model_polyfill::Val

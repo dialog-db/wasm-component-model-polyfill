@@ -250,17 +250,18 @@ pub fn lift_end_for_host<T: 'static>(
     })
 }
 
-/// Lift the error context at `index` of the guest's handle table, for
-/// a crossing whose values another guest lowers. The value names the
-/// record the entry names, and the entry stays in the table: an error
-/// context is copied between components, not moved, so the sender
-/// keeps its handle and the receiver's lower adds one of its own. An
-/// entry of another kind fails with the error-context cause, whose
-/// message is Wasmtime's, and an index that names nothing fails as an
-/// invalid handle.
+/// Lift the error context at `index` of the guest's handle table. The
+/// value names the record the entry names, and the entry stays in the
+/// table: an error context is copied, not moved, so the guest keeps
+/// its handle and a later lower adds one of its own. An entry of
+/// another kind fails with the error-context cause, whose message is
+/// Wasmtime's, and an index that names nothing fails as an invalid
+/// handle.
 ///
-/// The host sees no error context. A crossing between the host and a
-/// guest fails with [`Error::Unsupported`], before it reads the table.
+/// A lift whose value goes to the host, rather than to another guest,
+/// marks the record host-held. The host cannot drop an error context,
+/// so the record stays until the store drops, and a guest drop never
+/// frees a record the host still names.
 ///
 /// An error context is an index, as a resource handle is, so its lift
 /// charges the crossing's copy budget nothing.
@@ -270,9 +271,6 @@ pub fn lift_error_context<T: 'static>(
     ty: &ValueType,
     position: AbiPosition,
 ) -> Result<Val> {
-    if !ctx.crosses_between_guests() {
-        return Err(Error::unsupported(ERROR_CONTEXT_AT_THE_HOST));
-    }
     let invalid = |reason: String| {
         Error::from(AbiError {
             position,
@@ -286,7 +284,7 @@ pub fn lift_error_context<T: 'static>(
             "no handle table of the instance is available to the lift context".to_owned(),
         ));
     };
-    let guard = tables
+    let mut guard = tables
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
     let context = guard
@@ -297,13 +295,11 @@ pub fn lift_error_context<T: 'static>(
             }
             other => invalid(other.to_string()),
         })?;
+    if !ctx.crosses_between_guests() {
+        guard.tasks.hold_error_context(context)?;
+    }
     Ok(Val::ErrorContext(ErrorContextAny::new(context)))
 }
-
-/// The feature an `error-context` value that crosses between the host
-/// and a guest names when it is refused.
-pub const ERROR_CONTEXT_AT_THE_HOST: &str =
-    "`error-context` values that cross between the host and a guest";
 
 /// Lift the readable end at `index` of `table` for a crossing of
 /// type `ty`, a `stream<T>` or a `future<T>`: the entry leaves the
