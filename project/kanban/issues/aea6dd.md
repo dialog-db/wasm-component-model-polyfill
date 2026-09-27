@@ -15,6 +15,10 @@ Scenarios with more than one component, linked at run time, starting with two Ze
 - Scenario 8: Zena imports from Zena at run time, passing a string across the link.
 - Regenerate and commit the record lines.
 
+Notes from the review of 264c89 (landed as `b882bd371`):
+- The polyfill runner instantiates each component on its own (`tests/zena/runner.rs:81-86`). Run-time-linked scenarios need runner code on both the polyfill and the Wasmtime side.
+- The polyfill links and instantiates in one call, so the runner tells `link` from `instantiate` by error variant. With several components, the stage order can differ from the Wasmtime run, which parses all, links all, then instantiates all.
+
 ## Acceptance criteria
 - [ ] Scenario 8 runs under all three subjects, linked at run time.
 - [ ] The record holds lines for scenario 8, and `tests zena` passes the gate.
