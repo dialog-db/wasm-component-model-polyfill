@@ -34,9 +34,9 @@
 //!   with the waker of the driver, and once the poll comes out ready
 //!   the turn queues the completion, which fills the end's event.
 //! - A poll that fails fails the built-in with the consumer's error
-//!   when it is the first. A later one is the trap of the guest task
-//!   that started the write, as the failure of a host call is the
-//!   trap of the task that made the call.
+//!   when it is the first. A later one is a trap, as the failure of
+//!   a host call is: it poisons the store and ends the driver whose
+//!   turn meets it.
 //!
 //! The consumer takes items out of the guest's memory during its
 //! poll, through the source it is handed, and each poll records what
@@ -59,7 +59,7 @@
 use core::task::{Context, Poll};
 
 use crate::concurrency::{
-    Accessor, CopyBuffer, CopyState, EndId, EndKind, HostConsumer, HostTask, HostTaskBody, TaskId,
+    Accessor, CopyBuffer, CopyState, EndId, EndKind, HostConsumer, HostTask, HostTaskBody,
 };
 use crate::error::{CopyCause, Error, Result};
 use crate::internal::ErrorInternal;
@@ -148,7 +148,7 @@ pub fn pipe_readable_end<T: 'static, H: HostConsumer<T>>(
                 // No task started the write through this pipe, so a
                 // failure of the task that serves it reaches whichever
                 // driver is running.
-                serve_host_write(store, reader, None, false)?;
+                serve_host_write(store, reader, false)?;
             }
         }
         Route::Replace => {
@@ -180,8 +180,7 @@ enum Route {
 }
 
 /// Serve the write a guest started against `reader`, the readable end
-/// the host serves, on behalf of `caller_task`, the guest task that
-/// started it. With `now`, the end is polled once, here, with the
+/// the host serves. With `now`, the end is polled once, here, with the
 /// waker of the turn that is running: a poll that is ready completes
 /// the write before this returns, and a pending one joins the store's
 /// host tasks. A failure of either is the built-in's. Without `now`
@@ -190,11 +189,9 @@ enum Route {
 pub fn serve_host_write<T: 'static>(
     store: &mut StoreContext<'_, T>,
     reader: EndId,
-    caller_task: Option<TaskId>,
     now: bool,
 ) -> Result<()> {
     let mut task = HostTask::copy(
-        caller_task,
         move |store: &mut StoreContext<'_, T>, outcome: Result<Vec<Val>>| {
             // A poll that failed before it reached the store could not
             // forget the waker a pending poll kept; this forgets it.

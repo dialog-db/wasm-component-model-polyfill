@@ -591,19 +591,31 @@ pub fn abandon<T: 'static>(store: &mut StoreContext<'_, T>, subtask: SubtaskId) 
 /// nothing. A call that failed before the lower returned was never
 /// given an entry, and then there is only the record to remove.
 ///
+/// A call into a host function has no generated functions to name
+/// the caller's table, so its caller passes that table as `table`.
+/// A prepared call names its own, and `table` is `None` there.
+///
 /// The cancellation is recorded even for a subtask that had already
 /// returned, where cancelling is not the state the resolution would
 /// otherwise reach. Nothing reads the difference: the record and the
 /// caller's entry for it leave the store in the same breath, so the
 /// state it was moved to has no one left to observe it.
-pub fn release_subtask<T: 'static>(store: &mut StoreContext<'_, T>, subtask: SubtaskId) {
+pub fn release_subtask<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    subtask: SubtaskId,
+    table: Option<TableId>,
+) {
     abandon(store, subtask);
     let tables = store.internal().tables_handle();
     let Ok(mut guard) = tables.lock() else {
         return;
     };
     let entry = guard.tasks.subtask(subtask).and_then(|record| {
-        let table = record.bridge.as_ref()?.caller_table;
+        let table = record
+            .bridge
+            .as_ref()
+            .map(|bridge| bridge.caller_table)
+            .or(table)?;
         Some((table, record.handle?))
     });
     if let Some((table, index)) = entry {

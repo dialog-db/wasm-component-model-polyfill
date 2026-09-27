@@ -409,19 +409,15 @@ impl Builtin {
         let host_copy = {
             let guard = lock_tables(&self.tables)?;
             match guard.tasks.host_counterpart(end) {
-                Some(host) if !guard.tasks.has_pending_event(waitable).map_err(trap)? => {
-                    Some((host, guard.tasks.current_task()))
-                }
+                Some(host) if !guard.tasks.has_pending_event(waitable).map_err(trap)? => Some(host),
                 _ => None,
             }
         };
-        if let Some((host, caller_task)) = host_copy {
+        if let Some(host) = host_copy {
             match self.kind {
-                EndKind::StreamReadable | EndKind::FutureReadable => {
-                    serve_host_read(store, host, caller_task)
-                }
+                EndKind::StreamReadable | EndKind::FutureReadable => serve_host_read(store, host),
                 EndKind::StreamWritable | EndKind::FutureWritable => {
-                    serve_host_write(store, host, caller_task, true)
+                    serve_host_write(store, host, true)
                 }
             }
             .map_err(trap)?;

@@ -25,11 +25,10 @@ use wasm_runtime_layer::{
 use crate::abi::signature::Signature;
 use crate::backend::Backend;
 use crate::concurrency::{
-    Accessor, CallStatus, EntryFinish, EventSlot, FailureChannel, HostTask, InstanceId, Item,
-    LowerKind, Outcome, Plan, ResultChannel, Scheduler, StoreProvider, SubtaskId, TaskId, ThreadId,
-    WaitableSetId,
+    Accessor, CallStatus, EntryFinish, EventSlot, HostTask, InstanceId, Item, LowerKind, Outcome,
+    Plan, ResultChannel, Scheduler, StoreProvider, SubtaskId, TaskId, ThreadId, WaitableSetId,
 };
-use crate::error::{Error, Result, SchedulerCause};
+use crate::error::{Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
 use crate::executor::ir::CanonOptions;
 use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId, TableId};
@@ -378,16 +377,6 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
     /// Attach a result channel to `task`.
     pub fn attach_result_channel(self, task: TaskId) -> Result<ResultChannel> {
         self.context.attach_result_channel(task)
-    }
-
-    /// Attach a failure channel to `task`.
-    pub fn attach_failure_channel(self, task: TaskId) -> Result<FailureChannel> {
-        self.context.attach_failure_channel(task)
-    }
-
-    /// End `task` with `error`.
-    pub fn fail_export_task(self, task: Option<TaskId>, error: Error) -> Result<()> {
-        self.context.fail_export_task(task, error)
     }
 
     /// Whether `task` has resolved.

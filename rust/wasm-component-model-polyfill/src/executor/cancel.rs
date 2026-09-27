@@ -132,7 +132,7 @@ fn task_cancel(tables: &Arc<Mutex<HandleTables>>) -> crate::error::Result<()> {
     if let Some(subtask) = record.subtask {
         guard.tasks.subtask_cancelled_by_callee(subtask)?;
     }
-    if !guard.resolve_task(task, None) {
+    if !guard.resolve_task(task, None)? {
         return Err(Error::internal("the current task has no record"));
     }
     Ok(())

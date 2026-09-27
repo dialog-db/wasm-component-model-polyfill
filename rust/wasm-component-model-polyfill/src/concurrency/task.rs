@@ -3,11 +3,11 @@
 use std::sync::Arc;
 
 use crate::abi::signature::Signature;
+use crate::error::Result;
 use crate::executor::ir::CanonOptions;
 use crate::resource::TableId;
 use crate::value::Val;
 
-use super::failure_channel::FailureChannel;
 use super::instance_id::InstanceId;
 use super::subtask_id::SubtaskId;
 use super::task_result::TaskResult;
@@ -67,14 +67,6 @@ pub struct Task {
     pub lenders: Vec<(TableId, u32)>,
     /// Where the task's result goes.
     pub result: TaskResult,
-    /// Where the task's failure goes: the channel of the call that
-    /// started it, when that call left one. A task the store ends
-    /// with an error fills this, and the call reads it ahead of the
-    /// result. `None` for a task no call watches — the callee of a
-    /// call between two components, a destructor, the task an
-    /// adapter's enter intrinsic pushes — whose failure ends the
-    /// turn instead.
-    pub failure: Option<FailureChannel>,
     /// The subtask of the call this task is the callee of, for a
     /// call between two components the prepare intrinsic set up.
     /// The callee's `task.return` reaches the return function of
@@ -124,7 +116,6 @@ impl Task {
             threads: vec![implicit_thread],
             lenders: Vec::new(),
             result: TaskResult::Pending,
-            failure: None,
             subtask: None,
             thread_exited: false,
             implicit_thread_exited: false,
@@ -140,12 +131,16 @@ impl Task {
     /// not on the stack — that is what the channel is for — and its
     /// future can be one a host combinator polls again only after its
     /// waker fires, so a send that did not wake would leave the call
-    /// pending against the result it is waiting for.
-    pub fn resolve(&mut self, result: Option<Val>) {
+    /// pending against the result it is waiting for. A channel whose
+    /// lock a panic poisoned fails the resolution.
+    pub fn resolve(&mut self, result: Option<Val>) -> Result<()> {
         self.state = TaskState::Resolved;
         match &self.result {
             TaskResult::Channel(slot) => slot.fill(result),
-            _ => self.result = TaskResult::Returned(result),
+            _ => {
+                self.result = TaskResult::Returned(result);
+                Ok(())
+            }
         }
     }
 }

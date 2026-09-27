@@ -347,7 +347,7 @@ impl CallbackTask {
             .and_then(|record| record.subtask);
         store.internal().abandon_export_task(self.task)?;
         if let Some(subtask) = subtask {
-            release_subtask(store, subtask);
+            release_subtask(store, subtask, None);
         }
         Ok(())
     }

@@ -266,15 +266,19 @@ async fn it_returns_a_stackful_result_through_a_concurrent_call() {
 }
 
 #[wcmp_macros::test]
-async fn it_fails_a_concurrent_call_into_a_stackful_export_with_no_result() {
+async fn it_ends_the_entry_around_a_concurrent_call_into_a_stackful_export_with_no_result() {
     let (mut store, instance) = instantiate().await;
     let silent = func(&instance, "silent");
 
-    let err = store
+    // The no-result trap is not the call's to report: it ends the
+    // entry that was polling, and the closure goes with the call.
+    let err = match store
         .run_concurrent(async |accessor| silent.call_concurrent(accessor, &[Val::U32(5)]).await)
         .await
-        .expect("run the closure")
-        .expect_err("the call has no result to give");
+    {
+        Ok(_) => panic!("the call has no result to give, so the entry fails"),
+        Err(err) => err,
+    };
 
     assert!(
         chain(&err).contains("async-lifted export failed to produce a result"),

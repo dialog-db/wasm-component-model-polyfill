@@ -310,6 +310,10 @@ pub struct Scheduler<T: 'static> {
     /// provider that resumes a thread only where the store runs no
     /// guest code.
     deferred: DeferredWork<T>,
+    /// Whether the failure that is ending the running turn is the
+    /// failure of the host's own work, with no guest below it, which
+    /// is no trap.
+    host_failure: bool,
 }
 
 /// How many nested turns in a row the suspend seam runs against a
@@ -360,7 +364,20 @@ impl<T: 'static> Scheduler<T> {
             next_thread: None,
             switchers: Vec::new(),
             deferred: DeferredWork::default(),
+            host_failure: false,
         }
+    }
+
+    /// Note that the failure ending the running turn is the failure
+    /// of the host's own work, which touches no guest.
+    pub fn note_host_failure(&mut self) {
+        self.host_failure = true;
+    }
+
+    /// Whether the failure that ended the last turn was the host's
+    /// own, clearing the note.
+    pub fn take_host_failure(&mut self) -> bool {
+        core::mem::take(&mut self.host_failure)
     }
 
     /// Count one item the store has run. A turn spells this before

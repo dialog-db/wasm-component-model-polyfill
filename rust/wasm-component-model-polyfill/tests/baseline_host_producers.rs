@@ -774,7 +774,7 @@ async fn it_fails_the_guests_built_in_with_the_producers_error() {
 }
 
 #[wcmp_macros::test]
-async fn it_fails_the_reading_task_when_a_later_poll_fails() {
+async fn it_ends_the_driver_with_the_producers_error_when_a_later_poll_fails() {
     let (mut store, instance) = instantiate(DRAINS_A_STREAM).await;
     let (producer, seen) = Scripted::new([Step::Pend, Step::Fail("the producer failed later")]);
     let reader = StreamReader::new(&mut store.as_context_mut(), producer).expect("a stream");
@@ -790,7 +790,7 @@ async fn it_fails_the_reading_task_when_a_later_poll_fails() {
 
     assert!(
         chain(&failure).contains("the producer failed later"),
-        "the task that started the read failed with the producer's error, got \
+        "the driver that was polling ended with the producer's error, got \
          {failure:?}"
     );
     assert_eq!(polls(&seen), 2, "the failure came from the second poll");

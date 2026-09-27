@@ -60,10 +60,13 @@
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use wasm_component_model_polyfill::{
     Accessor, Component, Engine, Error, Func, FunctionParameter, FunctionType, HostResource,
-    Instance, Linker, PrimitiveType, ResourceType, SchedulerCause, Store, Val, ValueType,
+    Instance, Linker, PrimitiveType, ResourceType, SchedulerCause, Store, TaskCause, Val,
+    ValueType,
 };
 use wcmp_macros::component;
 
@@ -1344,14 +1347,12 @@ async fn caller_whose_host_call_fails() -> (Store<()>, Instance) {
 }
 
 #[wcmp_macros::test]
-async fn it_fails_the_calling_task_when_the_body_fails_after_a_pending_poll() {
+async fn it_ends_the_polling_driver_when_the_body_fails_after_a_pending_poll() {
     // The first poll left the body running, so the guest was told
     // the call started and went on to wait on the subtask. The poll
-    // that follows fails, and that failure is the trap of the task
-    // that made the call: the task ends with it and the call that
-    // started the task reports it. The same failure on the first
-    // poll fails the guest's call where it stands, and this is the
-    // same outcome by the later road.
+    // that follows fails, and that failure is a trap of the task that
+    // made the call. It ends the driver whose turn polled the body,
+    // which is this call, and it poisons the store.
     let (mut store, instance) = caller_whose_host_call_fails().await;
 
     let failure = func(&instance, "run")
@@ -1363,83 +1364,99 @@ async fn it_fails_the_calling_task_when_the_body_fails_after_a_pending_poll() {
         chain(&failure).contains(HOST_FAILED),
         "the call reports what the host's body failed with, got {failure:?}"
     );
-    assert_eq!(
-        recorded(&mut store, &instance).await,
-        (STARTED_AT_ONE, 2, NO_EVENT),
-        "the guest saw the started status and made its set, and the subtask \
-         did not resolve: no event was ever delivered to the callback"
-    );
-    assert_eq!(
-        read(&mut store, &instance, "runs").await,
-        0,
-        "the callback never ran, so the guest was never told the call was \
-         cancelled"
+    let refused = func(&instance, "status")
+        .call(&mut store, &[])
+        .await
+        .expect_err("the failed host future poisoned the store");
+    assert!(
+        matches!(refused, Error::Task(TaskCause::CannotEnter)),
+        "the next driver fails with the cannot-enter cause, got {refused:?}"
     );
 }
 
+/// A future that notes its drop, around a call future the closure of
+/// `run_concurrent` awaits: what the entry drops with the closure.
+struct NotesDrop<F> {
+    future: Pin<Box<F>>,
+    dropped: Arc<AtomicBool>,
+}
+
+impl<F: Future> Future for NotesDrop<F> {
+    type Output = F::Output;
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<F::Output> {
+        self.future.as_mut().poll(context)
+    }
+}
+
+impl<F> Drop for NotesDrop<F> {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::Relaxed);
+    }
+}
+
 #[wcmp_macros::test]
-async fn it_leaves_another_call_of_the_same_store_untouched_when_the_body_fails() {
+async fn it_ends_the_entry_and_drops_the_other_call_when_one_calls_host_body_fails() {
     // Two calls run together against one store: the one whose host
     // function fails, and a call into a synchronous export that has
-    // nothing to do with it. The failure belongs to the first call's
-    // task, so only that call reports it — the second answers, and
-    // the driver that polled them both returns rather than failing
-    // for another task's host function.
+    // nothing to do with it. The failure is a trap, and the first
+    // trap ends the driver that is polling: the whole entry returns
+    // it, and the closure goes with both call futures in it.
     let (mut store, instance) = caller_whose_host_call_fails().await;
     let run = func(&instance, "run");
     let status = func(&instance, "status");
+    let first_dropped = Arc::new(AtomicBool::new(false));
+    let second_dropped = Arc::new(AtomicBool::new(false));
 
-    let (failing, unrelated) = store
+    let entry = store
         .run_concurrent(async |accessor| {
             let arguments = [Val::U32(21)];
-            let mut first = Box::pin(run.call_concurrent(accessor, &arguments));
-            let mut second = Box::pin(status.call_concurrent(accessor, &[]));
-            let mut first_done: Option<Result<Box<[Val]>, Error>> = None;
+            let mut first = NotesDrop {
+                future: Box::pin(run.call_concurrent(accessor, &arguments)),
+                dropped: first_dropped.clone(),
+            };
+            let mut second = NotesDrop {
+                future: Box::pin(status.call_concurrent(accessor, &[])),
+                dropped: second_dropped.clone(),
+            };
             let mut second_done: Option<Result<Box<[Val]>, Error>> = None;
 
+            // The first call never answers: its task traps. The
+            // closure waits on it for good, and only the entry's end
+            // stops the wait.
             core::future::poll_fn(|context| {
-                if first_done.is_none()
-                    && let Poll::Ready(value) = first.as_mut().poll(context)
-                {
-                    first_done = Some(value);
+                if let Poll::Ready(value) = Pin::new(&mut first).poll(context) {
+                    return Poll::Ready(Some(value));
                 }
                 if second_done.is_none()
-                    && let Poll::Ready(value) = second.as_mut().poll(context)
+                    && let Poll::Ready(value) = Pin::new(&mut second).poll(context)
                 {
                     second_done = Some(value);
                 }
-                if first_done.is_some() && second_done.is_some() {
-                    Poll::Ready(())
-                } else {
-                    Poll::Pending
-                }
+                Poll::Pending
             })
-            .await;
-
-            (
-                first_done.expect("the failing call resolved"),
-                second_done.expect("the unrelated call resolved"),
-            )
+            .await
         })
-        .await
-        .expect("the entry returns, so the failure was never the driver's");
+        .await;
 
-    let failure = failing.expect_err("the call whose host function failed reports it");
+    let failure = match entry {
+        Ok(first) => panic!("the trap ends the entry, and the closure answered {first:?}"),
+        Err(failure) => failure,
+    };
     assert!(
         chain(&failure).contains(HOST_FAILED),
-        "the failure reached the call that made the host call, got {failure:?}"
+        "the entry reports what the host's body failed with, got {failure:?}"
     );
-    let answered = unrelated.expect("the unrelated call answers");
-    assert_eq!(
-        answered.first(),
-        Some(&Val::U32(STARTED_AT_ONE)),
-        "the second call read back the status word the first call's guest \
-         recorded, so it ran to its end beside the failure"
+    assert!(
+        first_dropped.load(Ordering::Relaxed) && second_dropped.load(Ordering::Relaxed),
+        "the closure was dropped with both call futures inside it"
     );
-    assert_eq!(
-        read(&mut store, &instance, "runs").await,
-        0,
-        "the callback of the failed task never ran, and the driver that came \
-         after the entry ran turns of the same store all the same"
+    let refused = status
+        .call(&mut store, &[])
+        .await
+        .expect_err("the failed host future poisoned the store");
+    assert!(
+        matches!(refused, Error::Task(TaskCause::CannotEnter)),
+        "the next driver fails with the cannot-enter cause, got {refused:?}"
     );
 }

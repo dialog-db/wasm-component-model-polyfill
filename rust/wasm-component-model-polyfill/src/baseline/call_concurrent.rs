@@ -33,11 +33,14 @@
 //! still unblock the task with another call, and a host bounds the
 //! whole entry from outside.
 //!
-//! The future leaves its waker behind, and the turn that resolves or
-//! fails the task wakes it. That is what lets a host hand several of
-//! these futures to a combinator which re-polls a child only after
-//! that child's waker fires, the shape of `FuturesUnordered` and its
-//! kin, rather than polling each of them by hand after every turn.
+//! The future leaves its waker behind, and the turn that resolves the
+//! task wakes it. That is what lets a host hand several of these
+//! futures to a combinator which re-polls a child only after that
+//! child's waker fires, the shape of `FuturesUnordered` and its kin,
+//! rather than polling each of them by hand after every turn. A trap
+//! of the task does not come back through the future: it ends the
+//! `run_concurrent` entry that was polling, and the closure goes with
+//! every future inside it.
 
 #![cfg(test)]
 
@@ -52,7 +55,7 @@ use crate::internal::ResourceTypeIdInternal;
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
     AbiCause, Accessor, Component, Engine, Error, Func, HostCall, HostResource, Instance,
-    InterfaceIdentifier, Linker, ResourceTypeId, Result, Store, Val,
+    InterfaceIdentifier, Linker, ResourceTypeId, Result, Store, TaskCause, Val,
 };
 use wcmp_macros::component;
 
@@ -882,34 +885,37 @@ async fn it_resolves_every_call_a_waker_gated_combinator_holds() {
 }
 
 #[wcmp_macros::test]
-async fn it_wakes_a_concurrent_call_that_failed_on_the_borrows_the_guest_owes() {
+async fn it_ends_the_entry_with_the_borrows_a_concurrent_calls_guest_still_owes() {
     let (mut store, instance, type_id) = instantiate_borrow_holder().await;
     let handle = store.resource_new(type_id, 5).expect("mint an own handle");
     let hold = func(&instance, "hold");
     let args = [Val::Borrow(handle)];
 
-    let mut resolved = store
+    let failure = match store
         .run_concurrent(async |accessor| {
             join_gated(accessor, vec![hold.call_concurrent(accessor, &args)]).await
         })
         .await
-        .expect("run the closure");
-
-    let call = resolved
-        .pop()
-        .expect("the combinator holds the one call")
-        .expect(
-            "the call was polled again after the turn that ran its task: the \
-             task resolved and then failed, and both wake the caller",
-        );
-    let failure = call.expect_err("the guest kept the borrow, so the call must fail");
+    {
+        Ok(_) => panic!("the guest kept the borrow, so the entry must fail"),
+        Err(failure) => failure,
+    };
     assert!(
         matches!(&failure, Error::Abi(abi) if matches!(
             abi.cause,
             AbiCause::OutstandingBorrows { count: 1 }
         )),
-        "the call fails with the borrow the guest still owed, which the task \
-         raised after it had already resolved: {failure}"
+        "the entry that was polling fails with the borrow the guest still \
+         owed, which the task raised after it had already resolved: {failure}"
+    );
+
+    let refused = hold
+        .call(&mut store, &args)
+        .await
+        .expect_err("the trap poisoned the store");
+    assert!(
+        matches!(refused, Error::Task(TaskCause::CannotEnter)),
+        "the next driver fails with the cannot-enter cause, got {refused:?}"
     );
 }
 

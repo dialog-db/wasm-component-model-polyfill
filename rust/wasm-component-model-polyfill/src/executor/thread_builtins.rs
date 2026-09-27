@@ -105,9 +105,10 @@
 //! with a callback does. When its start function returns, the thread
 //! leaves the instance's table and its task's list of threads. A
 //! start function that traps ends the thread the same way. The trap
-//! is the failure of the thread's task. A switch made from inside a
-//! built-in of the same task runs inside that task's call, so a trap
-//! of a thread it started there fails the built-in.
+//! poisons the store and ends the driver whose turn ran the thread,
+//! whichever task the thread belongs to. A switch runs the thread it
+//! names from inside the built-in, so a trap of that thread fails the
+//! built-in first and travels out from there to the driver.
 //!
 //! A task lives until its last thread ends, whether that thread has
 //! started or not. Its implicit thread can return first: the task
@@ -304,9 +305,8 @@ fn named_thread(tables: &HandleTables, instance: InstanceId, index: u32) -> Resu
 /// The start function is the thread's entry, so the scheduler starts
 /// it through the store's provider when there is one, on a stack of
 /// its own, and the thread ends when the entry finishes. A trap of
-/// the thread is the failure of the thread's task, which reaches the
-/// call that started the task when that call is waiting on it and
-/// ends the turn otherwise.
+/// the thread poisons the store and ends the turn, which reaches the
+/// driver that is polling.
 fn start_ready_thread<T: 'static>(store: &mut StoreContext<'_, T>, thread: ThreadId) -> Result<()> {
     store.internal().start_ready_thread(thread)
 }
@@ -317,11 +317,14 @@ fn start_ready_thread<T: 'static>(store: &mut StoreContext<'_, T>, thread: Threa
 /// The thread runs in its task's scope. Its end is the same whether
 /// its start function returned or trapped: the scope it pushed is
 /// popped, with whatever a failed call left above it, and the thread
-/// leaves its instance's table and its task. A trap comes back to
-/// the caller, which says whose failure it is. A thread that returned
-/// and was the last of its task, `task`, after the task's implicit
-/// thread exited, ends the task, and a failure of that end comes back
-/// the same way.
+/// leaves its instance's table and its task. A trap poisons the store
+/// and comes back to the caller, the built-in that switched, which
+/// fails with it and carries it out to the driver whose turn is
+/// running, exactly as the same trap does under a provider. That
+/// holds whichever task the thread belongs to, the switching thread's
+/// or another. A thread that returned and was the last of its task,
+/// `task`, after the task's implicit thread exited, ends the task,
+/// and a failure of that end comes back the same way.
 fn run_thread<T: 'static>(
     store: &mut StoreContext<'_, T>,
     thread: ThreadId,
@@ -343,7 +346,10 @@ fn run_thread<T: 'static>(
         guard.leave_thread(thread);
         guard.tasks.end_thread(thread);
     }
-    outcome?;
+    if let Err(error) = outcome {
+        store.internal().poison();
+        return Err(error);
+    }
     store.internal().end_last_thread(task)
 }
 
@@ -766,8 +772,9 @@ fn promote_target<T: 'static>(
 /// runs from here, which the cause of a failed block above it reads.
 /// The mark comes back off through an unwind too, as a start
 /// intrinsic's nested-start mark does. A trap of the started thread
-/// is the failure of the built-in that started it when it is the
-/// failure of the switching thread's own task.
+/// poisons the store and is the failure of the built-in that started
+/// it, whichever task the thread belongs to, and it travels out from
+/// there to the driver whose turn is running.
 fn start_switched<T: 'static>(
     store: &mut StoreContext<'_, T>,
     switching: ThreadId,

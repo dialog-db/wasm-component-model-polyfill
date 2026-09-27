@@ -50,7 +50,6 @@ pub fn start_host_pipe<T: 'static, H: HostConsumer<T>>(
         produced_all: false,
     };
     let task = HostTask::copy(
-        None,
         |_store: &mut StoreContext<'_, T>, outcome: Result<Vec<Val>>| outcome.map(drop),
         body,
     )

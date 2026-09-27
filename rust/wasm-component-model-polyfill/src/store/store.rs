@@ -77,10 +77,13 @@ pub mod internal;
 /// a consumer of its own, touches no guest and runs. The records of
 /// the store's tasks and subtasks stay until the store drops. A later
 /// driver therefore meets no stale work, and fails only for an entry
-/// it makes itself; a call future whose task was discarded never
-/// resolves. Wasmtime keeps its queued items and host futures, and a
-/// later `run_concurrent` runs them. The polyfill discards them,
-/// because the Component Model runs no guest code after a trap.
+/// it makes itself. A trap in a turn ends the driver that is polling,
+/// so a call future of a `run_concurrent` closure goes with the
+/// closure; one whose store a trap poisoned in some other way fails
+/// with the cannot-enter cause the next time it is polled. Wasmtime
+/// keeps its queued items and host futures, and a later
+/// `run_concurrent` runs them. The polyfill discards them, because
+/// the Component Model runs no guest code after a trap.
 ///
 /// A discarded future is dropped where host code may run: no lock of
 /// the store is held, and the store is not lent to a poll. A `Drop`
@@ -441,31 +444,28 @@ impl<T: 'static> Store<T> {
     /// outside the store, and the waker it was polled with is the
     /// one that brings the entry back.
     ///
-    /// # Where a failure surfaces
+    /// # Where a trap surfaces
     ///
-    /// A failure the store raises while a turn runs surfaces at the
-    /// call it belongs to whenever it has one. The result of a host
-    /// `async` function a task called is such a failure: the body
-    /// failed after the guest's call returned, so the failure is the
-    /// trap of the task that made the call. That task ends with the
-    /// error and the call that started it reports it, whether that
-    /// call is a [`Func::call`] or a [`Func::call_concurrent`]
-    /// awaited inside `body`. A task that ended that way does not
-    /// resolve, so its call never answers with a result as well, and
-    /// no other call of the same store is touched.
+    /// The first trap ends the driver that is polling the store, with
+    /// that trap, and poisons the store in the same step. While this
+    /// entry runs turns, it is that driver, whichever task the trap
+    /// belongs to: a task a [`Func::call_concurrent`] inside `body`
+    /// started, work that a task left after it resolved, a thread
+    /// that outlives its task's host call, or a host `async` function
+    /// whose future fails, which is a trap of the guest task that
+    /// called it. The entry returns the trap, and `body` is dropped
+    /// wherever its poll left it, with every call future inside it:
+    /// the call whose task trapped does not answer, and neither does
+    /// any other.
     ///
-    /// A failure that belongs to no call surfaces at whichever
-    /// driver is polling the store, which is this entry while it is
-    /// running turns. That is every other failure a turn meets: a
-    /// callback the store resumed a task through, a crossing whose
-    /// caller has ended, the bookkeeping of an item whose task is
-    /// gone. Such a failure ends the turn and this entry reports it,
-    /// so `body` is dropped wherever its poll left it. It is the
-    /// driver that happens to be running, not a driver the failure
-    /// names: the same failure reaches [`Func::call`] when a call is
-    /// what is polling the store instead.
+    /// The trap is never held for a caller that already has its
+    /// result. A call that answered before its task trapped keeps its
+    /// answer and never learns of the trap; this entry reports it
+    /// when one of its turns meets the trap, and a later driver
+    /// reports it when this entry has already returned. Every driver
+    /// after the trap fails with the cannot-enter cause, and a
+    /// [`Func::call_concurrent`] made inside `body` is refused with it.
     ///
-    /// [`Func::call`]: crate::Func::call
     /// [`Func::call_concurrent`]: crate::Func::call_concurrent
     pub async fn run_concurrent<R, F>(&mut self, body: F) -> Result<R>
     where

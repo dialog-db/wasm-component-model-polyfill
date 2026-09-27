@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use crate::store::StoreContextInternalExt;
 use crate::{
     Accessor, Component, Engine, Error, Func, HostCall, Instance, Linker, ResourceHandle, Store,
-    TaskCause, Val,
+    StoreContext, TaskCause, Val,
 };
 use wcmp_macros::component;
 
@@ -61,6 +61,7 @@ const TRAPPING_RESOURCE: &[u8] = component!(
 ///   the task.
 /// - `boom-sync` is lifted synchronously and calls `boom` through a
 ///   synchronous lower, so it blocks until the call returns.
+/// - `tick-sync` is lifted synchronously and calls `tick`.
 const CALLER: &[u8] = component!(
     r#"
     (component
@@ -103,7 +104,9 @@ const CALLER: &[u8] = component!(
           (call $task-return)
           (i32.const 0))
         (func (export "boom-sync")
-          (call $boom-sync)))
+          (call $boom-sync))
+        (func (export "tick-sync")
+          (call $tick)))
       (core instance $m (instantiate $M (with "" (instance
         (export "boom-async" (func $boom-async))
         (export "boom-sync" (func $boom-sync))
@@ -119,7 +122,9 @@ const CALLER: &[u8] = component!(
         (canon lift (core func $m "boom-then-pend") async
           (callback (core func $m "callback"))))
       (func (export "boom-sync")
-        (canon lift (core func $m "boom-sync"))))
+        (canon lift (core func $m "boom-sync")))
+      (func (export "tick-sync")
+        (canon lift (core func $m "tick-sync"))))
     "#
 );
 
@@ -169,15 +174,34 @@ impl Drop for Pend {
 struct Plan {
     /// The poll, counted from 1, on which `boom` releases the handle.
     at: Arc<AtomicU32>,
-    /// The guest's resource `boom` releases.
+    /// The guest's resource `boom` or `tick` releases.
     handle: Arc<Mutex<Option<ResourceHandle>>>,
-    /// What the release answered, once `boom` made it.
+    /// What the release answered, once `boom` or `tick` made it.
     released: Arc<Mutex<Option<Result<(), String>>>>,
+    /// Whether `boom` answers once it has released the handle, rather
+    /// than staying pending.
+    answers: Arc<AtomicBool>,
+    /// Whether `tick` releases the handle before it returns.
+    tick_releases: Arc<AtomicBool>,
 }
 
-/// The future of `boom`: pending for good. On the poll the plan names
-/// it releases the guest's resource through its accessor, and the
-/// guest's destructor traps.
+impl Plan {
+    /// Release the guest's resource in `store`, when the plan still
+    /// holds it, and note what the release answered.
+    fn release(&self, store: &mut StoreContext<'_, ()>) {
+        if let Some(handle) = self.handle.lock().expect("the handle").take() {
+            let released = store
+                .internal()
+                .resource_drop(handle)
+                .map_err(|error| error.to_string());
+            *self.released.lock().expect("the release") = Some(released);
+        }
+    }
+}
+
+/// The future of `boom`: pending for good, unless the plan says it
+/// answers. On the poll the plan names it releases the guest's
+/// resource through its accessor, and the guest's destructor traps.
 struct Boom {
     accessor: Accessor<()>,
     plan: Plan,
@@ -189,15 +213,13 @@ impl Future for Boom {
 
     fn poll(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Self::Output> {
         let polls = self.seen.polls.fetch_add(1, Ordering::Relaxed) + 1;
-        if polls == self.plan.at.load(Ordering::Relaxed)
-            && let Some(handle) = self.plan.handle.lock().expect("the handle").take()
-        {
-            let released = self
-                .accessor
-                .with(|store| store.internal().resource_drop(handle))
-                .and_then(|released| released)
-                .map_err(|error| error.to_string());
-            *self.plan.released.lock().expect("the release") = Some(released);
+        if polls == self.plan.at.load(Ordering::Relaxed) {
+            if let Err(error) = self.accessor.with(|store| self.plan.release(store)) {
+                *self.plan.released.lock().expect("the release") = Some(Err(error.to_string()));
+            }
+            if self.plan.answers.load(Ordering::Relaxed) {
+                return Poll::Ready(Ok(()));
+            }
         }
         Poll::Pending
     }
@@ -210,7 +232,7 @@ impl Drop for Boom {
 }
 
 /// A store with both components instantiated, and the guest's
-/// resource `boom` releases.
+/// resource `boom` or `tick` releases.
 struct Fixture {
     store: Store<()>,
     caller: Instance,
@@ -250,9 +272,12 @@ impl Fixture {
             Pend(pends.clone())
         })
         .expect("the registration of `pend`");
-        let tick = ticks.clone();
-        root.func_wrap("tick", move |_call: HostCall<'_, ()>, (): ()| {
+        let (tick, ticking) = (ticks.clone(), plan.clone());
+        root.func_wrap("tick", move |mut call: HostCall<'_, ()>, (): ()| {
             tick.fetch_add(1, Ordering::Relaxed);
+            if ticking.tick_releases.load(Ordering::Relaxed) {
+                ticking.release(call.store());
+            }
             Ok(())
         })
         .expect("the registration of `tick`");
@@ -331,44 +356,26 @@ fn assert_refused_after_poison(error: &Error) {
 async fn it_drops_an_asynchronous_host_call_whose_first_poll_poisons_the_store() {
     let mut fixture = Fixture::new(1).await;
     let call = fixture.func("pend-then-boom");
-    let (boom, pend) = (fixture.boom.clone(), fixture.pend.clone());
 
-    let (outcome, boom_dropped, pend_dropped) = fixture
+    // The guest's call fails on the stack, which is a trap of the task
+    // that made it, and the trap ends the entry that was polling.
+    let error = match fixture
         .store
-        .run_concurrent(async |accessor| {
-            // A call whose guest went on after the trap would wait on
-            // its set for good, so it is polled for long enough to
-            // fail and no longer.
-            let mut called = pin!(call.call_concurrent(accessor, &[]));
-            let mut polls = 0;
-            let outcome = poll_fn(|context| {
-                polls += 1;
-                if let Poll::Ready(outcome) = called.as_mut().poll(context) {
-                    return Poll::Ready(Some(outcome));
-                }
-                if polls == 64 {
-                    return Poll::Ready(None);
-                }
-                context.waker().wake_by_ref();
-                Poll::Pending
-            })
-            .await;
-            (outcome, boom.dropped(), pend.dropped())
-        })
+        .run_concurrent(async |accessor| call.call_concurrent(accessor, &[]).await)
         .await
-        .expect("the entry around the call returns");
+    {
+        Ok(_) => panic!("the trap ends the entry around the call"),
+        Err(error) => error,
+    };
 
     fixture.assert_destructor_trapped();
-    let error = outcome
-        .expect("the guest's call returns")
-        .expect_err("the guest's call fails once the store is poisoned");
     assert_refused_after_poison(&error);
     assert!(
-        boom_dropped,
+        fixture.boom.dropped(),
         "the future whose first poll poisoned the store was dropped rather than kept"
     );
     assert!(
-        pend_dropped,
+        fixture.pend.dropped(),
         "the pending future the store held was dropped at the trap"
     );
     assert_eq!(fixture.boom.polls(), 1, "`boom` was polled once");
@@ -483,6 +490,116 @@ async fn it_drops_a_parked_host_call_whose_later_poll_poisons_the_store() {
         fixture.boom.polls(),
         2,
         "`boom` was polled as the call started and once by the block, and never again"
+    );
+    fixture.assert_poisoned().await;
+}
+
+#[wcmp_macros::test]
+async fn it_fails_an_asynchronous_host_call_whose_first_poll_poisons_the_store_and_answers() {
+    // The body answers, but the poll that answered ran a destructor
+    // that trapped. The guest that would take the answer is guest code
+    // a poisoned store does not run, so its call fails instead.
+    let mut fixture = Fixture::new(1).await;
+    fixture.plan.answers.store(true, Ordering::Relaxed);
+    let call = fixture.func("pend-then-boom");
+
+    let error = match fixture
+        .store
+        .run_concurrent(async |accessor| call.call_concurrent(accessor, &[]).await)
+        .await
+    {
+        Ok(_) => panic!("the trap ends the entry around the call"),
+        Err(error) => error,
+    };
+
+    fixture.assert_destructor_trapped();
+    assert_refused_after_poison(&error);
+    assert!(
+        fixture.boom.dropped(),
+        "the future that answered was dropped, and its answer crossed into no guest"
+    );
+    assert_eq!(
+        fixture.ticks.load(Ordering::Relaxed),
+        0,
+        "the callback never ran"
+    );
+    fixture.assert_poisoned().await;
+}
+
+#[wcmp_macros::test]
+async fn it_fails_a_synchronous_host_call_whose_first_poll_poisons_the_store_and_answers() {
+    let mut fixture = Fixture::new(1).await;
+    fixture.plan.answers.store(true, Ordering::Relaxed);
+    let call = fixture.func("boom-sync");
+
+    let error = call
+        .call(&mut fixture.store, &[])
+        .await
+        .expect_err("the guest's call fails although the body answered");
+
+    fixture.assert_destructor_trapped();
+    assert_refused_after_poison(&error);
+    assert_eq!(fixture.boom.polls(), 1, "`boom` was polled once");
+    fixture.assert_poisoned().await;
+}
+
+#[wcmp_macros::test]
+async fn it_fails_the_guests_call_when_a_synchronous_host_function_poisons_the_store_mid_body() {
+    // `tick` releases the guest's resource, whose destructor traps,
+    // and then returns as though nothing happened. The guest that
+    // called it is guest code a poisoned store does not run, so the
+    // call fails with the cannot-enter cause.
+    let mut fixture = Fixture::new(0).await;
+    fixture.plan.tick_releases.store(true, Ordering::Relaxed);
+    let call = fixture.func("tick-sync");
+
+    let error = call
+        .call(&mut fixture.store, &[])
+        .await
+        .expect_err("the guest's call fails although the host function returned");
+
+    fixture.assert_destructor_trapped();
+    assert_refused_after_poison(&error);
+    assert_eq!(
+        fixture.ticks.load(Ordering::Relaxed),
+        1,
+        "`tick` ran once, and returned"
+    );
+    fixture.assert_poisoned().await;
+}
+
+#[wcmp_macros::test]
+async fn it_fails_a_pending_concurrent_call_with_the_cannot_enter_cause_after_the_closure_poisons_the_store()
+ {
+    // The trap happens outside any turn, in a destructor the closure
+    // releases through its accessor. It discards the task's work, so
+    // the call's future has nothing left to wait for.
+    let mut fixture = Fixture::new(0).await;
+    let call = fixture.func("pend-then-boom");
+    let plan = fixture.plan.clone();
+
+    let answered = fixture
+        .store
+        .run_concurrent(async |accessor| {
+            let mut called = pin!(call.call_concurrent(accessor, &[]));
+            let first =
+                poll_fn(|context| Poll::Ready(called.as_mut().poll(context).is_ready())).await;
+            assert!(!first, "the call is pending before the store is poisoned");
+            accessor
+                .with(|store| plan.release(store))
+                .expect("the closure reaches the store");
+            called.await
+        })
+        .await
+        .expect("the trap met no turn, so the entry returns what the closure answered");
+
+    fixture.assert_destructor_trapped();
+    let Err(error) = answered else {
+        panic!("the call fails once the store is poisoned, got {answered:?}");
+    };
+    assert!(
+        matches!(error, Error::Task(TaskCause::CannotEnter)),
+        "the call fails with the cannot-enter cause, got {error:?}"
     );
     fixture.assert_poisoned().await;
 }

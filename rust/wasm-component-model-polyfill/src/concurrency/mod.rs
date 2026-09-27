@@ -192,7 +192,6 @@ mod error_context_record;
 mod event;
 mod event_code;
 mod event_slot;
-mod failure_channel;
 mod future_any;
 mod future_consumer;
 mod future_producer;
@@ -290,7 +289,6 @@ pub use event::Event;
 #[cfg(test)]
 pub use event_code::EventCode;
 pub use event_slot::EventSlot;
-pub use failure_channel::FailureChannel;
 pub use future_any::FutureAny;
 pub use future_consumer::FutureConsumer;
 pub use future_producer::FutureProducer;

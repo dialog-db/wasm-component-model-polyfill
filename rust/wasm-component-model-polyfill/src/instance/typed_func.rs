@@ -96,6 +96,19 @@ where
     /// `T` is the host-data type of the [`Store`] the export's
     /// owning [`Instance`] was created in.
     ///
+    /// # Where a trap surfaces
+    ///
+    /// The first trap ends the driver that is polling the store, with
+    /// that trap, and poisons the store in the same step, as
+    /// [`Func::call`] states. While this call runs turns, it is that
+    /// driver: a trap in its own task ends it, and so does a trap in
+    /// work another task left after it resolved, or a host `async`
+    /// function whose future fails, when one of its turns meets it.
+    /// A trap in this call's task after the call has returned its
+    /// result is never reported here: the driver whose turn meets it
+    /// reports it, and every driver after it fails with the
+    /// cannot-enter cause.
+    ///
     /// [`Func::call`]: super::Func::call
     /// [`Store`]: crate::Store
     /// [`Instance`]: super::Instance

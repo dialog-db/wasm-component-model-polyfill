@@ -132,14 +132,17 @@ impl HandleTables {
     /// for the call cannot stay lent for the rest of the task. A
     /// task that resolves and later exits finds its lender list
     /// already empty, so the exit gives nothing back twice.
-    pub fn resolve_task(&mut self, task: TaskId, result: Option<Val>) -> bool {
+    ///
+    /// A result channel whose lock a panic poisoned fails the
+    /// resolution.
+    pub fn resolve_task(&mut self, task: TaskId, result: Option<Val>) -> Result<bool, Error> {
         self.undo_lends(Scope::Task(task));
         match self.tasks.task_mut(task) {
             Some(record) => {
-                record.resolve(result);
-                true
+                record.resolve(result)?;
+                Ok(true)
             }
-            None => false,
+            None => Ok(false),
         }
     }
 

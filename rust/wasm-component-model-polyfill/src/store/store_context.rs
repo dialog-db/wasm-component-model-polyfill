@@ -14,9 +14,9 @@ use crate::abi::boundary_call::BoundaryCall;
 use crate::abi::signature::Signature;
 use crate::backend::{Backend, substrate_failure};
 use crate::concurrency::{
-    Accessor, CallStatus, EntryFinish, EntryStatus, EventSlot, FailureChannel, HostTask, InFlight,
-    InstanceId, Item, ItemKind, LowerKind, Outcome, ParkedThread, PendingBlock, Plan, PollScope,
-    Readiness, ResultChannel, Scheduler, Scope, SeamWait, StoreProvider, SubtaskId, SubtaskState,
+    Accessor, CallStatus, EntryFinish, EntryStatus, EventSlot, HostTask, InFlight, InstanceId,
+    Item, ItemKind, LowerKind, Outcome, ParkedThread, PendingBlock, Plan, PollScope, Readiness,
+    ResultChannel, Scheduler, Scope, SeamWait, StoreProvider, SubtaskId, SubtaskState,
     SuspendProvider, SuspendSeam, TaskId, TaskState, ThreadId, ThreadStart, TurnGuard,
     WaitableSetId, YieldWake,
 };
@@ -396,12 +396,16 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// A failure that ends a turn is a trap: guest code, a built-in,
     /// or the store's work on a guest's behalf failed, and nothing
     /// took the failure as a call's own. It poisons the store before
-    /// the driver reports it.
+    /// the driver reports it. The one failure that ends a turn and is
+    /// no trap is a failure of the host's own work, a pipe from a
+    /// producer of the host's to a consumer of the host's, which
+    /// touches no guest and leaves the store as it was.
     ///
     /// Workspace-internal; not re-exported by `lib.rs`.
     fn turn(&mut self, waker: &Waker) -> Result<Outcome> {
         let outcome = self.run_driver_turn(waker);
-        if outcome.is_err() {
+        let host_failure = self.scheduler_mut().take_host_failure();
+        if outcome.is_err() && !host_failure {
             self.poison();
         }
         outcome
@@ -585,8 +589,11 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     ///
     /// A body that fails is a call that never returned: its subtask
     /// resolves as a cancellation, the handles the guest lent for it
-    /// go back, and the failure travels out to the call the guest
-    /// still has on the stack.
+    /// go back, and the failure is a trap of the guest task that made
+    /// the call. It poisons the store and travels out to the call the
+    /// guest still has on the stack, and from there to the driver.
+    /// A poll that poisoned the store fails the guest's call with the
+    /// cannot-enter cause, whatever the body answered.
     ///
     /// Through a synchronous lower the guest expects the result when
     /// the call returns, so a body that is still running has to block
@@ -633,6 +640,25 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         let outcome = task.poll(self, &waker);
 
         match outcome {
+            // The call never returned, so the subtask's resolution
+            // is a cancellation, and the handles the guest lent for
+            // it are given back all the same. The failure is a trap
+            // of the guest task that made the call, which poisons
+            // the store. The guest's call is on the stack, so the
+            // failure travels out through it to the driver, and
+            // nothing crosses.
+            Poll::Ready(Err(error)) => {
+                self.lock_tables()?.abandon_subtask(subtask);
+                self.poison();
+                Err(error)
+            }
+            // The poll itself poisoned the store, after the trap had
+            // let go of every host task the store held, so the task
+            // goes as they went rather than joining the store, and a
+            // result it produced crosses into no guest: the guest
+            // code that would read it is guest code a poisoned store
+            // does not run.
+            _ if self.poisoned() => self.abandon_poisoned_call(subtask, task),
             Poll::Ready(Ok(values)) => {
                 // The call is over, so the subtask leaves the stack
                 // and gives back the handles the guest lent for it
@@ -643,21 +669,8 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 task.lower(self, Ok(values))?;
                 Ok(CallStatus::returned())
             }
-            // The call never returned, so the subtask's resolution
-            // is a cancellation, and the handles the guest lent for
-            // it are given back all the same. The guest's call is on
-            // the stack, so the failure travels out to it and
-            // nothing crosses.
-            Poll::Ready(Err(error)) => {
-                self.lock_tables()?.abandon_subtask(subtask);
-                Err(error)
-            }
-            // The poll itself poisoned the store, after the trap had
-            // let go of every host task the store held, so the task
-            // goes as they went rather than joining the store.
-            Poll::Pending if self.poisoned() => self.abandon_poisoned_call(subtask, task),
             Poll::Pending => {
-                let (task_id, index) = {
+                let index = {
                     let mut guard = self.lock_tables()?;
                     // The host task joins the store's records here,
                     // so a call past the cap on them fails as one
@@ -666,12 +679,6 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                         guard.abandon_subtask(subtask);
                         return Err(error);
                     }
-                    // The guest task that made the call, read while
-                    // its subtask is still the current scope. A body
-                    // that fails after this poll is the trap of that
-                    // task, so the host task carries its identity out
-                    // of here.
-                    let task_id = guard.tasks.current_task();
                     // The subtask starts before its entry is made,
                     // because the status word this call returns is
                     // what tells the caller it started. A subtask
@@ -689,9 +696,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                     if guard.tasks.current_subtask() == Some(subtask) {
                         guard.tasks.pop_scope();
                     }
-                    (task_id, index)
+                    index
                 };
-                task.started_in(task_id, caller, index);
+                task.started_in(caller);
                 self.push_host_task(task);
                 Ok(CallStatus::started(index))
             }
@@ -705,8 +712,10 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// A body that resolves at once has its result lowered here, and
     /// the call is over: the answer is `None`. A body that fails is a
     /// call that never returned: its subtask resolves as a
-    /// cancellation, the handles the guest lent for it go back, and
-    /// the failure travels out to the guest's call.
+    /// cancellation, the handles the guest lent for it go back, the
+    /// store is poisoned, and the failure travels out to the guest's
+    /// call. A poll that poisoned the store fails the guest's call
+    /// with the cannot-enter cause, whatever the body answered.
     ///
     /// A body that is still running is parked among the store's host
     /// tasks, in every case, and the answer is the subtask of its
@@ -724,19 +733,23 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             .ok_or_else(|| Error::internal("a copy's host task was started as a call"))?;
         let waker = self.active_waker();
         match task.poll(self, &waker) {
+            // The failure is a trap of the guest task that made the
+            // call, which poisons the store.
+            Poll::Ready(Err(error)) => {
+                self.lock_tables()?.abandon_subtask(subtask);
+                self.poison();
+                Err(error)
+            }
+            // The poll poisoned the store, and the task is not
+            // parked, as no host task outlives the trap. A result it
+            // produced crosses into no guest.
+            _ if self.poisoned() => self.abandon_poisoned_call(subtask, task),
             Poll::Ready(Ok(values)) => {
                 self.lock_tables()?
                     .exit_subtask(subtask, SubtaskState::Returned);
                 task.lower(self, Ok(values))?;
                 Ok(None)
             }
-            Poll::Ready(Err(error)) => {
-                self.lock_tables()?.abandon_subtask(subtask);
-                Err(error)
-            }
-            // The poll poisoned the store, and the task is not
-            // parked, as no host task outlives the trap.
-            Poll::Pending if self.poisoned() => self.abandon_poisoned_call(subtask, task),
             Poll::Pending => {
                 // The host task joins the store's records here, so a
                 // call past the cap on them fails as one whose body
@@ -804,11 +817,12 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// first poll poisoned the store while its guest caller was on
     /// the stack. The trap already let go of every other host task,
     /// and this one goes the same way, its future dropped with no
-    /// lock held. The call never returned, so its subtask resolves as
-    /// a cancellation and the handles the guest lent for it go back.
-    /// The guest's call fails with the cannot-enter cause: a poisoned
-    /// store runs no more guest code, and the caller's code is the
-    /// guest code that would run next.
+    /// lock held, whether the body had completed or not: a result it
+    /// produced is not lowered. The call never returned, so its
+    /// subtask resolves as a cancellation and the handles the guest
+    /// lent for it go back. The guest's call fails with the
+    /// cannot-enter cause: a poisoned store runs no more guest code,
+    /// and the caller's code is the guest code that would run next.
     fn abandon_poisoned_call<R>(&mut self, subtask: SubtaskId, task: HostTask<T>) -> Result<R> {
         drop(task);
         self.lock_tables()?.abandon_subtask(subtask);
@@ -915,10 +929,12 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// the turn reports `Waiting` or `Idle` as it found it.
     ///
     /// An item that fails ends the turn and its failure is the
-    /// turn's. Almost no item can fail: what an item produces it
-    /// leaves in the store, and the failure of the call it ran is
-    /// part of that. The ones that can are the items whose own
-    /// bookkeeping failed, which belongs to no caller.
+    /// turn's: a trap of the guest work the item ran, whichever task
+    /// that work belongs to, or a failure of the item's own
+    /// bookkeeping. The first trap ends the driver that is polling.
+    /// No item keeps a trap for the call that started its task, not
+    /// even a `Func::call`'s: that call's future may have been dropped
+    /// before a later driver's turn ran the task.
     fn run_turn(
         &mut self,
         waker: &Waker,
@@ -1116,6 +1132,14 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// body an accessor to it, which is how a body that has to read
     /// the host data reaches it. A body that completes queues the
     /// lowering of what it produced into the subtask that awaits it.
+    ///
+    /// A call's body that fails is a trap of the guest task that made
+    /// the call, which can never resolve its subtask. It poisons the
+    /// store at once, which lets go of every other host task, and the
+    /// failure ends this turn, so the driver whose turn polled the
+    /// body reports it. That holds whichever guest task made the call
+    /// and whether or not the call that started that task has
+    /// returned.
     fn poll_host_tasks(&mut self, waker: &Waker) -> Result<()> {
         // The waker a nested turn polls with when no turn is running
         // is one that does nothing, and passing wakes on to that one
@@ -1128,6 +1152,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             return Ok(());
         }
         let mut completed = Vec::new();
+        let mut failed = None;
         for (key, task_waker, mut task) in woken {
             // A poll before this one can have poisoned the store: its
             // body reached the store and ran a destructor that
@@ -1149,12 +1174,36 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 continue;
             }
             match outcome {
+                Poll::Ready(Err(error)) if task.subtask().is_some() => {
+                    self.scheduler_mut().complete_host_task(key);
+                    // The subtask of a synchronous lower is still on
+                    // the stack of the guest thread that waits on it,
+                    // and that thread's block gives it back as the
+                    // failure unwinds through it.
+                    let parked = task
+                        .subtask()
+                        .is_some_and(|subtask| self.scheduler().is_parked_call(subtask));
+                    let error = if parked {
+                        drop(task);
+                        self.poison();
+                        error
+                    } else {
+                        task.trap(self, error)
+                    };
+                    failed.get_or_insert(error);
+                }
                 Poll::Ready(value) => {
                     self.scheduler_mut().complete_host_task(key);
                     completed.push((task, value));
                 }
                 Poll::Pending => self.scheduler_mut().restore_host_task(key, task),
             }
+        }
+        // A call that failed poisoned the store, and what the other
+        // polls completed crosses into no guest.
+        if let Some(error) = failed {
+            drop(completed);
+            return Err(error);
         }
         for (task, value) in completed {
             // The task of a synchronous lower settles where it
@@ -1235,6 +1284,14 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         match outcome {
             Poll::Ready(value) => {
                 self.scheduler_mut().complete_host_task(key);
+                // A body that failed is a trap of the guest task that
+                // made the call, and poisons the store. The settle
+                // comes after the poison, which would discard it, and
+                // hands the failure to the guest's call, which is on
+                // the stack and carries it out to the driver.
+                if value.is_err() {
+                    self.poison();
+                }
                 self.settle_call(subtask, task, value)
             }
             Poll::Pending => {
@@ -1274,7 +1331,18 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             return Ok(());
         }
         self.scheduler_mut().note_item_run();
-        item.run(self)?;
+        let host_only = item.is_host_only();
+        if let Err(error) = item.run(self) {
+            // The host's own work touches no guest, so its failure is
+            // no trap when no guest frame lies below it: the failure
+            // ends the driver's turn, and nothing more. Below a guest
+            // frame, in a nested turn, it unwinds through that frame,
+            // which is a trap.
+            if host_only && self.scope_depth()? == 0 {
+                self.scheduler_mut().note_host_failure();
+            }
+            return Err(error);
+        }
         if self.defers_work() {
             // The item stopped for work it left to the store, and is
             // done only once that work is. The evaluation that follows
@@ -2148,11 +2216,11 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     ///
     /// The thread runs in its task's scope. Its end is the same
     /// whether its start function returned or trapped: it leaves its
-    /// instance's table and its task. A trap is the failure of the
-    /// thread's task, which reaches the call that started the task
-    /// when that call is waiting on it, and fails whatever is running
-    /// the task when its scope is on the stack: a switch made in the
-    /// same task fails with it. A thread that returned and was the
+    /// instance's table and its task. A trap poisons the store and
+    /// fails whatever resumed or started the thread, which carries it
+    /// out to the driver whose turn ran the thread, whichever task the
+    /// thread belongs to and whether or not that task's call has
+    /// already returned. A thread that returned and was the
     /// last of a task whose implicit thread has exited ends the task,
     /// as [`end_last_thread`](Self::end_last_thread) states.
     fn start_explicit_thread(
@@ -2174,11 +2242,11 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             }
             match called {
                 Ok(_) => store.end_last_thread(task),
-                // A trap of the thread poisons the store, wherever
-                // the failure goes from here.
+                // A trap of the thread poisons the store, and ends
+                // the turn that ran the thread.
                 Err(error) => {
                     store.poison();
-                    store.fail_export_task(Some(task), error)
+                    Err(error)
                 }
             }
         };
@@ -2351,83 +2419,6 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             .ok_or_else(|| Error::internal("an export's task is not in the store"))
     }
 
-    /// Give an export's task a channel to fail through and hand the
-    /// caller its half.
-    ///
-    /// Every call that starts a task it does not hold on the stack
-    /// takes one. The item that runs the task fills it with whatever
-    /// that item failed with, and so does a later turn that ends the
-    /// task with a failure of its own — a host call the task made
-    /// that never returned. The call reads the channel ahead of the
-    /// result. Workspace-internal.
-    fn attach_failure_channel(&self, task: TaskId) -> Result<FailureChannel> {
-        self.lock_tables()?
-            .tasks
-            .attach_failure_channel(task)
-            .ok_or_else(|| Error::internal("an export's task is not in the store"))
-    }
-
-    /// End `task` with `error`, which is what a failure that belongs
-    /// to a guest task and not to the turn that found it comes to.
-    ///
-    /// A host `async` function whose body fails after the guest's
-    /// call returned is the case this exists for. The failure is the
-    /// trap of the task that made the call: that task ends here, and
-    /// the error goes to the call that started it, so an unrelated
-    /// driver polling the store at that moment is untouched.
-    ///
-    /// Three answers come out of it:
-    ///
-    /// - The task is on the scope stack, so the guest frame it is
-    ///   running in is below this turn. The error is handed back and
-    ///   ends the turn, which is how it travels out through that
-    ///   frame and traps the task where it stands — the same failure
-    ///   by the shorter road.
-    /// - The task is not on the stack and the call that started it
-    ///   left a failure channel. The task's record leaves the store
-    ///   with the instance it held and whatever it had queued, the
-    ///   caller's record of the call goes the way a trap in a callee
-    ///   sends it, and the error goes through the channel. The turn
-    ///   runs on.
-    /// - There is no task, or no channel. The error belongs to no
-    ///   call, so it is handed back and ends the turn, and whichever
-    ///   driver was polling reports it.
-    ///
-    /// Workspace-internal.
-    fn fail_export_task(&mut self, task: Option<TaskId>, error: Error) -> Result<()> {
-        let Some(task) = task else {
-            return Err(error);
-        };
-        let found = {
-            let guard = self.lock_tables()?;
-            guard.tasks.task(task).map(|record| {
-                (
-                    guard.tasks.scopes().contains(&Scope::Task(task)),
-                    guard.tasks.failure_channel(task),
-                    record.subtask,
-                )
-            })
-        };
-        let Some((on_stack, channel, subtask)) = found else {
-            return Err(error);
-        };
-        if on_stack {
-            return Err(error);
-        }
-        let Some(channel) = channel else {
-            return Err(error);
-        };
-        // The borrows the guest still owed go with the record: the
-        // task is ending on a failure that is already the call's, so
-        // there is nobody a borrow check could be reported to.
-        let _borrows = self.end_export_task(task)?;
-        if let Some(subtask) = subtask {
-            release_subtask(self, subtask);
-        }
-        channel.fill(error);
-        Ok(())
-    }
-
     /// Whether an export's task has resolved: the reference's
     /// `state == RESOLVED`. The exit of a callback task's implicit
     /// thread reads it, because a thread that exits without a result
@@ -2597,7 +2588,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// handle lent for the call comes back with the resolution.
     /// Workspace-internal.
     fn resolve_export_task(&self, task: TaskId, result: Option<Val>) -> Result<()> {
-        self.lock_tables()?.resolve_task(task, result);
+        self.lock_tables()?.resolve_task(task, result)?;
         Ok(())
     }
 
@@ -2705,9 +2696,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// The end is the one a task's implicit thread takes when it is
     /// the last: the record leaves the store, and whatever the task
     /// still has queued goes with it. The failure is the failure of
-    /// the task, and goes where a trap of its thread would: through
-    /// the channel of the call that started it when that call left
-    /// one, and back to the caller otherwise, which ends the turn. The
+    /// the task, and goes where a trap of its thread would: it poisons
+    /// the store and goes back to the caller, which ends the turn and
+    /// reaches the driver that is polling. The
     /// caller's record of a call between two components goes the way
     /// a trap in the callee sends it.
     fn end_last_thread(&mut self, task: TaskId) -> Result<()> {
@@ -2716,15 +2707,12 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             if !guard.tasks.outlived_its_threads(task) {
                 return Ok(());
             }
-            guard.tasks.task(task).map(|record| {
-                (
-                    record.state == TaskState::Resolved,
-                    guard.tasks.failure_channel(task),
-                    record.subtask,
-                )
-            })
+            guard
+                .tasks
+                .task(task)
+                .map(|record| (record.state == TaskState::Resolved, record.subtask))
         };
-        let Some((resolved, channel, subtask)) = found else {
+        let Some((resolved, subtask)) = found else {
             return Ok(());
         };
         let borrows = self.end_export_task(task)?;
@@ -2740,18 +2728,12 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             }),
         };
         // The failure is a trap of the task, which poisons the store
-        // wherever it goes.
+        // and ends the turn.
         self.poison();
         if let Some(subtask) = subtask {
-            release_subtask(self, subtask);
+            release_subtask(self, subtask, None);
         }
-        match channel {
-            Some(channel) => {
-                channel.fill(error);
-                Ok(())
-            }
-            None => Err(error),
-        }
+        Err(error)
     }
 
     /// Pop the scope of an export's task without ending the task, as
@@ -4414,7 +4396,7 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    async fn it_ends_the_turn_when_a_failed_host_task_has_no_task_to_trap() {
+    async fn it_ends_the_turn_that_polls_a_failed_host_task_and_poisons_the_store() {
         let engine = Engine::new().expect("engine");
         let (mut store, table, subtask) = host_call(&engine);
         let slot: Lowered = Arc::new(Mutex::new(None));
@@ -4440,22 +4422,22 @@ mod tests {
 
         outside.resolve();
 
-        // The turn that sees the body fail queues the item, and the
-        // turn after it runs the item.
-        assert_eq!(
-            store.internal().turn(Waker::noop()).expect("a turn"),
-            Outcome::Progress,
-            "the failed host task left an item ready to run"
-        );
+        // The failure is a trap of the guest task that made the call,
+        // and it ends the turn that polled the body, with no item
+        // queued for a later turn in between.
         let error = store
             .internal()
             .turn(Waker::noop())
-            .expect_err("the failure has no task to trap, so it ends the turn");
+            .expect_err("the failure ends the turn that polled the body");
 
         assert!(
             error.to_string().contains("the host call failed"),
             "the turn ends with what the body failed with, and it ended with \
              {error} instead"
+        );
+        assert!(
+            store.internal().enter_guest().is_err(),
+            "the failed host future poisoned the store"
         );
         assert!(
             slot.lock().expect("the lowering's slot").is_none(),

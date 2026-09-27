@@ -361,7 +361,7 @@ pub fn cross_result_into_caller<T: 'static>(
         bridge.flat_results = results;
     }
     guard.tasks.subtask_returned(subtask)?;
-    if !guard.resolve_task(task, None) {
+    if !guard.resolve_task(task, None)? {
         return Err(Error::internal("the current task has no record"));
     }
     Ok(())
@@ -398,7 +398,7 @@ fn resolve(
     if record.num_borrows > 0 {
         return Err(outstanding_borrows(record.num_borrows, result));
     }
-    if !guard.resolve_task(task, value) {
+    if !guard.resolve_task(task, value)? {
         return Err(Error::internal("the current task has no record"));
     }
     Ok(())

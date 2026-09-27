@@ -3,7 +3,10 @@
 
 use core::fmt;
 use core::task::Waker;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use crate::error::{Error, Result};
+use crate::internal::ErrorInternal;
 
 /// A slot whose filling wakes whoever waits on it.
 ///
@@ -22,6 +25,11 @@ use std::sync::{Arc, Mutex};
 ///
 /// Both sides hold the slot, because it outlives the future that
 /// waits on it: dropping that future cancels nothing.
+///
+/// A lock that a panic poisoned fails either side with a structured
+/// error. Neither side drops the value or answers that there is none,
+/// because a waiting side that took "none" for an answer would wait
+/// for a fill that already happened, and nothing would poll it again.
 pub struct WakeSlot<T> {
     slot: Arc<Mutex<Held<T>>>,
 }
@@ -49,23 +57,22 @@ impl<T> WakeSlot<T> {
     ///
     /// The wake happens after the slot's lock is released, so that
     /// whatever the waker runs does not meet the slot locked.
-    pub fn fill(&self, value: T) {
-        let woken = match self.slot.lock() {
-            Ok(mut held) => {
-                held.value = Some(value);
-                held.waker.take()
-            }
-            Err(_) => None,
+    pub fn fill(&self, value: T) -> Result<()> {
+        let woken = {
+            let mut held = self.lock()?;
+            held.value = Some(value);
+            held.waker.take()
         };
         if let Some(waker) = woken {
             waker.wake();
         }
+        Ok(())
     }
 
     /// Take the value out, leaving the slot empty, when a side has
     /// left one. A value is delivered once.
-    pub fn take(&self) -> Option<T> {
-        self.slot.lock().ok().and_then(|mut held| held.value.take())
+    pub fn take(&self) -> Result<Option<T>> {
+        Ok(self.lock()?.value.take())
     }
 
     /// Take the value out as [`Self::take`] does, and remember
@@ -76,12 +83,10 @@ impl<T> WakeSlot<T> {
     /// that found none and a registration made afterwards would be a
     /// wake nobody receives, and the side that waits would never be
     /// polled again.
-    pub fn take_or_wait(&self, waker: &Waker) -> Option<T> {
-        let Ok(mut held) = self.slot.lock() else {
-            return None;
-        };
+    pub fn take_or_wait(&self, waker: &Waker) -> Result<Option<T>> {
+        let mut held = self.lock()?;
         if let Some(value) = held.value.take() {
-            return Some(value);
+            return Ok(Some(value));
         }
         if held
             .waker
@@ -90,7 +95,15 @@ impl<T> WakeSlot<T> {
         {
             held.waker = Some(waker.clone());
         }
-        None
+        Ok(None)
+    }
+
+    /// Lock the slot, or fail with a structured error when a panic
+    /// poisoned the lock.
+    fn lock(&self) -> Result<MutexGuard<'_, Held<T>>> {
+        self.slot
+            .lock()
+            .map_err(|_| Error::internal("a wake slot's lock is poisoned"))
     }
 }
 
@@ -157,10 +170,14 @@ mod tests {
         let filled: WakeSlot<u32> = WakeSlot::new();
         let waiting = filled.clone();
 
-        filled.fill(7);
+        filled.fill(7).expect("the fill");
 
-        assert_eq!(waiting.take(), Some(7));
-        assert_eq!(waiting.take(), None, "a value is delivered once");
+        assert_eq!(waiting.take().expect("the take"), Some(7));
+        assert_eq!(
+            waiting.take().expect("the take"),
+            None,
+            "a value is delivered once"
+        );
     }
 
     #[wcmp_macros::test]
@@ -169,17 +186,21 @@ mod tests {
         let waker = Waker::from(wakes.clone());
         let slot: WakeSlot<u32> = WakeSlot::new();
 
-        assert_eq!(slot.take_or_wait(&waker), None, "the slot is empty");
+        assert_eq!(
+            slot.take_or_wait(&waker).expect("the take"),
+            None,
+            "the slot is empty"
+        );
         assert_eq!(wakes.count(), 0, "nothing has filled it yet");
 
-        slot.clone().fill(3);
+        slot.clone().fill(3).expect("the fill");
 
         assert_eq!(
             wakes.count(),
             1,
             "the fill woke the side that was waiting on the empty slot"
         );
-        assert_eq!(slot.take_or_wait(&waker), Some(3));
+        assert_eq!(slot.take_or_wait(&waker).expect("the take"), Some(3));
     }
 
     #[wcmp_macros::test]
@@ -187,16 +208,62 @@ mod tests {
         let wakes = Arc::new(Wakes::default());
         let waker = Waker::from(wakes.clone());
         let slot: WakeSlot<u32> = WakeSlot::new();
-        slot.fill(11);
+        slot.fill(11).expect("the fill");
 
-        assert_eq!(slot.take_or_wait(&waker), Some(11));
-        slot.fill(12);
+        assert_eq!(slot.take_or_wait(&waker).expect("the take"), Some(11));
+        slot.fill(12).expect("the fill");
 
         assert_eq!(
             wakes.count(),
             0,
             "the side that waits took the value instead of waiting, so the \
              next fill has nobody to wake"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_keeps_the_later_value_when_it_is_filled_twice() {
+        let slot: WakeSlot<u32> = WakeSlot::new();
+
+        slot.fill(1).expect("the first fill");
+        slot.fill(2).expect("the second fill");
+
+        assert_eq!(slot.take().expect("the take"), Some(2));
+        assert_eq!(
+            slot.take().expect("the take"),
+            None,
+            "the earlier value is gone"
+        );
+    }
+
+    // The browser target aborts on a panic instead of unwinding, so
+    // there is no poisoned lock to make there and the test is native
+    // only.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn it_fails_each_side_with_a_structured_error_when_a_panic_poisoned_its_lock() {
+        let slot: WakeSlot<u32> = WakeSlot::new();
+        let poisoner = slot.clone();
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _held = poisoner.slot.lock().expect("the lock is free");
+            panic!("a panic while the slot is locked");
+        }));
+        std::panic::set_hook(hook);
+        assert!(unwound.is_err(), "the panic unwound and poisoned the lock");
+
+        let filled = slot.fill(5);
+        let taken = slot.take_or_wait(Waker::noop());
+
+        assert!(
+            matches!(filled, Err(Error::Internal { .. })),
+            "the fill reports the poisoned lock rather than dropping the value, got {filled:?}"
+        );
+        assert!(
+            matches!(taken, Err(Error::Internal { .. })),
+            "the side that waits reports the poisoned lock rather than waiting for a fill \
+             that can never reach it, got {taken:?}"
         );
     }
 }

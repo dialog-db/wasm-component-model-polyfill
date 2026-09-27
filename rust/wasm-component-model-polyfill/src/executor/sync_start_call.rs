@@ -243,6 +243,6 @@ fn finish_sync_start_call<T: 'static>(
 /// module documentation says which item each way of parking leaves,
 /// and the scheduler's says what dropping one gives back.
 fn release_wait<T: 'static>(store: &mut StoreContext<'_, T>, subtask: SubtaskId, task: TaskId) {
-    release_subtask(store, subtask);
+    release_subtask(store, subtask, None);
     let _ = store.internal().end_export_task(task);
 }

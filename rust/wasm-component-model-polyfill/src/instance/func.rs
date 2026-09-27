@@ -13,11 +13,10 @@ use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::component::FunctionType;
 use crate::concurrency::{
-    Accessor, Driver, FailureChannel, InstanceId, Item, ItemKind, ResultChannel, Scope, TaskId,
-    WakeSlot,
+    Accessor, Driver, InstanceId, Item, ItemKind, ResultChannel, Scope, TaskId, WakeSlot,
 };
 use crate::error::{
-    AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result, SchedulerCause,
+    AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result, SchedulerCause, TaskCause,
 };
 use crate::executor::ir::CanonOptions;
 use crate::executor::{AsyncLift, CallbackTask};
@@ -33,29 +32,11 @@ use super::call_values::CallValues;
 /// Where the queued item of one call leaves what the call produced.
 ///
 /// The slot is what the call's driver watches: the item fills it
-/// when the export's task resolves or fails, and the driver takes
-/// the value out. Both sides hold it, because the item outlives the
-/// future when the future is dropped.
-type CallOutcome<O> = Arc<Mutex<Option<Result<O>>>>;
-
-/// Where the failure that belongs to the caller of one concurrent
-/// call is left.
-///
-/// A call whose task resolves through a channel resolves with a
-/// result and not with a failure. The failure travels through the
-/// task's own failure channel instead, which this is the caller's
-/// half of. The item that runs the call fills it with what that item
-/// failed with: the lowering of the arguments, a trap in the
-/// export's core function, the status word that function returned,
-/// or the borrows the guest still owed when a synchronous task that
-/// had already resolved ended. A later turn fills it with a failure
-/// of the task's that belongs to no item of the caller's — a host
-/// call the task made whose body never returned.
-///
-/// The slot carries the caller's waker beside the failure, as the
-/// result channel does, because a caller whose future a host
-/// combinator owns is polled again only after that waker fires.
-type CallFailure = FailureChannel;
+/// when the export's task resolves, and the driver takes the value
+/// out. Both sides hold it, because the item outlives the future
+/// when the future is dropped. A trap does not go here: it ends the
+/// turn that met it.
+type CallOutcome<O> = Arc<Mutex<Option<O>>>;
 
 /// Where a concurrent call takes its result from.
 enum Delivery<O> {
@@ -186,7 +167,8 @@ impl Func {
     /// all fail with the cannot-enter cause, [`TaskCause::CannotEnter`],
     /// before they change anything. A trap is a failure of the
     /// export's core code, or of a built-in, a host function, a lift,
-    /// or a lower that code reached, a deadlock, or a [`Val`] of the
+    /// or a lower that code reached, a host `async` function whose
+    /// future fails, a deadlock, or a [`Val`] of the
     /// wrong type for a parameter, which this call finds as it lowers
     /// the arguments. An arity mismatch, a call through another
     /// store, and the recursive-driver cause do not poison the store,
@@ -194,29 +176,29 @@ impl Func {
     ///
     /// [`TaskCause::CannotEnter`]: crate::TaskCause::CannotEnter
     ///
-    /// # Where a failure surfaces
+    /// # Where a trap surfaces
     ///
-    /// A failure the store raises while this call runs turns
-    /// surfaces at the call it belongs to whenever it has one. The
-    /// result of a host `async` function a task called is such a
-    /// failure: the body failed after the guest's call returned, so
-    /// the failure is the trap of the task that made the call. That
-    /// task ends with the error and the call that started it reports
-    /// it — a [`Self::call_concurrent`] awaited inside
-    /// [`Store::run_concurrent`] as readily as this entry. A task
-    /// that ended that way does not resolve, so its call never
-    /// answers with a result as well, and no other call is touched.
+    /// The first trap ends the driver that is polling the store, with
+    /// that trap, and poisons the store in the same step. While this
+    /// call runs turns, this call is that driver, whichever task the
+    /// trap belongs to:
     ///
-    /// A failure that belongs to no call surfaces at whichever
-    /// driver is polling the store, which is this call while it is
-    /// running turns. That is every other failure a turn meets: a
-    /// callback the store resumed a task through, a crossing whose
-    /// caller has ended, the bookkeeping of an item whose task is
-    /// gone. Such a failure ends the turn and this call reports it,
-    /// even when nothing of it is this call's own work. It is the
-    /// driver that happens to be running, not a driver the failure
-    /// names: the same failure reaches [`Store::run_concurrent`]
-    /// when that entry is what is polling the store instead.
+    /// - A trap in this call's own task ends this call.
+    /// - A trap in work that another task left after it resolved — a
+    ///   callback, or a thread that outlives the task's host call —
+    ///   ends this call when one of its turns runs that work.
+    /// - A host `async` function whose future fails is a trap of the
+    ///   guest task that called it, and ends this call when one of its
+    ///   turns polls that future.
+    ///
+    /// The trap is never held for a caller that already has its
+    /// result. A task that resolved this call and then traps in work
+    /// it left in the store fails whichever driver's turn runs that
+    /// work, which is a later driver when this call has already
+    /// returned: that driver reports the trap, and this call never
+    /// learns of it. Every driver after the trap fails with the
+    /// cannot-enter cause. The same rule makes [`Store::run_concurrent`]
+    /// report a trap that its own turns meet.
     ///
     /// [`Store::run_concurrent`]: crate::Store::run_concurrent
     pub async fn call<T: 'static>(&self, store: &mut Store<T>, args: &[Val]) -> Result<Box<[Val]>> {
@@ -299,9 +281,9 @@ impl Func {
         let item = Item::new(
             ItemKind::TaskStart,
             move |store: &mut StoreContext<'_, T>| {
-                // The failure of the call is the caller's, and the
-                // task leaves it in the slot the driver reads, so the
-                // item itself fails only when its own bookkeeping does.
+                // A trap of the task fails the item, which ends the
+                // turn that ran it, so the driver that is polling
+                // reports it even when this call's future is gone.
                 replica.run_task(
                     task,
                     &instance,
@@ -325,7 +307,10 @@ impl Func {
             .start_export_thread(task, instance_id, self.ty().async_, true, item)?;
 
         Driver::new(store, Some(task), move |_store, _waker| {
-            outcome.lock().ok().and_then(|mut slot| slot.take())
+            match outcome.lock() {
+                Ok(mut slot) => slot.take().map(Ok),
+                Err(_) => Some(Err(Error::internal("a call's outcome slot is poisoned"))),
+            }
         })
         .await
     }
@@ -364,10 +349,9 @@ impl Func {
     /// The future is spawn-like. Dropping it cancels nothing: the
     /// task stays in the store and runs on in the next turn of any
     /// driver, unless a trap poisons the store first and discards
-    /// the task's queued work, which leaves this future pending for
-    /// good. The task progresses only while a driver runs turns,
-    /// which in practice means while the future is awaited inside
-    /// the `run_concurrent` closure. This entry is not itself a
+    /// the task's queued work. The task progresses only while a
+    /// driver runs turns, which in practice means while the future is
+    /// awaited inside the `run_concurrent` closure. This entry is not itself a
     /// driver, and [`Self::call`], which is one, cannot be entered
     /// from that closure at all, because it takes the store by
     /// `&mut` and the closure holds only the accessor.
@@ -387,9 +371,17 @@ impl Func {
     /// entry with a timeout.
     ///
     /// A store a trap poisoned refuses the call with the cannot-enter
-    /// cause before it creates a task, as [`Self::call`] states. A
-    /// trap of the task this call started poisons the store, so a
-    /// later call from the same closure is refused.
+    /// cause before it creates a task, as [`Self::call`] states.
+    ///
+    /// A trap of the task this call started does not come back
+    /// through this future. The trap ends the driver that is polling,
+    /// which is the `run_concurrent` entry around the closure: the
+    /// entry returns the trap, and the closure is dropped with this
+    /// future and every other call future inside it. A trap that
+    /// poisoned the store in some other way, in a destructor the
+    /// closure released through its accessor, leaves this future with
+    /// nothing to wait for, and it fails with the cannot-enter cause
+    /// the next time it is polled.
     ///
     /// [`Store`]: crate::Store
     pub async fn call_concurrent<T: 'static>(
@@ -413,41 +405,45 @@ impl Func {
         // turn: it queues the task's start and runs none of it. What
         // it hands back is what the task leaves behind, which
         // outlives this future.
-        let (delivery, failure) = accessor.with(|store| self.start_concurrent(store, values))??;
+        let delivery = accessor.with(|store| self.start_concurrent(store, values))??;
 
         core::future::poll_fn(move |context| {
             let waker = context.waker();
-            // The failure is read first. A synchronous task can
-            // resolve and then fail on the borrows the guest still
-            // owes, and that failure is the call's, as it is for
-            // `Func::call`.
-            if let Some(error) = failure.take_or_wait(waker) {
-                return Poll::Ready(Err(error));
-            }
             let delivered = match &delivery {
-                Delivery::Returned(slot) => slot.take_or_wait(waker).map(Ok),
-                Delivery::Resolved(channel) => channel.take_or_wait(waker).map(C::from_resolution),
+                Delivery::Returned(slot) => slot.take_or_wait(waker).map(|kept| kept.map(Ok)),
+                Delivery::Resolved(channel) => channel
+                    .take_or_wait(waker)
+                    .map(|kept| kept.map(C::from_resolution)),
             };
             match delivered {
-                Some(result) => Poll::Ready(result),
-                // The waker is left in both slots, and whatever
-                // fills either of them wakes it. A turn is the only
-                // thing that carries the task forward, and the
-                // driver that runs turns polls this future again
-                // after each one only when it owns it directly. A
-                // host combinator that owns it instead — anything of
-                // the `FuturesUnordered` shape — polls it again only
-                // after the wake, so the wake is what the call
-                // resolves by.
-                None => Poll::Pending,
+                Ok(Some(result)) => Poll::Ready(result),
+                Err(error) => Poll::Ready(Err(error)),
+                // A store a trap poisoned discarded the task's work,
+                // so nothing will fill the slot. A trap in a turn
+                // ends the entry around this future before it is
+                // polled again, so what finds the store poisoned here
+                // is a trap the closure met through its accessor.
+                Ok(None) if poisoned(accessor) => {
+                    Poll::Ready(Err(Error::Task(TaskCause::CannotEnter)))
+                }
+                // The waker is left in the slot, and whatever fills it
+                // wakes it. A turn is the only thing that carries the
+                // task forward, and the driver that runs turns polls
+                // this future again after each one only when it owns
+                // it directly. A host combinator that owns it instead
+                // — anything of the `FuturesUnordered` shape — polls
+                // it again only after the wake, so the wake is what
+                // the call resolves by.
+                Ok(None) => Poll::Pending,
             }
         })
         .await
     }
 
     /// Start the task of one concurrent call and hand back what that
-    /// call watches: where its result arrives, and the slot the start
-    /// leaves a failure of the caller's in.
+    /// call watches: where its result arrives. A failure of the task
+    /// is a trap, which ends the turn that met it rather than coming
+    /// back to the call.
     ///
     /// Everything happens inside the one reach into the store, so a
     /// call whose arguments or whose export are wrong fails before
@@ -456,7 +452,7 @@ impl Func {
         &self,
         store: &mut StoreContext<'_, T>,
         values: C,
-    ) -> Result<(Delivery<C::Output>, CallFailure)> {
+    ) -> Result<Delivery<C::Output>> {
         if store.internal().id() != self.store_id {
             return Err(Error::from(InstantiationError::WrongStore));
         }
@@ -477,13 +473,11 @@ impl Func {
             Arc::clone(&self.export.options),
             instance_id,
         )?;
-        let failure: CallFailure = store.internal().attach_failure_channel(task)?;
 
         // The item is `'static`: it outlives this future, because
         // dropping the future cancels nothing. It therefore carries
         // its own copy of everything the call needs — the resolved
         // options among them.
-        let queued = failure.clone();
         let replica = self.replica();
 
         if self.export.options.async_ {
@@ -497,11 +491,10 @@ impl Func {
             let item = Item::new(
                 ItemKind::TaskStart,
                 move |store: &mut StoreContext<'_, T>| {
-                    // What the start produces is in the task's channel
-                    // and what it fails with is in the slot beside it,
-                    // so the item itself fails only when its own
-                    // bookkeeping does.
-                    replica.start_async_task(task, lift, &instance, store, values, &options, queued)
+                    // What the start produces is in the task's
+                    // channel, and a trap of the task fails the item,
+                    // which ends the turn that ran it.
+                    replica.start_async_task(task, lift, &instance, store, values, &options)
                 },
             )
             .for_task(task);
@@ -514,7 +507,7 @@ impl Func {
             store
                 .internal()
                 .start_export_thread(task, instance_id, true, needs_exclusive, item)?;
-            return Ok((Delivery::Resolved(channel), failure));
+            return Ok(Delivery::Resolved(channel));
         }
 
         // A synchronous export's result is the one its lift produced,
@@ -527,19 +520,16 @@ impl Func {
         let item = Item::new(
             ItemKind::TaskStart,
             move |store: &mut StoreContext<'_, T>| {
-                // What the task returns goes in one slot and what it
-                // fails with in the other, so the item itself fails
-                // only when its own bookkeeping does.
+                // What the task returns goes in the slot, and a trap
+                // of the task fails the item, which ends the turn
+                // that ran it.
                 replica.run_task(
                     task,
                     &instance,
                     store,
                     values,
                     &options,
-                    SyncDelivery::Slots {
-                        returned: delivered,
-                        failure: queued,
-                    },
+                    SyncDelivery::Returned(delivered),
                 )
             },
         )
@@ -554,7 +544,7 @@ impl Func {
         store
             .internal()
             .start_export_thread(task, instance_id, false, true, item)?;
-        Ok((Delivery::Returned(returned), failure))
+        Ok(Delivery::Returned(returned))
     }
 
     /// Invoke an export lifted `canon lift async`, with a callback or
@@ -598,16 +588,14 @@ impl Func {
         let needs_exclusive = lift.needs_exclusive();
         let channel: ResultChannel = store.internal().attach_result_channel(task)?;
 
-        let failure: CallFailure = store.internal().attach_failure_channel(task)?;
-        let queued = failure.clone();
         let replica = self.replica();
         let item = Item::new(
             ItemKind::TaskStart,
             move |store: &mut StoreContext<'_, T>| {
-                // What the start produces is in the task's channel and
-                // what it fails with is in the slot beside it, so the
-                // item itself fails only when its own bookkeeping does.
-                replica.start_async_task(task, lift, &instance, store, values, &options, queued)
+                // What the start produces is in the task's channel, and
+                // a trap of the task fails the item, which ends the
+                // turn that ran it and this call with it.
+                replica.start_async_task(task, lift, &instance, store, values, &options)
             },
         )
         .for_task(task);
@@ -622,11 +610,10 @@ impl Func {
             .start_export_thread(task, instance_id, true, needs_exclusive, item)?;
 
         Driver::new(store, Some(task), move |_store, waker| {
-            if let Some(error) = failure.take_or_wait(waker) {
-                return Some(Err(error));
+            match channel.take_or_wait(waker) {
+                Ok(result) => result.map(C::from_resolution),
+                Err(error) => Some(Err(error)),
             }
-            let result = channel.take_or_wait(waker)?;
-            Some(C::from_resolution(result))
         })
         .await
     }
@@ -661,7 +648,8 @@ impl Func {
     /// the current scope, the arguments are lowered, the core
     /// function runs as the task's implicit thread, the scope is
     /// popped, and what the core function returned goes to `lift`. A
-    /// failure anywhere in that ends the task and goes to `failure`.
+    /// failure anywhere in that ends the task, poisons the store, and
+    /// fails the item, which ends the turn that ran it.
     ///
     /// The core function is the thread's entry, so it starts through
     /// the store's provider when there is one, and the part after it
@@ -670,8 +658,6 @@ impl Func {
     /// the lowering calls is a task of its own, as the reference lifts
     /// it, and runs where it stands.
     ///
-    /// It fails only when the store's own bookkeeping does.
-    #[allow(clippy::too_many_arguments)]
     fn start_async_task<T: 'static, C: CallValues>(
         &self,
         task: TaskId,
@@ -680,12 +666,10 @@ impl Func {
         store: &mut StoreContext<'_, T>,
         values: C,
         options: &BoundaryOptions,
-        failure: CallFailure,
     ) -> Result<()> {
         let base = store.internal().scope_depth()?;
         if let Err(error) = store.internal().enter_export_task(task) {
-            trap(store, &failure, error);
-            return Ok(());
+            return trap(store, error);
         }
         let started = self
             .lower_args(store, values, instance, task, options)
@@ -699,8 +683,7 @@ impl Func {
             Ok(core_args) => core_args,
             Err(error) => {
                 let error = abandoned(store, task, error);
-                trap(store, &failure, error);
-                return Ok(());
+                return trap(store, error);
             }
         };
         let thread = store.internal().implicit_thread(task)?;
@@ -713,10 +696,10 @@ impl Func {
                     .and_then(|()| lift.returned(store, &core_results)),
                 Err(error) => Err(abandoned(store, task, error)),
             };
-            if let Err(error) = outcome {
-                trap(store, &failure, error);
+            match outcome {
+                Ok(()) => Ok(()),
+                Err(error) => trap(store, error),
             }
-            Ok(())
         };
         store.internal().run_thread_entry(
             thread,
@@ -769,7 +752,8 @@ impl Func {
     /// its result runs when the entry finishes, which is after the
     /// thread suspended and resumed when it blocked on the way.
     ///
-    /// It fails only when the store's own bookkeeping does.
+    /// A trap of the task fails this, which ends the turn that ran
+    /// it, so the driver that is polling reports it.
     fn run_task<T: 'static, C: CallValues>(
         &self,
         task: TaskId,
@@ -781,8 +765,7 @@ impl Func {
     ) -> Result<()> {
         let base = store.internal().scope_depth()?;
         if let Err(error) = store.internal().enter_export_task(task) {
-            delivery.deliver(store, Err(error));
-            return Ok(());
+            return delivery.deliver(store, Err(error));
         }
         // A host call into a sync-typed export must return before its
         // instance may block, so the flag is held for the length of
@@ -809,8 +792,7 @@ impl Func {
             Ok(core_args) => core_args,
             Err(error) => {
                 let error = abandoned(store, task, error);
-                delivery.deliver(store, Err(error));
-                return Ok(());
+                return delivery.deliver(store, Err(error));
             }
         };
         let thread = store.internal().implicit_thread(task)?;
@@ -831,8 +813,7 @@ impl Func {
                 Ok(result) => replica.end_task::<T, C>(store, task, result),
                 Err(error) => Err(abandoned(store, task, error)),
             };
-            delivery.deliver(store, result);
-            Ok(())
+            delivery.deliver(store, result)
         };
         store.internal().run_thread_entry(
             thread,
@@ -925,48 +906,61 @@ fn abandoned<T: 'static>(store: &mut StoreContext<'_, T>, task: TaskId, error: E
     }
 }
 
-/// Leave `error` where the caller of an asynchronous export's task
-/// watches. The failure of the task is a trap: its lowering, its core
-/// code, a built-in that code called, or what it returned failed. A
-/// trap poisons the store, so no guest code of it runs again.
-fn trap<T: 'static>(store: &mut StoreContext<'_, T>, failure: &CallFailure, error: Error) {
+/// Fail an asynchronous export's task with `error`. The failure of
+/// the task is a trap: its lowering, its core code, a built-in that
+/// code called, or what it returned failed. A trap poisons the store,
+/// so no guest code runs again, and it ends the turn that met it, so
+/// the driver that is polling reports it.
+fn trap<T: 'static>(store: &mut StoreContext<'_, T>, error: Error) -> Result<()> {
     store.internal().poison();
-    failure.fill(error);
+    Err(error)
 }
 
-/// Where a synchronous export's task leaves what its call produced.
+/// Whether a trap poisoned the store `accessor` reaches, read from
+/// inside a poll of it. A reach that fails answers no: the poll that
+/// is not lending the store is not one this reads for.
+fn poisoned<T: 'static>(accessor: &Accessor<T>) -> bool {
+    matches!(
+        accessor.with(|store| store.internal().enter_guest()),
+        Ok(Err(_))
+    )
+}
+
+/// Where a synchronous export's task leaves the result of its call.
+/// A trap goes to neither: it ends the turn instead.
 enum SyncDelivery<O> {
     /// The slot the driver of one call watches.
     Outcome(CallOutcome<O>),
-    /// The two slots of a concurrent call: the result, and the
-    /// failure that belongs to the caller.
-    Slots {
-        /// Where the result goes.
-        returned: WakeSlot<O>,
-        /// Where the failure goes.
-        failure: CallFailure,
-    },
+    /// The result slot of a concurrent call.
+    Returned(WakeSlot<O>),
 }
 
 impl<O> SyncDelivery<O> {
-    /// Leave what the call produced where its caller watches. A
-    /// failure is a trap of the call's task — its lowering, its core
-    /// code, a built-in that code called, its lift, or the borrows it
-    /// still owed — and poisons the store.
-    fn deliver<T: 'static>(self, store: &mut StoreContext<'_, T>, result: Result<O>) {
-        if result.is_err() {
-            store.internal().poison();
-        }
+    /// Leave the call's result where its caller watches. A failure is
+    /// a trap of the call's task — its lowering, its core code, a
+    /// built-in that code called, its lift, or the borrows it still
+    /// owed — and poisons the store. It fails this, which ends the
+    /// turn, so the driver that is polling reports it. That driver is
+    /// the call itself while its future is polled, and a later driver
+    /// when the future was dropped before the task ran: a slot that no
+    /// driver watches would lose the trap.
+    fn deliver<T: 'static>(self, store: &mut StoreContext<'_, T>, result: Result<O>) -> Result<()> {
+        let value = match result {
+            Ok(value) => value,
+            Err(error) => {
+                store.internal().poison();
+                return Err(error);
+            }
+        };
         match self {
             Self::Outcome(slot) => {
-                if let Ok(mut slot) = slot.lock() {
-                    *slot = Some(result);
-                }
+                *slot
+                    .lock()
+                    .map_err(|_| Error::internal("a call's outcome slot is poisoned"))? =
+                    Some(value);
+                Ok(())
             }
-            Self::Slots { returned, failure } => match result {
-                Ok(value) => returned.fill(value),
-                Err(error) => failure.fill(error),
-            },
+            Self::Returned(slot) => slot.fill(value),
         }
     }
 }

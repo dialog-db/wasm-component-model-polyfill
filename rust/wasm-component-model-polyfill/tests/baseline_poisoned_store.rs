@@ -17,7 +17,9 @@
 //! which is dropped there. Two tests read that back: one through a
 //! component of its own, whose tasks leave both kinds of work behind,
 //! and one through a pipe of the host's own that starts after the
-//! trap, which touches no guest and still runs.
+//! trap, which touches no guest and still runs. A failure of such a
+//! pipe is no trap: it ends the entry whose turn met it, and leaves
+//! the store usable.
 
 #![cfg(test)]
 
@@ -646,7 +648,7 @@ async fn it_discards_queued_guest_work_and_drops_host_futures_when_a_trap_poison
     let spin = instance.get_func("spin").expect("`spin` is exported");
     let trap = instance.get_func("trap").expect("`trap` is exported");
 
-    let (trapped, dropped_at_trap, spins_at_trap) = store
+    let entry = store
         .run_concurrent(async |accessor| {
             // The first task starts the host call and waits on it, and
             // the second gives way for good. Neither call ever
@@ -669,26 +671,25 @@ async fn it_discards_queued_guest_work_and_drops_host_futures_when_a_trap_poison
                 "the host future is alive before the trap"
             );
 
-            // The third task traps, which poisons the store.
-            let trapped = trap.call_concurrent(accessor, &[]).await;
-            (
-                trapped,
-                seen.dropped.load(Ordering::Relaxed),
-                seen.spins.load(Ordering::Relaxed),
-            )
+            // The third task traps, which poisons the store and ends
+            // the entry: the closure goes no further than this.
+            trap.call_concurrent(accessor, &[]).await
         })
-        .await
-        .expect("the entry around the calls returns");
+        .await;
 
-    let error = trapped.expect_err("the third task traps");
+    let error = match entry {
+        Ok(called) => panic!("the trap ends the entry, and the closure answered {called:?}"),
+        Err(error) => error,
+    };
     assert!(
         !matches!(error, Error::Task(TaskCause::CannotEnter)),
         "the third task entered the store and trapped there, got {error:?}"
     );
     assert!(
-        dropped_at_trap,
-        "the host future was dropped by the time the trapping call returned"
+        seen.dropped.load(Ordering::Relaxed),
+        "the host future was dropped by the time the entry returned the trap"
     );
+    let spins_at_trap = seen.spins.load(Ordering::Relaxed);
     // The trap drops the future inside the turn that ran the trapping
     // task, where no poll of the store is lending it.
     let reach = seen.reach.lock().expect("reach").clone();
@@ -797,4 +798,61 @@ async fn it_runs_a_pipe_of_the_hosts_own_that_starts_after_the_trap() {
         Some(5),
         "the pipe handed the host's value to the host's consumer"
     );
+}
+
+/// A consumer of the host's own future that fails as it takes the
+/// value.
+struct Refuses;
+
+impl FutureConsumer<Drops> for Refuses {
+    type Item = u32;
+
+    fn poll_consume(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _store: &mut StoreContext<'_, Drops>,
+        _source: Source<'_, u32>,
+        _finish: bool,
+    ) -> Poll<Result<(), Error>> {
+        Poll::Ready(Err(Error::Internal {
+            message: "the host's consumer failed".to_owned(),
+        }))
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_leaves_the_store_usable_when_a_pipe_of_the_hosts_own_fails() {
+    // The pipe touches no guest, so its failure is no trap. It ends the
+    // entry whose turn met it, and the store runs guest code after it.
+    let mut fixture = Fixture::new().await;
+    FutureReader::new(&mut fixture.store.as_context_mut(), async {
+        Ok::<_, Error>(5u32)
+    })
+    .expect("a future the host writes")
+    .pipe(&mut fixture.store.as_context_mut(), Refuses)
+    .expect("the host pipes its own future");
+
+    let entry = fixture
+        .store
+        .run_concurrent(async |_accessor| {
+            let mut polls = 0;
+            poll_fn(|context| {
+                polls += 1;
+                if polls == 64 {
+                    return Poll::Ready(());
+                }
+                context.waker().wake_by_ref();
+                Poll::Pending
+            })
+            .await;
+        })
+        .await;
+    let error = entry.expect_err("the failure ends the entry whose turn met it");
+    assert!(
+        error.to_string().contains("the host's consumer failed"),
+        "the entry reports the consumer's failure, got {error:?}"
+    );
+    fixture
+        .assert_usable("a failed pipe of the host's own")
+        .await;
 }

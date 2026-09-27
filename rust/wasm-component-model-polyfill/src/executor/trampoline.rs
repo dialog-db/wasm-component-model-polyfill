@@ -482,8 +482,26 @@ pub fn build_trampoline<T: 'static>(
 }
 
 /// What a lowered import that failed traps with.
+///
+/// The message carries every cause in the failure's source chain. A
+/// trap that unwound through a guest frame on its way here, such as a
+/// host call's failure met in a nested turn above this call, reaches
+/// this frame as a substrate failure whose own message names none of
+/// it, and the trap the driver reports would otherwise lose it. A
+/// cause whose words the message already carries, as it does for an
+/// error whose own message embeds its source, is not repeated.
 fn invocation_failed(err: Error) -> anyhow::Error {
-    anyhow!("trampoline invocation failed: {err}")
+    let mut message = format!("trampoline invocation failed: {err}");
+    let mut cause = std::error::Error::source(&err);
+    while let Some(inner) = cause {
+        let text = inner.to_string();
+        if !message.contains(&text) {
+            message.push_str(": ");
+            message.push_str(&text);
+        }
+        cause = inner.source();
+    }
+    anyhow!(message)
 }
 
 /// Whether a lowered import can block: a synchronous lower of a host
@@ -714,6 +732,15 @@ fn invoke_trampoline<T: 'static>(
                     instance.shared_resource_tables(),
                 );
                 body(call, &lifted, &mut host_results)?;
+                // A body that reached the store and trapped there, in
+                // a destructor it released, poisoned the store, and
+                // the guest that called it is guest code a poisoned
+                // store does not run. The call fails with the
+                // cannot-enter cause, whatever the body answered, and
+                // its results cross into no guest.
+                StoreContext::new(store_ctx.as_context_mut())
+                    .internal()
+                    .enter_guest()?;
                 HostOutcome::Values(host_results)
             }
             // A concurrent registration's body runs only far enough

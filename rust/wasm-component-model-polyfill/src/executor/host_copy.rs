@@ -14,10 +14,9 @@
 //!   with the waker of the driver, and once the poll comes out ready
 //!   the turn queues the delivery, which fills the end's event.
 //! - A poll that fails fails the built-in with the producer's error
-//!   when it is the first. A later one is the trap of the guest task
-//!   that started the read, as the failure of a host call is the
-//!   trap of the task that made the call, and so is a delivery that
-//!   fails.
+//!   when it is the first. A later one is a trap, as the failure
+//!   of a host call is, and so is a delivery that fails: it poisons
+//!   the store and ends the driver whose turn meets it.
 //!
 //! A poll is made only when nothing waits with the end: items the
 //! producer delivered beyond what the reader could take satisfy the
@@ -43,7 +42,7 @@ use wasm_runtime_layer::AsContextMut;
 use crate::abi::context::BoundaryContext;
 use crate::abi::instance::BoundaryInstance;
 use crate::abi::layout::size_of;
-use crate::concurrency::{Accessor, CopyState, EndId, HostTask, HostTaskBody, TaskId};
+use crate::concurrency::{Accessor, CopyState, EndId, HostTask, HostTaskBody};
 use crate::error::{AbiPosition, Error, Result};
 use crate::internal::ErrorInternal;
 use crate::store::{StoreContext, StoreContextInternalExt};
@@ -54,18 +53,12 @@ use crate::value::Val;
 const POINTER_ARGUMENT: AbiPosition = AbiPosition::Argument(1);
 
 /// Serve the read a guest just started against `writer`, the writable
-/// end the host serves, on behalf of `caller_task`, the guest task
-/// that started it. The end is polled once, here and now, with the
+/// end the host serves. The end is polled once, here and now, with the
 /// waker of the turn that is running: a poll that is ready is
 /// delivered before this returns, and a pending one joins the store's
 /// host tasks. A failure of either is the built-in's.
-pub fn serve_host_read<T: 'static>(
-    store: &mut StoreContext<'_, T>,
-    writer: EndId,
-    caller_task: Option<TaskId>,
-) -> Result<()> {
+pub fn serve_host_read<T: 'static>(store: &mut StoreContext<'_, T>, writer: EndId) -> Result<()> {
     let mut task = HostTask::copy(
-        caller_task,
         move |store: &mut StoreContext<'_, T>, outcome: Result<Vec<Val>>| {
             // A poll that failed before it reached the store could not
             // forget the waker a pending poll kept; this forgets it.
