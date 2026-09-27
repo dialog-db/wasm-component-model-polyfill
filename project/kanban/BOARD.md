@@ -35,11 +35,9 @@ kanban-plugin: basic
 
 ## In Progress
 
-- [ ] [[fed20f]]
-
 ## Needs Review
 
-- [ ] [[072663]]
+- [ ] [[fed20f]]
 
 ## Ready
 
@@ -54,6 +52,7 @@ kanban-plugin: basic
 - [ ] [[dd3ad3]]
 - [ ] [[96fdc4]]
 - [ ] [[f3a070]]
+- [ ] [[072663]]
 
 ---
 
