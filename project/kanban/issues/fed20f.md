@@ -5,6 +5,8 @@ type: chore
 blocked_by: [c3c149, 4e6441, 45ccc2, f3a070]
 labels: [PDD023, smoke, concurrency]
 created: 2026-09-26T23:12:28Z
+disposition: accepted
+disposition_at: 2026-09-27T17:07:41Z
 ---
 
 ## What to build

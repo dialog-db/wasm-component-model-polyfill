@@ -5,6 +5,8 @@ type: docs
 blocked_by: [072663, fed20f]
 labels: [PDD023, concurrency]
 created: 2026-09-26T23:12:28Z
+disposition: accepted
+disposition_at: 2026-09-27T17:07:41Z
 ---
 
 ## What to build
