@@ -84,13 +84,14 @@ callee returned. An exception thrown in a callee reaches the host as the
 trap the synchronous baseline gives it.
 
 The directive that first meets what is missing is an expected failure
-of category `deferred-feature`, for one reason: a block or a
-switch that only a stack switch can serve, such as a callee that can
-be released only by a caller that is on the stack or a thread that
-suspends after its task has resolved. Two definitions in the same
-category fail at link instead, on a
-host item the harness does not provide: the two WASI 0.3 handler
-fixtures import `wasi:http/types`. Most of the rest
+of category `deferred-feature`. Under a provider two definitions
+remain in that category, and both fail at link, on a host item the
+harness does not provide: the two WASI 0.3 handler fixtures import
+`wasi:http/types`. Without a provider the category holds one more
+reason, in the overlay described below: a block or a switch that only
+a stack switch can serve, such as a callee that can be released only
+by a caller that is on the stack or a thread that suspends after its
+task has resolved. Most of the rest
 is `cascade`: a component definition that fails leaves its name
 unbound and no instance current, so every later directive in the file
 that names the definition or invokes the instance fails as
@@ -299,16 +300,16 @@ provider:
 | `cm/async`       | 393        | 393    | 100.0  | none                                                                   |
 | `fixtures`       | 59         | 53     | 89.8   | deferred-feature 2, cascade 4                                          |
 | `wasmtime`       | 469        | 441    | 94.0   | substrate 8, cascade 20                                                |
-| `wasmtime/async` | 387        | 380    | 98.2   | deferred-feature 6, cascade 1                                          |
-| total            | 2434       | 2363   | 97.1   | deferred-feature 8, substrate 12, validation 20, cascade 31            |
+| `wasmtime/async` | 387        | 387    | 100.0  | none                                                                   |
+| total            | 2434       | 2370   | 97.4   | deferred-feature 2, substrate 12, validation 20, cascade 30            |
 
 The browser runs its guest threads through the JSPI provider, so its
 summary is the native one, and the eleven lines of
 `expected-failures.web.txt` move eleven passing directives into
 `substrate`: `cm` passes 1095 (97.2%) with substrate 5, `cm/async` 392
 (99.7%) with substrate 1, `wasmtime` 434 (92.5%) with substrate 15,
-`wasmtime/async` 378 (97.7%) with substrate 2, and the total is 2352
-(96.6%) with substrate 23. Six of the
+`wasmtime/async` 385 (99.5%) with substrate 2, and the total is 2359
+(96.9%) with substrate 23. Six of the
 eleven lines, among them the three in the `async` rows, are the browser
 engine's wording for a trap or a validation error that Wasmtime words
 differently. Two in `wasmtime/big-strings.wast` trap in the adapter
@@ -330,25 +331,24 @@ the provider turned off:
 | `cm/async`       | 393        | 361    | 91.9   | deferred-feature 22, cascade 10                                        |
 | `fixtures`       | 59         | 53     | 89.8   | deferred-feature 2, cascade 4                                          |
 | `wasmtime`       | 469        | 441    | 94.0   | substrate 8, cascade 20                                                |
-| `wasmtime/async` | 387        | 356    | 92.0   | deferred-feature 22, cascade 9                                         |
-| total            | 2434       | 2307   | 94.8   | deferred-feature 46, substrate 12, validation 20, cascade 49           |
+| `wasmtime/async` | 387        | 363    | 93.8   | deferred-feature 16, cascade 8                                         |
+| total            | 2434       | 2314   | 95.1   | deferred-feature 40, substrate 12, validation 20, cascade 48           |
 
 No line of the web delta names a directive of the overlay, so the
 browser without a provider moves the same eleven directives into
 `substrate`: `cm` passes 1095 (97.2%), `cm/async` 360 (91.6%),
-`wasmtime` 434 (92.5%), `wasmtime/async` 354 (91.5%), and the total is
-2296 (94.3%) with substrate 23.
+`wasmtime` 434 (92.5%), `wasmtime/async` 361 (93.3%), and the total is
+2303 (94.6%) with substrate 23.
 
-The `async` rows still hold the pass rate down, and the two reasons
-above cover what those directories still exercise. A directive that
+Without a provider the `async` rows still hold the pass rate down, and
+the stack-switch reason covers what those directories still exercise. A directive that
 fails on one of them can leave a later directive of the same file
 without its instance, or with a thread or a callee the failure left
 behind in the same instance, and each such later directive is a
 `cascade` line. Each component instance runs in a store of its own,
 as under Wasmtime's wast runner, so what an earlier instance left
 behind never runs during a later instance's call. The two async rows
-hold 1 of the 31 cascade lines natively, in `wasmtime/async`, and
-without a provider `cm/async` adds 10, nine in
+hold none of the 30 cascade lines natively, and without a provider `cm/async` adds 10, nine in
 `cm/async/during-sync-scheduling-candidates.wast` and one in
 `cm/async/async-calls-sync.wast`, and `wasmtime/async` adds 8, all in
 `wasmtime/async/task-deletion.wast`, each after a directive whose
@@ -358,11 +358,11 @@ Of the 38 files of `cm/async`, all 38 pass whole natively and 37 in
 the browser, where `builtin-trap-poisons-instance.wast` holds one line
 of the browser's delta, and 25 natively without a provider, where
 thirteen hold lines that only a provider serves, and 24 in the browser
-without one. Of the 54 files of `wasmtime/async`, 52 pass whole
-natively and 50 in the browser, where `subtask-wait.wast` and
+without one. Of the 54 files of `wasmtime/async`, all 54 pass whole
+natively and 52 in the browser, where `subtask-wait.wast` and
 `sync-call-context-trap.wast` each hold one line of the browser's delta,
-and 43 natively without a provider, where nine more hold lines that
-only a provider serves, and 41 in the browser without one. Eight of the ten fixtures pass whole.
+and 45 natively without a provider, where nine hold lines that
+only a provider serves, and 43 in the browser without one. Eight of the ten fixtures pass whole.
 
 The streams and futures account for 33 of the files that pass whole.
 In `cm/async`: `cancel-stream.wast`, `closed-stream.wast`,
@@ -475,7 +475,7 @@ exited, one of them calls `task.return`, and the others suspend or
 yield for ever in the provider after their calls returned. Without a
 provider its first directive waits on a stack switch, for those
 threads, which start in the nested turns of `run` and stay on the
-stack above it. The rest of the async rows wait on the other reasons.
+stack above it.
 The cancellation of a call into another component runs, so
 `cm/async/cancel-delivery.wast`, `cm/async/cancel-subtask.wast`,
 `cm/async/cancel-and-exclusive-lock.wast`,
