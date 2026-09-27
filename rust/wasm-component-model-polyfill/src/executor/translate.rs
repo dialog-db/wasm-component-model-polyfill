@@ -20,8 +20,8 @@ use wasmtime_environ::component::{
     ExtractPostReturn, ExtractRealloc, ExtractTable, FixedEncoding, GlobalInitializer,
     InstantiateModule, InterfaceType, LoweredIndex, OptionsIndex, RuntimeImportIndex,
     StaticModuleIndex, StringEncoding as EnvironStringEncoding, Trampoline, TrampolineIndex,
-    Transcode, Translator, TypeFutureTableIndex, TypeResourceTable, TypeResourceTableIndex,
-    TypeStreamTableIndex, UnsafeIntrinsic,
+    Transcode, Translator, TypeComponentLocalErrorContextTableIndex, TypeFutureTableIndex,
+    TypeResourceTable, TypeResourceTableIndex, TypeStreamTableIndex, UnsafeIntrinsic,
 };
 use wasmtime_environ::prelude::Error as TranslatorError;
 use wasmtime_environ::wasmparser::Validator;
@@ -50,19 +50,9 @@ use super::ir::{
 use super::thread_start_table::THREAD_START_PROBE;
 use super::{compile_module, compile_modules};
 
-/// What the trampoline pre-walk decided about one trampoline.
-enum TrampolineOutcome {
-    /// The polyfill builds this kind: the slot its
-    /// [`TrampolineSpec`] landed in.
-    Built(usize),
-    /// The polyfill does not build this kind, under the name the
-    /// translator gives it (`waitable-set-wait`, `future-new`, and
-    /// the rest of `Trampoline::symbol_name`).
-    Refused(String),
-}
-
-/// What the pre-walk decided for every trampoline of a component.
-type TrampolineOutcomes = HashMap<TrampolineIndex, TrampolineOutcome>;
+/// The slot the [`TrampolineSpec`] of each trampoline of a component
+/// landed in, by the translator's index.
+type TrampolineSlots = HashMap<TrampolineIndex, usize>;
 
 /// Everything one translation of a component binary produces.
 pub struct Translation {
@@ -92,12 +82,13 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
         .translate(bytes)
         .map_err(translation_error)?;
 
-    // The builder knows how many resource, stream, and future tables
-    // the component has; the finished types index them but do not
-    // count them.
+    // The builder knows how many resource, stream, future, and
+    // error-context tables the component has; the finished types
+    // index them but do not count them.
     let num_resource_tables = types.num_resource_tables();
     let num_stream_tables = types.num_stream_tables();
     let num_future_tables = types.num_future_tables();
+    let num_error_context_tables = types.num_error_context_tables();
     let (component_types, _) = types.finish(&translation.component);
     let projector = TypeProjector::new(&component_types, &translation.component);
 
@@ -184,13 +175,11 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
         )
         .collect();
 
-    // Pre-walk #3: decide every trampoline. A kind the polyfill
-    // implements gets a `TrampolineSpec` and the slot it landed in;
-    // every other kind is refused under the name the translator
-    // gives it, so that `CoreDef::Trampoline` resolution can say
-    // which built-in it is.
+    // Pre-walk #3: build every trampoline. Each gets a
+    // `TrampolineSpec` and the slot it landed in, which
+    // `CoreDef::Trampoline` resolution reads.
     let mut trampoline_specs: Vec<TrampolineSpec> = Vec::new();
-    let mut trampolines: TrampolineOutcomes = HashMap::new();
+    let mut trampolines: TrampolineSlots = HashMap::new();
     let mut stream_tables: Option<Arc<[EndTableSpec]>> = None;
     let mut future_tables: Option<Arc<[EndTableSpec]>> = None;
     for (trampoline_idx, trampoline) in translation.trampolines.iter() {
@@ -275,6 +264,19 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                         })?)
                         .clone(),
                 },
+                signature: core_signature(&component_types, &translation, trampoline_idx)?,
+            },
+            // The transfer intrinsic of an error context names its
+            // source and destination by the translator's error-context
+            // table index, and each such table is the handle table of
+            // one component instance.
+            Trampoline::ErrorContextTransfer => TrampolineSpec::ErrorContextTransfer {
+                instances: (0..num_error_context_tables as u32)
+                    .map(|i| {
+                        let index = TypeComponentLocalErrorContextTableIndex::from_u32(i);
+                        component_types[index].instance.as_u32() as usize
+                    })
+                    .collect(),
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
             Trampoline::Trap(trap) => TrampolineSpec::Trap {
@@ -594,21 +596,10 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 async_: *async_,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
-            // Concurrency built-ins and the rest are not built. A
-            // `CoreDef::Trampoline` that references one surfaces
-            // `Error::Unsupported` in `lift_core_def`, naming the
-            // built-in the translator emitted.
-            other => {
-                trampolines.insert(
-                    trampoline_idx,
-                    TrampolineOutcome::Refused(other.symbol_name()),
-                );
-                continue;
-            }
         };
         let slot = trampoline_specs.len();
         trampoline_specs.push(spec);
-        trampolines.insert(trampoline_idx, TrampolineOutcome::Built(slot));
+        trampolines.insert(trampoline_idx, slot);
     }
 
     // Main walk. Intrinsics that appear as `CoreDef`s rather than
@@ -966,7 +957,7 @@ fn collect_export_spec(
     translation: &ComponentTranslation,
     projector: &TypeProjector<'_>,
     state: &mut ProjectionState,
-    trampolines: &TrampolineOutcomes,
+    trampolines: &TrampolineSlots,
     out: &mut ExportTree<'_>,
     path: &[ExternalName],
     name: &str,
@@ -1223,15 +1214,12 @@ impl ProjectionState {
     fn lift_core_def(
         &mut self,
         def: &CoreDef,
-        trampolines: &TrampolineOutcomes,
+        trampolines: &TrampolineSlots,
     ) -> Result<ImportSource> {
         match def {
             CoreDef::Export(export) => self.lift_core_export(export),
             CoreDef::Trampoline(trampoline_idx) => match trampolines.get(trampoline_idx) {
-                Some(TrampolineOutcome::Built(slot)) => Ok(ImportSource::Trampoline(*slot)),
-                Some(TrampolineOutcome::Refused(name)) => {
-                    Err(Error::unsupported(format!("the `{name}` trampoline")))
-                }
+                Some(slot) => Ok(ImportSource::Trampoline(*slot)),
                 None => Err(Error::internal(
                     "a core definition names a trampoline the pre-walk did not see",
                 )),

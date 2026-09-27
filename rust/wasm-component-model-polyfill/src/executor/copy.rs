@@ -62,8 +62,13 @@
 //!   lifts them out of the writer's memory and the reader's context
 //!   lowers them into the reader's, and an owned handle in a value
 //!   moves from the writer's table to the reader's as a call moves
-//!   one. The lift charges the writer's context's copy budget, so a
-//!   copy cannot make the host build values without bound.
+//!   one. An error context in a value is copied instead: the writer
+//!   keeps its handle, and the reader gains one of its own over the
+//!   same record. The two contexts are marked as the sides of a move
+//!   between two guests, which is the one crossing an error context
+//!   makes through a value. The lift charges the writer's context's
+//!   copy budget, so a copy cannot make the host build values without
+//!   bound.
 //!
 //! The same set gates a read and a write from one instance. The
 //! reference traps, as a temporary rule, when a read or a write finds
@@ -548,7 +553,7 @@ impl MoveSide {
     }
 
     /// A boundary context over this side's memory, with no borrow
-    /// scope.
+    /// scope, marked as one side of a move between two guests.
     fn context<'a, T: 'static>(
         &self,
         store_ctx: RuntimeContextMut<'a, StoreData<T>, Backend>,
@@ -556,7 +561,7 @@ impl MoveSide {
     ) -> anyhow::Result<BoundaryContext<'a, StoreData<T>>> {
         let (options, instance) =
             BoundaryInstance::resolve(&self.options, &self.abi_state, tables).map_err(trap)?;
-        Ok(BoundaryContext::new(store_ctx, options, instance, None))
+        Ok(BoundaryContext::new(store_ctx, options, instance, None).between_guests())
     }
 }
 

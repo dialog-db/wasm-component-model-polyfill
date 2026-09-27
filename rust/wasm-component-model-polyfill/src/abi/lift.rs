@@ -9,9 +9,11 @@ use crate::abi::context::BoundaryContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
 use crate::abi::strings;
 use crate::concurrency::{CopyState, EndId, EndKind};
-use crate::concurrency::{FutureAny, StreamAny};
-use crate::error::{AbiCause, AbiError, AbiPosition, CopyCause, Error, Result};
-use crate::internal::{ErrorInternal, FutureAnyInternal, StreamAnyInternal};
+use crate::concurrency::{ErrorContextAny, FutureAny, StreamAny};
+use crate::error::{AbiCause, AbiError, AbiPosition, CopyCause, Error, ErrorContextCause, Result};
+use crate::internal::{
+    ErrorContextAnyInternal, ErrorInternal, FutureAnyInternal, StreamAnyInternal,
+};
 use crate::resource::{HandleKind, HandleLookupError, HandleTables, ResourceHandleParts, TableId};
 use crate::types::{MapType, PrimitiveType, ValueType};
 use crate::value::{Val, ValField};
@@ -186,6 +188,10 @@ pub fn lift<T: 'static>(
             let index = u32::from_le_bytes(ctx.read_array(offset, position, ty)?);
             lift_end_for_host(ctx, index, ty, position)
         }
+        ValueType::ErrorContext => {
+            let index = u32::from_le_bytes(ctx.read_array(offset, position, ty)?);
+            lift_error_context(ctx, index, ty, position)
+        }
     }
 }
 
@@ -243,6 +249,61 @@ pub fn lift_end_for_host<T: 'static>(
         }
     })
 }
+
+/// Lift the error context at `index` of the guest's handle table, for
+/// a crossing whose values another guest lowers. The value names the
+/// record the entry names, and the entry stays in the table: an error
+/// context is copied between components, not moved, so the sender
+/// keeps its handle and the receiver's lower adds one of its own. An
+/// entry of another kind fails with the error-context cause, whose
+/// message is Wasmtime's, and an index that names nothing fails as an
+/// invalid handle.
+///
+/// The host sees no error context. A crossing between the host and a
+/// guest fails with [`Error::Unsupported`], before it reads the table.
+///
+/// An error context is an index, as a resource handle is, so its lift
+/// charges the crossing's copy budget nothing.
+pub fn lift_error_context<T: 'static>(
+    ctx: &mut BoundaryContext<'_, T>,
+    index: u32,
+    ty: &ValueType,
+    position: AbiPosition,
+) -> Result<Val> {
+    if !ctx.crosses_between_guests() {
+        return Err(Error::unsupported(ERROR_CONTEXT_AT_THE_HOST));
+    }
+    let invalid = |reason: String| {
+        Error::from(AbiError {
+            position,
+            valtype: Some(ty.clone()),
+            cause: AbiCause::InvalidHandle { reason },
+        })
+    };
+    let (Some(tables), Some(table)) = (ctx.instance().tables(), ctx.instance().handle_table())
+    else {
+        return Err(invalid(
+            "no handle table of the instance is available to the lift context".to_owned(),
+        ));
+    };
+    let guard = tables
+        .lock()
+        .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
+    let context = guard
+        .error_context_from_handle(table, index)
+        .map_err(|err| match err {
+            HandleLookupError::NotAnErrorContext { index } => {
+                Error::ErrorContext(ErrorContextCause::NotAnErrorContext { index })
+            }
+            other => invalid(other.to_string()),
+        })?;
+    Ok(Val::ErrorContext(ErrorContextAny::new(context)))
+}
+
+/// The feature an `error-context` value that crosses between the host
+/// and a guest names when it is refused.
+pub const ERROR_CONTEXT_AT_THE_HOST: &str =
+    "`error-context` values that cross between the host and a guest";
 
 /// Lift the readable end at `index` of `table` for a crossing of
 /// type `ty`, a `stream<T>` or a `future<T>`: the entry leaves the

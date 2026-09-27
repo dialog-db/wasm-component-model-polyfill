@@ -1472,29 +1472,30 @@ async fn it_rejects_a_call_made_through_a_different_store() {
 
 #[wcmp_macros::test]
 async fn it_reports_an_unsupported_feature_as_a_structured_error() {
-    // A component whose export takes an `error-context` uses a
-    // feature the polyfill has not built. The translator reports it
-    // at construction as a structured `Error::Unsupported` naming the
-    // feature, never as a panic. Validation admits the type only with
-    // its feature enabled, so the engine enables it.
+    // A component whose export lifts under the garbage-collected
+    // data model uses a feature the polyfill has not built. The
+    // translator reports it at construction as a structured
+    // `Error::Unsupported` naming the feature, never as a panic.
+    // Validation admits the option only with its feature enabled, so
+    // the engine enables it.
     const COMPONENT: &[u8] = component!(
         r#"
         (component
           (core module $m
-            (func (export "f") (param i32)))
+            (func (export "f")))
           (core instance $i (instantiate $m))
-          (func (export "f") (param "x" error-context)
-            (canon lift (core func $i "f"))))
+          (func (export "f")
+            (canon lift (core func $i "f") gc)))
         "#
     );
     let mut config = wasm_component_model_polyfill::EngineConfig::default();
-    config.wasm_component_model_error_context(true);
+    config.wasm_component_model_gc(true);
     let engine = Engine::with_config(&config).expect("engine");
     let err = Component::new(&engine, COMPONENT)
         .await
-        .expect_err("error-context values are not supported yet");
+        .expect_err("the garbage-collected data model is not supported yet");
     assert!(
-        matches!(&err, Error::Unsupported { feature } if feature.contains("error-context")),
+        matches!(&err, Error::Unsupported { feature } if feature.contains("garbage-collected")),
         "expected Error::Unsupported, got {err:?}"
     );
 }

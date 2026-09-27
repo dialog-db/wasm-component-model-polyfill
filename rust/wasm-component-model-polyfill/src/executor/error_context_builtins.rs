@@ -13,7 +13,9 @@
 //!   message with an empty one. The record starts with a count of
 //!   one, and the built-in returns the index of the new entry. A
 //!   message that leaves the memory fails with the bounds checks
-//!   every string lift makes.
+//!   every string lift makes. The record counts against the cap on
+//!   the store's live records, so a record past the cap fails with
+//!   the full-table cause.
 //! - `error-context.debug-message` writes the message into the
 //!   guest's memory through the `realloc` its canon options name, in
 //!   their string encoding, and stores the pointer and the length at
@@ -32,6 +34,11 @@
 //! `realloc` or a `post-return` of that instance runs. The two that
 //! take a handle trap when the index names no entry, or an entry of
 //! another kind, before they do anything else.
+//!
+//! A fused adapter imports one more, `error-context.transfer`, for an
+//! error context in a parameter or a result of a call between two
+//! components. It copies the handle: the sender keeps its entry, the
+//! receiver gains one, and the record's count rises by one.
 
 use std::sync::{Arc, Mutex};
 
@@ -49,7 +56,7 @@ use crate::concurrency::{ErrorContextId, InstanceId};
 use crate::error::{AbiPosition, Error, ErrorContextCause, TaskCause};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CanonOptions, CoreSignature};
-use crate::resource::{HandleKind, HandleLookupError, HandleTables, TableId};
+use crate::resource::{HandleLookupError, HandleTables, TableId};
 use crate::store::StoreContextInternalExt;
 use crate::store::{StoreContext, StoreData};
 use crate::types::{PrimitiveType, ValueType};
@@ -125,6 +132,65 @@ pub fn build_error_context_drop<T: 'static>(
     )
 }
 
+/// Build the `error-context.transfer` intrinsic a fused adapter
+/// imports, over `instances`, the component instance of each
+/// error-context table of the component. The adapter calls it once
+/// per error context in a parameter or a result, with the context's
+/// index in the sender's table, the sender's table, and the
+/// receiver's table, and receives the index in the receiver's table.
+///
+/// An error context is copied between components, not moved: the
+/// sender's entry stays, and the receiver gains an entry of its own
+/// over the same record, whose count rises by one. That is
+/// Wasmtime's transfer. An entry of another kind fails with the
+/// error-context cause, and a count past `u32::MAX` fails with the
+/// reference-count cause and enters nothing.
+pub fn build_error_context_transfer<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    instances: Arc<[usize]>,
+    signature: &CoreSignature,
+    abi_state: Arc<Mutex<AbiRuntimeState>>,
+) -> RuntimeFunc {
+    let tables = store.internal().tables_handle();
+    RuntimeFunc::new(
+        store.internal().runtime_mut(),
+        core_func_type(signature),
+        move |_store_ctx, args, results| {
+            let index = arg_u32(args, 0)?;
+            let source = error_context_table(&instances, &abi_state, arg_u32(args, 1)?)?;
+            let destination = error_context_table(&instances, &abi_state, arg_u32(args, 2)?)?;
+            let mut guard = lock_tables(&tables)?;
+            let context = error_context_at(&guard, source, index)?;
+            guard.tasks.retain_error_context(context).map_err(trap)?;
+            let out = guard.insert_error_context(destination, context);
+            results[0] = RuntimeVal::I32(out as i32);
+            Ok(())
+        },
+    )
+}
+
+/// The handle table of the component instance whose error-context
+/// table an adapter named by `table_index`.
+fn error_context_table(
+    instances: &[usize],
+    abi_state: &Arc<Mutex<AbiRuntimeState>>,
+    table_index: u32,
+) -> anyhow::Result<TableId> {
+    let instance = *instances.get(table_index as usize).ok_or_else(|| {
+        anyhow!(
+            "an adapter named error-context table {table_index}, which the component does not declare"
+        )
+    })?;
+    let state = abi_state
+        .lock()
+        .map_err(|_| anyhow!("ABI runtime state lock poisoned"))?;
+    state.handle_tables.get(instance).copied().ok_or_else(|| {
+        anyhow!(
+            "error-context table {table_index} names component instance {instance}, which this instantiation does not hold"
+        )
+    })
+}
+
 /// The body of the `error-context.new` built-in: the index of the
 /// new entry, or the trap.
 fn error_context_new<T: 'static>(
@@ -160,7 +226,10 @@ fn error_context_new<T: 'static>(
     };
 
     let mut guard = lock_tables(tables)?;
-    let context = guard.tasks.insert_error_context(debug_message);
+    let context = guard
+        .tasks
+        .insert_error_context(debug_message)
+        .map_err(trap)?;
     Ok(guard.insert_error_context(table, context))
 }
 
@@ -218,13 +287,16 @@ fn error_context_at(
     table: TableId,
     index: u32,
 ) -> anyhow::Result<ErrorContextId> {
-    match tables.entry(table, index) {
-        Some(HandleKind::ErrorContext { context }) => Ok(context),
-        Some(_) => Err(trap(Error::ErrorContext(
-            ErrorContextCause::NotAnErrorContext { index },
-        ))),
-        None => Err(anyhow!("{}", HandleLookupError::Unknown { index })),
-    }
+    tables
+        .error_context_from_handle(table, index)
+        .map_err(|err| match err {
+            HandleLookupError::NotAnErrorContext { index } => {
+                trap(Error::ErrorContext(ErrorContextCause::NotAnErrorContext {
+                    index,
+                }))
+            }
+            other => anyhow!("{other}"),
+        })
 }
 
 /// The type a debug message crosses as.

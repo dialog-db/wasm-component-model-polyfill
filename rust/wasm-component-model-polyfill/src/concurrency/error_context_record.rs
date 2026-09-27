@@ -6,8 +6,9 @@
 /// hold a handle to it. The record holds the debug message exactly
 /// as `error-context.new` read it, and the count of the guest
 /// handles that name it. `error-context.new` creates the record with
-/// a count of one, and `error-context.drop` subtracts one; the
-/// record leaves the store when the count reaches zero.
+/// a count of one, a crossing into another instance adds one, and
+/// `error-context.drop` subtracts one; the record leaves the store
+/// when the count reaches zero.
 pub struct ErrorContextRecord {
     /// The debug message, as the guest wrote it.
     pub debug_message: String,

@@ -7,11 +7,13 @@
 
 use crate::abi::context::BoundaryContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
-use crate::abi::lift::declared_resource_index;
+use crate::abi::lift::{ERROR_CONTEXT_AT_THE_HOST, declared_resource_index};
 use crate::abi::strings;
-use crate::concurrency::{EndId, EndKind};
+use crate::concurrency::{EndId, EndKind, ErrorContextAny};
 use crate::error::{AbiCause, AbiError, AbiPosition, CopyCause, Error, Result};
-use crate::internal::{ErrorInternal, FutureAnyInternal, StreamAnyInternal};
+use crate::internal::{
+    ErrorContextAnyInternal, ErrorInternal, FutureAnyInternal, StreamAnyInternal,
+};
 use crate::resource::{HandleKind, HandleLookupError, HandleTables, ResourceHandle, TableId};
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
@@ -194,8 +196,49 @@ pub fn lower<T: 'static>(
             let index = lower_host_end(ctx, future.end(), ty, position)?;
             ctx.write_bytes(offset, &index.to_le_bytes(), position, ty)
         }
+        (ValueType::ErrorContext, Val::ErrorContext(context)) => {
+            let index = lower_error_context(ctx, context, ty, position)?;
+            ctx.write_bytes(offset, &index.to_le_bytes(), position, ty)
+        }
         _ => Err(host_value_mismatch(ty, position)),
     }
+}
+
+/// Lower `context`, an error context another guest's crossing lifted,
+/// into the guest's handle table, and return the index it takes
+/// there. The entry is a new handle of the guest's own, so the
+/// record's count of handles rises by one first; a count past
+/// `u32::MAX` fails with Wasmtime's reference-count cause and enters
+/// nothing.
+///
+/// The host holds no error context. A crossing between the host and a
+/// guest fails with [`Error::Unsupported`], before it touches the
+/// table.
+pub fn lower_error_context<T: 'static>(
+    ctx: &BoundaryContext<'_, T>,
+    context: &ErrorContextAny,
+    ty: &ValueType,
+    position: AbiPosition,
+) -> Result<u32> {
+    if !ctx.crosses_between_guests() {
+        return Err(Error::unsupported(ERROR_CONTEXT_AT_THE_HOST));
+    }
+    let (Some(tables), Some(table)) = (ctx.instance().tables(), ctx.instance().handle_table())
+    else {
+        return Err(Error::from(AbiError {
+            position,
+            valtype: Some(ty.clone()),
+            cause: AbiCause::InvalidHandle {
+                reason: "no handle table of the instance is available to the lower context"
+                    .to_owned(),
+            },
+        }));
+    };
+    let mut guard = tables
+        .lock()
+        .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
+    guard.tasks.retain_error_context(context.context())?;
+    Ok(guard.insert_error_context(table, context.context()))
 }
 
 /// Lower the readable end `end` into `table` for a crossing of type

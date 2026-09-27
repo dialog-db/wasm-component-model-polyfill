@@ -165,10 +165,13 @@ pub fn canonical_abi(ty: &ValueType) -> CanonicalAbiInfo {
         ValueType::Flags(flags) => CanonicalAbiInfo::flags(flags.names().len()),
         ValueType::List(_) | ValueType::Map(_) => CanonicalAbiInfo::POINTER_PAIR,
         // A stream or a future is the index of its readable end in a
-        // handle table, laid out as a handle is.
-        ValueType::Own(_) | ValueType::Borrow(_) | ValueType::Stream(_) | ValueType::Future(_) => {
-            CanonicalAbiInfo::SCALAR4
-        }
+        // handle table, and an error context the index of its entry,
+        // each laid out as a handle is.
+        ValueType::Own(_)
+        | ValueType::Borrow(_)
+        | ValueType::Stream(_)
+        | ValueType::Future(_)
+        | ValueType::ErrorContext => CanonicalAbiInfo::SCALAR4,
     }
 }
 
@@ -213,7 +216,8 @@ pub fn flat_types(ty: &ValueType) -> Cow<'_, [FlatType]> {
         | ValueType::Own(_)
         | ValueType::Borrow(_)
         | ValueType::Stream(_)
-        | ValueType::Future(_) => {
+        | ValueType::Future(_)
+        | ValueType::ErrorContext => {
             return Cow::Borrowed(I32);
         }
         ValueType::Flags(flags) => {
@@ -354,5 +358,32 @@ mod tests {
             flat_types(&record).as_ref(),
             &[FlatType::I32, FlatType::I32]
         );
+    }
+
+    #[wcmp_macros::test]
+    fn it_lays_out_an_error_context_as_a_handle_inside_a_record_and_a_list() {
+        let context = ValueType::ErrorContext;
+        assert_eq!(size_of(&context), 4);
+        assert_eq!(alignment_of(&context), 4);
+        assert_eq!(flat_types(&context).as_ref(), &[FlatType::I32]);
+
+        // A byte, then the context at the next multiple of four, then
+        // a byte, padded to the record's alignment of four.
+        let record = ValueType::Record(RecordType::new([
+            RecordField::new("tag", ValueType::Primitive(PrimitiveType::U8)),
+            RecordField::new("context", ValueType::ErrorContext),
+            RecordField::new("tail", ValueType::Primitive(PrimitiveType::U8)),
+        ]));
+        assert_eq!(size_of(&record), 12);
+        assert_eq!(alignment_of(&record), 4);
+        assert_eq!(
+            flat_types(&record).as_ref(),
+            &[FlatType::I32, FlatType::I32, FlatType::I32]
+        );
+
+        // A list is a pointer and a length whatever its element.
+        let list = ValueType::List(crate::types::ListType::new(ValueType::ErrorContext));
+        assert_eq!(size_of(&list), 8);
+        assert_eq!(flat_types(&list).as_ref(), &[FlatType::I32, FlatType::I32]);
     }
 }

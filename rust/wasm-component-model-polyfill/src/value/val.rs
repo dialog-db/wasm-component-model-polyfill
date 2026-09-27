@@ -1,6 +1,6 @@
 //! The polyfill's component-level value enum.
 
-use crate::concurrency::{FutureAny, StreamAny};
+use crate::concurrency::{ErrorContextAny, FutureAny, StreamAny};
 use crate::resource::ResourceHandle;
 
 /// A single component-level value passed to or returned from an
@@ -124,6 +124,13 @@ pub enum Val {
     /// future's payload type. A typed
     /// [`FutureReader`](crate::FutureReader) crosses as one of these.
     Future(FutureAny),
+    /// An error context (`error-context`).
+    ///
+    /// One carries an error context between two components, as the
+    /// payload of a stream or a future a copy moves. A lift or a
+    /// lower of one between the host and a guest fails with
+    /// [`Error::Unsupported`](crate::Error::Unsupported).
+    ErrorContext(ErrorContextAny),
 }
 
 /// One field of a [`Val::Record`].

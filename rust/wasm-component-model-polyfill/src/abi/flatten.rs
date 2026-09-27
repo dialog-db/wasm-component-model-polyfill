@@ -202,6 +202,11 @@ pub fn lower_into_flat_slots<T: 'static>(
             out.push(RuntimeVal::I32(index as i32));
             Ok(())
         }
+        (ValueType::ErrorContext, Val::ErrorContext(context)) => {
+            let index = lower::lower_error_context(ctx, context, ty, position)?;
+            out.push(RuntimeVal::I32(index as i32));
+            Ok(())
+        }
         _ => Err(host_value_mismatch(ty, position)),
     }
 }
@@ -405,6 +410,10 @@ pub fn lift_from_flat_slots<T: 'static>(
         ValueType::Stream(_) | ValueType::Future(_) => {
             let index = take_i32(args, cursor, ty, position)? as u32;
             lift_end_for_host(ctx, index, ty, position)
+        }
+        ValueType::ErrorContext => {
+            let index = take_i32(args, cursor, ty, position)? as u32;
+            crate::abi::lift_error_context(ctx, index, ty, position)
         }
     }
 }

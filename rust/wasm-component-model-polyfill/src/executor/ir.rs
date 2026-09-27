@@ -552,6 +552,16 @@ pub enum TrampolineSpec {
         /// The core signature the adapter imports.
         signature: CoreSignature,
     },
+    /// An adapter copies an error context from one component
+    /// instance's table to another's.
+    ErrorContextTransfer {
+        /// The component instance whose handle table each
+        /// error-context table of the component is, at the
+        /// translator's table index.
+        instances: Arc<[usize]>,
+        /// The core signature the adapter imports.
+        signature: CoreSignature,
+    },
     /// An adapter raises a trap with a Wasmtime trap code.
     Trap {
         /// The core signature the adapter imports.

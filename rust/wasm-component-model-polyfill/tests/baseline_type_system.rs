@@ -6,8 +6,8 @@
 //! the tests here are the structural complement.
 //!
 //! The `stream` and `future` valtypes are exercised in
-//! `baseline_stream_future_types.rs`. `error-context` and subtyping
-//! live in a separate, forthcoming test file.
+//! `baseline_stream_future_types.rs`. Subtyping lives in a separate,
+//! forthcoming test file.
 
 #![cfg(test)]
 
@@ -540,4 +540,51 @@ async fn it_runs_sync_resource_destructors() {
         panic!("expected own<thing> parameter");
     };
     assert_eq!(*rt, ResourceType::new("thing"));
+}
+
+#[wcmp_macros::test]
+async fn it_projects_an_error_context_wherever_a_value_appears() {
+    use wasm_component_model_polyfill::OptionType;
+
+    // `error-context` projects to `ValueType::ErrorContext` as a
+    // parameter, as a result, and inside a compound type. Validation
+    // admits the type only with its feature enabled, so the engine
+    // enables it.
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (core module $m
+            (memory (export "memory") 1)
+            (func (export "take") (param i32))
+            (func (export "give") (result i32) (i32.const 0)))
+          (core instance $i (instantiate $m))
+          (func (export "take") (param "e" error-context)
+            (canon lift (core func $i "take")))
+          (func (export "give") (result (option error-context))
+            (canon lift (core func $i "give") (memory (core memory $i "memory")))))
+        "#
+    );
+    let mut config = wasm_component_model_polyfill::EngineConfig::default();
+    config.wasm_component_model_error_context(true);
+    let engine = Engine::with_config(&config).expect("engine");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
+    let signature = |name: &str| {
+        let export = component
+            .exports
+            .iter()
+            .find(|export| matches!(&export.name, ExternalName::Plain(n) if n == name))
+            .unwrap_or_else(|| panic!("export `{name}` not found"));
+        match &export.ty {
+            ExternType::Function(ty) => ty.clone(),
+            other => panic!("export `{name}` is not a function: {other:?}"),
+        }
+    };
+
+    assert_eq!(signature("take").parameters[0].ty, ValueType::ErrorContext);
+    assert_eq!(
+        signature("give").result,
+        Some(ValueType::Option(OptionType::new(ValueType::ErrorContext)))
+    );
 }

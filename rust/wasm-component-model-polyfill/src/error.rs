@@ -1534,6 +1534,14 @@ pub enum ErrorContextCause {
         /// The index the guest named.
         index: u32,
     },
+
+    /// An error context crossed into another instance while
+    /// `u32::MAX` handles already named it, so its count of handles
+    /// would overflow. The message is the one of Wasmtime's
+    /// `Trap::ReferenceCountOverflow`, which its transfer of an error
+    /// context raises.
+    #[error("reference count overflow")]
+    ReferenceCountOverflow,
 }
 
 /// A `Result` whose error variant is the polyfill's [`Error`].
@@ -2131,5 +2139,18 @@ mod tests {
         ] {
             assert_eq!(Error::ErrorContext(cause).to_string(), rendered);
         }
+    }
+
+    #[wcmp_macros::test]
+    fn it_pins_the_reference_count_overflow_to_the_trap_wasmtime_environ_renders() {
+        let trap = Trap::ReferenceCountOverflow.to_string();
+        let cause = ErrorContextCause::ReferenceCountOverflow.to_string();
+        assert!(
+            trap.ends_with(&cause),
+            "`Trap::ReferenceCountOverflow` now renders as {trap:?}, which no longer ends \
+             with the `ErrorContextCause::ReferenceCountOverflow` message {cause:?}; the \
+             conformance corpus matches this trap by substring, so the message has to \
+             follow the trap"
+        );
     }
 }

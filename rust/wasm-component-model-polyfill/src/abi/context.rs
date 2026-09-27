@@ -100,6 +100,11 @@ pub struct BoundaryContext<'a, T: 'static> {
     /// How many more bytes of host values the crossing may build out
     /// of the guest.
     budget_left: usize,
+    /// Whether the values of the crossing come from one guest and go
+    /// to another, as they do in a copy through a stream or a future
+    /// whose two ends two components hold. An error context crosses
+    /// only there.
+    between_guests: bool,
 }
 
 /// A range of guest bytes the crossing holds on the host side: the
@@ -149,6 +154,7 @@ impl<'a, T: 'static> BoundaryContext<'a, StoreData<T>> {
             staged: None,
             accesses: 0,
             budget_left,
+            between_guests: false,
         }
     }
 
@@ -177,6 +183,7 @@ impl<'a, T: 'static> BoundaryContext<'a, StoreData<T>> {
             staged: None,
             accesses: 0,
             budget_left,
+            between_guests: false,
         }
     }
 }
@@ -199,6 +206,20 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
     /// The task or subtask the crossing counts against.
     pub fn scope(&self) -> Option<Scope> {
         self.scope
+    }
+
+    /// Mark the crossing as one side of a move of values from one
+    /// guest to another: a lift whose values another guest lowers,
+    /// or a lower of values another guest lifted.
+    pub fn between_guests(mut self) -> Self {
+        self.between_guests = true;
+        self
+    }
+
+    /// Whether the crossing is one side of a move of values from one
+    /// guest to another.
+    pub fn crosses_between_guests(&self) -> bool {
+        self.between_guests
     }
 
     /// The strategy the crossing's options selected. The crossing

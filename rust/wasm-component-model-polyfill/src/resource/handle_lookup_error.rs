@@ -51,6 +51,11 @@ pub enum HandleLookupError {
     /// A live entry sits there, but it is not a subtask:
     /// `subtask.drop` named it as the subtask to drop.
     NotASubtask { index: u32 },
+    /// A live entry sits there, but it is not an error context: an
+    /// error-context built-in or a crossing of an error context named
+    /// it. Every caller raises it as the structured error-context
+    /// cause, whose message is Wasmtime's.
+    NotAnErrorContext { index: u32 },
     /// The entry is an owning entry lent out as a borrow, so it
     /// cannot be removed until the call that lent it ends.
     Lent,
@@ -102,6 +107,9 @@ impl fmt::Display for HandleLookupError {
             }
             Self::NotASubtask { index } => {
                 write!(f, "handle index {index} is not a subtask")
+            }
+            Self::NotAnErrorContext { index } => {
+                write!(f, "handle index {index} is not an error-context")
             }
             Self::Lent => write!(f, "cannot remove owned resource while borrowed"),
             Self::NotOwned { index } => {

@@ -22,6 +22,9 @@
 //! - Stream and future transfer, which moves the readable end of a
 //!   stream or a future from one component instance's handle table
 //!   to another's, as an owned resource transfer moves a resource.
+//!   The transfer of an error context, which copies a handle rather
+//!   than moving it, lives with the other error-context built-ins in
+//!   [`super::error_context_builtins`].
 //! - A trap intrinsic per Wasmtime trap code an adapter can raise.
 //! - Enter and exit intrinsics around a synchronous call between two
 //!   components. The enter intrinsic pushes the callee's task on the

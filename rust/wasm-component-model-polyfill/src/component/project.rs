@@ -213,9 +213,7 @@ impl<'a> TypeProjector<'a> {
                     None => None,
                 }))
             }
-            InterfaceType::ErrorContext(_) => {
-                return Err(Error::unsupported("`error-context` values"));
-            }
+            InterfaceType::ErrorContext(_) => ValueType::ErrorContext,
         })
     }
 

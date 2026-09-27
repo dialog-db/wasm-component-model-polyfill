@@ -18,6 +18,7 @@ mod canonical_abi;
 mod compile_modules;
 mod destructor_task;
 mod error_context;
+mod error_context_transfer;
 mod host_end_lifecycle;
 mod instantiation;
 mod jspi_switch_module;

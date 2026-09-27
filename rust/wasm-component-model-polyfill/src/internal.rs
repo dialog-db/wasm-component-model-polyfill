@@ -35,7 +35,7 @@ use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::shape::AbiShape;
 use crate::backend::Backend;
 use crate::component::{Component, ExternalName, FunctionType};
-use crate::concurrency::{CopyBuffer, EndId};
+use crate::concurrency::{CopyBuffer, EndId, ErrorContextId};
 use crate::error::{Error, Result};
 use crate::executor::ir::{CanonOptions, ExecutorIr};
 use crate::identifier::InterfaceIdentifier;
@@ -143,6 +143,14 @@ pub trait StreamAnyInternal {
     fn end(&self) -> EndId;
     /// The type of the values the stream carries.
     fn payload(&self) -> Option<&ValueType>;
+}
+
+/// The crate-internal face of [`ErrorContextAny`](crate::ErrorContextAny).
+pub trait ErrorContextAnyInternal {
+    /// The untyped value of the error context `context`.
+    fn new(context: ErrorContextId) -> Self;
+    /// The error context the value names.
+    fn context(&self) -> ErrorContextId;
 }
 
 /// The crate-internal face of [`FutureAny`](crate::FutureAny).

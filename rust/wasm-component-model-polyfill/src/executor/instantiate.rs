@@ -42,6 +42,7 @@ use super::build_task_return;
 use super::build_thread_yield;
 use super::error_context_builtins::{
     build_error_context_debug_message, build_error_context_drop, build_error_context_new,
+    build_error_context_transfer,
 };
 use super::intrinsics::{
     build_backpressure_dec, build_backpressure_inc, build_context_get, build_context_set,
@@ -744,6 +745,15 @@ fn build_runtime_trampoline<T: 'static>(
         TrampolineSpec::EndTransfer { tables, signature } => Ok(build_end_transfer(
             store,
             tables.clone(),
+            signature,
+            abi_state.clone(),
+        )),
+        TrampolineSpec::ErrorContextTransfer {
+            instances,
+            signature,
+        } => Ok(build_error_context_transfer(
+            store,
+            instances.clone(),
             signature,
             abi_state.clone(),
         )),

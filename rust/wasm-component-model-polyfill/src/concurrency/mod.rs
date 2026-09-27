@@ -182,6 +182,7 @@ mod end_id;
 mod end_kind;
 mod entry_finish;
 mod entry_status;
+mod error_context_any;
 mod error_context_id;
 mod error_context_record;
 mod event;
@@ -275,6 +276,7 @@ pub use end_id::EndId;
 pub use end_kind::EndKind;
 pub use entry_finish::EntryFinish;
 pub use entry_status::EntryStatus;
+pub use error_context_any::ErrorContextAny;
 pub use error_context_id::ErrorContextId;
 pub use event::Event;
 // An event code is spelled outside this module only by the tests that

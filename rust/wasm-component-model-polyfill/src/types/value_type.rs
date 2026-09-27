@@ -74,6 +74,12 @@ pub enum ValueType {
     /// Like a handle, the value is an index into the handle table of
     /// the component instance that holds the end.
     Future(FutureType),
+    /// An error context (`error-context`): an opaque value that
+    /// carries a debug message from one component to another.
+    ///
+    /// Like a handle, the value is an index into the handle table of
+    /// the component instance that holds it.
+    ErrorContext,
 }
 
 #[cfg(test)]

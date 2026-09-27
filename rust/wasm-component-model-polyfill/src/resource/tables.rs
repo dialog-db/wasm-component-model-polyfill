@@ -354,6 +354,22 @@ impl HandleTables {
         }
     }
 
+    /// The error context the entry at `index` of `table` names. The
+    /// error-context built-ins that take a handle, and every crossing
+    /// of an error context into another instance, reach its record
+    /// this way.
+    pub fn error_context_from_handle(
+        &self,
+        table: TableId,
+        index: u32,
+    ) -> Result<ErrorContextId, HandleLookupError> {
+        match self.entry(table, index) {
+            Some(HandleKind::ErrorContext { context }) => Ok(context),
+            Some(_) => Err(HandleLookupError::NotAnErrorContext { index }),
+            None => Err(HandleLookupError::Unknown { index }),
+        }
+    }
+
     /// The subtask the entry at `index` of `table` names.
     /// `subtask.drop` reaches its record this way, and it is the one
     /// built-in that takes a subtask handle rather than a waitable

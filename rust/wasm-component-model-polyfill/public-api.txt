@@ -130,6 +130,7 @@ pub fn wasm_component_model_polyfill::Error::from(value: wasm_component_model_po
 pub wasm_component_model_polyfill::ErrorContextCause::DebugMessagePointerOutOfBounds
 pub wasm_component_model_polyfill::ErrorContextCause::NotAnErrorContext
 pub wasm_component_model_polyfill::ErrorContextCause::NotAnErrorContext::index: u32
+pub wasm_component_model_polyfill::ErrorContextCause::ReferenceCountOverflow
 pub enum wasm_component_model_polyfill::ExternType
 pub wasm_component_model_polyfill::ExternType::Component
 pub wasm_component_model_polyfill::ExternType::Function(wasm_component_model_polyfill::FunctionType)
@@ -277,6 +278,7 @@ pub wasm_component_model_polyfill::Val::Bool(bool)
 pub wasm_component_model_polyfill::Val::Borrow(wasm_component_model_polyfill::ResourceHandle)
 pub wasm_component_model_polyfill::Val::Char(char)
 pub wasm_component_model_polyfill::Val::Enum(alloc::string::String)
+pub wasm_component_model_polyfill::Val::ErrorContext(wasm_component_model_polyfill::ErrorContextAny)
 pub wasm_component_model_polyfill::Val::F32(f32)
 pub wasm_component_model_polyfill::Val::F64(f64)
 pub wasm_component_model_polyfill::Val::FixedLengthList(alloc::boxed::Box<[wasm_component_model_polyfill::Val]>)
@@ -305,6 +307,7 @@ pub wasm_component_model_polyfill::Val::Variant::payload: core::option::Option<a
 pub enum wasm_component_model_polyfill::ValueType
 pub wasm_component_model_polyfill::ValueType::Borrow(wasm_component_model_polyfill::ResourceType)
 pub wasm_component_model_polyfill::ValueType::Enum(wasm_component_model_polyfill::EnumType)
+pub wasm_component_model_polyfill::ValueType::ErrorContext
 pub wasm_component_model_polyfill::ValueType::FixedLengthList(wasm_component_model_polyfill::FixedLengthListType)
 pub wasm_component_model_polyfill::ValueType::Flags(wasm_component_model_polyfill::FlagsType)
 pub wasm_component_model_polyfill::ValueType::Future(wasm_component_model_polyfill::FutureType)
@@ -390,6 +393,7 @@ pub struct wasm_component_model_polyfill::EnumType
 impl wasm_component_model_polyfill::EnumType
 pub fn wasm_component_model_polyfill::EnumType::cases(&self) -> &[alloc::string::String]
 pub fn wasm_component_model_polyfill::EnumType::new(cases: impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> Self
+pub struct wasm_component_model_polyfill::ErrorContextAny
 pub struct wasm_component_model_polyfill::ExportInstance<'a>
 impl<'a> wasm_component_model_polyfill::ExportInstance<'a>
 pub fn wasm_component_model_polyfill::ExportInstance<'a>::func(&self, name: &str) -> core::option::Option<wasm_component_model_polyfill::Func>

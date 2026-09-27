@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::abi::signature::Signature;
-use crate::error::{CopyCause, Error, Result, SchedulerCause, ThreadCause, WaitableCause};
+use crate::error::{
+    CopyCause, Error, ErrorContextCause, Result, SchedulerCause, ThreadCause, WaitableCause,
+};
 use crate::executor::ir::CanonOptions;
 use crate::internal::ErrorInternal;
 use crate::resource::TableId;
@@ -85,9 +87,9 @@ use super::waitable_state::WaitableState;
 ///
 /// The tables cap how many records the store holds live. The records
 /// that count are tasks, subtasks, threads, waitable sets, the shared
-/// records of streams and futures, and the host tasks of calls the
-/// scheduler holds, whose number the scheduler shares with the
-/// tables. A record
+/// records of streams and futures, error-context records, and the
+/// host tasks of calls the scheduler holds, whose number the
+/// scheduler shares with the tables. A record
 /// that would take the count past the cap is not created, and its
 /// creation fails with Wasmtime's full-table cause. Lowering the cap
 /// below the count removes nothing; only the records created after
@@ -165,6 +167,7 @@ impl TaskTables {
             + self.threads.len()
             + self.waitable_sets.len()
             + self.shared_records.len()
+            + self.error_contexts.len()
             + self.host_tasks.load(Ordering::Acquire)
     }
 
@@ -1243,12 +1246,51 @@ impl TaskTables {
     /// Create an error-context record holding `debug_message`, named
     /// by one handle, and return its identity. The
     /// `error-context.new` built-in calls this and puts the
-    /// identity's index in a handle-table entry for the guest.
-    pub fn insert_error_context(&mut self, debug_message: String) -> ErrorContextId {
+    /// identity's index in a handle-table entry for the guest. The
+    /// record counts against the cap, so one past it fails with the
+    /// full-table cause.
+    pub fn insert_error_context(&mut self, debug_message: String) -> Result<ErrorContextId> {
+        self.admit_records(1)?;
         let (index, generation) = self
             .error_contexts
             .insert_with_generation(ErrorContextRecord::new(debug_message));
-        ErrorContextId::new(index, generation)
+        Ok(ErrorContextId::new(index, generation))
+    }
+
+    /// Add one handle to the error context `context`, for the handle
+    /// a crossing into another instance gives it: its count rises by
+    /// one. A count past `u32::MAX` fails with Wasmtime's
+    /// reference-count cause and leaves the count as it was. A
+    /// crossing only ever copies a handle that names a live record,
+    /// so an identity that names none is an internal failure.
+    pub fn retain_error_context(&mut self, context: ErrorContextId) -> Result<()> {
+        let index = self
+            .error_context_index(context)
+            .ok_or_else(|| Error::internal("an error-context handle named no record"))?;
+        let record = self
+            .error_contexts
+            .get_mut(index)
+            .ok_or_else(|| Error::internal("an error-context handle named no record"))?;
+        record.handle_count = record
+            .handle_count
+            .checked_add(1)
+            .ok_or(Error::ErrorContext(
+                ErrorContextCause::ReferenceCountOverflow,
+            ))?;
+        Ok(())
+    }
+
+    /// One error-context record, writable, under the rule
+    /// [`error_context`](Self::error_context) states. Only a test
+    /// writes a record directly, to bring its count to a bound no
+    /// guest reaches in a test's time.
+    #[cfg(test)]
+    pub fn error_context_mut(
+        &mut self,
+        context: ErrorContextId,
+    ) -> Option<&mut ErrorContextRecord> {
+        let index = self.error_context_index(context)?;
+        self.error_contexts.get_mut(index)
     }
 
     /// One error-context record. `None` once the record the identity
