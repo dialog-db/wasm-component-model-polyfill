@@ -48,10 +48,11 @@ kanban-plugin: basic
 
 ## In Progress
 
-- [ ] [[31e29c]]
 - [ ] [[f3f4c8]]
 
 ## Needs Review
+
+- [ ] [[31e29c]]
 
 ## Ready
 
