@@ -5,6 +5,8 @@ type: chore
 blocked_by: []
 labels: [api]
 created: 2026-09-22T17:00:12Z
+disposition: cancelled
+disposition_at: 2026-09-27T05:43:14Z
 ---
 
 ## What to build
@@ -18,3 +20,5 @@ The three review rounds of card `49c524` accepted the closed public surface and 
 - [ ] `ResourceType::indexed` is behind the internal seam or its public presence is justified in its doc.
 - [ ] `lint` passes (the `public-api` check included) and `tests all` is green on both targets with the conformance summary unchanged.
 
+## Triage notes
+- 2026-09-26: merged into `0bb7af` ("The gate runs the benchmarks and sees the whole public API") and cancelled. Its What to build and acceptance criteria carry over there in full.
