@@ -34,6 +34,19 @@
 //! fail when the bundle or a scenario cannot be read or judged, which
 //! is a fault of the build or of the runner. The engine has the default
 //! configuration, so the suspend provider is on.
+//!
+//! One target cannot run the other target's subject, so no lane alone
+//! holds every line of the record. `tests zena` runs the browser lane's
+//! scenario run first and keeps what it prints: each report on a line
+//! of its own after `PRINTED`. It then runs, natively,
+//! `it_holds_all_three_subjects_to_the_record_and_prints_the_table`,
+//! which reads those lines from the file `WCMP_ZENA_WEB_RUN` names,
+//! adds the Wasmtime and native reports, prints the compatibility table
+//! to the file `WCMP_ZENA_TABLE` names, and holds all three subjects to
+//! the record. `tests zena regenerate` sets `WCMP_ZENA_REGENERATE` to a
+//! file, and the test writes the record of the run there instead of
+//! holding the run to the committed one. The nextest profiles leave
+//! that test out of every other lane.
 
 #![cfg(test)]
 
@@ -82,6 +95,22 @@ fn zena_scenarios() -> Vec<Scenario> {
     bundle::scenarios(BUNDLE).unwrap_or_else(|error| panic!("the Zena bundle: {error}"))
 }
 
+/// What a report line printed by
+/// `it_runs_every_zena_scenario_and_reports_a_stage_and_its_reason`
+/// starts with, so `tests zena` can pick the browser's lines out of
+/// the test runner's output.
+const PRINTED: &str = "zena report: ";
+
+/// Print `line` where the test runner shows it: to standard output
+/// natively, and to the console in the browser, whose standard output
+/// goes nowhere.
+fn say(line: &str) {
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test::console_log!("{line}");
+    #[cfg(not(target_arch = "wasm32"))]
+    println!("{line}");
+}
+
 fn polyfill() -> PolyfillRun {
     PolyfillRun::new().unwrap_or_else(|error| panic!("the polyfill run: {error}"))
 }
@@ -106,7 +135,7 @@ async fn it_runs_every_zena_scenario_and_reports_a_stage_and_its_reason() {
     let mut reports = Vec::new();
     for scenario in zena_scenarios() {
         let report = report(&polyfill, &scenario).await;
-        println!("{report}");
+        say(&format!("{PRINTED}{report}"));
         reports.push(report);
     }
     assert!(
@@ -251,6 +280,10 @@ fn record_of(pin: &str, reports: &[Report]) -> Record {
     Record::new("zena", pin, lines)
 }
 
+/// What a failing gate says after its differences: how to write the
+/// record again from a run.
+const REGENERATE: &str = "`tests zena regenerate` writes the record again from all three subjects, the browser included; `tests zena regenerate --dry-run` prints the difference it would write.";
+
 /// One line per item, for a failure message.
 fn lines<T: core::fmt::Display>(items: &[T]) -> String {
     items.iter().map(|item| format!("  {item}\n")).collect()
@@ -267,9 +300,74 @@ async fn it_holds_every_subject_of_every_scenario_to_the_committed_record() {
     let differences = record.differences(&built_revision(), &reports);
     assert!(
         differences.is_empty(),
-        "the Zena run differs from tests/zena/record.txt:\n{}where this run stopped:\n{}",
+        "the Zena run differs from tests/zena/record.txt:\n{}where this run stopped:\n{}{REGENERATE}",
         lines(&differences),
         lines(&reports)
+    );
+}
+
+/// The browser's reports, from the output of its scenario run that
+/// `tests zena` keeps in the file `WCMP_ZENA_WEB_RUN` names: every line
+/// that starts with `PRINTED`.
+#[cfg(not(target_arch = "wasm32"))]
+fn browser_reports() -> Vec<Report> {
+    let path = std::env::var("WCMP_ZENA_WEB_RUN").unwrap_or_else(|_| {
+        panic!("WCMP_ZENA_WEB_RUN names no file; this test reads the browser's run that `tests zena` keeps")
+    });
+    let output = std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{path}: {error}"));
+    let reports: Vec<Report> = output
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix(PRINTED))
+        .map(|line| {
+            line.parse()
+                .unwrap_or_else(|error| panic!("{path}: `{line}`: {error}"))
+        })
+        .collect();
+    for report in &reports {
+        assert_eq!(report.subject, Subject::Web, "{path}: `{report}`");
+    }
+    reports
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[wcmp_macros::test]
+async fn it_holds_all_three_subjects_to_the_record_and_prints_the_table() {
+    let browser = browser_reports();
+    let mut reports = subjects(BUNDLE).await;
+    let bundled = zena_scenarios();
+    let mut scenarios: Vec<&str> = bundled
+        .iter()
+        .map(|scenario| scenario.name.as_str())
+        .collect();
+    let mut reported: Vec<&str> = browser
+        .iter()
+        .map(|report| report.scenario.as_str())
+        .collect();
+    scenarios.sort_unstable();
+    reported.sort_unstable();
+    assert_eq!(
+        reported, scenarios,
+        "the browser's run reports these scenarios where the bundle holds those"
+    );
+    reports.extend(browser.iter().cloned());
+
+    let pin = built_revision();
+    let run = Record::new("zena", pin.clone(), reports.clone());
+    let table = wcmp_scenario::Table::new(&run).to_string();
+    match std::env::var("WCMP_ZENA_TABLE") {
+        Ok(path) => std::fs::write(&path, &table).unwrap_or_else(|error| panic!("{path}: {error}")),
+        Err(_) => println!("{table}"),
+    }
+    if let Ok(path) = std::env::var("WCMP_ZENA_REGENERATE") {
+        std::fs::write(&path, run.to_string()).unwrap_or_else(|error| panic!("{path}: {error}"));
+        return;
+    }
+    let differences = committed_record().differences(&pin, &reports);
+    assert!(
+        differences.is_empty(),
+        "the Zena run of all three subjects differs from tests/zena/record.txt:\n{}where this run stopped:\n{}{REGENERATE}",
+        lines(&differences),
+        lines(&run.lines)
     );
 }
 

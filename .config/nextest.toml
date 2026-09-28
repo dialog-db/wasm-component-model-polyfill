@@ -8,9 +8,11 @@
 # replacing it; `--ignore-default-filter` drops it.
 
 # The ordinary lanes (`tests native|web <profile>`): every test, with
-# the conformance corpus in its provider-allowed state.
+# the conformance corpus in its provider-allowed state. The Zena test
+# that holds all three subjects to the record reads the browser's run
+# from a file, so only `tests zena` runs it.
 [profile.default]
-default-filter = "not test(/without_a_provider$/)"
+default-filter = "not test(/without_a_provider$/) and not (binary(zena) and test(=it_holds_all_three_subjects_to_the_record_and_prints_the_table))"
 
 # The `no-provider` lanes (`tests native|web no-provider`): the
 # conformance corpus alone, with the provider turned off.

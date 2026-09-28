@@ -15,7 +15,8 @@
 //! A [`Record`] is the committed stage of every scenario for every
 //! subject, made from one revision of the toolchain. It is the gate of
 //! a run: every [`Difference`] between the two fails the run, and only
-//! the stages are compared.
+//! the stages are compared. A [`Table`] prints a record for a person,
+//! one row per scenario and one column per subject.
 //!
 //! A contributor writes the [`Expectations`] by hand: the calls in
 //! order, each with the results it returns, a failure, or no outcome at
@@ -75,6 +76,7 @@ mod run;
 mod stage;
 mod subject;
 mod syntax;
+mod table;
 mod value;
 mod verdict;
 
@@ -91,6 +93,7 @@ pub use crate::report::Report;
 pub use crate::run::Run;
 pub use crate::stage::Stage;
 pub use crate::subject::Subject;
+pub use crate::table::Table;
 pub use crate::value::Value;
 pub use crate::verdict::Verdict;
 

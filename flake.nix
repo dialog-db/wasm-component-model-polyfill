@@ -880,6 +880,95 @@
             rm -rf "$workspace"' EXIT
         '';
 
+        # `tests zena` and `tests zena regenerate`: the Zena scenarios on
+        # all three subjects, from the debug archives. One target cannot
+        # run the other's subject, so each lane alone holds only the
+        # Wasmtime line and its own polyfill line to the record. This
+        # command runs the browser's scenario run first and keeps its
+        # output, whose report lines the native `zena` test then reads
+        # (`WCMP_ZENA_WEB_RUN`), adds the Wasmtime and native reports to,
+        # and holds to every line of the record. It writes the
+        # compatibility table (`WCMP_ZENA_TABLE`), which is printed last,
+        # after a failure too. `regenerate` has the test write the record
+        # of the run (`WCMP_ZENA_REGENERATE`), with the revision the build
+        # compiled with, which is the flake lock's, in its header; the
+        # difference from the committed record is printed, and
+        # `--dry-run` stops there.
+        zenaCommand = ''
+          record="$(git rev-parse --show-toplevel)"/rust/wasm-component-model-polyfill/tests/zena/record.txt
+          regenerate=""
+          dry=""
+          if [ "''${1:-}" = regenerate ]; then
+            regenerate=1
+            shift
+            for argument in "$@"; do
+              case "$argument" in
+                --dry-run) dry=1 ;;
+                *)
+                  echo "tests zena regenerate: $argument is not an argument of this command (only --dry-run)" >&2
+                  exit 2
+                  ;;
+              esac
+            done
+          elif [ "$#" -gt 0 ]; then
+            echo "tests zena: $1 is not an argument of this command (only regenerate [--dry-run])" >&2
+            exit 2
+          fi
+          web=$(nix build --no-link --print-out-paths .#tests-web-debug)
+          native=$(nix build --no-link --print-out-paths .#tests-native-debug)
+        ''
+        + testWorkspace "tests-zena"
+        + browserPool
+        + ''
+          replay() {
+            cargo nextest run \
+              --workspace-remap ./ \
+              --archive-file "$1" \
+              --extract-to "$workspace/archive" \
+              --extract-overwrite \
+              --ignore-default-filter \
+              -E "binary(zena) and test(=$2)" \
+              "''${@:3}"
+          }
+          echo "== the browser subject (wasm32-unknown-unknown, debug)"
+          if ! replay "$web/tests-web-debug.tar.zst" \
+            it_runs_every_zena_scenario_and_reports_a_stage_and_its_reason \
+            --no-capture >"$workspace/web-run.txt" 2>&1; then
+            cat "$workspace/web-run.txt"
+            echo "tests zena: the browser's scenario run failed" >&2
+            exit 1
+          fi
+          rm -rf "$workspace/archive"
+          mkdir -p "$workspace/archive"
+          echo "== the Wasmtime run and the native subject (${system}, debug)"
+          export WCMP_ZENA_WEB_RUN="$workspace/web-run.txt"
+          export WCMP_ZENA_TABLE="$workspace/table.txt"
+          if [ -n "$regenerate" ]; then
+            export WCMP_ZENA_REGENERATE="$workspace/record.txt"
+          fi
+          status=0
+          replay "$native/tests-native-debug.tar.zst" \
+            it_holds_all_three_subjects_to_the_record_and_prints_the_table || status=$?
+          if [ -s "$WCMP_ZENA_TABLE" ]; then
+            echo
+            cat "$WCMP_ZENA_TABLE"
+          fi
+          if [ "$status" != 0 ]; then
+            exit "$status"
+          fi
+          if [ -n "$regenerate" ]; then
+            echo
+            if diff -u "$record" "$WCMP_ZENA_REGENERATE"; then
+              echo "tests zena regenerate: tests/zena/record.txt is current, nothing to write"
+            elif [ -n "$dry" ]; then
+              echo "tests zena regenerate: the diff above is what a run would write; tests/zena/record.txt is unchanged"
+            else
+              install -m 644 "$WCMP_ZENA_REGENERATE" "$record"
+              echo "tests zena regenerate: wrote $record"
+            fi
+          fi
+        '';
+
         menuTestCommand =
           {
             description,
@@ -968,7 +1057,7 @@
           };
 
           "tests" = {
-            description = "Run the test suites from Nix-built archives";
+            description = "Run the test suites from Nix-built archives, and the Zena scenarios with their compatibility table";
             subcommands = {
               native = {
                 description = "Unit and integration tests on ${system}";
@@ -1050,16 +1139,25 @@
                   };
                 };
               };
+              zena = {
+                description = "The Zena scenarios on all three subjects, held to every line of tests/zena/record.txt, then the compatibility table: Browser, Native, and Wasmtime per scenario, with pass counts and the pin (`tests zena regenerate [--dry-run]` writes the record again from all three, the browser included, or only prints the difference)";
+                command = zenaCommand;
+              };
               # The conformance corpus runs in four states: each target with
               # the suspend provider allowed (the debug and release lanes)
-              # and with it turned off (the `no-provider` lanes). Each lane
-              # reports its wall-clock time, build included.
+              # and with it turned off (the `no-provider` lanes). The Zena
+              # lane is the one run that holds the browser's and the native
+              # line of the record together. Each lane reports its
+              # wall-clock time, build included. Arguments after the leaf
+              # reach every nextest lane, and not the Zena lane, which takes
+              # none.
               all = {
-                description = "Every lane, each timed: both targets in debug and release, and the conformance corpus on both targets with the suspend provider off, so the corpus runs in all four states (grab a coffee)";
+                description = "Every lane, each timed: both targets in debug and release, the conformance corpus on both targets with the suspend provider off, so the corpus runs in all four states, and the Zena scenarios on all three subjects (grab a coffee)";
                 command = ''
                   status=0
-                  for suite in "native debug" "native release" "native no-provider" \
-                    "web debug" "web release" "web no-provider"; do
+                  lane() {
+                    local suite=$1
+                    shift
                     started=$SECONDS
                     # shellcheck disable=SC2086
                     if tests $suite "$@"; then
@@ -1068,7 +1166,12 @@
                       echo "tests $suite: FAILED after $((SECONDS - started))s"
                       status=1
                     fi
+                  }
+                  for suite in "native debug" "native release" "native no-provider" \
+                    "web debug" "web release" "web no-provider"; do
+                    lane "$suite" "$@"
                   done
+                  lane zena
                   exit "$status"
                 '';
               };
