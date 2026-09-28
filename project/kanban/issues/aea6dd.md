@@ -24,3 +24,8 @@ Notes from the review of 264c89 (landed as `b882bd371`):
 - [ ] The record holds lines for scenario 8, and `tests zena` passes the gate.
 - [ ] `tests native debug`, `tests web debug`, and `lint` pass.
 
+
+## Dispatch log
+- 2026-09-28 00:07 PDT: implementor `card-aea6dd-383529a3` dispatched (after the weekly GC; runs beside 7bf3c5 and ff3743).
+- 2026-09-28: the drive exited after the guest nudges ran out (00:3x PDT) while the agent kept working; the agent finished at 08:43Z with a full summary filed as a non-terminal report instead of `report done`. Treated as done at `d063e00bb` (run-time link through both runners, scenario 8, record lines; `tests all` green at `45823632e`, `lint` green at `d063e00bb`, which only adds a rustfmt commit). Scenario 8 passes on Wasmtime and stops at `parse` on web and native. Design notes: a run-time link only works for async-typed functions (Wasmtime 49 panics on a nested `run_concurrent`; both refuse a concurrent host function for a sync-typed import), so scenario 8 uses `greet: async func`; the polyfill can report `instantiate` where Wasmtime reports `link`; composition links in `wiring.txt` are refused until the wac step exists. Implementor paused.
+- 2026-09-28: reviewer `review-aea6dd-f65e025b` launched; delivered tip `d063e00bb`.
