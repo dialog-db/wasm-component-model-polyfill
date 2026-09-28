@@ -1,14 +1,19 @@
 //! The Wasmtime run of one scenario.
 
-use wasmtime::component::{Component, Func, Instance, Linker, ResourceTable, Val};
+use wasmtime::component::{
+    Component, ComponentNamedList, ComponentType, Func, Instance, Lift, Linker, Lower,
+    ResourceTable, Val,
+};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
-use wcmp_scenario::{Call, Observations, Outcome, Run, Stage};
+use wcmp_scenario::{
+    Call, Observations, Outcome, Run, Stage, Typed, TypedSignature, Value, ValueType,
+};
 
 use crate::error::{Error, Result};
 use crate::scenario::Scenario;
-use crate::value::{from_val, to_val};
+use crate::value::{from_val, to_val, value_type};
 
 /// The most a scenario can print. A scenario is small and deterministic,
 /// so a megabyte is far more than any prints; a write past it fails in
@@ -68,11 +73,12 @@ impl WasmtimeRun {
     /// the expectations is made in order, even after one fails, and the
     /// lines printed to standard output are kept.
     ///
-    /// Every call is untyped: `Func::call_async` with `Val` arguments. A
-    /// call the expectations mark as typed fails, since typed calls are
-    /// not supported here yet. A result that is neither a scalar nor a
-    /// string fails its call too, because the scenario model cannot
-    /// hold it.
+    /// A call is untyped, through `Func::call_async` with `Val`
+    /// arguments, unless the expectations mark it as typed. A typed call
+    /// goes through Wasmtime's `TypedFunc`, for the closed set of
+    /// signatures of [`TypedSignature`], and fails for any other. A
+    /// result that is neither a scalar nor a string fails its call too,
+    /// because the scenario model cannot hold it.
     ///
     /// # Errors
     ///
@@ -135,9 +141,6 @@ impl WasmtimeRun {
 
 /// Make one call and report how it ended.
 async fn call(store: &mut Store<Host>, instances: &[(&str, Instance)], call: &Call) -> Outcome {
-    if call.typed {
-        return Outcome::Failure("the Wasmtime run does not make typed calls yet".to_string());
-    }
     let Some((_, instance)) = instances.iter().find(|(name, _)| *name == call.component) else {
         return Outcome::Failure(format!("the scenario has no component {}", call.component));
     };
@@ -147,6 +150,9 @@ async fn call(store: &mut Store<Host>, instances: &[(&str, Instance)], call: &Ca
             call.component, call.export
         ));
     };
+    if call.typed {
+        return typed_call(store, &func, &call.arguments).await;
+    }
     let arguments: Vec<Val> = call.arguments.iter().map(to_val).collect();
     let mut results = vec![Val::Bool(false); func.ty(&*store).results().len()];
     if let Err(error) = func.call_async(&mut *store, &arguments, &mut results).await {
@@ -165,6 +171,106 @@ async fn call(store: &mut Store<Host>, instances: &[(&str, Instance)], call: &Ca
         }
     }
     Outcome::Results(values)
+}
+
+/// Make one typed call of `func` through Wasmtime's `TypedFunc`, and
+/// report how it ended.
+///
+/// The Rust types of the typed function come from the closed set of
+/// [`TypedSignature`]: the parameter types from `arguments`, and the
+/// result type from the export. A call outside that set, or one whose
+/// export has a result the scenario model cannot hold, fails. So does a
+/// call whose arguments do not have the export's parameter types, which
+/// `Func::typed` refuses.
+async fn typed_call(store: &mut Store<Host>, func: &Func, arguments: &[Value]) -> Outcome {
+    let mut results = Vec::new();
+    for (index, ty) in func.ty(&*store).results().enumerate() {
+        match value_type(&ty) {
+            Some(ty) => results.push(ty),
+            None => {
+                return Outcome::Failure(format!(
+                    "result {} is {ty:?}, which is neither a scalar nor a string",
+                    index + 1
+                ));
+            }
+        }
+    }
+    let parameters: Vec<ValueType> = arguments.iter().map(Value::ty).collect();
+    let signature = match TypedSignature::new(&parameters, &results) {
+        Ok(signature) => signature,
+        Err(error) => return Outcome::Failure(error.to_string()),
+    };
+    let arguments = arguments.to_vec();
+    match signature.ty {
+        None => typed::<(), ()>(store, func, (), |()| Vec::new()).await,
+        Some(ValueType::Bool) => typed_of::<bool>(store, func, signature, arguments).await,
+        Some(ValueType::S8) => typed_of::<i8>(store, func, signature, arguments).await,
+        Some(ValueType::U8) => typed_of::<u8>(store, func, signature, arguments).await,
+        Some(ValueType::S16) => typed_of::<i16>(store, func, signature, arguments).await,
+        Some(ValueType::U16) => typed_of::<u16>(store, func, signature, arguments).await,
+        Some(ValueType::S32) => typed_of::<i32>(store, func, signature, arguments).await,
+        Some(ValueType::U32) => typed_of::<u32>(store, func, signature, arguments).await,
+        Some(ValueType::S64) => typed_of::<i64>(store, func, signature, arguments).await,
+        Some(ValueType::U64) => typed_of::<u64>(store, func, signature, arguments).await,
+        Some(ValueType::F32) => typed_of::<f32>(store, func, signature, arguments).await,
+        Some(ValueType::F64) => typed_of::<f64>(store, func, signature, arguments).await,
+        Some(ValueType::Char) => typed_of::<char>(store, func, signature, arguments).await,
+        Some(ValueType::String) => typed_of::<String>(store, func, signature, arguments).await,
+    }
+}
+
+/// Make a typed call of `signature` whose parameters and result are
+/// all of the Rust type `T`.
+async fn typed_of<T>(
+    store: &mut Store<Host>,
+    func: &Func,
+    signature: TypedSignature,
+    arguments: Vec<Value>,
+) -> Outcome
+where
+    T: Typed + ComponentType + Lower + Lift + Send + Sync + 'static,
+{
+    let Some(arguments) = arguments
+        .into_iter()
+        .map(T::from_value)
+        .collect::<Option<Vec<T>>>()
+    else {
+        return Outcome::Failure(format!("an argument is not a {}", T::TYPE));
+    };
+    let result = |(result,): (T,)| vec![result.into_value()];
+    let none = |()| Vec::new();
+    // `TypedSignature` holds a typed call to two arguments at most.
+    let mut arguments = arguments.into_iter();
+    match (arguments.next(), arguments.next(), signature.result) {
+        (None, _, false) => typed::<(), ()>(store, func, (), none).await,
+        (None, _, true) => typed::<(), (T,)>(store, func, (), result).await,
+        (Some(a), None, false) => typed::<(T,), ()>(store, func, (a,), none).await,
+        (Some(a), None, true) => typed::<(T,), (T,)>(store, func, (a,), result).await,
+        (Some(a), Some(b), false) => typed::<(T, T), ()>(store, func, (a, b), none).await,
+        (Some(a), Some(b), true) => typed::<(T, T), (T,)>(store, func, (a, b), result).await,
+    }
+}
+
+/// Make a typed call of `func` with the Rust types `P` and `R`, and
+/// turn its result into the scenario model's values with `values`.
+async fn typed<P, R>(
+    store: &mut Store<Host>,
+    func: &Func,
+    arguments: P,
+    values: impl FnOnce(R) -> Vec<Value>,
+) -> Outcome
+where
+    P: ComponentNamedList + Lower + Send + Sync + 'static,
+    R: ComponentNamedList + Lift + Send + Sync + 'static,
+{
+    let typed = match func.typed::<P, R>(&*store) {
+        Ok(typed) => typed,
+        Err(error) => return Outcome::Failure(format!("{error:#}")),
+    };
+    match typed.call_async(&mut *store, arguments).await {
+        Ok(results) => Outcome::Results(values(results)),
+        Err(error) => Outcome::Failure(format!("{error:#}")),
+    }
 }
 
 /// The function an export name names: `add` at the root of the
@@ -386,13 +492,12 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    async fn it_fails_a_call_to_a_missing_component_or_export_or_a_typed_call() {
+    async fn it_fails_a_call_to_a_missing_component_or_export() {
         let observations = calculate(
             "
             call other add(1s32, 2s32)
             call calc subtract(1s32, 2s32)
-            call calc local:demo/other#add(1s32, 2s32)
-            call typed calc add(1s32, 2s32)
+            call typed calc local:demo/other#add(1s32, 2s32)
             ",
         )
         .await;
@@ -410,9 +515,61 @@ mod tests {
                 "the scenario has no component other",
                 "component calc has no function export subtract",
                 "component calc has no function export local:demo/other#add",
-                "the Wasmtime run does not make typed calls yet",
             ]
         );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_makes_a_typed_call_that_ends_as_the_untyped_call_does() {
+        let observations = calculate(
+            "
+            call calc add(1s32, 2s32) -> 3s32
+            call typed calc add(1s32, 2s32) -> 3s32
+            call typed calc local:demo/api#add(2s32, 2s32) -> 4s32
+            call calc boom() -> fail
+            call typed calc boom() -> fail
+            ",
+        )
+        .await;
+        assert_eq!(observations.verdict, Verdict::pass());
+        let strings = run(
+            vec![program("echoer", ECHOER)],
+            r#"
+            call echoer shout("hello, wasmtime") -> "hello, wasmtime"
+            call typed echoer shout("hello, wasmtime") -> "hello, wasmtime"
+            "#,
+        )
+        .await;
+        assert_eq!(strings.verdict, Verdict::pass());
+    }
+
+    #[wcmp_macros::test]
+    async fn it_fails_a_typed_call_outside_the_closed_set_or_of_other_types() {
+        let observations = calculate(
+            "
+            call typed calc add(1s32, 2u32)
+            call typed calc add(1u32, 2u32)
+            ",
+        )
+        .await;
+        let reasons: Vec<&str> = observations
+            .calls
+            .iter()
+            .map(|observation| match &observation.outcome {
+                Outcome::Failure(reason) => reason.as_str(),
+                Outcome::Results(_) => panic!("{observation} succeeded"),
+            })
+            .collect();
+        assert_eq!(
+            reasons[0],
+            wcmp_scenario::Error::Untyped {
+                signature: "(s32, u32) -> s32".to_string()
+            }
+            .to_string()
+        );
+        // The arguments are `u32`, and `Func::typed` refuses them for an
+        // export that takes `s32`.
+        assert!(!reasons[1].is_empty());
     }
 
     #[wcmp_macros::test]

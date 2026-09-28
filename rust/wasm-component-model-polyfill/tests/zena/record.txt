@@ -31,12 +31,21 @@
 async-sleep wasmtime pass
 async-sleep web parse "component sleeper: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 8)) is not supported in the wasm_runtime_layer"
 async-sleep native parse "component sleeper: instantiation error: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer"
+classes-and-arrays wasmtime pass
+classes-and-arrays web parse "component shapes: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 1)) is not supported in the wasm_runtime_layer"
+classes-and-arrays native pass
 console-output wasmtime pass
 console-output web parse "component printer: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 8)) is not supported in the wasm_runtime_layer"
 console-output native parse "component printer: instantiation error: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer"
 custom-world wasmtime pass
 custom-world web parse "component relay: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 8)) is not supported in the wasm_runtime_layer"
 custom-world native parse "component relay: instantiation error: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer"
+exceptions wasmtime pass
+exceptions web parse "component halver: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 4)) is not supported in the wasm_runtime_layer"
+exceptions native parse "component halver: instantiation error: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer"
 scalar-export wasmtime pass
 scalar-export web pass
 scalar-export native pass
+string-roundtrip wasmtime pass
+string-roundtrip web parse "component strings: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 8)) is not supported in the wasm_runtime_layer"
+string-roundtrip native parse "component strings: instantiation error: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer"

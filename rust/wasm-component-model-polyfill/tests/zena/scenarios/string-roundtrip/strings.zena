@@ -1,0 +1,7 @@
+// Scenario 2: a string in and a string out. The string crosses the
+// Canonical ABI as `utf8` in linear memory, so the component has a
+// memory module beside the program module, and a string export brings
+// the exception tag and its global into the component with it.
+export let greet = (name: String): String => {
+  return 'hello, ' + name;
+};

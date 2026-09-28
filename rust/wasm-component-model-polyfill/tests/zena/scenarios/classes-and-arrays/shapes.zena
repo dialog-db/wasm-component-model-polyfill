@@ -1,0 +1,28 @@
+// Scenario 3: a class and an array that never cross the component
+// boundary. The export takes and returns scalars. The module-level
+// `origin` is a global whose type is a GC reference to the class.
+class Point {
+  x: i32;
+  y: i32;
+
+  new(x: i32, y: i32) : x = x, y = y {}
+
+  // The distance to `other` along the grid.
+  steps(other: Point): i32 {
+    let dx = if (other.x > this.x) other.x - this.x else this.x - other.x;
+    let dy = if (other.y > this.y) other.y - this.y else this.y - other.y;
+    return dx + dy;
+  }
+}
+
+let origin = new Point(0, 0);
+
+// The distance around a `width` by `height` rectangle, corner to corner.
+export let perimeter = (width: i32, height: i32): i32 => {
+  let corners = [origin, new Point(width, 0), new Point(width, height), new Point(0, height)];
+  var total = 0;
+  for (var i = 0; i < corners.length; i += 1) {
+    total = total + corners[i].steps(corners[(i + 1) % corners.length]);
+  }
+  return total;
+};

@@ -14,12 +14,15 @@
 //! For each scenario the runner (`zena/runner.rs`) parses every
 //! component with `Component::new`, links and instantiates it through
 //! the polyfill's `Linker` with the test host functions
-//! (`zena/host.rs`), and makes each call of the expectations through
-//! `Func::call` with `Val` arguments, keeping the lines the scenario
-//! prints. The scenario model judges the subject: against the Wasmtime
-//! run's observations when that run passed, and against the
-//! expectations otherwise. Each subject reports a stage and the text
-//! that says why, as a `Report` whose line is the scenario, the
+//! (`zena/host.rs`), and makes each call of the expectations, keeping
+//! the lines the scenario prints. A call goes through `Func::call` with
+//! `Val` arguments, or through `TypedFunc` when the expectations mark
+//! it as typed. The runner makes typed calls for a closed set of
+//! signatures of scalars and strings, so a scenario still needs no
+//! Rust code of its own. The scenario model judges the subject: against
+//! the Wasmtime run's observations when that run passed, and against
+//! the expectations otherwise. Each subject reports a stage and the
+//! text that says why, as a `Report` whose line is the scenario, the
 //! subject, the stage, and the reason.
 //!
 //! Where a subject stops is an outcome, not a failure, so no test
@@ -60,7 +63,7 @@ mod runner;
 use wasm_component_model_polyfill::{Component, Engine, Instance, Linker, Store, Val};
 use wcmp_macros::component;
 use wcmp_scenario::{
-    Difference, Observations, Outcome, Record, Report, Stage, Subject, Value, Verdict,
+    Call, Difference, Observations, Outcome, Record, Report, Stage, Subject, Value, Verdict,
 };
 
 use bundle::{Program, Scenario};
@@ -91,6 +94,9 @@ const RECORD: &str = include_str!("zena/record.txt");
 
 /// The name of scenario 1, the smallest program with an export.
 const SCALAR_EXPORT: &str = "scalar-export";
+
+/// The name of scenario 2, a string in and a string out.
+const STRING_ROUNDTRIP: &str = "string-roundtrip";
 
 /// Every Zena scenario in the bundle.
 fn zena_scenarios() -> Vec<Scenario> {
@@ -188,6 +194,89 @@ async fn it_reports_a_mismatch_when_one_result_of_a_passing_scenario_changes() {
             tampered.join(", ")
         );
     }
+}
+
+#[wcmp_macros::test]
+async fn it_gives_each_typed_call_the_outcome_of_the_same_untyped_call() {
+    let polyfill = polyfill();
+    let mut typed = Vec::new();
+    for scenario in zena_scenarios() {
+        let pairs = typed_pairs(&scenario.expectations);
+        if pairs.is_empty() {
+            continue;
+        }
+        typed.push(scenario.name.clone());
+        // The Wasmtime run's observations hold its calls only when it
+        // reached them, and so does this subject's run.
+        let wasmtime: Vec<Outcome> = scenario
+            .observations
+            .calls
+            .iter()
+            .map(|observation| observation.outcome.clone())
+            .collect();
+        let observed = polyfill
+            .observe(&scenario)
+            .await
+            .ok()
+            .map(|run| run.outcomes);
+        let subjects = [
+            (
+                Subject::Wasmtime,
+                (!wasmtime.is_empty()).then_some(wasmtime),
+            ),
+            (Subject::polyfill(), observed),
+        ];
+        for (subject, outcomes) in subjects {
+            let Some(outcomes) = outcomes else {
+                continue;
+            };
+            for &(untyped, typed) in &pairs {
+                assert_eq!(
+                    outcomes[typed],
+                    outcomes[untyped],
+                    "`{subject}` on {}: `{}` ended as {} where `{}` ended as {}",
+                    scenario.name,
+                    scenario.expectations.entries[typed].call,
+                    outcomes[typed],
+                    scenario.expectations.entries[untyped].call,
+                    outcomes[untyped]
+                );
+            }
+        }
+    }
+    for name in [SCALAR_EXPORT, STRING_ROUNDTRIP] {
+        assert!(
+            typed.iter().any(|typed| typed == name),
+            "scenario `{name}` makes no typed call beside the same untyped call"
+        );
+    }
+}
+
+/// For each typed call in `expectations` that has an untyped twin, a
+/// call of the same export with the same arguments: the index of the
+/// untyped call and the index of the typed one.
+fn typed_pairs(expectations: &wcmp_scenario::Expectations) -> Vec<(usize, usize)> {
+    let calls = || {
+        expectations
+            .entries
+            .iter()
+            .map(|entry| &entry.call)
+            .enumerate()
+    };
+    calls()
+        .filter(|(_, call)| call.typed)
+        .filter_map(|(typed, call)| {
+            calls()
+                .find(|(_, other)| !other.typed && same_call(call, other))
+                .map(|(untyped, _)| (untyped, typed))
+        })
+        .collect()
+}
+
+/// Whether `a` and `b` call the same export with the same arguments,
+/// typed or not.
+fn same_call(a: &Call, b: &Call) -> bool {
+    a.component == b.component && a.export == b.export && a.arguments == b.arguments
 }
 
 /// `observations` with the first result of the first call that returned
@@ -1000,13 +1089,12 @@ async fn it_fails_the_call_of_a_method_the_test_host_does_not_implement() {
 }
 
 #[wcmp_macros::test]
-async fn it_fails_a_call_to_a_missing_component_or_export_or_a_typed_call() {
+async fn it_fails_a_call_to_a_missing_component_or_export() {
     let verdict = calculate(
         "
         call other add(1s32, 2s32) -> 3s32
         call calc subtract(1s32, 2s32) -> 3s32
-        call calc local:demo/other#add(1s32, 2s32) -> 3s32
-        call typed calc add(1s32, 2s32) -> 3s32
+        call typed calc local:demo/other#add(1s32, 2s32) -> 3s32
         ",
         WASMTIME_STOPPED,
     )
@@ -1024,18 +1112,72 @@ async fn it_fails_a_call_to_a_missing_component_or_export_or_a_typed_call() {
             "component calc has no function export subtract",
         ),
         (
-            "call calc local:demo/other#add(1s32, 2s32) -> 3s32",
+            "call typed calc local:demo/other#add(1s32, 2s32) -> 3s32",
             "component calc has no function export local:demo/other#add",
-        ),
-        (
-            "call typed calc add(1s32, 2s32) -> 3s32",
-            "the polyfill run does not make typed calls yet",
         ),
     ] {
         let verdict = calculate(expectations, WASMTIME_STOPPED).await;
         assert_eq!(verdict.stage, Stage::Call);
         assert!(verdict.reason.ends_with(reason), "{}", verdict.reason);
     }
+}
+
+#[wcmp_macros::test]
+async fn it_makes_a_typed_call_that_ends_as_the_untyped_call_does() {
+    let calls = "
+        call calc add(1s32, 2s32) -> 3s32
+        call typed calc add(1s32, 2s32) -> 3s32
+        call typed calc local:demo/api#add(2s32, 2s32) -> 4s32
+        call calc boom() -> fail
+        call typed calc boom() -> fail
+        ";
+    assert_eq!(calculate(calls, WASMTIME_STOPPED).await, Verdict::pass());
+    let verdict = run(
+        vec![Program::compiled("echoer", ECHOER)],
+        r#"
+        call echoer shout("hello, polyfill") -> "hello, polyfill"
+        call typed echoer shout("hello, polyfill") -> "hello, polyfill"
+        "#,
+        WASMTIME_STOPPED,
+    )
+    .await;
+    assert_eq!(verdict, Verdict::pass());
+}
+
+#[wcmp_macros::test]
+async fn it_fails_a_typed_call_outside_the_closed_set_or_of_other_types() {
+    let outside = calculate("call typed calc add(1s32, 2u32) -> 3s32", WASMTIME_STOPPED).await;
+    assert_eq!(outside.stage, Stage::Call);
+    let untyped = wcmp_scenario::Error::Untyped {
+        signature: "(s32, u32) -> s32".to_string(),
+    };
+    assert!(
+        outside.reason.ends_with(&untyped.to_string()),
+        "{}",
+        outside.reason
+    );
+    // The arguments are `u32`, and `Func::typed` refuses them for an
+    // export that takes `s32`.
+    let other = calculate("call typed calc add(1u32, 2u32) -> 3u32", WASMTIME_STOPPED).await;
+    assert_eq!(other.stage, Stage::Call, "{}", other.reason);
+}
+
+#[wcmp_macros::test]
+async fn it_holds_a_call_with_no_outcome_to_whether_the_wasmtime_call_failed() {
+    // The polyfill's `add` returns where the Wasmtime run saw it fail.
+    let succeeded = calculate(
+        "call calc add(1s32, 2s32)",
+        "stage pass\ncall calc add(1s32, 2s32) -> fail",
+    )
+    .await;
+    assert_eq!(succeeded.stage, Stage::Mismatch, "{}", succeeded.reason);
+    // Both fail, whatever each one's message says.
+    let failed = calculate(
+        "call calc boom() -> fail\ncall calc boom()",
+        "stage pass\ncall calc boom() -> fail \"uncaught\"\ncall calc boom() -> fail \"cannot enter\"",
+    )
+    .await;
+    assert_eq!(failed, Verdict::pass());
 }
 
 #[wcmp_macros::test]

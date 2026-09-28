@@ -1,9 +1,10 @@
 //! The polyfill subject of a scenario, on the target the test runs on.
 
 use wasm_component_model_polyfill::{
-    Component, Engine, Error, Func, Instance, Linker, Store, TypeMismatchPosition, Val,
+    Component, ComponentParameters, ComponentResult, ComponentValue, Engine, Error, Func, Instance,
+    Linker, PrimitiveType, Store, TypeMismatchPosition, Val, ValueType,
 };
-use wcmp_scenario::{Call, Outcome, Run, Stage, Value, Verdict};
+use wcmp_scenario::{Call, Outcome, Run, Stage, Typed, TypedSignature, Value, Verdict};
 
 use crate::bundle::Scenario;
 use crate::host::{self, Host};
@@ -56,12 +57,13 @@ impl PolyfillRun {
     /// an import and `instantiate` otherwise.
     ///
     /// Each call of the expectations is then made in order, even after
-    /// one fails, untyped: `Func::call` with `Val` arguments. A call the
-    /// expectations mark as typed fails, since typed calls are not
-    /// supported here yet. A result that is neither a scalar nor a
-    /// string fails its call too, because the scenario model cannot
-    /// hold it.
-    async fn observe(&self, scenario: &Scenario) -> Result<Run, Verdict> {
+    /// one fails. A call is untyped, through `Func::call` with `Val`
+    /// arguments, unless the expectations mark it as typed. A typed call
+    /// goes through `TypedFunc`, for the closed set of signatures of
+    /// [`TypedSignature`], and fails for any other. A result that is
+    /// neither a scalar nor a string fails its call too, because the
+    /// scenario model cannot hold it.
+    pub async fn observe(&self, scenario: &Scenario) -> Result<Run, Verdict> {
         let mut compiled = Vec::with_capacity(scenario.programs.len());
         for program in &scenario.programs {
             compiled.push((program.name.as_str(), program.component()?));
@@ -137,9 +139,6 @@ fn describe(error: &(dyn std::error::Error + 'static)) -> String {
 
 /// Make one call and report how it ended.
 async fn call(store: &mut Store<Host>, instances: &[(&str, Instance)], call: &Call) -> Outcome {
-    if call.typed {
-        return Outcome::Failure("the polyfill run does not make typed calls yet".to_string());
-    }
     let Some((_, instance)) = instances.iter().find(|(name, _)| *name == call.component) else {
         return Outcome::Failure(format!("the scenario has no component {}", call.component));
     };
@@ -149,6 +148,9 @@ async fn call(store: &mut Store<Host>, instances: &[(&str, Instance)], call: &Ca
             call.component, call.export
         ));
     };
+    if call.typed {
+        return typed_call(store, func, &call.arguments).await;
+    }
     let arguments: Vec<Val> = call.arguments.iter().map(to_val).collect();
     let results = match func.call(store, &arguments).await {
         Ok(results) => results,
@@ -167,6 +169,131 @@ async fn call(store: &mut Store<Host>, instances: &[(&str, Instance)], call: &Ca
         }
     }
     Outcome::Results(values)
+}
+
+/// Make one typed call of `func` through the polyfill's `TypedFunc`,
+/// and report how it ended.
+///
+/// The Rust types of the typed function come from the closed set of
+/// [`TypedSignature`]: the parameter types from `arguments`, and the
+/// result type from the export. A call outside that set, or one whose
+/// export has a result the scenario model cannot hold, fails. So does a
+/// call whose arguments do not have the export's parameter types, which
+/// `Func::typed` refuses.
+async fn typed_call(store: &mut Store<Host>, func: Func, arguments: &[Value]) -> Outcome {
+    use wcmp_scenario::ValueType as Type;
+
+    let results = match &func.ty().result {
+        None => Vec::new(),
+        Some(ty) => match value_type(ty) {
+            Some(ty) => vec![ty],
+            None => {
+                return Outcome::Failure(format!(
+                    "result 1 is {ty:?}, which is neither a scalar nor a string"
+                ));
+            }
+        },
+    };
+    let parameters: Vec<Type> = arguments.iter().map(Value::ty).collect();
+    let signature = match TypedSignature::new(&parameters, &results) {
+        Ok(signature) => signature,
+        Err(error) => return Outcome::Failure(error.to_string()),
+    };
+    let arguments = arguments.to_vec();
+    match signature.ty {
+        None => typed::<(), ()>(store, func, (), |()| Vec::new()).await,
+        Some(Type::Bool) => typed_of::<bool>(store, func, signature, arguments).await,
+        Some(Type::S8) => typed_of::<i8>(store, func, signature, arguments).await,
+        Some(Type::U8) => typed_of::<u8>(store, func, signature, arguments).await,
+        Some(Type::S16) => typed_of::<i16>(store, func, signature, arguments).await,
+        Some(Type::U16) => typed_of::<u16>(store, func, signature, arguments).await,
+        Some(Type::S32) => typed_of::<i32>(store, func, signature, arguments).await,
+        Some(Type::U32) => typed_of::<u32>(store, func, signature, arguments).await,
+        Some(Type::S64) => typed_of::<i64>(store, func, signature, arguments).await,
+        Some(Type::U64) => typed_of::<u64>(store, func, signature, arguments).await,
+        Some(Type::F32) => typed_of::<f32>(store, func, signature, arguments).await,
+        Some(Type::F64) => typed_of::<f64>(store, func, signature, arguments).await,
+        Some(Type::Char) => typed_of::<char>(store, func, signature, arguments).await,
+        Some(Type::String) => typed_of::<String>(store, func, signature, arguments).await,
+    }
+}
+
+/// Make a typed call of `signature` whose parameters and result are
+/// all of the Rust type `T`.
+async fn typed_of<T>(
+    store: &mut Store<Host>,
+    func: Func,
+    signature: TypedSignature,
+    arguments: Vec<Value>,
+) -> Outcome
+where
+    T: Typed + ComponentValue,
+{
+    let Some(arguments) = arguments
+        .into_iter()
+        .map(T::from_value)
+        .collect::<Option<Vec<T>>>()
+    else {
+        return Outcome::Failure(format!("an argument is not a {}", T::TYPE));
+    };
+    let result = |result: T| vec![result.into_value()];
+    let none = |()| Vec::new();
+    // `TypedSignature` holds a typed call to two arguments at most.
+    let mut arguments = arguments.into_iter();
+    match (arguments.next(), arguments.next(), signature.result) {
+        (None, _, false) => typed::<(), ()>(store, func, (), none).await,
+        (None, _, true) => typed::<(), T>(store, func, (), result).await,
+        (Some(a), None, false) => typed::<(T,), ()>(store, func, (a,), none).await,
+        (Some(a), None, true) => typed::<(T,), T>(store, func, (a,), result).await,
+        (Some(a), Some(b), false) => typed::<(T, T), ()>(store, func, (a, b), none).await,
+        (Some(a), Some(b), true) => typed::<(T, T), T>(store, func, (a, b), result).await,
+    }
+}
+
+/// Make a typed call of `func` with the Rust types `P` and `R`, and
+/// turn its result into the scenario model's values with `values`.
+async fn typed<P, R>(
+    store: &mut Store<Host>,
+    func: Func,
+    arguments: P,
+    values: impl FnOnce(R) -> Vec<Value>,
+) -> Outcome
+where
+    P: ComponentParameters,
+    R: ComponentResult,
+{
+    let typed = match func.typed::<P, R>() {
+        Ok(typed) => typed,
+        Err(error) => return Outcome::Failure(describe(&error)),
+    };
+    match typed.call(store, arguments).await {
+        Ok(result) => Outcome::Results(values(result)),
+        Err(error) => Outcome::Failure(describe(&error)),
+    }
+}
+
+/// The scenario model's type of a polyfill type, or `None` when the
+/// model has no values of it: it holds scalars and strings only.
+fn value_type(ty: &ValueType) -> Option<wcmp_scenario::ValueType> {
+    use wcmp_scenario::ValueType as Type;
+    let ValueType::Primitive(primitive) = ty else {
+        return None;
+    };
+    Some(match primitive {
+        PrimitiveType::Bool => Type::Bool,
+        PrimitiveType::S8 => Type::S8,
+        PrimitiveType::U8 => Type::U8,
+        PrimitiveType::S16 => Type::S16,
+        PrimitiveType::U16 => Type::U16,
+        PrimitiveType::S32 => Type::S32,
+        PrimitiveType::U32 => Type::U32,
+        PrimitiveType::S64 => Type::S64,
+        PrimitiveType::U64 => Type::U64,
+        PrimitiveType::F32 => Type::F32,
+        PrimitiveType::F64 => Type::F64,
+        PrimitiveType::Char => Type::Char,
+        PrimitiveType::String => Type::String,
+    })
 }
 
 /// The function an export name names: `add` at the root of the

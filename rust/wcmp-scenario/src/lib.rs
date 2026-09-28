@@ -47,7 +47,9 @@
 //! ```
 //!
 //! - `call [typed] <component> <export>(<arguments>) [-> <outcome>]`
-//!   is one call. `typed` asks for a typed call. The component is one
+//!   is one call. `typed` asks for a typed call, which a runner makes
+//!   only for a signature in the closed set of [`TypedSignature`],
+//!   through the Rust types of [`Typed`]. The component is one
 //!   word, and the export runs up to the opening parenthesis, so an
 //!   interface export such as `local:demo/api#greet` needs no quoting.
 //!   The outcome is `fail`, optionally followed by a quoted message, or
@@ -77,7 +79,10 @@ mod stage;
 mod subject;
 mod syntax;
 mod table;
+mod typed;
+mod typed_signature;
 mod value;
+mod value_type;
 mod verdict;
 
 pub use crate::call::Call;
@@ -94,7 +99,10 @@ pub use crate::run::Run;
 pub use crate::stage::Stage;
 pub use crate::subject::Subject;
 pub use crate::table::Table;
+pub use crate::typed::Typed;
+pub use crate::typed_signature::TypedSignature;
 pub use crate::value::Value;
+pub use crate::value_type::ValueType;
 pub use crate::verdict::Verdict;
 
 /// The fixed test interface every subject supplies to a scenario. Its

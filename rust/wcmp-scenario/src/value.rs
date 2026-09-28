@@ -3,6 +3,7 @@
 use core::fmt;
 
 use crate::syntax::quote;
+use crate::value_type::ValueType;
 
 /// One argument or result of a call: a scalar or a string.
 ///
@@ -41,6 +42,27 @@ pub enum Value {
     Char(char),
     /// A `string`.
     String(String),
+}
+
+impl Value {
+    /// The value's type.
+    pub fn ty(&self) -> ValueType {
+        match self {
+            Value::Bool(_) => ValueType::Bool,
+            Value::S8(_) => ValueType::S8,
+            Value::U8(_) => ValueType::U8,
+            Value::S16(_) => ValueType::S16,
+            Value::U16(_) => ValueType::U16,
+            Value::S32(_) => ValueType::S32,
+            Value::U32(_) => ValueType::U32,
+            Value::S64(_) => ValueType::S64,
+            Value::U64(_) => ValueType::U64,
+            Value::F32(_) => ValueType::F32,
+            Value::F64(_) => ValueType::F64,
+            Value::Char(_) => ValueType::Char,
+            Value::String(_) => ValueType::String,
+        }
+    }
 }
 
 impl PartialEq for Value {

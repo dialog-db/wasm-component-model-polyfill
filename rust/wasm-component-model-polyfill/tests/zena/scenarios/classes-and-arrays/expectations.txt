@@ -1,0 +1,3 @@
+# Scenario 3: classes and arrays used inside the program only. It
+# prints nothing.
+call shapes perimeter(3s32, 4s32) -> 14s32

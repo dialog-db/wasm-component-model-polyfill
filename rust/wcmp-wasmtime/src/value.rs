@@ -1,7 +1,7 @@
 //! Conversions between the scenario model's values and Wasmtime's.
 
-use wasmtime::component::Val;
-use wcmp_scenario::Value;
+use wasmtime::component::{Type, Val};
+use wcmp_scenario::{Value, ValueType};
 
 /// The Wasmtime value of an argument.
 pub fn to_val(value: &Value) -> Val {
@@ -43,6 +43,27 @@ pub fn from_val(val: &Val) -> Option<Value> {
     })
 }
 
+/// The scenario model's type of a Wasmtime type, or `None` when the
+/// model has no values of it: it holds scalars and strings only.
+pub fn value_type(ty: &Type) -> Option<ValueType> {
+    Some(match ty {
+        Type::Bool => ValueType::Bool,
+        Type::S8 => ValueType::S8,
+        Type::U8 => ValueType::U8,
+        Type::S16 => ValueType::S16,
+        Type::U16 => ValueType::U16,
+        Type::S32 => ValueType::S32,
+        Type::U32 => ValueType::U32,
+        Type::S64 => ValueType::S64,
+        Type::U64 => ValueType::U64,
+        Type::Float32 => ValueType::F32,
+        Type::Float64 => ValueType::F64,
+        Type::Char => ValueType::Char,
+        Type::String => ValueType::String,
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,5 +93,13 @@ mod tests {
     #[wcmp_macros::test]
     fn it_has_no_value_for_a_compound_result() {
         assert_eq!(from_val(&Val::List(vec![Val::U8(1)])), None);
+    }
+
+    #[wcmp_macros::test]
+    fn it_names_the_type_of_a_scalar_or_a_string_and_of_nothing_else() {
+        assert_eq!(value_type(&Type::S32), Some(ValueType::S32));
+        assert_eq!(value_type(&Type::Float64), Some(ValueType::F64));
+        assert_eq!(value_type(&Type::String), Some(ValueType::String));
+        assert_eq!(value_type(&Type::ErrorContext), None);
     }
 }

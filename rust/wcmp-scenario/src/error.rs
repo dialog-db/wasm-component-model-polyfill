@@ -56,6 +56,15 @@ pub enum Error {
     /// for with a stage that a run reaches only by making them.
     #[error("a run that made no calls cannot stop at `{0}`")]
     StoppedLate(Stage),
+    /// A call asked to be typed, but its signature is not one a
+    /// runner makes typed calls for.
+    #[error(
+        "a typed call takes at most two parameters of one scalar or string type and returns nothing or one value of that type, and `{signature}` does not"
+    )]
+    Untyped {
+        /// The signature, such as `(s32, u32) -> s32`.
+        signature: String,
+    },
 }
 
 /// The result of reading a scenario's files or judging a run.

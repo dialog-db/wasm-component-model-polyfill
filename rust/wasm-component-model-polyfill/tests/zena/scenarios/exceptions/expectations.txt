@@ -1,0 +1,9 @@
+# Scenario 4: an exception caught inside the program, and one that
+# leaves it. It prints nothing. Zena exports `halveOrZero` under the
+# component name `halve-or-zero`, and so on.
+call halver halve-or-zero(6s32) -> 3s32
+call halver halve-or-zero(7s32) -> 0s32
+call halver halve-or-throw(7s32) -> fail
+# The same uncaught call again. It has no outcome, so the Wasmtime run
+# decides whether the instance still answers after the first one.
+call halver halve-or-throw(7s32)

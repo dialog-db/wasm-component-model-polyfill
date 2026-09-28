@@ -1,0 +1,4 @@
+# Scenario 2: a string in and a string out, called untyped and then
+# typed. It prints nothing.
+call strings greet("world") -> "hello, world"
+call typed strings greet("world") -> "hello, world"
