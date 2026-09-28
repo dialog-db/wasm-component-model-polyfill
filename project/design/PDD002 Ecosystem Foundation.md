@@ -1,11 +1,10 @@
 # Ecosystem Foundation
 
 The polyfill is not a from-scratch effort. The Rust Wasm ecosystem already
-provides a runtime abstraction that spans browsers and native hosts, a reference
-implementation of the Component Model, and a target-agnostic component
-translator. The polyfill composes those pieces and adds the part that nobody
-provides: a Component Model runtime that a Rust host can use on every target
-with one API.
+provides a reference implementation of the Component Model and a target-agnostic
+component translator. The polyfill composes those pieces with a runtime layer of
+its own, and adds the part that nobody provides: a Component Model runtime that
+a Rust host can use on every target with one API.
 
 This document records that posture. It names the upstream projects the polyfill
 depends on, how they divide the problem, and what the polyfill owes back to
@@ -13,8 +12,8 @@ them.
 
 ## Goals
 
-- Establish [`wasm_runtime_layer`] as the runtime layer of the polyfill, so that
-  an upstream crate solves the browser-versus-native split.
+- Establish that the polyfill owns its runtime layer, a trait over Wasm Core
+  with one backend for each engine.
 - Establish [Wasmtime] as the reference implementation and as the source of the
   component translator the polyfill uses on every target.
 - Define the relationship to upstream projects clearly enough that a contributor
@@ -32,36 +31,23 @@ them.
 
 ## Runtime Layer
 
-[`wasm_runtime_layer`] is a thin facade over Wasm Core runtimes. It defines a
-`WasmEngine` trait, and a backend (an implementation of that trait) exists for
-[Wasmtime], [Wasmer], [Wasmi], and the browser's `WebAssembly` JavaScript API.
-On top of the trait it exposes `Engine`, `Store`, `Module`, `Instance`, `Func`,
-`Memory`, `Global`, `Table`, and `Val`.
-
-The polyfill depends on the Wasmtime backend for native execution and on the
-browser backend for `wasm32-unknown-unknown`. Other backends are neither
-required nor excluded. The runtime layer sees only core Wasm. Every
-component-level concern (translation, the type system, lift and lower,
-instantiation, resource tables, tasks) is implemented in the polyfill on top of
-the runtime layer's generic types. The same component-level code runs on every
-target.
+The runtime layer is a family of crates in this repository. It defines one trait
+over Wasm Core, and a backend (an implementation of that trait) exists for each
+engine the polyfill runs on: the browser's `WebAssembly` JavaScript API,
+[Wasmi], and [Wasmtime]. The host selects the backend when it makes an engine.
+The runtime layer sees only core Wasm. Every component-level concern
+(translation, the type system, lift and lower, instantiation, resource tables,
+tasks) is implemented in the polyfill on top of the runtime layer's generic
+types. The same component-level code runs on every target.
 
 The polyfill wraps the runtime layer. It never re-exports a runtime layer type
 from its public API.
 
-### The Browser Backend
-
-The browser backend of the runtime layer must surface a host function's `Err(_)`
-result to the guest as a trap. A backend that returns `undefined` to the guest
-instead hides every error the polyfill raises inside a host trampoline. The
-polyfill files such a defect upstream with a reproduction, and carries a patched
-copy of the backend until the fix lands. The patched copy keeps the shape of
-upstream so that the patch can be dropped when upstream catches up.
-
-The polyfill does not replace the runtime layer on the web. If a browser
-capability that the polyfill needs cannot be expressed through the runtime
-layer's trait (for example, an asynchronous compile or a [JavaScript Promise
-Integration][JSPI] wrapper), the polyfill proposes the extension upstream first.
+The polyfill owns the runtime layer because its needs change with each feature.
+Tags, GC references, asynchronous compilation, and [JavaScript Promise
+Integration][JSPI] all reach into the trait. An upstream facade over many
+engines is shaped for the needs they share, and the polyfill cannot wait for it
+to change. The polyfill also must build as a dependency with no patched crates.
 
 ## Wasmtime
 
@@ -96,12 +82,18 @@ Two corollaries follow for every PDD that introduces a component-layer type:
 ## Prior Art
 
 [`wasm_component_layer`] is a Rust implementation of the Component Model on top
-of the runtime layer. It predates the concurrency features of Component Model
-0.3 and is inactive. The polyfill reads it as prior art. Its data structures,
-traversal patterns, and ABI choices inform the polyfill's design. The polyfill
-does not depend on it, vendor it, or copy it. Every line of the polyfill is
-written for the polyfill. Where a design choice comes from the prior art, a
-comment at that place in the source says so.
+of [`wasm_runtime_layer`]. It predates the concurrency features of Component
+Model 0.3 and is inactive. The polyfill reads it as prior art. Its data
+structures, traversal patterns, and ABI choices inform the polyfill's design.
+The polyfill does not depend on it, vendor it, or copy it. Every line of the
+polyfill is written for the polyfill. Where a design choice comes from the prior
+art, a comment at that place in the source says so.
+
+[`wasm_runtime_layer`] is a thin facade over Wasm Core runtimes, with a backend
+for [Wasmtime], [Wasmer], [Wasmi], and the browser's `WebAssembly` JavaScript
+API. The runtime layer of the polyfill keeps its shape: one trait, and one
+backend for each engine. The polyfill treats it as prior art under the same
+rules. It does not depend on it, vendor it, or copy it.
 
 ## Related Projects
 
@@ -130,23 +122,22 @@ polyfill will:
    shaped so that it can be upstreamed later, and a note in the tree explains
    why upstreaming was not pursued.
 
-The runtime layer and the translator are active, so option 2 is the default for
-them. The prior art is inactive, so it is a reference only.
+The translator is active, so option 2 is the default for it. The prior art is a
+reference only.
 
 The polyfill carries forward the copyright notices and licenses of any upstream
 code it adopts, and credits the upstream projects in its top-level
-documentation. The runtime layer and the prior art are dual-licensed under MIT
-and Apache-2.0, which is compatible with the polyfill's license.
+documentation. The prior art is dual-licensed under MIT and Apache-2.0, which is
+compatible with the polyfill's license.
 
 ## User Stories
 
-A maintainer of the polyfill wants the runtime-versus-browser split to be
-somebody else's problem.
+A maintainer of the polyfill wants the browser-versus-native split in one place.
 
 > The maintainer reaches for the runtime layer whenever the polyfill talks to a
 > core Wasm engine. They do not write conditional code paths for the browser
-> versus Wasmtime. When they find a gap in the abstraction, they open a pull
-> request upstream before they patch locally.
+> versus a native engine. When they find a gap in the abstraction, they change
+> the runtime layer, and every backend implements the change.
 
 A maintainer of the polyfill wants one parser that behaves the same on every
 target.
@@ -182,7 +173,7 @@ issue.
 
 - [PDD000], the product overview.
 - [PDD001], the development environment.
-- [`wasm_runtime_layer`], the runtime layer.
+- [`wasm_runtime_layer`], prior art for the runtime layer.
 - [`wasmtime-environ`], the component translator.
 - [`wasm_component_layer`], prior art.
 - [Wasmtime], the reference implementation.

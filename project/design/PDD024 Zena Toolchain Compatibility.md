@@ -106,11 +106,11 @@ Each fact below was read from the cited source. The Zena facts are from revision
   ([Zena exception tag]).
 - Zena's string exports force the same exception machinery into the component,
   for a reason that Zena does not record ([Zena component emission], C3.1).
-- The browser backend refuses a core module that imports or exports a tag
-  ([browser backend tags]). It refuses a global whose type is a reference type
-  other than `funcref` or `externref` ([browser backend refs]).
-- The Wasmtime backend refuses a core module that imports or exports a tag
-  ([Wasmtime backend tags]).
+- The browser backend of `wasm_runtime_layer` refuses a core module that imports
+  or exports a tag ([browser backend tags]). It refuses a global whose type is a
+  reference type other than `funcref` or `externref` ([browser backend refs]).
+- The Wasmtime backend of `wasm_runtime_layer` refuses a core module that
+  imports or exports a tag ([Wasmtime backend tags]).
 - Zena's flake exports a package that builds the whole Zena monorepo. The build
   runs `npm run build`, which also compiles four Rust crates with
   `cargo build --release`. It uses a fixed npm dependency hash and a vendored
@@ -625,9 +625,9 @@ pin. `tests all` runs the lane and reports its time.
 - [Zena flake], the Nix package of the toolchain.
 - [Zena development], the bootstrap and the build.
 - [Zena CI], Zena's public continuous integration.
-- [browser backend tags] and [browser backend refs], the refusals of the browser
-  backend.
-- [Wasmtime backend tags], the refusal of the Wasmtime backend.
+- [browser backend tags] and [browser backend refs], the refusals of the
+  upstream browser backend.
+- [Wasmtime backend tags], the refusal of the upstream Wasmtime backend.
 - [wasmtime-wasi versions], the published versions of `wasmtime-wasi`.
 - [`wac`], the composition tool.
 
@@ -654,8 +654,11 @@ pin. `tests all` runs the lane and reports its time.
   https://github.com/elematic/zena/blob/b2237f7e65847eda43ef1f4094eea77fe225ce0d/DEVELOPMENT.md
 [Zena CI]:
   https://github.com/elematic/zena/blob/b2237f7e65847eda43ef1f4094eea77fe225ce0d/.github/workflows/test.yml
-[browser backend tags]: ../../rust/vendor/js_wasm_runtime_layer/src/module.rs
-[browser backend refs]: ../../rust/vendor/js_wasm_runtime_layer/src/module.rs
-[Wasmtime backend tags]: ../../rust/vendor/wasmtime_runtime_layer/src/lib.rs
+[browser backend tags]:
+  https://github.com/DouglasDwyer/wasm_runtime_layer/blob/d4c702c/backends/js_wasm_runtime_layer/src/module.rs#L231-L252
+[browser backend refs]:
+  https://github.com/DouglasDwyer/wasm_runtime_layer/blob/d4c702c/backends/js_wasm_runtime_layer/src/module.rs#L92-L100
+[Wasmtime backend tags]:
+  https://github.com/DouglasDwyer/wasm_runtime_layer/blob/d4c702c/backends/wasmtime_runtime_layer/src/lib.rs#L770-L797
 [wasmtime-wasi versions]: https://crates.io/crates/wasmtime-wasi/versions
 [`wac`]: https://github.com/bytecodealliance/wac

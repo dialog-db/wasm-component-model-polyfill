@@ -40,7 +40,9 @@ Five terms recur:
   thread resumes later with the result of that built-in.
 - Two providers fill the contract. The stack-switching provider uses the
   instructions of the stack-switching proposal on any engine that implements
-  them. The JSPI provider uses JavaScript Promise Integration in the browser.
+  them. The host-suspension provider uses the host suspension of the runtime
+  layer on any backend that declares it. In the browser, that is JavaScript
+  Promise Integration (JSPI).
 - The polyfill selects a provider once per `Engine`, in a fixed order, from
   probes that do not depend on the engine. Where no provider exists, the nested
   turn of [PDD020] stays the fallback.
@@ -98,8 +100,8 @@ prototype on an x86_64 Linux host.
   this.
 - The browser backend passes one instance's exported function to another
   instance as the function object itself. A call between two core instances is
-  therefore a call from WebAssembly to WebAssembly. Source:
-  `create_imports_object` in the vendored `js_wasm_runtime_layer`.
+  therefore a call from WebAssembly to WebAssembly. The runtime layer holds this
+  rule for the browser backend.
 - Wasmtime 49 implements the stack-switching proposal on x86_64 Linux only
   ([Wasmtime stack switching]). The feature is off by default and turns off
   compiler inlining.
@@ -144,8 +146,9 @@ the capability with less. Where no provider exists, the nested turn of [PDD020]
 serves each blocking built-in under its five rules, unchanged.
 
 A resumption can complete at once or later. The stack-switching provider resumes
-a thread synchronously. The JSPI provider resumes a thread on a microtask, which
-runs before the browser returns to its event loop. The scheduler treats both the
+a thread synchronously. The host-suspension provider resumes a thread on a
+microtask under JSPI, which runs before the browser returns to its event loop.
+Under Wasmi, it resumes a thread synchronously. The scheduler treats both the
 same way: a turn that resumes a thread waits until the thread suspends again or
 finishes, and runs nothing else in between.
 
@@ -235,18 +238,25 @@ A resumption runs synchronously and returns when the thread suspends again or
 finishes. The provider works on any engine that implements the proposal. Today
 those are Wasmtime 49 on x86_64 Linux and wasm3. No browser ships the proposal.
 
-### The JSPI Provider
+### The Host-Suspension Provider
 
-The JSPI provider fills the capability with the JavaScript API. A thread starts
-through `WebAssembly.promising` over its entry wrapper. The `suspend` of a shim
-is a call to an import made with `WebAssembly.Suspending`. The JavaScript
-function behind that import returns a promise the scheduler holds. To resume the
-thread, the scheduler resolves the promise with the built-in's result.
+The host-suspension provider fills the capability with the host suspension of
+the runtime layer. A thread starts as a resumable call of its entry wrapper. The
+`suspend` of a shim is a call of a suspending host function, which answers "not
+yet". The scheduler holds the handle of the call. To resume the thread, the
+scheduler resumes the handle with the built-in's result.
 
-A promising call returns a promise and never the entry's results. The entry
-wrapper is therefore how the scheduler learns at once that an entry finished.
-The wrapper must be WebAssembly. A JavaScript wrapper puts a frame that is not
-WebAssembly between the start of the stack and the suspension.
+A backend declares host suspension when its engine has a way to suspend a call
+at a host function. The browser backend uses JSPI. A resumable call goes through
+`WebAssembly.promising`, and a suspending host function is an import made with
+`WebAssembly.Suspending`. The JavaScript function behind that import returns a
+promise, and a resumption resolves it. The Wasmi backend uses Wasmi's resumable
+calls.
+
+Under JSPI, a promising call returns a promise and never the entry's results.
+The entry wrapper is therefore how the scheduler learns at once that an entry
+finished. The wrapper must be WebAssembly. A JavaScript wrapper puts a frame
+that is not WebAssembly between the start of the stack and the suspension.
 
 A resumption under JSPI runs on a microtask, never inside the call that asks for
 it. This matters in one place. The reference sometimes resumes a suspended
@@ -258,12 +268,13 @@ stops. Two cases exist:
 - A thread that a nested start began switches to a suspended thread before it
   first suspends.
 
-The JSPI provider cannot resume a suspended stack from inside a synchronous
-frame. In both cases it suspends the thread the trampoline runs in as well. The
-scheduler then runs only the threads the reference runs from that point, in the
-reference's order. It runs no other item and polls no host task. It then resumes
-the trampoline's thread with the outcome. A guest cannot observe the difference,
-because no other guest code runs in the interval.
+Under JSPI, the provider cannot resume a suspended stack from inside a
+synchronous frame. The provider holds the same rule on every backend, so its
+order is one order. In both cases it suspends the thread the trampoline runs in
+as well. The scheduler then runs only the threads the reference runs from that
+point, in the reference's order. It runs no other item and polls no host task.
+It then resumes the trampoline's thread with the outcome. A guest cannot observe
+the difference, because no other guest code runs in the interval.
 
 ### No Provider
 
@@ -280,8 +291,9 @@ The polyfill selects the provider once, when an `Engine` is constructed, and
 keeps the answer for the life of the engine. The order is:
 
 1. The stack-switching provider, if the switch probe passes.
-2. The JSPI provider, if `WebAssembly.Suspending` and `WebAssembly.promising`
-   exist as functions. The probe runs in the browser only.
+2. The host-suspension provider, if the backend declares host suspension. The
+   browser backend declares it when `WebAssembly.Suspending` and
+   `WebAssembly.promising` exist as functions.
 3. No provider.
 
 The switch probe compiles and instantiates a module of about 130 bytes. The
@@ -290,7 +302,7 @@ fetches anything. The probe starts one thread, suspends it, resumes it, and
 makes sure that it finished. An engine that rejects the module, or that runs it
 with any other outcome, fails the probe. The probe proves that the feature
 works, not only that the engine validates it. The two probes are small and
-synchronous, so `Engine::new` stays synchronous.
+synchronous, so the making of an `Engine` stays synchronous.
 
 The stack-switching provider comes first because it resumes a thread
 synchronously. Its scheduling order then matches the native order with no
@@ -306,9 +318,9 @@ The host surface grows by two items, spelled in the style of the existing
   synchronous order of nested turns, or to avoid a provider that fails on one
   engine version.
 - A query on `Engine` that answers which provider it selected: the
-  stack-switching provider, the JSPI provider, or none. A host uses it to
-  explain a stack-switch failure to a person. The harness uses it to select the
-  expected-failure lists.
+  stack-switching provider, the host-suspension provider, or none. A host uses
+  it to explain a stack-switch failure to a person. The harness uses it to
+  select the expected-failure lists.
 
 Wasmtime has no counterpart, because its fibers always exist. The names are the
 polyfill's own.
@@ -348,13 +360,13 @@ Its thread never lets the store run other work. When it blocks, the try part
 runs the ready threads of the task's own instance from inside itself, as
 `canon_lift` runs them ([`definitions.py`]). A queued item of that instance runs
 as the nested turn of [PDD020], limited to the instance. A suspended thread of
-that instance resumes through the provider, from inside the try part. Under
-JSPI, that resumption follows the rule The JSPI Provider states. The block fails
-with the cannot-block cause when no thread of the instance is ready. Wasmtime
-runs the same rule through `switch_or_trap_if_may_not_suspend` ([Wasmtime
-may-not-suspend]). This revises the statement of [PDD020] that such a task never
-reaches the provider. It reaches the provider, but only to resume the threads of
-its own instance.
+that instance resumes through the provider, from inside the try part. Under the
+host-suspension provider, that resumption follows the rule The Host-Suspension
+Provider states. The block fails with the cannot-block cause when no thread of
+the instance is ready. Wasmtime runs the same rule through
+`switch_or_trap_if_may_not_suspend` ([Wasmtime may-not-suspend]). This revises
+the statement of [PDD020] that such a task never reaches the provider. It
+reaches the provider, but only to resume the threads of its own instance.
 
 ## Starting a Thread
 
@@ -513,24 +525,18 @@ turns only.
 ## The Browser Backend Admits a Re-entrant Call
 
 [PDD020] records a difference between the targets. A native engine enters a host
-function that is already on the stack, and the browser backend refuses the
-second call. This design removes the difference in the backend.
+function that is already on the stack, and a browser backend can refuse the
+second call. This design removes the difference.
 
-The refusal comes from a guard. The vendored `js_wasm_runtime_layer` wraps each
-host function's body in a shared JavaScript closure and in a guard that detects
-a second entry. The patch that introduced the guard states that the shared
-closure is entered at any depth. The function the runtime layer hands the
-backend is `Fn`, so the body needs no exclusive access. A host function that
-calls a guest, which calls a different host function, already derives the store
-from its pointer twice, on both targets. A second entry into the same function
-adds no new kind of access.
-
-The backend therefore drops the guard and calls the body directly. The browser
-enters a host function at any depth, with or without a provider. Every shape
-that [PDD020] lists runs the same on both targets. `SchedulerCause` loses its
-re-entrant host-call variant, and the backend's refusal type goes with it. The
-change breaks the public API, which the project accepts before its first major
-release.
+A host function of the runtime layer is `Fn`, so its body needs no exclusive
+access. Each call has its own arguments and results. A host function that calls
+a guest, which calls a different host function, already reaches the store twice,
+on both targets. A second entry into the same function adds no new kind of
+access. So the browser backend enters a host function at any depth, with or
+without a provider. Every shape that [PDD020] lists runs the same on both
+targets. `SchedulerCause` loses its re-entrant host-call variant, and the
+backend's refusal type goes with it. The change breaks the public API, which the
+project accepts before its first major release.
 
 ## Translation
 
@@ -588,12 +594,13 @@ The differences of [PDD018] and [PDD020] stay, except the re-entrant host call,
 which this design removes. The provider is the difference this design adds:
 
 - Native: the stack-switching provider on an engine that implements the
-  proposal. Under Wasmtime 49, that is x86_64 Linux. Nested turns elsewhere.
-- Browser: the JSPI provider in every browser that ships JSPI. Nested turns in
-  an older browser, such as Safari 26.
+  proposal. Under Wasmtime 49, that is x86_64 Linux. The host-suspension
+  provider on Wasmi. Nested turns elsewhere.
+- Browser: the host-suspension provider in every browser that ships JSPI. Nested
+  turns in an older browser, such as Safari 26.
 
-A resumption is synchronous under the stack-switching provider and runs on a
-microtask under the JSPI provider. The order of the scheduler is the same under
+A resumption is synchronous under the stack-switching provider and under Wasmi.
+It runs on a microtask under JSPI. The order of the scheduler is the same under
 both. A guest observes no difference, because a turn that resumes a thread runs
 nothing else until the thread suspends or finishes.
 
@@ -607,15 +614,16 @@ large program slowed by five times. Indirect calls push the cost toward the
 worst case. Every function that can be on the stack at a suspension must be
 rewritten. Here that includes the fused adapters and the core modules of every
 component in a chain. The rewrite needs a port of the pass to Rust, or Binaryen
-shipped to the browser. The JSPI provider serves every current browser at no
-such cost. A browser without JSPI keeps nested turns.
+shipped to the browser. The host-suspension provider serves every current
+browser at no such cost. A browser without JSPI keeps nested turns.
 
 ## The Corpus
 
 The shared expected-failure list records the best case: the failures under a
 provider. The native lane runs the stack-switching provider on the x86_64 Linux
-host, and the web lane runs the JSPI provider in the flake's Chromium. Each line
-this design owns leaves the shared list once it passes under a provider.
+host, and the web lane runs the host-suspension provider in the flake's
+Chromium. Each line this design owns leaves the shared list once it passes under
+a provider.
 
 A new overlay, `expected-failures.no-provider.txt`, lists the lines that fail
 without a provider. Each of its lines carries the stack-switch reason. The
@@ -675,12 +683,12 @@ sets the overlay. The design does not predict it.
 A developer runs a C component that uses pthreads in a browser page.
 
 > The C library starts each pthread with `thread.new-indirect` and parks it with
-> `thread.suspend`. In Safari 27, the polyfill selects the JSPI provider, and
-> each thread runs on a stack of its own. A thread that waits for a lock
-> suspends, and the page stays responsive. In Safari 26, the same component
-> loads. Its threads that never wait run to their end. The first wait that only
-> a suspended thread can release fails with the stack-switch cause, and the page
-> tells the person that the browser is too old.
+> `thread.suspend`. In Safari 27, the polyfill selects the host-suspension
+> provider, and each thread runs on a stack of its own. A thread that waits for
+> a lock suspends, and the page stays responsive. In Safari 26, the same
+> component loads. Its threads that never wait run to their end. The first wait
+> that only a suspended thread can release fails with the stack-switch cause,
+> and the page tells the person that the browser is too old.
 
 A developer calls a synchronous export that calls an `async` host function which
 fetches over the network.
@@ -709,9 +717,9 @@ A contributor adds a provider for a new engine.
 
 The switch probe selects the provider. On the x86_64 Linux host, the native
 engine's query answers the stack-switching provider. In the flake's Chromium,
-the query answers the JSPI provider. With the provider turned off through
-`EngineConfig`, the query answers none on both targets. A repository test proves
-each answer.
+the query answers the host-suspension provider. With the provider turned off
+through `EngineConfig`, the query answers none on both targets. A repository
+test proves each answer.
 
 The stack-switching provider meets the contract next to the fused adapters. A
 repository test starts a stackful export of one component that calls a second
@@ -720,9 +728,9 @@ A second test starts a thread by nested start from inside a host trampoline,
 suspends it, lets the trampoline return, and resumes the thread after its
 starter. Both pass natively on the x86_64 Linux host.
 
-The JSPI provider meets the contract in the browser. The same two repository
-tests pass in the web lane. A third test proves that a shim whose built-in is
-ready returns without a suspension.
+The host-suspension provider meets the contract in the browser. The same two
+repository tests pass in the web lane. A third test proves that a shim whose
+built-in is ready returns without a suspension.
 
 A synchronous export calls an `async` host function. A repository test lowers a
 host function whose future is pending for two polls. With a provider, the export

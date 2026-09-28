@@ -37,8 +37,8 @@ Write every PDD in plain English:
   "might", "could", or "would".
 - Do not use semicolons, em-dashes, or contractions.
 - Use one word for one meaning through the whole corpus. For example, use
-  "runtime layer" for the `wasm_runtime_layer` crate and "backend" for one of
-  its implementations.
+  "runtime layer" for the polyfill's family of crates over Wasm Core, and
+  "backend" for one of its implementations.
 - Define a concept term at its first use in a document.
 - State facts. Delete words that carry no fact.
 

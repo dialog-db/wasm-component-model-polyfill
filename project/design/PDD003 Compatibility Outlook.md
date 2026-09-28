@@ -169,7 +169,7 @@ must do, the status in Wasmtime (✅ implemented, ⚠️ gated behind a feature 
 
 | Concern                                                                           | Polyfill target              | Wasmtime | Reference                                |
 | --------------------------------------------------------------------------------- | ---------------------------- | -------- | ---------------------------------------- |
-| `Engine`, `Store`, `Module`, `Instance` at the core layer (via the runtime layer) | Track upstream               | ✅       | [`wasmtime::component::Linker`]          |
+| `Engine`, `Store`, `Module`, `Instance` at the core layer (via the runtime layer) | Implement                    | ✅       | [`wasmtime::component::Linker`]          |
 | `Component`, `Linker`, `LinkerInstance`, `Instance` at the component layer        | Implement                    | ✅       | [`wasmtime::component::LinkerInstance`]  |
 | Identifier model (`PackageName`, `InterfaceIdentifier`, semver)                   | Implement                    | ✅       | [Explainer – import and export]          |
 | Host function definition, synchronous                                             | Implement, typed and untyped | ✅       | [`LinkerInstance::func_wrap`]            |

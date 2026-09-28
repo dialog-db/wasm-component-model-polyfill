@@ -29,9 +29,9 @@ type, and the posture under which every later PDD is built.
 Two types make up the surface.
 
 `Engine` is the compilation context. It is a thin newtype over the runtime
-layer's `Engine`, parameterized by the backend of the target: the Wasmtime
-backend on native and the browser backend on `wasm32-unknown-unknown`.
-`Engine::new()` returns an engine with a default configuration. Engines are
+layer's `Engine`, over the backend that the host selects. The host gives the
+backend when it makes the engine, on every target, and the polyfill has no
+default backend. An engine starts with a default configuration. Engines are
 cheap to clone and share state internally. `Engine` is the equivalent of
 [Wasmtime]'s `wasmtime::Engine`.
 
@@ -127,9 +127,10 @@ design.
 
 A developer adopting the polyfill wants a familiar foundation in a few lines.
 
-> The developer writes `let engine = wcmp::Engine::new()?;` and
-> `let mut store = wcmp::Store::new(&engine, ())?;`. They do not reach for the
-> runtime layer.
+> The developer adds the crate of one backend. They write
+> `let engine = wcmp::Engine::with_backend(Web::default())?;` and
+> `let mut store = wcmp::Store::new(&engine, ())?;`. They name the backend once,
+> and no other type of the runtime layer.
 
 A contributor opening a PDD that introduces component-layer types wants the
 foundation in place.
@@ -166,7 +167,7 @@ calling an export each return a future the host awaits, on both targets.
 - [PDD002], the ecosystem foundation.
 - [PDD003], the compatibility outlook and checklist.
 - [PDD004], the test macros.
-- [`wasm_runtime_layer`], the runtime layer.
+- [`wasm_runtime_layer`], prior art for the runtime layer.
 - [`wasm_component_layer`], prior art.
 - [`thiserror`], the derive used by the error enum.
 - [Wasmtime], the reference implementation.
