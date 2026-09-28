@@ -1,0 +1,6 @@
+# Scenario 9: Zena imports from Zena by composition. The build composes
+# the two programs into one component, which keeps the importer's name
+# and exports only `welcome`. The call passes a string into the
+# composition and back, untyped and then typed. It prints nothing.
+call importer welcome("zena") -> "hello, zena!"
+call typed importer welcome("zena") -> "hello, zena!"

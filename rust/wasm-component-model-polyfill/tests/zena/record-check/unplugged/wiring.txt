@@ -1,0 +1,5 @@
+# The build plugs `exporter` into `importer` with `wac`, which refuses:
+# the exporter exports nothing the importer imports.
+#
+# <linking> <importer> <import> <exporter>
+composition importer wcmp:unplugged/greeter exporter

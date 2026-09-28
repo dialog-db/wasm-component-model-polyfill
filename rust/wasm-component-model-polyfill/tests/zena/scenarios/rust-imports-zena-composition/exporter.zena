@@ -1,0 +1,6 @@
+// Scenario 13, the exporter: it implements the `greeter` interface that
+// the Rust partner under `importer/` imports, and the build composes
+// the two with `wac`.
+export function greet(name: String): String {
+  return 'hello from Zena, ' + name;
+}

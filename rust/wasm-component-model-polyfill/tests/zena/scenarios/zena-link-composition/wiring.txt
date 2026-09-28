@@ -1,0 +1,6 @@
+# Scenario 9: the build plugs `exporter`'s `greeter` into `importer`
+# with `wac`, and the subjects run the composition under the name
+# `importer`.
+#
+# <linking> <importer> <import> <exporter>
+composition importer wcmp:zena-compose/greeter exporter

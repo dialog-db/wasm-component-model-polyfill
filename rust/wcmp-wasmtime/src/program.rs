@@ -6,7 +6,8 @@ use wcmp_scenario::Verdict;
 
 use crate::error::{Error, Result};
 
-/// One program of a scenario, as the build compiled it.
+/// One program of a scenario, as the build compiled it, and composed it
+/// when its scenario's wiring plugs other components into it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Program {
     /// The program's name: its file name without the extension. The
@@ -16,27 +17,30 @@ pub struct Program {
     pub status: i32,
     /// Everything the compiler printed.
     pub log: String,
-    /// The component, present when the program compiled.
+    /// The component, present when the program compiled. When the build
+    /// composed other components into it, this is the composition.
     pub component: Option<Vec<u8>>,
+    /// The composition tool's exit status, present when the build
+    /// composed other components into the program. `0` means the
+    /// component is the composition.
+    pub compose_status: Option<i32>,
+    /// Everything the composition tool printed.
+    pub compose_log: String,
 }
 
 impl Program {
     /// Read the program `name` from a compiled scenario's directory:
     /// `<name>.status`, `<name>.log`, and `<name>.wasm` when the status
-    /// is `0`.
+    /// is `0`, and `<name>.compose-status` and `<name>.compose-log` when
+    /// the build composed other components into it.
     ///
     /// # Errors
     ///
     /// [`Error::Io`] when a file cannot be read, and [`Error::Layout`]
-    /// when the status is not a number, or when it says the program
-    /// compiled and there is no component.
+    /// when a status is not a number, or when the status says the
+    /// program compiled and there is no component.
     pub fn read(directory: &Path, name: &str) -> Result<Self> {
-        let status_path = directory.join(format!("{name}.status"));
-        let status_text = read_to_string(&status_path)?;
-        let status = status_text.trim().parse().map_err(|_| Error::Layout {
-            path: status_path.clone(),
-            reason: format!("`{}` is not an exit status", status_text.trim()),
-        })?;
+        let status = read_status(&directory.join(format!("{name}.status")))?;
         let log = read_to_string(&directory.join(format!("{name}.log")))?;
         let component_path = directory.join(format!("{name}.wasm"));
         let component = if status == 0 {
@@ -47,11 +51,22 @@ impl Program {
         } else {
             None
         };
+        let compose_status_path = directory.join(format!("{name}.compose-status"));
+        let (compose_status, compose_log) = if compose_status_path.exists() {
+            (
+                Some(read_status(&compose_status_path)?),
+                read_to_string(&directory.join(format!("{name}.compose-log")))?,
+            )
+        } else {
+            (None, String::new())
+        };
         Ok(Program {
             name: name.to_string(),
             status,
             log,
             component,
+            compose_status,
+            compose_log,
         })
     }
 
@@ -63,6 +78,28 @@ impl Program {
             None => Err(Verdict::not_compiled(&self.name, self.status, &self.log)),
         }
     }
+
+    /// Nothing when the program's composition succeeded or the build
+    /// composed nothing into it, and otherwise the verdict of a scenario
+    /// the program stops at `compose`, which names the composition
+    /// tool's exit status and output.
+    pub fn composed(&self) -> core::result::Result<(), Verdict> {
+        match self.compose_status {
+            Some(status) if status != 0 => {
+                Err(Verdict::not_composed(&self.name, status, &self.compose_log))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Read an exit status that a build step wrote to `path`.
+fn read_status(path: &Path) -> Result<i32> {
+    let text = read_to_string(path)?;
+    text.trim().parse().map_err(|_| Error::Layout {
+        path: path.to_path_buf(),
+        reason: format!("`{}` is not an exit status", text.trim()),
+    })
 }
 
 fn read_to_string(path: &Path) -> Result<String> {

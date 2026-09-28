@@ -1,0 +1,7 @@
+// Scenario 9, the importer: `welcome` passes its string to the
+// exporter's `greet` inside the composition and passes the answer back.
+import { greet } from 'wcmp:zena-compose/greeter';
+
+export function welcome(name: String): String {
+  return greet(name) + '!';
+}

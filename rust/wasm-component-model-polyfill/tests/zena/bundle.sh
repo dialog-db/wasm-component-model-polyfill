@@ -15,7 +15,9 @@
 # - `<scenario>/observations.txt`, from the Wasmtime run.
 # - `<scenario>/wiring.txt`, from the sources, when the scenario has one.
 # - `<scenario>/<program>.status`, `.log`, and `.wasm` for each
-#   program, as `build.sh` left them.
+#   program, as `build.sh`, `partner.sh`, and `compose.sh` left them,
+#   and `<program>.compose-status` and `.compose-log` for a program
+#   that `compose.sh` composed other components into.
 #
 # and `zena-revision`, the toolchain's revision. Each file is a header
 # line `file <path> <length>`, then its `<length>` bytes, then a

@@ -1,0 +1,6 @@
+# Scenario 13: the build plugs the Zena `exporter`'s `greeter` into the
+# Rust partner `importer` with `wac`, and the subjects run the
+# composition under the name `importer`.
+#
+# <linking> <importer> <import> <exporter>
+composition importer wcmp:rust-compose/greeter exporter

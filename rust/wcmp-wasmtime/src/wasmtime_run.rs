@@ -70,7 +70,10 @@ impl WasmtimeRun {
     /// Run `scenario` and judge it against its expectations.
     ///
     /// A program that did not compile stops the scenario at `compile`,
-    /// and nothing runs. Otherwise every component is parsed, then
+    /// and nothing runs. Then a composition the build could not make
+    /// stops it at `compose` the same way. A composition that the build
+    /// made is one component under its importer's name, and runs like
+    /// any other. Otherwise every component is parsed, then
     /// linked, then instantiated, all in one store, and the first step
     /// that fails for any of them is the stage. Components are parsed
     /// in the order of their programs' names, and linked and
@@ -127,6 +130,11 @@ impl WasmtimeRun {
             match program.compiled() {
                 Ok(bytes) => compiled.push((program.name.as_str(), bytes)),
                 Err(verdict) => return stopped(verdict.stage, verdict.reason),
+            }
+        }
+        for program in &scenario.programs {
+            if let Err(verdict) = program.composed() {
+                return stopped(verdict.stage, verdict.reason);
             }
         }
 
@@ -869,6 +877,8 @@ mod tests {
             status: 0,
             log: String::new(),
             component: Some(component.to_vec()),
+            compose_status: None,
+            compose_log: String::new(),
         }
     }
 
@@ -1035,6 +1045,8 @@ mod tests {
             status: 1,
             log: "refused.zena:4:3 - Error: Type mismatch\n".to_string(),
             component: None,
+            compose_status: None,
+            compose_log: String::new(),
         };
         let observations = run(
             vec![program("calc", CALCULATOR), refused],
@@ -1049,6 +1061,40 @@ mod tests {
             )
         );
         assert!(observations.calls.is_empty());
+    }
+
+    #[wcmp_macros::test]
+    async fn it_runs_nothing_when_a_composition_failed() {
+        // The refused composition sorts first, and a program after it
+        // does not parse: `compose` comes before `parse`, and `compile`
+        // before `compose`.
+        let refused = Program {
+            compose_status: Some(1),
+            compose_log: "error: the socket component had no matching imports\n".to_string(),
+            ..program("calc", CALCULATOR)
+        };
+        let unparsable = program("zzz", b"\0asm not a component");
+        let observations = run(
+            vec![refused.clone(), unparsable],
+            "call calc add(1s32, 2s32) -> 3s32",
+        )
+        .await;
+        assert_eq!(
+            observations.verdict,
+            Verdict::new(
+                Stage::Compose,
+                "the composition into calc failed (exit 1): error: the socket component had no matching imports"
+            )
+        );
+        assert!(observations.calls.is_empty());
+
+        let uncompiled = Program {
+            status: 1,
+            component: None,
+            ..program("zzz", b"")
+        };
+        let observations = run(vec![refused, uncompiled], "").await;
+        assert_eq!(observations.verdict.stage, Stage::Compile);
     }
 
     #[wcmp_macros::test]

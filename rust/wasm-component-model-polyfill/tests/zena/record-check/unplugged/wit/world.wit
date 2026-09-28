@@ -1,0 +1,22 @@
+// Two worlds that do not compose: the exporter exports `farewell`, and
+// the importer imports `greeter`.
+package wcmp:unplugged;
+
+interface greeter {
+  greet: func(name: string) -> string;
+}
+
+interface farewell {
+  part: func(name: string) -> string;
+}
+
+// The world of `exporter.zena`.
+world exporter {
+  export farewell;
+}
+
+// The world of `importer.zena`.
+world importer {
+  import greeter;
+  export welcome: func(name: string) -> string;
+}

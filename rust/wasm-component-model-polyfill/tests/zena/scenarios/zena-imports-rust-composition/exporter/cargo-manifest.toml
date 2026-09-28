@@ -1,0 +1,26 @@
+# The Rust partner's manifest. `partner.sh` copies it to `Cargo.toml`,
+# and `cargo-lock.toml` beside it to `Cargo.lock`, when it builds the
+# partner; its header says why neither file has its usual name here.
+[package]
+name = "wcmp-zena-partner-exporter"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "exporter"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "=0.62.0"
+
+# Small and deterministic: no debug information, no panic machinery,
+# and nothing the linker can order differently between two runs.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = 0

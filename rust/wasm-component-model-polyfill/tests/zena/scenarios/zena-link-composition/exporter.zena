@@ -1,0 +1,5 @@
+// Scenario 9, the exporter: it implements the `greeter` interface that
+// `importer.zena` imports, and the build composes the two with `wac`.
+export function greet(name: String): String {
+  return 'hello, ' + name;
+}

@@ -29,8 +29,8 @@ pub enum Error {
     /// A name that is not the name of a kind of link.
     #[error("`{0}` is not a way to link")]
     UnknownLinking(String),
-    /// A link of a scenario's wiring names a component the scenario
-    /// does not have.
+    /// A run-time link of a scenario's wiring names a component the
+    /// scenario does not have.
     #[error("the link `{link}` names component {component}, which the scenario does not have")]
     UnknownComponent {
         /// The link, as its line spells it.

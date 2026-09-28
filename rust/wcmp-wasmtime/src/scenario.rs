@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use wcmp_scenario::{Expectations, Linking, Wiring};
+use wcmp_scenario::{Expectations, Link, Wiring};
 
 use crate::error::{Error, Result};
 use crate::program::Program;
@@ -74,8 +74,9 @@ impl Scenario {
     /// the wiring file is malformed or its links name a program the
     /// scenario does not have or form a cycle, and [`Error::Layout`]
     /// when the compiled directory holds no program, a program's files
-    /// are out of place, or the wiring asks for a composition, which
-    /// the build does not make.
+    /// are out of place, or every program compiled and a composition
+    /// link of the wiring was not made: its importer carries no outcome
+    /// of a composition, or its exporter is still a program of its own.
     pub fn read(sources: &Path, compiled: &Path) -> Result<Self> {
         let name = compiled
             .file_name()
@@ -115,20 +116,16 @@ impl Scenario {
             path: wiring_path.clone(),
             source,
         })?;
-        if let Some(link) = wiring
-            .links
-            .iter()
-            .find(|link| link.linking == Linking::Composition)
-        {
-            return Err(Error::Layout {
-                path: wiring_path,
-                reason: format!("`{link}` asks for a composition, which the build does not make"),
-            });
-        }
-        let programs = program_names
+        let programs: Vec<Program> = program_names
             .iter()
             .map(|program| Program::read(compiled, program))
             .collect::<Result<_>>()?;
+        if let Some(link) = uncomposed(&wiring, &programs) {
+            return Err(Error::Layout {
+                path: wiring_path,
+                reason: format!("`{link}` asks for a composition, which the build did not make"),
+            });
+        }
         Ok(Scenario {
             name,
             expectations,
@@ -136,6 +133,24 @@ impl Scenario {
             programs,
         })
     }
+}
+
+/// The first composition link of `wiring` that the build should have
+/// made and did not: every program compiled, and yet the link's
+/// importer carries no outcome of a composition or its exporter is
+/// still a program of its own. When a program did not compile, the
+/// build attempts no composition, and the scenario stops at `compile`.
+fn uncomposed<'a>(wiring: &'a Wiring, programs: &[Program]) -> Option<&'a Link> {
+    if programs.iter().any(|program| program.status != 0) {
+        return None;
+    }
+    wiring.composition().find(|link| {
+        let composed = programs
+            .iter()
+            .any(|program| program.name == link.importer && program.compose_status.is_some());
+        let consumed = programs.iter().all(|program| program.name != link.exporter);
+        !(composed && consumed)
+    })
 }
 
 fn read_to_string(path: &Path) -> Result<String> {
@@ -175,7 +190,7 @@ fn entries(directory: &Path) -> Result<Vec<String>> {
 mod tests {
     use std::path::PathBuf;
 
-    use wcmp_scenario::{Link, Linking};
+    use wcmp_scenario::Linking;
 
     use super::*;
 
@@ -216,6 +231,28 @@ mod tests {
 
         fn read(&self) -> Result<Scenario> {
             Scenario::read(&self.sources(), &self.compiled())
+        }
+
+        /// Make `program` one that compiled.
+        fn compile(&self, program: &str) {
+            std::fs::write(self.compiled().join(format!("{program}.status")), "0\n").unwrap();
+            std::fs::write(self.compiled().join(format!("{program}.wasm")), "\0asm").unwrap();
+        }
+
+        /// Give `program` the outcome of a composition into it.
+        fn compose(&self, program: &str, status: i32, log: &str) {
+            let file = |extension: &str| self.compiled().join(format!("{program}.{extension}"));
+            std::fs::write(file("compose-status"), format!("{status}\n")).unwrap();
+            std::fs::write(file("compose-log"), log).unwrap();
+        }
+
+        /// Remove `program`'s files, as a composition does with each
+        /// program it plugs into another.
+        fn remove(&self, program: &str) {
+            for extension in ["status", "log", "wasm"] {
+                let _ =
+                    std::fs::remove_file(self.compiled().join(format!("{program}.{extension}")));
+            }
         }
     }
 
@@ -302,21 +339,77 @@ mod tests {
         );
     }
 
+    /// The wiring of a scenario whose build plugs `exporter` into
+    /// `importer`.
+    const COMPOSITION: &str = "composition importer local:demo/greeter exporter";
+
     #[wcmp_macros::test]
-    fn it_refuses_a_composition_as_a_layout_the_build_does_not_make() {
-        let layout = Layout::new(
-            "composition",
-            Some("composition importer local:demo/greeter exporter"),
+    fn it_reads_a_composition_under_its_importer_name_and_its_outcome() {
+        let layout = Layout::new("composed", Some(COMPOSITION));
+        layout.compile("importer");
+        layout.compose("importer", 0, "");
+        layout.remove("exporter");
+        let scenario = layout.read().unwrap();
+        let [program] = &scenario.programs[..] else {
+            panic!("{:?}", scenario.programs);
+        };
+        assert_eq!(program.name, "importer");
+        assert_eq!(program.compose_status, Some(0));
+        assert_eq!(program.compiled(), Ok(&b"\0asm"[..]));
+        assert_eq!(program.composed(), Ok(()));
+
+        let layout = Layout::new("refused-composition", Some(COMPOSITION));
+        layout.compile("importer");
+        layout.compose("importer", 1, "error: no matching imports\n");
+        layout.remove("exporter");
+        let scenario = layout.read().unwrap();
+        assert_eq!(
+            scenario.programs[0].composed(),
+            Err(wcmp_scenario::Verdict::not_composed(
+                "importer",
+                1,
+                "error: no matching imports"
+            ))
         );
-        match layout.read() {
-            Err(Error::Layout { path, reason }) => {
-                assert_eq!(path, layout.sources().join(WIRING));
-                assert_eq!(
-                    reason,
-                    "`composition importer local:demo/greeter exporter` asks for a composition, which the build does not make"
-                );
+    }
+
+    #[wcmp_macros::test]
+    fn it_reads_a_composition_whose_programs_did_not_compile_as_they_are() {
+        // The build attempts no composition then, and the scenario
+        // stops at `compile`.
+        let layout = Layout::new("uncompiled", Some(COMPOSITION));
+        layout.compile("importer");
+        let scenario = layout.read().unwrap();
+        let programs: Vec<_> = scenario
+            .programs
+            .iter()
+            .map(|program| (program.name.as_str(), program.compose_status))
+            .collect();
+        assert_eq!(programs, [("exporter", None), ("importer", None)]);
+    }
+
+    #[wcmp_macros::test]
+    fn it_refuses_a_composition_the_build_did_not_make() {
+        let uncomposed = Layout::new("uncomposed", Some(COMPOSITION));
+        uncomposed.compile("importer");
+        uncomposed.compile("exporter");
+        let unconsumed = Layout::new("unconsumed", Some(COMPOSITION));
+        unconsumed.compile("importer");
+        unconsumed.compile("exporter");
+        unconsumed.compose("importer", 0, "");
+        for layout in [uncomposed, unconsumed] {
+            match layout.read() {
+                Err(Error::Layout { path, reason }) => {
+                    assert_eq!(path, layout.sources().join(WIRING));
+                    assert_eq!(
+                        reason,
+                        format!(
+                            "`{COMPOSITION}` asks for a composition, which the build did not make"
+                        )
+                    );
+                }
+                other => panic!("{other:?}"),
             }
-            other => panic!("{other:?}"),
         }
     }
 }

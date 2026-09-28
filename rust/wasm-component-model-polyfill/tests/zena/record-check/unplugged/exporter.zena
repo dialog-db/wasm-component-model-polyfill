@@ -1,0 +1,5 @@
+// The exporter of a composition that `wac` refuses: it exports
+// `farewell`, and nothing of the importer's matches it.
+export function part(name: String): String {
+  return 'goodbye, ' + name;
+}

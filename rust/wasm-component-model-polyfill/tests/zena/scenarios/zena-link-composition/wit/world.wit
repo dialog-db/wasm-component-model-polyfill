@@ -1,0 +1,22 @@
+// The contract between the two programs of scenario 9. Each program
+// compiles against the world named after it.
+//
+// `greet` is synchronous: the build composes the two programs into one
+// component, so no host function stands between them, and a
+// synchronous import can call a synchronous export.
+package wcmp:zena-compose;
+
+interface greeter {
+  greet: func(name: string) -> string;
+}
+
+// The world of `exporter.zena`.
+world exporter {
+  export greeter;
+}
+
+// The world of `importer.zena`.
+world importer {
+  import greeter;
+  export welcome: func(name: string) -> string;
+}

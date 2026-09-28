@@ -39,18 +39,29 @@ impl Wiring {
             .filter(|link| link.linking == Linking::RunTime)
     }
 
+    /// The links the build makes by composition.
+    pub fn composition(&self) -> impl Iterator<Item = &Link> {
+        self.links
+            .iter()
+            .filter(|link| link.linking == Linking::Composition)
+    }
+
     /// The order to instantiate `components` in: every exporter of a
     /// run-time link before its importer, and otherwise the order
     /// `components` come in.
     ///
+    /// A composition link orders nothing and is not checked here: the
+    /// build composes its exporter into its importer, so once the build
+    /// made it, the exporter is no component of its own.
+    ///
     /// # Errors
     ///
-    /// [`Error::UnknownComponent`] when a link names a component that is
-    /// not among `components`, and [`Error::LinkCycle`] when the
+    /// [`Error::UnknownComponent`] when a run-time link names a component
+    /// that is not among `components`, and [`Error::LinkCycle`] when the
     /// run-time links leave no order, such as a component that imports
     /// from itself.
     pub fn order<'a>(&self, components: &[&'a str]) -> Result<Vec<&'a str>> {
-        for link in &self.links {
+        for link in self.run_time() {
             for component in [&link.importer, &link.exporter] {
                 if !components.contains(&component.as_str()) {
                     return Err(Error::UnknownComponent {
@@ -162,6 +173,11 @@ mod tests {
             .map(|link| link.importer.as_str())
             .collect();
         assert_eq!(run_time, ["importer"]);
+        let composition: Vec<_> = wiring
+            .composition()
+            .map(|link| link.importer.as_str())
+            .collect();
+        assert_eq!(composition, ["main"]);
     }
 
     #[wcmp_macros::test]
@@ -201,9 +217,11 @@ mod tests {
             Ok(vec!["c", "b", "a", "d"])
         );
         assert_eq!(Wiring::default().order(&["b", "a"]), Ok(vec!["b", "a"]));
-        // A composition link is the build's, so it orders nothing.
+        // A composition link is the build's, so it orders nothing, and
+        // once the build made it, its exporter is inside the importer.
         let composed: Wiring = "composition a local:demo/b b".parse().unwrap();
         assert_eq!(composed.order(&["a", "b"]), Ok(vec!["a", "b"]));
+        assert_eq!(composed.order(&["a"]), Ok(vec!["a"]));
     }
 
     #[wcmp_macros::test]

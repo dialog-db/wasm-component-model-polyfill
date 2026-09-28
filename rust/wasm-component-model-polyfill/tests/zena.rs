@@ -26,6 +26,12 @@
 //! text that says why, as a `Report` whose line is the scenario, the
 //! subject, the stage, and the reason.
 //!
+//! A scenario whose wiring asks for a composition reaches the runner
+//! as one component: the build composed its components with `wac` into
+//! one under the importer's name. When `wac` refused them, the build
+//! kept its exit status and output instead, and every subject stops at
+//! `compose` before any component runs.
+//!
 //! Where a subject stops is an outcome, not a failure, so no test
 //! asserts that a scenario passes. The committed record,
 //! `tests/zena/record.txt`, holds the stage of every scenario for every
@@ -81,13 +87,20 @@ const BUNDLE: &[u8] = include_bytes!(env!(
     "the Zena scenario tests embed the bundle the build writes; run them through `tests native` or `tests web`"
 ));
 
-/// A scenario whose one program Zena refuses, built, run through
-/// Wasmtime, and bundled like every scenario, from
-/// `tests/zena/record-check`. It is not a scenario of the record.
-const REFUSED: &[u8] = include_bytes!(env!(
-    "WCMP_ZENA_REFUSED",
+/// The scenarios of `tests/zena/record-check`, built, run through
+/// Wasmtime, and bundled like every scenario: [`REFUSED`] and
+/// [`UNPLUGGED`]. Neither is a scenario of the record.
+const RECORD_CHECK: &[u8] = include_bytes!(env!(
+    "WCMP_ZENA_RECORD_CHECK",
     "the Zena scenario tests embed the bundle the build writes; run them through `tests native` or `tests web`"
 ));
+
+/// The record-check scenario whose one program Zena refuses.
+const REFUSED: &str = "refused";
+
+/// The record-check scenario whose composition `wac` refuses: its
+/// exporter exports nothing its importer imports.
+const UNPLUGGED: &str = "unplugged";
 
 /// The committed record: the stage of every Zena scenario for every
 /// subject, and the Zena revision it was made from.
@@ -467,7 +480,7 @@ async fn it_holds_all_three_subjects_to_the_record_and_prints_the_table() {
 #[wcmp_macros::test]
 async fn it_fails_the_gate_when_a_recorded_stage_is_one_step_later_or_earlier_than_the_run() {
     let pin = built_revision();
-    let reports = [subjects(BUNDLE).await, subjects(REFUSED).await].concat();
+    let reports = [subjects(BUNDLE).await, subjects(RECORD_CHECK).await].concat();
     let matching = record_of(&pin, &reports);
     assert!(matching.differences(&pin, &reports).is_empty());
     let (mut later, mut earlier) = (0, 0);
@@ -562,13 +575,7 @@ async fn it_fails_the_gate_when_the_record_names_another_revision_and_names_both
 
 #[wcmp_macros::test]
 async fn it_records_compile_for_every_subject_of_a_program_zena_refuses() {
-    let scenarios = bundle::scenarios(REFUSED).unwrap();
-    let [scenario] = &scenarios[..] else {
-        panic!(
-            "the refused-program bundle holds {} scenarios",
-            scenarios.len()
-        );
-    };
+    let scenario = record_check(REFUSED);
     // The build succeeded without a component, and kept Zena's exit
     // status and its error output.
     let [program] = &scenario.programs[..] else {
@@ -583,21 +590,70 @@ async fn it_records_compile_for_every_subject_of_a_program_zena_refuses() {
     assert!(program.log.contains("Error"), "{}", program.log);
 
     let refused = Verdict::not_compiled(&program.name, program.status, &program.log);
-    let reports = subjects(REFUSED).await;
+    assert_every_subject_stops(&scenario.name, &refused, &program.log).await;
+}
+
+#[wcmp_macros::test]
+async fn it_records_compose_for_every_subject_of_a_composition_wac_refuses() {
+    let scenario = record_check(UNPLUGGED);
+    // Both programs compiled, and the build succeeded: it left the
+    // importer alone under its name, with `wac`'s exit status and its
+    // error output, and removed the exporter it could not plug in.
+    let [program] = &scenario.programs[..] else {
+        panic!(
+            "{} holds {} programs",
+            scenario.name,
+            scenario.programs.len()
+        );
+    };
+    assert_eq!(program.status, 0);
+    let status = program
+        .compose_status
+        .unwrap_or_else(|| panic!("the build composed nothing into {}", program.name));
+    assert_ne!(status, 0);
+    assert!(
+        program.compose_log.contains("error"),
+        "{}",
+        program.compose_log
+    );
+
+    let refused = Verdict::not_composed(&program.name, status, &program.compose_log);
+    assert_every_subject_stops(&scenario.name, &refused, &program.compose_log).await;
+}
+
+/// The scenario `name` of the record-check bundle.
+fn record_check(name: &str) -> Scenario {
+    bundle::scenarios(RECORD_CHECK)
+        .unwrap_or_else(|error| panic!("the record-check bundle: {error}"))
+        .into_iter()
+        .find(|scenario| scenario.name == name)
+        .unwrap_or_else(|| panic!("the record-check bundle has no scenario {name}"))
+}
+
+/// Hold the Wasmtime run and this target's polyfill subject of the
+/// record-check scenario `name` to `verdict`, and check that a record
+/// written from the run keeps `output`, the output of the tool that
+/// stopped the scenario, on the line of every subject.
+async fn assert_every_subject_stops(name: &str, verdict: &Verdict, output: &str) {
+    let reports: Vec<Report> = subjects(RECORD_CHECK)
+        .await
+        .into_iter()
+        .filter(|report| report.scenario == name)
+        .collect();
+    assert_eq!(reports.len(), 2, "{}", lines(&reports));
     for report in &reports {
-        assert_eq!(report.verdict, refused, "{report}");
+        assert_eq!(&report.verdict, verdict, "{report}");
     }
     let record: Record = record_of(&built_revision(), &reports)
         .to_string()
         .parse()
         .unwrap();
     for subject in Subject::ALL {
-        let line = record.line(&scenario.name, subject).unwrap();
-        assert_eq!(line.verdict.stage, Stage::Compile, "{line}");
+        let line = record.line(name, subject).unwrap();
+        assert_eq!(line.verdict.stage, verdict.stage, "{line}");
         assert!(
-            line.verdict.reason.contains(program.log.trim()),
-            "`{line}` does not keep Zena's output: {}",
-            program.log
+            line.verdict.reason.contains(output.trim()),
+            "`{line}` does not keep the tool's output: {output}"
         );
     }
 }
@@ -1591,9 +1647,18 @@ async fn it_stops_at_the_first_step_that_fails() {
         status: 1,
         log: "refused.zena:4:3 - Error: Type mismatch\n".to_string(),
         component: None,
+        compose_status: None,
+        compose_log: String::new(),
+    };
+    // A composition the build could not make sorts first here, and
+    // `compile` still comes before `compose`.
+    let unplugged = Program {
+        compose_status: Some(1),
+        compose_log: "error: the socket component had no matching imports\n".to_string(),
+        ..Program::compiled("calc", CALCULATOR)
     };
     let compile = run(
-        vec![Program::compiled("calc", CALCULATOR), refused],
+        vec![unplugged.clone(), refused],
         "call calc add(1s32, 2s32) -> 3s32",
         r#"stage compile "program refused did not compile (exit 1): refused.zena:4:3 - Error: Type mismatch""#,
     )
@@ -1603,6 +1668,24 @@ async fn it_stops_at_the_first_step_that_fails() {
         Verdict::new(
             Stage::Compile,
             "program refused did not compile (exit 1): refused.zena:4:3 - Error: Type mismatch"
+        )
+    );
+
+    // Then `compose` comes before `parse`.
+    let compose = run(
+        vec![
+            unplugged,
+            Program::compiled("zzz", b"\0asm not a component"),
+        ],
+        "call calc add(1s32, 2s32) -> 3s32",
+        r#"stage compose "the composition into calc failed (exit 1): error: the socket component had no matching imports""#,
+    )
+    .await;
+    assert_eq!(
+        compose,
+        Verdict::new(
+            Stage::Compose,
+            "the composition into calc failed (exit 1): error: the socket component had no matching imports"
         )
     );
 

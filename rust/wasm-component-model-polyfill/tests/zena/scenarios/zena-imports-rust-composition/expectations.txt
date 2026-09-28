@@ -1,0 +1,7 @@
+# Scenario 12: Zena imports from Rust by composition. The build
+# composes the two components into one, which keeps the importer's name
+# and exports only `welcome`. The call passes a string into the
+# composition and back, untyped and then typed. The greeting names
+# Rust, so it can only come from the partner. It prints nothing.
+call importer welcome("zena") -> "hello from Rust, zena!"
+call typed importer welcome("zena") -> "hello from Rust, zena!"

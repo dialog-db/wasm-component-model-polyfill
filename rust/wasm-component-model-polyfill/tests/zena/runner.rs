@@ -113,11 +113,16 @@ impl PolyfillRun {
     /// Parse every component of `scenario` in the order of its
     /// program's name, or answer the verdict of the step that stopped
     /// it. A program that did not compile stops the scenario at
-    /// `compile`, and nothing is parsed.
+    /// `compile`, and then a composition the build could not make stops
+    /// it at `compose`, and nothing is parsed. A composition the build
+    /// made is one component under its importer's name.
     async fn parse<'a>(&self, scenario: &'a Scenario) -> Result<Components<'a>, Verdict> {
         let mut compiled = Vec::with_capacity(scenario.programs.len());
         for program in &scenario.programs {
             compiled.push((program.name.as_str(), program.component()?));
+        }
+        for program in &scenario.programs {
+            program.composed()?;
         }
         let mut components = Vec::with_capacity(compiled.len());
         for (name, bytes) in compiled {

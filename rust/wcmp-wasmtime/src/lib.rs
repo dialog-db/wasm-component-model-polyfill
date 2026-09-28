@@ -32,6 +32,12 @@
 //!   a component by its program's name. A scenario's Rust partner is a
 //!   program here too: the build writes its status as `0` and its log
 //!   empty, because a partner that does not build fails the build.
+//!   When the wiring asks for a composition, the build plugs each
+//!   exporter into its importer and leaves one program under the
+//!   importer's name: `<importer>.compose-status` with the composition
+//!   tool's exit status, `<importer>.compose-log` with its output, and
+//!   `<importer>.wasm` with the composition when it succeeded. The
+//!   exporter's files are gone, so the run sees one component.
 //!
 //! # What the run links
 //!

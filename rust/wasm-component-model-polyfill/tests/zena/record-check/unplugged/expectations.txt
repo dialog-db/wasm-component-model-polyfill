@@ -1,0 +1,3 @@
+# A scenario whose composition `wac` refuses, so every subject stops at
+# `compose` and makes no call.
+call importer welcome("zena") -> "hello, zena!"

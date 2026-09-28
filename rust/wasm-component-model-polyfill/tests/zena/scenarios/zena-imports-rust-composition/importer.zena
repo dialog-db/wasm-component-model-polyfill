@@ -1,0 +1,7 @@
+// Scenario 12, the importer: `welcome` passes its string to the Rust
+// partner's `greet` inside the composition and passes the answer back.
+import { greet } from 'wcmp:rust-compose/greeter';
+
+export function welcome(name: String): String {
+  return greet(name) + '!';
+}

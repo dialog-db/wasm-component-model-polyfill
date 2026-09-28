@@ -342,12 +342,27 @@
               )
           ) (directories scenarios);
 
+        # The script that composes the components of each scenario whose
+        # wiring asks for a composition, with the `wac` the conformance
+        # fixtures use. Its header states the layout it leaves.
+        zenaComposer = pkgs.writeShellApplication {
+          name = "zena-compose-scenarios";
+          runtimeInputs = [
+            pkgs.coreutils
+            wac-cli
+          ];
+          text = builtins.readFile ./rust/wasm-component-model-polyfill/tests/zena/compose.sh;
+        };
+
         # Every scenario under `scenarios` compiled: the Zena programs with
         # the pinned toolchain (`buildZenaScenarios`) and the Rust partners
         # with this workspace's (`rustPartners`), side by side under
         # `$out/<scenario>/`, so the steps after this one read a partner
         # as they read a program. A partner named like a program of its
-        # scenario fails the build.
+        # scenario fails the build. Then `zenaComposer` composes each
+        # scenario whose wiring asks for it into one component under the
+        # importer's name, or keeps `wac`'s refusal as the scenario's
+        # outcome.
         compileScenarios =
           { name, scenarios }:
           let
@@ -371,6 +386,10 @@
                 cp ${component}/* "$out/${scenario}/"
               ''
             ) (rustPartners scenarios)
+            + ''
+              chmod -R u+w "$out"
+              ${pkgs.lib.getExe zenaComposer} ${scenarios} "$out"
+            ''
           );
 
         zenaScenarios = compileScenarios {
@@ -406,6 +425,11 @@
         # - A directory with no scenario, or a scenario with no program,
         #   fails the build instead of yielding an empty output. These run
         #   the script alone, with a stand-in for Zena that never runs.
+        # - A composition link that names a missing program, or programs
+        #   that compose in a chain, fail the composer; a composition
+        #   whose exporter did not compile is left as it is, for the
+        #   `compile` stage. These run the composer alone, on layouts that
+        #   never reach `wac`.
         zenaScenarioBuildCheck =
           let
             built = buildZenaScenarios {
@@ -442,6 +466,39 @@
             grep -q 'no-scenario holds no scenario directory' no-scenario.err
             test ! -e no-scenario.out
             grep -q 'scenario empty holds no .zena program' no-program.err
+
+            # The composer on wirings it cannot make, which fail the
+            # build, and on a composition whose exporter did not compile,
+            # which it leaves as it is. None of them reaches `wac`.
+            for layout in missing chain uncompiled; do
+              mkdir -p "compose-$layout/sources/demo" "compose-$layout/built/demo"
+            done
+            echo 'composition importer local:demo/api exporter' \
+              >compose-missing/sources/demo/wiring.txt
+            echo 0 >compose-missing/built/demo/importer.status
+            printf '%s\n' 'composition a local:demo/b b' 'composition b local:demo/c c' \
+              >compose-chain/sources/demo/wiring.txt
+            for program in a b c; do
+              echo 0 >compose-chain/built/demo/$program.status
+            done
+            echo 'composition importer local:demo/api exporter' \
+              >compose-uncompiled/sources/demo/wiring.txt
+            echo 0 >compose-uncompiled/built/demo/importer.status
+            echo 1 >compose-uncompiled/built/demo/exporter.status
+            for layout in missing chain; do
+              if ${pkgs.lib.getExe zenaComposer} compose-$layout/sources \
+                compose-$layout/built 2>compose-$layout.err; then
+                echo "the composer accepted the $layout wiring" >&2
+                exit 1
+              fi
+            done
+            grep -q 'scenario demo has no program exporter' compose-missing.err
+            grep -q 'b is both an importer and an exporter of compositions' \
+              compose-chain.err
+            ${pkgs.lib.getExe zenaComposer} compose-uncompiled/sources \
+              compose-uncompiled/built
+            test -e compose-uncompiled/built/demo/exporter.status
+            test ! -e compose-uncompiled/built/demo/importer.compose-status
 
             touch "$out"
           '';
@@ -513,24 +570,27 @@
           observed = zenaWasmtime;
         };
 
-        # A scenario whose program Zena refuses, taken through every step a
-        # real scenario takes: compiled with the pinned toolchain, run
-        # through Wasmtime, and bundled. The `zena` test checks that each
-        # subject stops it at `compile` and that the record written from
-        # the run keeps Zena's error output. It is not in the record.
-        zenaRefusedScenario =
+        # Two scenarios that stop before any component runs, taken through
+        # every step a real scenario takes: compiled with the pinned
+        # toolchain, composed, run through Wasmtime, and bundled. In
+        # `refused`, Zena refuses the program; in `unplugged`, `wac`
+        # refuses the composition. The `zena` test checks that each
+        # subject stops them at `compile` and `compose`, and that the
+        # record written from the run keeps the tool's error output.
+        # Neither is in the record.
+        zenaRecordCheck =
           let
             scenarios = ./rust/wasm-component-model-polyfill/tests/zena/record-check;
-            compiled = buildZenaScenarios {
-              name = "zena-refused-program";
+            compiled = compileScenarios {
+              name = "zena-record-check-scenarios";
               inherit scenarios;
             };
           in
           bundleZenaScenarios {
-            name = "zena-refused-scenario";
+            name = "zena-record-check";
             inherit scenarios compiled;
             observed = runScenariosUnderWasmtime {
-              name = "zena-refused-wasmtime";
+              name = "zena-record-check-wasmtime";
               inherit scenarios compiled;
             };
           };
@@ -540,12 +600,13 @@
         # the polyfill, in the browser and natively, and reads them from
         # the bundle `WCMP_ZENA_SCENARIOS` names. It holds the run to the
         # committed record, `tests/zena/record.txt`, and checks the
-        # `compile` stage on the bundle `WCMP_ZENA_REFUSED` names.
+        # `compile` and `compose` stages on the bundle
+        # `WCMP_ZENA_RECORD_CHECK` names.
         withZenaScenarios =
           derivation:
           derivation.overrideAttrs {
             WCMP_ZENA_SCENARIOS = "${zenaTestScenarios}/scenarios.bundle";
-            WCMP_ZENA_REFUSED = "${zenaRefusedScenario}/scenarios.bundle";
+            WCMP_ZENA_RECORD_CHECK = "${zenaRecordCheck}/scenarios.bundle";
           };
 
         # The Wasmtime run against its own cases, compiled with the pinned
@@ -1590,7 +1651,8 @@
             # see `publicApiCheck`.
             public-api = publicApiCheck;
             # Every Zena scenario compiles, or keeps Zena's refusal, with the
-            # pinned toolchain, and its Rust partners build; and the
+            # pinned toolchain, its Rust partners build, and its
+            # composition is made or keeps `wac`'s refusal; and the
             # scenario build keeps a refusal as its output: see
             # `compileScenarios` and `buildZenaScenarios`.
             zena-scenarios = zenaScenarios;

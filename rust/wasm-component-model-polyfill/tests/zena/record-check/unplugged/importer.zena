@@ -1,0 +1,7 @@
+// The importer of a composition that `wac` refuses: it imports
+// `greeter`, which the exporter does not export.
+import { greet } from 'wcmp:unplugged/greeter';
+
+export function welcome(name: String): String {
+  return greet(name) + '!';
+}

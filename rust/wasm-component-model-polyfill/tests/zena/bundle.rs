@@ -8,9 +8,10 @@
 
 use std::collections::BTreeMap;
 
-use wcmp_scenario::{Expectations, Linking, Observations, Verdict, Wiring};
+use wcmp_scenario::{Expectations, Link, Observations, Verdict, Wiring};
 
-/// One program of a scenario, as the build compiled it.
+/// One program of a scenario, as the build compiled it, and composed it
+/// when the scenario's wiring plugs other components into it.
 #[derive(Debug, Clone)]
 pub struct Program {
     /// The program's name: its file name without the extension. The
@@ -20,8 +21,15 @@ pub struct Program {
     pub status: i32,
     /// Everything the compiler printed.
     pub log: String,
-    /// The component, present when the program compiled.
+    /// The component, present when the program compiled. When the build
+    /// composed other components into it, this is the composition.
     pub component: Option<Vec<u8>>,
+    /// The composition tool's exit status, present when the build
+    /// composed other components into the program. `0` means the
+    /// component is the composition.
+    pub compose_status: Option<i32>,
+    /// Everything the composition tool printed.
+    pub compose_log: String,
 }
 
 impl Program {
@@ -32,6 +40,8 @@ impl Program {
             status: 0,
             log: String::new(),
             component: Some(component.to_vec()),
+            compose_status: None,
+            compose_log: String::new(),
         }
     }
 
@@ -41,6 +51,19 @@ impl Program {
         match &self.component {
             Some(component) => Ok(component),
             None => Err(Verdict::not_compiled(&self.name, self.status, &self.log)),
+        }
+    }
+
+    /// Nothing when the program's composition succeeded or the build
+    /// composed nothing into it, and otherwise the verdict of a scenario
+    /// the program stops at `compose`, which is the same for every
+    /// subject.
+    pub fn composed(&self) -> Result<(), Verdict> {
+        match self.compose_status {
+            Some(status) if status != 0 => {
+                Err(Verdict::not_composed(&self.name, status, &self.compose_log))
+            }
+            _ => Ok(()),
         }
     }
 }
@@ -116,15 +139,17 @@ fn scenario(name: &str, files: &BTreeMap<&str, &[u8]>) -> Result<Scenario, Strin
     let observations = text("observations.txt")?
         .parse()
         .map_err(|error| format!("{name}/observations.txt: {error}"))?;
+    let exit_status = |file: &str| -> Result<i32, String> {
+        let status = text(file)?.trim();
+        status
+            .parse()
+            .map_err(|_| format!("{name}/{file}: `{status}` is not an exit status"))
+    };
     let programs = files
         .keys()
         .filter_map(|file| file.strip_suffix(".status"))
         .map(|program| {
-            let status_file = format!("{program}.status");
-            let status = text(&status_file)?.trim();
-            let status = status
-                .parse()
-                .map_err(|_| format!("{name}/{status_file}: `{status}` is not an exit status"))?;
+            let status = exit_status(&format!("{program}.status"))?;
             let component = match status {
                 0 => Some(
                     files
@@ -136,11 +161,21 @@ fn scenario(name: &str, files: &BTreeMap<&str, &[u8]>) -> Result<Scenario, Strin
                 ),
                 _ => None,
             };
+            let compose_status_file = format!("{program}.compose-status");
+            let (compose_status, compose_log) = match files.get(compose_status_file.as_str()) {
+                Some(_) => (
+                    Some(exit_status(&compose_status_file)?),
+                    text(&format!("{program}.compose-log"))?.to_string(),
+                ),
+                None => (None, String::new()),
+            };
             Ok(Program {
                 name: program.to_string(),
                 status,
                 log: text(&format!("{program}.log"))?.to_string(),
                 component,
+                compose_status,
+                compose_log,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -150,13 +185,9 @@ fn scenario(name: &str, files: &BTreeMap<&str, &[u8]>) -> Result<Scenario, Strin
             .map_err(|error| format!("{name}/wiring.txt: {error}"))?,
         None => Wiring::default(),
     };
-    if let Some(link) = wiring
-        .links
-        .iter()
-        .find(|link| link.linking == Linking::Composition)
-    {
+    if let Some(link) = uncomposed(&wiring, &programs) {
         return Err(format!(
-            "{name}/wiring.txt: `{link}` asks for a composition, which the build does not make"
+            "{name}/wiring.txt: `{link}` asks for a composition, which the build did not make"
         ));
     }
     if programs.is_empty() {
@@ -168,6 +199,24 @@ fn scenario(name: &str, files: &BTreeMap<&str, &[u8]>) -> Result<Scenario, Strin
         observations,
         wiring,
         programs,
+    })
+}
+
+/// The first composition link of `wiring` that the build should have
+/// made and did not: every program compiled, and yet the link's
+/// importer carries no outcome of a composition or its exporter is
+/// still a program of its own. When a program did not compile, the
+/// build attempts no composition, and the scenario stops at `compile`.
+fn uncomposed<'a>(wiring: &'a Wiring, programs: &[Program]) -> Option<&'a Link> {
+    if programs.iter().any(|program| program.status != 0) {
+        return None;
+    }
+    wiring.composition().find(|link| {
+        let composed = programs
+            .iter()
+            .any(|program| program.name == link.importer && program.compose_status.is_some());
+        let consumed = programs.iter().all(|program| program.name != link.exporter);
+        !(composed && consumed)
     })
 }
 
@@ -269,7 +318,7 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    fn it_reads_the_wiring_of_a_scenario_and_refuses_a_composition_the_build_does_not_make() {
+    fn it_reads_the_wiring_of_a_scenario() {
         let scenario = |wiring: &[u8]| {
             let mut bundle = [
                 file("demo/expectations.txt", b""),
@@ -290,14 +339,82 @@ mod tests {
             wired.wiring.to_string(),
             "run-time main local:demo/api partner\n"
         );
-        assert_eq!(
-            scenario(b"composition main local:demo/api partner\n").unwrap_err(),
-            "demo/wiring.txt: `composition main local:demo/api partner` asks for a composition, which the build does not make"
-        );
         assert!(
             scenario(b"run-time main\n")
                 .unwrap_err()
                 .starts_with("demo/wiring.txt: line 1: ")
+        );
+    }
+
+    /// A scenario whose wiring plugs `partner` into `main`, with the
+    /// files `extra` beside `main`'s.
+    fn composition(extra: &[Vec<u8>]) -> Result<Scenario, String> {
+        let mut bundle = [
+            file("demo/expectations.txt", b""),
+            file("demo/observations.txt", b"stage pass\n"),
+            file(
+                "demo/wiring.txt",
+                b"composition main local:demo/api partner\n",
+            ),
+            file("demo/main.log", b""),
+            file("demo/main.status", b"0\n"),
+            file("demo/main.wasm", b"\0asm"),
+        ]
+        .concat();
+        for extra in extra {
+            bundle.extend(extra);
+        }
+        scenarios(&bundle).map(|mut scenarios| scenarios.remove(0))
+    }
+
+    #[wcmp_macros::test]
+    fn it_reads_a_composition_under_its_importer_name_and_its_outcome() {
+        let composed = composition(&[
+            file("demo/main.compose-log", b""),
+            file("demo/main.compose-status", b"0\n"),
+        ])
+        .unwrap();
+        let [main] = &composed.programs[..] else {
+            panic!("{:?}", composed.programs);
+        };
+        assert_eq!(main.compose_status, Some(0));
+        assert_eq!(main.component(), Ok(&b"\0asm"[..]));
+        assert_eq!(main.composed(), Ok(()));
+
+        let refused = composition(&[
+            file("demo/main.compose-log", b"error: no matching imports\n"),
+            file("demo/main.compose-status", b"1\n"),
+        ])
+        .unwrap();
+        assert_eq!(
+            refused.programs[0].composed().unwrap_err().reason,
+            "the composition into main failed (exit 1): error: no matching imports"
+        );
+
+        // A program that did not compile stops the scenario at
+        // `compile`, and the build attempts no composition.
+        let uncompiled = composition(&[
+            file("demo/partner.log", b"no!\n"),
+            file("demo/partner.status", b"1\n"),
+        ])
+        .unwrap();
+        assert_eq!(uncompiled.programs.len(), 2);
+    }
+
+    #[wcmp_macros::test]
+    fn it_refuses_a_composition_the_build_did_not_make() {
+        let refusal = "demo/wiring.txt: `composition main local:demo/api partner` asks for a composition, which the build did not make";
+        assert_eq!(composition(&[]).unwrap_err(), refusal);
+        assert_eq!(
+            composition(&[
+                file("demo/main.compose-log", b""),
+                file("demo/main.compose-status", b"0\n"),
+                file("demo/partner.log", b""),
+                file("demo/partner.status", b"0\n"),
+                file("demo/partner.wasm", b"\0asm"),
+            ])
+            .unwrap_err(),
+            refusal
         );
     }
 }
