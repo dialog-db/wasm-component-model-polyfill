@@ -1,0 +1,8 @@
+// Scenario 11, the exporter: it implements the `greeter` interface that
+// the Rust partner under `importer/` imports, and the runner links the
+// two at run time.
+import { Future } from 'zena:async';
+
+export async function greet(name: String): Future<String> {
+  return 'hello from Zena, ' + name;
+}

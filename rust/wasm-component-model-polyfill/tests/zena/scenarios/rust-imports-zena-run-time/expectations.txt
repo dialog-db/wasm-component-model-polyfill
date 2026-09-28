@@ -1,0 +1,8 @@
+# Scenario 11: Rust imports from Zena at run time. The importer's call
+# passes a string across the link and back, untyped and then typed; the
+# exporter's call is the same function without the link. The greeting
+# names Zena, so it can only come from the Zena exporter. It prints
+# nothing.
+call importer welcome("rust") -> "hello from Zena, rust!"
+call typed importer welcome("rust") -> "hello from Zena, rust!"
+call exporter wcmp:rust-link/greeter#greet("rust") -> "hello from Zena, rust"

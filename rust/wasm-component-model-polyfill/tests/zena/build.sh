@@ -14,7 +14,9 @@
 # --world <program>`. A contributor adds a scenario by adding its
 # directory; nothing here names one. The scenario's `expectations.txt`,
 # and its `wiring.txt` when its components link, are for the steps
-# after this one, which read them from the sources.
+# after this one, which read them from the sources. So are its Rust
+# partners, one directory each: `partner.sh` builds them without the
+# Zena toolchain, and the flake puts each beside the programs.
 #
 # The script fails when the directory holds no scenario, or a scenario
 # holds no program: that is a layout it cannot read, not an outcome of

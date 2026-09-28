@@ -282,10 +282,116 @@
               echo ${zenaRevision} > "$out/zena-revision"
             '';
 
-        zenaScenarios = buildZenaScenarios {
+        # The script that builds one Rust partner of a scenario. Its header
+        # states the layout of a partner and of the output. It runs with
+        # this workspace's Rust toolchain and nothing from Zena's.
+        zenaPartnerBuilder = pkgs.writeShellApplication {
+          name = "zena-build-partner";
+          runtimeInputs = [
+            pkgs.coreutils
+            pkgs.wasm-tools
+            rustToolchain
+          ];
+          text = builtins.readFile ./rust/wasm-component-model-polyfill/tests/zena/partner.sh;
+        };
+
+        partnerCrane = katsuobushi.inputs.crane.mkLib pkgs;
+
+        # The Rust partners of a directory of scenarios, found at
+        # evaluation time: every directory `<scenario>/<partner>/` that
+        # holds a `cargo-manifest.toml`. Each is `{ scenario, partner,
+        # component }`, where `component` builds it from its locked
+        # manifest with its crates vendored from its lock. The build's
+        # source is the partner's directory and the scenario's `wit/`, and
+        # nothing in it comes from the `zena` input, so a move of the pin
+        # leaves every partner's derivation, and its bytes, as they were.
+        rustPartners =
+          scenarios:
+          let
+            inherit (pkgs.lib) attrNames filterAttrs concatMap;
+            directories = path: attrNames (filterAttrs (_: type: type == "directory") (builtins.readDir path));
+          in
+          concatMap (
+            scenario:
+            map
+              (partner: {
+                inherit scenario partner;
+                component =
+                  let
+                    root = scenarios + "/${scenario}";
+                    source = pkgs.lib.fileset.toSource {
+                      inherit root;
+                      fileset = pkgs.lib.fileset.unions [
+                        (root + "/wit")
+                        (root + "/${partner}")
+                      ];
+                    };
+                    vendor = partnerCrane.vendorCargoDeps {
+                      cargoLock = root + "/${partner}/cargo-lock.toml";
+                    };
+                  in
+                  pkgs.runCommandCC "zena-partner-${scenario}-${partner}" { } ''
+                    ${pkgs.lib.getExe zenaPartnerBuilder} ${source} ${partner} \
+                      ${vendor}/config.toml "$out"
+                  '';
+              })
+              (
+                builtins.filter (
+                  partner: builtins.pathExists (scenarios + "/${scenario}/${partner}/cargo-manifest.toml")
+                ) (directories (scenarios + "/${scenario}"))
+              )
+          ) (directories scenarios);
+
+        # Every scenario under `scenarios` compiled: the Zena programs with
+        # the pinned toolchain (`buildZenaScenarios`) and the Rust partners
+        # with this workspace's (`rustPartners`), side by side under
+        # `$out/<scenario>/`, so the steps after this one read a partner
+        # as they read a program. A partner named like a program of its
+        # scenario fails the build.
+        compileScenarios =
+          { name, scenarios }:
+          let
+            programs = buildZenaScenarios {
+              name = "${name}-programs";
+              inherit scenarios;
+            };
+          in
+          pkgs.runCommand name { passthru = { inherit zenaRevision; }; } (
+            ''
+              cp -R ${programs} "$out"
+              chmod -R u+w "$out"
+            ''
+            + pkgs.lib.concatMapStrings (
+              { scenario, partner, component }:
+              ''
+                if [ -e "$out/${scenario}/${partner}.status" ]; then
+                  echo "zena: scenario ${scenario} has a program and a partner named ${partner}" >&2
+                  exit 1
+                fi
+                cp ${component}/* "$out/${scenario}/"
+              ''
+            ) (rustPartners scenarios)
+          );
+
+        zenaScenarios = compileScenarios {
           name = "zena-scenarios";
           scenarios = ./rust/wasm-component-model-polyfill/tests/zena/scenarios;
         };
+
+        # The Rust partners of the scenarios alone, one directory per
+        # scenario that has one, for a person to inspect.
+        zenaPartners = pkgs.runCommand "zena-partners" { } (
+          ''
+            mkdir -p "$out"
+          ''
+          + pkgs.lib.concatMapStrings (
+            { scenario, component, ... }:
+            ''
+              mkdir -p "$out/${scenario}"
+              cp ${component}/* "$out/${scenario}/"
+            ''
+          ) (rustPartners ./rust/wasm-component-model-polyfill/tests/zena/scenarios)
+        );
 
         # The scenario build against its own cases, failing the check when
         # one does not hold:
@@ -1412,6 +1518,9 @@
           # it. Neither enters the development shell.
           zena = zenaToolchain;
           zena-scenarios = zenaScenarios;
+          # The scenarios' Rust partners alone, built with this workspace's
+          # Rust toolchain.
+          zena-partners = zenaPartners;
           # Every Zena scenario run through Wasmtime: each scenario's
           # observations and Wasmtime stage, which the polyfill subjects
           # read.
@@ -1481,8 +1590,9 @@
             # see `publicApiCheck`.
             public-api = publicApiCheck;
             # Every Zena scenario compiles, or keeps Zena's refusal, with the
-            # pinned toolchain; and the scenario build keeps a refusal as
-            # its output: see `buildZenaScenarios`.
+            # pinned toolchain, and its Rust partners build; and the
+            # scenario build keeps a refusal as its output: see
+            # `compileScenarios` and `buildZenaScenarios`.
             zena-scenarios = zenaScenarios;
             zena-scenario-build = zenaScenarioBuildCheck;
             # Every Zena scenario runs through Wasmtime and writes its

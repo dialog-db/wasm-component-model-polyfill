@@ -29,7 +29,9 @@
 //!   `<program>.status` with the compiler's exit status, `<program>.log`
 //!   with the compiler's output, and `<program>.wasm` with the component
 //!   when the program compiled. The calls of the expectations file name
-//!   a component by its program's name.
+//!   a component by its program's name. A scenario's Rust partner is a
+//!   program here too: the build writes its status as `0` and its log
+//!   empty, because a partner that does not build fails the build.
 //!
 //! # What the run links
 //!

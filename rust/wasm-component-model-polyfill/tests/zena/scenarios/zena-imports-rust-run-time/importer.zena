@@ -1,0 +1,9 @@
+// Scenario 10, the importer: `welcome` passes its string to the Rust
+// partner's `greet` across the link and passes the answer back.
+import { greet } from 'wcmp:rust-link/greeter';
+import { Future } from 'zena:async';
+
+export async function welcome(name: String): Future<String> {
+  let greeting = await greet(name);
+  return greeting + '!';
+}
