@@ -215,7 +215,7 @@ The first set has seven scenarios with one component:
 | 2   | A string in and a string out                                         | The `utf8` shell and the shape with two core modules.                      |
 | 3   | Classes and arrays, used inside the program only                     | The browser backend's refusal of a global with a GC reference type.        |
 | 4   | Exceptions, one caught inside the program and one uncaught           | The refusal of a tag export on both backends, and an uncaught exception.   |
-| 5   | Console output                                                       | The p3 `wasi:cli/stdout` stream write.                                     |
+| 5   | Console output, with one error line                                  | The p3 `wasi:cli/stdout` and `wasi:cli/stderr` stream writes.              |
 | 6   | An async export that sleeps on a timer                               | The export lifted with a callback, and the p3 `wasi:clocks` imports.       |
 | 7   | A custom world through `--wit` and `--world` that imports a function | An import that the host supplies.                                          |
 
@@ -577,10 +577,11 @@ call and then a second call on every subject. The browser and native subjects
 pass only when each call fails or succeeds as it did in the Wasmtime run.
 
 The test host functions supply the imports. Scenario 5 prints through the p3
-`wasi:cli/stdout` stream write, and its output lines are the same under the
-Wasmtime run and the polyfill subjects. Scenario 6 sleeps on the p3 timer in the
-browser and natively. A test calls a method that the functions do not implement,
-and the call returns an error.
+`wasi:cli/stdout` stream write and writes one error line through
+`wasi:cli/stderr`. Its output lines are the same under the Wasmtime run and the
+polyfill subjects, and its error line never enters them. Scenario 6 sleeps on
+the p3 timer in the browser and natively. A test calls a method that the
+functions do not implement, and the call returns an error.
 
 Integration scenarios link at run time and by composition. Scenarios 8 to 13 run
 under all three subjects. Scenarios 10 to 13 build the Rust partner from its
