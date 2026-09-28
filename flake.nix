@@ -451,6 +451,8 @@
         #   observations keep them.
         # - The same program against other expected lines, a wrong
         #   result, and a call to a missing export each stop before `pass`.
+        # - Two programs whose wiring file links them at run time pass only
+        #   when the name crosses the link and the greeting crosses back.
         # - A program Zena refuses stops at `compile` and makes no call.
         zenaWasmtimeCheck =
           let
@@ -476,6 +478,10 @@
             test "$(stage returns-other-result)" = \
               'stage mismatch "call 1 `scalar add(1s32, 2s32)` returned 3s32 where 4s32 was expected"'
             stage calls-a-missing-export | grep -q '^stage call "call 1 .*has no function export subtract"$'
+
+            test "$(stage links-at-run-time)" = "stage pass"
+            grep -qx 'call importer welcome("check") -> "hello, check!"' \
+              ${observed}/links-at-run-time/observations.txt
 
             stage refused | grep -q '^stage compile "program refused did not compile (exit 1): '
             test "$(grep -c '^call ' ${observed}/refused/observations.txt)" = 0

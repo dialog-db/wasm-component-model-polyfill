@@ -26,6 +26,13 @@
 //! what it saw becomes its [`Observations`]: a build product that the
 //! polyfill subjects read and judge themselves against.
 //!
+//! A scenario with several components also has a [`Wiring`]: one
+//! [`Link`] per import that another component's export satisfies, made
+//! at run time by the runner or ahead of time by composition, as its
+//! [`Linking`] says. The wiring orders the components for run-time
+//! linking, each exporter before its importer. Its file has a format of
+//! its own, which [`Wiring`] describes.
+//!
 //! Nothing here depends on the toolchain that built a scenario, on
 //! Wasmtime, or on the polyfill, so the same model serves the Wasmtime
 //! run and the polyfill runner on both targets.
@@ -69,6 +76,8 @@ mod entry;
 mod error;
 mod expectations;
 mod judge;
+mod link;
+mod linking;
 mod observation;
 mod observations;
 mod outcome;
@@ -84,12 +93,15 @@ mod typed_signature;
 mod value;
 mod value_type;
 mod verdict;
+mod wiring;
 
 pub use crate::call::Call;
 pub use crate::difference::Difference;
 pub use crate::entry::Entry;
 pub use crate::error::{Error, Result};
 pub use crate::expectations::Expectations;
+pub use crate::link::Link;
+pub use crate::linking::Linking;
 pub use crate::observation::Observation;
 pub use crate::observations::Observations;
 pub use crate::outcome::Outcome;
@@ -104,6 +116,7 @@ pub use crate::typed_signature::TypedSignature;
 pub use crate::value::Value;
 pub use crate::value_type::ValueType;
 pub use crate::verdict::Verdict;
+pub use crate::wiring::Wiring;
 
 /// The fixed test interface every subject supplies to a scenario. Its
 /// one function, [`TEST_FUNCTION`], takes a string and returns it.

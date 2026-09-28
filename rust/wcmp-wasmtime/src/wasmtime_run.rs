@@ -1,14 +1,15 @@
 //! The Wasmtime run of one scenario.
 
+use wasmtime::component::types::{ComponentFunc, ComponentItem};
 use wasmtime::component::{
-    Component, ComponentNamedList, ComponentType, Func, Instance, Lift, Linker, Lower,
-    ResourceTable, Val,
+    Component, ComponentNamedList, ComponentType, Func, Instance, Lift, Linker, LinkerInstance,
+    Lower, ResourceTable, Val,
 };
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{AsContextMut, Config, Engine, Store};
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 use wcmp_scenario::{
-    Call, Observations, Outcome, Run, Stage, Typed, TypedSignature, Value, ValueType,
+    Call, Link, Observations, Outcome, Run, Stage, Typed, TypedSignature, Value, ValueType,
 };
 
 use crate::error::{Error, Result};
@@ -27,6 +28,8 @@ const STDOUT_CAPACITY: usize = 1 << 20;
 /// `wasmtime-wasi` and the fixed test interface. Each scenario gets a
 /// store of its own, whose standard output goes to a buffer in memory,
 /// so the lines a scenario prints are compared with its expectations.
+/// A scenario whose components link at run time gets a copy of the
+/// linker with its links added.
 pub struct WasmtimeRun {
     engine: Engine,
     linker: Linker<Host>,
@@ -67,10 +70,33 @@ impl WasmtimeRun {
     ///
     /// A program that did not compile stops the scenario at `compile`,
     /// and nothing runs. Otherwise every component is parsed, then
-    /// linked, then instantiated, in the order of its program's name,
-    /// all in one store, and the first step that fails for any of them
-    /// is the stage. Once every component is instantiated, each call of
-    /// the expectations is made in order, even after one fails, and the
+    /// linked, then instantiated, all in one store, and the first step
+    /// that fails for any of them is the stage. Components are parsed
+    /// in the order of their programs' names, and linked and
+    /// instantiated in the order the wiring gives: each exporter of a
+    /// run-time link before its importer, and otherwise by name.
+    ///
+    /// Once every component is parsed, each run-time link is checked:
+    /// its importer must import, and its exporter export, an item under
+    /// the link's import name. A link that fails the check is a mistake
+    /// in the wiring file, so it fails the run instead of being recorded
+    /// as a stage.
+    ///
+    /// A run-time link is made through the linker before any component
+    /// is linked. For each function of the item the exporter exports
+    /// under the link's import name, the linker gets a function of the
+    /// same name that calls the exporter's function once the exporter
+    /// is instantiated. Such a function is a concurrent host function
+    /// that calls the exporter through `Func::call_concurrent`, because
+    /// nothing else in Wasmtime's API calls another instance from inside
+    /// a host function: a call that runs its own event loop there
+    /// panics, and Wasmtime refuses a concurrent host function for an
+    /// import that is not `async`. So a run-time link forwards `async`
+    /// functions only, and an item that holds a synchronous function
+    /// stops the scenario at `link` with a reason that says so.
+    ///
+    /// Once every component is instantiated, each call of the
+    /// expectations is made in order, even after one fails, and the
     /// lines printed to standard output are kept.
     ///
     /// A call is untyped, through `Func::call_async` with `Val`
@@ -82,8 +108,11 @@ impl WasmtimeRun {
     ///
     /// # Errors
     ///
-    /// [`Error::Judge`] when the scenario model refuses the run, which
-    /// means a fault of this runner, not a stage of the scenario.
+    /// [`Error::Judge`] when the scenario model refuses the run, or the
+    /// scenario's wiring: its links leave no order to instantiate in,
+    /// or one names an import or export that a component it joins does
+    /// not have. That is a fault of this runner or of the scenario's
+    /// files, not a stage of the scenario.
     pub async fn run(&self, scenario: &Scenario) -> Result<Observations> {
         let judge = |source| Error::Judge {
             scenario: scenario.name.clone(),
@@ -106,21 +135,52 @@ impl WasmtimeRun {
                 Err(error) => return stopped(Stage::Parse, format!("component {name}: {error:#}")),
             }
         }
+        let names: Vec<&str> = components.iter().map(|(name, _)| *name).collect();
+        let order = scenario.wiring.order(&names).map_err(judge)?;
+        let component = |name: &str| {
+            components
+                .iter()
+                .find(|(component, _)| *component == name)
+                .map(|(_, component)| component)
+                .expect("the wiring orders the scenario's own components")
+        };
 
-        let mut prepared = Vec::with_capacity(components.len());
-        for (name, component) in &components {
-            match self.linker.instantiate_pre(component) {
-                Ok(pre) => prepared.push((*name, pre)),
+        for link in scenario.wiring.run_time() {
+            let imports = component(&link.importer).component_type();
+            let exports = component(&link.exporter).component_type();
+            link.check(
+                imports.imports(&self.engine).map(|(name, _)| name),
+                exports.exports(&self.engine).map(|(name, _)| name),
+            )
+            .map_err(judge)?;
+        }
+
+        let mut linker = self.linker.clone();
+        for link in scenario.wiring.run_time() {
+            if let Err(reason) = forward(&mut linker, &self.engine, link, component(&link.exporter))
+            {
+                return stopped(
+                    Stage::Link,
+                    format!("component {}: {reason}", link.importer),
+                );
+            }
+        }
+        let mut prepared = Vec::with_capacity(order.len());
+        for name in order {
+            match linker.instantiate_pre(component(name)) {
+                Ok(pre) => prepared.push((name, pre)),
                 Err(error) => return stopped(Stage::Link, format!("component {name}: {error:#}")),
             }
         }
 
         let stdout = MemoryOutputPipe::new(STDOUT_CAPACITY);
         let mut store = Store::new(&self.engine, Host::new(stdout.clone()));
-        let mut instances = Vec::with_capacity(prepared.len());
         for (name, pre) in prepared {
             match pre.instantiate_async(&mut store).await {
-                Ok(instance) => instances.push((name, instance)),
+                Ok(instance) => store
+                    .data_mut()
+                    .instances
+                    .push((name.to_string(), instance)),
                 Err(error) => {
                     return stopped(Stage::Instantiate, format!("component {name}: {error:#}"));
                 }
@@ -129,7 +189,7 @@ impl WasmtimeRun {
 
         let mut outcomes = Vec::with_capacity(scenario.expectations.entries.len());
         for entry in &scenario.expectations.entries {
-            outcomes.push(call(&mut store, &instances, &entry.call).await);
+            outcomes.push(call(&mut store, &entry.call).await);
         }
         let output = String::from_utf8_lossy(&stdout.contents())
             .lines()
@@ -139,12 +199,94 @@ impl WasmtimeRun {
     }
 }
 
+/// Make the run-time `link` through `linker`: define each function of
+/// the item `exporter` exports under the link's import name, as a
+/// function that calls the exporter's instance. The link is checked,
+/// so the exporter has the item. The answer is the reason the link
+/// cannot be made.
+fn forward(
+    linker: &mut Linker<Host>,
+    engine: &Engine,
+    link: &Link,
+    exporter: &Component,
+) -> core::result::Result<(), String> {
+    let exporter_type = exporter.component_type();
+    let item = exporter_type
+        .get_export(engine, &link.import)
+        .expect("a checked link names an export of its exporter");
+    match item.ty {
+        ComponentItem::ComponentInstance(instance) => {
+            let mut interface = linker
+                .instance(&link.import)
+                .map_err(|error| format!("{error:#}"))?;
+            for (name, item) in instance.exports(engine) {
+                let ComponentItem::ComponentFunc(func) = item.ty else {
+                    return Err(format!(
+                        "{}#{name} is not a function, and a run-time link forwards functions only",
+                        link.import
+                    ));
+                };
+                let export = format!("{}#{name}", link.import);
+                forward_func(&mut interface, name, &link.exporter, export, &func)?;
+            }
+            Ok(())
+        }
+        ComponentItem::ComponentFunc(func) => forward_func(
+            &mut linker.root(),
+            &link.import,
+            &link.exporter,
+            link.import.clone(),
+            &func,
+        ),
+        _ => Err(format!(
+            "{} is not a function or an instance, and a run-time link forwards functions only",
+            link.import
+        )),
+    }
+}
+
+/// Define `name` in `interface` as a function that calls the function
+/// `export` of the instance of `exporter`.
+fn forward_func(
+    interface: &mut LinkerInstance<'_, Host>,
+    name: &str,
+    exporter: &str,
+    export: String,
+    func: &ComponentFunc,
+) -> core::result::Result<(), String> {
+    if !func.async_() {
+        return Err(format!(
+            "{export} is a synchronous function of component {exporter}, and a run-time link forwards only an `async` one"
+        ));
+    }
+    let exporter = exporter.to_string();
+    interface
+        .func_new_concurrent(name, move |accessor, _, params, results| {
+            let exporter = exporter.clone();
+            let export = export.clone();
+            Box::pin(async move {
+                let func = accessor.with(|mut access| {
+                    let instance = access.data_mut().instance(&exporter).ok_or_else(|| {
+                        wasmtime::format_err!("component {exporter} is not instantiated yet")
+                    })?;
+                    lookup(&mut access, &instance, &export).ok_or_else(|| {
+                        wasmtime::format_err!(
+                            "component {exporter} has no function export {export}"
+                        )
+                    })
+                })?;
+                func.call_concurrent(accessor, params, results).await
+            })
+        })
+        .map_err(|error| format!("{error:#}"))
+}
+
 /// Make one call and report how it ended.
-async fn call(store: &mut Store<Host>, instances: &[(&str, Instance)], call: &Call) -> Outcome {
-    let Some((_, instance)) = instances.iter().find(|(name, _)| *name == call.component) else {
+async fn call(store: &mut Store<Host>, call: &Call) -> Outcome {
+    let Some(instance) = store.data().instance(&call.component) else {
         return Outcome::Failure(format!("the scenario has no component {}", call.component));
     };
-    let Some(func) = lookup(store, instance, &call.export) else {
+    let Some(func) = lookup(&mut *store, &instance, &call.export) else {
         return Outcome::Failure(format!(
             "component {} has no function export {}",
             call.component, call.export
@@ -275,23 +417,27 @@ where
 
 /// The function an export name names: `add` at the root of the
 /// component, or `local:demo/api#greet` inside an exported interface.
-fn lookup(store: &mut Store<Host>, instance: &Instance, export: &str) -> Option<Func> {
+fn lookup(mut store: impl AsContextMut, instance: &Instance, export: &str) -> Option<Func> {
     let (interface, name) = match export.split_once('#') {
         Some((interface, name)) => (Some(interface), name),
         None => (None, export),
     };
     let parent = match interface {
-        Some(interface) => Some(instance.get_export_index(&mut *store, None, interface)?),
+        Some(interface) => Some(instance.get_export_index(&mut store, None, interface)?),
         None => None,
     };
-    let index = instance.get_export_index(&mut *store, parent.as_ref(), name)?;
-    instance.get_func(&mut *store, index)
+    let index = instance.get_export_index(&mut store, parent.as_ref(), name)?;
+    instance.get_func(&mut store, index)
 }
 
-/// What a scenario's store holds: the WASI context and its resources.
+/// What a scenario's store holds: the WASI context and its resources,
+/// and the scenario's instances, which the functions of a run-time link
+/// call.
 struct Host {
     ctx: WasiCtx,
     table: ResourceTable,
+    /// Each component instantiated so far, under its program's name.
+    instances: Vec<(String, Instance)>,
 }
 
 impl Host {
@@ -303,7 +449,16 @@ impl Host {
         Host {
             ctx: WasiCtxBuilder::new().stdout(stdout).build(),
             table: ResourceTable::new(),
+            instances: Vec::new(),
         }
+    }
+
+    /// The instance of the component `name`, once it is instantiated.
+    fn instance(&self, name: &str) -> Option<Instance> {
+        self.instances
+            .iter()
+            .find(|(component, _)| component == name)
+            .map(|(_, instance)| *instance)
     }
 }
 
@@ -318,7 +473,7 @@ impl WasiView for Host {
 
 #[cfg(test)]
 mod tests {
-    use wcmp_scenario::{Expectations, Verdict};
+    use wcmp_scenario::{Expectations, Verdict, Wiring};
 
     use super::*;
     use crate::program::Program;
@@ -392,6 +547,296 @@ mod tests {
         "#
     );
 
+    /// A component that exports the interface `local:demo/greeter`,
+    /// whose `async` function `greet` takes a name and returns `hello, `
+    /// followed by the name, written to fresh memory. It is lifted
+    /// synchronously, which an `async` function allows.
+    const GREETER: &[u8] = wcmp_macros::component!(
+        r#"
+        (component
+          (core module $m
+            (memory (export "memory") 1)
+            (data (i32.const 0) "hello, ")
+            (global $next (mut i32) (i32.const 1024))
+            (func $realloc (export "realloc") (param i32 i32 i32 i32) (result i32)
+              (local $pointer i32)
+              global.get $next
+              local.get 2
+              i32.const 1
+              i32.sub
+              i32.add
+              i32.const 0
+              local.get 2
+              i32.sub
+              i32.and
+              local.tee $pointer
+              local.get 3
+              i32.add
+              global.set $next
+              local.get $pointer)
+            (func (export "greet") (param $name i32) (param $length i32) (result i32)
+              (local $greeting i32)
+              (local.set $length (i32.add (local.get $length) (i32.const 7)))
+              (local.set $greeting
+                (call $realloc (i32.const 0) (i32.const 0) (i32.const 1) (local.get $length)))
+              (memory.copy (local.get $greeting) (i32.const 0) (i32.const 7))
+              (memory.copy
+                (i32.add (local.get $greeting) (i32.const 7))
+                (local.get $name)
+                (i32.sub (local.get $length) (i32.const 7)))
+              (i32.store (i32.const 16) (local.get $greeting))
+              (i32.store (i32.const 20) (local.get $length))
+              i32.const 16))
+          (core instance $i (instantiate $m))
+          (type $greet (func async (param "name" string) (result string)))
+          (func $greet (type $greet)
+            (canon lift (core func $i "greet")
+              (memory (core memory $i "memory")) (realloc (core func $i "realloc"))))
+          (instance $greeter (export "greet" (func $greet)))
+          (export "local:demo/greeter" (instance $greeter)))
+        "#
+    );
+
+    /// [`GREETER`] lifted as Zena lifts an `async` export: `async` with a
+    /// callback. `greet` writes its greeting and yields once instead of
+    /// returning, so a caller cannot have the result from the first poll;
+    /// the callback it is given back returns the greeting through
+    /// `task.return`.
+    const CALLBACK_GREETER: &[u8] = wcmp_macros::component!(
+        r#"
+        (component
+          (core module $libc
+            (memory (export "memory") 1)
+            (data (i32.const 0) "hello, ")
+            (global $next (mut i32) (i32.const 1024))
+            (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+              (local $pointer i32)
+              global.get $next
+              local.get 2
+              i32.const 1
+              i32.sub
+              i32.add
+              i32.const 0
+              local.get 2
+              i32.sub
+              i32.and
+              local.tee $pointer
+              local.get 3
+              i32.add
+              global.set $next
+              local.get $pointer))
+          (core instance $libc (instantiate $libc))
+          (alias core export $libc "memory" (core memory $mem))
+          (alias core export $libc "realloc" (core func $realloc))
+          (core func $task-return (canon task.return (result string) (memory $mem)))
+          (core module $main
+            (import "libc" "memory" (memory 1))
+            (import "libc" "realloc" (func $realloc (param i32 i32 i32 i32) (result i32)))
+            (import "" "task.return" (func $task-return (param i32 i32)))
+            (global $greeting (mut i32) (i32.const 0))
+            (global $length (mut i32) (i32.const 0))
+            (func (export "greet") (param $name i32) (param $name-length i32) (result i32)
+              (global.set $length (i32.add (local.get $name-length) (i32.const 7)))
+              (global.set $greeting
+                (call $realloc (i32.const 0) (i32.const 0) (i32.const 1) (global.get $length)))
+              (memory.copy (global.get $greeting) (i32.const 0) (i32.const 7))
+              (memory.copy
+                (i32.add (global.get $greeting) (i32.const 7))
+                (local.get $name)
+                (local.get $name-length))
+              ;; YIELD.
+              (i32.const 1))
+            (func (export "greet-callback") (param i32 i32 i32) (result i32)
+              (call $task-return (global.get $greeting) (global.get $length))
+              ;; EXIT.
+              (i32.const 0)))
+          (core instance $main (instantiate $main
+            (with "libc" (instance $libc))
+            (with "" (instance (export "task.return" (func $task-return))))))
+          (type $greet (func async (param "name" string) (result string)))
+          (func $greet (type $greet)
+            (canon lift (core func $main "greet") async
+              (callback (core func $main "greet-callback")) (memory $mem) (realloc $realloc)))
+          (instance $greeter (export "greet" (func $greet)))
+          (export "local:demo/greeter" (instance $greeter)))
+        "#
+    );
+
+    /// [`GREETER`] with a `greet` that is not `async`.
+    const SYNC_GREETER: &[u8] = wcmp_macros::component!(
+        r#"
+        (component
+          (core module $m
+            (memory (export "memory") 1)
+            (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+              i32.const 1024)
+            (func (export "greet") (param i32 i32) (result i32)
+              (i32.store (i32.const 16) (i32.const 0))
+              (i32.store (i32.const 20) (i32.const 0))
+              i32.const 16))
+          (core instance $i (instantiate $m))
+          (func $greet (param "name" string) (result string)
+            (canon lift (core func $i "greet")
+              (memory (core memory $i "memory")) (realloc (core func $i "realloc"))))
+          (instance $greeter (export "greet" (func $greet)))
+          (export "local:demo/greeter" (instance $greeter)))
+        "#
+    );
+
+    /// A component that imports `local:demo/greeter` and exports
+    /// `welcome`, which passes its name to `greet` and returns what
+    /// `greet` returned. It lowers `greet` synchronously.
+    const CALLER: &[u8] = wcmp_macros::component!(
+        r#"
+        (component
+          (import "local:demo/greeter" (instance $greeter
+            (export "greet" (func async (param "name" string) (result string)))))
+          (core module $memory
+            (memory (export "memory") 1)
+            (global $next (mut i32) (i32.const 1024))
+            (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+              (local $pointer i32)
+              global.get $next
+              local.get 2
+              i32.const 1
+              i32.sub
+              i32.add
+              i32.const 0
+              local.get 2
+              i32.sub
+              i32.and
+              local.tee $pointer
+              local.get 3
+              i32.add
+              global.set $next
+              local.get $pointer))
+          (core instance $memory (instantiate $memory))
+          (alias core export $memory "memory" (core memory $mem))
+          (alias core export $memory "realloc" (core func $realloc))
+          (alias export $greeter "greet" (func $greet))
+          (core func $greet_lowered
+            (canon lower (func $greet) (memory $mem) (realloc $realloc)))
+          (core module $main
+            (import "greeter" "greet" (func $greet (param i32 i32 i32)))
+            (func (export "welcome") (param i32 i32) (result i32)
+              local.get 0
+              local.get 1
+              i32.const 16
+              call $greet
+              i32.const 16))
+          (core instance $main (instantiate $main
+            (with "greeter" (instance (export "greet" (func $greet_lowered))))))
+          (type $welcome (func async (param "name" string) (result string)))
+          (func $welcome (type $welcome)
+            (canon lift (core func $main "welcome") (memory $mem) (realloc $realloc)))
+          (export "welcome" (func $welcome)))
+        "#
+    );
+
+    /// [`CALLER`] as Zena builds an importer: it lowers `greet` with the
+    /// `async` option and lifts `welcome` `async` with a callback.
+    ///
+    /// `welcome` calls `greet` with the return area at address 16. A call
+    /// that returned has its greeting there already, and `welcome` returns
+    /// it at once. A call that started joins its subtask to a waitable set
+    /// and waits on it; the callback waits again until the subtask has
+    /// returned, then drops the subtask and the set and returns the
+    /// greeting. `waited` says whether the callback ran, so a test can
+    /// tell which of the two ways the call took.
+    const ASYNC_CALLER: &[u8] = wcmp_macros::component!(
+        r#"
+        (component
+          (import "local:demo/greeter" (instance $greeter
+            (export "greet" (func async (param "name" string) (result string)))))
+          (core module $libc
+            (memory (export "memory") 1)
+            (global $next (mut i32) (i32.const 1024))
+            (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+              (local $pointer i32)
+              global.get $next
+              local.get 2
+              i32.const 1
+              i32.sub
+              i32.add
+              i32.const 0
+              local.get 2
+              i32.sub
+              i32.and
+              local.tee $pointer
+              local.get 3
+              i32.add
+              global.set $next
+              local.get $pointer))
+          (core instance $libc (instantiate $libc))
+          (alias core export $libc "memory" (core memory $mem))
+          (alias core export $libc "realloc" (core func $realloc))
+          (alias export $greeter "greet" (func $greet))
+          (core func $greet
+            (canon lower (func $greet) async (memory $mem) (realloc $realloc)))
+          (core func $task-return (canon task.return (result string) (memory $mem)))
+          (core func $set-new (canon waitable-set.new))
+          (core func $join (canon waitable.join))
+          (core func $subtask-drop (canon subtask.drop))
+          (core func $set-drop (canon waitable-set.drop))
+          (core module $main
+            (import "libc" "memory" (memory 1))
+            (import "" "greet" (func $greet (param i32 i32 i32) (result i32)))
+            (import "" "task.return" (func $task-return (param i32 i32)))
+            (import "" "waitable-set.new" (func $set-new (result i32)))
+            (import "" "waitable.join" (func $join (param i32 i32)))
+            (import "" "subtask.drop" (func $subtask-drop (param i32)))
+            (import "" "waitable-set.drop" (func $set-drop (param i32)))
+            (global $set (mut i32) (i32.const 0))
+            (global $waited (mut i32) (i32.const 0))
+            (func $return-greeting
+              (call $task-return (i32.load (i32.const 16)) (i32.load (i32.const 20))))
+            (func (export "welcome") (param i32 i32) (result i32)
+              (local $status i32)
+              (local.set $status (call $greet (local.get 0) (local.get 1) (i32.const 16)))
+              ;; RETURNED.
+              (if (i32.eq (i32.and (local.get $status) (i32.const 0xf)) (i32.const 2))
+                (then
+                  (call $return-greeting)
+                  (return (i32.const 0))))
+              (global.set $set (call $set-new))
+              (call $join (i32.shr_u (local.get $status) (i32.const 4)) (global.get $set))
+              ;; WAIT on the set.
+              (i32.or (i32.shl (global.get $set) (i32.const 4)) (i32.const 2)))
+            (func (export "welcome-callback")
+              (param $event i32) (param $subtask i32) (param $state i32) (result i32)
+              (global.set $waited (i32.const 1))
+              ;; Only the subtask's events, SUBTASK, reach the set.
+              (if (i32.ne (local.get $event) (i32.const 1)) (then unreachable))
+              ;; Until the subtask has RETURNED, WAIT on the set again.
+              (if (i32.ne (local.get $state) (i32.const 2))
+                (then (return (i32.or (i32.shl (global.get $set) (i32.const 4)) (i32.const 2)))))
+              (call $subtask-drop (local.get $subtask))
+              (call $set-drop (global.get $set))
+              (call $return-greeting)
+              ;; EXIT.
+              (i32.const 0))
+            (func (export "waited") (result i32) (global.get $waited)))
+          (core instance $main (instantiate $main
+            (with "libc" (instance $libc))
+            (with "" (instance
+              (export "greet" (func $greet))
+              (export "task.return" (func $task-return))
+              (export "waitable-set.new" (func $set-new))
+              (export "waitable.join" (func $join))
+              (export "subtask.drop" (func $subtask-drop))
+              (export "waitable-set.drop" (func $set-drop))))))
+          (type $welcome (func async (param "name" string) (result string)))
+          (func $welcome (type $welcome)
+            (canon lift (core func $main "welcome") async
+              (callback (core func $main "welcome-callback")) (memory $mem) (realloc $realloc)))
+          (export "welcome" (func $welcome))
+          (func (export "waited") (result bool) (canon lift (core func $main "waited"))))
+        "#
+    );
+
+    /// The wiring of [`CALLER`] to a greeter.
+    const CALLER_TO_GREETER: &str = "run-time caller local:demo/greeter greeter";
+
     /// A component that imports a function no linker here supplies.
     const UNLINKABLE: &[u8] = wcmp_macros::component!(
         r#"
@@ -421,18 +866,23 @@ mod tests {
         }
     }
 
-    fn scenario(programs: Vec<Program>, expectations: &str) -> Scenario {
+    fn scenario(programs: Vec<Program>, wiring: &str, expectations: &str) -> Scenario {
         Scenario {
             name: "test".to_string(),
             expectations: expectations.parse::<Expectations>().unwrap(),
+            wiring: wiring.parse::<Wiring>().unwrap(),
             programs,
         }
     }
 
     async fn run(programs: Vec<Program>, expectations: &str) -> Observations {
+        run_wired(programs, "", expectations).await
+    }
+
+    async fn run_wired(programs: Vec<Program>, wiring: &str, expectations: &str) -> Observations {
         WasmtimeRun::new()
             .unwrap()
-            .run(&scenario(programs, expectations))
+            .run(&scenario(programs, wiring, expectations))
             .await
             .unwrap()
     }
@@ -617,5 +1067,128 @@ mod tests {
         )
         .await;
         assert_eq!(earliest.verdict.stage, Stage::Parse);
+    }
+
+    #[wcmp_macros::test]
+    async fn it_links_async_functions_of_one_component_to_imports_of_another_at_run_time() {
+        // The importer's name sorts first, so the wiring orders the
+        // exporter before it. The greeting holds the name, so an
+        // argument lost or corrupted on its way across the link fails
+        // the call.
+        let linked = run_wired(
+            vec![program("caller", CALLER), program("greeter", GREETER)],
+            CALLER_TO_GREETER,
+            r#"
+            call caller welcome("world") -> "hello, world"
+            call caller welcome("") -> "hello, "
+            call greeter local:demo/greeter#greet("zena") -> "hello, zena"
+            "#,
+        )
+        .await;
+        assert_eq!(linked.verdict, Verdict::pass());
+
+        let unwired = run(
+            vec![program("caller", CALLER), program("greeter", GREETER)],
+            r#"call caller welcome("world") -> "hello, world""#,
+        )
+        .await;
+        assert_eq!(unwired.verdict.stage, Stage::Link);
+        assert!(
+            unwired.verdict.reason.starts_with("component caller: ")
+                && unwired.verdict.reason.contains("local:demo/greeter"),
+            "{}",
+            unwired.verdict.reason
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_links_an_async_lowered_import_to_a_callback_lifted_export_as_zena_builds_them() {
+        // The greeter yields before it returns, so the caller's call
+        // has no result on its first poll: the caller waits on the
+        // subtask and its callback runs.
+        let linked = run_wired(
+            vec![
+                program("caller", ASYNC_CALLER),
+                program("greeter", CALLBACK_GREETER),
+            ],
+            CALLER_TO_GREETER,
+            r#"
+            call caller welcome("world") -> "hello, world"
+            call caller waited() -> true
+            call caller welcome("zena") -> "hello, zena"
+            call greeter local:demo/greeter#greet("zena") -> "hello, zena"
+            "#,
+        )
+        .await;
+        assert_eq!(linked.verdict, Verdict::pass());
+    }
+
+    #[wcmp_macros::test]
+    async fn it_makes_typed_and_untyped_calls_across_a_run_time_link() {
+        let linked = run_wired(
+            vec![program("caller", CALLER), program("greeter", GREETER)],
+            CALLER_TO_GREETER,
+            r#"
+            call caller welcome("world") -> "hello, world"
+            call typed caller welcome("world") -> "hello, world"
+            call greeter local:demo/greeter#greet("zena") -> "hello, zena"
+            call typed greeter local:demo/greeter#greet("zena") -> "hello, zena"
+            "#,
+        )
+        .await;
+        assert_eq!(linked.verdict, Verdict::pass());
+    }
+
+    #[wcmp_macros::test]
+    async fn it_stops_at_link_when_the_exported_function_is_not_async() {
+        let synchronous = run_wired(
+            vec![program("caller", CALLER), program("greeter", SYNC_GREETER)],
+            CALLER_TO_GREETER,
+            "",
+        )
+        .await;
+        assert_eq!(
+            synchronous.verdict,
+            Verdict::new(
+                Stage::Link,
+                "component caller: local:demo/greeter#greet is a synchronous function of component greeter, and a run-time link forwards only an `async` one"
+            )
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_refuses_a_link_whose_import_or_export_a_component_lacks_instead_of_stopping_at_link()
+     {
+        let refused = async |greeter: &[u8], wiring: &str| {
+            let programs = vec![program("caller", CALLER), program("greeter", greeter)];
+            match WasmtimeRun::new()
+                .unwrap()
+                .run(&scenario(programs, wiring, ""))
+                .await
+            {
+                Err(Error::Judge { source, .. }) => source,
+                other => panic!("{other:?}"),
+            }
+        };
+        let misspelled = "run-time caller local:demo/greter greeter";
+        assert_eq!(
+            refused(GREETER, misspelled).await,
+            wcmp_scenario::Error::UnknownImport {
+                link: misspelled.to_string(),
+                component: "caller".to_string(),
+            }
+        );
+        assert_eq!(
+            refused(CALCULATOR, CALLER_TO_GREETER).await,
+            wcmp_scenario::Error::UnknownExport {
+                link: CALLER_TO_GREETER.to_string(),
+                component: "greeter".to_string(),
+            }
+        );
+        // A wiring that leaves no order is refused the same way.
+        assert_eq!(
+            refused(GREETER, "run-time greeter local:demo/greeter greeter").await,
+            wcmp_scenario::Error::LinkCycle(vec!["greeter".to_string()])
+        );
     }
 }

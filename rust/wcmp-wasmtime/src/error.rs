@@ -35,6 +35,16 @@ pub enum Error {
         /// What the scenario model found wrong with it.
         source: wcmp_scenario::Error,
     },
+    /// A scenario's wiring file is malformed, or its links name a
+    /// component the scenario does not have or leave no order to
+    /// instantiate its components in.
+    #[error("{}: {source}", path.display())]
+    Wiring {
+        /// The wiring file.
+        path: PathBuf,
+        /// What the scenario model found wrong with it.
+        source: wcmp_scenario::Error,
+    },
     /// The scenario model refused to judge the run.
     #[error("scenario {scenario}: {source}")]
     Judge {

@@ -1,0 +1,16 @@
+// The contract between the two programs. Each program compiles against
+// the world named after it.
+package wcmp:check-link;
+
+interface greeter {
+  greet: async func(name: string) -> string;
+}
+
+world exporter {
+  export greeter;
+}
+
+world importer {
+  import greeter;
+  export welcome: async func(name: string) -> string;
+}

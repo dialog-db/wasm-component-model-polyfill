@@ -26,6 +26,40 @@ pub enum Error {
     /// A name that is not the name of a subject.
     #[error("`{0}` is not a subject")]
     UnknownSubject(String),
+    /// A name that is not the name of a kind of link.
+    #[error("`{0}` is not a way to link")]
+    UnknownLinking(String),
+    /// A link of a scenario's wiring names a component the scenario
+    /// does not have.
+    #[error("the link `{link}` names component {component}, which the scenario does not have")]
+    UnknownComponent {
+        /// The link, as its line spells it.
+        link: String,
+        /// The component it names.
+        component: String,
+    },
+    /// A run-time link of a scenario's wiring names an import that its
+    /// importer does not have, such as a misspelled interface name.
+    #[error("the link `{link}` names an import that component {component} does not have")]
+    UnknownImport {
+        /// The link, as its line spells it.
+        link: String,
+        /// The importer.
+        component: String,
+    },
+    /// A run-time link of a scenario's wiring names an export that its
+    /// exporter does not have.
+    #[error("the link `{link}` names an export that component {component} does not have")]
+    UnknownExport {
+        /// The link, as its line spells it.
+        link: String,
+        /// The exporter.
+        component: String,
+    },
+    /// The run-time links of a scenario's wiring leave no order to
+    /// instantiate its components in: each of these waits for another.
+    #[error("the run-time links form a cycle among {}", .0.join(", "))]
+    LinkCycle(Vec<String>),
     /// An observations file has no `stage` line.
     #[error("the observations have no `stage` line")]
     MissingStage,

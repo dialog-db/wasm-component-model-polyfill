@@ -1,0 +1,3 @@
+# The Wasmtime run reads this file and gives the exporter's `greeter`
+# to the importer at run time.
+run-time importer wcmp:check-link/greeter exporter

@@ -1,0 +1,3 @@
+# The Wasmtime run passes only when the name crosses the link to the
+# exporter and the greeting crosses back.
+call importer welcome("check") -> "hello, check!"

@@ -1,33 +1,53 @@
 //! The polyfill subject of a scenario, on the target the test runs on.
 
+use std::sync::{Arc, Mutex, MutexGuard};
+
 use wasm_component_model_polyfill::{
-    Component, ComponentParameters, ComponentResult, ComponentValue, Engine, Error, Func, Instance,
-    Linker, PrimitiveType, Store, TypeMismatchPosition, Val, ValueType,
+    Component, ComponentParameters, ComponentResult, ComponentValue, Engine, Error, ExternType,
+    ExternalName, Func, FunctionType, Instance, InstanceItem, Linker, LinkerInstance,
+    PrimitiveType, Store, TypeMismatchPosition, Val, ValueType,
 };
-use wcmp_scenario::{Call, Outcome, Run, Stage, Typed, TypedSignature, Value, Verdict};
+use wcmp_scenario::{Call, Link, Outcome, Run, Stage, Typed, TypedSignature, Value, Verdict};
 
 use crate::bundle::Scenario;
 use crate::host::{self, Host};
 
-/// The polyfill subject: one engine and one linker with the test host
-/// functions, shared by every scenario it runs.
+/// The polyfill subject: one engine, shared by every scenario it runs.
 ///
 /// The engine has the default configuration, so the suspend provider
-/// is on wherever the target has one. Each scenario gets a store of its
-/// own, whose standard output the test host keeps.
+/// is on wherever the target has one. Each scenario gets a linker with
+/// the test host functions and its own run-time links, and a store of
+/// its own, whose standard output the test host keeps.
 pub struct PolyfillRun {
     engine: Engine,
-    linker: Linker<Host>,
 }
 
+/// The instances of one scenario, each under its program's name. The
+/// functions of a run-time link look the exporter up here when they
+/// are called, and the runner looks up the component a call names.
+type Instances = Arc<Mutex<Vec<(String, Instance)>>>;
+
+/// The parsed components of one scenario, each under its program's
+/// name, in the order of the names.
+type Components<'a> = Vec<(&'a str, Component)>;
+
 impl PolyfillRun {
-    /// An engine with the default configuration and a linker with the
-    /// test host functions.
+    /// An engine with the default configuration. A linker with the test
+    /// host functions is built once here, so a definition the polyfill
+    /// refuses fails before any scenario runs.
     pub fn new() -> Result<Self, Error> {
-        let engine = Engine::new()?;
-        let mut linker = Linker::new(&engine);
+        let run = PolyfillRun {
+            engine: Engine::new()?,
+        };
+        run.linker()?;
+        Ok(run)
+    }
+
+    /// A linker with the test host functions.
+    fn linker(&self) -> Result<Linker<Host>, Error> {
+        let mut linker = Linker::new(&self.engine);
         host::define(&mut linker)?;
-        Ok(PolyfillRun { engine, linker })
+        Ok(linker)
     }
 
     /// Run `scenario` and judge it with the scenario model: against the
@@ -37,24 +57,102 @@ impl PolyfillRun {
     /// # Errors
     ///
     /// The scenario model's error when it refuses to judge the run,
-    /// such as observations made from another version of the scenario.
-    /// That is a fault of the build or of this runner, not a stage.
+    /// such as observations made from another version of the scenario,
+    /// or when the wiring names a component the scenario does not have,
+    /// leaves no order to instantiate in, or names an import or export
+    /// that a component it joins does not have. That is a fault of the
+    /// build, of the scenario's files, or of this runner, not a stage.
     pub async fn run(&self, scenario: &Scenario) -> Result<Verdict, wcmp_scenario::Error> {
-        match self.observe(scenario).await {
+        match self.observe(scenario).await? {
             Ok(run) => scenario.observations.judge(&scenario.expectations, &run),
             Err(verdict) => Ok(verdict),
         }
     }
 
     /// Run `scenario` up to its calls, or answer the verdict of the step
-    /// that stopped it.
+    /// that stopped it: parse every component, check each run-time link
+    /// against the components it joins, and then link, instantiate, and
+    /// call them.
     ///
-    /// A program that did not compile stops the scenario at `compile`,
-    /// and nothing runs. Otherwise every component is parsed, and then
-    /// linked and instantiated in the order of its program's name, all
-    /// in one store. The polyfill links and instantiates in one step, so
-    /// an error of that step is `link` when the linker could not supply
-    /// an import and `instantiate` otherwise.
+    /// # Errors
+    ///
+    /// The scenario model's error when the wiring names a component the
+    /// scenario does not have, leaves no order to instantiate in, or
+    /// names an import or export that a component it joins does not
+    /// have. That is a fault of the build or of the scenario's files,
+    /// not a stage.
+    pub async fn observe(
+        &self,
+        scenario: &Scenario,
+    ) -> Result<Result<Run, Verdict>, wcmp_scenario::Error> {
+        let names: Vec<&str> = scenario
+            .programs
+            .iter()
+            .map(|program| program.name.as_str())
+            .collect();
+        let order = scenario.wiring.order(&names)?;
+        let components = match self.parse(scenario).await {
+            Ok(components) => components,
+            Err(verdict) => return Ok(Err(verdict)),
+        };
+        for link in scenario.wiring.run_time() {
+            link.check(
+                component(&components, &link.importer)
+                    .imports
+                    .iter()
+                    .map(|import| import.name.to_string()),
+                component(&components, &link.exporter)
+                    .exports
+                    .iter()
+                    .map(|export| export.name.to_string()),
+            )?;
+        }
+        Ok(self.link_and_call(scenario, &order, &components).await)
+    }
+
+    /// Parse every component of `scenario` in the order of its
+    /// program's name, or answer the verdict of the step that stopped
+    /// it. A program that did not compile stops the scenario at
+    /// `compile`, and nothing is parsed.
+    async fn parse<'a>(&self, scenario: &'a Scenario) -> Result<Components<'a>, Verdict> {
+        let mut compiled = Vec::with_capacity(scenario.programs.len());
+        for program in &scenario.programs {
+            compiled.push((program.name.as_str(), program.component()?));
+        }
+        let mut components = Vec::with_capacity(compiled.len());
+        for (name, bytes) in compiled {
+            match Component::new(&self.engine, bytes).await {
+                Ok(component) => components.push((name, component)),
+                Err(error) => return Err(stopped(Stage::Parse, name, &error)),
+            }
+        }
+        Ok(components)
+    }
+
+    /// Run the parsed `components` of `scenario` up to its calls, or
+    /// answer the verdict of the step that stopped it.
+    ///
+    /// The components are linked and instantiated in `order`, each
+    /// exporter of a run-time link before its importer, all in one
+    /// store. The polyfill links and instantiates in one step, so an
+    /// error of that step is `link` when the linker could not supply an
+    /// import and `instantiate` otherwise. The Wasmtime run links every
+    /// component before it instantiates any, so when one component
+    /// fails to link and an earlier one in `order` fails to
+    /// instantiate, the two runs stop at different stages.
+    ///
+    /// A run-time link is made through the linker before any component
+    /// is linked. For each function of the item the exporter exports
+    /// under the link's import name, the linker gets a concurrent host
+    /// function of the same name and the exporter's type, whose call
+    /// looks up the exporter's instance and calls its function through
+    /// `Func::call_concurrent`. That is the only way the polyfill's
+    /// public API calls another instance from a host function, and the
+    /// linker takes a concurrent host function only for an `async`
+    /// import. So a run-time link forwards `async` functions only, and
+    /// an item that holds a synchronous function stops the scenario at
+    /// `link` with a reason that says so. The Wasmtime run makes the
+    /// same links the same way.
     ///
     /// Each call of the expectations is then made in order, even after
     /// one fails. A call is untyped, through `Func::call` with `Val`
@@ -63,26 +161,38 @@ impl PolyfillRun {
     /// [`TypedSignature`], and fails for any other. A result that is
     /// neither a scalar nor a string fails its call too, because the
     /// scenario model cannot hold it.
-    pub async fn observe(&self, scenario: &Scenario) -> Result<Run, Verdict> {
-        let mut compiled = Vec::with_capacity(scenario.programs.len());
-        for program in &scenario.programs {
-            compiled.push((program.name.as_str(), program.component()?));
-        }
-
-        let mut components = Vec::with_capacity(compiled.len());
-        for (name, bytes) in compiled {
-            match Component::new(&self.engine, bytes).await {
-                Ok(component) => components.push((name, component)),
-                Err(error) => return Err(stopped(Stage::Parse, name, &error)),
+    async fn link_and_call(
+        &self,
+        scenario: &Scenario,
+        order: &[&str],
+        components: &Components<'_>,
+    ) -> Result<Run, Verdict> {
+        let instances = Instances::default();
+        let mut linker = self
+            .linker()
+            .unwrap_or_else(|error| panic!("a linker for scenario {}: {error}", scenario.name));
+        for link in scenario.wiring.run_time() {
+            if let Err(reason) = forward(
+                &mut linker,
+                link,
+                component(components, &link.exporter),
+                &instances,
+            ) {
+                return Err(Verdict::new(
+                    Stage::Link,
+                    format!("component {}: {reason}", link.importer),
+                ));
             }
         }
 
         let mut store = Store::new(&self.engine, Host::default())
             .unwrap_or_else(|error| panic!("a store for scenario {}: {error}", scenario.name));
-        let mut instances = Vec::with_capacity(components.len());
-        for (name, component) in &components {
-            match self.linker.instantiate(&mut store, component).await {
-                Ok(instance) => instances.push((*name, instance)),
+        for &name in order {
+            match linker
+                .instantiate(&mut store, component(components, name))
+                .await
+            {
+                Ok(instance) => lock(&instances).push((name.to_string(), instance)),
                 Err(error) => return Err(stopped(instantiation_stage(&error), name, &error)),
             }
         }
@@ -96,6 +206,128 @@ impl PolyfillRun {
             output: store.data().lines(),
         })
     }
+}
+
+/// The parsed component of `name`, one of the scenario's own: the
+/// wiring's order and a link's check name only those.
+fn component<'a>(components: &'a Components<'_>, name: &str) -> &'a Component {
+    components
+        .iter()
+        .find(|(component, _)| *component == name)
+        .map(|(_, component)| component)
+        .expect("the wiring names the scenario's own components")
+}
+
+/// Make the run-time `link` through `linker`: define each function of
+/// the item `exporter` exports under the link's import name, as a
+/// function that calls the exporter's instance in `instances`. The
+/// link is checked, so the exporter has the item. The answer is the
+/// reason the link cannot be made.
+fn forward(
+    linker: &mut Linker<Host>,
+    link: &Link,
+    exporter: &Component,
+    instances: &Instances,
+) -> Result<(), String> {
+    let export = exporter
+        .exports
+        .iter()
+        .find(|export| export.name.to_string() == link.import)
+        .expect("a checked link names an export of its exporter");
+    match (&export.name, &export.ty) {
+        (ExternalName::Interface(interface), ExternType::Instance(instance)) => forward_items(
+            &mut linker.instance(interface),
+            link,
+            &instance.items,
+            instances,
+        ),
+        (_, ExternType::Instance(instance)) => forward_items(
+            &mut linker.root().instance(link.import.clone()),
+            link,
+            &instance.items,
+            instances,
+        ),
+        (_, ExternType::Function(ty)) => forward_func(
+            &mut linker.root(),
+            &link.import,
+            &link.exporter,
+            link.import.clone(),
+            ty,
+            instances,
+        ),
+        _ => Err(format!(
+            "{} is not a function or an instance, and a run-time link forwards functions only",
+            link.import
+        )),
+    }
+}
+
+/// Define each of `items`, the functions of the instance `link`
+/// imports, in `view`.
+fn forward_items(
+    view: &mut LinkerInstance<'_, Host>,
+    link: &Link,
+    items: &[InstanceItem],
+    instances: &Instances,
+) -> Result<(), String> {
+    for item in items {
+        let ExternType::Function(ty) = &item.ty else {
+            return Err(format!(
+                "{}#{} is not a function, and a run-time link forwards functions only",
+                link.import, item.name
+            ));
+        };
+        let export = format!("{}#{}", link.import, item.name);
+        forward_func(view, &item.name, &link.exporter, export, ty, instances)?;
+    }
+    Ok(())
+}
+
+/// Define `name` in `view` as a function of type `ty` that calls the
+/// function `export` of the instance of `exporter`.
+fn forward_func(
+    view: &mut LinkerInstance<'_, Host>,
+    name: &str,
+    exporter: &str,
+    export: String,
+    ty: &FunctionType,
+    instances: &Instances,
+) -> Result<(), String> {
+    if !ty.async_ {
+        return Err(format!(
+            "{export} is a synchronous function of component {exporter}, and a run-time link forwards only an `async` one"
+        ));
+    }
+    let exporter = exporter.to_string();
+    let instances = instances.clone();
+    view.func_new_concurrent(name, ty.clone(), move |accessor, args| {
+        let accessor = accessor.clone();
+        let func = exported(&instances, &exporter, &export);
+        async move {
+            let func = func.map_err(|message| Error::Internal { message })?;
+            Ok(func.call_concurrent(&accessor, &args).await?.into_vec())
+        }
+    })
+    .map_err(|error| describe(&error))
+}
+
+/// The function `export` of the instance of `component`, or why there
+/// is none.
+fn exported(instances: &Instances, component: &str, export: &str) -> Result<Func, String> {
+    let instances = lock(instances);
+    let (_, instance) = instances
+        .iter()
+        .find(|(name, _)| name == component)
+        .ok_or_else(|| format!("the scenario has no component {component}"))?;
+    lookup(instance, export)
+        .ok_or_else(|| format!("component {component} has no function export {export}"))
+}
+
+/// Lock `instances`, whatever a panic elsewhere left in it.
+fn lock(instances: &Instances) -> MutexGuard<'_, Vec<(String, Instance)>> {
+    instances
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// The verdict of a component `name` that stopped at `stage`.
@@ -138,15 +370,10 @@ fn describe(error: &(dyn std::error::Error + 'static)) -> String {
 }
 
 /// Make one call and report how it ended.
-async fn call(store: &mut Store<Host>, instances: &[(&str, Instance)], call: &Call) -> Outcome {
-    let Some((_, instance)) = instances.iter().find(|(name, _)| *name == call.component) else {
-        return Outcome::Failure(format!("the scenario has no component {}", call.component));
-    };
-    let Some(func) = lookup(instance, &call.export) else {
-        return Outcome::Failure(format!(
-            "component {} has no function export {}",
-            call.component, call.export
-        ));
+async fn call(store: &mut Store<Host>, instances: &Instances, call: &Call) -> Outcome {
+    let func = match exported(instances, &call.component, &call.export) {
+        Ok(func) => func,
+        Err(reason) => return Outcome::Failure(reason),
     };
     if call.typed {
         return typed_call(store, func, &call.arguments).await;

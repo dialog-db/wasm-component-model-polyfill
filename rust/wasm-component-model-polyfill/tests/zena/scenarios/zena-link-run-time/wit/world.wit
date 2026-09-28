@@ -1,0 +1,24 @@
+// The contract between the two programs of scenario 8. Each program
+// compiles against the world named after it.
+//
+// `greet` is `async`: a run-time link gives the importer a host
+// function that calls the exporter's instance, and neither Wasmtime nor
+// the polyfill lets a host function call into an instance for an
+// import that is not `async`.
+package wcmp:zena-link;
+
+interface greeter {
+  greet: async func(name: string) -> string;
+}
+
+// The world of `exporter.zena`.
+world exporter {
+  export greeter;
+}
+
+// The world of `importer.zena`, which awaits `greet`, so its own export
+// is `async` too.
+world importer {
+  import greeter;
+  export welcome: async func(name: string) -> string;
+}

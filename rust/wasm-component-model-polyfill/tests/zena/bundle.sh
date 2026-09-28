@@ -13,6 +13,7 @@
 #
 # - `<scenario>/expectations.txt`, from the sources.
 # - `<scenario>/observations.txt`, from the Wasmtime run.
+# - `<scenario>/wiring.txt`, from the sources, when the scenario has one.
 # - `<scenario>/<program>.status`, `.log`, and `.wasm` for each
 #   program, as `build.sh` left them.
 #
@@ -42,6 +43,9 @@ for directory in */; do
   name=${directory%/}
   add "$name/expectations.txt" "$scenarios/$name/expectations.txt"
   add "$name/observations.txt" "$observed/$name/observations.txt"
+  if [ -e "$scenarios/$name/wiring.txt" ]; then
+    add "$name/wiring.txt" "$scenarios/$name/wiring.txt"
+  fi
   for file in "$name"/*; do
     add "$file" "$file"
   done

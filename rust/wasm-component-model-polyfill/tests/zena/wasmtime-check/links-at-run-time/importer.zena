@@ -1,0 +1,9 @@
+// The importer of a run-time link: `welcome` passes its string to the
+// exporter's `greet` and passes the answer back.
+import { greet } from 'wcmp:check-link/greeter';
+import { Future } from 'zena:async';
+
+export async function welcome(name: String): Future<String> {
+  let greeting = await greet(name);
+  return greeting + '!';
+}

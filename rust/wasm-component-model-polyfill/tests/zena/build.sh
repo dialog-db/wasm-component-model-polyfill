@@ -12,7 +12,9 @@
 # `wit/`, Zena derives each program's world. With it, each program
 # compiles against the world named after the program, through `--wit wit
 # --world <program>`. A contributor adds a scenario by adding its
-# directory; nothing here names one.
+# directory; nothing here names one. The scenario's `expectations.txt`,
+# and its `wiring.txt` when its components link, are for the steps
+# after this one, which read them from the sources.
 #
 # The script fails when the directory holds no scenario, or a scenario
 # holds no program: that is a layout it cannot read, not an outcome of

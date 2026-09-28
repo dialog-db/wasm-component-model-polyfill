@@ -1,0 +1,7 @@
+// Scenario 8, the exporter: it implements the `greeter` interface that
+// `importer.zena` imports, and the runner links the two at run time.
+import { Future } from 'zena:async';
+
+export async function greet(name: String): Future<String> {
+  return 'hello, ' + name;
+}

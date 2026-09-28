@@ -1,0 +1,5 @@
+# Scenario 8: Zena imports from Zena at run time. The importer's call
+# passes a string across the link and back; the exporter's call is the
+# same function without the link. It prints nothing.
+call importer welcome("zena") -> "hello, zena!"
+call exporter wcmp:zena-link/greeter#greet("zena") -> "hello, zena"

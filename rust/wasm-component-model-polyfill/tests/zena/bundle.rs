@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use wcmp_scenario::{Expectations, Observations, Verdict};
+use wcmp_scenario::{Expectations, Linking, Observations, Verdict, Wiring};
 
 /// One program of a scenario, as the build compiled it.
 #[derive(Debug, Clone)]
@@ -45,8 +45,8 @@ impl Program {
     }
 }
 
-/// One scenario: its expectations, the Wasmtime run's observations, and
-/// its compiled programs.
+/// One scenario: its expectations, the Wasmtime run's observations, its
+/// wiring, and its compiled programs.
 #[derive(Debug, Clone)]
 pub struct Scenario {
     /// The scenario's name: the name of its directory.
@@ -55,6 +55,9 @@ pub struct Scenario {
     pub expectations: Expectations,
     /// What the Wasmtime run saw, with its verdict.
     pub observations: Observations,
+    /// Which component's exports satisfy which component's imports:
+    /// its `wiring.txt`, or empty when it has none.
+    pub wiring: Wiring,
     /// The scenario's programs, ordered by name.
     pub programs: Vec<Program>,
 }
@@ -141,6 +144,21 @@ fn scenario(name: &str, files: &BTreeMap<&str, &[u8]>) -> Result<Scenario, Strin
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
+    let wiring: Wiring = match files.get("wiring.txt") {
+        Some(_) => text("wiring.txt")?
+            .parse()
+            .map_err(|error| format!("{name}/wiring.txt: {error}"))?,
+        None => Wiring::default(),
+    };
+    if let Some(link) = wiring
+        .links
+        .iter()
+        .find(|link| link.linking == Linking::Composition)
+    {
+        return Err(format!(
+            "{name}/wiring.txt: `{link}` asks for a composition, which the build does not make"
+        ));
+    }
     if programs.is_empty() {
         return Err(format!("scenario {name} has no compiled program"));
     }
@@ -148,6 +166,7 @@ fn scenario(name: &str, files: &BTreeMap<&str, &[u8]>) -> Result<Scenario, Strin
         name: name.to_string(),
         expectations,
         observations,
+        wiring,
         programs,
     })
 }
@@ -246,6 +265,39 @@ mod tests {
         assert_eq!(
             scenarios(&file("zena-revision", b"abc\n")).unwrap_err(),
             "the bundle holds no scenario"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_reads_the_wiring_of_a_scenario_and_refuses_a_composition_the_build_does_not_make() {
+        let scenario = |wiring: &[u8]| {
+            let mut bundle = [
+                file("demo/expectations.txt", b""),
+                file("demo/observations.txt", b"stage pass\n"),
+                file("demo/main.log", b""),
+                file("demo/main.status", b"0\n"),
+                file("demo/main.wasm", b"\0asm"),
+            ]
+            .concat();
+            if !wiring.is_empty() {
+                bundle.extend(file("demo/wiring.txt", wiring));
+            }
+            scenarios(&bundle).map(|mut scenarios| scenarios.remove(0))
+        };
+        assert!(scenario(b"").unwrap().wiring.links.is_empty());
+        let wired = scenario(b"run-time main local:demo/api partner\n").unwrap();
+        assert_eq!(
+            wired.wiring.to_string(),
+            "run-time main local:demo/api partner\n"
+        );
+        assert_eq!(
+            scenario(b"composition main local:demo/api partner\n").unwrap_err(),
+            "demo/wiring.txt: `composition main local:demo/api partner` asks for a composition, which the build does not make"
+        );
+        assert!(
+            scenario(b"run-time main\n")
+                .unwrap_err()
+                .starts_with("demo/wiring.txt: line 1: ")
         );
     }
 }

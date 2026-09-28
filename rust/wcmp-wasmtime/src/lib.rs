@@ -22,7 +22,9 @@
 //! scenario in each, under the same name:
 //!
 //! - The scenario's sources, which hold its `expectations.txt` in the
-//!   format of the scenario model.
+//!   format of the scenario model, and its `wiring.txt` when its
+//!   components link. The run makes each run-time link through
+//!   Wasmtime's `Linker`; see [`WasmtimeRun::run`].
 //! - The compiled scenario, which holds three files per program:
 //!   `<program>.status` with the compiler's exit status, `<program>.log`
 //!   with the compiler's output, and `<program>.wasm` with the component

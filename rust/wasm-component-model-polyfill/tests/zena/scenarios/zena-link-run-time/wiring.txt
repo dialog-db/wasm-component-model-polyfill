@@ -1,0 +1,5 @@
+# Scenario 8: the runner instantiates `exporter` first and gives its
+# `greeter` to `importer` through the subject's linker.
+#
+# <linking> <importer> <import> <exporter>
+run-time importer wcmp:zena-link/greeter exporter

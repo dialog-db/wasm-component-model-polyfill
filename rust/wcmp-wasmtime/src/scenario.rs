@@ -1,8 +1,8 @@
-//! One compiled scenario and its expectations.
+//! One compiled scenario, its expectations, and its wiring.
 
 use std::path::Path;
 
-use wcmp_scenario::Expectations;
+use wcmp_scenario::{Expectations, Linking, Wiring};
 
 use crate::error::{Error, Result};
 use crate::program::Program;
@@ -10,14 +10,21 @@ use crate::program::Program;
 /// The name of the expectations file in a scenario's sources.
 const EXPECTATIONS: &str = "expectations.txt";
 
-/// One scenario as the build left it: its expectations and its compiled
-/// programs.
+/// The name of the wiring file in a scenario's sources. A scenario
+/// whose components do not link has none.
+const WIRING: &str = "wiring.txt";
+
+/// One scenario as the build left it: its expectations, its wiring, and
+/// its compiled programs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scenario {
     /// The scenario's name: the name of its directory.
     pub name: String,
     /// The calls to make and the lines to expect.
     pub expectations: Expectations,
+    /// Which component's exports satisfy which component's imports.
+    /// Empty when the components do not link.
+    pub wiring: Wiring,
     /// The scenario's programs, ordered by name.
     pub programs: Vec<Program>,
 }
@@ -63,20 +70,19 @@ impl Scenario {
     /// # Errors
     ///
     /// [`Error::Io`] when a file cannot be read, [`Error::Expectations`]
-    /// when the expectations file is malformed, and [`Error::Layout`]
-    /// when the compiled directory holds no program or a program's files
-    /// are out of place.
+    /// when the expectations file is malformed, [`Error::Wiring`] when
+    /// the wiring file is malformed or its links name a program the
+    /// scenario does not have or form a cycle, and [`Error::Layout`]
+    /// when the compiled directory holds no program, a program's files
+    /// are out of place, or the wiring asks for a composition, which
+    /// the build does not make.
     pub fn read(sources: &Path, compiled: &Path) -> Result<Self> {
         let name = compiled
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
         let expectations_path = sources.join(EXPECTATIONS);
-        let expectations = std::fs::read_to_string(&expectations_path)
-            .map_err(|source| Error::Io {
-                path: expectations_path.clone(),
-                source,
-            })?
+        let expectations = read_to_string(&expectations_path)?
             .parse()
             .map_err(|source| Error::Expectations {
                 path: expectations_path,
@@ -93,6 +99,32 @@ impl Scenario {
                 reason: "holds no compiled program".to_string(),
             });
         }
+        let wiring_path = sources.join(WIRING);
+        let wiring: Wiring = if wiring_path.exists() {
+            read_to_string(&wiring_path)?
+                .parse()
+                .map_err(|source| Error::Wiring {
+                    path: wiring_path.clone(),
+                    source,
+                })?
+        } else {
+            Wiring::default()
+        };
+        let names: Vec<&str> = program_names.iter().map(String::as_str).collect();
+        wiring.order(&names).map_err(|source| Error::Wiring {
+            path: wiring_path.clone(),
+            source,
+        })?;
+        if let Some(link) = wiring
+            .links
+            .iter()
+            .find(|link| link.linking == Linking::Composition)
+        {
+            return Err(Error::Layout {
+                path: wiring_path,
+                reason: format!("`{link}` asks for a composition, which the build does not make"),
+            });
+        }
         let programs = program_names
             .iter()
             .map(|program| Program::read(compiled, program))
@@ -100,9 +132,17 @@ impl Scenario {
         Ok(Scenario {
             name,
             expectations,
+            wiring,
             programs,
         })
     }
+}
+
+fn read_to_string(path: &Path) -> Result<String> {
+    std::fs::read_to_string(path).map_err(|source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 /// The names of the directories directly under `directory`, sorted.
@@ -129,4 +169,154 @@ fn entries(directory: &Path) -> Result<Vec<String>> {
                 .map_err(io)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use wcmp_scenario::{Link, Linking};
+
+    use super::*;
+
+    /// A scenario's two directories under the system's temporary
+    /// directory, removed when the value is dropped. The compiled
+    /// directory holds the programs `exporter` and `importer`, which
+    /// Zena refused, so no component is needed.
+    struct Layout {
+        root: PathBuf,
+    }
+
+    impl Layout {
+        fn new(test: &str, wiring: Option<&str>) -> Self {
+            let root =
+                std::env::temp_dir().join(format!("wcmp-wasmtime-{}-{test}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            let layout = Layout { root };
+            std::fs::create_dir_all(layout.sources()).unwrap();
+            std::fs::create_dir_all(layout.compiled()).unwrap();
+            std::fs::write(layout.sources().join(EXPECTATIONS), "").unwrap();
+            if let Some(wiring) = wiring {
+                std::fs::write(layout.sources().join(WIRING), wiring).unwrap();
+            }
+            for program in ["exporter", "importer"] {
+                std::fs::write(layout.compiled().join(format!("{program}.status")), "1").unwrap();
+                std::fs::write(layout.compiled().join(format!("{program}.log")), "").unwrap();
+            }
+            layout
+        }
+
+        fn sources(&self) -> PathBuf {
+            self.root.join("sources")
+        }
+
+        fn compiled(&self) -> PathBuf {
+            self.root.join("linked")
+        }
+
+        fn read(&self) -> Result<Scenario> {
+            Scenario::read(&self.sources(), &self.compiled())
+        }
+    }
+
+    impl Drop for Layout {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// The wiring error `layout` fails to read with.
+    fn wiring_error(layout: &Layout) -> wcmp_scenario::Error {
+        match layout.read() {
+            Err(Error::Wiring { path, source }) => {
+                assert_eq!(path, layout.sources().join(WIRING));
+                source
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_reads_an_empty_wiring_when_the_scenario_has_no_wiring_file() {
+        let layout = Layout::new("no-wiring", None);
+        let scenario = layout.read().unwrap();
+        assert_eq!(scenario.name, "linked");
+        assert_eq!(scenario.wiring, Wiring::default());
+        let programs: Vec<&str> = scenario
+            .programs
+            .iter()
+            .map(|program| program.name.as_str())
+            .collect();
+        assert_eq!(programs, ["exporter", "importer"]);
+    }
+
+    #[wcmp_macros::test]
+    fn it_reads_the_links_of_the_wiring_file() {
+        let layout = Layout::new(
+            "run-time",
+            Some("# A comment.\nrun-time importer local:demo/greeter exporter\n"),
+        );
+        assert_eq!(
+            layout.read().unwrap().wiring.links,
+            [Link {
+                linking: Linking::RunTime,
+                importer: "importer".to_string(),
+                import: "local:demo/greeter".to_string(),
+                exporter: "exporter".to_string(),
+            }]
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_refuses_a_malformed_wiring_or_one_that_names_a_missing_program_or_a_cycle() {
+        let malformed = Layout::new("malformed", Some("run-time importer exporter"));
+        assert_eq!(
+            wiring_error(&malformed),
+            wcmp_scenario::Error::Syntax {
+                line: 1,
+                reason: "expected `<linking> <importer> <import> <exporter>`, found 3 words"
+                    .to_string(),
+            }
+        );
+        let missing = Layout::new(
+            "missing",
+            Some("run-time importer local:demo/greeter exprter"),
+        );
+        assert_eq!(
+            wiring_error(&missing),
+            wcmp_scenario::Error::UnknownComponent {
+                link: "run-time importer local:demo/greeter exprter".to_string(),
+                component: "exprter".to_string(),
+            }
+        );
+        let cycle = Layout::new(
+            "cycle",
+            Some(
+                "run-time importer local:demo/greeter exporter\n\
+                 run-time exporter local:demo/welcome importer",
+            ),
+        );
+        assert_eq!(
+            wiring_error(&cycle),
+            wcmp_scenario::Error::LinkCycle(vec!["exporter".to_string(), "importer".to_string()])
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_refuses_a_composition_as_a_layout_the_build_does_not_make() {
+        let layout = Layout::new(
+            "composition",
+            Some("composition importer local:demo/greeter exporter"),
+        );
+        match layout.read() {
+            Err(Error::Layout { path, reason }) => {
+                assert_eq!(path, layout.sources().join(WIRING));
+                assert_eq!(
+                    reason,
+                    "`composition importer local:demo/greeter exporter` asks for a composition, which the build does not make"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
 }

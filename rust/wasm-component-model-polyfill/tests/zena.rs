@@ -14,7 +14,8 @@
 //! For each scenario the runner (`zena/runner.rs`) parses every
 //! component with `Component::new`, links and instantiates it through
 //! the polyfill's `Linker` with the test host functions
-//! (`zena/host.rs`), and makes each call of the expectations, keeping
+//! (`zena/host.rs`) and the scenario's run-time links, each exporter
+//! before its importer, and makes each call of the expectations, keeping
 //! the lines the scenario prints. A call goes through `Func::call` with
 //! `Val` arguments, or through `TypedFunc` when the expectations mark
 //! it as typed. The runner makes typed calls for a closed set of
@@ -217,6 +218,7 @@ async fn it_gives_each_typed_call_the_outcome_of_the_same_untyped_call() {
         let observed = polyfill
             .observe(&scenario)
             .await
+            .unwrap_or_else(|error| panic!("scenario {}: {error}", scenario.name))
             .ok()
             .map(|run| run.outcomes);
         let subjects = [
@@ -853,21 +855,329 @@ const TRAPS_ON_START: &[u8] = component!(
     "#
 );
 
-/// A scenario of `programs`, with `expectations` and the Wasmtime run's
-/// `observations` in the text format of the scenario model.
-fn scenario(programs: Vec<Program>, expectations: &str, observations: &str) -> Scenario {
+/// A component that exports the interface `local:demo/greeter`,
+/// whose `async` function `greet` takes a name and returns `hello, `
+/// followed by the name, written to fresh memory. It is lifted
+/// synchronously, which an `async` function allows.
+const GREETER: &[u8] = component!(
+    r#"
+    (component
+      (core module $m
+        (memory (export "memory") 1)
+        (data (i32.const 0) "hello, ")
+        (global $next (mut i32) (i32.const 1024))
+        (func $realloc (export "realloc") (param i32 i32 i32 i32) (result i32)
+          (local $pointer i32)
+          global.get $next
+          local.get 2
+          i32.const 1
+          i32.sub
+          i32.add
+          i32.const 0
+          local.get 2
+          i32.sub
+          i32.and
+          local.tee $pointer
+          local.get 3
+          i32.add
+          global.set $next
+          local.get $pointer)
+        (func (export "greet") (param $name i32) (param $length i32) (result i32)
+          (local $greeting i32)
+          (local.set $length (i32.add (local.get $length) (i32.const 7)))
+          (local.set $greeting
+            (call $realloc (i32.const 0) (i32.const 0) (i32.const 1) (local.get $length)))
+          (memory.copy (local.get $greeting) (i32.const 0) (i32.const 7))
+          (memory.copy
+            (i32.add (local.get $greeting) (i32.const 7))
+            (local.get $name)
+            (i32.sub (local.get $length) (i32.const 7)))
+          (i32.store (i32.const 16) (local.get $greeting))
+          (i32.store (i32.const 20) (local.get $length))
+          i32.const 16))
+      (core instance $i (instantiate $m))
+      (type $greet (func async (param "name" string) (result string)))
+      (func $greet (type $greet)
+        (canon lift (core func $i "greet")
+          (memory (core memory $i "memory")) (realloc (core func $i "realloc"))))
+      (instance $greeter (export "greet" (func $greet)))
+      (export "local:demo/greeter" (instance $greeter)))
+    "#
+);
+
+/// [`GREETER`] lifted as Zena lifts an `async` export: `async` with a
+/// callback. `greet` writes its greeting and yields once instead of
+/// returning, so a caller cannot have the result from the first poll;
+/// the callback it is given back returns the greeting through
+/// `task.return`.
+const CALLBACK_GREETER: &[u8] = component!(
+    r#"
+    (component
+      (core module $libc
+        (memory (export "memory") 1)
+        (data (i32.const 0) "hello, ")
+        (global $next (mut i32) (i32.const 1024))
+        (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+          (local $pointer i32)
+          global.get $next
+          local.get 2
+          i32.const 1
+          i32.sub
+          i32.add
+          i32.const 0
+          local.get 2
+          i32.sub
+          i32.and
+          local.tee $pointer
+          local.get 3
+          i32.add
+          global.set $next
+          local.get $pointer))
+      (core instance $libc (instantiate $libc))
+      (alias core export $libc "memory" (core memory $mem))
+      (alias core export $libc "realloc" (core func $realloc))
+      (core func $task-return (canon task.return (result string) (memory $mem)))
+      (core module $main
+        (import "libc" "memory" (memory 1))
+        (import "libc" "realloc" (func $realloc (param i32 i32 i32 i32) (result i32)))
+        (import "" "task.return" (func $task-return (param i32 i32)))
+        (global $greeting (mut i32) (i32.const 0))
+        (global $length (mut i32) (i32.const 0))
+        (func (export "greet") (param $name i32) (param $name-length i32) (result i32)
+          (global.set $length (i32.add (local.get $name-length) (i32.const 7)))
+          (global.set $greeting
+            (call $realloc (i32.const 0) (i32.const 0) (i32.const 1) (global.get $length)))
+          (memory.copy (global.get $greeting) (i32.const 0) (i32.const 7))
+          (memory.copy
+            (i32.add (global.get $greeting) (i32.const 7))
+            (local.get $name)
+            (local.get $name-length))
+          ;; YIELD.
+          (i32.const 1))
+        (func (export "greet-callback") (param i32 i32 i32) (result i32)
+          (call $task-return (global.get $greeting) (global.get $length))
+          ;; EXIT.
+          (i32.const 0)))
+      (core instance $main (instantiate $main
+        (with "libc" (instance $libc))
+        (with "" (instance (export "task.return" (func $task-return))))))
+      (type $greet (func async (param "name" string) (result string)))
+      (func $greet (type $greet)
+        (canon lift (core func $main "greet") async
+          (callback (core func $main "greet-callback")) (memory $mem) (realloc $realloc)))
+      (instance $greeter (export "greet" (func $greet)))
+      (export "local:demo/greeter" (instance $greeter)))
+    "#
+);
+
+/// [`GREETER`] with a `greet` that is not `async`.
+const SYNC_GREETER: &[u8] = component!(
+    r#"
+    (component
+      (core module $m
+        (memory (export "memory") 1)
+        (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+          i32.const 1024)
+        (func (export "greet") (param i32 i32) (result i32)
+          (i32.store (i32.const 16) (i32.const 0))
+          (i32.store (i32.const 20) (i32.const 0))
+          i32.const 16))
+      (core instance $i (instantiate $m))
+      (func $greet (param "name" string) (result string)
+        (canon lift (core func $i "greet")
+          (memory (core memory $i "memory")) (realloc (core func $i "realloc"))))
+      (instance $greeter (export "greet" (func $greet)))
+      (export "local:demo/greeter" (instance $greeter)))
+    "#
+);
+
+/// A component that imports `local:demo/greeter` and exports
+/// `welcome`, which passes its name to `greet` and returns what
+/// `greet` returned. It lowers `greet` synchronously.
+const CALLER: &[u8] = component!(
+    r#"
+    (component
+      (import "local:demo/greeter" (instance $greeter
+        (export "greet" (func async (param "name" string) (result string)))))
+      (core module $memory
+        (memory (export "memory") 1)
+        (global $next (mut i32) (i32.const 1024))
+        (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+          (local $pointer i32)
+          global.get $next
+          local.get 2
+          i32.const 1
+          i32.sub
+          i32.add
+          i32.const 0
+          local.get 2
+          i32.sub
+          i32.and
+          local.tee $pointer
+          local.get 3
+          i32.add
+          global.set $next
+          local.get $pointer))
+      (core instance $memory (instantiate $memory))
+      (alias core export $memory "memory" (core memory $mem))
+      (alias core export $memory "realloc" (core func $realloc))
+      (alias export $greeter "greet" (func $greet))
+      (core func $greet_lowered
+        (canon lower (func $greet) (memory $mem) (realloc $realloc)))
+      (core module $main
+        (import "greeter" "greet" (func $greet (param i32 i32 i32)))
+        (func (export "welcome") (param i32 i32) (result i32)
+          local.get 0
+          local.get 1
+          i32.const 16
+          call $greet
+          i32.const 16))
+      (core instance $main (instantiate $main
+        (with "greeter" (instance (export "greet" (func $greet_lowered))))))
+      (type $welcome (func async (param "name" string) (result string)))
+      (func $welcome (type $welcome)
+        (canon lift (core func $main "welcome") (memory $mem) (realloc $realloc)))
+      (export "welcome" (func $welcome)))
+    "#
+);
+
+/// [`CALLER`] as Zena builds an importer: it lowers `greet` with the
+/// `async` option and lifts `welcome` `async` with a callback.
+///
+/// `welcome` calls `greet` with the return area at address 16. A call
+/// that returned has its greeting there already, and `welcome` returns
+/// it at once. A call that started joins its subtask to a waitable set
+/// and waits on it; the callback waits again until the subtask has
+/// returned, then drops the subtask and the set and returns the
+/// greeting. `waited` says whether the callback ran, so a test can
+/// tell which of the two ways the call took.
+const ASYNC_CALLER: &[u8] = component!(
+    r#"
+    (component
+      (import "local:demo/greeter" (instance $greeter
+        (export "greet" (func async (param "name" string) (result string)))))
+      (core module $libc
+        (memory (export "memory") 1)
+        (global $next (mut i32) (i32.const 1024))
+        (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+          (local $pointer i32)
+          global.get $next
+          local.get 2
+          i32.const 1
+          i32.sub
+          i32.add
+          i32.const 0
+          local.get 2
+          i32.sub
+          i32.and
+          local.tee $pointer
+          local.get 3
+          i32.add
+          global.set $next
+          local.get $pointer))
+      (core instance $libc (instantiate $libc))
+      (alias core export $libc "memory" (core memory $mem))
+      (alias core export $libc "realloc" (core func $realloc))
+      (alias export $greeter "greet" (func $greet))
+      (core func $greet
+        (canon lower (func $greet) async (memory $mem) (realloc $realloc)))
+      (core func $task-return (canon task.return (result string) (memory $mem)))
+      (core func $set-new (canon waitable-set.new))
+      (core func $join (canon waitable.join))
+      (core func $subtask-drop (canon subtask.drop))
+      (core func $set-drop (canon waitable-set.drop))
+      (core module $main
+        (import "libc" "memory" (memory 1))
+        (import "" "greet" (func $greet (param i32 i32 i32) (result i32)))
+        (import "" "task.return" (func $task-return (param i32 i32)))
+        (import "" "waitable-set.new" (func $set-new (result i32)))
+        (import "" "waitable.join" (func $join (param i32 i32)))
+        (import "" "subtask.drop" (func $subtask-drop (param i32)))
+        (import "" "waitable-set.drop" (func $set-drop (param i32)))
+        (global $set (mut i32) (i32.const 0))
+        (global $waited (mut i32) (i32.const 0))
+        (func $return-greeting
+          (call $task-return (i32.load (i32.const 16)) (i32.load (i32.const 20))))
+        (func (export "welcome") (param i32 i32) (result i32)
+          (local $status i32)
+          (local.set $status (call $greet (local.get 0) (local.get 1) (i32.const 16)))
+          ;; RETURNED.
+          (if (i32.eq (i32.and (local.get $status) (i32.const 0xf)) (i32.const 2))
+            (then
+              (call $return-greeting)
+              (return (i32.const 0))))
+          (global.set $set (call $set-new))
+          (call $join (i32.shr_u (local.get $status) (i32.const 4)) (global.get $set))
+          ;; WAIT on the set.
+          (i32.or (i32.shl (global.get $set) (i32.const 4)) (i32.const 2)))
+        (func (export "welcome-callback")
+          (param $event i32) (param $subtask i32) (param $state i32) (result i32)
+          (global.set $waited (i32.const 1))
+          ;; Only the subtask's events, SUBTASK, reach the set.
+          (if (i32.ne (local.get $event) (i32.const 1)) (then unreachable))
+          ;; Until the subtask has RETURNED, WAIT on the set again.
+          (if (i32.ne (local.get $state) (i32.const 2))
+            (then (return (i32.or (i32.shl (global.get $set) (i32.const 4)) (i32.const 2)))))
+          (call $subtask-drop (local.get $subtask))
+          (call $set-drop (global.get $set))
+          (call $return-greeting)
+          ;; EXIT.
+          (i32.const 0))
+        (func (export "waited") (result i32) (global.get $waited)))
+      (core instance $main (instantiate $main
+        (with "libc" (instance $libc))
+        (with "" (instance
+          (export "greet" (func $greet))
+          (export "task.return" (func $task-return))
+          (export "waitable-set.new" (func $set-new))
+          (export "waitable.join" (func $join))
+          (export "subtask.drop" (func $subtask-drop))
+          (export "waitable-set.drop" (func $set-drop))))))
+      (type $welcome (func async (param "name" string) (result string)))
+      (func $welcome (type $welcome)
+        (canon lift (core func $main "welcome") async
+          (callback (core func $main "welcome-callback")) (memory $mem) (realloc $realloc)))
+      (export "welcome" (func $welcome))
+      (func (export "waited") (result bool) (canon lift (core func $main "waited"))))
+    "#
+);
+
+/// The wiring of [`CALLER`] to a greeter.
+const CALLER_TO_GREETER: &str = "run-time caller local:demo/greeter greeter";
+
+/// A scenario of `programs`, linked as `wiring` says, with
+/// `expectations` and the Wasmtime run's `observations` in the text
+/// format of the scenario model.
+fn scenario(
+    programs: Vec<Program>,
+    wiring: &str,
+    expectations: &str,
+    observations: &str,
+) -> Scenario {
     Scenario {
         name: "test".to_string(),
         expectations: expectations.parse().unwrap(),
         observations: observations.parse().unwrap(),
+        wiring: wiring.parse().unwrap(),
         programs,
     }
 }
 
 /// Run `programs` through the polyfill and judge them.
 async fn run(programs: Vec<Program>, expectations: &str, observations: &str) -> Verdict {
+    run_wired(programs, "", expectations, observations).await
+}
+
+/// Run `programs`, linked as `wiring` says, through the polyfill and
+/// judge them.
+async fn run_wired(
+    programs: Vec<Program>,
+    wiring: &str,
+    expectations: &str,
+    observations: &str,
+) -> Verdict {
     polyfill()
-        .run(&scenario(programs, expectations, observations))
+        .run(&scenario(programs, wiring, expectations, observations))
         .await
         .unwrap()
 }
@@ -1244,5 +1554,168 @@ async fn it_stops_at_the_first_step_that_fails() {
         instantiate.reason.starts_with("component traps: "),
         "{}",
         instantiate.reason
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_links_async_functions_of_one_component_to_imports_of_another_at_run_time() {
+    // The importer's name sorts first, so the wiring orders the
+    // exporter before it.
+    let programs = || {
+        vec![
+            Program::compiled("caller", CALLER),
+            Program::compiled("greeter", GREETER),
+        ]
+    };
+    // The greeting holds the name, so an argument lost or corrupted on
+    // its way across the link fails the call.
+    let linked = run_wired(
+        programs(),
+        CALLER_TO_GREETER,
+        r#"
+        call caller welcome("world") -> "hello, world"
+        call caller welcome("") -> "hello, "
+        call greeter local:demo/greeter#greet("zena") -> "hello, zena"
+        "#,
+        WASMTIME_STOPPED,
+    )
+    .await;
+    assert_eq!(linked, Verdict::pass());
+
+    let unwired = run(
+        programs(),
+        r#"call caller welcome("world") -> "hello, world""#,
+        WASMTIME_STOPPED,
+    )
+    .await;
+    assert_eq!(unwired.stage, Stage::Link, "{}", unwired.reason);
+    assert!(
+        unwired.reason.starts_with("component caller: ")
+            && unwired.reason.contains("local:demo/greeter"),
+        "{}",
+        unwired.reason
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_links_an_async_lowered_import_to_a_callback_lifted_export_as_zena_builds_them() {
+    // The greeter yields before it returns, so the caller's call has
+    // no result on its first poll: the caller waits on the subtask and
+    // its callback runs.
+    let verdict = run_wired(
+        vec![
+            Program::compiled("caller", ASYNC_CALLER),
+            Program::compiled("greeter", CALLBACK_GREETER),
+        ],
+        CALLER_TO_GREETER,
+        r#"
+        call caller welcome("world") -> "hello, world"
+        call caller waited() -> true
+        call caller welcome("zena") -> "hello, zena"
+        call greeter local:demo/greeter#greet("zena") -> "hello, zena"
+        "#,
+        WASMTIME_STOPPED,
+    )
+    .await;
+    assert_eq!(verdict, Verdict::pass());
+}
+
+#[wcmp_macros::test]
+async fn it_makes_typed_and_untyped_calls_across_a_run_time_link() {
+    let verdict = run_wired(
+        vec![
+            Program::compiled("caller", CALLER),
+            Program::compiled("greeter", GREETER),
+        ],
+        CALLER_TO_GREETER,
+        r#"
+        call caller welcome("world") -> "hello, world"
+        call typed caller welcome("world") -> "hello, world"
+        call greeter local:demo/greeter#greet("zena") -> "hello, zena"
+        call typed greeter local:demo/greeter#greet("zena") -> "hello, zena"
+        "#,
+        WASMTIME_STOPPED,
+    )
+    .await;
+    assert_eq!(verdict, Verdict::pass());
+}
+
+#[wcmp_macros::test]
+async fn it_stops_at_link_when_the_exported_function_is_not_async() {
+    let synchronous = run_wired(
+        vec![
+            Program::compiled("caller", CALLER),
+            Program::compiled("greeter", SYNC_GREETER),
+        ],
+        CALLER_TO_GREETER,
+        "",
+        WASMTIME_STOPPED,
+    )
+    .await;
+    assert_eq!(
+        synchronous,
+        Verdict::new(
+            Stage::Link,
+            "component caller: local:demo/greeter#greet is a synchronous function of component greeter, and a run-time link forwards only an `async` one"
+        )
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_wiring_that_names_a_missing_component_or_leaves_no_order() {
+    let calculator = || vec![Program::compiled("calc", CALCULATOR)];
+    let missing = polyfill()
+        .run(&scenario(
+            calculator(),
+            "run-time calc local:demo/api partner",
+            "",
+            WASMTIME_STOPPED,
+        ))
+        .await;
+    assert!(
+        matches!(missing, Err(wcmp_scenario::Error::UnknownComponent { .. })),
+        "{missing:?}"
+    );
+    let cycle = polyfill()
+        .run(&scenario(
+            calculator(),
+            "run-time calc local:demo/api calc",
+            "",
+            WASMTIME_STOPPED,
+        ))
+        .await;
+    assert_eq!(
+        cycle,
+        Err(wcmp_scenario::Error::LinkCycle(vec!["calc".to_string()]))
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_link_whose_import_or_export_a_component_lacks_instead_of_stopping_at_link() {
+    let wired = |greeter: &[u8], wiring: &str| {
+        scenario(
+            vec![
+                Program::compiled("caller", CALLER),
+                Program::compiled("greeter", greeter),
+            ],
+            wiring,
+            "",
+            WASMTIME_STOPPED,
+        )
+    };
+    let misspelled = "run-time caller local:demo/greter greeter";
+    assert_eq!(
+        polyfill().run(&wired(GREETER, misspelled)).await,
+        Err(wcmp_scenario::Error::UnknownImport {
+            link: misspelled.to_string(),
+            component: "caller".to_string(),
+        })
+    );
+    assert_eq!(
+        polyfill().run(&wired(CALCULATOR, CALLER_TO_GREETER)).await,
+        Err(wcmp_scenario::Error::UnknownExport {
+            link: CALLER_TO_GREETER.to_string(),
+            component: "greeter".to_string(),
+        })
     );
 }

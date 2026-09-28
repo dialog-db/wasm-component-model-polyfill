@@ -1,0 +1,7 @@
+// The exporter of a run-time link: it implements the `greeter`
+// interface that `importer.zena` imports.
+import { Future } from 'zena:async';
+
+export async function greet(name: String): Future<String> {
+  return 'hello, ' + name;
+}
