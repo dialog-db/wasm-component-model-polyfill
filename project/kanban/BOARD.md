@@ -54,7 +54,6 @@ kanban-plugin: basic
 
 ## Needs Review
 
-- [ ] [[6d91fb]]
 - [ ] [[f259d6]]
 
 ## Ready
@@ -71,6 +70,7 @@ kanban-plugin: basic
 - [ ] [[2103de]]
 - [ ] [[ff3743]]
 - [ ] [[89451b]]
+- [ ] [[6d91fb]]
 
 ---
 
