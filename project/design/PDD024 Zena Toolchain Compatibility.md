@@ -53,8 +53,9 @@ Nine terms recur:
 - Scenarios cover one component alone, two Zena components linked together, and
   a Zena component linked with a component from another toolchain. The links are
   made at run time through a `Linker` and ahead of time through composition.
-- A menu command prints a compatibility table that leads with the browser.
-  `tests all` runs the scenarios as one of its lanes.
+- A menu command prints a compatibility report that leads with the browser and
+  shows why each subject stopped. `tests all` runs the scenarios as one of its
+  lanes.
 - Each failure that code reading predicts today is confirmed or refuted by a
   scenario.
 
@@ -391,7 +392,7 @@ of the pin. Regeneration rewrites the text, so it does not go stale.
 ### Regeneration
 
 One command runs all three subjects and writes the record again. The browser run
-is part of it, because the browser column matters most. A dry run prints the
+is part of it, because the browser subject matters most. A dry run prints the
 difference and writes nothing.
 
 ## Moving the Pin
@@ -426,17 +427,35 @@ A revert of the one commit restores the lock and the record together.
 
 The menu has two commands:
 
-- `tests zena` runs the three subjects and prints the compatibility table.
+- `tests zena` runs the three subjects and prints the compatibility report.
 - `tests zena regenerate` writes the record again. It accepts `--dry-run`.
 
 `tests all` runs the scenarios as one more timed lane.
 
-The table has one row per scenario, and the columns `Browser`, `Native`, and
-`Wasmtime`, in that order. Each cell holds the stage. A footer counts the passes
-in each column. A header line names the pin.
+The report is a list with one entry per scenario. Under each scenario it lists
+the subjects `Browser`, `Native`, and `Wasmtime`, in that order, one per line.
+Each line holds the stage. When the stage comes before `pass`, the line also
+holds the reason: the error text of the step that stopped the subject, as the
+run observed it. A header line names the pin. A footer counts the passes of each
+subject.
+
+```text
+zena at b2237f7
+
+- async-sleep
+  - Browser: parse (<error text>)
+  - Native: parse (<error text>)
+  - Wasmtime: pass
+- scalar-export
+  - Browser: pass
+  - Native: pass
+  - Wasmtime: pass
+
+Passes: Browser 1/2, Native 1/2, Wasmtime 2/2
+```
 
 The README has a section on Zena compatibility beside its section on
-conformance. It holds a dated copy of the table with the pin. A person updates
+conformance. It holds a dated copy of the report with the pin. A person updates
 it at a move of the pin, as the conformance table is updated. The section states
 that the record is the source of truth and names the menu command.
 
@@ -481,10 +500,10 @@ The owner of this repository hears that Zena changed how it emits exceptions.
 A developer builds a tool in the browser that compiles Zena programs to
 components and runs their tests on the polyfill.
 
-> The developer reads the table in the README. The browser column shows which
+> The developer reads the report in the README. The browser lines show which
 > Zena features run today and where the others stop. The developer sees that a
-> program with a string export stops at `instantiate`, and reads the error text
-> in the record to learn why.
+> program with a string export stops at `parse` in the browser, and reads the
+> error text on the same line to learn why.
 
 A contributor finds a Zena feature that no scenario covers.
 
@@ -572,9 +591,10 @@ Typed calls cover scalars and strings. Scenario 1 calls its scalar export with
 `TypedFunc`, and scenario 2 calls its string export with `TypedFunc`. The typed
 call and the untyped call give the same results on every subject.
 
-The table leads with the browser. `tests zena` prints one row per scenario with
-the columns `Browser`, `Native`, and `Wasmtime`, in that order, a footer of pass
-counts, and the pin. `tests all` runs the lane and reports its time.
+The report leads with the browser. `tests zena` prints each scenario with one
+line per subject, in the order `Browser`, `Native`, `Wasmtime`, the reason
+beside each stage that comes before `pass`, a footer of pass counts, and the
+pin. `tests all` runs the lane and reports its time.
 
 ## References
 
