@@ -152,7 +152,8 @@ holds the build reuses it. The first build on a cold store pays the full cost.
 
 A scenario holds these sources:
 
-- One or more Zena programs.
+- One or more Zena programs. A baseline scenario holds no Zena program, only
+  partners.
 - Optional WIT. When a scenario has WIT, each Zena program compiles against the
   world named after the program, which Zena reads through `--wit` and `--world`.
 - For a scenario with a partner, the partner's Rust source and its locked cargo
