@@ -387,21 +387,59 @@
           text = builtins.readFile ./rust/wasm-component-model-polyfill/tests/zena/bundle.sh;
         };
 
-        zenaTestScenarios = pkgs.runCommand "zena-test-scenarios" { } ''
-          mkdir -p "$out"
-          ${pkgs.lib.getExe zenaBundler} \
-            ${./rust/wasm-component-model-polyfill/tests/zena/scenarios} \
-            ${zenaScenarios} ${zenaWasmtime} "$out/scenarios.bundle"
-        '';
+        bundleZenaScenarios =
+          {
+            name,
+            scenarios,
+            compiled,
+            observed,
+          }:
+          pkgs.runCommand name { } ''
+            mkdir -p "$out"
+            ${pkgs.lib.getExe zenaBundler} \
+              ${scenarios} ${compiled} ${observed} "$out/scenarios.bundle"
+          '';
+
+        zenaTestScenarios = bundleZenaScenarios {
+          name = "zena-test-scenarios";
+          scenarios = ./rust/wasm-component-model-polyfill/tests/zena/scenarios;
+          compiled = zenaScenarios;
+          observed = zenaWasmtime;
+        };
+
+        # A scenario whose program Zena refuses, taken through every step a
+        # real scenario takes: compiled with the pinned toolchain, run
+        # through Wasmtime, and bundled. The `zena` test checks that each
+        # subject stops it at `compile` and that the record written from
+        # the run keeps Zena's error output. It is not in the record.
+        zenaRefusedScenario =
+          let
+            scenarios = ./rust/wasm-component-model-polyfill/tests/zena/record-check;
+            compiled = buildZenaScenarios {
+              name = "zena-refused-program";
+              inherit scenarios;
+            };
+          in
+          bundleZenaScenarios {
+            name = "zena-refused-scenario";
+            inherit scenarios compiled;
+            observed = runScenariosUnderWasmtime {
+              name = "zena-refused-wasmtime";
+              inherit scenarios compiled;
+            };
+          };
 
         # A build that compiles the polyfill's tests: the test archives
         # and the clippy check. The `zena` test runs each scenario through
         # the polyfill, in the browser and natively, and reads them from
-        # the bundle this variable names.
+        # the bundle `WCMP_ZENA_SCENARIOS` names. It holds the run to the
+        # committed record, `tests/zena/record.txt`, and checks the
+        # `compile` stage on the bundle `WCMP_ZENA_REFUSED` names.
         withZenaScenarios =
           derivation:
           derivation.overrideAttrs {
             WCMP_ZENA_SCENARIOS = "${zenaTestScenarios}/scenarios.bundle";
+            WCMP_ZENA_REFUSED = "${zenaRefusedScenario}/scenarios.bundle";
           };
 
         # The Wasmtime run against its own cases, compiled with the pinned

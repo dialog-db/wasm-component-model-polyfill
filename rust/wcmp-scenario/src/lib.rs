@@ -12,6 +12,11 @@
 //! reads to learn why. A [`Report`] puts one [`Subject`]'s verdict on
 //! one scenario on one line.
 //!
+//! A [`Record`] is the committed stage of every scenario for every
+//! subject, made from one revision of the toolchain. It is the gate of
+//! a run: every [`Difference`] between the two fails the run, and only
+//! the stages are compared.
+//!
 //! A contributor writes the [`Expectations`] by hand: the calls in
 //! order, each with the results it returns, a failure, or no outcome at
 //! all, and the lines the scenario prints. A subject that reaches its
@@ -56,6 +61,7 @@
 //! escapes `\\`, `\"`, `\'`, `\n`, `\r`, `\t`, `\0`, and `\u{…}`.
 
 mod call;
+mod difference;
 mod entry;
 mod error;
 mod expectations;
@@ -63,6 +69,7 @@ mod judge;
 mod observation;
 mod observations;
 mod outcome;
+mod record;
 mod report;
 mod run;
 mod stage;
@@ -72,12 +79,14 @@ mod value;
 mod verdict;
 
 pub use crate::call::Call;
+pub use crate::difference::Difference;
 pub use crate::entry::Entry;
 pub use crate::error::{Error, Result};
 pub use crate::expectations::Expectations;
 pub use crate::observation::Observation;
 pub use crate::observations::Observations;
 pub use crate::outcome::Outcome;
+pub use crate::record::Record;
 pub use crate::report::Report;
 pub use crate::run::Run;
 pub use crate::stage::Stage;

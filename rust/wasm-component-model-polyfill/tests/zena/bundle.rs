@@ -82,6 +82,23 @@ pub fn scenarios(bundle: &[u8]) -> Result<Vec<Scenario>, String> {
         .collect()
 }
 
+/// The revision of the toolchain that compiled the scenarios in
+/// `bundle`: its `zena-revision` file, which the build writes from the
+/// flake input the lock pins.
+pub fn revision(bundle: &[u8]) -> Result<String, String> {
+    let (_, bytes) = files(bundle)?
+        .into_iter()
+        .find(|(path, _)| *path == "zena-revision")
+        .ok_or("the bundle has no zena-revision")?;
+    let revision = core::str::from_utf8(bytes)
+        .map_err(|error| format!("zena-revision: {error}"))?
+        .trim();
+    if revision.is_empty() {
+        return Err("zena-revision is empty".to_string());
+    }
+    Ok(revision.to_string())
+}
+
 /// Read one scenario from its files.
 fn scenario(name: &str, files: &BTreeMap<&str, &[u8]>) -> Result<Scenario, String> {
     let text = |file: &str| -> Result<&str, String> {
@@ -191,6 +208,7 @@ mod tests {
             file("demo/refused.status", b"1\n"),
         ]
         .concat();
+        assert_eq!(revision(&bundle).as_deref(), Ok("abc"));
         let scenarios = scenarios(&bundle).unwrap();
         assert_eq!(scenarios.len(), 1);
         let demo = &scenarios[0];
@@ -220,6 +238,10 @@ mod tests {
         assert_eq!(
             scenarios(&status).unwrap_err(),
             "scenario demo has no expectations.txt"
+        );
+        assert_eq!(
+            revision(&status).unwrap_err(),
+            "the bundle has no zena-revision"
         );
         assert_eq!(
             scenarios(&file("zena-revision", b"abc\n")).unwrap_err(),

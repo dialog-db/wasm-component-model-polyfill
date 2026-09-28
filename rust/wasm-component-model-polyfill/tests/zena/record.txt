@@ -1,0 +1,33 @@
+# zena b2237f7e65847eda43ef1f4094eea77fe225ce0d
+# The stage where each subject stopped on each scenario, one line per
+# scenario and subject:
+#
+#   <scenario> <subject> <stage> "<reason>"
+#
+# The subject is `wasmtime`, the Wasmtime run, or the polyfill in the
+# browser (`web`) or natively (`native`). The reason is the text that
+# says why the subject stopped there, for a person to read. A run is held
+# to the stage alone. A pass has no reason.
+#
+# The stages, in the order a run meets them:
+#
+#   compile      The toolchain refused a program. The stage is the same
+#                for every subject, and nothing else runs.
+#   compose      The composition tool refused the components. The stage
+#                is the same for every subject.
+#   parse        `Component::new` failed.
+#   link         The linker did not supply an import.
+#   instantiate  Instantiation failed.
+#   call         A call failed where its expectation is a result.
+#   mismatch     Every call ran, but a result or an output line differs,
+#                or a call succeeded where it had to fail.
+#   pass         Every call and every output line met its expectation.
+#
+# A run fails when a subject stops at another stage than its line holds,
+# earlier or later; when a scenario has no line for a subject, or a line
+# names a scenario that does not exist; and when the revision in the
+# header is not the one the build compiled with.
+
+scalar-export wasmtime pass
+scalar-export web pass
+scalar-export native pass

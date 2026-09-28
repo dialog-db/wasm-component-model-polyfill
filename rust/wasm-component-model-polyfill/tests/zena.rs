@@ -22,11 +22,18 @@
 //! that says why, as a `Report` whose line is the scenario, the
 //! subject, the stage, and the reason.
 //!
-//! The tests do not assert that a scenario passes: where a subject
-//! stops is an outcome, not a failure. They fail when the bundle or a
-//! scenario cannot be read or judged, which is a fault of the build or
-//! of the runner. The engine has the default configuration, so the
-//! suspend provider is on.
+//! Where a subject stops is an outcome, not a failure, so no test
+//! asserts that a scenario passes. The committed record,
+//! `tests/zena/record.txt`, holds the stage of every scenario for every
+//! subject, and the gate fails the run when a stage here differs from
+//! it in either direction, when a scenario has no line for a subject or
+//! a line names no scenario, and when the record was made from another
+//! Zena revision than the build compiled with. It compares the stages
+//! only; the reasons are for a person. Each target holds the Wasmtime
+//! stage and its own polyfill subject to the record. The tests also
+//! fail when the bundle or a scenario cannot be read or judged, which
+//! is a fault of the build or of the runner. The engine has the default
+//! configuration, so the suspend provider is on.
 
 #![cfg(test)]
 
@@ -38,7 +45,9 @@ mod host;
 mod runner;
 
 use wcmp_macros::component;
-use wcmp_scenario::{Observations, Outcome, Report, Stage, Subject, Value, Verdict};
+use wcmp_scenario::{
+    Difference, Observations, Outcome, Record, Report, Stage, Subject, Value, Verdict,
+};
 
 use bundle::{Program, Scenario};
 use runner::PolyfillRun;
@@ -52,6 +61,18 @@ const BUNDLE: &[u8] = include_bytes!(env!(
     "WCMP_ZENA_SCENARIOS",
     "the Zena scenario tests embed the bundle the build writes; run them through `tests native` or `tests web`"
 ));
+
+/// A scenario whose one program Zena refuses, built, run through
+/// Wasmtime, and bundled like every scenario, from
+/// `tests/zena/record-check`. It is not a scenario of the record.
+const REFUSED: &[u8] = include_bytes!(env!(
+    "WCMP_ZENA_REFUSED",
+    "the Zena scenario tests embed the bundle the build writes; run them through `tests native` or `tests web`"
+));
+
+/// The committed record: the stage of every Zena scenario for every
+/// subject, and the Zena revision it was made from.
+const RECORD: &str = include_str!("zena/record.txt");
 
 /// The name of scenario 1, the smallest program with an export.
 const SCALAR_EXPORT: &str = "scalar-export";
@@ -170,6 +191,224 @@ fn with_one_result_changed(observations: &Observations) -> Option<Observations> 
     };
     *result = other;
     Some(changed)
+}
+
+/// Where the Wasmtime run and this target's polyfill subject stopped on
+/// every scenario in `bundle`: the Wasmtime stage from the observations
+/// the build wrote, and the polyfill's from a run here.
+async fn subjects(bundle: &[u8]) -> Vec<Report> {
+    let polyfill = polyfill();
+    let mut reports = Vec::new();
+    for scenario in
+        bundle::scenarios(bundle).unwrap_or_else(|error| panic!("a Zena bundle: {error}"))
+    {
+        reports.push(Report {
+            scenario: scenario.name.clone(),
+            subject: Subject::Wasmtime,
+            verdict: scenario.observations.verdict.clone(),
+        });
+        reports.push(report(&polyfill, &scenario).await);
+    }
+    reports
+}
+
+/// The revision of the toolchain the build compiled the scenarios with,
+/// which it takes from the flake lock.
+fn built_revision() -> String {
+    bundle::revision(BUNDLE).unwrap_or_else(|error| panic!("the Zena bundle: {error}"))
+}
+
+/// The committed record.
+fn committed_record() -> Record {
+    RECORD
+        .parse()
+        .unwrap_or_else(|error| panic!("tests/zena/record.txt: {error}"))
+}
+
+/// The polyfill subject of the other target.
+fn other_polyfill() -> Subject {
+    match Subject::polyfill() {
+        Subject::Web => Subject::Native,
+        _ => Subject::Web,
+    }
+}
+
+/// A record at `pin` that holds `reports` and, for the other target's
+/// polyfill subject, which this target cannot run, a copy of this
+/// target's line. The gate compares no stage of that subject here, so
+/// the record matches the run.
+fn record_of(pin: &str, reports: &[Report]) -> Record {
+    let mut lines = reports.to_vec();
+    lines.extend(
+        reports
+            .iter()
+            .filter(|report| report.subject == Subject::polyfill())
+            .map(|report| Report {
+                subject: other_polyfill(),
+                ..report.clone()
+            }),
+    );
+    Record::new("zena", pin, lines)
+}
+
+/// One line per item, for a failure message.
+fn lines<T: core::fmt::Display>(items: &[T]) -> String {
+    items.iter().map(|item| format!("  {item}\n")).collect()
+}
+
+#[wcmp_macros::test]
+async fn it_holds_every_subject_of_every_scenario_to_the_committed_record() {
+    let record = committed_record();
+    assert_eq!(
+        record.toolchain, "zena",
+        "the header of tests/zena/record.txt"
+    );
+    let reports = subjects(BUNDLE).await;
+    let differences = record.differences(&built_revision(), &reports);
+    assert!(
+        differences.is_empty(),
+        "the Zena run differs from tests/zena/record.txt:\n{}where this run stopped:\n{}",
+        lines(&differences),
+        lines(&reports)
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_fails_the_gate_when_a_recorded_stage_is_one_step_later_or_earlier_than_the_run() {
+    let pin = built_revision();
+    let reports = [subjects(BUNDLE).await, subjects(REFUSED).await].concat();
+    let matching = record_of(&pin, &reports);
+    assert!(matching.differences(&pin, &reports).is_empty());
+    let (mut later, mut earlier) = (0, 0);
+    for report in &reports {
+        let index = Stage::ALL
+            .iter()
+            .position(|&stage| stage == report.verdict.stage)
+            .unwrap();
+        for (neighbor, count) in [
+            (index.checked_add(1), &mut later),
+            (index.checked_sub(1), &mut earlier),
+        ] {
+            let Some(recorded) = neighbor.and_then(|neighbor| Stage::ALL.get(neighbor).copied())
+            else {
+                continue;
+            };
+            let mut record = matching.clone();
+            let line = record
+                .lines
+                .iter_mut()
+                .find(|line| line.scenario == report.scenario && line.subject == report.subject)
+                .unwrap();
+            line.verdict.stage = recorded;
+            assert_eq!(
+                record.differences(&pin, &reports),
+                [Difference::Stage {
+                    scenario: report.scenario.clone(),
+                    subject: report.subject,
+                    recorded,
+                    verdict: report.verdict.clone(),
+                }],
+                "`{report}` against a record of `{recorded}`"
+            );
+            *count += 1;
+        }
+    }
+    // The scenario that Zena refuses stops at the first stage and has a
+    // later one; scenario 1 stops after it and has an earlier one.
+    assert!(
+        later > 0 && earlier > 0,
+        "{later} later and {earlier} earlier stages for:\n{}",
+        lines(&reports)
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_fails_the_gate_once_for_a_missing_line_and_once_for_a_line_of_no_scenario() {
+    let pin = built_revision();
+    let reports = subjects(BUNDLE).await;
+    let mut record = record_of(&pin, &reports);
+    record
+        .lines
+        .retain(|line| !(line.scenario == SCALAR_EXPORT && line.subject == Subject::polyfill()));
+    let stray: Report = "no-such-scenario wasmtime pass".parse().unwrap();
+    record.lines.push(stray.clone());
+    assert_eq!(
+        record.differences(&pin, &reports),
+        [
+            Difference::Missing {
+                scenario: SCALAR_EXPORT.to_string(),
+                subject: Subject::polyfill(),
+            },
+            Difference::Unknown(stray),
+        ]
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_fails_the_gate_when_the_record_names_another_revision_and_names_both() {
+    let pin = built_revision();
+    let other = if pin.starts_with('0') {
+        "f".repeat(pin.len())
+    } else {
+        "0".repeat(pin.len())
+    };
+    let reports = subjects(BUNDLE).await;
+    let record = record_of(&other, &reports);
+    let differences = record.differences(&pin, &reports);
+    assert_eq!(
+        differences,
+        [Difference::Pin {
+            recorded: other.clone(),
+            built: pin.clone(),
+        }]
+    );
+    let message = differences[0].to_string();
+    assert!(
+        message.contains(&pin) && message.contains(&other),
+        "{message}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_records_compile_for_every_subject_of_a_program_zena_refuses() {
+    let scenarios = bundle::scenarios(REFUSED).unwrap();
+    let [scenario] = &scenarios[..] else {
+        panic!(
+            "the refused-program bundle holds {} scenarios",
+            scenarios.len()
+        );
+    };
+    // The build succeeded without a component, and kept Zena's exit
+    // status and its error output.
+    let [program] = &scenario.programs[..] else {
+        panic!(
+            "{} holds {} programs",
+            scenario.name,
+            scenario.programs.len()
+        );
+    };
+    assert_ne!(program.status, 0);
+    assert!(program.component.is_none());
+    assert!(program.log.contains("Error"), "{}", program.log);
+
+    let refused = Verdict::not_compiled(&program.name, program.status, &program.log);
+    let reports = subjects(REFUSED).await;
+    for report in &reports {
+        assert_eq!(report.verdict, refused, "{report}");
+    }
+    let record: Record = record_of(&built_revision(), &reports)
+        .to_string()
+        .parse()
+        .unwrap();
+    for subject in Subject::ALL {
+        let line = record.line(&scenario.name, subject).unwrap();
+        assert_eq!(line.verdict.stage, Stage::Compile, "{line}");
+        assert!(
+            line.verdict.reason.contains(program.log.trim()),
+            "`{line}` does not keep Zena's output: {}",
+            program.log
+        );
+    }
 }
 
 /// A component with a scalar export at its root, the same function
