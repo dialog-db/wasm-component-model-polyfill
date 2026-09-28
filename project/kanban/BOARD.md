@@ -50,6 +50,8 @@ kanban-plugin: basic
 ## In Progress
 
 - [ ] [[8ba35a]]
+- [ ] [[89451b]]
+- [ ] [[95a419]]
 
 ## Needs Review
 
