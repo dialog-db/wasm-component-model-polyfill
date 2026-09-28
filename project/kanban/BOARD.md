@@ -50,11 +50,10 @@ kanban-plugin: basic
 
 ## In Progress
 
-- [ ] [[95a419]]
-
 ## Needs Review
 
 - [ ] [[f259d6]]
+- [ ] [[95a419]]
 
 ## Ready
 
