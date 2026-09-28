@@ -15,8 +15,9 @@
 //! A [`Record`] is the committed stage of every scenario for every
 //! subject, made from one revision of the toolchain. It is the gate of
 //! a run: every [`Difference`] between the two fails the run, and only
-//! the stages are compared. A [`Table`] prints a record for a person,
-//! one row per scenario and one column per subject.
+//! the stages are compared. A [`Compatibility`] report prints a run's
+//! reports for a person: one entry per scenario, and under it where
+//! each subject stopped and why.
 //!
 //! A contributor writes the [`Expectations`] by hand: the calls in
 //! order, each with the results it returns, a failure, or no outcome at
@@ -71,6 +72,7 @@
 //! escapes `\\`, `\"`, `\'`, `\n`, `\r`, `\t`, `\0`, and `\u{…}`.
 
 mod call;
+mod compatibility;
 mod difference;
 mod entry;
 mod error;
@@ -87,7 +89,6 @@ mod run;
 mod stage;
 mod subject;
 mod syntax;
-mod table;
 mod typed;
 mod typed_signature;
 mod value;
@@ -96,6 +97,7 @@ mod verdict;
 mod wiring;
 
 pub use crate::call::Call;
+pub use crate::compatibility::Compatibility;
 pub use crate::difference::Difference;
 pub use crate::entry::Entry;
 pub use crate::error::{Error, Result};
@@ -110,7 +112,6 @@ pub use crate::report::Report;
 pub use crate::run::Run;
 pub use crate::stage::Stage;
 pub use crate::subject::Subject;
-pub use crate::table::Table;
 pub use crate::typed::Typed;
 pub use crate::typed_signature::TypedSignature;
 pub use crate::value::Value;

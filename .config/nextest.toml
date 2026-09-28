@@ -12,7 +12,7 @@
 # that holds all three subjects to the record reads the browser's run
 # from a file, so only `tests zena` runs it.
 [profile.default]
-default-filter = "not test(/without_a_provider$/) and not (binary(zena) and test(=it_holds_all_three_subjects_to_the_record_and_prints_the_table))"
+default-filter = "not test(/without_a_provider$/) and not (binary(zena) and test(=it_holds_all_three_subjects_to_the_record_and_prints_the_report))"
 
 # The `no-provider` lanes (`tests native|web no-provider`): the
 # conformance corpus alone, with the provider turned off.

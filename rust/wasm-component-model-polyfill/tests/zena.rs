@@ -49,13 +49,14 @@
 //! holds every line of the record. `tests zena` runs the browser lane's
 //! scenario run first and keeps what it prints: each report on a line
 //! of its own after `PRINTED`. It then runs, natively,
-//! `it_holds_all_three_subjects_to_the_record_and_prints_the_table`,
+//! `it_holds_all_three_subjects_to_the_record_and_prints_the_report`,
 //! which reads those lines from the file `WCMP_ZENA_WEB_RUN` names,
-//! adds the Wasmtime and native reports, prints the compatibility table
-//! to the file `WCMP_ZENA_TABLE` names, and holds all three subjects to
-//! the record. `tests zena regenerate` sets `WCMP_ZENA_REGENERATE` to a
-//! file, and the test writes the record of the run there instead of
-//! holding the run to the committed one. The nextest profiles leave
+//! adds the Wasmtime and native reports, prints the run's compatibility
+//! report, with the reason of each subject that stopped before `pass`,
+//! to the file `WCMP_ZENA_REPORT` names, and holds all three subjects
+//! to the record. `tests zena regenerate` sets `WCMP_ZENA_REGENERATE`
+//! to a file, and the test writes the record of the run there instead
+//! of holding the run to the committed one. The nextest profiles leave
 //! that test out of every other lane.
 
 #![cfg(test)]
@@ -437,7 +438,7 @@ fn browser_reports() -> Vec<Report> {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[wcmp_macros::test]
-async fn it_holds_all_three_subjects_to_the_record_and_prints_the_table() {
+async fn it_holds_all_three_subjects_to_the_record_and_prints_the_report() {
     let browser = browser_reports();
     let mut reports = subjects(BUNDLE).await;
     let bundled = zena_scenarios();
@@ -459,10 +460,13 @@ async fn it_holds_all_three_subjects_to_the_record_and_prints_the_table() {
 
     let pin = built_revision();
     let run = Record::new("zena", pin.clone(), reports.clone());
-    let table = wcmp_scenario::Table::new(&run).to_string();
-    match std::env::var("WCMP_ZENA_TABLE") {
-        Ok(path) => std::fs::write(&path, &table).unwrap_or_else(|error| panic!("{path}: {error}")),
-        Err(_) => println!("{table}"),
+    // The report is of this run, the browser included, and goes to its
+    // file before the gate, so it prints after a failure too.
+    let compatibility = wcmp_scenario::Compatibility::new("zena", pin.clone(), &reports);
+    match std::env::var("WCMP_ZENA_REPORT") {
+        Ok(path) => std::fs::write(&path, compatibility.to_string())
+            .unwrap_or_else(|error| panic!("{path}: {error}")),
+        Err(_) => println!("{compatibility}"),
     }
     if let Ok(path) = std::env::var("WCMP_ZENA_REGENERATE") {
         std::fs::write(&path, run.to_string()).unwrap_or_else(|error| panic!("{path}: {error}"));

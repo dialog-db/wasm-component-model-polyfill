@@ -1070,12 +1070,13 @@
         # output, whose report lines the native `zena` test then reads
         # (`WCMP_ZENA_WEB_RUN`), adds the Wasmtime and native reports to,
         # and holds to every line of the record. It writes the
-        # compatibility table (`WCMP_ZENA_TABLE`), which is printed last,
-        # after a failure too. `regenerate` has the test write the record
-        # of the run (`WCMP_ZENA_REGENERATE`), with the revision the build
-        # compiled with, which is the flake lock's, in its header; the
-        # difference from the committed record is printed, and
-        # `--dry-run` stops there.
+        # compatibility report of the run (`WCMP_ZENA_REPORT`), which is
+        # printed last, after a failure's differences too. `regenerate`
+        # has the test write the record of the run
+        # (`WCMP_ZENA_REGENERATE`), with the revision the build compiled
+        # with, which is the flake lock's, in its header; the difference
+        # from the committed record is printed, and `--dry-run` stops
+        # there.
         zenaCommand = ''
           record="$(git rev-parse --show-toplevel)"/rust/wasm-component-model-polyfill/tests/zena/record.txt
           regenerate=""
@@ -1124,16 +1125,16 @@
           mkdir -p "$workspace/archive"
           echo "== the Wasmtime run and the native subject (${system}, debug)"
           export WCMP_ZENA_WEB_RUN="$workspace/web-run.txt"
-          export WCMP_ZENA_TABLE="$workspace/table.txt"
+          export WCMP_ZENA_REPORT="$workspace/report.txt"
           if [ -n "$regenerate" ]; then
             export WCMP_ZENA_REGENERATE="$workspace/record.txt"
           fi
           status=0
           replay "$native/tests-native-debug.tar.zst" \
-            it_holds_all_three_subjects_to_the_record_and_prints_the_table || status=$?
-          if [ -s "$WCMP_ZENA_TABLE" ]; then
+            it_holds_all_three_subjects_to_the_record_and_prints_the_report || status=$?
+          if [ -s "$WCMP_ZENA_REPORT" ]; then
             echo
-            cat "$WCMP_ZENA_TABLE"
+            cat "$WCMP_ZENA_REPORT"
           fi
           if [ "$status" != 0 ]; then
             exit "$status"
@@ -1239,7 +1240,7 @@
           };
 
           "tests" = {
-            description = "Run the test suites from Nix-built archives, and the Zena scenarios with their compatibility table";
+            description = "Run the test suites from Nix-built archives, and the Zena scenarios with their compatibility report";
             subcommands = {
               native = {
                 description = "Unit and integration tests on ${system}";
@@ -1322,7 +1323,7 @@
                 };
               };
               zena = {
-                description = "The Zena scenarios on all three subjects, held to every line of tests/zena/record.txt, then the compatibility table: Browser, Native, and Wasmtime per scenario, with pass counts and the pin (`tests zena regenerate [--dry-run]` writes the record again from all three, the browser included, or only prints the difference)";
+                description = "The Zena scenarios on all three subjects, held to every line of tests/zena/record.txt, then the compatibility report: the pin, each scenario with the stage of Browser, Native, and Wasmtime and the reason of each that stopped before pass, and pass counts (`tests zena regenerate [--dry-run]` writes the record again from all three, the browser included, or only prints the difference)";
                 command = zenaCommand;
               };
               # The conformance corpus runs in four states: each target with
