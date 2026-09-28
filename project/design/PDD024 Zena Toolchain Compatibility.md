@@ -224,7 +224,8 @@ The first set has seven scenarios with one component:
 | 6   | An async export that sleeps on a timer                               | The export lifted with a callback, and the p3 `wasi:clocks` imports.       |
 | 7   | A custom world through `--wit` and `--world` that imports a function | An import that the host supplies.                                          |
 
-It also has six integration scenarios. Each one passes a string across the link:
+It also has seven integration scenarios. Each one passes a string across the
+link:
 
 | #   | Importer | Exporter | Link        |
 | --- | -------- | -------- | ----------- |
@@ -234,10 +235,16 @@ It also has six integration scenarios. Each one passes a string across the link:
 | 11  | Rust     | Zena     | Run time    |
 | 12  | Zena     | Rust     | Composition |
 | 13  | Rust     | Zena     | Composition |
+| 14  | Rust     | Rust     | Run time    |
 
 A string crosses two shells of linear memory. A fault in a copy or in a
-`realloc` shows there first. A link from Rust to Rust is not in the set. The
-conformance fixtures cover it.
+`realloc` shows there first.
+
+Scenario 14 is the baseline for the scenarios with a Rust partner. It has no
+Zena component, so the polyfill subjects run the partners and the run-time link
+even while Zena's output stops earlier. When scenario 14 passes and scenarios 10
+and 11 stop, the stop is in the Zena component. When scenario 14 fails, the
+fault is in the partner build or in the polyfill's link.
 
 Scenario 4 makes the uncaught call twice. The second entry has no outcome, so
 the Wasmtime run decides whether the instance still answers. This design states
@@ -588,10 +595,11 @@ polyfill subjects, and its error line never enters them. Scenario 6 sleeps on
 the p3 timer in the browser and natively. A test calls a method that the
 functions do not implement, and the call returns an error.
 
-Integration scenarios link at run time and by composition. Scenarios 8 to 13 run
-under all three subjects. Scenarios 10 to 13 build the Rust partner from its
+Integration scenarios link at run time and by composition. Scenarios 8 to 14 run
+under all three subjects. Scenarios 10 to 14 build the Rust partner from its
 locked manifest at test time. The partner's bytes do not change when the pin
-moves.
+moves. Scenario 14 passes on every subject while the partners and the run-time
+link work.
 
 Typed calls cover scalars and strings. Scenario 1 calls its scalar export with
 `TypedFunc`, and scenario 2 calls its string export with `TypedFunc`. The typed
