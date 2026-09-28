@@ -271,7 +271,8 @@ scenario 2 on its string export.
 
 A contributor adds a scenario in four steps:
 
-1. Write the Zena program, and the WIT world if it needs one.
+1. Write the Zena program, and the WIT world if it needs one. A baseline
+   scenario has partners instead of a Zena program.
 2. Write the expectations file.
 3. Run the command that regenerates the record.
 4. Read the new lines of the record, and commit them with the sources.
