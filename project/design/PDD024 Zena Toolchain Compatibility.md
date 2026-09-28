@@ -153,7 +153,8 @@ holds the build reuses it. The first build on a cold store pays the full cost.
 A scenario holds these sources:
 
 - One or more Zena programs.
-- An optional WIT world, which Zena reads through `--wit` and `--world`.
+- Optional WIT. When a scenario has WIT, each Zena program compiles against the
+  world named after the program, which Zena reads through `--wit` and `--world`.
 - For a scenario with a partner, the partner's Rust source and its locked cargo
   manifest.
 - For a scenario with links, the wiring: which component's exports satisfy which
@@ -182,10 +183,14 @@ A scenario meets four criteria:
 
 ### Integration Scenarios
 
-An integration scenario has more than one component. One WIT world is the
-contract between the components. Zena compiles against it with `--wit` and
-`--world`. A Rust partner compiles against the same file with `wit-bindgen`. So
-the two sides cannot drift apart.
+An integration scenario has more than one component. Each component under test
+has one WIT world: each Zena program compiles against the world in the
+scenario's WIT that is named after the program, with `--wit` and `--world`. A
+partner is not under test, so it declares whatever world it needs, in the
+scenario's WIT or in its own, and compiles against it with `wit-bindgen`. When
+the partner's copy of an interface differs from the Zena program's, the run
+stops at `link`. That stage reports a fault of the scenario, not of Zena or the
+polyfill.
 
 The scenario runner links the components in one of two ways:
 
