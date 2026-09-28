@@ -1,0 +1,7 @@
+// Scenario 7: a custom world through `--wit` and `--world`. The program
+// imports the test interface's `echo` and returns what it answers.
+import { echo } from 'wcmp:scenario/host';
+
+export let relay = (text: String): String => {
+  return echo(text);
+};

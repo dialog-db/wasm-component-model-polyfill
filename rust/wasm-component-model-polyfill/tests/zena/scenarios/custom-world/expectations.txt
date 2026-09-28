@@ -1,0 +1,3 @@
+# Scenario 7: a custom world whose import the host supplies. The string
+# goes out through the import and comes back unchanged.
+call relay relay("hello, host") -> "hello, host"

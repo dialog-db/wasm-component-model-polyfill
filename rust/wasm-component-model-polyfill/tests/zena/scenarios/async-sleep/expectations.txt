@@ -1,0 +1,5 @@
+# Scenario 6: an async export that sleeps on a timer. It prints "before",
+# sleeps, prints "after", and returns nothing.
+call sleeper main() -> ()
+output "before"
+output "after"

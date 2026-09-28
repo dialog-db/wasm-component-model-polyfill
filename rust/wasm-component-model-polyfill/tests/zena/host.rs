@@ -10,20 +10,33 @@
 //!   runner compares with the lines the Wasmtime run captured. The
 //!   future resolves once the guest drops the stream's writable end.
 //!   `wasi:cli/types@0.3.0`, where `error-code` lives, holds no function.
+//!   The pinned toolchain's console prints through this interface and
+//!   imports no Preview 2 stdio, so none is defined here.
+//! - `wasi:clocks/monotonic-clock@0.3.0`, whose `wait-for` is an async
+//!   host function: a `setTimeout` timer backs it in the browser, and
+//!   the test runtime's timer natively. Its `now` reads the target's
+//!   monotonic clock, which the toolchain's timer queue reads to place
+//!   each deadline. `wasi:clocks/types@0.3.0`, where `duration` lives,
+//!   holds no function.
 //! - The fixed test interface, whose one function takes a string and
 //!   returns it, as the Wasmtime run defines it on Wasmtime's `Linker`.
 //!
-//! A function these do not define is missing from the linker, so a
-//! scenario that imports one stops at `link`, not at a silent pass.
+//! Every function of an interface defined here is in the linker, so a
+//! component that imports the whole interface links. A function the
+//! scenarios do not call, `get-resolution` or `wait-until`, returns an
+//! error when it is called, so a toolchain change that starts calling
+//! one shows as a stage, not a silent pass. An interface these do not
+//! define is missing from the linker, so a scenario that imports one
+//! stops at `link`.
 
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use wasm_component_model_polyfill::{
-    ComponentValue, EnumType, Error, FunctionParameter, FunctionType, FutureProducer, FutureReader,
-    FutureType, HostCall, InterfaceIdentifier, Linker, ResultType, Source, StoreContext,
-    StreamConsumer, StreamReader, StreamResult, Val, ValueType,
+    Accessor, ComponentValue, EnumType, Error, FunctionParameter, FunctionType, FutureProducer,
+    FutureReader, FutureType, HostCall, InterfaceIdentifier, Linker, ResultType, Source,
+    StoreContext, StreamConsumer, StreamReader, StreamResult, Val, ValueType,
 };
 
 /// The interface `wasi:cli/stdout` imports its `error-code` from.
@@ -31,6 +44,13 @@ const CLI_TYPES: &str = "wasi:cli/types@0.3.0";
 
 /// The interface a scenario prints through.
 const STDOUT: &str = "wasi:cli/stdout@0.3.0";
+
+/// The interface `wasi:clocks/monotonic-clock` imports its `duration`
+/// from.
+const CLOCK_TYPES: &str = "wasi:clocks/types@0.3.0";
+
+/// The interface a scenario reads the time and sleeps through.
+const MONOTONIC_CLOCK: &str = "wasi:clocks/monotonic-clock@0.3.0";
 
 /// The cases of `wasi:cli/types.error-code`, in order.
 const ERROR_CODES: [&str; 3] = ["io", "illegal-byte-sequence", "pipe"];
@@ -83,12 +103,36 @@ pub fn define(linker: &mut Linker<Host>) -> Result<(), Error> {
             Ok(())
         },
     )?;
+    linker.instance(&identifier(CLOCK_TYPES));
+    let mut monotonic_clock = linker.instance(&identifier(MONOTONIC_CLOCK));
+    monotonic_clock.func_wrap("now", |_, (): ()| Ok(clock::now()))?;
+    monotonic_clock.func_wrap("get-resolution", |_, (): ()| {
+        Err::<u64, _>(unimplemented(MONOTONIC_CLOCK, "get-resolution"))
+    })?;
+    monotonic_clock
+        .func_wrap_concurrent("wait-for", |_: &Accessor<Host>, (how_long,): (u64,)| {
+            clock::wait(how_long)
+        })?;
+    monotonic_clock.func_wrap_concurrent(
+        "wait-until",
+        |_: &Accessor<Host>, (_when,): (u64,)| {
+            core::future::ready(Err::<(), _>(unimplemented(MONOTONIC_CLOCK, "wait-until")))
+        },
+    )?;
     let test_interface = identifier(wcmp_scenario::TEST_INTERFACE);
     linker
         .instance(&test_interface)
         .func_wrap(wcmp_scenario::TEST_FUNCTION, |_, (text,): (String,)| {
             Ok(text)
         })
+}
+
+/// What a function of `interface` the test host does not implement,
+/// `method`, answers when it is called.
+fn unimplemented(interface: &str, method: &str) -> Error {
+    Error::Unsupported {
+        feature: format!("`{interface}#{method}` in the scenario runner's test host"),
+    }
 }
 
 /// The identifier of an interface this file names.
@@ -206,5 +250,94 @@ impl ComponentValue for WriteResult {
 
     fn to_val(self) -> Val {
         Val::Result(Ok(None))
+    }
+}
+
+/// The monotonic clock of `wasi:clocks/monotonic-clock` on the target
+/// the test runs on: its reading and its timer, both in nanoseconds.
+#[cfg(not(target_arch = "wasm32"))]
+mod clock {
+    use std::sync::OnceLock;
+    use std::time::{Duration, Instant};
+
+    use wasm_component_model_polyfill::Error;
+
+    /// Nanoseconds since the first reading in this process.
+    pub fn now() -> u64 {
+        static ORIGIN: OnceLock<Instant> = OnceLock::new();
+        let elapsed = ORIGIN.get_or_init(Instant::now).elapsed();
+        u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
+    }
+
+    /// Wait `nanos` nanoseconds on the test runtime's timer.
+    pub async fn wait(nanos: u64) -> Result<(), Error> {
+        tokio::time::sleep(Duration::from_nanos(nanos)).await;
+        Ok(())
+    }
+}
+
+/// The monotonic clock of `wasi:clocks/monotonic-clock` on the target
+/// the test runs on: its reading and its timer, both in nanoseconds.
+///
+/// Both go through the global rather than `window`, so they work in a
+/// worker as well as on a page.
+#[cfg(target_arch = "wasm32")]
+mod clock {
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::JsFuture;
+    use wasm_component_model_polyfill::Error;
+
+    /// Nanoseconds in a millisecond, the unit of the browser's clock
+    /// and of `setTimeout`.
+    const NANOS_PER_MILLI: f64 = 1_000_000.0;
+
+    /// Nanoseconds since the time origin of the page, from
+    /// `performance.now()`.
+    pub fn now() -> u64 {
+        let millis = method("performance", "now")
+            .and_then(|(performance, now)| now.call0(&performance).ok())
+            .and_then(|reading| reading.as_f64())
+            .unwrap_or_else(js_sys::Date::now);
+        // A float-to-integer cast saturates, which is what a reading
+        // past the range of `u64` should do.
+        (millis * NANOS_PER_MILLI) as u64
+    }
+
+    /// Wait `nanos` nanoseconds on a `setTimeout` timer, rounded up to
+    /// the whole millisecond `setTimeout` counts in.
+    pub async fn wait(nanos: u64) -> Result<(), Error> {
+        let millis = (nanos as f64 / NANOS_PER_MILLI).ceil();
+        let Some((global, set_timeout)) = method("", "setTimeout") else {
+            return Err(Error::Unsupported {
+                feature: "a timer on a global with no `setTimeout`".to_string(),
+            });
+        };
+        let mut armed = Ok(JsValue::UNDEFINED);
+        let fired = js_sys::Promise::new(&mut |resolve, _reject| {
+            armed = set_timeout.call2(&global, &resolve, &JsValue::from_f64(millis));
+        });
+        if let Err(thrown) = armed {
+            return Err(Error::Unsupported {
+                feature: format!("a timer from a `setTimeout` that threw {thrown:?}"),
+            });
+        }
+        // The promise only ever resolves.
+        let _ = JsFuture::from(fired).await;
+        Ok(())
+    }
+
+    /// The function `name` of the global's property `object`, or of the
+    /// global itself when `object` is empty, with the value to call it
+    /// on.
+    fn method(object: &str, name: &str) -> Option<(JsValue, js_sys::Function)> {
+        let mut this: JsValue = js_sys::global().into();
+        if !object.is_empty() {
+            this = js_sys::Reflect::get(&this, &JsValue::from_str(object)).ok()?;
+        }
+        let function = js_sys::Reflect::get(&this, &JsValue::from_str(name))
+            .ok()?
+            .dyn_into::<js_sys::Function>()
+            .ok()?;
+        Some((this, function))
     }
 }

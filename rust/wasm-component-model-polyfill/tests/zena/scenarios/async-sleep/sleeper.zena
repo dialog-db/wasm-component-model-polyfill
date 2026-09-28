@@ -1,0 +1,13 @@
+// Scenario 6: an async export that sleeps on a timer. Zena lifts it
+// with a callback, and `sleep` waits through `wasi:clocks`'
+// `monotonic-clock.wait-for`. It prints a line on each side of the
+// sleep, never a duration, so the output is the same on every run.
+import { console } from 'zena:console';
+import { sleep, milliseconds } from 'zena:time';
+import { Future } from 'zena:async';
+
+export async function main(): Future<void> {
+  console.log('before');
+  await sleep(milliseconds(10));
+  console.log('after');
+}

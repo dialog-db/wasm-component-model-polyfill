@@ -1,0 +1,9 @@
+// Scenario 5: console output. Two lines through Zena's console, which
+// writes standard output through `wasi:cli/stdout`, then a result.
+import { console } from 'zena:console';
+
+export let greet = (): i32 => {
+  console.log('hello');
+  console.log('world');
+  return 2;
+};

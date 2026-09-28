@@ -28,6 +28,15 @@
 # names a scenario that does not exist; and when the revision in the
 # header is not the one the build compiled with.
 
+async-sleep wasmtime pass
+async-sleep web parse "component sleeper: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 8)) is not supported in the wasm_runtime_layer"
+async-sleep native parse "component sleeper: instantiation error: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer"
+console-output wasmtime pass
+console-output web parse "component printer: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 8)) is not supported in the wasm_runtime_layer"
+console-output native parse "component printer: instantiation error: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer"
+custom-world wasmtime pass
+custom-world web parse "component relay: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 8)) is not supported in the wasm_runtime_layer"
+custom-world native parse "component relay: instantiation error: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer"
 scalar-export wasmtime pass
 scalar-export web pass
 scalar-export native pass

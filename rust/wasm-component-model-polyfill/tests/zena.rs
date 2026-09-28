@@ -57,12 +57,14 @@ mod host;
 #[path = "zena/runner.rs"]
 mod runner;
 
+use wasm_component_model_polyfill::{Component, Engine, Instance, Linker, Store, Val};
 use wcmp_macros::component;
 use wcmp_scenario::{
     Difference, Observations, Outcome, Record, Report, Stage, Subject, Value, Verdict,
 };
 
 use bundle::{Program, Scenario};
+use host::Host;
 use runner::PolyfillRun;
 
 #[cfg(target_arch = "wasm32")]
@@ -637,6 +639,111 @@ const ECHOER: &[u8] = component!(
     "#
 );
 
+/// A component that imports `wasi:clocks/monotonic-clock@0.3.0` whole,
+/// in the shape the pinned Zena's timer imports it, and calls each of
+/// its functions.
+///
+/// `sleep-for` and `sleep-until` are lifted `async` with a callback, as
+/// Zena lifts an async export. Each lowers its wait with the `async`
+/// option. A wait that returned at once returns; one that started
+/// joins its subtask to a waitable set and waits on it, and the
+/// callback returns once the subtask has. `waited` says whether a wait
+/// had to start. `now` and `resolution` pass the clock's reading and
+/// its resolution through.
+const CLOCK_USER: &[u8] = component!(
+    r#"
+    (component
+      (type (instance
+        (type u64)
+        (export "duration" (type (eq 0)))))
+      (import "wasi:clocks/types@0.3.0" (instance $types (type 0)))
+      (alias export $types "duration" (type))
+      (type (instance
+        (alias outer 1 1 (type))
+        (export "duration" (type (eq 0)))
+        (type u64)
+        (export "mark" (type (eq 2)))
+        (type (func (result 3)))
+        (export "now" (func (type 4)))
+        (type (func (result 1)))
+        (export "get-resolution" (func (type 5)))
+        (type (func async (param "when" 3)))
+        (export "wait-until" (func (type 6)))
+        (type (func async (param "how-long" 1)))
+        (export "wait-for" (func (type 7)))))
+      (import "wasi:clocks/monotonic-clock@0.3.0" (instance $clock (type 2)))
+      (alias export $clock "now" (func $now))
+      (alias export $clock "get-resolution" (func $get-resolution))
+      (alias export $clock "wait-until" (func $wait-until))
+      (alias export $clock "wait-for" (func $wait-for))
+      (core func $now (canon lower (func $now)))
+      (core func $get-resolution (canon lower (func $get-resolution)))
+      (core func $wait-until (canon lower (func $wait-until) async))
+      (core func $wait-for (canon lower (func $wait-for) async))
+      (core func $task-return (canon task.return))
+      (core func $set-new (canon waitable-set.new))
+      (core func $join (canon waitable.join))
+      (core func $subtask-drop (canon subtask.drop))
+      (core module $m
+        (import "" "now" (func $now (result i64)))
+        (import "" "get-resolution" (func $get-resolution (result i64)))
+        (import "" "wait-until" (func $wait-until (param i64) (result i32)))
+        (import "" "wait-for" (func $wait-for (param i64) (result i32)))
+        (import "" "task.return" (func $task-return))
+        (import "" "waitable-set.new" (func $set-new (result i32)))
+        (import "" "waitable.join" (func $join (param i32 i32)))
+        (import "" "subtask.drop" (func $subtask-drop (param i32)))
+        (global $set (mut i32) (i32.const 0))
+        (global $waited (mut i32) (i32.const 0))
+        ;; Return when the lowered wait that answered `status` has
+        ;; returned, or else wait on its subtask.
+        (func $park (param $status i32) (result i32)
+          (if (i32.eq (i32.and (local.get $status) (i32.const 0xf)) (i32.const 2))
+            (then
+              (call $task-return)
+              (return (i32.const 0))))
+          (global.set $waited (i32.const 1))
+          (global.set $set (call $set-new))
+          (call $join (i32.shr_u (local.get $status) (i32.const 4)) (global.get $set))
+          (i32.or (i32.shl (global.get $set) (i32.const 4)) (i32.const 2)))
+        (func (export "sleep-for") (param i64) (result i32)
+          (call $park (call $wait-for (local.get 0))))
+        (func (export "sleep-until") (param i64) (result i32)
+          (call $park (call $wait-until (local.get 0))))
+        ;; A subtask that returned is dropped and ends the task; any
+        ;; other event waits on.
+        (func (export "callback") (param $event i32) (param $index i32) (param $status i32)
+          (result i32)
+          (if (i32.and
+                (i32.eq (local.get $event) (i32.const 1))
+                (i32.eq (local.get $status) (i32.const 2)))
+            (then
+              (call $subtask-drop (local.get $index))
+              (call $task-return)
+              (return (i32.const 0))))
+          (i32.or (i32.shl (global.get $set) (i32.const 4)) (i32.const 2)))
+        (func (export "now") (result i64) (call $now))
+        (func (export "resolution") (result i64) (call $get-resolution))
+        (func (export "waited") (result i32) (global.get $waited)))
+      (core instance $m (instantiate $m (with "" (instance
+        (export "now" (func $now))
+        (export "get-resolution" (func $get-resolution))
+        (export "wait-until" (func $wait-until))
+        (export "wait-for" (func $wait-for))
+        (export "task.return" (func $task-return))
+        (export "waitable-set.new" (func $set-new))
+        (export "waitable.join" (func $join))
+        (export "subtask.drop" (func $subtask-drop))))))
+      (func (export "sleep-for") async (param "how-long" u64)
+        (canon lift (core func $m "sleep-for") async (callback (core func $m "callback"))))
+      (func (export "sleep-until") async (param "when" u64)
+        (canon lift (core func $m "sleep-until") async (callback (core func $m "callback"))))
+      (func (export "now") (result u64) (canon lift (core func $m "now")))
+      (func (export "resolution") (result u64) (canon lift (core func $m "resolution")))
+      (func (export "waited") (result bool) (canon lift (core func $m "waited"))))
+    "#
+);
+
 /// A component that imports a function no linker here supplies.
 const UNLINKABLE: &[u8] = component!(
     r#"
@@ -783,6 +890,113 @@ async fn it_supplies_the_test_interface_that_returns_its_string() {
     )
     .await;
     assert_eq!(verdict, Verdict::pass());
+}
+
+/// Nanoseconds in a millisecond, the unit of `wasi:clocks`.
+const MILLISECOND: u64 = 1_000_000;
+
+/// `component` instantiated in a store of its own, through a linker
+/// with the test host functions.
+async fn instantiate(component: &[u8]) -> (Store<Host>, Instance) {
+    let engine = Engine::new().expect("engine");
+    let mut linker = Linker::new(&engine);
+    host::define(&mut linker).expect("the test host functions");
+    let component = Component::new(&engine, component)
+        .await
+        .expect("the component parses");
+    let mut store = Store::new(&engine, Host::default()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the component links and instantiates");
+    (store, instance)
+}
+
+/// Call the export `name` of `instance` with `arguments`, and answer
+/// its one result.
+async fn call_one(
+    store: &mut Store<Host>,
+    instance: &Instance,
+    name: &str,
+    arguments: &[Val],
+) -> Val {
+    let func = instance
+        .get_func(name)
+        .unwrap_or_else(|| panic!("no export {name}"));
+    let results = func
+        .call(store, arguments)
+        .await
+        .unwrap_or_else(|error| panic!("{name}: {error}"));
+    let [result] = &results[..] else {
+        panic!("{name} returned {results:?}");
+    };
+    result.clone()
+}
+
+/// What the export `now` of [`CLOCK_USER`] reads.
+async fn now(store: &mut Store<Host>, instance: &Instance) -> u64 {
+    match call_one(store, instance, "now", &[]).await {
+        Val::U64(nanos) => nanos,
+        other => panic!("now returned {other:?}"),
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_sleeps_on_the_timer_of_this_target_through_the_p3_wait_for() {
+    let (mut store, instance) = instantiate(CLOCK_USER).await;
+    let before = now(&mut store, &instance).await;
+    let func = instance.get_func("sleep-for").expect("sleep-for");
+    let results = func
+        .call(&mut store, &[Val::U64(20 * MILLISECOND)])
+        .await
+        .expect("sleep-for");
+    assert!(results.is_empty(), "{results:?}");
+    let after = now(&mut store, &instance).await;
+    assert_eq!(
+        call_one(&mut store, &instance, "waited", &[]).await,
+        Val::Bool(true),
+        "`wait-for` returned before the guest could wait on it"
+    );
+    // A millisecond of slack for a browser clock that is coarser than
+    // its timer.
+    let slept = after.saturating_sub(before);
+    assert!(
+        slept >= 19 * MILLISECOND,
+        "a wait of 20 ms ended after {slept} ns"
+    );
+
+    // The runner links the same interface, and its async export passes.
+    let verdict = run(
+        vec![Program::compiled("clock", CLOCK_USER)],
+        "call clock sleep-for(1000000u64) -> ()",
+        "stage pass\ncall clock sleep-for(1000000u64) -> ()",
+    )
+    .await;
+    assert_eq!(verdict, Verdict::pass());
+}
+
+#[wcmp_macros::test]
+async fn it_fails_the_call_of_a_method_the_test_host_does_not_implement() {
+    for (call, method) in [
+        ("call clock resolution() -> 1u64", "get-resolution"),
+        ("call clock sleep-until(0u64) -> ()", "wait-until"),
+    ] {
+        let verdict = run(
+            vec![Program::compiled("clock", CLOCK_USER)],
+            call,
+            WASMTIME_STOPPED,
+        )
+        .await;
+        assert_eq!(verdict.stage, Stage::Call, "{call}: {}", verdict.reason);
+        let named = format!(
+            "`wasi:clocks/monotonic-clock@0.3.0#{method}` in the scenario runner's test host"
+        );
+        assert!(
+            verdict.reason.contains(&named),
+            "{call}: {}",
+            verdict.reason
+        );
+    }
 }
 
 #[wcmp_macros::test]

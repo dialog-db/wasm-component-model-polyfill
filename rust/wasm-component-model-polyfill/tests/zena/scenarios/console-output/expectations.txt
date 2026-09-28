@@ -1,0 +1,5 @@
+# Scenario 5: console output. The call prints two lines, in order, and
+# returns.
+call printer greet() -> 2s32
+output "hello"
+output "world"

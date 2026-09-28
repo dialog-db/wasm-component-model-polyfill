@@ -57,7 +57,8 @@ wasm-bindgen = { workspace = true }
 [dev-dependencies]
 # The crate itself, with the entry its conformance harness needs.
 wasm-component-model-polyfill = { workspace = true, features = ["wast-runner"] }
-tokio = { workspace = true, features = ["rt", "macros"] }
+# `time` backs the Zena test host's `wait-for` natively.
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
 wast = { workspace = true }
 # Sets the `cancellable` immediate in a test fixture, which the text format
 # no longer spells.
@@ -76,3 +77,7 @@ wasm-bindgen-futures = { workspace = true }
 # repeated call records in the browser's store goes through to reach
 # the backend store behind it.
 wasm_runtime_layer = { workspace = true }
+# The Zena test host's clock in the browser: `performance.now()` and a
+# `setTimeout` timer.
+js-sys = { workspace = true }
+wasm-bindgen = { workspace = true }

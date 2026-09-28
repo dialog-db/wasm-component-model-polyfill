@@ -1,0 +1,12 @@
+// Scenario 7: the world `relay.zena` compiles against. It imports the
+// fixed test interface the host supplies on every subject.
+package wcmp:scenario;
+
+interface host {
+  echo: func(text: string) -> string;
+}
+
+world relay {
+  import host;
+  export relay: func(text: string) -> string;
+}
