@@ -1,9 +1,12 @@
 // Scenario 5: console output. Two lines through Zena's console, which
-// writes standard output through `wasi:cli/stdout`, then a result.
+// writes standard output through `wasi:cli/stdout`, and one error line,
+// which it writes to standard error through `wasi:cli/stderr`, then a
+// result. Only standard output is compared.
 import { console } from 'zena:console';
 
 export let greet = (): i32 => {
   console.log('hello');
+  console.error('oops');
   console.log('world');
   return 2;
 };

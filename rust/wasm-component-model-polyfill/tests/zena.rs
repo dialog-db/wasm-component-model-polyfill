@@ -683,6 +683,80 @@ const PRINTER: &[u8] = component!(
     "#
 );
 
+/// A component whose `greet` prints `hello` through
+/// `wasi:cli/stdout@0.3.0` and writes `oops` through
+/// `wasi:cli/stderr@0.3.0`, as the pinned Zena's `console.log` and
+/// `console.error` do, and returns 2. Both interfaces have the one
+/// shape, so both imports share one instance type. Each write goes to a
+/// `stream<u8>` of its own, whose writable end it drops after the write.
+const COMPLAINER: &[u8] = component!(
+    r#"
+    (component
+      (type (instance
+        (type (enum "io" "illegal-byte-sequence" "pipe"))
+        (export "error-code" (type (eq 0)))))
+      (import "wasi:cli/types@0.3.0" (instance $types (type 0)))
+      (alias export $types "error-code" (type))
+      (type (instance
+        (alias outer 1 1 (type))
+        (export "error-code" (type (eq 0)))
+        (type (stream u8))
+        (type (result (error 1)))
+        (type (future 3))
+        (type (func (param "data" 2) (result 4)))
+        (export "write-via-stream" (func (type 5)))))
+      (import "wasi:cli/stdout@0.3.0" (instance $stdout (type 2)))
+      (import "wasi:cli/stderr@0.3.0" (instance $stderr (type 2)))
+      (type $bytes (stream u8))
+      (core module $libc
+        (memory (export "memory") 1)
+        (data (i32.const 0) "hello\n")
+        (data (i32.const 16) "oops\n"))
+      (core instance $libc (instantiate $libc))
+      (alias export $stdout "write-via-stream" (func $write-stdout))
+      (alias export $stderr "write-via-stream" (func $write-stderr))
+      (core func $write-stdout (canon lower (func $write-stdout)))
+      (core func $write-stderr (canon lower (func $write-stderr)))
+      (core func $stream-new (canon stream.new $bytes))
+      (core func $write
+        (canon stream.write $bytes async (memory (core memory $libc "memory"))))
+      (core func $drop-writable (canon stream.drop-writable $bytes))
+      (core module $main
+        (import "" "write-stdout" (func $write-stdout (param i32) (result i32)))
+        (import "" "write-stderr" (func $write-stderr (param i32) (result i32)))
+        (import "" "stream.new" (func $stream-new (result i64)))
+        (import "" "stream.write" (func $write (param i32 i32 i32) (result i32)))
+        (import "" "stream.drop-writable" (func $drop-writable (param i32)))
+        (func (export "greet") (result i32)
+          (local $pair i64)
+          (local $writable i32)
+          (local.set $pair (call $stream-new))
+          (local.set $writable (i32.wrap_i64 (i64.shr_u (local.get $pair) (i64.const 32))))
+          (drop (call $write-stdout (i32.wrap_i64 (local.get $pair))))
+          ;; Six bytes, completed: 6 << 4.
+          (if (i32.ne (call $write (local.get $writable) (i32.const 0) (i32.const 6))
+                (i32.const 96))
+            (then unreachable))
+          (call $drop-writable (local.get $writable))
+          (local.set $pair (call $stream-new))
+          (local.set $writable (i32.wrap_i64 (i64.shr_u (local.get $pair) (i64.const 32))))
+          (drop (call $write-stderr (i32.wrap_i64 (local.get $pair))))
+          ;; Five bytes, completed: 5 << 4.
+          (if (i32.ne (call $write (local.get $writable) (i32.const 16) (i32.const 5))
+                (i32.const 80))
+            (then unreachable))
+          (call $drop-writable (local.get $writable))
+          (i32.const 2)))
+      (core instance $main (instantiate $main (with "" (instance
+        (export "write-stdout" (func $write-stdout))
+        (export "write-stderr" (func $write-stderr))
+        (export "stream.new" (func $stream-new))
+        (export "stream.write" (func $write))
+        (export "stream.drop-writable" (func $drop-writable))))))
+      (func (export "greet") (result s32) (canon lift (core func $main "greet"))))
+    "#
+);
+
 /// A component whose `shout` passes its string through the test
 /// interface's `echo` and returns what `echo` returned.
 const ECHOER: &[u8] = component!(
@@ -1277,6 +1351,26 @@ async fn it_captures_the_lines_a_scenario_prints_through_p3_standard_output() {
             r#"output line 2 is "world" where "there" was expected"#
         )
     );
+}
+
+#[wcmp_macros::test]
+async fn it_keeps_what_a_scenario_writes_to_p3_standard_error_apart_from_its_output() {
+    let (mut store, instance) = instantiate(COMPLAINER).await;
+    assert_eq!(
+        call_one(&mut store, &instance, "greet", &[]).await,
+        Val::S32(2)
+    );
+    assert_eq!(store.data().lines(), ["hello"]);
+    assert_eq!(store.data().error_lines(), ["oops"]);
+    // Standard error is not compared, so only the output line is held
+    // to the Wasmtime run.
+    let verdict = run(
+        vec![Program::compiled("complainer", COMPLAINER)],
+        "call complainer greet() -> 2s32\noutput \"hello\"",
+        "stage pass\ncall complainer greet() -> 2s32\noutput \"hello\"",
+    )
+    .await;
+    assert_eq!(verdict, Verdict::pass());
 }
 
 #[wcmp_macros::test]

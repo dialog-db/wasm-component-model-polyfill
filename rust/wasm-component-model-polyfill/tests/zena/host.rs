@@ -4,14 +4,17 @@
 //! at the interface versions the pinned toolchain emits, through the
 //! polyfill's public `Linker`:
 //!
-//! - `wasi:cli/stdout@0.3.0`, whose `write-via-stream` takes a
-//!   `stream<u8>` and answers a `future<result<_, error-code>>`. Every
-//!   byte the guest writes goes to a buffer in the store, which the
-//!   runner compares with the lines the Wasmtime run captured. The
-//!   future resolves once the guest drops the stream's writable end.
-//!   `wasi:cli/types@0.3.0`, where `error-code` lives, holds no function.
-//!   The pinned toolchain's console prints through this interface and
-//!   imports no Preview 2 stdio, so none is defined here.
+//! - `wasi:cli/stdout@0.3.0` and `wasi:cli/stderr@0.3.0`, whose
+//!   `write-via-stream` takes a `stream<u8>` and answers a
+//!   `future<result<_, error-code>>`. Every byte the guest writes goes
+//!   to a buffer in the store, one for each interface. The future
+//!   resolves once the guest drops the stream's writable end. The runner
+//!   compares the standard output buffer with the lines the Wasmtime
+//!   run captured. It keeps standard error apart and compares none of
+//!   it. `wasi:cli/types@0.3.0`, where `error-code` lives, holds no
+//!   function. The pinned toolchain's console prints through these
+//!   interfaces, to standard error only for `console.error`, and imports
+//!   no Preview 2 stdio, so none is defined here.
 //! - `wasi:clocks/monotonic-clock@0.3.0`, whose `wait-for` is an async
 //!   host function: a `setTimeout` timer backs it in the browser, and
 //!   the test runtime's timer natively. Its `now` reads the target's
@@ -39,11 +42,15 @@ use wasm_component_model_polyfill::{
     StoreContext, StreamConsumer, StreamReader, StreamResult, Val, ValueType,
 };
 
-/// The interface `wasi:cli/stdout` imports its `error-code` from.
+/// The interface `wasi:cli/stdout` and `wasi:cli/stderr` import their
+/// `error-code` from.
 const CLI_TYPES: &str = "wasi:cli/types@0.3.0";
 
 /// The interface a scenario prints through.
 const STDOUT: &str = "wasi:cli/stdout@0.3.0";
+
+/// The interface a scenario writes its error lines through.
+const STDERR: &str = "wasi:cli/stderr@0.3.0";
 
 /// The interface `wasi:clocks/monotonic-clock` imports its `duration`
 /// from.
@@ -55,54 +62,31 @@ const MONOTONIC_CLOCK: &str = "wasi:clocks/monotonic-clock@0.3.0";
 /// The cases of `wasi:cli/types.error-code`, in order.
 const ERROR_CODES: [&str; 3] = ["io", "illegal-byte-sequence", "pipe"];
 
-/// What a scenario's store holds: everything the scenario printed.
+/// What a scenario's store holds: everything the scenario printed, to
+/// standard output and, apart, to standard error.
 #[derive(Default)]
 pub struct Host {
-    stdout: Stdout,
+    stdout: Output,
+    stderr: Output,
 }
 
 impl Host {
     /// Every line the scenario printed to standard output, in order.
     pub fn lines(&self) -> Vec<String> {
-        String::from_utf8_lossy(&lock(&self.stdout))
-            .lines()
-            .map(str::to_string)
-            .collect()
+        lines(&self.stdout)
+    }
+
+    /// Every line the scenario wrote to standard error, in order.
+    pub fn error_lines(&self) -> Vec<String> {
+        lines(&self.stderr)
     }
 }
 
 /// Define the test host functions in `linker`.
 pub fn define(linker: &mut Linker<Host>) -> Result<(), Error> {
     linker.instance(&identifier(CLI_TYPES));
-    linker.instance(&identifier(STDOUT)).func_new(
-        "write-via-stream",
-        FunctionType {
-            parameters: vec![FunctionParameter {
-                name: "data".to_string(),
-                ty: StreamReader::<u8>::value_type(),
-            }],
-            result: Some(ValueType::Future(FutureType::new(Some(
-                WriteResult::value_type(),
-            )))),
-            async_: false,
-        },
-        |mut call: HostCall<'_, Host>, args, results| {
-            let [Val::Stream(data)] = args else {
-                return Err(Error::Internal {
-                    message: format!("`write-via-stream` was given {args:?}"),
-                });
-            };
-            let stdout = call.data().stdout.clone();
-            let end = Arc::new(Mutex::new(End::default()));
-            let consumer = Collects {
-                stdout,
-                end: end.clone(),
-            };
-            StreamReader::<u8>::try_from_stream_any(data.clone())?.pipe(call.store(), consumer)?;
-            results[0] = FutureReader::new(call.store(), Finishes(end))?.to_val();
-            Ok(())
-        },
-    )?;
+    define_output(linker, STDOUT, |host| &host.stdout)?;
+    define_output(linker, STDERR, |host| &host.stderr)?;
     linker.instance(&identifier(CLOCK_TYPES));
     let mut monotonic_clock = linker.instance(&identifier(MONOTONIC_CLOCK));
     monotonic_clock.func_wrap("now", |_, (): ()| Ok(clock::now()))?;
@@ -127,6 +111,45 @@ pub fn define(linker: &mut Linker<Host>) -> Result<(), Error> {
         })
 }
 
+/// Define `write-via-stream` of the output interface `interface` in
+/// `linker`. Every byte the guest writes goes to the buffer `output`
+/// picks from the store.
+fn define_output(
+    linker: &mut Linker<Host>,
+    interface: &str,
+    output: fn(&Host) -> &Output,
+) -> Result<(), Error> {
+    linker.instance(&identifier(interface)).func_new(
+        "write-via-stream",
+        FunctionType {
+            parameters: vec![FunctionParameter {
+                name: "data".to_string(),
+                ty: StreamReader::<u8>::value_type(),
+            }],
+            result: Some(ValueType::Future(FutureType::new(Some(
+                WriteResult::value_type(),
+            )))),
+            async_: false,
+        },
+        move |mut call: HostCall<'_, Host>, args, results| {
+            let [Val::Stream(data)] = args else {
+                return Err(Error::Internal {
+                    message: format!("`write-via-stream` was given {args:?}"),
+                });
+            };
+            let output = output(call.data()).clone();
+            let end = Arc::new(Mutex::new(End::default()));
+            let consumer = Collects {
+                output,
+                end: end.clone(),
+            };
+            StreamReader::<u8>::try_from_stream_any(data.clone())?.pipe(call.store(), consumer)?;
+            results[0] = FutureReader::new(call.store(), Finishes(end))?.to_val();
+            Ok(())
+        },
+    )
+}
+
 /// What a function of `interface` the test host does not implement,
 /// `method`, answers when it is called.
 fn unimplemented(interface: &str, method: &str) -> Error {
@@ -142,9 +165,17 @@ fn identifier(interface: &str) -> InterfaceIdentifier {
         .unwrap_or_else(|error| panic!("`{interface}` is not an interface: {error}"))
 }
 
-/// Everything a scenario printed, shared by the store and the streams
-/// that write it.
-type Stdout = Arc<Mutex<Vec<u8>>>;
+/// Everything a scenario printed to one output, shared by the store and
+/// the streams that write it.
+type Output = Arc<Mutex<Vec<u8>>>;
+
+/// The lines of `output`, in order.
+fn lines(output: &Output) -> Vec<String> {
+    String::from_utf8_lossy(&lock(output))
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
 
 /// Lock `shared`, whatever a panic elsewhere left in it.
 fn lock<T>(shared: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -166,7 +197,7 @@ struct End {
 /// The consumer of a stream passed to `write-via-stream`: it takes
 /// every byte the guest writes.
 struct Collects {
-    stdout: Stdout,
+    output: Output,
     end: Arc<Mutex<End>>,
 }
 
@@ -183,7 +214,7 @@ impl StreamConsumer<Host> for Collects {
         let mut bytes = Vec::new();
         let count = source.remaining();
         source.read(store, &mut bytes, count)?;
-        lock(&self.stdout).extend(bytes);
+        lock(&self.output).extend(bytes);
         Poll::Ready(Ok(StreamResult::Completed))
     }
 }
@@ -243,7 +274,7 @@ impl ComponentValue for WriteResult {
         match val {
             Val::Result(Ok(None)) => Ok(WriteResult),
             other => Err(Error::Internal {
-                message: format!("the host writes only `ok` to standard output, not {other:?}"),
+                message: format!("the host writes only `ok` to an output, not {other:?}"),
             }),
         }
     }

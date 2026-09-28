@@ -16,10 +16,10 @@ use crate::error::{Error, Result};
 use crate::scenario::Scenario;
 use crate::value::{from_val, to_val, value_type};
 
-/// The most a scenario can print. A scenario is small and deterministic,
-/// so a megabyte is far more than any prints; a write past it fails in
-/// the guest.
-const STDOUT_CAPACITY: usize = 1 << 20;
+/// The most a scenario can print to standard output, and apart to
+/// standard error. A scenario is small and deterministic, so a megabyte
+/// is far more than any prints; a write past it fails in the guest.
+const OUTPUT_CAPACITY: usize = 1 << 20;
 
 /// The Wasmtime subject: one engine and one linker, shared by every
 /// scenario it runs.
@@ -28,7 +28,8 @@ const STDOUT_CAPACITY: usize = 1 << 20;
 /// `wasmtime-wasi` and the fixed test interface. Each scenario gets a
 /// store of its own, whose standard output goes to a buffer in memory,
 /// so the lines a scenario prints are compared with its expectations.
-/// A scenario whose components link at run time gets a copy of the
+/// Its standard error goes to a buffer of its own, which is not
+/// compared. A scenario whose components link at run time gets a copy of the
 /// linker with its links added.
 pub struct WasmtimeRun {
     engine: Engine,
@@ -97,7 +98,8 @@ impl WasmtimeRun {
     ///
     /// Once every component is instantiated, each call of the
     /// expectations is made in order, even after one fails, and the
-    /// lines printed to standard output are kept.
+    /// lines printed to standard output are kept. What the scenario
+    /// writes to standard error is kept apart and not observed.
     ///
     /// A call is untyped, through `Func::call_async` with `Val`
     /// arguments, unless the expectations mark it as typed. A typed call
@@ -173,7 +175,7 @@ impl WasmtimeRun {
             }
         }
 
-        let stdout = MemoryOutputPipe::new(STDOUT_CAPACITY);
+        let stdout = MemoryOutputPipe::new(OUTPUT_CAPACITY);
         let mut store = Store::new(&self.engine, Host::new(stdout.clone()));
         for (name, pre) in prepared {
             match pre.instantiate_async(&mut store).await {
@@ -444,10 +446,14 @@ impl Host {
     /// A WASI context that writes standard output to `stdout` and gives
     /// the guest nothing else of the host: no arguments, no environment,
     /// no files, and no network address. Standard input is closed, and
-    /// standard error discards what the guest writes.
+    /// standard error goes to a buffer of its own that nothing reads, so
+    /// it never mixes into the output lines.
     fn new(stdout: MemoryOutputPipe) -> Self {
         Host {
-            ctx: WasiCtxBuilder::new().stdout(stdout).build(),
+            ctx: WasiCtxBuilder::new()
+                .stdout(stdout)
+                .stderr(MemoryOutputPipe::new(OUTPUT_CAPACITY))
+                .build(),
             table: ResourceTable::new(),
             instances: Vec::new(),
         }

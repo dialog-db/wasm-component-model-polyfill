@@ -1,5 +1,6 @@
 # Scenario 5: console output. The call prints two lines, in order, and
-# returns.
+# returns. The error line it writes goes to standard error, which is not
+# compared, so it is not an output line.
 call printer greet() -> 2s32
 output "hello"
 output "world"

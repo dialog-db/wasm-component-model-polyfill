@@ -34,9 +34,10 @@
 //! # What the run links
 //!
 //! The [`WasmtimeRun`] links the WASI Preview 2 and Preview 3 imports
-//! from `wasmtime-wasi`, with standard output captured in memory, and
-//! one fixed test interface, [`WasmtimeRun::TEST_INTERFACE`], whose one
-//! function takes a string and returns it.
+//! from `wasmtime-wasi`, with standard output and standard error each
+//! captured in a buffer of its own, and one fixed test interface,
+//! [`WasmtimeRun::TEST_INTERFACE`], whose one function takes a string
+//! and returns it. Only standard output is compared.
 
 mod error;
 mod program;
