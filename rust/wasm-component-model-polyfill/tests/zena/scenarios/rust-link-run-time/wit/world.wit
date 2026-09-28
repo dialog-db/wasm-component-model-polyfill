@@ -1,0 +1,26 @@
+// The contract between the two Rust partners of scenario 14. The
+// partner under `importer/` binds the world `importer` and the partner
+// under `exporter/` binds the world `exporter`, both with `wit-bindgen`,
+// so the two sides cannot drift apart.
+//
+// `greet` is `async`: a run-time link gives the importer a host
+// function that calls the exporter's instance, and neither Wasmtime nor
+// the polyfill lets a host function call into an instance for an
+// import that is not `async`.
+package wcmp:rust-link;
+
+interface greeter {
+  greet: async func(name: string) -> string;
+}
+
+// The world of the Rust partner, `exporter/`.
+world exporter {
+  export greeter;
+}
+
+// The world of the Rust partner, `importer/`, which awaits `greet`, so
+// its own export is `async` too.
+world importer {
+  import greeter;
+  export welcome: async func(name: string) -> string;
+}

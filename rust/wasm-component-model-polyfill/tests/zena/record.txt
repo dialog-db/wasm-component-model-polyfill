@@ -49,6 +49,9 @@ rust-imports-zena-composition native parse "component importer: instantiation er
 rust-imports-zena-run-time wasmtime pass
 rust-imports-zena-run-time web parse "component exporter: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 8)) is not supported in the wasm_runtime_layer"
 rust-imports-zena-run-time native parse "component exporter: instantiation error: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer"
+rust-link-run-time wasmtime pass
+rust-link-run-time web pass
+rust-link-run-time native pass
 scalar-export wasmtime pass
 scalar-export web pass
 scalar-export native pass

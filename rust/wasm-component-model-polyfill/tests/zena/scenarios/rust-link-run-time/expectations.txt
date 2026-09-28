@@ -1,0 +1,10 @@
+# Scenario 14: Rust imports from Rust at run time, with no Zena
+# component. It is the baseline for the scenarios with a Rust partner:
+# while it passes, the partners and the run-time link work. The
+# importer's call passes a string across the link and back, untyped and
+# then typed; the exporter's call is the same function without the
+# link. The greeting names the Rust exporter, so it can only come from
+# the other side of the link. It prints nothing.
+call importer welcome("rust") -> "hello from the Rust exporter, rust!"
+call typed importer welcome("rust") -> "hello from the Rust exporter, rust!"
+call exporter wcmp:rust-link/greeter#greet("rust") -> "hello from the Rust exporter, rust"

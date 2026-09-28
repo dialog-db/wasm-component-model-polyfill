@@ -422,9 +422,11 @@
         #   with the world. Another lacks an export its world declares, so
         #   Zena refuses it only with the world.
         # - The recorded revision is the one `flake.lock` pins.
-        # - A directory with no scenario, or a scenario with no program,
-        #   fails the build instead of yielding an empty output. These run
-        #   the script alone, with a stand-in for Zena that never runs.
+        # - A directory with no scenario, or a scenario with neither a
+        #   program nor a Rust partner, fails the build instead of yielding
+        #   an empty output. A scenario with partners only builds, and
+        #   leaves its directory empty for the partners. These run the
+        #   script alone, with a stand-in for Zena that never runs.
         # - A composition link that names a missing program, or programs
         #   that compose in a chain, fail the composer; a composition
         #   whose exporter did not compile is left as it is, for the
@@ -465,7 +467,14 @@
             done
             grep -q 'no-scenario holds no scenario directory' no-scenario.err
             test ! -e no-scenario.out
-            grep -q 'scenario empty holds no .zena program' no-program.err
+            grep -q 'scenario empty holds no .zena program and no Rust partner' \
+              no-program.err
+
+            mkdir -p partners-only/baseline/partner
+            touch partners-only/baseline/partner/cargo-manifest.toml
+            ${pkgs.lib.getExe zenaScenarioBuilder} partners-only partners-only.out
+            test -d partners-only.out/baseline
+            test -z "$(ls partners-only.out/baseline)"
 
             # The composer on wirings it cannot make, which fail the
             # build, and on a composition whose exporter did not compile,

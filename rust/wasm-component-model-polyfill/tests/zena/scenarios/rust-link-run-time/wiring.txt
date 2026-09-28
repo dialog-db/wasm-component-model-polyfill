@@ -1,0 +1,6 @@
+# Scenario 14: the runner instantiates the Rust partner `exporter` first
+# and gives its `greeter` to the Rust partner `importer` through the
+# subject's linker.
+#
+# <linking> <importer> <import> <exporter>
+run-time importer wcmp:rust-link/greeter exporter
