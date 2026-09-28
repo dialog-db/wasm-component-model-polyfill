@@ -82,9 +82,18 @@ Each fact below was read from the cited source. The Zena facts are from revision
 
 - Zena's component target emits WasmGC core modules inside a Canonical ABI shell
   of linear memory. Strings cross the boundary as `utf8`. Async exports are
-  lifted with a callback. Console output goes through the WASI Preview 2 (p2)
-  stdio interfaces. Timers go through the WASI Preview 3 (p3) `wasi:clocks`
-  interfaces ([Zena component emission], "Status" and 1.4).
+  lifted with a callback ([Zena component emission], "Status").
+- On the component target, console output goes through the WASI Preview 3 (p3)
+  interfaces `wasi:cli/stdout@0.3.0` and `wasi:cli/stderr@0.3.0`. A write passes
+  a `stream<u8>` to `write-via-stream`, which returns a
+  `future<result<_, error-code>>` that Zena does not read. The `error-code` type
+  comes from `wasi:cli/types@0.3.0`. A program imports `wasi:cli/stderr` only
+  when it writes an error line. The component target has no WASI Preview 2 (p2)
+  stdio path ([Zena console], [Zena stdlib manifest], [Zena component emission],
+  C6).
+- Timers go through the p3 interfaces `wasi:clocks/monotonic-clock@0.3.0` and
+  `wasi:clocks/types@0.3.0`. Zena calls `now` and the async `wait-for` ([Zena
+  timers]).
 - A program that uses memory becomes two core modules. One module defines the
   memory, and the program module imports it ([Zena component emission], 1.3).
 - `--wit` and `--world` declare a world that the program must match. A
@@ -205,7 +214,7 @@ The first set has seven scenarios with one component:
 | 2   | A string in and a string out                                         | The `utf8` shell and the shape with two core modules.                      |
 | 3   | Classes and arrays, used inside the program only                     | The browser backend's refusal of a global with a GC reference type.        |
 | 4   | Exceptions, one caught inside the program and one uncaught           | The refusal of a tag export on both backends, and an uncaught exception.   |
-| 5   | Console output                                                       | The p2 stdio imports.                                                      |
+| 5   | Console output                                                       | The p3 `wasi:cli/stdout` stream write.                                     |
 | 6   | An async export that sleeps on a timer                               | The export lifted with a callback, and the p3 `wasi:clocks` imports.       |
 | 7   | A custom world through `--wit` and `--world` that imports a function | An import that the host supplies.                                          |
 
@@ -298,11 +307,16 @@ The polyfill subjects get them from test host functions in the scenario runner.
 The functions use the polyfill's public `Linker` API, and the crate does not
 export them. They cover only what the first set calls:
 
-- The p2 stdio functions that Zena's console output calls, from `wasi:cli`,
-  `wasi:io/streams`, and the `wasi:io/error` resource. A write goes to a buffer
-  that the runner compares with the output of the Wasmtime run.
-- The p3 `wasi:clocks` wait as an async host function. A `setTimeout` timer
-  backs it in the browser, and a native timer backs it natively.
+- The p3 `write-via-stream` functions of `wasi:cli/stdout@0.3.0` and
+  `wasi:cli/stderr@0.3.0`, and the `wasi:cli/types@0.3.0` interface that holds
+  `error-code`. Each function reads the guest's stream into a buffer and answers
+  a future that resolves when the guest drops its end. The runner compares the
+  standard output buffer with the output of the Wasmtime run. The runner keeps
+  standard error apart and does not compare it.
+- The p3 `wasi:clocks/monotonic-clock@0.3.0` functions `now` and `wait-for`,
+  with `wasi:clocks/types@0.3.0`. `wait-for` is an async host function. A
+  `setTimeout` timer backs it in the browser, and a native timer backs it
+  natively.
 - One fixed test interface with one function that takes a string and returns it.
   Scenario 7 imports it. The Wasmtime run defines the same function on
   Wasmtime's `Linker`.
@@ -543,11 +557,11 @@ An uncaught exception follows the Wasmtime run. Scenario 4 makes its uncaught
 call and then a second call on every subject. The browser and native subjects
 pass only when each call fails or succeeds as it did in the Wasmtime run.
 
-The test host functions supply the imports. Scenario 5 prints through the p2
-stdio functions, and its output lines are the same under the Wasmtime run and
-the polyfill subjects. Scenario 6 sleeps on the p3 timer in the browser and
-natively. A test calls a method that the functions do not implement, and the
-call returns an error.
+The test host functions supply the imports. Scenario 5 prints through the p3
+`wasi:cli/stdout` stream write, and its output lines are the same under the
+Wasmtime run and the polyfill subjects. Scenario 6 sleeps on the p3 timer in the
+browser and natively. A test calls a method that the functions do not implement,
+and the call returns an error.
 
 Integration scenarios link at run time and by composition. Scenarios 8 to 13 run
 under all three subjects. Scenarios 10 to 13 build the Rust partner from its
@@ -591,6 +605,12 @@ counts, and the pin. `tests all` runs the lane and reports its time.
 [Zena]: https://zena-lang.dev/
 [Zena component emission]:
   https://github.com/elematic/zena/blob/b2237f7e65847eda43ef1f4094eea77fe225ce0d/docs/design/component-emission.md
+[Zena console]:
+  https://github.com/elematic/zena/blob/b2237f7e65847eda43ef1f4094eea77fe225ce0d/packages/stdlib/zena/console/component.zena#L25-L29
+[Zena stdlib manifest]:
+  https://github.com/elematic/zena/blob/b2237f7e65847eda43ef1f4094eea77fe225ce0d/packages/stdlib/stdlib-manifest.json#L19-L27
+[Zena timers]:
+  https://github.com/elematic/zena/blob/b2237f7e65847eda43ef1f4094eea77fe225ce0d/packages/stdlib/zena/time/p3.zena#L29-L41
 [Zena exception tag]:
   https://github.com/elematic/zena/blob/b2237f7e65847eda43ef1f4094eea77fe225ce0d/packages/zena-compiler/zena/lib/codegen/wasm-module.zena#L1680-L1699
 [Zena flake]:
