@@ -3,7 +3,7 @@ id: fe8bc2
 title: The browser backend reports link errors without reading V8 message text
 type: bug
 blocked_by: [f9f268]
-labels: [runtime-layer]
+labels: [runtime-layer, PDD025]
 created: 2026-09-29T07:32:47Z
 ---
 

@@ -3,7 +3,7 @@ id: edf2c7
 title: A forgotten instantiation future cannot leave a stale store pointer in the browser backend
 type: bug
 blocked_by: [5d0ebe]
-labels: [runtime-layer]
+labels: [runtime-layer, PDD025]
 created: 2026-09-29T10:01:11Z
 ---
 
@@ -25,3 +25,8 @@ Restructure so a stale access cannot be undefined behaviour (for example, a poin
 ## Review notes
 
 - 2026-09-29: card 5b4e90 (JSPI, landed `cf3cb439a`) replaced the raw-pointer guard with an `Rc`-owned store cell, an epoch-checked `Owner`, and permit-checked flights; its reviewer confirmed the stale-pointer hole described above is closed for `instantiate` and suspension. One residual remains: after `mem::forget` of a pending resume or deferred-instantiate future and release of the guard, a host function of that still-permitted flight that reaches its own `Store` through a global or a captured `Rc<RefCell<Store>>` makes a reference beside the live `&mut WebStore` (`wcmp-wasm-core-web/src/calls.rs:552`, via `Owner::store`/`store_mut`, `owner.rs:54,62`). Reviewer's suggested fix: a "flight inside a host call" flag in `Calls`, checked by `Owner::store`/`store_mut` (an error on fallible methods, a panic in `data`/`data_mut`). Retarget this card to that residual, and add the forget tests for both resume and instantiate.
+
+## Dispatch log
+
+- 2026-09-29: pulled into the PDD025 implement session at the owner's request. The card text above predates 5b4e90; the last review note is the current target (the forget-plus-global residual in the `Owner`/flight design, not the old raw-pointer guard). Card 10f282 (trap kinds) is in review and touches `store.rs` and `errors.rs` in the same crate.
+- 2026-09-29: implementor `card-edf2c7-6d976fda` dispatched (JSPI landed as `cf3cb439a`, Wasmi suspension as `16c966ff9`).
