@@ -23,3 +23,8 @@ A JavaScript function that throws into a guest throws an exception, and a guest'
 - [ ] The shared contract tests for host functions pass in the web lane.
 - [ ] `lint` and `tests web debug` pass.
 
+
+## Dispatch log
+
+- 2026-09-29: the seed is the first tip that carries both the browser backend (`ba6877408`) and the Wasmtime memory and trap cases (`2447fc945`), which were built in parallel. If the gate fails on the seed before your change, say so in your report and name the failure.
+- 2026-09-29: implementor `card-5d0ebe-61aa517e` dispatched from `e665f640` (browser backend landed as `ba6877408`), in parallel with 215523 in the same crate.
