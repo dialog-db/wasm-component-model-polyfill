@@ -1,0 +1,32 @@
+[package]
+name = "wcmp-wasm-core-wasmi"
+description = "The Wasmi backend of the runtime layer of the Wasm Component Model Polyfill: the practical native backend, over the Wasmi interpreter"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+# Wasmi builds for every target, `wasm32` included, so the backend does too.
+# No test lane runs it in the browser: its tests are native only.
+[dependencies]
+# The error a host function returns, which the backend carries back to the
+# host unchanged.
+anyhow = { workspace = true }
+# `std` for Wasmi's own error types, `validate` for a validation of every
+# module before it runs, and one feature each for the floor's vectors and
+# the capabilities the backend declares. `auto-dispatch` is Wasmi's own
+# default choice of how its interpreter dispatches.
+wasmi = { workspace = true, features = ["std", "validate", "simd", "memory64", "auto-dispatch"] }
+# Finds the capability a module needs, where Wasmi refuses it, with the
+# validator whose feature names the capability lexicon repeats. The
+# `features` feature is what gives the feature set its named flags, and
+# `simd` is what lets the validator read a vector instruction at all.
+wasmparser = { workspace = true, features = ["validate", "features", "simd"] }
+wcmp-wasm-core = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+wcmp-macros = { workspace = true }
+wcmp-wasm-core-contract = { workspace = true }
+wcmp-wasm-core-faithfulness = { workspace = true }

@@ -26,7 +26,10 @@ pub trait Backend: MaybeSend + MaybeSync + 'static {
     /// Compiles `bytes` into a module, asynchronously.
     ///
     /// Each compile makes a module of its own. A backend keeps no cache of
-    /// modules by their bytes. A module the engine refuses is
+    /// modules by their bytes. A module the engine refuses because it needs
+    /// a capability the backend does not declare is
+    /// [`Error::Unsupported`](crate::Error::Unsupported), with that
+    /// capability. A module the engine refuses for any other reason is
     /// [`Error::Compile`](crate::Error::Compile), with the message of the
     /// engine.
     fn compile<'a>(&'a self, bytes: &'a [u8]) -> BoxFuture<'a, Result<Box<dyn BackendModule>>>;

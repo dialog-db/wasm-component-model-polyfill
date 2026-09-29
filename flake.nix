@@ -1370,6 +1370,12 @@
               faithfulness = {
                 description = "The pinned WebAssembly specification test suite on one backend of the runtime layer, for the floor and each capability the backend declares, then the suite of every script";
                 subcommands = {
+                  wasmi = menuTestCommand {
+                    description = "The faithfulness suite on the Wasmi backend (${system}, debug)";
+                    package = "tests-native-debug";
+                    nextestProfile = "faithfulness";
+                    filter = "binary_id(wcmp-wasm-core-wasmi::faithfulness)";
+                  };
                   wasmtime = menuTestCommand {
                     description = "The faithfulness suite on the Wasmtime backend (${system}, debug)";
                     package = "tests-native-debug";
@@ -1443,7 +1449,8 @@
                     fi
                   }
                   for suite in "native debug" "native release" "native no-provider" \
-                    "web debug" "web release" "web no-provider" "faithfulness wasmtime"; do
+                    "web debug" "web release" "web no-provider" "faithfulness wasmi" \
+                    "faithfulness wasmtime"; do
                     lane "$suite" "$@"
                   done
                   lane zena

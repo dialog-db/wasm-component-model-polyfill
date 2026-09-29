@@ -9,6 +9,7 @@ members = [
   "rust/wcmp-wasm-core",
   "rust/wcmp-wasm-core-contract",
   "rust/wcmp-wasm-core-faithfulness",
+  "rust/wcmp-wasm-core-wasmi",
   "rust/wcmp-wasm-core-wasmtime",
   "rust/wcmp-wasm-core-web",
 ]
@@ -52,6 +53,11 @@ wasm_runtime_layer = "0.7"
 # already links, so the graph keeps one.
 wasmparser = { version = "0.258", default-features = false, features = ["std", "component-model"] }
 wast = "259"
+# The engine of the Wasmi backend of the runtime layer, at the current
+# major version. Nothing else in the graph must agree with it: Wasmi links
+# its own `wasmparser`. The backend turns off the default features, which
+# add the text format to `Module::new`, and names each one it needs.
+wasmi = { version = "2", default-features = false }
 # Wasmtime 49 removed the rule that compiled a fused adapter between a lift
 # and a lower of one component instance to an unconditional trap. 49 is a
 # release candidate on crates.io; the pin moves to the stable release when it
@@ -80,6 +86,9 @@ path = "./rust/wcmp-scenario"
 
 [workspace.dependencies.wcmp-wasm-core]
 path = "./rust/wcmp-wasm-core"
+# A published backend depends on the published runtime layer, so the path
+# carries the version too. It moves with the workspace version.
+version = "0.1.0"
 
 [workspace.dependencies.wcmp-wasm-core-contract]
 path = "./rust/wcmp-wasm-core-contract"
@@ -87,11 +96,21 @@ path = "./rust/wcmp-wasm-core-contract"
 [workspace.dependencies.wcmp-wasm-core-faithfulness]
 path = "./rust/wcmp-wasm-core-faithfulness"
 
+[workspace.dependencies.wcmp-wasm-core-wasmi]
+path = "./rust/wcmp-wasm-core-wasmi"
+
 [profile.dev]
 opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# Wasmi picks its tail-call dispatch at every optimizing level, and its debug
+# assertions keep LLVM from turning that dispatch into tail calls, so a long
+# run overflows the native stack (wasmi-labs/wasmi#2039). The dependencies
+# build optimized here, so Wasmi builds without its debug assertions.
+[profile.dev.package.wasmi]
+debug-assertions = false
 
 [profile.release]
 lto = "thin"

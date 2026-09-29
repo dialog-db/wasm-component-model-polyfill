@@ -1,0 +1,10 @@
+# The directives of the faithfulness suite that Wasmi fails, run through
+# the Wasmi backend of the runtime layer.
+#
+# One entry per line: `<script>:<line> <citation> <reason>`. The script is
+# its path under the root of the pinned specification test suite, and the
+# line is the directive's, counted from one. The citation names the defect
+# of Wasmi that explains the failure: an issue of wasmi-labs/wasmi, or a
+# line of its source at a fixed commit. An entry without a citation fails
+# the check, and a feature whose failures no defect of Wasmi explains is not
+# a capability the backend declares.
