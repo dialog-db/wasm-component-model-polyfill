@@ -8,7 +8,7 @@ created: 2026-09-27T21:47:29Z
 ---
 
 ## What to build
-Close the gaps the independent review of card 17e40b found in `rust/wcmp-wasmtime` (landed as `4d3706559`). None blocked the card.
+Close the gaps the independent review of card 17e40b found in `rust/wcmp-scenario-wasmtime` (landed as `4d3706559`). None blocked the card.
 
 - **A result the model cannot hold.** `value.rs:42` and `wasmtime_run.rs:159` turn a result value the scenario model cannot represent into a failed call. An entry that expects `fail`, or has no outcome, would then record a failure where the call succeeded. Record this case so that it cannot pass as an expected failure.
 - **Error variants.** `program.rs:28` says a program with status 0 and no `.wasm` gives `Error::Layout`, but `program.rs:41` gives `Error::Io`. `scenario.rs:48` checks for a sources directory with no compiled directory, but not the reverse, which gives `Error::Io`. Make the code and its doc comments agree.
