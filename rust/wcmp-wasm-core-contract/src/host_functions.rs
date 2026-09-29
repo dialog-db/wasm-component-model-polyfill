@@ -90,6 +90,103 @@ fn argument(values: &[Val]) -> anyhow::Result<i32> {
     }
 }
 
+/// A guest calls a host function of ten parameters, of each number type,
+/// and the host function returns three results. Each argument reaches the
+/// host in its place, and each result reaches the guest in its place.
+pub async fn it_calls_a_host_function_of_more_than_eight_parameters(engine: &Engine) {
+    let mut store = support::store(engine, ());
+    let params = [
+        ValType::I32,
+        ValType::I64,
+        ValType::F32,
+        ValType::F64,
+        ValType::I32,
+        ValType::I64,
+        ValType::F32,
+        ValType::F64,
+        ValType::I32,
+        ValType::I64,
+    ];
+    let tally = Func::new(
+        &mut store,
+        FuncType::new(params, [ValType::I64, ValType::F64, ValType::I32]),
+        |_, params, results| {
+            let (mut integers, mut floats) = (0i64, 0f64);
+            for (place, value) in params.iter().enumerate() {
+                // Each argument counts times its place, so an argument
+                // out of its place changes the sums.
+                let place = place as i64 + 1;
+                match value {
+                    Val::I32(value) => integers += i64::from(*value) * place,
+                    Val::I64(value) => integers += *value * place,
+                    Val::F32(bits) => floats += f64::from(f32::from_bits(*bits)) * place as f64,
+                    Val::F64(bits) => floats += f64::from_bits(*bits) * place as f64,
+                    other => anyhow::bail!("{other:?} is not a number"),
+                }
+            }
+            results[0] = Val::I64(integers);
+            results[1] = Val::F64(floats.to_bits());
+            results[2] = Val::I32(params.len() as i32);
+            Ok(())
+        },
+    )
+    .expect("the store makes a host function");
+
+    let instance = support::instance(
+        &mut store,
+        wasm!(
+            r#"
+            (module
+              (import "host" "tally"
+                (func $tally
+                  (param i32 i64 f32 f64 i32 i64 f32 f64 i32 i64)
+                  (result i64 f64 i32)))
+              (func (export "relay")
+                (param i32 i64 f32 f64 i32 i64 f32 f64 i32 i64)
+                (result i64 f64 i32)
+                local.get 0
+                local.get 1
+                local.get 2
+                local.get 3
+                local.get 4
+                local.get 5
+                local.get 6
+                local.get 7
+                local.get 8
+                local.get 9
+                call $tally))
+            "#
+        ),
+        &[tally.into()],
+    )
+    .await;
+    let relay = support::func(&mut store, instance, "relay");
+
+    let results = support::call(
+        &mut store,
+        relay,
+        &[
+            Val::I32(-1),
+            Val::I64(1 << 40),
+            Val::F32(0.5f32.to_bits()),
+            Val::F64(0.25f64.to_bits()),
+            Val::I32(7),
+            Val::I64(-3),
+            Val::F32(2.0f32.to_bits()),
+            Val::F64((-1.5f64).to_bits()),
+            Val::I32(i32::MAX),
+            Val::I64(i64::from(u32::MAX)),
+        ],
+        &[ValType::I64, ValType::F64, ValType::I32],
+    );
+    let integers =
+        -1 + (1i64 << 40) * 2 + 7 * 5 - 3 * 6 + i64::from(i32::MAX) * 9 + i64::from(u32::MAX) * 10;
+    let floats = 0.5 * 3.0 + 0.25 * 4.0 + 2.0 * 7.0 - 1.5 * 8.0;
+    assert_eq!(results[0].i64(), Some(integers));
+    assert_eq!(results[1].f64(), Some(floats));
+    assert_eq!(results[2].i32(), Some(10));
+}
+
 /// The error the failing host function returns.
 #[derive(Debug)]
 struct Refusal;

@@ -1,6 +1,7 @@
 //! A store of the browser backend.
 
 use core::any::Any;
+use core::task::Poll;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -10,11 +11,12 @@ use wcmp_wasm_core::backend::{
     BackendModule, BackendStore, BoxFuture, HostFunc, RawHandle, StoreData,
 };
 use wcmp_wasm_core::{
-    AnyRef, Error, Extern, ExternRef, ExternType, Func, FuncType, Global, GlobalType, HeapType,
-    I31, ImportType, Instance, Memory, MemoryType, Mutability, Result, Table, TableType, Tag,
-    TagType, Val, ValType,
+    AnyRef, Capability, Error, Extern, ExternRef, ExternType, Func, FuncType, Global, GlobalType,
+    HeapType, I31, ImportType, Instance, Memory, MemoryType, Mutability, Result, Table, TableType,
+    Tag, TagType, Val, ValType,
 };
 
+use crate::calls::Calls;
 use crate::carrier::Carrier;
 use crate::errors;
 use crate::js;
@@ -22,6 +24,7 @@ use crate::module::WebModule;
 use crate::objects::{GlobalObject, InstanceObject, MemoryObject, Objects, TableObject, TagObject};
 use crate::type_registry::TypeRegistry;
 use crate::values::{self, Kind};
+use crate::wrapper::{self, Wrappers};
 
 /// A store of the browser backend: the engine's data for the store, and
 /// every object a handle of the store names.
@@ -34,6 +37,8 @@ pub struct WebStore {
     types: Rc<TypeRegistry>,
     objects: Objects,
     carrier: Carrier,
+    calls: Rc<Calls>,
+    wrappers: Wrappers,
 }
 
 impl WebStore {
@@ -42,12 +47,63 @@ impl WebStore {
     pub fn new(data: StoreData, types: Rc<TypeRegistry>) -> Self {
         let objects = Objects::new(data.id());
         let carrier = Carrier::new(data.id());
+        let calls = Rc::new(Calls::new());
+        let wrappers = Wrappers::new(calls.clone());
         Self {
             data,
             types,
             objects,
             carrier,
+            calls,
+            wrappers,
         }
+    }
+
+    /// Runs the host function `func` of type `ty` in this store, a guest's
+    /// store, with the arguments `args` that its wrapper carried, and
+    /// returns its results as the wrapper carries them.
+    ///
+    /// The host function receives this store, and can call back into a
+    /// guest through it, at any depth.
+    pub fn call_host(
+        &mut self,
+        ty: &FuncType,
+        func: &HostFunc,
+        args: Vec<JsValue>,
+    ) -> anyhow::Result<Vec<JsValue>> {
+        let params = wrapper::params(&mut self.objects, &self.types, self.data.id(), ty, args)?;
+        let mut results = ty
+            .results()
+            .iter()
+            .map(|ty| Val::default_for_ty(ty).unwrap_or(Val::I32(0)))
+            .collect::<Vec<_>>();
+        match func.call(self, &params, &mut results)? {
+            Poll::Ready(()) => {}
+            Poll::Pending => anyhow::bail!(
+                "a host function that is not suspending answered \"not yet\" to a guest"
+            ),
+        }
+        Ok(wrapper::results(
+            &self.objects,
+            &mut self.carrier,
+            &self.types,
+            ty,
+            &results,
+        )?)
+    }
+
+    /// Calls the guest function `function` with `args`, where the host
+    /// functions of this store reach it.
+    ///
+    /// A host function that fails inside the call traps the guest, and the
+    /// call fails with [`TrapKind::Host`](wcmp_wasm_core::TrapKind::Host)
+    /// and the host function's own error.
+    fn apply(&mut self, function: &Function, args: &Array) -> Result<JsValue> {
+        let calls = self.calls.clone();
+        let entry = calls.enter(self);
+        let returned = Reflect::apply(function, &JsValue::UNDEFINED, args);
+        drop(entry);
+        returned.map_err(|error| calls.trap().unwrap_or_else(|| errors::call(&error)))
     }
 
     /// The imports object of an instantiation of a module whose imports are
@@ -193,10 +249,19 @@ impl BackendStore for WebStore {
                 .ok_or(Error::WrongEngine)?;
             let object = self.imports_object(module.imports(), imports)?;
             // `WebAssembly.instantiate`, and never `new WebAssembly.Instance`,
-            // which the browser refuses for a module above its limit.
-            let instance = WebAssembly::instantiate_module(module.module(), &object)
-                .await
-                .map_err(|error| errors::instantiate(&error, module.imports()))?
+            // which the browser refuses for a module above its limit. The
+            // start function of the module can call a host function, so the
+            // host functions reach the store until the instantiation ends.
+            let calls = self.calls.clone();
+            let entry = calls.enter(self);
+            let instantiated = WebAssembly::instantiate_module(module.module(), &object).await;
+            drop(entry);
+            let instance = instantiated
+                .map_err(|error| {
+                    calls
+                        .trap()
+                        .unwrap_or_else(|| errors::instantiate(&error, module.imports()))
+                })?
                 .dyn_into::<WebAssembly::Instance>()
                 .map_err(|_| errors::backend("the instantiation gave no instance"))?;
             Ok(self.objects.add_instance(InstanceObject {
@@ -226,11 +291,11 @@ impl BackendStore for WebStore {
     }
 
     fn func_new(&mut self, ty: FuncType, func: HostFunc) -> Result<Func> {
-        let _ = (ty, func);
-        Err(errors::backend(
-            "the browser backend does not make host functions yet: each needs a generated \
-             wrapper module, so that a host error traps the guest",
-        ))
+        if func.is_suspending() {
+            return Err(Error::Unsupported(Capability::HostSuspension));
+        }
+        let function = self.wrappers.make(&ty, func, &mut self.carrier)?;
+        Ok(self.objects.add_func(function, Some(ty)))
     }
 
     fn func_ty(&self, func: Func) -> Result<Option<FuncType>> {
@@ -257,12 +322,18 @@ impl BackendStore for WebStore {
                     values::check(value, ty, &self.types)?;
                 }
                 if Carrier::needed(ty) {
-                    return self.carrier.call(
-                        &mut self.objects,
-                        &self.types,
+                    let (carrier, args) = self.carrier.arguments(
+                        &self.objects,
                         (func.index(), &function),
                         ty,
                         params,
+                    )?;
+                    let returned = self.apply(&carrier, &args)?;
+                    return self.carrier.results(
+                        &mut self.objects,
+                        &self.types,
+                        ty,
+                        returned,
                         results,
                     );
                 }
@@ -277,8 +348,7 @@ impl BackendStore for WebStore {
             .iter()
             .map(|value| values::to_js(&self.objects, value))
             .collect::<Result<Array>>()?;
-        let returned = Reflect::apply(&function, &JsValue::UNDEFINED, &args)
-            .map_err(|error| errors::call(&error))?;
+        let returned = self.apply(&function, &args)?;
         match results {
             [] => {}
             [result] => *result = values::from_js(&mut self.objects, returned, kinds[0])?,

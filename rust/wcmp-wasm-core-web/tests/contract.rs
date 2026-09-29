@@ -1,11 +1,9 @@
 //! The backend contract of the runtime layer, on the browser backend.
 //!
-//! The browser backend does not make host functions yet: each needs a
-//! generated wrapper module, so that a host error traps the guest. So the
-//! tests of the contract that make a host function do not run here. They
-//! are the two tests of host functions, and the test of a link error, whose
-//! import of the wrong type is a host function. `web.rs` checks link errors
-//! with externs of the browser's own.
+//! The browser backend does not yet reach guest memory through a generated
+//! accessor module, and does not yet map a trap to its kind. So the tests
+//! of the contract for memory access and for trap kinds do not run here.
+//! Every other test of the contract does.
 
 #![cfg(target_arch = "wasm32")]
 
@@ -23,10 +21,14 @@ wcmp_wasm_core_contract::contract_tests!(
     it_compiles_a_module_asynchronously_and_synchronously,
     it_refuses_bytes_that_are_not_a_module_with_a_compile_error,
     it_describes_the_imports_and_exports_of_a_module,
+    it_refuses_an_import_of_the_wrong_type_with_a_link_error,
     it_instantiates_a_module_with_a_gc_global_and_an_exported_tag,
     it_loads_a_module_whose_internal_items_do_not_cross_its_boundary,
     it_describes_a_tag_at_the_boundary,
     it_links_a_tag_from_one_instance_into_another,
+    it_enters_a_host_function_again_at_any_depth,
+    it_calls_a_host_function_of_more_than_eight_parameters,
+    it_traps_with_the_host_error_that_no_guest_can_catch,
     it_reads_an_externref_the_guest_hands_back,
     it_calls_a_funcref_the_guest_hands_out,
     it_reads_an_i31ref,

@@ -11,6 +11,9 @@ repository.workspace = true
 # is `wasm32` only. On every other target the library is empty, which keeps
 # the workspace building for the native lanes.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# The error of a host function, which the store keeps while the guest
+# traps.
+anyhow = { workspace = true }
 # The WebAssembly JavaScript API, whose promises the backend awaits directly.
 js-sys = { workspace = true }
 wasm-bindgen = { workspace = true }

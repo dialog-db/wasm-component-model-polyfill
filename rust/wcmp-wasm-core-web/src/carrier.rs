@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use js_sys::{Array, Function, Object, Reflect, WebAssembly};
+use js_sys::{Array, Function, Object, WebAssembly};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_encoder::{
     AbstractHeapType, BlockType, CodeSection, EntityType, ExportKind, ExportSection,
@@ -72,20 +72,20 @@ impl Carrier {
             .any(|ty| matches!(slot(ty), Some(Slot::V128 | Slot::Exn { .. } | Slot::NoExn)))
     }
 
-    /// Calls the guest function `func`, whose handle has index `index` in
-    /// `objects` and whose type is `ty`, with `params`, through its carrier,
-    /// and writes its results to `results`.
+    /// The carrier function of the guest function `func`, whose handle has
+    /// index `index` in `objects` and whose type is `ty`, and the arguments
+    /// it takes for `params`.
     ///
-    /// The engine already checked the number and the kinds of the values.
-    pub fn call(
+    /// The store calls the carrier with the arguments, and reads the
+    /// results with [`Carrier::results`]. The engine already checked the
+    /// number and the kinds of the values.
+    pub fn arguments(
         &mut self,
-        objects: &mut Objects,
-        types: &TypeRegistry,
+        objects: &Objects,
         (index, func): (u64, &Function),
         ty: &FuncType,
         params: &[Val],
-        results: &mut [Val],
-    ) -> Result<()> {
+    ) -> Result<(Function, Array)> {
         let carrier = self.function(index, func, ty)?;
         let mut args = Vec::new();
         for (value, ty) in params.iter().zip(ty.params()) {
@@ -103,8 +103,19 @@ impl Carrier {
                 _ => args.push(values::to_js(objects, value)?),
             }
         }
-        let returned = Reflect::apply(&carrier, &JsValue::UNDEFINED, &args.into_iter().collect())
-            .map_err(|error| errors::call(&error))?;
+        Ok((carrier, args.into_iter().collect()))
+    }
+
+    /// Writes to `results` the results of a function of type `ty` that
+    /// its carrier returned as `returned`.
+    pub fn results(
+        &self,
+        objects: &mut Objects,
+        types: &TypeRegistry,
+        ty: &FuncType,
+        returned: JsValue,
+        results: &mut [Val],
+    ) -> Result<()> {
         let width: usize = ty.results().iter().map(|ty| slot_width(slot(ty))).sum();
         let mut returned = match width {
             0 => Vec::new(),
@@ -138,7 +149,7 @@ impl Carrier {
     }
 
     /// The index of `exn` in the table of exceptions, or `-1` for null.
-    fn exn_index(&mut self, exn: Option<ExnRef>) -> Result<f64> {
+    pub fn exn_index(&mut self, exn: Option<ExnRef>) -> Result<f64> {
         let Some(exn) = exn else {
             return Ok(-1.0);
         };
@@ -157,7 +168,7 @@ impl Carrier {
 
     /// The table of exceptions of the store, made the first time a call
     /// needs it.
-    fn exns(&mut self) -> Result<&WebAssembly::Table> {
+    pub fn exns(&mut self) -> Result<&WebAssembly::Table> {
         if self.exns.is_none() {
             let bytes = wcmp_macros::wasm!(r#"(module (table (export "exns") 0 exnref))"#);
             let exports = instantiate(bytes, &Object::new())?;

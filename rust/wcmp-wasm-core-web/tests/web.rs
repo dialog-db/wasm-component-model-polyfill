@@ -1,7 +1,7 @@
 //! What the browser backend holds beyond the backend contract: the probes
 //! of its capabilities, a module above the browser's limit for a
-//! synchronous compile, linking by the objects of the browser, and the
-//! externs the browser makes.
+//! synchronous compile, linking by the objects of the browser, the externs
+//! the browser makes, and host functions through their wrapper modules.
 
 #![cfg(target_arch = "wasm32")]
 
@@ -11,8 +11,9 @@ use wasm_bindgen::closure::Closure;
 use wcmp_macros::wasm;
 use wcmp_wasm_core::backend::RawHandle;
 use wcmp_wasm_core::{
-    Capabilities, Capability, Engine, Error, Extern, Func, Global, GlobalType, Instance, Memory,
-    MemoryType, Module, Mutability, RefType, Store, Table, TableType, Val, ValType,
+    Caller, Capabilities, Capability, Engine, Error, Extern, ExternRef, Func, FuncType, Global,
+    GlobalType, Instance, Memory, MemoryType, Module, Mutability, RefType, Store, Table, TableType,
+    TrapKind, Val, ValType,
 };
 use wcmp_wasm_core_web::Web;
 
@@ -534,14 +535,355 @@ async fn it_refuses_a_v128_for_a_function_whose_type_it_does_not_know() {
     );
 }
 
+/// The host function of `ty` in `store` that gives back its arguments as
+/// its results.
+fn echo<T: 'static>(store: &mut Store<T>, ty: FuncType) -> Func {
+    Func::new(store, ty, |_, params, results| {
+        results.copy_from_slice(params);
+        Ok(())
+    })
+    .expect("the store makes a host function")
+}
+
 #[wcmp_macros::test]
-async fn it_refuses_a_host_function_until_it_has_a_wrapper() {
+async fn it_carries_the_bits_of_each_value_through_a_host_function() {
     let engine = engine();
     let mut store = Store::new(&engine, ()).expect("the engine makes a store");
-    let refused = Func::new(
-        &mut store,
-        wcmp_wasm_core::FuncType::new([], []),
-        |_, _, _| Ok(()),
+    let types = [
+        ValType::F32,
+        ValType::F64,
+        ValType::V128,
+        ValType::EXTERNREF,
+        ValType::FUNCREF,
+    ];
+    let same = echo(&mut store, FuncType::new(types.clone(), types));
+    let module = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (import "host" "same"
+                (func $same
+                  (param f32 f64 v128 externref funcref)
+                  (result f32 f64 v128 externref funcref)))
+              (func $marker (result i32) i32.const 42)
+              (elem declare func $marker)
+              ;; The guest makes each value itself, so only the wrapper
+              ;; carries it, and gives back the bits of each number.
+              (func (export "relay") (param $token externref)
+                (result i32 i64 i64 i64 externref funcref)
+                (local $single f32)
+                (local $double f64)
+                (local $vector v128)
+                (local $held externref)
+                (local $function funcref)
+                i32.const 0x7fa00001
+                f32.reinterpret_i32
+                i64.const 0x7ff4000000000001
+                f64.reinterpret_i64
+                v128.const i64x2 0x0123456789abcdef 0x7edcba9876543210
+                local.get $token
+                ref.func $marker
+                call $same
+                local.set $function
+                local.set $held
+                local.set $vector
+                local.set $double
+                local.set $single
+                local.get $single
+                i32.reinterpret_f32
+                local.get $double
+                i64.reinterpret_f64
+                local.get $vector
+                i64x2.extract_lane 0
+                local.get $vector
+                i64x2.extract_lane 1
+                local.get $held
+                local.get $function))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    let instance = Instance::instantiate(&mut store, &module, &[same.into()])
+        .await
+        .expect("the module instantiates");
+    let relay = func(&mut store, instance, "relay");
+    let token = ExternRef::new(&mut store, "token").expect("the store makes an externref");
+
+    let mut results = [
+        Val::I32(0),
+        Val::I64(0),
+        Val::I64(0),
+        Val::I64(0),
+        Val::ExternRef(None),
+        Val::FuncRef(None),
+    ];
+    relay
+        .call(&mut store, &[Val::ExternRef(Some(token))], &mut results)
+        .expect("the call succeeds");
+
+    // A signaling NaN keeps its payload each way, which a `Number` would
+    // not promise.
+    assert_eq!(results[0].i32(), Some(0x7fa0_0001));
+    assert_eq!(results[1].i64(), Some(0x7ff4_0000_0000_0001));
+    assert_eq!(results[2].i64(), Some(0x0123_4567_89ab_cdef));
+    assert_eq!(results[3].i64(), Some(0x7edc_ba98_7654_3210));
+    let Val::ExternRef(Some(held)) = results[4] else {
+        panic!("the host gave back the externref: {:?}", results[4]);
+    };
+    assert_eq!(
+        held.data(&store)
+            .expect("the externref belongs to the store")
+            .downcast_ref::<&str>(),
+        Some(&"token")
     );
-    assert!(matches!(refused, Err(Error::Backend { .. })), "{refused:?}");
+    let Val::FuncRef(Some(marker)) = results[5] else {
+        panic!("the host gave back the funcref: {:?}", results[5]);
+    };
+    let mut result = [Val::I32(0)];
+    marker
+        .call(&mut store, &[], &mut result)
+        .expect("the call succeeds");
+    assert_eq!(result[0].i32(), Some(42));
+}
+
+#[wcmp_macros::test]
+fn it_carries_a_v128_parameter_to_a_host_function_through_a_carrier() {
+    let engine = engine();
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    let same = echo(
+        &mut store,
+        FuncType::new([ValType::V128, ValType::I32], [ValType::V128, ValType::I32]),
+    );
+    let bits = 0x0011_2233_4455_6677_8899_aabb_ccdd_eeff;
+    let mut results = [Val::V128(0), Val::I32(0)];
+    same.call(&mut store, &[Val::V128(bits), Val::I32(-5)], &mut results)
+        .expect("the host calls its own function through a carrier");
+    assert_eq!(results[0].v128(), Some(bits));
+    assert_eq!(results[1].i32(), Some(-5));
+}
+
+#[wcmp_macros::test]
+async fn it_carries_an_exnref_through_a_host_function() {
+    let engine = engine();
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    let same = echo(
+        &mut store,
+        FuncType::new([ValType::EXNREF], [ValType::EXNREF]),
+    );
+    let module = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (import "host" "same" (func $same (param exnref) (result exnref)))
+              (tag $oops (param i32))
+              (func (export "round") (param i32) (result i32)
+                (local $held exnref)
+                block $caught (result exnref)
+                  try_table (catch_all_ref $caught)
+                    local.get 0
+                    throw $oops
+                  end
+                  unreachable
+                end
+                call $same
+                local.set $held
+                block $payload (result i32)
+                  try_table (catch $oops $payload)
+                    local.get $held
+                    throw_ref
+                  end
+                  unreachable
+                end))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    let instance = Instance::instantiate(&mut store, &module, &[same.into()])
+        .await
+        .expect("the module instantiates");
+    let round = func(&mut store, instance, "round");
+    let mut result = [Val::I32(0)];
+    round
+        .call(&mut store, &[Val::I32(17)], &mut result)
+        .expect("the call succeeds");
+    assert_eq!(result[0].i32(), Some(17));
+}
+
+#[wcmp_macros::test]
+async fn it_traps_where_a_host_function_gives_a_result_of_the_wrong_type() {
+    let engine = engine();
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    let wrong = Func::new(
+        &mut store,
+        FuncType::new([], [ValType::I32]),
+        |_, _, results| {
+            results[0] = Val::I64(1);
+            Ok(())
+        },
+    )
+    .expect("the store makes a host function");
+    let module = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (import "host" "wrong" (func $wrong (result i32)))
+              (global $handled (export "handled") (mut i32) (i32.const 0))
+              (func (export "guarded")
+                block $caught
+                  try_table (catch_all $caught)
+                    call $wrong
+                    drop
+                  end
+                  return
+                end
+                i32.const 1
+                global.set $handled))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    let instance = Instance::instantiate(&mut store, &module, &[wrong.into()])
+        .await
+        .expect("the module instantiates");
+    let guarded = func(&mut store, instance, "guarded");
+
+    match guarded.call(&mut store, &[], &mut []) {
+        Err(Error::Trap(TrapKind::Host(error))) => assert!(
+            matches!(
+                error.downcast_ref::<Error>(),
+                Some(Error::TypeMismatch { .. })
+            ),
+            "{error:?}"
+        ),
+        other => panic!("the call fails with the host's type mismatch: {other:?}"),
+    }
+    let handled = export(&mut store, instance, "handled")
+        .into_global()
+        .expect("`handled` is a global")
+        .get(&mut store)
+        .expect("the global belongs to the store");
+    assert_eq!(handled.i32(), Some(0), "the guest's handler did not run");
+}
+
+#[wcmp_macros::test]
+async fn it_calls_a_host_function_from_the_start_function() {
+    let engine = engine();
+    let mut store = Store::new(&engine, 0u32).expect("the engine makes a store");
+    let count = Func::new(
+        &mut store,
+        FuncType::new([], []),
+        |mut caller: Caller<'_, u32>, _, _| {
+            *caller.data_mut() += 1;
+            Ok(())
+        },
+    )
+    .expect("the store makes a host function");
+    let fail = Func::new(&mut store, FuncType::new([], []), |_, _, _| {
+        anyhow::bail!("the start refused")
+    })
+    .expect("the store makes a host function");
+    let module = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (import "host" "start" (func $start))
+              (start $start))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+
+    Instance::instantiate(&mut store, &module, &[count.into()])
+        .await
+        .expect("the module instantiates");
+    assert_eq!(*store.data(), 1, "the start function called the host");
+
+    match Instance::instantiate(&mut store, &module, &[fail.into()]).await {
+        Err(Error::Trap(TrapKind::Host(error))) => {
+            assert_eq!(error.to_string(), "the start refused");
+        }
+        other => panic!("the instantiation fails with the host's error: {other:?}"),
+    }
+}
+
+/// What the store of the test of a trap under a host function holds: the
+/// guest function the host function calls back into.
+#[derive(Default)]
+struct Below {
+    down: Option<Func>,
+}
+
+#[wcmp_macros::test]
+async fn it_keeps_each_frame_of_a_host_function_below_a_trap() {
+    let engine = engine();
+    let mut store = Store::new(&engine, Below::default()).expect("the engine makes a store");
+    // At depth zero the host function fails. At depth one it calls down,
+    // and makes the failure below it a result. Above that it adds its
+    // depth to what the call below gave.
+    let descend = Func::new(
+        &mut store,
+        FuncType::new([ValType::I32], [ValType::I32]),
+        |mut caller: Caller<'_, Below>, params, results| {
+            let depth = params[0].i32().unwrap_or_default();
+            if depth == 0 {
+                anyhow::bail!("the bottom refuses");
+            }
+            let down = caller
+                .data()
+                .down
+                .ok_or_else(|| anyhow::anyhow!("the guest function is not set"))?;
+            let mut inner = [Val::I32(0)];
+            let below = match down.call(&mut caller, &[Val::I32(depth - 1)], &mut inner) {
+                Ok(()) => inner[0].i32().unwrap_or_default(),
+                Err(Error::Trap(TrapKind::Host(error))) if depth == 1 => {
+                    anyhow::ensure!(error.to_string() == "the bottom refuses");
+                    100
+                }
+                Err(error) => return Err(error.into()),
+            };
+            anyhow::ensure!(params[0].i32() == Some(depth), "the arguments changed");
+            results[0] = Val::I32(below + depth);
+            Ok(())
+        },
+    )
+    .expect("the store makes a host function");
+    let module = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (import "host" "descend" (func $descend (param i32) (result i32)))
+              (func (export "down") (param i32) (result i32)
+                local.get 0
+                call $descend))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    let instance = Instance::instantiate(&mut store, &module, &[descend.into()])
+        .await
+        .expect("the module instantiates");
+    let down = instance
+        .get_export(&mut store, "down")
+        .expect("the instance belongs to the store")
+        .and_then(Extern::into_func)
+        .expect("the instance exports `down`");
+    store.data_mut().down = Some(down);
+
+    // Twice, so the second call finds the frames as the first left them.
+    for _ in 0..2 {
+        let mut result = [Val::I32(0)];
+        down.call(&mut store, &[Val::I32(4)], &mut result)
+            .expect("the call succeeds");
+        assert_eq!(result[0].i32(), Some(100 + 1 + 2 + 3 + 4));
+    }
 }

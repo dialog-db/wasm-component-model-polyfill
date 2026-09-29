@@ -13,7 +13,8 @@
 //! The backend never makes a function from a string of source. It reaches
 //! the JavaScript API through `js-sys` and `wasm-bindgen` imports alone, and
 //! JavaScript carries only what that API alone can do: a compile, an
-//! instantiation, and the reads and writes of its objects.
+//! instantiation, the reads and writes of its objects, and the calls from a
+//! host function's wrapper module to the host.
 //!
 //! # Compilation and instantiation
 //!
@@ -103,18 +104,37 @@
 //! JavaScript Promise Integration, `WebAssembly.Suspending` and
 //! `WebAssembly.promising`, and keeps them.
 //!
-//! The backend does not yet make host functions, and it does not declare
-//! [`host_suspension`](wcmp_wasm_core::Capability::HostSuspension). A host
-//! function needs a generated wrapper module, so that a host error traps the
-//! guest instead of throwing an exception that a guest can catch.
-//! [`Func::new`](wcmp_wasm_core::Func::new) is
-//! [`Error::Backend`](wcmp_wasm_core::Error::Backend) until then. A trap is
-//! [`TrapKind::Other`](wcmp_wasm_core::TrapKind::Other), with the browser's
-//! message.
+//! The backend does not declare
+//! [`host_suspension`](wcmp_wasm_core::Capability::HostSuspension) yet. A
+//! trap is [`TrapKind::Other`](wcmp_wasm_core::TrapKind::Other), with the
+//! browser's message, except the trap of a host function that failed.
+//!
+//! # Host functions
+//!
+//! A host function is a Rust closure behind a generated wrapper module. A
+//! JavaScript function that throws into a guest throws an exception, which
+//! a guest's `catch_all` catches, and a host error must be a trap, which no
+//! guest catches. So a guest calls the export of the wrapper, and the
+//! wrapper calls the host through JavaScript functions that never throw.
+//! One of them runs the closure and returns a status. Where the closure
+//! failed, the store keeps its error and the wrapper runs `unreachable`.
+//! The call into the guest then fails with
+//! [`TrapKind::Host`](wcmp_wasm_core::TrapKind::Host) and the closure's own
+//! error. The wrapper is WebAssembly, so it does not break JavaScript
+//! Promise Integration.
+//!
+//! The wrapper passes each argument and each result in a call of its own,
+//! into a frame that belongs to one call of the host function. So a host
+//! function of any number of parameters works, with no function made from
+//! source, and no call shares a buffer with another. The closure receives
+//! the store, and can call back into a guest, which can call the same host
+//! function again, at any depth.
 
 mod backend;
 mod boundary;
+mod calls;
 mod carrier;
+mod entry;
 mod errors;
 mod js;
 mod jspi;
@@ -124,6 +144,7 @@ mod probes;
 mod store;
 mod type_registry;
 mod values;
+mod wrapper;
 
 pub use crate::backend::Web;
 

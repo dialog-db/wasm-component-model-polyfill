@@ -2380,6 +2380,7 @@ dependencies = [
 name = "wcmp-wasm-core-web"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "js-sys",
  "wasm-bindgen",
  "wasm-bindgen-test",

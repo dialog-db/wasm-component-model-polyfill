@@ -52,6 +52,7 @@ pub use crate::compile::{
     it_refuses_bytes_that_are_not_a_module_with_a_compile_error,
 };
 pub use crate::host_functions::{
+    it_calls_a_host_function_of_more_than_eight_parameters,
     it_enters_a_host_function_again_at_any_depth,
     it_traps_with_the_host_error_that_no_guest_can_catch,
 };
@@ -101,6 +102,7 @@ macro_rules! contract_tests {
             it_describes_a_tag_at_the_boundary,
             it_links_a_tag_from_one_instance_into_another,
             it_enters_a_host_function_again_at_any_depth,
+            it_calls_a_host_function_of_more_than_eight_parameters,
             it_traps_with_the_host_error_that_no_guest_can_catch,
             it_reads_an_externref_the_guest_hands_back,
             it_calls_a_funcref_the_guest_hands_out,
