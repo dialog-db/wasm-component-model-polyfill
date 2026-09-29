@@ -18,13 +18,13 @@
 //! the one the browser takes.
 
 use anyhow::anyhow;
-use wasm_runtime_layer::{
-    AsContextMut, Extern as RuntimeExtern, Func as RuntimeFunc, Imports,
-    Instance as RuntimeInstance, Module as RuntimeModule, Table, Val as RuntimeVal,
-};
 
 use crate::abi::layout::FlatType;
 use crate::error::{Error, ThreadCause};
+use crate::runtime_layer::{
+    AsContextMut, Extern as RuntimeExtern, Func as RuntimeFunc, Imports,
+    Instance as RuntimeInstance, Module as RuntimeModule, Table, Val as RuntimeVal,
+};
 
 /// The probe, as a core module binary. Its text is:
 ///

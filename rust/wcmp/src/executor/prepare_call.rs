@@ -35,7 +35,6 @@
 
 use std::sync::{Arc, Mutex};
 
-use wasm_runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
 use wasmtime_environ::component::{PREPARE_ASYNC_NO_RESULT, PREPARE_ASYNC_WITH_RESULT};
 
 use crate::abi::runtime_state::AbiRuntimeState;
@@ -45,6 +44,7 @@ use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CanonOptions, CoreSignature, DataModel, StringEncoding};
 use crate::internal::ErrorInternal;
 use crate::resource::{HandleTables, TableId};
+use crate::runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 

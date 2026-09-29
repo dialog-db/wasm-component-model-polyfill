@@ -79,15 +79,12 @@
 //! suspended in its shim under a provider, and writes the result
 //! exactly where a synchronous registration's crossing writes it.
 //!
-//! [`Func`]: wasm_runtime_layer::Func
+//! [`Func`]: crate::runtime_layer::Func
 //! [`HostFunc<T>`]: crate::linker::HostFunc
 
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, anyhow};
-use wasm_runtime_layer::{
-    AsContextMut, Func as RuntimeFunc, FuncType, Val as RuntimeVal, ValType as CoreType,
-};
 
 use crate::abi::boundary_call::BoundaryCall;
 use crate::abi::context::BoundaryContext;
@@ -101,7 +98,6 @@ use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::signature::Signature;
 use crate::abi::{lift, lower};
-use crate::backend::Backend;
 use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, TaskCause};
 use crate::executor::ir::{CanonOptions, LoweringSpec};
@@ -109,6 +105,9 @@ use crate::internal::{
     AccessorInternal, ErrorInternal, HostCallInternal, HostResourceInternal, ResourceTypeIdInternal,
 };
 use crate::linker::{HostCall, HostFuncFuture, HostFuncKind, HostResource};
+use crate::runtime_layer::{
+    AsContextMut, Backend, Func as RuntimeFunc, FuncType, Val as RuntimeVal, ValType as CoreType,
+};
 use crate::store::StoreContextInternalExt;
 
 use super::ResourceDestructor;
@@ -629,7 +628,7 @@ enum HostOutcome {
 /// lower, or the status word of an asynchronous one.
 #[allow(clippy::too_many_arguments)]
 fn invoke_trampoline<T: 'static>(
-    mut store_ctx: wasm_runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
+    mut store_ctx: crate::runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
     signature: &Arc<Signature>,
     declared: &Arc<CanonOptions>,
     kind: LowerKind,
@@ -670,7 +669,7 @@ fn invoke_trampoline<T: 'static>(
     // failure travels past the pop that would have ended the subtask,
     // so the whole of it is one fallible step whose one error path
     // ends the subtask below.
-    let called = (|store_ctx: &mut wasm_runtime_layer::StoreContextMut<
+    let called = (|store_ctx: &mut crate::runtime_layer::StoreContextMut<
         '_,
         StoreData<T>,
         Backend,
@@ -858,7 +857,7 @@ fn invoke_trampoline<T: 'static>(
 /// scope the pop uncovers.
 #[allow(clippy::too_many_arguments)]
 fn return_host_values<T: 'static>(
-    store_ctx: &mut wasm_runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
+    store_ctx: &mut crate::runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
     signature: &FunctionType,
     tables: &Arc<Mutex<HandleTables>>,
     options: BoundaryOptions,
@@ -903,7 +902,7 @@ fn return_host_values<T: 'static>(
 /// belongs to the caller's task.
 #[allow(clippy::too_many_arguments)]
 fn write_host_result<T: 'static>(
-    store_ctx: &mut wasm_runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
+    store_ctx: &mut crate::runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
     signature: &FunctionType,
     options: BoundaryOptions,
     instance: BoundaryInstance,
@@ -979,7 +978,7 @@ fn write_host_result<T: 'static>(
 /// subtask's index in the caller's handle table when it was not.
 #[allow(clippy::too_many_arguments)]
 fn start_host_call<T: 'static>(
-    store_ctx: &mut wasm_runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
+    store_ctx: &mut crate::runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
     signature: &Arc<Signature>,
     declared: &CanonOptions,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
@@ -1063,7 +1062,7 @@ fn start_host_call<T: 'static>(
 /// crossing runs.
 #[allow(clippy::too_many_arguments)]
 fn block_on_host_call<T: 'static>(
-    store_ctx: &mut wasm_runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
+    store_ctx: &mut crate::runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
     signature: &Arc<Signature>,
     declared: &CanonOptions,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
@@ -1136,7 +1135,7 @@ fn block_on_host_call<T: 'static>(
 /// the stack.
 #[allow(clippy::too_many_arguments)]
 fn write_produced<T: 'static>(
-    store_ctx: &mut wasm_runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
+    store_ctx: &mut crate::runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
     signature: &FunctionType,
     tables: &Arc<Mutex<HandleTables>>,
     options: BoundaryOptions,

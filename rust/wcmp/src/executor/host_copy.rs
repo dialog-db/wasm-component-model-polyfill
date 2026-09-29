@@ -37,14 +37,13 @@
 
 use core::task::{Context, Poll};
 
-use wasm_runtime_layer::AsContextMut;
-
 use crate::abi::context::BoundaryContext;
 use crate::abi::instance::BoundaryInstance;
 use crate::abi::layout::size_of;
 use crate::concurrency::{Accessor, CopyState, EndId, HostTask, HostTaskBody};
 use crate::error::{AbiPosition, Error, Result};
 use crate::internal::ErrorInternal;
+use crate::runtime_layer::AsContextMut;
 use crate::store::{StoreContext, StoreContextInternalExt};
 use crate::value::Val;
 

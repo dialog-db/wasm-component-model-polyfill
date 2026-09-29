@@ -875,7 +875,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use wasm_runtime_layer::{
+    use crate::runtime_layer::{
         AsContextMut, Func as RuntimeFunc, FuncType, Memory, MemoryType, Val as RuntimeVal,
         ValType as CoreType,
     };

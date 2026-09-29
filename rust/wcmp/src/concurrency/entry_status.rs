@@ -1,6 +1,6 @@
 //! Where a thread entry stopped when a provider handed control back.
 
-use wasm_runtime_layer::Val as RuntimeVal;
+use crate::runtime_layer::Val as RuntimeVal;
 
 /// Where a thread entry stopped when a provider's start or resume
 /// handed control back to its caller.

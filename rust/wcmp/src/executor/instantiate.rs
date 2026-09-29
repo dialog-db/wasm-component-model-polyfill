@@ -1,7 +1,7 @@
 //! The cross-target executor driver.
 //!
 //! Walks the polyfill's [`ExecutorIr`], building one
-//! [`wasm_runtime_layer::Instance`] per `InstantiateModule`
+//! [`crate::runtime_layer::Instance`] per `InstantiateModule`
 //! directive, populating the canonical-ABI runtime state slabs as
 //! `Extract*` directives are encountered, and constructing host
 //! trampolines for `LowerImport` directives. The driver is target-
@@ -13,11 +13,6 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
 
-use wasm_runtime_layer::{
-    Extern as RuntimeExtern, Func as RuntimeFunc, Imports, Instance as RuntimeInstance,
-    ValType as CoreType,
-};
-
 use crate::component::{Component, ExternType};
 use crate::concurrency::{BlockingBuiltin, InstanceId};
 use crate::error::{Error, InstantiationError, LinkError, Result};
@@ -27,6 +22,10 @@ use crate::internal::{InstanceParts, ModuleInternal};
 use crate::linker::{HostFuncKind, ImportBinding, InstanceRegistration, Linker, Resolution};
 use crate::module::Module;
 use crate::resource::{HandleTables, ResourceTableRuntime, ResourceTypeId, TableId};
+use crate::runtime_layer::{
+    Extern as RuntimeExtern, Func as RuntimeFunc, Imports, Instance as RuntimeInstance,
+    ValType as CoreType,
+};
 use crate::store::ResourceRecord;
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
@@ -1390,7 +1389,7 @@ fn resolve_core_instance_export<T: 'static>(
         .ok_or_else(|| internal("module did not export the named item at runtime"))
 }
 
-/// Walk the IR's exports, build a [`wasm_runtime_layer::Func`] per
+/// Walk the IR's exports, build a [`crate::runtime_layer::Func`] per
 /// lifted-function export, and pair it with the polyfill
 /// [`FunctionType`] the IR projected onto the [`ExportSpec`] so the
 /// polyfill's [`Func::call`] knows how to lower its arguments and

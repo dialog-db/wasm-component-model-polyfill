@@ -16,12 +16,11 @@
 
 use std::sync::Arc;
 
-use wasm_runtime_layer::{Func as RuntimeFunc, Memory};
-
 use crate::abi::instance_flags::InstanceFlags;
 use crate::concurrency::InstanceId;
 use crate::executor::ThreadStartTable;
 use crate::resource::{ResourceTableRuntime, TableId};
+use crate::runtime_layer::{Func as RuntimeFunc, Memory};
 
 /// Per-component canonical-ABI runtime state. Populated by the
 /// executor's `Extract*` directives during instantiation; consulted

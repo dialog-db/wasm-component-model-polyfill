@@ -1,13 +1,12 @@
 //! The buffer of a write a host consumer serves.
 
-use wasm_runtime_layer::AsContextMut;
-
 use crate::abi::context::BoundaryContext;
 use crate::abi::instance::BoundaryInstance;
 use crate::abi::layout::size_of;
 use crate::error::{AbiPosition, Error, Result};
 use crate::internal::{ErrorInternal, SourceInternal};
 use crate::linker::ComponentValue;
+use crate::runtime_layer::AsContextMut;
 use crate::store::{StoreContext, StoreContextInternalExt};
 
 use super::copy_buffer::CopyBuffer;

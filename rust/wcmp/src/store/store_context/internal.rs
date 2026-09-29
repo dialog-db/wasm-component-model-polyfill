@@ -18,12 +18,7 @@
 use core::task::Waker;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use wasm_runtime_layer::{
-    Func as RuntimeFunc, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
-};
-
 use crate::abi::signature::Signature;
-use crate::backend::Backend;
 use crate::concurrency::{
     Accessor, CallStatus, EntryFinish, EventSlot, HostTask, InstanceId, Item, LowerKind, Outcome,
     Plan, ResultChannel, Scheduler, StoreProvider, SubtaskId, TaskId, ThreadId, WaitableSetId,
@@ -32,6 +27,9 @@ use crate::error::{Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
 use crate::executor::ir::CanonOptions;
 use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId, TableId};
+use crate::runtime_layer::{
+    Backend, Func as RuntimeFunc, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
+};
 use crate::types::ResourceType;
 use crate::value::Val;
 

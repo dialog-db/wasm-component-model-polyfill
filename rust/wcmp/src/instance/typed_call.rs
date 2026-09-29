@@ -2,13 +2,12 @@
 
 use core::marker::PhantomData;
 
-use wasm_runtime_layer::Val as RuntimeVal;
-
 use crate::abi::context::BoundaryContext;
 use crate::abi::signature::Signature;
 use crate::component::FunctionType;
 use crate::error::Result;
 use crate::linker::{ComponentParameters, ComponentResult};
+use crate::runtime_layer::Val as RuntimeVal;
 use crate::value::Val;
 
 use super::call_values::CallValues;

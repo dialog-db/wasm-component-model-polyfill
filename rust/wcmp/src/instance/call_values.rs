@@ -10,13 +10,12 @@
 //! back a Rust value, and never holds a `Val` for either unless the
 //! export resolves through `task.return`.
 
-use wasm_runtime_layer::Val as RuntimeVal;
-
 use crate::abi::call_values::{lift_result_value, lower_arguments};
 use crate::abi::context::BoundaryContext;
 use crate::abi::signature::Signature;
 use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
+use crate::runtime_layer::Val as RuntimeVal;
 use crate::value::Val;
 
 /// The arguments of one export call and the shape its result comes

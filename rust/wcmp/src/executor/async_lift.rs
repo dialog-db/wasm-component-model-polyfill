@@ -43,10 +43,9 @@
 //! the stack-switch cause. A stackful export that never blocks
 //! behaves the same on every target.
 
-use wasm_runtime_layer::Val as RuntimeVal;
-
 use crate::concurrency::TaskId;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, TaskCause};
+use crate::runtime_layer::Val as RuntimeVal;
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 

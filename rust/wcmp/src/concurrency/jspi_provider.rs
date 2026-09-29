@@ -9,19 +9,16 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Poll, Waker};
 
 use js_sys::{Function, Promise, Reflect};
-use js_wasm_runtime_layer::Func as BackendFunc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
-use wasm_runtime_layer::backend::{Extern as BackendExtern, Val as BackendVal};
-use wasm_runtime_layer::{
-    Engine as RuntimeEngine, Extern as RuntimeExtern, Func as RuntimeFunc, FuncType, Imports,
-    Instance as RuntimeInstance, Module as RuntimeModule, Val as RuntimeVal,
-    ValType as RuntimeValType,
-};
 
-use crate::backend::{Backend, substrate_failure};
 use crate::error::{Error, Result};
 use crate::internal::ErrorInternal;
+use crate::runtime_layer::{
+    Backend, BackendExtern, BackendFunc, BackendVal, Engine as RuntimeEngine,
+    Extern as RuntimeExtern, Func as RuntimeFunc, FuncType, Imports, Instance as RuntimeInstance,
+    Module as RuntimeModule, Val as RuntimeVal, ValType as RuntimeValType, substrate_failure,
+};
 use crate::store::{StoreContext, StoreContextInternalExt};
 
 use super::entry_status::EntryStatus;

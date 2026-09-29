@@ -24,11 +24,10 @@
 //! compile failed, or the caller dropped the future — discards the
 //! entries of the compiles that did finish.
 
-use wasm_runtime_layer::Module as RuntimeModule;
-
 use crate::engine::Engine;
 use crate::error::{Error, InstantiationError, Result};
 use crate::internal::{EngineInternal, ErrorInternal};
+use crate::runtime_layer::Module as RuntimeModule;
 
 /// Compile `bytes`, one core module, against `engine`. A module the
 /// runtime substrate refuses fails as the substrate's failure.
@@ -90,7 +89,7 @@ fn distinct_modules<'a>(modules: &[&'a [u8]]) -> (Vec<&'a [u8]>, Vec<usize>) {
 /// same bytes can be in the map by then.
 #[cfg(target_arch = "wasm32")]
 struct Precompiled<'a> {
-    backend: js_wasm_runtime_layer::Engine,
+    backend: crate::runtime_layer::Backend,
     finished: Vec<&'a [u8]>,
 }
 

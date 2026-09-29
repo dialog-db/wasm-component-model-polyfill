@@ -6,8 +6,8 @@ use crate::resource::ResourceHandle;
 /// A single component-level value passed to or returned from an
 /// exported component function.
 ///
-/// `Val` is the polyfill's own value enum; no [`wasm_runtime_layer`]
-/// or upstream component-layer type appears in its shape. Equality
+/// `Val` is the polyfill's own value enum; no runtime-layer type or
+/// upstream component-layer type appears in its shape. Equality
 /// and hashing are structural.
 ///
 /// Each variant carries the host-readable Rust representation of one
@@ -32,8 +32,6 @@ use crate::resource::ResourceHandle;
 /// guest's entry into the host table. Lifting a `borrow` out of a
 /// guest lends the guest's entry to the call when that entry owns the
 /// resource, and lends nothing when the entry is itself a borrow.
-///
-/// [`wasm_runtime_layer`]: https://docs.rs/wasm_runtime_layer
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum Val {

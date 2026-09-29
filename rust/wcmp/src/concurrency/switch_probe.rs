@@ -1,12 +1,10 @@
 //! The probe that asks an engine whether it switches stacks with the
 //! instructions of the WebAssembly stack-switching proposal.
 
-use wasm_runtime_layer::{
-    Engine as RuntimeEngine, Imports, Instance as RuntimeInstance, Module as RuntimeModule,
-    Store as RuntimeStore, Val as RuntimeVal,
+use crate::runtime_layer::{
+    Backend, Engine as RuntimeEngine, Imports, Instance as RuntimeInstance,
+    Module as RuntimeModule, Store as RuntimeStore, Val as RuntimeVal,
 };
-
-use crate::backend::Backend;
 
 /// The probe that asks an engine whether it switches stacks with the
 /// instructions of the WebAssembly stack-switching proposal.

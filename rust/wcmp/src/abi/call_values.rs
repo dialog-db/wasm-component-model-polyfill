@@ -10,8 +10,6 @@
 //! [`Val`] per value, and the typed one, which moves native Rust
 //! values through the same decisions.
 
-use wasm_runtime_layer::Val as RuntimeVal;
-
 use super::context::BoundaryContext;
 use super::flatten::{lift_from_flat_slots, lower_into_flat_slots};
 use super::layout::{alignment_of, result_spills, size_of};
@@ -19,6 +17,7 @@ use super::signature::Signature;
 use super::{lift, lower};
 use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
+use crate::runtime_layer::Val as RuntimeVal;
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
 

@@ -73,10 +73,6 @@ wasm-bindgen-test = { workspace = true }
 # the host-task bound is there to take, and what the test of that
 # bound builds one from.
 wasm-bindgen-futures = { workspace = true }
-# The runtime layer's own context type, which the test of what a
-# repeated call records in the browser's store goes through to reach
-# the backend store behind it.
-wasm_runtime_layer = { workspace = true }
 # The Zena test host's clock in the browser: `performance.now()` and a
 # `setTimeout` timer.
 js-sys = { workspace = true }

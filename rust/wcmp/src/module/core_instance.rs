@@ -1,8 +1,7 @@
 //! An instantiated core module the host drove itself.
 
-use wasm_runtime_layer::Instance as RuntimeInstance;
-
 use crate::internal::{CoreExternParts, CoreInstanceParts};
+use crate::runtime_layer::Instance as RuntimeInstance;
 use crate::store::StoreInternalExt;
 use crate::store::{Store, StoreId};
 

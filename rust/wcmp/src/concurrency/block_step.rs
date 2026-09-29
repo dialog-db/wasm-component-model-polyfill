@@ -1,8 +1,7 @@
 //! What the first part of a blocking built-in found.
 
-use wasm_runtime_layer::Val as RuntimeVal;
-
 use crate::error::Result;
+use crate::runtime_layer::Val as RuntimeVal;
 use crate::store::StoreContext;
 
 use super::readiness::Readiness;

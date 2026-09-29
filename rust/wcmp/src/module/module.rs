@@ -2,13 +2,12 @@
 
 use std::sync::Arc;
 
-use wasm_runtime_layer::{
-    Imports as RuntimeImports, Instance as RuntimeInstance, Module as RuntimeModule,
-};
-
 use crate::engine::Engine;
 use crate::error::{Error, InstantiationError, Result};
 use crate::internal::{CoreExternInternal, CoreInstanceParts, ModuleInternal};
+use crate::runtime_layer::{
+    Imports as RuntimeImports, Instance as RuntimeInstance, Module as RuntimeModule,
+};
 use crate::store::Store;
 use crate::store::StoreInternalExt;
 

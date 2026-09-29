@@ -227,7 +227,6 @@
 mod baseline;
 
 mod abi;
-mod backend;
 mod component;
 mod concurrency;
 mod engine;
@@ -240,6 +239,7 @@ mod internal;
 mod linker;
 mod module;
 mod resource;
+mod runtime_layer;
 mod store;
 mod suspend_provider_kind;
 mod types;

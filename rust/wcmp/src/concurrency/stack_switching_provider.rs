@@ -5,15 +5,13 @@ use core::task::{Poll, Waker};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use wasm_runtime_layer::{
-    Engine as RuntimeEngine, Extern as RuntimeExtern, FuncType, Imports,
-    Instance as RuntimeInstance, Module as RuntimeModule, ValType as RuntimeValType,
-};
-use wasm_runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
-
-use crate::backend::{Backend, substrate_failure};
 use crate::error::{Error, Result};
 use crate::internal::ErrorInternal;
+use crate::runtime_layer::{
+    Backend, Engine as RuntimeEngine, Extern as RuntimeExtern, Func as RuntimeFunc, FuncType,
+    Imports, Instance as RuntimeInstance, Module as RuntimeModule, Val as RuntimeVal,
+    ValType as RuntimeValType, substrate_failure,
+};
 use crate::store::{StoreContext, StoreContextInternalExt};
 
 use super::entry_status::EntryStatus;

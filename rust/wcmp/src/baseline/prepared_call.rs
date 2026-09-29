@@ -397,7 +397,7 @@ fn subtask_count(store: &Store<()>) -> usize {
 /// measurement is the browser's alone.
 #[cfg(target_arch = "wasm32")]
 fn function_record_count(store: &mut Store<()>) -> usize {
-    use wasm_runtime_layer::AsContextMut;
+    use crate::runtime_layer::AsContextMut;
 
     store
         .internal()
@@ -936,7 +936,7 @@ extern "C" {
 #[cfg(target_arch = "wasm32")]
 #[wcmp_macros::test]
 async fn it_runs_a_prepared_call_under_a_policy_without_unsafe_eval() {
-    use wasm_runtime_layer::{
+    use crate::runtime_layer::{
         AsContextMut, Func as RuntimeFunc, FuncType, Val as RuntimeVal, ValType,
     };
 

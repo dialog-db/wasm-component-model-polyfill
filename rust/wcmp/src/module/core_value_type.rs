@@ -1,9 +1,8 @@
 //! The type of one core WebAssembly value.
 
-use wasm_runtime_layer::{RefType, ValType as RuntimeValType};
-
 use crate::error::{Error, Result};
 use crate::internal::{CoreValueTypeInternal, ErrorInternal};
+use crate::runtime_layer::{RefType, ValType as RuntimeValType};
 
 /// The type of a core WebAssembly value: a number, a vector, or a
 /// reference. These are the value types a core module's function

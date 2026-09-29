@@ -1,10 +1,9 @@
 //! The two generated functions that carry one call between
 //! components.
 
-use wasm_runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
-
 use crate::abi::layout::FlatType;
 use crate::resource::TableId;
+use crate::runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
 
 use super::caller_kind::CallerKind;
 use super::thread_id::ThreadId;

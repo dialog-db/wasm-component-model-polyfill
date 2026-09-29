@@ -49,7 +49,6 @@
 
 use std::sync::{Arc, Mutex};
 
-use wasm_runtime_layer::Val as RuntimeVal;
 use wasmtime_environ::component::START_FLAG_ASYNC_CALLEE;
 
 use crate::abi::instance::BoundaryInstance;
@@ -61,6 +60,7 @@ use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::CoreSignature;
 use crate::internal::ErrorInternal;
 use crate::resource::{HandleTables, TableId};
+use crate::runtime_layer::Val as RuntimeVal;
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 

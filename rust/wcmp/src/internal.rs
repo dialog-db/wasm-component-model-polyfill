@@ -25,15 +25,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use wasm_runtime_layer::{
-    Extern as RuntimeExtern, ExternType as RuntimeExternType, Instance as RuntimeInstance,
-    Module as RuntimeModule, RefType, ValType as RuntimeValType,
-};
 use wasmtime_environ::wasmparser::WasmFeatures;
 
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::shape::AbiShape;
-use crate::backend::Backend;
 use crate::component::{Component, ExternalName, FunctionType};
 use crate::concurrency::{CopyBuffer, EndId, ErrorContextId};
 use crate::error::{Error, Result};
@@ -43,6 +38,10 @@ use crate::instance::{ExportedFunction, ExportedModule, Func, Instance, TypedFun
 use crate::linker::{DestructorBody, InstanceRegistration, Resolution};
 use crate::module::{CoreExternType, CoreValueType, Module};
 use crate::resource::ResourceTableRuntime;
+use crate::runtime_layer::{
+    Backend, Extern as RuntimeExtern, ExternType as RuntimeExternType, Instance as RuntimeInstance,
+    Module as RuntimeModule, RefType, ValType as RuntimeValType,
+};
 use crate::store::{StoreContext, StoreId};
 use crate::types::ValueType;
 
@@ -55,14 +54,14 @@ pub trait ComponentInternal {
 /// The crate-internal face of [`Engine`](crate::Engine).
 pub trait EngineInternal {
     /// Borrow the wrapped runtime-layer engine.
-    fn inner(&self) -> &wasm_runtime_layer::Engine<Backend>;
+    fn inner(&self) -> &crate::runtime_layer::Engine<Backend>;
 
     /// The switch modules the stores of the engine instantiate,
     /// compiled once each, by their bytes.
     fn switch_modules(
         &self,
     ) -> &std::sync::Arc<
-        std::sync::Mutex<std::collections::HashMap<Vec<u8>, wasm_runtime_layer::Module>>,
+        std::sync::Mutex<std::collections::HashMap<Vec<u8>, crate::runtime_layer::Module>>,
     >;
 }
 

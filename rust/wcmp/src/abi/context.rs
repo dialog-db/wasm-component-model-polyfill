@@ -35,18 +35,16 @@
 
 use std::sync::Arc;
 
-use wasm_runtime_layer::{StoreContextMut, Val as RuntimeVal};
-
 use crate::abi::boundary_call::BoundaryCall;
 use crate::abi::instance::BoundaryInstance;
 use crate::abi::options::BoundaryOptions;
 use crate::abi::signature::Signature;
 use crate::abi::strategy::AbiStrategy;
-use crate::backend::Backend;
 use crate::concurrency::Scope;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::{CanonOptions, StringEncoding};
 use crate::internal::ErrorInternal;
+use crate::runtime_layer::{Backend, StoreContextMut, Val as RuntimeVal};
 use crate::store::StoreData;
 use crate::types::ValueType;
 
@@ -588,10 +586,10 @@ mod tests {
     use crate::engine::Engine;
     use crate::executor::ir::DataModel;
     use crate::resource::TableId;
+    use crate::runtime_layer::AsContextMut;
     use crate::store::Store;
     use crate::store::StoreInternalExt;
     use crate::types::PrimitiveType;
-    use wasm_runtime_layer::AsContextMut;
 
     /// Canon options that name no runtime slot, under `data_model`.
     fn canon(data_model: DataModel) -> Arc<CanonOptions> {

@@ -9,13 +9,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use wasm_runtime_layer::Module as RuntimeModule;
-
 use crate::abi::layout::FlatType;
 use crate::abi::signature::Signature;
 use crate::component::ExternalName;
 use crate::concurrency::{EndKind, LowerKind};
 use crate::module::Module;
+use crate::runtime_layer::Module as RuntimeModule;
 use crate::types::{ResourceType, ValueType};
 
 /// The executor's IR for a single parsed component.

@@ -37,7 +37,7 @@ pub struct ExportedFunction {
     /// addressed instance.
     pub path: Box<[ExternalName]>,
     /// The runtime-layer core-Wasm function that backs this export.
-    pub func: wasm_runtime_layer::Func,
+    pub func: crate::runtime_layer::Func,
     /// The polyfill's component-level signature for this export,
     /// with its canonical-ABI layout. Shared with the translation.
     pub signature: Arc<Signature>,
@@ -83,7 +83,7 @@ pub struct Instance {
     /// for as long as the component instance lives, which is what
     /// keeps the guest's core state alive; nothing reads it.
     #[allow(dead_code)]
-    core_instances: Box<[wasm_runtime_layer::Instance]>,
+    core_instances: Box<[crate::runtime_layer::Instance]>,
     /// The component-level function exports the executor produced
     /// when wiring the component.
     function_exports: Box<[Arc<ExportedFunction>]>,

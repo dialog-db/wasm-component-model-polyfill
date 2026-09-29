@@ -43,7 +43,6 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
-use wasm_runtime_layer::{AsContextMut, Func as RuntimeFunc, Val as RuntimeVal};
 
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::concurrency::{EndKind, InstanceId, WaitableId};
@@ -51,6 +50,7 @@ use crate::error::{CopyCause, Error, TaskCause};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::CoreSignature;
 use crate::resource::{HandleTables, TableId};
+use crate::runtime_layer::{AsContextMut, Func as RuntimeFunc, Val as RuntimeVal};
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 use crate::types::ValueType;

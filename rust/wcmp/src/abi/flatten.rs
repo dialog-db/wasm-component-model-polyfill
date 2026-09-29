@@ -18,8 +18,6 @@
 //! valtypes (string, list) through the existing memory-resident
 //! lift / lower paths.
 
-use wasm_runtime_layer::Val as RuntimeVal;
-
 use super::context::BoundaryContext;
 use super::layout::{FlatType, flags_chunk_count, flat_types};
 use super::{
@@ -28,6 +26,7 @@ use super::{
 };
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::internal::{ErrorInternal, FutureAnyInternal, StreamAnyInternal};
+use crate::runtime_layer::Val as RuntimeVal;
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::{Val, ValField};
 

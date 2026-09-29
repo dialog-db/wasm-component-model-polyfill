@@ -145,11 +145,9 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
-use wasm_runtime_layer::{AsContextMut, Func as RuntimeFunc, Val as RuntimeVal};
 
 use crate::abi::layout::FlatType;
 use crate::abi::runtime_state::AbiRuntimeState;
-use crate::backend::substrate_failure;
 use crate::concurrency::{
     BlockStep, BlockingBuiltin, InstanceId, Item, ItemKind, Readiness, SuspendSeam, TaskId,
     ThreadId, ThreadStart,
@@ -159,6 +157,9 @@ use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CoreParameter, CoreSignature};
 use crate::internal::ErrorInternal;
 use crate::resource::HandleTables;
+use crate::runtime_layer::{
+    AsContextMut, Func as RuntimeFunc, Val as RuntimeVal, substrate_failure,
+};
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 

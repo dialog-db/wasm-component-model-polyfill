@@ -62,8 +62,6 @@
 
 use std::sync::{Arc, Mutex};
 
-use wasm_runtime_layer::Val as RuntimeVal;
-
 use crate::abi::layout::FlatType;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::concurrency::{BlockStep, BlockingBuiltin, LowerKind, Readiness, SubtaskId, TaskId};
@@ -71,6 +69,7 @@ use crate::error::{Error, Result};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::CoreSignature;
 use crate::internal::ErrorInternal;
+use crate::runtime_layer::Val as RuntimeVal;
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 

@@ -5,14 +5,8 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use wasm_runtime_layer::{
-    AsContextMut, Func as RuntimeFunc, FuncType, StoreContextMut as RuntimeContextMut,
-    Val as RuntimeVal,
-};
-
 use crate::abi::boundary_call::BoundaryCall;
 use crate::abi::signature::Signature;
-use crate::backend::{Backend, substrate_failure};
 use crate::concurrency::{
     Accessor, CallStatus, EntryFinish, EntryStatus, EventSlot, HostTask, InFlight, InstanceId,
     Item, ItemKind, LowerKind, Outcome, ParkedThread, PendingBlock, Plan, PollScope, Readiness,
@@ -26,6 +20,10 @@ use crate::executor::ir::CanonOptions;
 use crate::executor::release_subtask;
 use crate::internal::{AccessorInternal, ErrorInternal};
 use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId, TableId};
+use crate::runtime_layer::{
+    AsContextMut, Backend, Func as RuntimeFunc, FuncType, StoreContextMut as RuntimeContextMut,
+    Val as RuntimeVal, substrate_failure,
+};
 use crate::types::ResourceType;
 use crate::value::Val;
 

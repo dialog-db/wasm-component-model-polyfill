@@ -56,23 +56,22 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use wasm_runtime_layer::{
-    AsContextMut, Func as RuntimeFunc, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
-};
-
 use crate::abi::context::BoundaryContext;
 use crate::abi::flatten::lift_from_flat_slots;
 use crate::abi::instance::BoundaryInstance;
 use crate::abi::layout::{FlatType, MAX_FLAT_PARAMS, flat_count};
 use crate::abi::lift;
 use crate::abi::runtime_state::AbiRuntimeState;
-use crate::backend::{Backend, substrate_failure};
 use crate::concurrency::{InstanceId, Scope, SubtaskId, TaskId, TaskState};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, ReturnMismatchKind, TaskCause};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CanonOptions, CoreSignature};
 use crate::internal::ErrorInternal;
 use crate::resource::HandleTables;
+use crate::runtime_layer::{
+    AsContextMut, Backend, Func as RuntimeFunc, StoreContextMut as RuntimeContextMut,
+    Val as RuntimeVal, substrate_failure,
+};
 use crate::store::StoreContextInternalExt;
 use crate::store::{StoreContext, StoreData};
 use crate::types::ValueType;
@@ -492,7 +491,7 @@ fn lock(tables: &Arc<Mutex<HandleTables>>) -> Result<MutexGuard<'_, HandleTables
 
 #[cfg(test)]
 mod tests {
-    use wasm_runtime_layer::{Memory, MemoryType};
+    use crate::runtime_layer::{Memory, MemoryType};
 
     use super::*;
     use crate::abi::instance_flags::InstanceFlags;

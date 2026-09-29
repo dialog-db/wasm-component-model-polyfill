@@ -437,7 +437,7 @@ const I64_START: &[u8] = component!(
 async fn it_starts_a_thread_whose_start_function_takes_an_i64_in_a_64_bit_memory() {
     use core::task::Waker;
 
-    use wasm_runtime_layer::Val as RuntimeVal;
+    use crate::runtime_layer::Val as RuntimeVal;
 
     use crate::abi::layout::FlatType;
     use crate::executor::ir::{CoreParameter, CoreSignature};

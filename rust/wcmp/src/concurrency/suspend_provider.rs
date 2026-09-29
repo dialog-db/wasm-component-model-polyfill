@@ -3,9 +3,8 @@
 
 use core::task::{Poll, Waker};
 
-use wasm_runtime_layer::{Func as RuntimeFunc, FuncType, Val as RuntimeVal};
-
 use crate::error::Result;
+use crate::runtime_layer::{Func as RuntimeFunc, FuncType, Val as RuntimeVal};
 use crate::store::StoreContext;
 
 use super::entry_status::EntryStatus;

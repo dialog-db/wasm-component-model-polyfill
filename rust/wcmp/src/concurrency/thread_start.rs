@@ -1,6 +1,6 @@
 //! What an explicit thread runs when it starts.
 
-use wasm_runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
+use crate::runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
 
 /// What an explicit thread runs when it starts: the start function
 /// `thread.new-indirect` read out of its table, and the context value

@@ -15,13 +15,12 @@
 
 use std::sync::{Arc, Mutex};
 
-use wasm_runtime_layer::{Func as RuntimeFunc, Memory};
-
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::concurrency::InstanceId;
 use crate::error::{Error, Result};
 use crate::executor::ir::{CanonOptions, DataModel, StringEncoding};
 use crate::internal::ErrorInternal;
+use crate::runtime_layer::{Func as RuntimeFunc, Memory};
 
 /// The canonical-ABI options of one crossing, resolved against the
 /// instance's runtime state.

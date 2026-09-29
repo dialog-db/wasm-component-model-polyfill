@@ -28,8 +28,6 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 
-use wasm_runtime_layer::Val as RuntimeVal;
-
 use super::numeric_list;
 use crate::abi::call_values::{
     lift_result_value, lower_arguments, parameter_spill, result_pointer,
@@ -54,6 +52,7 @@ use crate::internal::{
     ErrorContextAnyInternal, ErrorContextInternal, FutureAnyInternal, FutureReaderInternal,
     StreamAnyInternal, StreamReaderInternal,
 };
+use crate::runtime_layer::Val as RuntimeVal;
 use crate::types::{
     FixedLengthListType, FutureType, ListType, MapType, OptionType, PrimitiveType, StreamType,
     ValueType,

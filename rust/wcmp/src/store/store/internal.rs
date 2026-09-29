@@ -28,10 +28,10 @@
 use core::task::Waker;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::backend::Backend;
 use crate::concurrency::{Outcome, Scheduler};
 use crate::error::{Error, Result, TaskCause};
 use crate::resource::HandleTables;
+use crate::runtime_layer::Backend;
 
 use super::super::store_context::StoreContext;
 use super::super::store_context::internal::StoreContextInternalExt;
@@ -99,7 +99,7 @@ impl<'a, T: 'static> StoreInternal<'a, T> {
     }
 
     /// Mutably borrow the wrapped runtime-layer store.
-    pub fn inner_mut(self) -> &'a mut wasm_runtime_layer::Store<StoreData<T>, Backend> {
+    pub fn inner_mut(self) -> &'a mut crate::runtime_layer::Store<StoreData<T>, Backend> {
         self.store.inner_mut()
     }
 
@@ -133,7 +133,7 @@ impl<'a, T: 'static> StoreRefInternal<'a, T> {
     }
 
     /// Borrow the wrapped runtime-layer store.
-    pub fn inner(self) -> &'a wasm_runtime_layer::Store<StoreData<T>, Backend> {
+    pub fn inner(self) -> &'a crate::runtime_layer::Store<StoreData<T>, Backend> {
         self.store.inner()
     }
 

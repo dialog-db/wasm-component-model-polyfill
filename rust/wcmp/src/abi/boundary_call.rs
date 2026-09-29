@@ -37,14 +37,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use wasm_runtime_layer::AsContextMut;
-
 use crate::abi::instance::BoundaryInstance;
 use crate::abi::instance_flags::InstanceFlags;
 use crate::concurrency::{InstanceId, TaskId};
 use crate::error::{Error, Result};
 use crate::internal::ErrorInternal;
 use crate::resource::HandleTables;
+use crate::runtime_layer::AsContextMut;
 
 /// One call the polyfill makes into a guest, in flight.
 ///

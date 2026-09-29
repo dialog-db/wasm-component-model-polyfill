@@ -50,7 +50,6 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
-use wasm_runtime_layer::{Func as RuntimeFunc, FuncType, Val as RuntimeVal, ValType as CoreType};
 use wasmtime_environ::Trap;
 
 use crate::abi::context::BoundaryContext;
@@ -65,6 +64,7 @@ use crate::error::{Error, Result, TaskCause};
 use crate::executor::ir::{CoreParameter, CoreSignature, EndTableSpec, TranscodeOp};
 use crate::internal::ErrorInternal;
 use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime, TableId};
+use crate::runtime_layer::{Func as RuntimeFunc, FuncType, Val as RuntimeVal, ValType as CoreType};
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 

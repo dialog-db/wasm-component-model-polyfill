@@ -1,8 +1,7 @@
 //! The bound what runs after a thread entry carries.
 
-use wasm_runtime_layer::Val as RuntimeVal;
-
 use crate::error::Result;
+use crate::runtime_layer::Val as RuntimeVal;
 use crate::store::StoreContext;
 
 /// The bound what runs after a thread entry carries: the part of the

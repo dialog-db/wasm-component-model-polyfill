@@ -12,11 +12,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::backend::Backend;
 use crate::concurrency::{JspiProbe, SwitchProbe};
 use crate::engine_config::EngineConfig;
 use crate::error::Result;
 use crate::internal::{EngineConfigInternal, EngineInternal};
+use crate::runtime_layer::Backend;
 use crate::suspend_provider_kind::SuspendProviderKind;
 
 /// The polyfill's compilation context.
@@ -31,12 +31,12 @@ use crate::suspend_provider_kind::SuspendProviderKind;
 /// selected when it was constructed.
 #[derive(Clone)]
 pub struct Engine {
-    inner: wasm_runtime_layer::Engine<Backend>,
+    inner: crate::runtime_layer::Engine<Backend>,
     config: EngineConfig,
     suspend_provider: SuspendProviderKind,
     /// The switch modules the stores of this engine instantiate,
     /// compiled once each, by their bytes.
-    switch_modules: Arc<Mutex<HashMap<Vec<u8>, wasm_runtime_layer::Module>>>,
+    switch_modules: Arc<Mutex<HashMap<Vec<u8>, crate::runtime_layer::Module>>>,
 }
 
 impl Engine {
@@ -59,7 +59,7 @@ impl Engine {
     /// [`suspend_provider`](Self::suspend_provider).
     #[allow(clippy::unnecessary_wraps)]
     pub fn with_config(config: &EngineConfig) -> Result<Self> {
-        let inner = wasm_runtime_layer::Engine::new(Backend::default());
+        let inner = crate::runtime_layer::Engine::new(Backend::default());
         let suspend_provider = select_suspend_provider(
             config.suspend_provider_enabled(),
             || SwitchProbe::new().passes(&inner),
@@ -117,11 +117,11 @@ impl Engine {
 }
 
 impl EngineInternal for Engine {
-    fn inner(&self) -> &wasm_runtime_layer::Engine<Backend> {
+    fn inner(&self) -> &crate::runtime_layer::Engine<Backend> {
         &self.inner
     }
 
-    fn switch_modules(&self) -> &Arc<Mutex<HashMap<Vec<u8>, wasm_runtime_layer::Module>>> {
+    fn switch_modules(&self) -> &Arc<Mutex<HashMap<Vec<u8>, crate::runtime_layer::Module>>> {
         &self.switch_modules
     }
 }

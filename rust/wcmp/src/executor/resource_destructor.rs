@@ -4,10 +4,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use wasm_runtime_layer::Func as RuntimeFunc;
-
 use crate::concurrency::InstanceId;
 use crate::linker::DestructorBody;
+use crate::runtime_layer::Func as RuntimeFunc;
 
 /// The destructor a `resource.drop` runs after it removes the handle.
 pub enum ResourceDestructor<T> {

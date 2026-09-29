@@ -2,9 +2,8 @@
 //!
 //! [`CoreInstance`]: super::CoreInstance
 
-use wasm_runtime_layer::Extern as RuntimeExtern;
-
 use crate::internal::{CoreExternInternal, CoreExternParts, CoreExternTypeInternal};
+use crate::runtime_layer::Extern as RuntimeExtern;
 use crate::store::StoreInternalExt;
 use crate::store::{Store, StoreId};
 

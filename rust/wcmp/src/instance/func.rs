@@ -5,8 +5,6 @@
 use core::task::Poll;
 use std::sync::{Arc, Mutex};
 
-use wasm_runtime_layer::{AsContextMut, Val as RuntimeVal};
-
 use crate::abi::context::BoundaryContext;
 use crate::abi::instance::BoundaryInstance;
 use crate::abi::options::BoundaryOptions;
@@ -23,6 +21,7 @@ use crate::executor::{AsyncLift, CallbackTask};
 use crate::instance::ExportedFunction;
 use crate::internal::{ErrorInternal, FuncInternal, FuncParts};
 use crate::resource::TableId;
+use crate::runtime_layer::{AsContextMut, Val as RuntimeVal};
 use crate::store::{Store, StoreContext, StoreId};
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::value::Val;

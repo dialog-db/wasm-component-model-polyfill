@@ -26,8 +26,8 @@ use super::thread_id::ThreadId;
 use super::waitable_set_id::WaitableSetId;
 use crate::error::Result;
 use crate::resource::HandleTables;
+use crate::runtime_layer::Val as RuntimeVal;
 use crate::value::Val;
-use wasm_runtime_layer::Val as RuntimeVal;
 
 /// One task held at an instance's entry gate.
 ///

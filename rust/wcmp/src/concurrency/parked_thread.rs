@@ -1,8 +1,7 @@
 //! A guest thread suspended in the provider.
 
-use wasm_runtime_layer::Val as RuntimeVal;
-
 use crate::error::Result;
+use crate::runtime_layer::Val as RuntimeVal;
 use crate::store::StoreContext;
 
 use super::entry_finish::EntryFinish;

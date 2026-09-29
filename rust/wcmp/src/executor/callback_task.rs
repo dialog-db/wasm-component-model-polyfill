@@ -60,12 +60,11 @@
 //! record: whichever way the task ends, the item goes with it. The
 //! item therefore never has to ask whether the task is still there.
 
-use wasm_runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
-
 use crate::concurrency::{Event, EventSlot, InstanceId, Item, ItemKind, TaskId};
 use crate::error::{Error, Result, TaskCause};
 use crate::internal::ErrorInternal;
 use crate::resource::TableId;
+use crate::runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 

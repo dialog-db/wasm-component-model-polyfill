@@ -856,6 +856,29 @@
           }
         );
 
+        # The polyfill reaches its runtime layer through one seam module,
+        # `src/runtime_layer.rs`, so moving to another runtime layer changes
+        # one file. Every other Rust source of the crate, its tests
+        # included, names neither the runtime layer's crate nor a backend
+        # crate, even in a comment.
+        runtimeLayerSeamCheck =
+          let
+            sources = pkgs.lib.fileset.toSource {
+              root = ./rust/wcmp;
+              fileset = pkgs.lib.fileset.fileFilter (file: file.hasExt "rs") ./rust/wcmp;
+            };
+          in
+          pkgs.runCommand "wcmp-runtime-layer-seam-check" { } ''
+            cd ${sources}
+            if grep -rnE 'wasm(time)?_runtime_layer' . | grep -v '^\./src/runtime_layer\.rs:'; then
+              echo >&2
+              echo "Only src/runtime_layer.rs may name a runtime-layer crate." >&2
+              echo "Reach the names above through crate::runtime_layer instead." >&2
+              exit 1
+            fi
+            touch "$out"
+          '';
+
         # The listing against the one checked in beside the crate. A `pub`
         # that reaches a workspace-internal type — a field, a constructor, a
         # method whose type no caller outside can name — is a line in the
@@ -1660,6 +1683,9 @@
             # The crate's public surface must still be the checked-in one:
             # see `publicApiCheck`.
             public-api = publicApiCheck;
+            # Only the seam module names a runtime-layer crate: see
+            # `runtimeLayerSeamCheck`.
+            runtime-layer-seam = runtimeLayerSeamCheck;
             # Every Zena scenario compiles, or keeps Zena's refusal, with the
             # pinned toolchain, its Rust partners build, and its
             # composition is made or keeps `wac`'s refusal; and the

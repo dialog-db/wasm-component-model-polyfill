@@ -54,14 +54,10 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
-use wasm_runtime_layer::{
-    AsContextMut, Func as RuntimeFunc, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
-};
 
 use crate::abi::context::BoundaryContext;
 use crate::abi::instance::BoundaryInstance;
 use crate::abi::runtime_state::AbiRuntimeState;
-use crate::backend::Backend;
 use crate::concurrency::{
     BlockStep, BlockingBuiltin, Event, InstanceId, Readiness, ThreadId, WaitableSetId,
 };
@@ -69,6 +65,10 @@ use crate::error::{AbiCause, AbiError, AbiPosition, Error, TaskCause};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CanonOptions, CoreSignature};
 use crate::resource::{HandleTables, TableId};
+use crate::runtime_layer::{
+    AsContextMut, Backend, Func as RuntimeFunc, StoreContextMut as RuntimeContextMut,
+    Val as RuntimeVal,
+};
 use crate::store::StoreContextInternalExt;
 use crate::store::{StoreContext, StoreData};
 use crate::types::{PrimitiveType, ValueType};

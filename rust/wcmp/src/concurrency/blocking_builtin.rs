@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use wasm_runtime_layer::{Func as RuntimeFunc, FuncType, Val as RuntimeVal, ValType};
 
+use crate::runtime_layer::{Func as RuntimeFunc, FuncType, Val as RuntimeVal, ValType};
 use crate::store::{StoreContext, StoreContextInternalExt};
 
 use super::block_step::BlockStep;

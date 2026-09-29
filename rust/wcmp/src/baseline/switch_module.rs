@@ -24,16 +24,16 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use wasm_runtime_layer::{
-    Extern as RuntimeExtern, Func as RuntimeFunc, FuncType, Imports, Instance as RuntimeInstance,
-    Module as RuntimeModule, Val as RuntimeVal, ValType as RuntimeValType,
-};
 use wcmp_macros::wasm;
 
 use crate::concurrency::{
     EntryStatus, StackSwitchingProvider, SuspendProvider, SwitchForm, SwitchModule, ThreadId,
 };
 use crate::internal::EngineInternal;
+use crate::runtime_layer::{
+    Extern as RuntimeExtern, Func as RuntimeFunc, FuncType, Imports, Instance as RuntimeInstance,
+    Module as RuntimeModule, Val as RuntimeVal, ValType as RuntimeValType,
+};
 use crate::store::{StoreContext, StoreContextInternalExt, StoreInternalExt};
 use crate::{Engine, Store};
 

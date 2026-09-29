@@ -2,15 +2,16 @@
 //!
 //! Component-level work in the polyfill — instantiation, export
 //! invocation, the canonical-ABI runtime — is implemented on top of
-//! [`wasm_runtime_layer`]'s generic core-Wasm abstractions. The
-//! executor consumes a flattened, sequenced IR (the same shape
-//! `wasmtime_environ::component::Component` carries) and drives
-//! `wasm_runtime_layer::Module::new` and
-//! `wasm_runtime_layer::Instance::new` per `(core module ...)` and
-//! `(core instance N (instantiate $module ...))` directive. Compiling
-//! a core module is awaited, because the browser compiles large
-//! modules only through its asynchronous API; instantiating and
-//! calling complete without suspending on both targets today.
+//! the runtime layer's generic core-Wasm abstractions, which the
+//! polyfill reaches through [`crate::runtime_layer`]. The executor
+//! consumes a flattened, sequenced IR (the same shape
+//! `wasmtime_environ::component::Component` carries) and drives the
+//! runtime layer's `Module::new` and `Instance::new` per
+//! `(core module ...)` and `(core instance N (instantiate $module ...))`
+//! directive. Compiling a core module is awaited, because the browser
+//! compiles large modules only through its asynchronous API;
+//! instantiating and calling complete without suspending on both
+//! targets today.
 //!
 //! IR construction is shared across targets: `wasmtime_environ`'s
 //! component `Translator` runs on every supported target, including
@@ -18,8 +19,6 @@
 //! its name, does not pull in Cranelift codegen — it only enables
 //! `wasm-encoder`, `wasmprinter`, and the `gimli`/`object` write
 //! paths, all of which build on `wasm32-unknown-unknown`.
-//!
-//! [`wasm_runtime_layer`]: https://docs.rs/wasm_runtime_layer
 
 mod async_lift;
 mod async_start_call;

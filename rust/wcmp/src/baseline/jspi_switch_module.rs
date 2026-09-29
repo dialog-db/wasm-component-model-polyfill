@@ -29,19 +29,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use js_sys::Promise;
-use js_wasm_runtime_layer::Func as BackendFunc;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
-use wasm_runtime_layer::backend::Extern as BackendExtern;
-use wasm_runtime_layer::{
-    Extern as RuntimeExtern, Func as RuntimeFunc, FuncType, Imports, Instance as RuntimeInstance,
-    Module as RuntimeModule, Val as RuntimeVal, ValType as RuntimeValType,
-};
 use wcmp_macros::wasm;
 
-use crate::backend::Backend;
 use crate::concurrency::{EntryStatus, JspiProvider, SuspendProvider, ThreadId};
 use crate::internal::EngineInternal;
+use crate::runtime_layer::{
+    Backend, BackendExtern, BackendFunc, Extern as RuntimeExtern, Func as RuntimeFunc, FuncType,
+    Imports, Instance as RuntimeInstance, Module as RuntimeModule, Val as RuntimeVal,
+    ValType as RuntimeValType,
+};
 use crate::store::{StoreContext, StoreContextInternalExt, StoreInternalExt};
 use crate::{Engine, Store};
 

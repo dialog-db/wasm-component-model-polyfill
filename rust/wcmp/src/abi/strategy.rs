@@ -13,12 +13,10 @@
 //!
 //! [`BoundaryContext`]: crate::abi::context::BoundaryContext
 
-use wasm_runtime_layer::{StoreContextMut, Val as RuntimeVal};
-
 use crate::abi::options::BoundaryOptions;
-use crate::backend::Backend;
 use crate::error::AbiCause;
 use crate::executor::ir::DataModel;
+use crate::runtime_layer::{Backend, StoreContextMut, Val as RuntimeVal};
 
 /// Which canonical-ABI strategy a crossing performs its accesses
 /// under.

@@ -19,10 +19,9 @@
 //! The global is an `i32` that holds 0 or 1, which is how the
 //! adapters spell it, so no masking is needed to read it.
 
-use wasm_runtime_layer::{AsContextMut, Global as RuntimeGlobal, Val as RuntimeVal};
-
 use crate::error::{Error, Result};
 use crate::internal::ErrorInternal;
+use crate::runtime_layer::{AsContextMut, Global as RuntimeGlobal, Val as RuntimeVal};
 
 /// The may-leave flag of one component instance, as the core global
 /// the instance's adapters import.

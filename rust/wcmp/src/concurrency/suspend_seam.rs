@@ -3,10 +3,9 @@
 
 use std::marker::PhantomData;
 
-use wasm_runtime_layer::Val as RuntimeVal;
-
 use crate::error::{Error, Result, SchedulerCause};
 use crate::internal::ErrorInternal;
+use crate::runtime_layer::Val as RuntimeVal;
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 

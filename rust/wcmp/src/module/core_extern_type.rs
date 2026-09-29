@@ -1,9 +1,8 @@
 //! The type of one import or export of a core module.
 
-use wasm_runtime_layer::ExternType as RuntimeExternType;
-
 use super::core_value_type::CoreValueType;
 use crate::internal::{CoreExternTypeInternal, CoreValueTypeInternal};
+use crate::runtime_layer::ExternType as RuntimeExternType;
 
 /// The type of a core module's import or export: a function, a
 /// global, a linear memory, a table, or an exception tag. Sizes are

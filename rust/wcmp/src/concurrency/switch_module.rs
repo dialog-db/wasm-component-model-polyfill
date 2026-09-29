@@ -10,7 +10,8 @@ use wasm_encoder::{
     ImportSection, Instruction, Module, RefType, TableSection, TableType, TagKind, TagSection,
     TagType, TypeSection, ValType,
 };
-use wasm_runtime_layer::{FuncType, ValType as RuntimeValType};
+
+use crate::runtime_layer::{FuncType, ValType as RuntimeValType};
 
 use super::switch_form::SwitchForm;
 
@@ -1085,7 +1086,7 @@ fn promising_start_body(ty: &FuncType, wrapper: u32) -> Function {
 
 #[cfg(test)]
 mod tests {
-    use wasm_runtime_layer::Module as RuntimeModule;
+    use crate::runtime_layer::Module as RuntimeModule;
 
     use super::*;
     use crate::Engine;

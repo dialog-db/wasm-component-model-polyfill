@@ -3,9 +3,6 @@
 use core::task::Waker;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use wasm_runtime_layer::AsContextMut;
-
-use crate::backend::Backend;
 #[cfg(target_arch = "wasm32")]
 use crate::concurrency::JspiProvider;
 use crate::concurrency::{Accessor, Outcome, Scheduler, StackSwitchingProvider, StoreProvider};
@@ -13,6 +10,7 @@ use crate::engine::Engine;
 use crate::error::Result;
 use crate::internal::EngineInternal;
 use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId};
+use crate::runtime_layer::{AsContextMut, Backend};
 use crate::suspend_provider_kind::SuspendProviderKind;
 
 use super::store_context::StoreContext;
@@ -172,7 +170,7 @@ pub mod internal;
 ///
 /// [`StoreInternalExt`]: super::StoreInternalExt
 pub struct Store<T: 'static> {
-    inner: wasm_runtime_layer::Store<StoreData<T>, Backend>,
+    inner: crate::runtime_layer::Store<StoreData<T>, Backend>,
 }
 
 impl<T: 'static> Store<T> {
@@ -186,7 +184,7 @@ impl<T: 'static> Store<T> {
     /// infallibly.
     pub fn new(engine: &Engine, data: T) -> Result<Self> {
         let mut store = Self {
-            inner: wasm_runtime_layer::Store::new(engine.inner(), StoreData::new(data)),
+            inner: crate::runtime_layer::Store::new(engine.inner(), StoreData::new(data)),
         };
         // The provider the engine selected is instantiated in the
         // store once, here, and stays in it for the store's life.
@@ -478,14 +476,14 @@ impl<T: 'static> Store<T> {
     /// Borrow the wrapped runtime-layer store.
     ///
     /// Workspace-internal; not re-exported by `lib.rs`.
-    fn inner(&self) -> &wasm_runtime_layer::Store<StoreData<T>, Backend> {
+    fn inner(&self) -> &crate::runtime_layer::Store<StoreData<T>, Backend> {
         &self.inner
     }
 
     /// Mutably borrow the wrapped runtime-layer store.
     ///
     /// Workspace-internal; not re-exported by `lib.rs`.
-    fn inner_mut(&mut self) -> &mut wasm_runtime_layer::Store<StoreData<T>, Backend> {
+    fn inner_mut(&mut self) -> &mut crate::runtime_layer::Store<StoreData<T>, Backend> {
         &mut self.inner
     }
 }

@@ -49,17 +49,15 @@
 
 use std::sync::{Arc, Mutex};
 
-use wasm_runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
-
 use crate::abi::boundary_call::BoundaryCall;
 use crate::abi::instance::BoundaryInstance;
 use crate::abi::runtime_state::AbiRuntimeState;
-use crate::backend::substrate_failure;
 use crate::concurrency::{InstanceId, Item, ItemKind, LowerKind, SubtaskId, TaskId};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::{AsyncLift, CallbackTask};
 use crate::internal::ErrorInternal;
 use crate::resource::{HandleTables, TableId};
+use crate::runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal, substrate_failure};
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 
