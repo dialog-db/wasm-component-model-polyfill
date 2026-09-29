@@ -13,8 +13,9 @@
 //! The backend never makes a function from a string of source. It reaches
 //! the JavaScript API through `js-sys` and `wasm-bindgen` imports alone, and
 //! JavaScript carries only what that API alone can do: a compile, an
-//! instantiation, the reads and writes of its objects, and the calls from a
-//! host function's wrapper module to the host.
+//! instantiation, the reads and writes of its objects, a bulk copy of memory
+//! where the browser lacks `multi_memory`, and the calls from a host
+//! function's wrapper module to the host.
 //!
 //! # Compilation and instantiation
 //!
@@ -94,6 +95,54 @@
 //! passes each of them to another guest directly, and a module with each
 //! of them at its boundary loads.
 //!
+//! # Memory access
+//!
+//! Rust on `wasm32` addresses only memory 0 of the polyfill's own instance,
+//! and a guest memory is another `WebAssembly.Memory`. So the backend
+//! cannot lend guest bytes to Rust. It reaches each guest memory through a
+//! generated accessor module, which imports the memory and exports its
+//! size and its scalar loads and stores. Rust calls those functions through
+//! a function pointer: from WebAssembly to WebAssembly, with no JavaScript
+//! frame.
+//!
+//! The polyfill's own function table cannot grow, because the linker sizes
+//! it to the functions of the polyfill. So the polyfill holds one entry
+//! function for each signature of an accessor function, and the backend
+//! overwrites the table slot of each, once for each thread, with a
+//! trampoline of a generated dispatch module. The trampoline calls a
+//! function of an accessor by its index in a table of the dispatch module,
+//! which grows. A store releases the indices of its accessors when it
+//! drops.
+//!
+//! A bulk copy (`read`, `write`, `with_bytes`, and `Memory::copy`) needs two
+//! memories in one module. Where the browser declares `multi_memory`, each
+//! accessor imports the polyfill's own memory too, and a generated bridge
+//! module imports both memories of a copy between two guest memories. Over
+//! unshared memories, a bulk copy is then one `memory.copy`, with no
+//! JavaScript frame. Where the browser lacks `multi_memory`, a bulk copy
+//! between unshared memories is one call of `TypedArray.set`. A copy
+//! within one memory is one `memory.copy` of its accessor in every browser.
+//!
+//! `with_bytes` copies the range into a buffer of the polyfill once, and
+//! lends the buffer. Another agent can write a shared memory at any time,
+//! so the backend reaches each byte of a shared memory atomically, in a
+//! scalar access and in a copy alike, and never through `TypedArray.set`,
+//! which is not atomic. A page makes a shared memory without cross-origin
+//! isolation, so the backend needs no special headers.
+//!
+//! Every memory method checks its range against the size of the memory,
+//! which the accessor reads, and a range outside the memory is
+//! [`Error::MemoryOutOfBounds`](wcmp_wasm_core::Error::MemoryOutOfBounds).
+//! No generated function checks a range, and none traps.
+//!
+//! A host function reaches a guest memory through the store it receives,
+//! as the host does outside a call, and so through the same accessor. The
+//! store keeps each accessor with its memory, and the dispatcher is held
+//! only while an accessor is made or released. No memory method calls
+//! into a guest, so none is running when a host function runs, and a host
+//! function that makes the accessor of a memory inside a guest call makes
+//! it for the store.
+//!
 //! # Capabilities
 //!
 //! The backend runs one small probe for each Wasm feature of the lexicon
@@ -130,10 +179,14 @@
 //! the store, and can call back into a guest, which can call the same host
 //! function again, at any depth.
 
+mod accessor;
 mod backend;
 mod boundary;
+mod bridge;
 mod calls;
 mod carrier;
+mod code;
+mod dispatcher;
 mod entry;
 mod errors;
 mod js;

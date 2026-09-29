@@ -1,13 +1,17 @@
 //! What the browser backend holds beyond the backend contract: the probes
 //! of its capabilities, a module above the browser's limit for a
 //! synchronous compile, linking by the objects of the browser, the externs
-//! the browser makes, and host functions through their wrapper modules.
+//! the browser makes, host functions through their wrapper modules, and
+//! how memory access crosses into JavaScript.
 
 #![cfg(target_arch = "wasm32")]
 
-use js_sys::Reflect;
-use wasm_bindgen::JsValue;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+use js_sys::{Array, Function, Object, Proxy, Reflect, SharedArrayBuffer, Uint8Array};
 use wasm_bindgen::closure::Closure;
+use wasm_bindgen::{JsCast, JsValue};
 use wcmp_macros::wasm;
 use wcmp_wasm_core::backend::RawHandle;
 use wcmp_wasm_core::{
@@ -886,4 +890,311 @@ async fn it_keeps_each_frame_of_a_host_function_below_a_trap() {
             .expect("the call succeeds");
         assert_eq!(result[0].i32(), Some(100 + 1 + 2 + 3 + 4));
     }
+}
+
+/// The bytes 1 to 16, a pattern no fresh memory holds.
+const PATTERN: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+
+/// The property `name` of `target`.
+fn property(target: &JsValue, name: &str) -> JsValue {
+    Reflect::get(target, &name.into()).expect("the property reads")
+}
+
+/// A proxy of `target` whose trap `trap` is `closure`.
+fn proxy(target: &JsValue, trap: &str, closure: &JsValue) -> JsValue {
+    let handler = Object::new();
+    Reflect::set(&handler, &trap.into(), closure).expect("the handler is an object");
+    Proxy::new(target, &handler).into()
+}
+
+/// Runs `body`, and counts the calls of `TypedArray.prototype.set` on a
+/// `Uint8Array` meanwhile: the one step of JavaScript a bulk copy takes
+/// where the browser lacks `multi_memory`.
+fn typed_array_sets<R>(body: impl FnOnce() -> R) -> (R, u32) {
+    let prototype = property(&property(&js_sys::global(), "Uint8Array"), "prototype");
+    let set = property(&prototype, "set");
+    let count = Rc::new(Cell::new(0));
+    let apply = Closure::<dyn Fn(JsValue, JsValue, JsValue) -> Result<JsValue, JsValue>>::new({
+        let count = count.clone();
+        move |target: JsValue, this: JsValue, args: JsValue| {
+            count.set(count.get() + 1);
+            Reflect::apply(
+                target.unchecked_ref::<Function>(),
+                &this,
+                args.unchecked_ref(),
+            )
+        }
+    });
+    Reflect::set(
+        &prototype,
+        &"set".into(),
+        &proxy(&set, "apply", apply.as_ref()),
+    )
+    .expect("the prototype is writable");
+    let result = body();
+    Reflect::delete_property(prototype.unchecked_ref::<Object>(), &"set".into())
+        .expect("the prototype is writable");
+    (result, count.get())
+}
+
+/// An engine over a backend made while the browser refuses the probe of
+/// `multi_memory`, as a browser without the feature does, and accepts
+/// every other.
+fn engine_without_multi_memory() -> Engine {
+    let validate = property(&webassembly(), "validate").unchecked_into::<Function>();
+    let probe = wasm!(r#"(module (memory 1) (memory 1))"#);
+    let refuse = Closure::<dyn Fn(JsValue) -> Result<JsValue, JsValue>>::new(move |bytes| {
+        if Uint8Array::new(&bytes).to_vec() == probe {
+            return Ok(JsValue::FALSE);
+        }
+        Reflect::apply(&validate, &webassembly(), &Array::of1(&bytes))
+    });
+    with_webassembly_property("validate", refuse.as_ref(), engine)
+}
+
+/// The bytes of `memory` at `offset`, read with no count of JavaScript.
+fn bytes_at(store: &Store<()>, memory: Memory, offset: u64) -> Vec<u8> {
+    memory
+        .with_bytes(store, offset, 16, <[u8]>::to_vec)
+        .expect("the range lies inside the memory")
+}
+
+#[wcmp_macros::test]
+async fn it_copies_in_bulk_with_no_javascript_where_multi_memory_is_declared() {
+    let engine = engine();
+    assert!(engine.capabilities().contains(Capability::MultiMemory));
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    let first = Memory::new(&mut store, MemoryType::new(1, None)).expect("a memory");
+    let second = Memory::new(&mut store, MemoryType::new(1, None)).expect("a memory");
+    let shared = Memory::new(&mut store, MemoryType::shared(1, 1)).expect("a shared memory");
+    // The first access of a memory, and the first copy between two, make
+    // their generated modules.
+    for memory in [first, second, shared] {
+        memory.size(&store).expect("the memory is the store's");
+    }
+    Memory::copy(&mut store, &first, 0, &second, 0, 1).expect("the ranges lie inside");
+    Memory::copy(&mut store, &first, 0, &shared, 0, 1).expect("the ranges lie inside");
+    Memory::copy(&mut store, &shared, 0, &second, 0, 1).expect("the ranges lie inside");
+
+    let ((), sets) = typed_array_sets(|| {
+        for memory in [first, shared] {
+            memory
+                .write(&mut store, 8, &PATTERN)
+                .expect("the range lies inside the memory");
+            let mut read = [0; 16];
+            memory
+                .read(&store, 8, &mut read)
+                .expect("the range lies inside the memory");
+            assert_eq!(read, PATTERN);
+            assert_eq!(bytes_at(&store, memory, 8), PATTERN);
+            assert_eq!(memory.load_u32(&store, 8).ok(), Some(0x0403_0201));
+        }
+        Memory::copy(&mut store, &first, 8, &second, 100, 16).expect("the ranges lie inside");
+        Memory::copy(&mut store, &shared, 8, &second, 200, 16).expect("the ranges lie inside");
+        Memory::copy(&mut store, &first, 8, &first, 12, 16).expect("the ranges lie inside");
+    });
+    assert_eq!(
+        sets, 0,
+        "a bulk copy is a `memory.copy`, or an atomic copy of each byte, in WebAssembly"
+    );
+    assert_eq!(bytes_at(&store, second, 100), PATTERN);
+    assert_eq!(bytes_at(&store, second, 200), PATTERN);
+    assert_eq!(bytes_at(&store, first, 12), PATTERN);
+}
+
+#[wcmp_macros::test]
+async fn it_copies_in_bulk_with_one_typed_array_set_where_multi_memory_is_off() {
+    let engine = engine_without_multi_memory();
+    let capabilities = engine.capabilities();
+    assert!(!capabilities.contains(Capability::MultiMemory));
+    assert!(
+        capabilities.contains(Capability::Threads),
+        "only the probe of `multi_memory` fails"
+    );
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    let first = Memory::new(&mut store, MemoryType::new(1, None)).expect("a memory");
+    let second = Memory::new(&mut store, MemoryType::new(1, None)).expect("a memory");
+    let shared = Memory::new(&mut store, MemoryType::shared(1, 1)).expect("a shared memory");
+    for memory in [first, second, shared] {
+        memory.size(&store).expect("the memory is the store's");
+    }
+
+    let (_, write) = typed_array_sets(|| first.write(&mut store, 8, &PATTERN));
+    let mut read = [0; 16];
+    let (_, reads) = typed_array_sets(|| first.read(&store, 8, &mut read));
+    assert_eq!(read, PATTERN);
+    let (lent, lends) = typed_array_sets(|| first.with_bytes(&store, 8, 16, <[u8]>::to_vec));
+    assert_eq!(lent.ok().as_deref(), Some(&PATTERN[..]));
+    let (_, copies) = typed_array_sets(|| Memory::copy(&mut store, &first, 8, &second, 100, 16));
+    assert_eq!(bytes_at(&store, second, 100), PATTERN);
+    assert_eq!(
+        [write, reads, lends, copies],
+        [1; 4],
+        "each bulk copy (`write`, `read`, `with_bytes`, `copy`) is one `TypedArray.set`"
+    );
+
+    // A scalar access, and a copy within one memory, stay in WebAssembly.
+    let (loaded, scalars) = typed_array_sets(|| {
+        first.store_u16(&mut store, 40, 0xbeef).expect("inside");
+        first.load_u32(&store, 8)
+    });
+    assert_eq!(loaded.ok(), Some(0x0403_0201));
+    let (_, within) = typed_array_sets(|| Memory::copy(&mut store, &first, 8, &first, 12, 16));
+    assert_eq!(bytes_at(&store, first, 12), PATTERN);
+    assert_eq!([scalars, within], [0, 0]);
+
+    // A shared memory takes each byte atomically, through its accessor,
+    // and never through `TypedArray.set`.
+    let ((), atomic) = typed_array_sets(|| {
+        shared.write(&mut store, 8, &PATTERN).expect("inside");
+        assert_eq!(bytes_at(&store, shared, 8), PATTERN);
+        Memory::copy(&mut store, &shared, 8, &second, 300, 16).expect("inside");
+        Memory::copy(&mut store, &second, 300, &shared, 100, 16).expect("inside");
+    });
+    assert_eq!(atomic, 0);
+    assert_eq!(bytes_at(&store, second, 300), PATTERN);
+    assert_eq!(bytes_at(&store, shared, 100), PATTERN);
+}
+
+#[wcmp_macros::test]
+async fn it_lends_a_copy_of_a_shared_memory() {
+    // The runner of the web lane serves every page cross-origin isolated,
+    // so this test cannot show a page without isolation. The backend asks
+    // for none: `new WebAssembly.Memory({ shared: true })` needs none.
+    let engine = engine();
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+
+    // The test keeps the browser's object of the memory the backend makes,
+    // so that it can write the memory as another agent would.
+    let made = Rc::new(RefCell::new(None));
+    let construct =
+        Closure::<dyn Fn(JsValue, JsValue, JsValue) -> Result<JsValue, JsValue>>::new({
+            let made = made.clone();
+            move |target: JsValue, args: JsValue, new_target: JsValue| {
+                let memory = Reflect::construct_with_new_target(
+                    target.unchecked_ref(),
+                    args.unchecked_ref(),
+                    new_target.unchecked_ref(),
+                )?;
+                made.replace(Some(memory.clone()));
+                Ok(memory)
+            }
+        });
+    let constructor = property(&webassembly(), "Memory");
+    let memory = with_webassembly_property(
+        "Memory",
+        &proxy(&constructor, "construct", construct.as_ref()),
+        || Memory::new(&mut store, MemoryType::shared(1, 1)),
+    )
+    .expect("the store makes a shared memory");
+    let buffer = property(
+        made.borrow().as_ref().expect("the backend made the memory"),
+        "buffer",
+    );
+    assert!(buffer.is_instance_of::<SharedArrayBuffer>());
+
+    memory
+        .write(&mut store, 100, &PATTERN)
+        .expect("the range lies inside the memory");
+    let other_agent = Uint8Array::new_with_byte_offset_and_length(&buffer, 100, 16);
+    let lent = memory
+        .with_bytes(&store, 100, 16, |bytes| {
+            // Another agent writes the range while the bytes are lent.
+            other_agent.fill(0xee, 0, 16);
+            bytes.to_vec()
+        })
+        .expect("the range lies inside the memory");
+    assert_eq!(lent, PATTERN, "the lent bytes are a copy");
+    assert_eq!(
+        memory.load_u8(&store, 100).ok(),
+        Some(0xee),
+        "the memory holds the write of the other agent"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_reads_and_writes_guest_memory_from_a_host_function() {
+    let engine = engine();
+    assert!(engine.capabilities().contains(Capability::MultiMemory));
+    let mut store = Store::new(&engine, None::<Memory>).expect("the engine makes a store");
+    // The host function reads the `u32` the guest stored at the address it
+    // passes, writes its bytes back reversed, and stores the value plus one
+    // after them.
+    let reverse = Func::new(
+        &mut store,
+        FuncType::new([ValType::I32], []),
+        |mut caller: Caller<'_, Option<Memory>>, params, _| {
+            let memory = caller
+                .data()
+                .ok_or_else(|| anyhow::anyhow!("the guest memory is not set"))?;
+            let address = u64::from(params[0].i32().unwrap_or_default() as u32);
+            let value = memory.load_u32(&caller, address)?;
+            let mut bytes = [0; 4];
+            memory.read(&caller, address, &mut bytes)?;
+            anyhow::ensure!(bytes == value.to_le_bytes(), "the read and the load differ");
+            bytes.reverse();
+            memory.write(&mut caller, address, &bytes)?;
+            memory.store_u32(&mut caller, address + 4, value + 1)?;
+            Ok(())
+        },
+    )
+    .expect("the store makes a host function");
+    let module = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (import "host" "reverse" (func $reverse (param i32)))
+              (memory (export "memory") 1)
+              (func (export "run") (param i32) (result i32 i32)
+                local.get 0
+                i32.const 0x04030201
+                i32.store
+                local.get 0
+                call $reverse
+                local.get 0
+                i32.load
+                local.get 0
+                i32.load offset=4))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    let instance = Instance::instantiate(&mut store, &module, &[reverse.into()])
+        .await
+        .expect("the module instantiates");
+    let memory = instance
+        .get_export(&mut store, "memory")
+        .expect("the instance belongs to the store")
+        .and_then(Extern::into_memory)
+        .expect("the instance exports `memory`");
+    let run = instance
+        .get_export(&mut store, "run")
+        .expect("the instance belongs to the store")
+        .and_then(Extern::into_func)
+        .expect("the instance exports `run`");
+    *store.data_mut() = Some(memory);
+
+    // The first call makes the accessor of the memory inside the host
+    // function. The second finds it made, and crosses into no
+    // `TypedArray.set`.
+    let call = |store: &mut Store<Option<Memory>>, address: i32| {
+        let mut results = [Val::I32(0), Val::I32(0)];
+        run.call(store, &[Val::I32(address)], &mut results)
+            .expect("the call succeeds");
+        (results[0].i32(), results[1].i32())
+    };
+    assert_eq!(call(&mut store, 64), (Some(0x0102_0304), Some(0x0403_0202)));
+    let (seen, sets) = typed_array_sets(|| call(&mut store, 128));
+    assert_eq!(
+        seen,
+        (Some(0x0102_0304), Some(0x0403_0202)),
+        "the guest sees each write of the host function"
+    );
+    assert_eq!(
+        sets, 0,
+        "the host function reaches memory through its accessor"
+    );
+    assert_eq!(memory.load_u32(&store, 132).ok(), Some(0x0403_0202));
 }

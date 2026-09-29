@@ -3,6 +3,7 @@
 use core::any::Any;
 use core::task::Poll;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::rc::Rc;
 
 use js_sys::{Array, Function, Object, Reflect, Uint8Array, WebAssembly};
@@ -16,6 +17,8 @@ use wcmp_wasm_core::{
     Tag, TagType, Val, ValType,
 };
 
+use crate::accessor::Accessor;
+use crate::bridge::Bridge;
 use crate::calls::Calls;
 use crate::carrier::Carrier;
 use crate::errors;
@@ -37,6 +40,13 @@ pub struct WebStore {
     types: Rc<TypeRegistry>,
     objects: Objects,
     carrier: Carrier,
+    /// Whether the engine declares `multi_memory`, so a generated module
+    /// can import two memories.
+    multi_memory: bool,
+    /// The bridge of each pair of memories, by the indices of the source
+    /// and the destination, made the first time the host copies between
+    /// them.
+    bridges: HashMap<(u64, u64), Bridge>,
     calls: Rc<Calls>,
     wrappers: Wrappers,
 }
@@ -47,6 +57,10 @@ impl WebStore {
     pub fn new(data: StoreData, types: Rc<TypeRegistry>) -> Self {
         let objects = Objects::new(data.id());
         let carrier = Carrier::new(data.id());
+        let multi_memory = data
+            .engine()
+            .capabilities()
+            .contains(Capability::MultiMemory);
         let calls = Rc::new(Calls::new());
         let wrappers = Wrappers::new(calls.clone());
         Self {
@@ -54,6 +68,8 @@ impl WebStore {
             types,
             objects,
             carrier,
+            multi_memory,
+            bridges: HashMap::new(),
             calls,
             wrappers,
         }
@@ -185,10 +201,10 @@ impl WebStore {
                 table: value.dyn_into().map_err(wrong)?,
                 ty: *ty,
             })),
-            ExternType::Memory(ty) => Extern::Memory(self.objects.add_memory(MemoryObject {
-                memory: value.dyn_into().map_err(wrong)?,
-                ty: *ty,
-            })),
+            ExternType::Memory(ty) => Extern::Memory(
+                self.objects
+                    .add_memory(MemoryObject::new(value.dyn_into().map_err(wrong)?, *ty)),
+            ),
             ExternType::Tag(ty) => Extern::Tag(self.objects.add_tag(TagObject {
                 tag: value,
                 ty: ty.clone(),
@@ -201,31 +217,80 @@ impl WebStore {
         Kind::of_type(ty, &self.types)
     }
 
-    /// The bytes of `memory` as a view over its buffer, after a check that
-    /// the `len` bytes at `offset` lie inside it.
-    fn memory_view(&self, memory: Memory, offset: u64, len: u64) -> Result<Uint8Array> {
-        let object = self.objects.memory(memory)?;
-        let buffer = object.memory.buffer();
-        let size = js::get(&buffer, "byteLength")
-            .ok()
-            .as_ref()
-            .and_then(js::count)
-            .unwrap_or(0);
-        let outside = || Error::MemoryOutOfBounds { offset, len, size };
-        let end = offset.checked_add(len).ok_or_else(outside)?;
-        if end > size {
-            return Err(outside());
-        }
-        // A typed array addresses its buffer with 32-bit numbers here.
-        let (Ok(offset), Ok(len)) = (u32::try_from(offset), u32::try_from(len)) else {
-            return Err(errors::backend(
-                "the browser backend reaches only the first 4 GiB of a memory",
-            ));
-        };
-        Ok(Uint8Array::new_with_byte_offset_and_length(
-            &buffer, offset, len,
-        ))
+    /// The object of `memory`, and its accessor, after a check that the
+    /// `len` bytes at `offset` lie inside the memory.
+    ///
+    /// The check reads the size of the memory through the accessor, so it
+    /// crosses into JavaScript only the first time the host reaches the
+    /// memory, to make the accessor.
+    fn reach(&self, memory: Memory, offset: u64, len: u64) -> Result<(&MemoryObject, &Accessor)> {
+        reach(&self.objects, self.multi_memory, memory, offset, len)
     }
+}
+
+/// [`WebStore::reach`] over the objects `objects` of a store, whose engine
+/// declares `multi_memory` where `multi_memory`.
+fn reach(
+    objects: &Objects,
+    multi_memory: bool,
+    memory: Memory,
+    offset: u64,
+    len: u64,
+) -> Result<(&MemoryObject, &Accessor)> {
+    let object = objects.memory(memory)?;
+    let accessor = match object.accessor.get() {
+        Some(accessor) => accessor,
+        None => {
+            let accessor = Accessor::new(&object.memory, &object.ty, multi_memory)?;
+            object.accessor.get_or_init(|| accessor)
+        }
+    };
+    let size = accessor.size();
+    let outside = || Error::MemoryOutOfBounds { offset, len, size };
+    let end = offset.checked_add(len).ok_or_else(outside)?;
+    if end > size {
+        return Err(outside());
+    }
+    Ok((object, accessor))
+}
+
+/// Copies the bytes of `object` at `offset` into `buffer`, through its
+/// accessor `accessor`. The range lies inside the memory.
+fn read(object: &MemoryObject, accessor: &Accessor, offset: u64, buffer: &mut [u8]) -> Result<()> {
+    if buffer.is_empty() {
+        return Ok(());
+    }
+    if accessor.bulk() {
+        accessor.read(offset, buffer);
+    } else if accessor.shared() {
+        // Without `multi_memory`, a shared memory gives each byte through
+        // the accessor, atomically, and never through JavaScript, whose
+        // `TypedArray.set` is not atomic.
+        for (index, byte) in buffer.iter_mut().enumerate() {
+            *byte = accessor.load8(offset + index as u64);
+        }
+    } else {
+        view(object, offset, buffer.len() as u64)?.copy_to(buffer);
+    }
+    Ok(())
+}
+
+/// The `len` bytes at `offset` of `object` as a view over its buffer, for a
+/// bulk copy with `TypedArray.set` where the browser lacks
+/// `multi_memory`. The range lies inside the memory.
+fn view(object: &MemoryObject, offset: u64, len: u64) -> Result<Uint8Array> {
+    // A typed array addresses its buffer with 32-bit numbers here.
+    let (Ok(offset), Ok(len)) = (u32::try_from(offset), u32::try_from(len)) else {
+        return Err(errors::backend(
+            "without `multi_memory`, the browser backend copies in bulk only within the first \
+             4 GiB of a memory",
+        ));
+    };
+    Ok(Uint8Array::new_with_byte_offset_and_length(
+        &object.memory.buffer(),
+        offset,
+        len,
+    ))
 }
 
 impl BackendStore for WebStore {
@@ -385,7 +450,7 @@ impl BackendStore for WebStore {
         }
         let descriptor = js::object(&descriptor).map_err(|error| errors::call(&error))?;
         let memory = WebAssembly::Memory::new(&descriptor).map_err(|error| errors::call(&error))?;
-        Ok(self.objects.add_memory(MemoryObject { memory, ty }))
+        Ok(self.objects.add_memory(MemoryObject::new(memory, ty)))
     }
 
     fn memory_ty(&self, memory: Memory) -> Result<MemoryType> {
@@ -393,12 +458,7 @@ impl BackendStore for WebStore {
     }
 
     fn memory_size(&self, memory: Memory) -> Result<u64> {
-        let buffer = self.objects.memory(memory)?.memory.buffer();
-        js::get(&buffer, "byteLength")
-            .ok()
-            .as_ref()
-            .and_then(js::count)
-            .ok_or_else(|| errors::backend("the memory's buffer has no length"))
+        Ok(self.reach(memory, 0, 0)?.1.size())
     }
 
     fn memory_grow(&mut self, memory: Memory, pages: u64) -> Result<u64> {
@@ -412,14 +472,27 @@ impl BackendStore for WebStore {
     }
 
     fn memory_read(&self, memory: Memory, offset: u64, buffer: &mut [u8]) -> Result<()> {
-        self.memory_view(memory, offset, buffer.len() as u64)?
-            .copy_to(buffer);
-        Ok(())
+        let (object, accessor) = self.reach(memory, offset, buffer.len() as u64)?;
+        read(object, accessor, offset, buffer)
     }
 
     fn memory_write(&mut self, memory: Memory, offset: u64, bytes: &[u8]) -> Result<()> {
-        self.memory_view(memory, offset, bytes.len() as u64)?
-            .copy_from(bytes);
+        let (object, accessor) = self.reach(memory, offset, bytes.len() as u64)?;
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        if accessor.bulk() {
+            accessor.write(offset, bytes);
+        } else if accessor.shared() {
+            // Without `multi_memory`, a shared memory takes each byte
+            // through the accessor, atomically, and never through
+            // JavaScript, whose `TypedArray.set` is not atomic.
+            for (index, byte) in bytes.iter().enumerate() {
+                accessor.store8(offset + index as u64, *byte);
+            }
+        } else {
+            view(object, offset, bytes.len() as u64)?.copy_from(bytes);
+        }
         Ok(())
     }
 
@@ -431,9 +504,18 @@ impl BackendStore for WebStore {
         f: &mut dyn FnMut(&[u8]),
     ) -> Result<()> {
         // The browser cannot lend guest bytes to Rust, so the range is
-        // copied once, and the copy is lent.
-        let mut bytes = vec![0; len];
-        self.memory_read(memory, offset, &mut bytes)?;
+        // copied once into a buffer of the host, and the buffer is lent. A
+        // shared memory is copied atomically, like every read of it.
+        let (object, accessor) = self.reach(memory, offset, len as u64)?;
+        // A range of a memory addressed with 64-bit numbers can exceed the
+        // host's own memory, and a failed allocation aborts, so the buffer
+        // is reserved first.
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(len).map_err(|_| {
+            errors::backend(format!("the host has no room for a copy of {len} bytes"))
+        })?;
+        bytes.resize(len, 0);
+        read(object, accessor, offset, &mut bytes)?;
         f(&bytes);
         Ok(())
     }
@@ -446,11 +528,91 @@ impl BackendStore for WebStore {
         destination_offset: u64,
         len: u64,
     ) -> Result<()> {
-        let source = self.memory_view(source, source_offset, len)?;
-        let destination = self.memory_view(destination, destination_offset, len)?;
-        // `TypedArray.set` copies as if through a buffer where the two
-        // views overlap, so no buffer of the host is needed.
-        destination.set(&source, 0);
+        let (from, from_accessor) =
+            reach(&self.objects, self.multi_memory, source, source_offset, len)?;
+        let (to, to_accessor) = reach(
+            &self.objects,
+            self.multi_memory,
+            destination,
+            destination_offset,
+            len,
+        )?;
+        if len == 0 {
+            return Ok(());
+        }
+        if source.index() == destination.index() {
+            // The accessor copies within its own memory. A range of 4 GiB
+            // in a memory addressed with 32-bit numbers is the whole
+            // memory onto itself, and its length narrows to 0, which
+            // copies nothing, as the copy would leave every byte as it is.
+            from_accessor.copy(destination_offset, source_offset, len);
+            return Ok(());
+        }
+        if self.multi_memory {
+            let bridge = match self.bridges.entry((source.index(), destination.index())) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    entry.insert(Bridge::new((&from.memory, &from.ty), (&to.memory, &to.ty))?)
+                }
+            };
+            bridge.copy(destination_offset, source_offset, len);
+        } else if from_accessor.shared() || to_accessor.shared() {
+            // Each byte through the accessors, atomically, in the direction
+            // that reads each byte before it is overwritten, since two
+            // handles can name one memory.
+            let byte = |index: u64| {
+                to_accessor.store8(
+                    destination_offset + index,
+                    from_accessor.load8(source_offset + index),
+                );
+            };
+            if destination_offset <= source_offset {
+                (0..len).for_each(byte);
+            } else {
+                (0..len).rev().for_each(byte);
+            }
+        } else {
+            // `TypedArray.set` copies as if through a buffer where the two
+            // views overlap, so no buffer of the host is needed.
+            let source = view(from, source_offset, len)?;
+            view(to, destination_offset, len)?.set(&source, 0);
+        }
+        Ok(())
+    }
+
+    fn memory_load_u8(&self, memory: Memory, offset: u64) -> Result<u8> {
+        Ok(self.reach(memory, offset, 1)?.1.load8(offset))
+    }
+
+    fn memory_load_u16(&self, memory: Memory, offset: u64) -> Result<u16> {
+        Ok(self.reach(memory, offset, 2)?.1.load16(offset))
+    }
+
+    fn memory_load_u32(&self, memory: Memory, offset: u64) -> Result<u32> {
+        Ok(self.reach(memory, offset, 4)?.1.load32(offset))
+    }
+
+    fn memory_load_u64(&self, memory: Memory, offset: u64) -> Result<u64> {
+        Ok(self.reach(memory, offset, 8)?.1.load64(offset))
+    }
+
+    fn memory_store_u8(&mut self, memory: Memory, offset: u64, value: u8) -> Result<()> {
+        self.reach(memory, offset, 1)?.1.store8(offset, value);
+        Ok(())
+    }
+
+    fn memory_store_u16(&mut self, memory: Memory, offset: u64, value: u16) -> Result<()> {
+        self.reach(memory, offset, 2)?.1.store16(offset, value);
+        Ok(())
+    }
+
+    fn memory_store_u32(&mut self, memory: Memory, offset: u64, value: u32) -> Result<()> {
+        self.reach(memory, offset, 4)?.1.store32(offset, value);
+        Ok(())
+    }
+
+    fn memory_store_u64(&mut self, memory: Memory, offset: u64, value: u64) -> Result<()> {
+        self.reach(memory, offset, 8)?.1.store64(offset, value);
         Ok(())
     }
 

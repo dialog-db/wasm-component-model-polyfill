@@ -1,6 +1,7 @@
 //! Every object a handle of a store names.
 
 use core::any::Any;
+use core::cell::OnceCell;
 use std::collections::HashMap;
 
 use js_sys::{Function, Map, Object, WebAssembly};
@@ -10,6 +11,8 @@ use wcmp_wasm_core::{
     AnyRef, Error, ExportType, Extern, ExternRef, Func, FuncType, Global, GlobalType, Instance,
     Memory, MemoryType, Result, Table, TableType, Tag, TagType,
 };
+
+use crate::accessor::Accessor;
 
 /// An instance: the object of its exports, the description of each export,
 /// and the handle of each export the host asked for.
@@ -29,10 +32,24 @@ pub struct FuncObject {
     pub ty: Option<FuncType>,
 }
 
-/// A memory and its type.
+/// A memory, its type, and the accessor through which the host reaches
+/// it, made the first time the host does.
 pub struct MemoryObject {
     pub memory: WebAssembly::Memory,
     pub ty: MemoryType,
+    pub accessor: OnceCell<Accessor>,
+}
+
+impl MemoryObject {
+    /// The memory `memory` of type `ty`, which the host has not reached
+    /// yet.
+    pub fn new(memory: WebAssembly::Memory, ty: MemoryType) -> Self {
+        Self {
+            memory,
+            ty,
+            accessor: OnceCell::new(),
+        }
+    }
 }
 
 /// A global and its type.

@@ -1,9 +1,8 @@
 //! The backend contract of the runtime layer, on the browser backend.
 //!
-//! The browser backend does not yet reach guest memory through a generated
-//! accessor module, and does not yet map a trap to its kind. So the tests
-//! of the contract for memory access and for trap kinds do not run here.
-//! Every other test of the contract does.
+//! The browser backend does not map a trap to its kind yet. So the two
+//! tests of the contract for trap kinds do not run here. Every other test
+//! of the contract does.
 
 #![cfg(target_arch = "wasm32")]
 
@@ -35,4 +34,10 @@ wcmp_wasm_core_contract::contract_tests!(
     it_passes_a_gc_object_back_to_its_guest,
     it_passes_an_exnref_back_to_its_guest,
     it_refuses_host_suspension_where_it_is_not_declared,
+    it_reads_and_writes_a_memory,
+    it_grows_a_memory_up_to_its_maximum,
+    it_lends_the_bytes_of_a_range,
+    it_refuses_a_range_outside_the_memory,
+    it_copies_between_two_memories_of_one_store,
+    it_addresses_a_64_bit_memory_with_the_same_methods,
 );
