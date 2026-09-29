@@ -6,6 +6,7 @@ use wasmi::errors::{ErrorKind, InstantiationError};
 use wcmp_wasm_core::{Error, TrapKind};
 
 use crate::host_error::HostError;
+use crate::suspension::Suspension;
 
 /// [`Error::Backend`], with Wasmi's words for `error`.
 pub fn backend(error: impl Display) -> Error {
@@ -22,9 +23,15 @@ pub fn trap(error: wasmi::Error) -> Error {
 /// The kind of the trap that `error` stands for.
 ///
 /// A host function's own error comes back as [`TrapKind::Host`], unchanged.
-/// A trap of Wasmi's with a trap code comes back as the kind of the same
-/// name, and anything else as [`TrapKind::Other`] with Wasmi's message.
+/// The marker of a suspending host function that answered "not yet" where
+/// its call cannot suspend comes back as [`TrapKind::Host`] too, with the
+/// marker's message, as every backend reports it. A trap of Wasmi's with a
+/// trap code comes back as the kind of the same name, and anything else as
+/// [`TrapKind::Other`] with Wasmi's message.
 fn trap_kind(error: wasmi::Error) -> TrapKind {
+    if let Some(suspension) = error.downcast_ref::<Suspension>() {
+        return TrapKind::Host(anyhow::anyhow!("{suspension}"));
+    }
     // `downcast` takes the error, so the other readings of it come first.
     let core = error.as_trap_code().and_then(core_trap);
     let message = error.to_string();
@@ -90,7 +97,10 @@ pub fn instantiation(error: wasmi::Error) -> Error {
             return Error::Trap(TrapKind::TableOutOfBounds);
         }
         ErrorKind::Instantiation(_) => return backend(error),
-        _ if error.downcast_ref::<HostError>().is_some() || error.as_trap_code().is_some() => {
+        _ if error.downcast_ref::<HostError>().is_some()
+            || error.downcast_ref::<Suspension>().is_some()
+            || error.as_trap_code().is_some() =>
+        {
             return trap(error);
         }
         _ => return backend(error),
@@ -151,6 +161,15 @@ mod tests {
                 "{kind:?}"
             );
         }
+    }
+
+    #[wcmp_macros::test]
+    fn it_reports_a_suspension_that_cannot_suspend_as_a_host_trap() {
+        let kind = trap_kind(wasmi::Error::host(Suspension));
+        assert!(
+            matches!(&kind, TrapKind::Host(error) if error.to_string() == Suspension.to_string()),
+            "{kind:?}"
+        );
     }
 
     #[wcmp_macros::test]

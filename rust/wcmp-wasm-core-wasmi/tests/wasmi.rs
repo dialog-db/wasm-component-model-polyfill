@@ -1,7 +1,8 @@
 //! What the Wasmi backend holds beyond the backend contract: the
 //! capabilities it declares, compiles and instantiations that finish at
 //! once, a refusal that names each capability it lacks where a test of the
-//! contract needs one, and loans of memory that copy nothing.
+//! contract needs one, loans of memory that copy nothing, and where
+//! Wasmi sets a resumable call aside and where it does not.
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -11,7 +12,8 @@ use std::task::{Context, Poll, Waker};
 use wcmp_macros::wasm;
 use wcmp_wasm_core::{
     AnyRef, Capability, Engine, Error, ExportType, Extern, FuncType, GlobalType, I31, Instance,
-    Memory, MemoryType, Module, Mutability, RefType, Store, TableType, TrapKind, Val, ValType,
+    Memory, MemoryType, Module, Mutability, RefType, ResumableCall, Store, TableType, TrapKind,
+    Val, ValType,
 };
 use wcmp_wasm_core_wasmi::Wasmi;
 
@@ -36,6 +38,7 @@ fn it_declares_what_wasmi_implements_and_nothing_else() {
         Capability::Memory64,
         Capability::TailCall,
         Capability::RelaxedSimd,
+        Capability::HostSuspension,
     ];
     for capability in Capability::ALL {
         assert_eq!(
@@ -589,4 +592,167 @@ async fn it_traps_a_descent_through_host_functions_beyond_its_bound_with_a_stack
     let outcome = down.call(&mut store, &[], &mut []);
     assert!(outcome.is_err(), "{outcome:?}");
     assert_eq!(store.data().entered, 64);
+}
+
+/// What the store of a test of where Wasmi suspends holds: the guest
+/// function `through` calls back into, and the error of that call.
+#[derive(Default)]
+struct Between {
+    inner: Option<wcmp_wasm_core::Func>,
+    error: Option<Error>,
+}
+
+/// A store with a module whose functions reach the suspending host
+/// function `wait` in each way Wasmi treats apart, and its instance.
+///
+/// `wait` answers "not yet" to every argument. `through` is a host function
+/// that cannot suspend: it calls back into the guest's `inner`, which calls
+/// `wait`, and keeps the error of that call in the store.
+async fn waits(engine: &Engine) -> (Store<Between>, Instance) {
+    let mut store = Store::new(engine, Between::default()).expect("the engine makes a store");
+    let wait = wcmp_wasm_core::Func::new_suspending(
+        &mut store,
+        FuncType::new([ValType::I32], [ValType::I32]),
+        |_, _, _| Ok(Poll::Pending),
+    )
+    .expect("the store makes a suspending host function");
+    let through = wcmp_wasm_core::Func::new(
+        &mut store,
+        FuncType::new([ValType::I32], [ValType::I32]),
+        |mut caller: wcmp_wasm_core::Caller<'_, Between>, params, results| {
+            let inner = caller
+                .data()
+                .inner
+                .ok_or_else(|| anyhow::anyhow!("the guest function is not set"))?;
+            let outcome = inner.call(&mut caller, params, results);
+            caller.data_mut().error = outcome.err();
+            results[0] = Val::I32(-1);
+            Ok(())
+        },
+    )
+    .expect("the store makes a host function");
+    let module = Module::compile(
+        engine,
+        wasm!(
+            r#"
+            (module
+              (import "host" "wait" (func $wait (param i32) (result i32)))
+              (import "host" "through" (func $through (param i32) (result i32)))
+              (func $below (param i32) (result i32)
+                (return_call $wait (local.get 0)))
+              (func (export "run") (param i32) (result i32)
+                (call $wait (local.get 0)))
+              (func (export "below") (param i32) (result i32)
+                (call $below (local.get 0)))
+              (func (export "root") (param i32) (result i32)
+                (return_call $wait (local.get 0)))
+              (func (export "inner") (param i32) (result i32)
+                (call $wait (local.get 0)))
+              (func (export "outer") (param i32) (result i32)
+                (call $through (local.get 0))))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    let instance = Instance::instantiate(&mut store, &module, &[wait.into(), through.into()])
+        .await
+        .expect("the module instantiates");
+    let inner = export(&mut store, instance, "inner");
+    store.data_mut().inner = Some(inner);
+    (store, instance)
+}
+
+/// The function `instance` exports as `name`.
+fn export(store: &mut Store<Between>, instance: Instance, name: &str) -> wcmp_wasm_core::Func {
+    instance
+        .get_export(store, name)
+        .expect("the instance belongs to the store")
+        .and_then(Extern::into_func)
+        .unwrap_or_else(|| panic!("the instance exports `{name}`"))
+}
+
+/// Whether `error` is the trap of a suspension that could not suspend.
+fn cannot_suspend(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Trap(TrapKind::Host(error)) if error.to_string().contains("where its call cannot suspend")
+    )
+}
+
+#[wcmp_macros::test]
+async fn it_finishes_a_resumable_call_and_its_resumption_at_once() {
+    let (mut store, instance) = waits(&engine()).await;
+    let run = export(&mut store, instance, "run");
+
+    let mut results = [Val::I32(0)];
+    let outcome = at_once(run.call_resumable(&mut store, &[Val::I32(1)], &mut results));
+    let Ok(ResumableCall::Suspended(waiting)) = outcome else {
+        panic!("the call suspends: {outcome:?}");
+    };
+    let outcome = at_once(waiting.resume(&mut store, &[Val::I32(42)], &mut results));
+    assert!(
+        matches!(outcome, Ok(ResumableCall::Finished)),
+        "{outcome:?}"
+    );
+    assert_eq!(results[0].i32(), Some(42));
+}
+
+#[wcmp_macros::test]
+async fn it_suspends_a_tail_call_below_the_root_frame_and_traps_one_from_it() {
+    let (mut store, instance) = waits(&engine()).await;
+
+    // A frame below the root tail-calls the host function, and the root
+    // frame still waits for its results, so Wasmi sets the call aside.
+    let below = export(&mut store, instance, "below");
+    let mut results = [Val::I32(0)];
+    let outcome = below
+        .call_resumable(&mut store, &[Val::I32(1)], &mut results)
+        .await;
+    let Ok(ResumableCall::Suspended(waiting)) = outcome else {
+        panic!("the call suspends: {outcome:?}");
+    };
+    let outcome = waiting
+        .resume(&mut store, &[Val::I32(7)], &mut results)
+        .await;
+    assert!(
+        matches!(outcome, Ok(ResumableCall::Finished)),
+        "{outcome:?}"
+    );
+    assert_eq!(results[0].i32(), Some(7));
+
+    // The root frame tail-calls the host function, and leaves no frame to
+    // resume, so Wasmi does not set the call aside.
+    let root = export(&mut store, instance, "root");
+    let outcome = root
+        .call_resumable(&mut store, &[Val::I32(1)], &mut results)
+        .await;
+    assert!(
+        outcome.as_ref().err().is_some_and(cannot_suspend),
+        "{outcome:?}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_traps_the_call_back_into_the_guest_that_a_host_frame_makes() {
+    let (mut store, instance) = waits(&engine()).await;
+    let outer = export(&mut store, instance, "outer");
+
+    // The host function between the start of the call and the suspension
+    // sees its own call back into the guest trap, and answers anyway, so
+    // the resumable call finishes with that answer.
+    let mut results = [Val::I32(0)];
+    let outcome = outer
+        .call_resumable(&mut store, &[Val::I32(1)], &mut results)
+        .await;
+    assert!(
+        matches!(outcome, Ok(ResumableCall::Finished)),
+        "{outcome:?}"
+    );
+    assert_eq!(results[0].i32(), Some(-1));
+    assert!(
+        store.data().error.as_ref().is_some_and(cannot_suspend),
+        "{:?}",
+        store.data().error
+    );
 }

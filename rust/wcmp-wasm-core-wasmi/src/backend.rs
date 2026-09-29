@@ -32,7 +32,8 @@ impl Wasmi {
     ];
 
     /// A backend over a new Wasmi engine, with every feature the backend
-    /// declares turned on.
+    /// declares turned on, and host suspension, which Wasmi's resumable
+    /// calls fill.
     pub fn new() -> Self {
         let mut config = wasmi::Config::default();
         config
@@ -43,7 +44,7 @@ impl Wasmi {
             .wasm_relaxed_simd(true);
         Self {
             engine: wasmi::Engine::new(&config),
-            capabilities: Capabilities::from_iter(Self::FEATURES),
+            capabilities: Capabilities::from_iter(Self::FEATURES).with(Capability::HostSuspension),
         }
     }
 }

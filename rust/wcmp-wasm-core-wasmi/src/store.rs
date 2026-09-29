@@ -4,10 +4,13 @@ use core::any::Any;
 use core::ops::Range;
 use core::task::Poll;
 
-use wcmp_wasm_core::backend::{BackendModule, BackendStore, BoxFuture, HostFunc, StoreData};
+use wcmp_wasm_core::backend::{
+    BackendModule, BackendStore, BackendSuspendedCall, BoxFuture, HostFunc, StoreData,
+};
 use wcmp_wasm_core::{
     Capability, Error, Extern, ExternRef, Func, FuncType, Global, GlobalType, Instance, Memory,
-    MemoryType, Result, Table, TableType, Tag, TagType, Val,
+    MemoryType, Result, ResumableCall, SuspendedCall, Table, TableType, Tag, TagType, TrapKind,
+    Val,
 };
 
 use crate::context::Context;
@@ -16,6 +19,8 @@ use crate::errors;
 use crate::host_error::HostError;
 use crate::module::WasmiModule;
 use crate::state::State;
+use crate::suspended_call::WasmiSuspendedCall;
+use crate::suspension::Suspension;
 use crate::values;
 
 /// A store of the Wasmi backend, over a Wasmi context `C`.
@@ -86,6 +91,148 @@ impl<C: Context> WasmiStore<C> {
         let end = usize::try_from(end).map_err(|_| out_of_bounds())?;
         Ok(start..end)
     }
+
+    /// The Wasmi function that `func` names, its type, and Wasmi's values
+    /// for `params`, where `params` and `results` fit the type.
+    fn prepare_call(
+        &self,
+        func: Func,
+        params: &[Val],
+        results: &[Val],
+    ) -> Result<(wasmi::Func, wasmi::FuncType, Vec<wasmi::Val>)> {
+        let func = *self.inner.state().func(func)?;
+        let ty = func.ty(&self.inner);
+        if params.len() != ty.params().len() || results.len() != ty.results().len() {
+            return Err(Error::TypeMismatch {
+                message: format!(
+                    "the function takes {} arguments and gives {} results, and the call gave {} \
+                     arguments and {} result slots",
+                    ty.params().len(),
+                    ty.results().len(),
+                    params.len(),
+                    results.len(),
+                ),
+            });
+        }
+        let arguments = params
+            .iter()
+            .zip(ty.params())
+            .map(|(value, ty)| values::to_wasmi(self.inner.state(), value, *ty))
+            .collect::<Result<Vec<_>>>()?;
+        Ok((func, ty, arguments))
+    }
+
+    /// Writes Wasmi's `outputs` to `results`, as values of the runtime
+    /// layer that the store keeps.
+    fn write_results(&mut self, outputs: &[wasmi::Val], results: &mut [Val]) {
+        let state = self.inner.state_mut();
+        for (slot, output) in results.iter_mut().zip(outputs) {
+            *slot = values::from_wasmi(state, output);
+        }
+    }
+
+    /// Calls `func` as a resumable call, synchronously, as Wasmi does.
+    fn call_resumable_now(
+        &mut self,
+        func: Func,
+        params: &[Val],
+        results: &mut [Val],
+    ) -> Result<ResumableCall> {
+        let (func, ty, arguments) = self.prepare_call(func, params, results)?;
+        let mut outputs = result_slots(ty.results());
+        let call = func
+            .call_resumable(&mut self.inner, &arguments, &mut outputs)
+            .map_err(errors::trap)?;
+        self.outcome(call, ty.results().to_vec(), &outputs, results)
+    }
+
+    /// Resumes `call` with `import_results`, synchronously, as Wasmi does.
+    ///
+    /// Wasmi's resumption takes its handle even where it refuses the
+    /// values, so the backend checks them first, and refuses them with an
+    /// [`Error::TypeMismatch`] of its own. The call is gone either way: the
+    /// runtime layer's resumption takes the handle too.
+    fn resume_now(
+        &mut self,
+        call: Box<dyn BackendSuspendedCall>,
+        import_results: &[Val],
+        results: &mut [Val],
+    ) -> Result<ResumableCall> {
+        let call = call
+            .into_any()
+            .downcast::<WasmiSuspendedCall>()
+            .map_err(|_| Error::WrongStore)?;
+        let (call, result_types) = call.into_parts();
+        let host_ty = call.host_func().ty(&self.inner);
+        if import_results.len() != host_ty.results().len() || results.len() != result_types.len() {
+            return Err(Error::TypeMismatch {
+                message: format!(
+                    "the host function gives {} results and the call {}, and the resumption gave \
+                     {} results of the host function and {} result slots",
+                    host_ty.results().len(),
+                    result_types.len(),
+                    import_results.len(),
+                    results.len(),
+                ),
+            });
+        }
+        let inputs = import_results
+            .iter()
+            .zip(host_ty.results())
+            .map(|(value, ty)| values::to_wasmi(self.inner.state(), value, *ty))
+            .collect::<Result<Vec<_>>>()?;
+        let mut outputs = result_slots(&result_types);
+        let next = call
+            .resume(&mut self.inner, &inputs, &mut outputs)
+            .map_err(errors::trap)?;
+        self.outcome(next, result_types, &outputs, results)
+    }
+
+    /// The outcome of the runtime layer for Wasmi's outcome `call`, of a
+    /// call whose results are of `result_types`, and whose results Wasmi
+    /// wrote to `outputs` where it finished.
+    ///
+    /// Wasmi sets a resumable call aside at any error of a host function
+    /// that a WebAssembly frame called. Only the marker of a suspending
+    /// host function suspends the call. Any other error is the trap it
+    /// stands for, as it is in a call that is not resumable, and the call
+    /// is gone.
+    fn outcome(
+        &mut self,
+        call: wasmi::ResumableCall,
+        result_types: Vec<wasmi::ValType>,
+        outputs: &[wasmi::Val],
+        results: &mut [Val],
+    ) -> Result<ResumableCall> {
+        match call {
+            wasmi::ResumableCall::Finished => {
+                self.write_results(outputs, results);
+                Ok(ResumableCall::Finished)
+            }
+            wasmi::ResumableCall::HostTrap(call) => {
+                if call.host_error().downcast_ref::<Suspension>().is_none() {
+                    return Err(errors::trap(call.into_host_error()));
+                }
+                let store = self.inner.state().data().id();
+                let call = WasmiSuspendedCall::new(call, result_types);
+                Ok(ResumableCall::Suspended(SuspendedCall::new(
+                    store,
+                    Box::new(call),
+                )))
+            }
+            // The backend does not turn fuel on, so Wasmi never sets a call
+            // aside for it.
+            wasmi::ResumableCall::OutOfFuel(_) => Err(Error::Trap(TrapKind::OutOfFuel)),
+        }
+    }
+}
+
+/// A slot for each result of `types`, for Wasmi to fill.
+fn result_slots(types: &[wasmi::ValType]) -> Vec<wasmi::Val> {
+    types
+        .iter()
+        .map(|ty| wasmi::Val::default_for_ty(*ty))
+        .collect()
 }
 
 impl<C: Context> BackendStore for WasmiStore<C> {
@@ -115,9 +262,6 @@ impl<C: Context> BackendStore for WasmiStore<C> {
     }
 
     fn func_new(&mut self, ty: FuncType, func: HostFunc) -> Result<Func> {
-        if func.is_suspending() {
-            return Err(Error::Unsupported(Capability::HostSuspension));
-        }
         let wasm_ty = convert::to_func_type(&ty)?;
         let result_types = wasm_ty.results().to_vec();
         let slots = ty
@@ -137,42 +281,41 @@ impl<C: Context> BackendStore for WasmiStore<C> {
     }
 
     fn func_call(&mut self, func: Func, params: &[Val], results: &mut [Val]) -> Result<()> {
-        let func = *self.inner.state().func(func)?;
-        let ty = func.ty(&self.inner);
-        if params.len() != ty.params().len() || results.len() != ty.results().len() {
-            return Err(Error::TypeMismatch {
-                message: format!(
-                    "the function takes {} arguments and gives {} results, and the call gave {} \
-                     arguments and {} result slots",
-                    ty.params().len(),
-                    ty.results().len(),
-                    params.len(),
-                    results.len(),
-                ),
-            });
-        }
-        let arguments = params
-            .iter()
-            .zip(ty.params())
-            .map(|(value, ty)| values::to_wasmi(self.inner.state(), value, *ty))
-            .collect::<Result<Vec<_>>>()?;
-        let mut outputs = ty
-            .results()
-            .iter()
-            .map(|ty| wasmi::Val::default_for_ty(*ty))
-            .collect::<Vec<_>>();
+        let (func, ty, arguments) = self.prepare_call(func, params, results)?;
+        let mut outputs = result_slots(ty.results());
         func.call(&mut self.inner, &arguments, &mut outputs)
             .map_err(errors::trap)?;
-        let state = self.inner.state_mut();
-        for (slot, output) in results.iter_mut().zip(&outputs) {
-            *slot = values::from_wasmi(state, output);
-        }
+        self.write_results(&outputs, results);
         Ok(())
     }
 
-    // `func_call_resumable` and `resume_call` keep the contract's bodies,
-    // which return `Unsupported(host_suspension)`: see the crate's
-    // documentation of its capabilities.
+    fn func_call_resumable<'a>(
+        &'a mut self,
+        func: Func,
+        params: &'a [Val],
+        results: &'a mut [Val],
+    ) -> BoxFuture<'a, Result<ResumableCall>> {
+        // Wasmi runs a resumable call synchronously, so the future is ready
+        // on its first poll.
+        Box::pin(core::future::ready(
+            self.call_resumable_now(func, params, results),
+        ))
+    }
+
+    fn resume_call<'a>(
+        &'a mut self,
+        call: Box<dyn BackendSuspendedCall>,
+        import_results: &'a [Val],
+        results: &'a mut [Val],
+    ) -> BoxFuture<'a, Result<ResumableCall>> {
+        // Wasmi resumes a call synchronously, so the future is ready on its
+        // first poll.
+        Box::pin(core::future::ready(self.resume_now(
+            call,
+            import_results,
+            results,
+        )))
+    }
 
     fn memory_new(&mut self, ty: MemoryType) -> Result<Memory> {
         let wasm_ty = convert::to_memory_type(&ty)?;
@@ -393,9 +536,10 @@ const MAX_HOST_DEPTH: u32 = 64;
 /// Each call has its own arguments and its own result slots, which start
 /// as `slots`. An error of the host function, or a result it gave that
 /// does not fit `result_types`, leaves as a [`HostError`], which the call
-/// that ran the guest turns back into the host's own error. A call beyond
-/// [`MAX_HOST_DEPTH`] traps with a stack overflow instead of running the
-/// host function.
+/// that ran the guest turns back into the host's own error. A suspending
+/// host function that answers "not yet" leaves as the [`Suspension`]
+/// marker, with no results. A call beyond [`MAX_HOST_DEPTH`] traps with a
+/// stack overflow instead of running the host function.
 fn call_host(
     func: &HostFunc,
     slots: &[Val],
@@ -432,6 +576,12 @@ fn run_host(
     let mut outputs = slots.to_vec();
     match func.call(store, &params, &mut outputs) {
         Ok(Poll::Ready(())) => {}
+        // The marker suspends the resumable call the guest runs in, where
+        // Wasmi can set the call aside, and traps the call anywhere else.
+        // The results come with the resumption.
+        Ok(Poll::Pending) if func.is_suspending() => {
+            return Err(wasmi::Error::host(Suspension));
+        }
         Ok(Poll::Pending) => {
             return Err(host(anyhow::anyhow!(
                 "a host function that cannot suspend answered \"not yet\""

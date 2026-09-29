@@ -133,10 +133,38 @@
 //! declare garbage collection, exception handling, typed function
 //! references, threads, or stack switching, which Wasmi does not implement.
 //!
-//! It does not declare host suspension yet. Every method of host
-//! suspension returns
-//! [`Error::Unsupported`](wcmp_wasm_core::Error::Unsupported) with
-//! `host_suspension`.
+//! It declares host suspension, which Wasmi's resumable calls fill.
+//!
+//! # Host suspension
+//!
+//! A resumable call is Wasmi's `call_resumable`. A suspending host function
+//! that answers "not yet" returns a marker error to Wasmi, which sets the
+//! call aside and hands back a `ResumableCallHostTrap`. That handle owns
+//! the stack of the call, and not the store, so any number of calls wait
+//! at once in one store, and the host resumes them in any order, with the
+//! results of the host function. A resumption runs the call to its next
+//! suspension or its end. Both finish synchronously: each future is ready
+//! on its first poll.
+//!
+//! Wasmi sets a resumable call aside at any error of a host function that a
+//! WebAssembly frame called, and the backend suspends the call only at the
+//! marker. Any other error is the trap it stands for, as in a call that is
+//! not resumable, and the call is gone.
+//!
+//! A suspension succeeds only where WebAssembly frames alone lie between
+//! the start of the resumable call and the suspending host function. A host
+//! function between the two calls back into the guest with a call that is
+//! not resumable, and Wasmi does not set such a call aside: the marker
+//! leaves it as its error, and the call traps with
+//! [`TrapKind::Host`](wcmp_wasm_core::TrapKind::Host), with a message that
+//! says the call cannot suspend, as on every backend. So does a call
+//! that is not resumable at all, and a suspending host function that the
+//! root frame of a resumable call tail-calls, whose call Wasmi does not set
+//! aside either.
+//!
+//! When a store drops, its waiting calls drop without a resumption. A
+//! waiting call does not reach its store when it drops: it gives its stack
+//! back to the engine. So it can drop before or after its store.
 
 mod backend;
 mod context;
@@ -147,6 +175,8 @@ mod module;
 mod refusal;
 mod state;
 mod store;
+mod suspended_call;
+mod suspension;
 mod values;
 
 pub use crate::backend::Wasmi;

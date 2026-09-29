@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use wcmp_macros::wasm;
 use wcmp_wasm_core::{
-    Caller, Capability, Engine, Error, Func, FuncType, ResumableCall, Store, SuspendedCall, Val,
-    ValType,
+    Caller, Capability, Engine, Error, Func, FuncType, Instance, ResumableCall, Store,
+    SuspendedCall, TrapKind, Val, ValType,
 };
 
 use crate::support;
@@ -166,8 +166,9 @@ struct Through {
 /// function, and wait at once. A fourth call reaches the suspending host
 /// function through a host function that calls back into the guest, so a
 /// frame of the host lies between the start of the call and the
-/// suspension, and the call traps. The three that wait are resumed third,
-/// first, second, and each finishes with its own results.
+/// suspension, and the call traps with [`TrapKind::Host`] and a message
+/// that says the call cannot suspend. The three that wait are resumed
+/// third, first, second, and each finishes with its own results.
 pub async fn it_resumes_calls_that_wait_at_once_in_any_order(engine: &Engine) {
     if !support::declares(engine, &[Capability::HostSuspension]) {
         return;
@@ -241,7 +242,7 @@ pub async fn it_resumes_calls_that_wait_at_once_in_any_order(engine: &Engine) {
         .call_resumable(&mut store, &[Val::I32(4)], &mut results)
         .await;
     assert!(
-        matches!(fourth, Err(Error::Trap(_))),
+        fourth.as_ref().err().is_some_and(cannot_suspend),
         "a suspension with a host frame below it traps: {fourth:?}"
     );
     assert_eq!(log.events().last(), Some(&Event::Waits(4)));
@@ -283,7 +284,9 @@ const TWICE: &[u8] = wasm!(
 
 /// A store drops while two calls wait in it and a resumption of a third is
 /// under way. Nothing panics. The resumption runs to its next suspension,
-/// with its host functions, and the calls that waited never run again.
+/// with its host functions, and the calls that waited never run again: one
+/// drops before the store and one after it, and the one after it does not
+/// resume in another store.
 pub async fn it_runs_a_resumption_in_flight_to_its_next_stop_when_the_store_drops(engine: &Engine) {
     if !support::declares(engine, &[Capability::HostSuspension]) {
         return;
@@ -303,6 +306,8 @@ pub async fn it_runs_a_resumption_in_flight_to_its_next_stop_when_the_store_drop
         handles.push(waiting(outcome));
     }
     let resumed = handles.remove(0);
+    let before = handles.remove(0);
+    let after = handles.remove(0);
 
     let mut results = [Val::I32(0)];
     {
@@ -315,8 +320,16 @@ pub async fn it_runs_a_resumption_in_flight_to_its_next_stop_when_the_store_drop
             drop(handle);
         }
     }
+    drop(before);
     drop(store);
-    drop(handles);
+    let mut other = support::store(engine, ());
+    let stray = after
+        .resume(&mut other, &[Val::I32(9)], &mut [Val::I32(0)])
+        .await;
+    assert!(
+        matches!(stray, Err(Error::WrongStore)),
+        "a call does not resume in another store: {stray:?}"
+    );
 
     log.reaches(5).await;
     assert_eq!(
@@ -333,7 +346,9 @@ pub async fn it_runs_a_resumption_in_flight_to_its_next_stop_when_the_store_drop
 
 /// The future of a resumption drops before the resumption stops, and the
 /// host uses the store. The resumption reaches the store no more: its host
-/// functions never run. The store serves the next resumption as before.
+/// functions never run. The store serves the next resumption as before:
+/// the call it resumes suspends again, and finishes at its last
+/// resumption.
 pub async fn it_gives_the_store_back_when_the_future_of_a_resumption_drops(engine: &Engine) {
     if !support::declares(engine, &[Capability::HostSuspension]) {
         return;
@@ -368,7 +383,7 @@ pub async fn it_gives_the_store_back_when_the_future_of_a_resumption_drops(engin
     // this one stops.
     let mut results = [Val::I32(0)];
     let outcome = kept.resume(&mut store, &[Val::I32(5)], &mut results).await;
-    drop(waiting(outcome));
+    let again = waiting(outcome);
     let expected = if under_way {
         vec![
             Event::Waits(1),
@@ -388,4 +403,157 @@ pub async fn it_gives_the_store_back_when_the_future_of_a_resumption_drops(engin
     };
     assert_eq!(log.events(), expected);
     assert_eq!(*store.data(), 1);
+
+    // The call that suspended again finishes at its last resumption, with
+    // the result of the second suspension.
+    let mut results = [Val::I32(0)];
+    let outcome = again.resume(&mut store, &[Val::I32(9)], &mut results).await;
+    assert_eq!(finished(outcome, &results), [Some(9)]);
+    assert_eq!(log.events(), expected, "no host function ran again");
+}
+
+/// Whether `error` is the trap of a suspending host function that answered
+/// "not yet" where its call cannot suspend: [`TrapKind::Host`], with a
+/// message that says so, on every backend.
+fn cannot_suspend(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Trap(TrapKind::Host(error)) if error.to_string().contains("cannot suspend")
+    )
+}
+
+/// A store with the guest of the tests of how a resumable call ends
+/// without a suspension, and its instance.
+///
+/// The suspending host function `answer` answers a negative argument at
+/// once with its double, fails at zero, and records any other argument in
+/// `log` and answers "not yet". `run` gives the result of `answer` and its
+/// own argument. `fail` calls a host function that cannot suspend, and
+/// fails.
+async fn answers(engine: &Engine, log: &Log) -> (Store<()>, Instance) {
+    let mut store = support::store(engine, ());
+    let waits = log.clone();
+    let answer = Func::new_suspending(
+        &mut store,
+        FuncType::new([ValType::I32], [ValType::I32]),
+        move |_, params, results| {
+            let argument = argument(params)?;
+            if argument < 0 {
+                results[0] = Val::I32(argument * 2);
+                return Ok(Poll::Ready(()));
+            }
+            anyhow::ensure!(argument != 0, "no answer for zero");
+            waits.push(Event::Waits(argument));
+            Ok(Poll::Pending)
+        },
+    )
+    .expect("the store makes a suspending host function");
+    let fail = Func::new(&mut store, FuncType::new([], [ValType::I32]), |_, _, _| {
+        Err(anyhow::anyhow!("the host failed"))
+    })
+    .expect("the store makes a host function");
+    let instance = support::instance(
+        &mut store,
+        wasm!(
+            r#"
+            (module
+              (import "host" "answer" (func $answer (param i32) (result i32)))
+              (import "host" "fail" (func $fail (result i32)))
+              (func (export "run") (param i32) (result i32 i32)
+                local.get 0
+                call $answer
+                local.get 0)
+              (func (export "fail") (result i32)
+                call $fail))
+            "#
+        ),
+        &[answer.into(), fail.into()],
+    )
+    .await;
+    (store, instance)
+}
+
+/// A suspending host function that answers at once does not suspend its
+/// call, and the resumable call finishes with its results.
+pub async fn it_finishes_a_resumable_call_that_does_not_suspend(engine: &Engine) {
+    if !support::declares(engine, &[Capability::HostSuspension]) {
+        return;
+    }
+    let log = Log::default();
+    let (mut store, instance) = answers(engine, &log).await;
+    let run = support::func(&mut store, instance, "run");
+
+    let mut results = [Val::I32(0), Val::I32(0)];
+    let outcome = run
+        .call_resumable(&mut store, &[Val::I32(-4)], &mut results)
+        .await;
+    assert_eq!(finished(outcome, &results), [Some(-8), Some(-4)]);
+    assert!(log.events().is_empty(), "nothing waited");
+}
+
+/// Outside a resumable call, a suspending host function that answers "not
+/// yet" traps the call with [`TrapKind::Host`] and a message that says the
+/// call cannot suspend. The store stays good: a resumable call suspends in
+/// it afterwards, and finishes.
+pub async fn it_traps_a_suspension_outside_a_resumable_call(engine: &Engine) {
+    if !support::declares(engine, &[Capability::HostSuspension]) {
+        return;
+    }
+    let log = Log::default();
+    let (mut store, instance) = answers(engine, &log).await;
+    let run = support::func(&mut store, instance, "run");
+
+    let outcome = run.call(&mut store, &[Val::I32(7)], &mut [Val::I32(0), Val::I32(0)]);
+    assert!(
+        outcome.as_ref().err().is_some_and(cannot_suspend),
+        "{outcome:?}"
+    );
+
+    let mut results = [Val::I32(0), Val::I32(0)];
+    let outcome = run
+        .call_resumable(&mut store, &[Val::I32(8)], &mut results)
+        .await;
+    let handle = waiting(outcome);
+    let mut results = [Val::I32(0), Val::I32(0)];
+    let outcome = handle
+        .resume(&mut store, &[Val::I32(80)], &mut results)
+        .await;
+    assert_eq!(finished(outcome, &results), [Some(80), Some(8)]);
+    assert_eq!(log.events(), [Event::Waits(7), Event::Waits(8)]);
+}
+
+/// Inside a resumable call, an error of a host function traps the call
+/// with the host's error, unchanged, and does not suspend it. That holds
+/// for a host function that cannot suspend, and for a suspending one.
+pub async fn it_traps_a_resumable_call_with_the_error_of_a_host_function(engine: &Engine) {
+    if !support::declares(engine, &[Capability::HostSuspension]) {
+        return;
+    }
+    let log = Log::default();
+    let (mut store, instance) = answers(engine, &log).await;
+
+    let fail = support::func(&mut store, instance, "fail");
+    let outcome = fail
+        .call_resumable(&mut store, &[], &mut [Val::I32(0)])
+        .await;
+    assert!(
+        matches!(
+            &outcome,
+            Err(Error::Trap(TrapKind::Host(error))) if error.to_string() == "the host failed"
+        ),
+        "{outcome:?}"
+    );
+
+    let run = support::func(&mut store, instance, "run");
+    let outcome = run
+        .call_resumable(&mut store, &[Val::I32(0)], &mut [Val::I32(0), Val::I32(0)])
+        .await;
+    assert!(
+        matches!(
+            &outcome,
+            Err(Error::Trap(TrapKind::Host(error))) if error.to_string() == "no answer for zero"
+        ),
+        "{outcome:?}"
+    );
+    assert!(log.events().is_empty(), "nothing waited");
 }
