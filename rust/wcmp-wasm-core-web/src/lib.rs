@@ -56,6 +56,13 @@
 //! function object of the export itself, and a call between two instances
 //! is a call from WebAssembly to WebAssembly.
 //!
+//! The browser decides whether an extern links, and every `LinkError` it
+//! throws is [`Error::Link`](wcmp_wasm_core::Error::Link). Each engine words
+//! the error in its own way, so the backend never reads the words to name
+//! the import. It reads the imports object it gave the browser, and checks
+//! each extern against the type of its import. Where no import explains the
+//! error, both names are empty.
+//!
 //! # References and their roots
 //!
 //! The host reads three kinds of reference. A `funcref` is the function
@@ -264,6 +271,7 @@ mod errors;
 mod flight;
 mod js;
 mod jspi;
+mod linking;
 mod module;
 mod objects;
 mod owner;

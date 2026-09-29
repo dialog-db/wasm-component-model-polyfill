@@ -25,6 +25,7 @@ use crate::errors;
 use crate::flight::{Flight, Stop};
 use crate::js;
 use crate::jspi::Jspi;
+use crate::linking;
 use crate::module::WebModule;
 use crate::objects::{GlobalObject, InstanceObject, MemoryObject, Objects, TableObject, TagObject};
 use crate::returns::Returns;
@@ -268,7 +269,8 @@ impl WebStore {
     }
 
     /// Starts the instantiation of `module` with `imports`, and answers
-    /// its flight, which ends once the browser settles the instantiation.
+    /// its flight, which ends once the browser settles the instantiation,
+    /// and the imports object it gave the browser.
     ///
     /// `WebAssembly.instantiate`, and never `new WebAssembly.Instance`,
     /// which the browser refuses for a module above its limit. The start
@@ -282,7 +284,7 @@ impl WebStore {
         &mut self,
         module: &dyn BackendModule,
         imports: &[Extern],
-    ) -> Result<Rc<Flight>> {
+    ) -> Result<(Rc<Flight>, Object)> {
         let module = module
             .as_any()
             .downcast_ref::<WebModule>()
@@ -300,7 +302,7 @@ impl WebStore {
         let started = js::call_method(
             &webassembly,
             "instantiate",
-            &[module.module().clone().into(), object.into()],
+            &[module.module().clone().into(), object.clone().into()],
         );
         if let Some(failure) = entry.leave() {
             flight.fail(failure);
@@ -309,13 +311,20 @@ impl WebStore {
             .and_then(|promise| promise.dyn_into::<Promise>())
             .unwrap_or_else(|error| Promise::reject(&error));
         flight.watch(&promise);
-        Ok(flight)
+        Ok((flight, object))
     }
 
-    /// The instance of `module` whose instantiation stopped at `stop`.
+    /// The instance of `module` whose instantiation with `imports`, in
+    /// the imports object `object`, stopped at `stop`.
+    ///
+    /// Where the browser refused the instantiation, the backend names the
+    /// import it failed on from `object` and the types of `imports`, and
+    /// never from the browser's words. See [`linking::failed`].
     pub fn finish_instantiation(
         &mut self,
         module: &dyn BackendModule,
+        imports: &[Extern],
+        object: &Object,
         stop: Stop,
     ) -> Result<Instance> {
         let module = module
@@ -328,9 +337,17 @@ impl WebStore {
                 host: Some(host), ..
             } => return Err(Error::Trap(TrapKind::Host(host))),
             Stop::Failed { reason, .. } => {
-                return Err(errors::instantiate(
+                let failed = linking::failed(
                     &reason,
                     module.imports(),
+                    imports,
+                    object,
+                    &self.objects,
+                    &self.types,
+                );
+                return Err(errors::instantiate(
+                    &reason,
+                    failed,
                     &mut self.carrier,
                     self.shared_memory,
                 ));
@@ -488,7 +505,7 @@ impl WebStore {
             if expected != found {
                 return Err(link(format!("expected {expected}, found {found}")));
             }
-            let value = self.extern_value(import)?;
+            let value = linking::value(import, &self.objects)?;
             if let Some(earlier) = given.get(&(ty.module(), ty.name())) {
                 if !Object::is(earlier, &value) {
                     return Err(link(
@@ -511,17 +528,6 @@ impl WebStore {
             given.insert((ty.module(), ty.name()), value);
         }
         Ok(object)
-    }
-
-    /// The JavaScript value of `external`.
-    fn extern_value(&self, external: &Extern) -> Result<JsValue> {
-        Ok(match external {
-            Extern::Func(func) => self.objects.func(*func)?.function.clone().into(),
-            Extern::Global(global) => self.objects.global(*global)?.global.clone().into(),
-            Extern::Table(table) => self.objects.table(*table)?.table.clone().into(),
-            Extern::Memory(memory) => self.objects.memory(*memory)?.memory.clone().into(),
-            Extern::Tag(tag) => self.objects.tag(*tag)?.tag.clone(),
-        })
     }
 
     /// The handle of the export `value` of type `ty`, named `name`.
@@ -651,9 +657,9 @@ impl BackendStore for WebStore {
         // future cannot outlive the host function, which cannot wait for
         // it, so no guest of the store runs while it holds the store.
         Box::pin(async move {
-            let flight = self.start_instantiation(module, imports)?;
+            let (flight, object) = self.start_instantiation(module, imports)?;
             let stop = flight.stop().await;
-            self.finish_instantiation(module, stop)
+            self.finish_instantiation(module, imports, &object, stop)
         })
     }
 

@@ -115,9 +115,10 @@ impl BackendStore for Owner {
         // Each step reaches the store anew, and holds no reference to it
         // across the await, while the start function can run.
         Box::pin(async move {
-            let flight = self.store_mut()?.start_instantiation(module, imports)?;
+            let (flight, object) = self.store_mut()?.start_instantiation(module, imports)?;
             let stop = flight.stop().await;
-            self.store_mut()?.finish_instantiation(module, stop)
+            self.store_mut()?
+                .finish_instantiation(module, imports, &object, stop)
         })
     }
 

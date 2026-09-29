@@ -27,34 +27,46 @@ pub fn compile(error: &JsValue) -> Error {
     }
 }
 
-/// The error of an instantiation of a module with the imports `imports`
-/// that the engine refused.
+/// The error of an instantiation that the engine refused, where `failed`
+/// is the import it failed on, as the backend tells it without the
+/// engine's words.
 ///
-/// The engine names an import that does not link by its place, as
-/// `Import #3`, in a `LinkError`, or in a `TypeError` where the imports
-/// object lacks it. The backend reads the place back to name the import in
-/// [`Error::Link`]. A trap in the start function is [`Error::Trap`], as
-/// [`guest`] reads it.
+/// An instantiation that failed on an import is [`Error::Link`], which
+/// names it with the engine's message. Every other `LinkError` is
+/// [`Error::Link`] too, with no names, since the backend cannot tell which
+/// import it is about, or whether it is about one at all. A trap in the
+/// start function is [`Error::Trap`], as [`guest`] reads it.
 pub fn instantiate(
     error: &JsValue,
-    imports: &[ImportType],
+    failed: Option<&ImportType>,
     carrier: &mut Carrier,
     shared_memory: bool,
 ) -> Error {
-    let text = message(error);
-    let linking = error.is_instance_of::<WebAssembly::LinkError>()
-        || error.is_instance_of::<js_sys::TypeError>();
-    if linking && let Some(import) = import_index(&text).and_then(|index| imports.get(index)) {
-        return Error::Link {
-            module: import.module().to_string(),
-            name: import.name().to_string(),
-            message: text,
-        };
+    if let Some(error) = link(error, failed) {
+        return error;
     }
     if error.is_instance_of::<WebAssembly::CompileError>() {
-        return Error::Compile { message: text };
+        return Error::Compile {
+            message: message(error),
+        };
     }
     guest(error, carrier, shared_memory)
+}
+
+/// [`Error::Link`] for an instantiation that failed with `error` on the
+/// import `failed`, or with a `LinkError` on no import the backend can
+/// name. See [`instantiate`].
+fn link(error: &JsValue, failed: Option<&ImportType>) -> Option<Error> {
+    let (module, name) = match failed {
+        Some(import) => (import.module().to_string(), import.name().to_string()),
+        None if error.is_instance_of::<WebAssembly::LinkError>() => (String::new(), String::new()),
+        None => return None,
+    };
+    Some(Error::Link {
+        module,
+        name,
+        message: message(error),
+    })
 }
 
 /// The error of a call into a guest of a store that threw `error`, where
@@ -115,31 +127,55 @@ pub fn backend(message: impl Into<String>) -> Error {
     }
 }
 
-/// The place of the import that the engine's message `text` names, as
-/// `Import #3`.
-fn import_index(text: &str) -> Option<usize> {
-    let (_, after) = text.split_once("Import #")?;
-    let digits = after
-        .find(|c: char| !c.is_ascii_digit())
-        .map_or(after, |end| &after[..end]);
-    digits.parse().ok()
-}
-
 #[cfg(test)]
 mod tests {
+    use wcmp_wasm_core::{ExternType, FuncType, ValType};
+
     use super::*;
 
     #[wcmp_macros::test]
-    fn it_reads_the_place_of_an_import_from_the_engines_message() {
-        assert_eq!(
-            import_index(
-                "WebAssembly.instantiate(): Import #12 \"host\" \"notify\": \
-                 function import requires a callable"
-            ),
-            Some(12)
+    fn it_reads_every_link_error_as_a_link_error_whatever_its_words() {
+        let import = ImportType::new(
+            "host",
+            "notify",
+            ExternType::Func(FuncType::new([ValType::I32], [])),
         );
-        assert_eq!(import_index("Import #3"), Some(3));
-        assert_eq!(import_index("no place here"), None);
+        // The words of V8, JavaScriptCore, and SpiderMonkey, and none.
+        for text in [
+            "WebAssembly.instantiate(): Import #0 \"host\" \"notify\": imported function does \
+             not match the expected type",
+            "imported function host:notify signature doesn't match the provided WebAssembly \
+             function's signature",
+            "imported global type mismatch",
+            "",
+        ] {
+            let error = WebAssembly::LinkError::new(text);
+            assert!(
+                matches!(
+                    link(&error, Some(&import)),
+                    Some(Error::Link { ref module, ref name, .. })
+                        if module == "host" && name == "notify"
+                ),
+                "{text:?}"
+            );
+            assert!(
+                matches!(
+                    link(&error, None),
+                    Some(Error::Link { ref module, ref name, .. })
+                        if module.is_empty() && name.is_empty()
+                ),
+                "{text:?}"
+            );
+        }
+
+        // A `TypeError` is about an import only where the backend found
+        // the one it failed on.
+        let error = js_sys::TypeError::new("import host:notify must be an object");
+        assert!(matches!(
+            link(&error, Some(&import)),
+            Some(Error::Link { .. })
+        ));
+        assert!(link(&error, None).is_none());
     }
 
     #[wcmp_macros::test]

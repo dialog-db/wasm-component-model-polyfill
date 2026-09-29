@@ -14,7 +14,9 @@ use core::task::{Context, Poll, Waker};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use js_sys::{Array, Function, Object, Proxy, Reflect, SharedArrayBuffer, Uint8Array};
+use js_sys::{
+    Array, Function, Object, Promise, Proxy, Reflect, SharedArrayBuffer, Uint8Array, WebAssembly,
+};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use wcmp_macros::wasm;
@@ -352,6 +354,237 @@ async fn it_refuses_an_import_of_the_wrong_kind_or_type_with_a_link_error() {
             other => panic!("the instantiation fails with a link error: {other:?}"),
         }
     }
+}
+
+/// Awaits `body` while `WebAssembly.instantiate` is `instantiate`, and
+/// puts the browser's own back after.
+async fn with_instantiate<R>(instantiate: &JsValue, body: impl Future<Output = R>) -> R {
+    let namespace = webassembly();
+    let original = Reflect::get(&namespace, &"instantiate".into()).expect("the property reads");
+    Reflect::set(&namespace, &"instantiate".into(), instantiate).expect("the property is writable");
+    let result = body.await;
+    Reflect::set(&namespace, &"instantiate".into(), &original).expect("the property is writable");
+    result
+}
+
+/// A `WebAssembly.instantiate` that refuses every instantiation with a
+/// `LinkError` whose message is `text`.
+fn refusing_instantiate(text: &'static str) -> Closure<dyn Fn(JsValue, JsValue) -> Promise> {
+    Closure::new(move |_, _| Promise::reject(&WebAssembly::LinkError::new(text)))
+}
+
+/// The module and item names of the import that `refused` names, where it
+/// is a link error.
+fn link_names(refused: wcmp_wasm_core::Result<Instance>) -> (String, String) {
+    match refused {
+        Err(Error::Link { module, name, .. }) => (module, name),
+        other => panic!("the instantiation fails with a link error: {other:?}"),
+    }
+}
+
+/// How JavaScriptCore and SpiderMonkey refuse a function of the wrong
+/// type, and a refusal in no words at all. Neither engine names an import
+/// by its place.
+const FOREIGN_REFUSALS: [&str; 3] = [
+    "imported function host:notify signature doesn't match the provided WebAssembly function's \
+     signature",
+    "imported function 'host.notify' signature mismatch",
+    "",
+];
+
+#[wcmp_macros::test]
+async fn it_names_an_import_of_the_wrong_type_whatever_words_the_engine_uses() {
+    let engine = engine();
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    let exporter = Module::compile(&engine, wasm!(r#"(module (func (export "nothing")))"#))
+        .await
+        .expect("the module compiles");
+    let exporter = Instance::instantiate(&mut store, &exporter, &[])
+        .await
+        .expect("the module instantiates");
+    let nothing = func(&mut store, exporter, "nothing");
+    let module = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (import "host" "first" (func))
+              (import "host" "notify" (func (param i32))))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    let imports = [nothing.into(), nothing.into()];
+
+    for text in FOREIGN_REFUSALS {
+        let refuse = refusing_instantiate(text);
+        let refused = with_instantiate(
+            refuse.as_ref(),
+            Instance::instantiate(&mut store, &module, &imports),
+        )
+        .await;
+        assert_eq!(
+            link_names(refused),
+            ("host".to_string(), "notify".to_string()),
+            "{text:?}"
+        );
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_names_an_import_whose_namespace_is_missing() {
+    let engine = engine();
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    let exporter = Module::compile(&engine, wasm!(r#"(module (func (export "nothing")))"#))
+        .await
+        .expect("the module compiles");
+    let exporter = Instance::instantiate(&mut store, &exporter, &[])
+        .await
+        .expect("the module instantiates");
+    let nothing = func(&mut store, exporter, "nothing");
+    let module = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (import "host" "first" (func))
+              (import "other" "notify" (func)))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    let imports = [nothing.into(), nothing.into()];
+
+    // The backend gives every namespace, so the test takes one away on the
+    // way to the browser. The browser refuses the instantiation in its own
+    // words, and then again in none.
+    let original = Reflect::get(&webassembly(), &"instantiate".into())
+        .expect("the property reads")
+        .dyn_into::<Function>()
+        .expect("`WebAssembly.instantiate` is a function");
+    let forward =
+        Closure::<dyn Fn(JsValue, JsValue) -> JsValue>::new(move |module, imports: JsValue| {
+            Reflect::delete_property(imports.unchecked_ref::<Object>(), &"other".into())
+                .expect("the namespace deletes");
+            original
+                .call2(&webassembly(), &module, &imports)
+                .unwrap_or_else(|error| Promise::reject(&error).into())
+        });
+    let unworded = Closure::<dyn Fn(JsValue, JsValue) -> Promise>::new(|_, imports: JsValue| {
+        Reflect::delete_property(imports.unchecked_ref::<Object>(), &"other".into())
+            .expect("the namespace deletes");
+        Promise::reject(&js_sys::TypeError::new(""))
+    });
+    for instantiate in [forward.as_ref(), unworded.as_ref()] {
+        let refused = with_instantiate(
+            instantiate,
+            Instance::instantiate(&mut store, &module, &imports),
+        )
+        .await;
+        assert_eq!(
+            link_names(refused),
+            ("other".to_string(), "notify".to_string())
+        );
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_names_the_one_import_whose_type_it_does_not_know() {
+    let engine = engine();
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    let exporter = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (func (export "nothing"))
+              (func $hidden)
+              (table (export "table") 1 funcref)
+              (elem (i32.const 0) func $hidden))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    let exporter = Instance::instantiate(&mut store, &exporter, &[])
+        .await
+        .expect("the module instantiates");
+    let nothing = func(&mut store, exporter, "nothing");
+    let table = export(&mut store, exporter, "table")
+        .into_table()
+        .expect("`table` is a table");
+    // A function that only a table gave: the JavaScript API does not tell
+    // its type.
+    let Val::FuncRef(Some(hidden)) = table.get(&mut store, 0).expect("the element reads") else {
+        panic!("the table holds a function");
+    };
+    assert_eq!(
+        hidden.ty(&store).expect("the store owns the function"),
+        None
+    );
+
+    let module = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (import "host" "first" (func))
+              (import "host" "notify" (func (param i32))))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    let imports = [nothing.into(), hidden.into()];
+
+    // The browser refuses in its own words, and then in the words of other
+    // engines.
+    let refused = Instance::instantiate(&mut store, &module, &imports).await;
+    assert_eq!(
+        link_names(refused),
+        ("host".to_string(), "notify".to_string())
+    );
+    for text in FOREIGN_REFUSALS {
+        let refuse = refusing_instantiate(text);
+        let refused = with_instantiate(
+            refuse.as_ref(),
+            Instance::instantiate(&mut store, &module, &imports),
+        )
+        .await;
+        assert_eq!(
+            link_names(refused),
+            ("host".to_string(), "notify".to_string()),
+            "{text:?}"
+        );
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_reads_a_link_error_about_no_import_as_a_link_error_that_names_none() {
+    let engine = engine();
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    let exporter = Module::compile(&engine, wasm!(r#"(module (func (export "nothing")))"#))
+        .await
+        .expect("the module compiles");
+    let exporter = Instance::instantiate(&mut store, &exporter, &[])
+        .await
+        .expect("the module instantiates");
+    let nothing = func(&mut store, exporter, "nothing");
+    let module = Module::compile(&engine, wasm!(r#"(module (import "host" "first" (func)))"#))
+        .await
+        .expect("the module compiles");
+
+    // JavaScriptCore throws a `LinkError` where it cannot make a table of
+    // the module, which is about no import. Every import here links.
+    let refuse = refusing_instantiate("couldn't create Table");
+    let refused = with_instantiate(
+        refuse.as_ref(),
+        Instance::instantiate(&mut store, &module, &[nothing.into()]),
+    )
+    .await;
+    assert_eq!(link_names(refused), (String::new(), String::new()));
 }
 
 #[wcmp_macros::test]

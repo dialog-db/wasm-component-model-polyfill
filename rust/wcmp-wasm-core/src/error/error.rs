@@ -36,6 +36,10 @@ pub enum Error {
     },
 
     /// An import was given an extern of the wrong kind or type.
+    ///
+    /// The engine refused the instantiation for its imports. Where the
+    /// backend cannot tell which import the engine refused, both names are
+    /// empty.
     #[error("the import `{module}` `{name}` does not link: {message}")]
     Link {
         /// The module name of the import.
