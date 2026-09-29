@@ -20,12 +20,14 @@ wast = { workspace = true }
 wcmp-macros = { workspace = true }
 wcmp-wasm-core = { workspace = true }
 
+# Prints the report lines of a run in the browser, whose standard output
+# goes nowhere, where the test runner shows them.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-test = { workspace = true }
+
 [dev-dependencies]
 # The error a host function returns, which a host trap carries.
 anyhow = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
-
-[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = { workspace = true }

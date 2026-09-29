@@ -1,4 +1,5 @@
-//! Generated modules that carry a `v128` or an `exnref` across a call.
+//! Generated modules that carry a float, a `v128`, or an `exnref` across a
+//! call.
 
 use std::collections::HashMap;
 
@@ -19,15 +20,18 @@ use crate::type_registry::TypeRegistry;
 use crate::values::{self, Kind};
 
 /// The generated modules through which the host calls a guest function
-/// whose type holds a `v128` or an `exnref`.
+/// whose type holds a float, a `v128`, or an `exnref`.
 ///
-/// The JavaScript API carries neither value between JavaScript and a
-/// guest. So for such a function, the backend generates a carrier: a small
-/// module that imports the function and exports one function that the
-/// JavaScript API can call. The carrier takes and gives a `v128` as two
-/// `i64` halves, and an `exnref` as its index in a table of exceptions that
-/// the store owns, or `-1` for null. Inside the carrier, the call of the
-/// guest function is a call from WebAssembly to WebAssembly.
+/// The JavaScript API carries neither a `v128` nor an `exnref` between
+/// JavaScript and a guest, and it carries a float as a `Number`, which can
+/// change the bits of a NaN. So for such a function, the backend generates
+/// a carrier: a small module that imports the function and exports one
+/// function that the JavaScript API can call. The carrier takes and gives
+/// an `f32` as the `i32` of its bits, an `f64` as the `i64` of its bits, a
+/// `v128` as two `i64` halves, and an `exnref` as its index in a table of
+/// exceptions that the store owns, or `-1` for null. Inside the carrier,
+/// the call of the guest function is a call from WebAssembly to
+/// WebAssembly.
 ///
 /// The table of exceptions roots each `exnref` that crosses to the host
 /// for the life of the store: the index is the handle, and the store never
@@ -37,7 +41,10 @@ pub struct Carrier {
     id: StoreId,
     exns: Option<WebAssembly::Table>,
     modules: HashMap<FuncType, WebAssembly::Module>,
-    functions: HashMap<u64, Function>,
+    /// The carrier function of each guest function by the index of its
+    /// handle, or `None` for a function whose floats cross as a `Number`:
+    /// see [`Carrier::arguments`].
+    functions: HashMap<u64, Option<Function>>,
     catcher: Option<Catcher>,
 }
 
@@ -53,6 +60,10 @@ struct Catcher {
 enum Slot {
     /// A value the JavaScript API carries, as it is.
     Plain(wasm_encoder::ValType),
+    /// An `f32`, as the `i32` of its bits.
+    F32,
+    /// An `f64`, as the `i64` of its bits.
+    F64,
     /// A `v128`, as its low and its high `i64` halves.
     V128,
     /// A reference to an exception, as its index in the table of
@@ -151,11 +162,17 @@ impl Carrier {
     }
 
     /// Whether a call of a function of type `ty` needs a carrier.
+    ///
+    /// A `v128` or an `exnref` always does. A float does where the carrier
+    /// can name every type of the function: beside a reference to a
+    /// concrete type, which no carrier can name, a float crosses as a
+    /// `Number`.
     pub fn needed(ty: &FuncType) -> bool {
-        ty.params()
-            .iter()
-            .chain(ty.results())
-            .any(|ty| matches!(slot(ty), Some(Slot::V128 | Slot::Exn { .. } | Slot::NoExn)))
+        let mut slots = ty.params().iter().chain(ty.results()).map(slot);
+        let float = slots
+            .clone()
+            .any(|slot| matches!(slot, Some(Slot::F32 | Slot::F64)));
+        required(ty) || (float && slots.all(|slot| slot.is_some()))
     }
 
     /// The carrier function of the guest function `func`, whose handle has
@@ -165,17 +182,31 @@ impl Carrier {
     /// The store calls the carrier with the arguments, and reads the
     /// results with [`Carrier::results`]. The engine already checked the
     /// number and the kinds of the values.
+    ///
+    /// The carrier imports the function with the type it declares from
+    /// `ty`, which is final and alone in its recursion group. A function of
+    /// a type that is not final, or of another recursion group, does not
+    /// link to it. Where the type holds a float and nothing else a carrier
+    /// must carry, the call then goes without a carrier, the floats as a
+    /// `Number`, and this returns `None`, for this and every later call of
+    /// the function.
     pub fn arguments(
         &mut self,
         objects: &Objects,
         (index, func): (u64, &Function),
         ty: &FuncType,
         params: &[Val],
-    ) -> Result<(Function, Array)> {
-        let carrier = self.function(index, func, ty)?;
+    ) -> Result<Option<(Function, Array)>> {
+        let Some(carrier) = self.function(index, func, ty)? else {
+            return Ok(None);
+        };
         let mut args = Vec::new();
         for (value, ty) in params.iter().zip(ty.params()) {
             match (slot(ty), value) {
+                (Some(Slot::F32), Val::F32(bits)) => {
+                    args.push(JsValue::from_f64(f64::from(*bits as i32)));
+                }
+                (Some(Slot::F64), Val::F64(bits)) => args.push(JsValue::from(*bits as i64)),
                 (Some(Slot::V128), Val::V128(bits)) => {
                     args.push(JsValue::from(*bits as u64 as i64));
                     args.push(JsValue::from((*bits >> 64) as u64 as i64));
@@ -189,7 +220,7 @@ impl Carrier {
                 _ => args.push(values::to_js(objects, value)?),
             }
         }
-        Ok((carrier, args.into_iter().collect()))
+        Ok(Some((carrier, args.into_iter().collect())))
     }
 
     /// Writes to `results` the results of a function of type `ty` that
@@ -219,9 +250,17 @@ impl Carrier {
         };
         for (result, ty) in results.iter_mut().zip(ty.results()) {
             *result = match slot(ty) {
+                Some(Slot::F32) => {
+                    let value = next()?;
+                    let bits = value.as_f64().ok_or_else(|| {
+                        values::mismatch(format!("{value:?} is not the bits of an f32"))
+                    })?;
+                    Val::F32(bits as i32 as u32)
+                }
+                Some(Slot::F64) => Val::F64(bits64(next()?, "an f64")?),
                 Some(Slot::V128) => {
-                    let low = half(next()?)?;
-                    let high = half(next()?)?;
+                    let low = bits64(next()?, "a half of a v128")?;
+                    let high = bits64(next()?, "a half of a v128")?;
                     Val::V128(u128::from(low) | (u128::from(high) << 64))
                 }
                 Some(Slot::Exn { .. } | Slot::NoExn) => {
@@ -270,8 +309,9 @@ impl Carrier {
     }
 
     /// The carrier function of the guest function `func`, whose handle has
-    /// index `index`, made the first time the host calls it.
-    fn function(&mut self, index: u64, func: &Function, ty: &FuncType) -> Result<Function> {
+    /// index `index`, made the first time the host calls it, or `None`
+    /// where the function goes without one: see [`Carrier::arguments`].
+    fn function(&mut self, index: u64, func: &Function, ty: &FuncType) -> Result<Option<Function>> {
         if let Some(carrier) = self.functions.get(&index) {
             return Ok(carrier.clone());
         }
@@ -298,16 +338,42 @@ impl Carrier {
         };
         let imports_object =
             js::object(&[("", imports.into())]).map_err(|error| errors::call(&error))?;
-        let exports = WebAssembly::Instance::new(&module, &imports_object)
-            .map_err(|error| errors::backend(errors::message(&error)))?
-            .exports();
+        let exports = match WebAssembly::Instance::new(&module, &imports_object) {
+            Ok(instance) => instance.exports(),
+            Err(error) if goes_without(&error, ty) => {
+                self.functions.insert(index, None);
+                return Ok(None);
+            }
+            Err(error) => return Err(errors::backend(errors::message(&error))),
+        };
         let carrier = js::get(&exports, "call")
             .ok()
             .and_then(|carrier| carrier.dyn_into::<Function>().ok())
             .ok_or_else(|| errors::backend("the carrier exports no function"))?;
-        self.functions.insert(index, carrier.clone());
-        Ok(carrier)
+        self.functions.insert(index, Some(carrier.clone()));
+        Ok(Some(carrier))
     }
+}
+
+/// Whether a function of type `ty` holds a value that the JavaScript API
+/// cannot carry at all, a `v128` or an `exnref`, so that a call of it needs
+/// a carrier.
+fn required(ty: &FuncType) -> bool {
+    ty.params()
+        .iter()
+        .chain(ty.results())
+        .any(|ty| matches!(slot(ty), Some(Slot::V128 | Slot::Exn { .. } | Slot::NoExn)))
+}
+
+/// Whether a call of a function of type `ty` goes without a carrier, where
+/// the engine refused the carrier with `error`.
+///
+/// Only a `LinkError` says that the function does not link to the type the
+/// carrier imports it with, and only a function whose type holds nothing a
+/// carrier must carry can go without one. Every other failure is the
+/// backend's.
+fn goes_without(error: &JsValue, ty: &FuncType) -> bool {
+    !required(ty) && error.is_instance_of::<WebAssembly::LinkError>()
 }
 
 /// The exports of the generated module `bytes`, instantiated with
@@ -323,12 +389,12 @@ fn instantiate(bytes: &[u8], imports: &Object) -> Result<Object> {
         .exports())
 }
 
-/// The half of a `v128` that the JavaScript API gave as the `BigInt`
-/// `value`.
-fn half(value: JsValue) -> Result<u64> {
+/// The 64 bits that the JavaScript API gave as the `BigInt` `value`, which
+/// carries `what`: an `f64`, or a half of a `v128`.
+fn bits64(value: JsValue, what: &str) -> Result<u64> {
     i64::try_from(value)
-        .map(|half| half as u64)
-        .map_err(|value| values::mismatch(format!("{value:?} is not a half of a v128")))
+        .map(|bits| bits as u64)
+        .map_err(|value| values::mismatch(format!("{value:?} is not the bits of {what}")))
 }
 
 /// How a carrier takes or gives a value of `ty`, or `None` where no
@@ -339,8 +405,8 @@ fn slot(ty: &ValType) -> Option<Slot> {
     Some(match ty {
         ValType::I32 => Slot::Plain(Encoded::I32),
         ValType::I64 => Slot::Plain(Encoded::I64),
-        ValType::F32 => Slot::Plain(Encoded::F32),
-        ValType::F64 => Slot::Plain(Encoded::F64),
+        ValType::F32 => Slot::F32,
+        ValType::F64 => Slot::F64,
         ValType::V128 => Slot::V128,
         ValType::Ref(ty) => {
             let abstract_type = match ty.heap {
@@ -387,6 +453,8 @@ fn slot_width(slot: Option<Slot>) -> usize {
 fn encoded(ty: &ValType) -> Option<wasm_encoder::ValType> {
     Some(match slot(ty)? {
         Slot::Plain(ty) => ty,
+        Slot::F32 => wasm_encoder::ValType::F32,
+        Slot::F64 => wasm_encoder::ValType::F64,
         Slot::V128 => wasm_encoder::ValType::V128,
         Slot::Exn { nullable } => wasm_encoder::ValType::Ref(wasm_encoder::RefType {
             nullable,
@@ -410,8 +478,9 @@ fn carried(ty: &ValType) -> Vec<wasm_encoder::ValType> {
     use wasm_encoder::ValType as Encoded;
     match slot(ty) {
         Some(Slot::Plain(ty)) => vec![ty],
+        Some(Slot::F64) => vec![Encoded::I64],
         Some(Slot::V128) => vec![Encoded::I64, Encoded::I64],
-        Some(Slot::Exn { .. } | Slot::NoExn) | None => vec![Encoded::I32],
+        Some(Slot::F32 | Slot::Exn { .. } | Slot::NoExn) | None => vec![Encoded::I32],
     }
 }
 
@@ -484,6 +553,14 @@ fn generate(ty: &FuncType, uses_exns: bool) -> Result<Vec<u8>> {
     let mut local = 0;
     for ty in ty.params() {
         match slot(ty) {
+            Some(Slot::F32) => {
+                code.local_get(local).f32_reinterpret_i32();
+                local += 1;
+            }
+            Some(Slot::F64) => {
+                code.local_get(local).f64_reinterpret_i64();
+                local += 1;
+            }
             Some(Slot::V128) => {
                 code.v128_const(0)
                     .local_get(local)
@@ -530,6 +607,12 @@ fn generate(ty: &FuncType, uses_exns: bool) -> Result<Vec<u8>> {
     for (index, ty) in ty.results().iter().enumerate() {
         let local = first_local + index as u32;
         match slot(ty) {
+            Some(Slot::F32) => {
+                code.local_get(local).i32_reinterpret_f32();
+            }
+            Some(Slot::F64) => {
+                code.local_get(local).i64_reinterpret_f64();
+            }
             Some(Slot::V128) => {
                 code.local_get(local)
                     .i64x2_extract_lane(0)
@@ -557,4 +640,30 @@ fn generate(ty: &FuncType, uses_exns: bool) -> Result<Vec<u8>> {
     section.function(&body);
     module.section(&section);
     Ok(module.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[wcmp_macros::test]
+    fn it_goes_without_a_carrier_only_where_a_float_function_does_not_link() {
+        let float = FuncType::new([ValType::F32], [ValType::F64]);
+        let v128 = FuncType::new([ValType::F32], [ValType::V128]);
+        let link: JsValue = WebAssembly::LinkError::new("the callee does not link").into();
+        assert!(goes_without(&link, &float));
+        assert!(!goes_without(&link, &v128));
+
+        // Any other failure of the carrier is the backend's, never a call
+        // without a carrier.
+        for error in [
+            WebAssembly::RuntimeError::new("unreachable").into(),
+            WebAssembly::CompileError::new("invalid module").into(),
+            js_sys::TypeError::new("callee is not a function").into(),
+            js_sys::RangeError::new("out of memory").into(),
+            JsValue::from_str("thrown"),
+        ] {
+            assert!(!goes_without(&error, &float), "{error:?}");
+        }
+    }
 }

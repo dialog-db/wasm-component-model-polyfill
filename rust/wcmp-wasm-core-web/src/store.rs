@@ -170,8 +170,8 @@ impl WebStore {
     /// arguments, and how to read its results into `len` slots.
     ///
     /// Where the backend knows the type of the function, the call must
-    /// match it, and a function whose type holds a `v128` or an `exnref`
-    /// is called through its carrier.
+    /// match it, and a function that [`Carrier::needed`] names is called
+    /// through its carrier.
     fn prepare(
         &mut self,
         func: Func,
@@ -195,10 +195,11 @@ impl WebStore {
             for (value, ty) in params.iter().zip(ty.params()) {
                 values::check(value, ty, &self.types)?;
             }
-            if Carrier::needed(ty) {
-                let (carrier, args) =
+            if Carrier::needed(ty)
+                && let Some((carrier, args)) =
                     self.carrier
-                        .arguments(&self.objects, (func.index(), &function), ty, params)?;
+                        .arguments(&self.objects, (func.index(), &function), ty, params)?
+            {
                 let returns = Returns {
                     ty: Some(ty.clone()),
                     carried: true,

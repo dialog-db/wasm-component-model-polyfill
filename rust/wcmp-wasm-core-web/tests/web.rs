@@ -764,6 +764,85 @@ async fn it_carries_a_v128_through_a_generated_module() {
 }
 
 #[wcmp_macros::test]
+async fn it_carries_the_bits_of_a_nan_to_and_from_an_export() {
+    let engine = engine();
+    let (mut store, instance) = instance(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (func (export "same") (param f32 f64) (result f64 f32)
+                local.get 1
+                local.get 0)
+              (func (export "bits") (param f32 f64) (result i32 i64)
+                local.get 0
+                i32.reinterpret_f32
+                local.get 1
+                i64.reinterpret_f64))
+            "#
+        ),
+    )
+    .await;
+
+    // A signaling NaN keeps its payload each way, which a `Number` would
+    // not promise.
+    let f32_bits = 0x7fa0_0001;
+    let f64_bits = 0x7ff4_0000_0000_0001;
+    let params = [Val::F32(f32_bits), Val::F64(f64_bits)];
+
+    let same = func(&mut store, instance, "same");
+    let mut results = [Val::F64(0), Val::F32(0)];
+    same.call(&mut store, &params, &mut results)
+        .expect("the carrier carries the floats");
+    assert!(
+        matches!(results[0], Val::F64(bits) if bits == f64_bits),
+        "{:?}",
+        results[0]
+    );
+    assert!(
+        matches!(results[1], Val::F32(bits) if bits == f32_bits),
+        "{:?}",
+        results[1]
+    );
+
+    let bits = func(&mut store, instance, "bits");
+    let mut results = [Val::I32(0), Val::I64(0)];
+    bits.call(&mut store, &params, &mut results)
+        .expect("the carrier carries the floats");
+    assert_eq!(results[0].i32(), Some(f32_bits as i32));
+    assert_eq!(results[1].i64(), Some(f64_bits as i64));
+}
+
+#[wcmp_macros::test]
+async fn it_calls_a_float_export_whose_type_is_not_final_without_a_carrier() {
+    let engine = engine();
+    let (mut store, instance) = instance(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (type $open (sub (func (param f32) (result f32))))
+              (func (export "half") (type $open)
+                local.get 0
+                f32.const 0.5
+                f32.mul))
+            "#
+        ),
+    )
+    .await;
+
+    // The carrier imports a final type, which the export does not link
+    // to, so the call carries the float as a `Number`.
+    let half = func(&mut store, instance, "half");
+    for _ in 0..2 {
+        let mut result = [Val::F32(0)];
+        half.call(&mut store, &[Val::F32(3.0f32.to_bits())], &mut result)
+            .expect("the call goes without a carrier");
+        assert_eq!(result[0].f32(), Some(1.5));
+    }
+}
+
+#[wcmp_macros::test]
 async fn it_refuses_a_v128_for_a_function_whose_type_it_does_not_know() {
     let engine = engine();
     let (mut store, instance) = instance(

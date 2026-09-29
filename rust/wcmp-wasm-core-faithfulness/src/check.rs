@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use wcmp_wasm_core::{Capability, Engine};
 
+use crate::expected_failure::ExpectedFailure;
 use crate::expected_failures::ExpectedFailures;
 use crate::runner;
 use crate::script::{SCRIPTS, Script};
@@ -33,14 +34,14 @@ pub async fn check_script(engine: &Engine, path: &str, expected: &str) {
     let listed = expected.for_script(path).collect::<Vec<_>>();
 
     if !suite.runs_with(engine.capabilities()) {
-        println!("{path} ({suite}): the backend does not run it");
+        say(&format!("{path} ({suite}): the backend does not run it"));
         let stale = listed
             .iter()
             .map(|entry| {
                 format!(
                     "stale expectation: {path}:{} {}: the backend does not run the script",
                     entry.line(),
-                    entry.citation()
+                    cited(entry)
                 )
             })
             .collect::<Vec<_>>();
@@ -60,12 +61,12 @@ pub async fn check_script(engine: &Engine, path: &str, expected: &str) {
             problems.push(format!(
                 "stale expectation: {path}:{} {}",
                 entry.line(),
-                entry.citation()
+                cited(entry)
             ));
         }
     }
     for (line, reason) in run.skipped() {
-        println!("skipped: {path}:{line} {reason}");
+        say(&format!("skipped: {path}:{line} {reason}"));
     }
     let summary = format!(
         "{path} ({suite}): {} directives, {} passed, {} expected failures, {} skipped",
@@ -78,12 +79,12 @@ pub async fn check_script(engine: &Engine, path: &str, expected: &str) {
                 .count(),
         run.skipped().len(),
     );
-    println!("{summary}");
+    say(&summary);
     assert!(problems.is_empty(), "{summary}\n{}", problems.join("\n"));
 }
 
 /// Checks the backend's list of expected failures, `expected`: each entry
-/// cites a defect of the engine and names a script of the suite.
+/// cites what explains its failure and names a script of the suite.
 pub fn check_expected_failures(expected: &str) {
     let list = ExpectedFailures::parse(expected).unwrap_or_else(|error| panic!("{error}"));
     let unknown = list
@@ -116,20 +117,20 @@ pub fn report_suites(engine: &Engine) {
             .push(script.path());
     }
 
-    println!(
+    say(&format!(
         "faithfulness suite: {} scripts of the pinned test suite; the backend declares {:?}",
         SCRIPTS.len(),
         declared
-    );
+    ));
     for (name, (suite, scripts)) in &suites {
         let runs = if suite.runs_with(declared) {
             "run"
         } else {
             "not run"
         };
-        println!("  {name}: {} scripts, {runs}", scripts.len());
+        say(&format!("  {name}: {} scripts, {runs}", scripts.len()));
         if let Suite::Outside(_) = suite {
-            println!("    {}", scripts.join(" "));
+            say(&format!("    {}", scripts.join(" ")));
         }
         if suite.runs_with(declared) {
             for path in scripts {
@@ -139,10 +140,10 @@ pub fn report_suites(engine: &Engine) {
                 let lifted = Suite::lifted_refusals(source, declared)
                     .unwrap_or_else(|error| panic!("{path} does not parse: {error}"));
                 for (line, lifting) in lifted {
-                    println!(
+                    say(&format!(
                         "    skipped: {path}:{line} asserts a refusal that {} lifts",
                         Suite::Capabilities(lifting)
-                    );
+                    ));
                 }
             }
         }
@@ -156,10 +157,30 @@ pub fn report_suites(engine: &Engine) {
             Suite::Outside(_) => false,
         });
         if !needed {
-            println!(
+            say(&format!(
                 "  {}: declared, and no script of the pinned test suite needs it",
                 Capability::name(capability)
-            );
+            ));
         }
     }
+}
+
+/// Prints `line` where the test runner shows it: to standard output
+/// natively, and to the console in the browser, whose standard output goes
+/// nowhere.
+fn say(line: &str) {
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test::console_log!("{line}");
+    #[cfg(not(target_arch = "wasm32"))]
+    println!("{line}");
+}
+
+/// The citations of `entry`, as the list gives them.
+fn cited(entry: &ExpectedFailure) -> String {
+    entry
+        .citations()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" ")
 }

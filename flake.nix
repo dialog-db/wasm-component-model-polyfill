@@ -1382,6 +1382,13 @@
                     nextestProfile = "faithfulness";
                     filter = "binary_id(wcmp-wasm-core-wasmtime::faithfulness)";
                   };
+                  web = menuTestCommand {
+                    description = "The faithfulness suite on the browser backend (wasm32-unknown-unknown, debug)";
+                    package = "tests-web-debug";
+                    nextestProfile = "faithfulness";
+                    filter = "binary_id(wcmp-wasm-core-web::faithfulness)";
+                    browser = true;
+                  };
                 };
               };
               regenerate = {
@@ -1450,7 +1457,7 @@
                   }
                   for suite in "native debug" "native release" "native no-provider" \
                     "web debug" "web release" "web no-provider" "faithfulness wasmi" \
-                    "faithfulness wasmtime"; do
+                    "faithfulness wasmtime" "faithfulness web"; do
                     lane "$suite" "$@"
                   done
                   lane zena

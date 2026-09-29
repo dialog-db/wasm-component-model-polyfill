@@ -84,8 +84,10 @@
 //! # Expected failures
 //!
 //! Each backend has a list of the directives its engine fails. Each entry
-//! cites a defect of the engine: an issue in its tracker, or a line of its
-//! source at a fixed commit. An entry without a citation fails the check.
+//! cites what explains its failure: a defect of the engine, as an issue in
+//! its tracker or a line of its source at a fixed commit, or a limit that
+//! the embedding of the engine requires, as a line of the specification at
+//! a fixed commit. An entry without a citation fails the check.
 //! A directive that fails and is not listed fails its script's test, and so
 //! does a listed directive that passes, so the list stays current. See
 //! [`ExpectedFailures`] for the format.
@@ -123,9 +125,9 @@ pub mod __private {
 /// `&str` constant that holds the backend's list of expected failures.
 ///
 /// Three more tests come with them. One checks the list itself: every
-/// entry cites a defect of the engine and names a script of the suite. One
-/// prints the suite of every script, and whether the backend runs it. One
-/// checks that the build embedded the pinned test suite.
+/// entry cites what explains its failure and names a script of the suite.
+/// One prints the suite of every script, and whether the backend runs it.
+/// One checks that the build embedded the pinned test suite.
 ///
 /// See the crate's documentation.
 #[macro_export]

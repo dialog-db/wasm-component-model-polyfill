@@ -102,6 +102,11 @@
 //! passes each of them to another guest directly, and a module with each
 //! of them at its boundary loads.
 //!
+//! The JavaScript API carries a float as a `Number`, which can change the
+//! bits of a NaN. So an export whose type holds a float goes through a
+//! carrier too, which takes and gives the float as the integer of its
+//! bits, where the carrier can name every type of the export.
+//!
 //! # Memory access
 //!
 //! Rust on `wasm32` addresses only memory 0 of the polyfill's own instance,

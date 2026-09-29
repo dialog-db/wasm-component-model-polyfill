@@ -2,24 +2,25 @@
 
 use crate::citation::Citation;
 
-/// A directive of the suite that a backend's engine fails, and the defect
-/// of the engine that explains it.
+/// A directive of the suite that a backend's engine fails, and what
+/// explains it: a defect of the engine, or a limit that the embedding of
+/// the engine requires.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExpectedFailure {
     path: String,
     line: usize,
-    citation: Citation,
+    citations: Vec<Citation>,
     reason: String,
 }
 
 impl ExpectedFailure {
     /// The failure of the directive on `line` of the script at `path`,
-    /// explained by the defect `citation` names, in the words of `reason`.
-    pub fn new(path: String, line: usize, citation: Citation, reason: String) -> Self {
+    /// explained by what `citations` name, in the words of `reason`.
+    pub fn new(path: String, line: usize, citations: Vec<Citation>, reason: String) -> Self {
         Self {
             path,
             line,
-            citation,
+            citations,
             reason,
         }
     }
@@ -34,9 +35,9 @@ impl ExpectedFailure {
         self.line
     }
 
-    /// The defect of the engine that explains the failure.
-    pub fn citation(&self) -> &Citation {
-        &self.citation
+    /// What explains the failure, one citation or more.
+    pub fn citations(&self) -> &[Citation] {
+        &self.citations
     }
 
     /// What fails, in the list's own words.

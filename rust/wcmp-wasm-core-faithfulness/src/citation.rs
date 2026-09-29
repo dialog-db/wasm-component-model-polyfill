@@ -1,9 +1,10 @@
-//! The citation of an engine defect.
+//! The citation of an engine defect, or of a limit an embedding requires.
 
 use core::fmt;
 
-/// The citation of a defect of an engine: an issue in the engine's
-/// tracker, or a line of the engine's source at a fixed commit.
+/// The citation of a defect of an engine, or of a limit that its embedding
+/// requires: an issue in the engine's tracker, or a line of the engine's
+/// source or of a specification at a fixed commit.
 ///
 /// A citation is a URL of one of these forms:
 ///
@@ -107,6 +108,10 @@ mod tests {
             "https://github.com/bytecodealliance/wasmtime/issues/10248",
             "https://github.com/bytecodealliance/wasmtime/blob/0123abc/crates/wasmtime/src/lib.rs#L12",
             "https://github.com/wasmi-labs/wasmi/blob/2970aa8f00/crates/core/src/trap.rs#L1-L20",
+            // The specifications the web embedding follows.
+            "https://github.com/WebAssembly/spec/blob/608711107b7f1edb13efd57b7d79b49477462d36/document/js-api/index.bs#L2208-L2234",
+            "https://github.com/WebAssembly/threads/blob/cc535ada1aa21cfaa3cabf3ac73b89acef78a0a0/proposals/threads/Overview.md#L392-L401",
+            "https://github.com/tc39/ecma262/blob/726ec8a42625509026a6570f1d4649bfa9fe4156/spec.html#L47429",
             "https://issues.chromium.org/issues/40001",
             "https://crbug.com/12",
             "https://bugzilla.mozilla.org/show_bug.cgi?id=1900000",

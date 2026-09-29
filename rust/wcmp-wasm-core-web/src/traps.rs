@@ -23,10 +23,12 @@ enum Names {
 ///
 /// Source: `src/common/message-template.h`, the `WasmTrap` templates and
 /// `StackOverflow`, and `src/runtime/runtime-wasm.cc`, which refuses an
-/// atomic wait with `AtomicsOperationNotAllowed`, at
+/// atomic wait with `AtomicsOperationNotAllowed` and throws each segment
+/// template, at
 /// <https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h>
 /// and
 /// <https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/runtime/runtime-wasm.cc>.
+/// A trap of an instantiation has more words: see [`instantiation`].
 const V8: &[(&str, Names)] = &[
     (
         "unreachable",
@@ -77,6 +79,21 @@ const V8: &[(&str, Names)] = &[
     (
         "requested new array is too large",
         Names::One(|| TrapKind::AllocationTooLarge),
+    ),
+    // A range of a data segment out of its bounds, in `array.new_data` and
+    // `array.init_data`, which the specification and Wasmtime call an
+    // access out of the bounds of a memory. `memory.init` takes the
+    // message of a memory.
+    (
+        "data segment out of bounds",
+        Names::One(|| TrapKind::MemoryOutOfBounds),
+    ),
+    // A range of an element segment out of its bounds, in `table.init`,
+    // `array.new_elem`, and `array.init_elem`, which the specification and
+    // Wasmtime call an access out of the bounds of a table.
+    (
+        "element segment out of bounds",
+        Names::One(|| TrapKind::TableOutOfBounds),
     ),
     (
         "WasmFX: unhandled suspend",
@@ -262,7 +279,9 @@ const JAVASCRIPTCORE: &[(&str, Names)] = &[
 ///
 /// JavaScriptCore can add the source of a call to a message, as in
 /// `Division by zero (evaluating 'f()')`. The table knows the message
-/// without it.
+/// without it. V8 puts the name of the call of the JavaScript API before
+/// the message of a trap that an instantiation raised: see
+/// [`instantiation`].
 pub fn kind(message: &str, shared_memory: bool) -> TrapKind {
     let other = || TrapKind::Other(message.to_string());
     match names(message) {
@@ -278,11 +297,58 @@ fn names(message: &str) -> Option<Names> {
         .find(" (evaluating '")
         .filter(|_| message.ends_with("')"))
         .map_or(message, |end| &message[..end]);
+    let message = match instantiation(message) {
+        Instantiation::Trap(message) => message,
+        Instantiation::DataSegment => return Some(Names::One(|| TrapKind::MemoryOutOfBounds)),
+    };
     [V8, SPIDERMONKEY, JAVASCRIPTCORE]
         .into_iter()
         .flatten()
         .find(|(known, _)| *known == message)
         .map(|&(_, names)| names)
+}
+
+/// What a message of V8 tells, once the name of its call is taken off.
+enum Instantiation<'a> {
+    /// A message whose words the tables know, or do not know.
+    Trap(&'a str),
+    /// A data segment out of the bounds of its memory, which the
+    /// specification and Wasmtime call an access out of the bounds of a
+    /// memory.
+    DataSegment,
+}
+
+/// The message `message` of a trap, without the name of the call of the
+/// JavaScript API that V8 puts before it, as in
+/// `WebAssembly.instantiate(): table index is out of bounds`.
+///
+/// V8 raises a trap of an instantiation through its `ErrorThrower`, which
+/// words it as the name of the call, `: `, and the message: the template of
+/// the trap, or the words of a data segment out of bounds, as in
+/// `data segment 0 is out of bounds (offset 65536, length 1, memory size
+/// 65536)`. Source: `src/wasm/wasm-result.cc` and
+/// `src/wasm/module-instantiate.cc`, at
+/// <https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/wasm/wasm-result.cc#L58-L69>
+/// and
+/// <https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/wasm/module-instantiate.cc#L1507-L1513>.
+fn instantiation(message: &str) -> Instantiation<'_> {
+    let Some(trap) = message
+        .strip_prefix("WebAssembly.")
+        .and_then(|rest| rest.split_once("(): "))
+        .filter(|(call, _)| call.chars().all(|c| c.is_ascii_alphabetic()))
+        .map(|(_, trap)| trap)
+    else {
+        return Instantiation::Trap(message);
+    };
+    let data_segment = trap
+        .strip_prefix("data segment ")
+        .and_then(|rest| rest.split_once(" is out of bounds (offset "))
+        .is_some_and(|(index, _)| !index.is_empty() && index.chars().all(|c| c.is_ascii_digit()));
+    if data_segment {
+        Instantiation::DataSegment
+    } else {
+        Instantiation::Trap(trap)
+    }
 }
 
 #[cfg(test)]
@@ -397,6 +463,8 @@ mod tests {
                     "requested new array is too large",
                     Kind("AllocationTooLarge"),
                 ),
+                ("data segment out of bounds", Kind("MemoryOutOfBounds")),
+                ("element segment out of bounds", Kind("TableOutOfBounds")),
                 ("WasmFX: unhandled suspend", Kind("UnhandledTag")),
                 ("Atomics.wait cannot be called in this context", Wait),
                 ("Maximum call stack size exceeded", Kind("StackOverflow")),
@@ -479,6 +547,42 @@ mod tests {
             kind("Division by zero (evaluating 'f()')", false),
             TrapKind::IntegerDivisionByZero
         ));
+    }
+
+    #[wcmp_macros::test]
+    fn it_reads_a_trap_of_an_instantiation_without_the_name_of_its_call() {
+        for (message, expected) in [
+            (
+                "WebAssembly.instantiate(): table index is out of bounds",
+                "TableOutOfBounds",
+            ),
+            (
+                "WebAssembly.Instance(): data segment 0 is out of bounds \
+                 (offset 65536, length 1, memory size 65536)",
+                "MemoryOutOfBounds",
+            ),
+            (
+                "WebAssembly.instantiate(): data segment 12 is out of bounds \
+                 (offset 4294967295, length 1, memory size 0)",
+                "MemoryOutOfBounds",
+            ),
+        ] {
+            assert_eq!(
+                format!("{:?}", kind(message, false)),
+                expected,
+                "{message:?}"
+            );
+        }
+        for message in [
+            "WebAssembly.instantiate(): float unrepresentable in integer range",
+            "WebAssembly.instantiate(): data segment is out of bounds (offset 1)",
+            "data segment 0 is out of bounds (offset 1, length 1, memory size 0)",
+        ] {
+            assert!(
+                matches!(kind(message, false), TrapKind::Other(ref text) if text == message),
+                "{message:?}"
+            );
+        }
     }
 
     #[wcmp_macros::test]

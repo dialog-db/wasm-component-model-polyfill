@@ -2469,6 +2469,7 @@ dependencies = [
  "wcmp-macros",
  "wcmp-wasm-core",
  "wcmp-wasm-core-contract",
+ "wcmp-wasm-core-faithfulness",
 ]
 
 [[package]]

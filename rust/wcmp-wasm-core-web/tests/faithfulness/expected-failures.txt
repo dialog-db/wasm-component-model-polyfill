@@ -1,0 +1,126 @@
+# The directives of the faithfulness suite that the browser's engine fails,
+# run through the browser backend of the runtime layer in the headless
+# Chrome of the web lane, whose engine is V8.
+#
+# One entry per line: `<script>:<line> <citation>... <reason>`. The script
+# is its path under the root of the pinned specification test suite, and
+# the line is the directive's, counted from one. The citations name what
+# explains the failure: a defect of the engine, as an issue of V8 or
+# Chromium or a line of V8's source at a fixed commit, or a limit that the
+# web embedding requires, as a line of the specification that sets it at a
+# fixed commit. An entry without a citation fails the check, and a feature
+# whose failures neither explains is not a capability the backend
+# declares.
+#
+# V8's source lines are at the commit whose trap messages the backend
+# reads (`src/traps.rs`).
+
+# V8 words a truncation of a NaN (`invalid conversion to integer`) and of a
+# float outside the range of the integer (`integer overflow`) with one
+# message, the template `WasmTrapFloatUnrepresentable`. The backend reports
+# the trap as `Other` with that message, never a wrong kind, as the trap
+# fixture of the backend contract allows for the same message.
+conversions.wast:78 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:79 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:80 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:81 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:82 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:83 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:84 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:85 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:100 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:101 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:102 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:103 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:104 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:105 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:106 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:107 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:125 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:126 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:127 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:128 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:129 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:130 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:131 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:132 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:150 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:151 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:152 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:153 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:154 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:155 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:156 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:157 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:158 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:159 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:160 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:178 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:179 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:180 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:181 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:182 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:183 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:184 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:185 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:198 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:199 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:200 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:201 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:202 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:203 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:204 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:205 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:223 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:224 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:225 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:226 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:227 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:228 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:229 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:230 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:247 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:248 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:249 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:250 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `integer overflow` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:251 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:252 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:253 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+conversions.wast:254 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+traps.wast:50 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+traps.wast:51 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+traps.wast:52 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+traps.wast:53 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+traps.wast:54 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+traps.wast:55 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+traps.wast:56 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+traps.wast:57 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h#L719 V8 words the trap `invalid conversion to integer` as `float unrepresentable in integer range`, which names more than one kind
+
+# V8 checks the range of the element segment before the range of the array
+# in `array.init_elem`, where the specification checks the array first. A
+# call whose range is out of the bounds of both traps as a table access,
+# where the specification traps as an array access.
+array_init_elem.wast:92 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/runtime/runtime-wasm.cc#L1269-L1276 V8 checks the element segment before the array, and traps out of the bounds of a table
+array_init_elem.wast:93 https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/runtime/runtime-wasm.cc#L1269-L1276 V8 checks the element segment before the array, and traps out of the bounds of a table
+
+# The JavaScript API of WebAssembly, which the web embedding follows,
+# defines exact limits that an implementation must refuse a module above
+# with a `CompileError`: 10,000,000 elements of a table, and 2^37-1 pages
+# of a 64-bit memory. The core specification lets an embedding define such
+# limits, so these modules validate in the core specification and not on
+# the web. Every engine of the web refuses them, not V8 alone. The lines
+# are the JavaScript API's at the commit of WebAssembly/spec cited.
+table.wast:9 https://github.com/WebAssembly/spec/blob/608711107b7f1edb13efd57b7d79b49477462d36/document/js-api/index.bs#L2208-L2234 The embedding requires a table of at most 10000000 elements, and the module declares 4294967295
+table64.wast:9 https://github.com/WebAssembly/spec/blob/608711107b7f1edb13efd57b7d79b49477462d36/document/js-api/index.bs#L2208-L2234 The embedding requires a table of at most 10000000 elements, and the 64-bit module declares 18446744073709551615
+memory64.wast:8 https://github.com/WebAssembly/spec/blob/608711107b7f1edb13efd57b7d79b49477462d36/document/js-api/index.bs#L2208-L2234 The embedding requires a 64-bit memory of at most 2^37-1 pages, and the module declares 281474976710656
+memory64.wast:9 https://github.com/WebAssembly/spec/blob/608711107b7f1edb13efd57b7d79b49477462d36/document/js-api/index.bs#L2208-L2234 The embedding requires a 64-bit memory whose maximum is at most 2^37-1 pages, and the module declares 281474976710656
+
+# The threads proposal makes an atomic wait on the web an `Atomics.wait`,
+# and ECMA-262's DoWait throws a `TypeError` where the agent cannot
+# suspend (AgentCanSuspend), before it compares the value. ECMA-262 lets a
+# browser keep the main thread of a page from suspending, and the browsers
+# do; the web lane runs there. A wait whose value differs returns
+# `not-equal` without waiting in the core specification. The lines are
+# the proposal's Overview and ECMA-262's at the commits cited.
+proposals/threads/atomic.wast:434 https://github.com/WebAssembly/threads/blob/cc535ada1aa21cfaa3cabf3ac73b89acef78a0a0/proposals/threads/Overview.md#L392-L401 https://github.com/tc39/ecma262/blob/726ec8a42625509026a6570f1d4649bfa9fe4156/spec.html#L47429-L47442 https://github.com/tc39/ecma262/blob/726ec8a42625509026a6570f1d4649bfa9fe4156/spec.html#L12770-L12780 The embedding requires `memory.atomic.wait32` on the main thread to throw, as `Atomics.wait` does, where the value differs and the wait returns at once
+proposals/threads/atomic.wast:435 https://github.com/WebAssembly/threads/blob/cc535ada1aa21cfaa3cabf3ac73b89acef78a0a0/proposals/threads/Overview.md#L403-L412 https://github.com/tc39/ecma262/blob/726ec8a42625509026a6570f1d4649bfa9fe4156/spec.html#L47429-L47442 https://github.com/tc39/ecma262/blob/726ec8a42625509026a6570f1d4649bfa9fe4156/spec.html#L12770-L12780 The embedding requires `memory.atomic.wait64` on the main thread to throw, as `Atomics.wait` does, where the value differs and the wait returns at once

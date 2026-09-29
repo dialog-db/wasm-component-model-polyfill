@@ -6,20 +6,23 @@ use crate::citation::Citation;
 use crate::expected_failure::ExpectedFailure;
 
 /// The directives of the suite that a backend's engine fails, each with
-/// the defect of the engine that explains it.
+/// what explains it: a defect of the engine, or a limit that the embedding
+/// of the engine requires.
 ///
 /// The list is a text file, one entry per line:
 ///
 /// ```text
 /// # A line that starts with `#` is a comment.
-/// <script>:<line> <citation> <reason>
+/// <script>:<line> <citation> [<citation>...] <reason>
 /// ```
 ///
 /// `<script>` is the path of the script under the root of the test suite,
-/// and `<line>` the line of the directive, counted from one. `<citation>`
-/// is a [`Citation`]: an issue of the engine, or a line of its source at a
-/// fixed commit. `<reason>` says what fails. An entry without a citation,
-/// or without a reason, is refused, and so is a directive listed twice.
+/// and `<line>` the line of the directive, counted from one. Each
+/// `<citation>` is a [`Citation`]: an issue of the engine, or a line of a
+/// source or a specification at a fixed commit. An entry has one citation
+/// or more, and every word before its reason that is a citation is one.
+/// `<reason>` says what fails. An entry without a citation, or without a
+/// reason, is refused, and so is a directive listed twice.
 #[derive(Clone, Debug, Default)]
 pub struct ExpectedFailures {
     entries: Vec<ExpectedFailure>,
@@ -47,15 +50,24 @@ impl ExpectedFailures {
                 .ok()
                 .filter(|number| *number > 0 && !path.is_empty())
                 .ok_or_else(|| at(format!("`{directive}` is not `<script>:<line>`")))?;
-            let rest = rest.trim_start();
-            let (citation, reason) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-            let citation = Citation::parse(citation).ok_or_else(|| {
-                at(format!(
+            let mut citations = Vec::new();
+            let mut rest = rest.trim_start();
+            loop {
+                let (word, after) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                let Some(citation) = Citation::parse(word) else {
+                    break;
+                };
+                citations.push(citation);
+                rest = after.trim_start();
+            }
+            if citations.is_empty() {
+                return Err(at(format!(
                     "`{directive}` cites no defect of the engine: an entry cites an issue of \
-                     the engine or a line of its source at a fixed commit, before its reason"
-                ))
-            })?;
-            let reason = reason.trim();
+                     the engine, or a line of a source or a specification at a fixed commit, \
+                     before its reason"
+                )));
+            }
+            let reason = rest.trim();
             if reason.is_empty() {
                 return Err(at(format!("`{directive}` gives no reason")));
             }
@@ -65,7 +77,7 @@ impl ExpectedFailures {
             entries.push(ExpectedFailure::new(
                 path.to_string(),
                 number,
-                citation,
+                citations,
                 reason.to_string(),
             ));
         }
@@ -103,12 +115,43 @@ mod tests {
         assert_eq!(entries[0].path(), "address.wast");
         assert_eq!(entries[0].line(), 12);
         assert_eq!(
-            entries[0].citation().url(),
-            "https://github.com/o/r/issues/7"
+            entries[0]
+                .citations()
+                .iter()
+                .map(Citation::url)
+                .collect::<Vec<_>>(),
+            ["https://github.com/o/r/issues/7"]
         );
         assert_eq!(entries[0].reason(), "the load traps");
         assert_eq!(entries[1].path(), "proposals/threads/atomic.wast");
         assert_eq!(list.for_script("address.wast").count(), 1);
+    }
+
+    #[wcmp_macros::test]
+    fn it_reads_every_citation_before_the_reason() {
+        let list = ExpectedFailures::parse(
+            "proposals/threads/atomic.wast:434 \
+             https://github.com/o/spec/blob/abc1234/Overview.md#L392-L401 \
+             https://github.com/o/ecma/blob/def5678/spec.html#L47429 \
+             the embedding requires https://crbug.com/1 here\n",
+        )
+        .expect("the list is well formed");
+        let entry = list.iter().next().expect("the list holds the entry");
+        assert_eq!(
+            entry
+                .citations()
+                .iter()
+                .map(Citation::url)
+                .collect::<Vec<_>>(),
+            [
+                "https://github.com/o/spec/blob/abc1234/Overview.md#L392-L401",
+                "https://github.com/o/ecma/blob/def5678/spec.html#L47429",
+            ]
+        );
+        assert_eq!(
+            entry.reason(),
+            "the embedding requires https://crbug.com/1 here"
+        );
     }
 
     #[wcmp_macros::test]
