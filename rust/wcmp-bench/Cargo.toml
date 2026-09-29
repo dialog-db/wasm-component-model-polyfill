@@ -10,7 +10,7 @@ publish = false
 
 [dependencies]
 thiserror = { workspace = true }
-wasm-component-model-polyfill = { workspace = true }
+wcmp = { workspace = true }
 wcmp-macros = { workspace = true }
 
 # The suite's calls are awaited, so the native runner needs a runtime to

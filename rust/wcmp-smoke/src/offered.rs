@@ -15,7 +15,7 @@
 //! the engine answer that it has no provider, and the stories that
 //! need a suspension report the outcome documented for that case.
 
-use wasm_component_model_polyfill::SuspendProviderKind;
+use wcmp::SuspendProviderKind;
 
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 mod imp {

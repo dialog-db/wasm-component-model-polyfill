@@ -10,9 +10,7 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use std::sync::{Arc, Mutex};
 
-use wasm_component_model_polyfill::{
-    Accessor, Component, Engine, Func, Instance, Linker, Store, Val, ValField,
-};
+use wcmp::{Accessor, Component, Engine, Func, Instance, Linker, Store, Val, ValField};
 
 use crate::benchmark::Benchmark;
 use crate::error::{Error, Result};
@@ -305,7 +303,7 @@ struct RelayCall {
 }
 
 impl Future for RelayCall {
-    type Output = core::result::Result<u32, wasm_component_model_polyfill::Error>;
+    type Output = core::result::Result<u32, wcmp::Error>;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();

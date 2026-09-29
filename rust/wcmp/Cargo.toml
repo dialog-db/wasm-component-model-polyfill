@@ -1,0 +1,83 @@
+[package]
+name = "wcmp"
+description = "A polyfill bringing the WebAssembly Component Model (wasip3) to web browsers"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Integration tests that drive a real browser via WebDriver.
+web-integration-tests = []
+# The entry the conformance harness lowers the store's record cap
+# through, as Wasmtime's wast runner does. Only the crate's own tests
+# turn it on, through the dev-dependency on the crate below; it is not
+# part of the public API.
+wast-runner = []
+
+[dependencies]
+anyhow = { workspace = true }
+semver = { workspace = true }
+thiserror = { workspace = true }
+# Encodes the switch module, the core module the polyfill generates for
+# each store to switch stacks.
+wasm-encoder = { workspace = true }
+wasm_runtime_layer = { workspace = true }
+# `wasmtime-environ`'s `compile` feature gates the component-IR
+# `Translator` and the FACT adapter compiler. Despite the name, it
+# does not pull in Cranelift codegen or any host-only machinery — only
+# `wasm-encoder`, `wasmprinter`, and `gimli`/`object` write paths,
+# all of which build on `wasm32-unknown-unknown`. Enabling it on every
+# target lets the polyfill share one component-translation path
+# instead of maintaining a parallel hand-rolled walker on the web.
+wasmtime-environ = { workspace = true, features = ["component-model", "compile"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["rt", "sync"] }
+# Pulled in for its feature flag: `wasmtime_runtime_layer`'s default
+# `Backend` constructs a `wasmtime::Engine` whose GC support requires
+# at least one collector feature to be enabled in the dep graph.
+wasmtime = { workspace = true, features = ["gc-drc"] }
+wasmtime_runtime_layer = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js_wasm_runtime_layer = { workspace = true }
+# The wake after a yield crosses a macrotask boundary in the browser:
+# a self-wake from a microtask lands ahead of every network response
+# and timer and starves the page. Reaching `MessageChannel`, and the
+# `setTimeout` it falls back to, through the global is all the polyfill
+# needs of the JavaScript bindings, and both work in a worker as well
+# as on a page. The tests of the browser target link this same
+# dependency, so it is not repeated below.
+js-sys = { workspace = true }
+wasm-bindgen = { workspace = true }
+
+[dev-dependencies]
+# The crate itself, with the entry its conformance harness needs.
+wcmp = { workspace = true, features = ["wast-runner"] }
+# `time` backs the Zena test host's `wait-for` natively.
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+wast = { workspace = true }
+# Sets the `cancellable` immediate in a test fixture, which the text format
+# no longer spells.
+wasmparser = { workspace = true }
+wcmp-macros = { workspace = true }
+# The scenario model the `zena` test judges each Zena scenario with.
+wcmp-scenario = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = { workspace = true }
+# A JavaScript promise wrapped as a future: what the browser half of
+# the host-task bound is there to take, and what the test of that
+# bound builds one from.
+wasm-bindgen-futures = { workspace = true }
+# The runtime layer's own context type, which the test of what a
+# repeated call records in the browser's store goes through to reach
+# the backend store behind it.
+wasm_runtime_layer = { workspace = true }
+# The Zena test host's clock in the browser: `performance.now()` and a
+# `setTimeout` timer.
+js-sys = { workspace = true }
+wasm-bindgen = { workspace = true }

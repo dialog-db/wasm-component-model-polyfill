@@ -258,7 +258,7 @@
             pkgs.coreutils
             pkgs.gnused
           ];
-          text = builtins.readFile ./rust/wasm-component-model-polyfill/tests/zena/build.sh;
+          text = builtins.readFile ./rust/wcmp/tests/zena/build.sh;
         };
 
         # Compiles every scenario under `scenarios` with the `zena` command
@@ -292,7 +292,7 @@
             pkgs.wasm-tools
             rustToolchain
           ];
-          text = builtins.readFile ./rust/wasm-component-model-polyfill/tests/zena/partner.sh;
+          text = builtins.readFile ./rust/wcmp/tests/zena/partner.sh;
         };
 
         partnerCrane = katsuobushi.inputs.crane.mkLib pkgs;
@@ -351,7 +351,7 @@
             pkgs.coreutils
             wac-cli
           ];
-          text = builtins.readFile ./rust/wasm-component-model-polyfill/tests/zena/compose.sh;
+          text = builtins.readFile ./rust/wcmp/tests/zena/compose.sh;
         };
 
         # Every scenario under `scenarios` compiled: the Zena programs with
@@ -394,7 +394,7 @@
 
         zenaScenarios = compileScenarios {
           name = "zena-scenarios";
-          scenarios = ./rust/wasm-component-model-polyfill/tests/zena/scenarios;
+          scenarios = ./rust/wcmp/tests/zena/scenarios;
         };
 
         # The Rust partners of the scenarios alone, one directory per
@@ -409,7 +409,7 @@
               mkdir -p "$out/${scenario}"
               cp ${component}/* "$out/${scenario}/"
             ''
-          ) (rustPartners ./rust/wasm-component-model-polyfill/tests/zena/scenarios)
+          ) (rustPartners ./rust/wcmp/tests/zena/scenarios)
         );
 
         # The scenario build against its own cases, failing the check when
@@ -436,7 +436,7 @@
           let
             built = buildZenaScenarios {
               name = "zena-scenario-build-cases";
-              scenarios = ./rust/wasm-component-model-polyfill/tests/zena/build-check;
+              scenarios = ./rust/wcmp/tests/zena/build-check;
             };
           in
           pkgs.runCommand "zena-scenario-build-check" { } ''
@@ -512,16 +512,16 @@
             touch "$out"
           '';
 
-        # The Wasmtime run of the scenarios (`rust/wcmp-wasmtime`): a
+        # The Wasmtime run of the scenarios (`rust/wcmp-scenario-wasmtime`): a
         # native program built against this workspace's Wasmtime, the one
         # the polyfill's native backend links, with `wasmtime-wasi` at the
         # same version. Zena's own flake pins another Wasmtime, which only
         # the compile step above runs, inside Zena's command; it never
         # runs a scenario.
         wasmtimeRunner = buildCrate {
-          pname = "wcmp-wasmtime";
+          pname = "wcmp-scenario-wasmtime";
           version = "0.1.0";
-          cargoExtraArgs = "--package wcmp-wasmtime";
+          cargoExtraArgs = "--package wcmp-scenario-wasmtime";
         };
 
         # Runs every compiled scenario through Wasmtime, before either
@@ -539,12 +539,12 @@
             compiled,
           }:
           pkgs.runCommand name { } ''
-            ${wasmtimeRunner}/bin/wcmp-wasmtime ${scenarios} ${compiled} "$out"
+            ${wasmtimeRunner}/bin/wcmp-scenario-wasmtime ${scenarios} ${compiled} "$out"
           '';
 
         zenaWasmtime = runScenariosUnderWasmtime {
           name = "zena-wasmtime";
-          scenarios = ./rust/wasm-component-model-polyfill/tests/zena/scenarios;
+          scenarios = ./rust/wcmp/tests/zena/scenarios;
           compiled = zenaScenarios;
         };
 
@@ -556,7 +556,7 @@
         zenaBundler = pkgs.writeShellApplication {
           name = "zena-bundle-scenarios";
           runtimeInputs = [ pkgs.coreutils ];
-          text = builtins.readFile ./rust/wasm-component-model-polyfill/tests/zena/bundle.sh;
+          text = builtins.readFile ./rust/wcmp/tests/zena/bundle.sh;
         };
 
         bundleZenaScenarios =
@@ -574,7 +574,7 @@
 
         zenaTestScenarios = bundleZenaScenarios {
           name = "zena-test-scenarios";
-          scenarios = ./rust/wasm-component-model-polyfill/tests/zena/scenarios;
+          scenarios = ./rust/wcmp/tests/zena/scenarios;
           compiled = zenaScenarios;
           observed = zenaWasmtime;
         };
@@ -589,7 +589,7 @@
         # Neither is in the record.
         zenaRecordCheck =
           let
-            scenarios = ./rust/wasm-component-model-polyfill/tests/zena/record-check;
+            scenarios = ./rust/wcmp/tests/zena/record-check;
             compiled = compileScenarios {
               name = "zena-record-check-scenarios";
               inherit scenarios;
@@ -632,7 +632,7 @@
         # - A program Zena refuses stops at `compile` and makes no call.
         zenaWasmtimeCheck =
           let
-            cases = ./rust/wasm-component-model-polyfill/tests/zena/wasmtime-check;
+            cases = ./rust/wcmp/tests/zena/wasmtime-check;
             observed = runScenariosUnderWasmtime {
               name = "zena-wasmtime-cases";
               scenarios = cases;
@@ -827,7 +827,7 @@
 
         publicApiArguments = {
           src = publicApiSource;
-          pname = "wasm-component-model-polyfill-public-api";
+          pname = "wcmp-public-api";
           version = "0.1.0";
           strictDeps = true;
           nativeBuildInputs = commonBuildInputs;
@@ -845,7 +845,7 @@
             cargoArtifacts = publicApiCrane.buildDepsOnly publicApiArguments;
             nativeBuildInputs = commonBuildInputs ++ [ pkgs.cargo-public-api ];
             buildPhaseCargoCommand = ''
-              cargo public-api --package wasm-component-model-polyfill -sss \
+              cargo public-api --package wcmp -sss \
                 --color never > public-api.txt
             '';
             installPhaseCommand = ''
@@ -862,9 +862,9 @@
         # listing, so it arrives as a diff in review rather than as a piece
         # of surface nobody noticed was nameable.
         publicApiCheck =
-          pkgs.runCommand "wasm-component-model-polyfill-public-api-check" { }
+          pkgs.runCommand "wcmp-public-api-check" { }
             ''
-              if ! diff -u ${./rust/wasm-component-model-polyfill/public-api.txt} \
+              if ! diff -u ${./rust/wcmp/public-api.txt} \
                 ${publicApiListing}/public-api.txt; then
                 echo >&2
                 echo "The public API changed. If every line above is intended," >&2
@@ -958,7 +958,7 @@
         # `--dry-run` stops there, which is also how to read the live
         # reason of a directive a list already names.
         regenerateExpectationsCommand = ''
-          corpus="$(git rev-parse --show-toplevel)"/rust/wasm-component-model-polyfill/tests/corpus
+          corpus="$(git rev-parse --show-toplevel)"/rust/wcmp/tests/corpus
           dry=""
           for argument in "$@"; do
             case "$argument" in
@@ -1078,7 +1078,7 @@
         # from the committed record is printed, and `--dry-run` stops
         # there.
         zenaCommand = ''
-          record="$(git rev-parse --show-toplevel)"/rust/wasm-component-model-polyfill/tests/zena/record.txt
+          record="$(git rev-parse --show-toplevel)"/rust/wcmp/tests/zena/record.txt
           regenerate=""
           dry=""
           if [ "''${1:-}" = regenerate ]; then
@@ -1382,7 +1382,7 @@
                 description = "Record today's public surface as the checked-in snapshot";
                 command = ''
                   listing=$(nix build --no-link --print-out-paths .#public-api)
-                  snapshot="$(git rev-parse --show-toplevel)"/rust/wasm-component-model-polyfill/public-api.txt
+                  snapshot="$(git rev-parse --show-toplevel)"/rust/wcmp/public-api.txt
                   install -m 644 "$listing"/public-api.txt "$snapshot"
                   echo "recorded $(wc -l < "$snapshot") public items in $snapshot"
                 '';
@@ -1400,7 +1400,7 @@
             description = "Regenerate the conformance fixtures with cargo, wasm-tools, and wac";
             command = ''
               export PATH=${pkgs.wasm-tools}/bin:${wac-cli}/bin:${rustToolchain}/bin:$PATH
-              "$(git rev-parse --show-toplevel)"/rust/wasm-component-model-polyfill/tests/corpus/fixtures/build.sh
+              "$(git rev-parse --show-toplevel)"/rust/wcmp/tests/corpus/fixtures/build.sh
             '';
           };
 
@@ -1531,9 +1531,9 @@
             profile,
           }:
           buildCrate {
-            pname = "wasm-component-model-polyfill";
+            pname = "wcmp";
             version = "0.1.0";
-            cargoExtraArgs = "--package wasm-component-model-polyfill";
+            cargoExtraArgs = "--package wcmp";
             inherit target profile;
           };
 
@@ -1678,7 +1678,7 @@
             # them), so they get a derivation of their own: the workspace's
             # `cargo test --doc` against the `dev` dependency bundle.
             doctests = buildCrate {
-              pname = "wasm-component-model-polyfill-doctests";
+              pname = "wcmp-doctests";
               version = "0.1.0";
               profile = "dev";
               buildPhaseCargoCommand = "cargo test --doc --workspace";

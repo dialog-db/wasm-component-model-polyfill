@@ -2,7 +2,7 @@
 # it with the suspend provider allowed, and
 # `it_passes_<file>::it_passes_without_a_provider` runs it with the
 # provider turned off through `EngineConfig` (see
-# `rust/wasm-component-model-polyfill/tests/conformance.rs`). The
+# `rust/wcmp/tests/conformance.rs`). The
 # profiles split the two states into their own lanes. A filterset on
 # the command line narrows a profile's default filter rather than
 # replacing it; `--ignore-default-filter` drops it.

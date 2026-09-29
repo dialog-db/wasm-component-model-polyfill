@@ -32,7 +32,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use wasm_component_model_polyfill::{
+use wcmp::{
     Accessor, Component, ComponentValue, CoreExternType, Destination, Engine, EngineConfig, Error,
     FunctionParameter, FunctionType, FutureConsumer, FutureReader, HostCall, Instance,
     InterfaceIdentifier, LinkError, Linker, PrimitiveType, ResourceType, SchedulerCause, Source,
@@ -50,41 +50,34 @@ pub use crate::story::Story;
 
 /// The `guest` fixture: a component `wasm-tools component new` built
 /// from a core module and its WIT. It exports `double`.
-const GUEST: &[u8] =
-    include_bytes!("../../wasm-component-model-polyfill/tests/corpus/fixtures/guest/guest.wasm");
+const GUEST: &[u8] = include_bytes!("../../wcmp/tests/corpus/fixtures/guest/guest.wasm");
 
 /// The `composition` fixture: two such components joined by `wac plug`.
 /// The socket's `run` calls the plug's `double` through an adapter.
-const COMPOSITION: &[u8] = include_bytes!(
-    "../../wasm-component-model-polyfill/tests/corpus/fixtures/composition/composed.wasm"
-);
+const COMPOSITION: &[u8] =
+    include_bytes!("../../wcmp/tests/corpus/fixtures/composition/composed.wasm");
 
 /// The `maps` fixture: a `wasm-tools` build whose exports take and
 /// return a `map<string, u32>`.
-const MAPS: &[u8] =
-    include_bytes!("../../wasm-component-model-polyfill/tests/corpus/fixtures/maps/maps.wasm");
+const MAPS: &[u8] = include_bytes!("../../wcmp/tests/corpus/fixtures/maps/maps.wasm");
 
 /// The `fixed-lists` fixture: a `wasm-tools` build whose exports take
 /// and return a `list<u32, 4>` and a `list<u8, 16>`.
-const FIXED_LISTS: &[u8] = include_bytes!(
-    "../../wasm-component-model-polyfill/tests/corpus/fixtures/fixed-lists/fixed-lists.wasm"
-);
+const FIXED_LISTS: &[u8] =
+    include_bytes!("../../wcmp/tests/corpus/fixtures/fixed-lists/fixed-lists.wasm");
 
 /// The `rich` fixture: three components `cargo` and wit-bindgen
 /// built against a world of records, variants, enums, flags,
 /// options, results, nested lists, strings, and two resources,
 /// joined by two `wac plug` steps. Every call it answers has crossed
 /// three component boundaries and come back.
-const RICH: &[u8] =
-    include_bytes!("../../wasm-component-model-polyfill/tests/corpus/fixtures/rich/rich.wasm");
+const RICH: &[u8] = include_bytes!("../../wcmp/tests/corpus/fixtures/rich/rich.wasm");
 
 /// The `wasi-http` fixture: a WASI 0.3 HTTP handler the same
 /// toolchain built. Its export is an `async func` whose request and
 /// response carry a `stream<u8>` body and a `future` of trailers,
 /// whose types it imports from `wasi:http/types`.
-const WASI_HTTP: &[u8] = include_bytes!(
-    "../../wasm-component-model-polyfill/tests/corpus/fixtures/wasi-http/handler.wasm"
-);
+const WASI_HTTP: &[u8] = include_bytes!("../../wcmp/tests/corpus/fixtures/wasi-http/handler.wasm");
 
 /// The `streams` fixture: a component `cargo` and wit-bindgen's
 /// async support built. `words` answers with a `stream<string>` and
@@ -92,26 +85,22 @@ const WASI_HTTP: &[u8] = include_bytes!(
 /// `stream<u32>`, answers with a `future<u64>`, and resolves it with
 /// the sum of each number it read times its one-based position. Both
 /// write after the export has returned.
-const STREAMS: &[u8] = include_bytes!(
-    "../../wasm-component-model-polyfill/tests/corpus/fixtures/streams/streams.wasm"
-);
+const STREAMS: &[u8] = include_bytes!("../../wcmp/tests/corpus/fixtures/streams/streams.wasm");
 
 /// The `stream-composition` fixture: two components the same
 /// toolchain built, joined by `wac plug`. `total` calls the other
 /// component's `count-up`, reads the `stream<u32>` it answers with to
 /// its end, and returns the sum.
-const STREAM_COMPOSITION: &[u8] = include_bytes!(
-    "../../wasm-component-model-polyfill/tests/corpus/fixtures/stream-composition/composed.wasm"
-);
+const STREAM_COMPOSITION: &[u8] =
+    include_bytes!("../../wcmp/tests/corpus/fixtures/stream-composition/composed.wasm");
 
 /// The `sync-wait` fixture: a component `cargo` and wit-bindgen built
 /// whose `async func` import and export are both bound synchronously.
 /// `total` calls the host's `host-echo-u32` once per key, through a
 /// plain call that returns only once the host has answered, and
 /// returns the sum of the answers.
-const SYNC_WAIT: &[u8] = include_bytes!(
-    "../../wasm-component-model-polyfill/tests/corpus/fixtures/sync-wait/sync-wait.wasm"
-);
+const SYNC_WAIT: &[u8] =
+    include_bytes!("../../wcmp/tests/corpus/fixtures/sync-wait/sync-wait.wasm");
 
 /// The `deadline` fixture: an HTTP-style handler `cargo` and
 /// wit-bindgen's async support built. `handle` sends the request the
@@ -120,16 +109,13 @@ const SYNC_WAIT: &[u8] = include_bytes!(
 /// When the timer wins it drops the pending call, which wit-bindgen's
 /// runtime cancels with `subtask.cancel`, then drops the request and
 /// answers `timeout`.
-const DEADLINE: &[u8] = include_bytes!(
-    "../../wasm-component-model-polyfill/tests/corpus/fixtures/deadline/deadline.wasm"
-);
+const DEADLINE: &[u8] = include_bytes!("../../wcmp/tests/corpus/fixtures/deadline/deadline.wasm");
 
 /// The `stats` fixture: a component the same toolchain built, with a
 /// bug. `average` divides by the number of values without checking
 /// it, so an empty list divides by zero and the guest traps. `sum`
 /// has no bug.
-const STATS: &[u8] =
-    include_bytes!("../../wasm-component-model-polyfill/tests/corpus/fixtures/stats/stats.wasm");
+const STATS: &[u8] = include_bytes!("../../wcmp/tests/corpus/fixtures/stats/stats.wasm");
 
 /// Two components that pass an `error-context` along: a store whose
 /// `put` fails a value over 16 bytes with an error context saying so,
@@ -266,9 +252,8 @@ const STORE_AND_CALLER: &[u8] = component!(
 /// The `error-reporter` fixture: a third component, which `cargo` and
 /// wit-bindgen built, whose `describe` answers the debug message of
 /// the `error-context` it is handed.
-const REPORTER: &[u8] = include_bytes!(
-    "../../wasm-component-model-polyfill/tests/corpus/fixtures/error-reporter/error-reporter.wasm"
-);
+const REPORTER: &[u8] =
+    include_bytes!("../../wcmp/tests/corpus/fixtures/error-reporter/error-reporter.wasm");
 
 /// A component that exports a core module for the host to take: one
 /// global and one function, and nothing the component instantiates
@@ -1214,9 +1199,7 @@ async fn host_function(engine: &Engine) -> Result<String, String> {
         .instance(&host)
         .func_wrap(
             "tally",
-            |mut state: HostCall<'_, HostState>,
-             (n,): (u32,)|
-             -> wasm_component_model_polyfill::Result<()> {
+            |mut state: HostCall<'_, HostState>, (n,): (u32,)| -> wcmp::Result<()> {
                 state.data_mut().tallies.push(n);
                 Ok(())
             },
@@ -1286,7 +1269,7 @@ async fn host_resource(engine: &Engine) -> Result<String, String> {
         .instance(&resources)
         .resource(
             "thing",
-            |state: &mut HostState, rep: u32| -> wasm_component_model_polyfill::Result<()> {
+            |state: &mut HostState, rep: u32| -> wcmp::Result<()> {
                 state.dropped.push(rep);
                 Ok(())
             },
@@ -1325,7 +1308,7 @@ async fn disposal(engine: &Engine) -> Result<String, String> {
         .instance(&resources)
         .resource(
             "thing",
-            |state: &mut HostState, rep: u32| -> wasm_component_model_polyfill::Result<()> {
+            |state: &mut HostState, rep: u32| -> wcmp::Result<()> {
                 state.dropped.push(rep);
                 Ok(())
             },
@@ -2288,9 +2271,7 @@ fn tallying(engine: &Engine) -> Result<Linker<HostState>, String> {
         .instance(&host)
         .func_wrap(
             "tally",
-            |mut state: HostCall<'_, HostState>,
-             (n,): (u32,)|
-             -> wasm_component_model_polyfill::Result<()> {
+            |mut state: HostCall<'_, HostState>, (n,): (u32,)| -> wcmp::Result<()> {
                 state.data_mut().tallies.push(n);
                 Ok(())
             },
@@ -2693,7 +2674,7 @@ async fn cancel_a_slow_host_call_on(engine: &Engine) -> Result<String, String> {
         let request = upstream
             .resource(
                 "request",
-                |state: &mut HostState, rep: u32| -> wasm_component_model_polyfill::Result<()> {
+                |state: &mut HostState, rep: u32| -> wcmp::Result<()> {
                     state.dropped.push(rep);
                     Ok(())
                 },

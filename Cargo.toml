@@ -1,11 +1,11 @@
 [workspace]
 members = [
-  "rust/wasm-component-model-polyfill",
+  "rust/wcmp",
   "rust/wcmp-bench",
   "rust/wcmp-macros",
   "rust/wcmp-scenario",
+  "rust/wcmp-scenario-wasmtime",
   "rust/wcmp-smoke",
-  "rust/wcmp-wasmtime",
 ]
 # Each vendored backend keeps its own dependency table (it is upstream's
 # crate with local patches), so neither is a member.
@@ -64,8 +64,8 @@ wasmtime_runtime_layer = "48"
 js_wasm_runtime_layer = "0.7"
 wat = "1"
 
-[workspace.dependencies.wasm-component-model-polyfill]
-path = "./rust/wasm-component-model-polyfill"
+[workspace.dependencies.wcmp]
+path = "./rust/wcmp"
 
 [workspace.dependencies.wcmp-macros]
 path = "./rust/wcmp-macros"

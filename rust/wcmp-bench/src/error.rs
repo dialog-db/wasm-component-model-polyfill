@@ -7,7 +7,7 @@ pub enum Error {
     /// The polyfill returned an error while the benchmark was driving
     /// its guest.
     #[error("the polyfill returned an error: {0}")]
-    Polyfill(#[from] wasm_component_model_polyfill::Error),
+    Polyfill(#[from] wcmp::Error),
     /// The benchmark could not be set up or configured: a guest export
     /// is missing, a run control is out of range, or the target has no
     /// clock to measure against.

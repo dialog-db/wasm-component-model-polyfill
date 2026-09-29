@@ -14,25 +14,21 @@ use wcmp_macros::component;
 /// The `guest` fixture: `double: func(x: u32) -> u32`, lifted with no
 /// memory and no realloc, so a call through it touches no guest
 /// memory at all.
-pub const GUEST: &[u8] =
-    include_bytes!("../../wasm-component-model-polyfill/tests/corpus/fixtures/guest/guest.wasm");
+pub const GUEST: &[u8] = include_bytes!("../../wcmp/tests/corpus/fixtures/guest/guest.wasm");
 
 /// The `composition` fixture: a socket whose `run` reaches a plug's
 /// `double` through the adapter `wac plug` generated between them.
-pub const COMPOSITION: &[u8] = include_bytes!(
-    "../../wasm-component-model-polyfill/tests/corpus/fixtures/composition/composed.wasm"
-);
+pub const COMPOSITION: &[u8] =
+    include_bytes!("../../wcmp/tests/corpus/fixtures/composition/composed.wasm");
 
 /// The `maps` fixture: exports that take and return a
 /// `map<string, u32>`.
-pub const MAPS: &[u8] =
-    include_bytes!("../../wasm-component-model-polyfill/tests/corpus/fixtures/maps/maps.wasm");
+pub const MAPS: &[u8] = include_bytes!("../../wcmp/tests/corpus/fixtures/maps/maps.wasm");
 
 /// The `fixed-lists` fixture: exports that take and return a
 /// `list<u32, 4>` and a `list<u8, 16>`.
-pub const FIXED_LISTS: &[u8] = include_bytes!(
-    "../../wasm-component-model-polyfill/tests/corpus/fixtures/fixed-lists/fixed-lists.wasm"
-);
+pub const FIXED_LISTS: &[u8] =
+    include_bytes!("../../wcmp/tests/corpus/fixtures/fixed-lists/fixed-lists.wasm");
 
 /// A component that echoes a heap value back: the lowered pointer and
 /// length are returned unchanged, so one call is one lower into guest

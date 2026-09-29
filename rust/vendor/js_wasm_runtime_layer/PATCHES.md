@@ -147,7 +147,7 @@ which is every composition with an asynchronous lower or lift.
 
 Two artifacts hold that down, and each covers one half of it. The browser test
 `it_runs_a_prepared_call_under_a_policy_without_unsafe_eval`, in
-`rust/wasm-component-model-polyfill/tests/baseline_prepared_call.rs`, installs
+`rust/wcmp/tests/baseline_prepared_call.rs`, installs
 the policy, proves the browser enforces it, and under it both runs a
 composition whose lift is asynchronous — which does prepare a call — and builds
 and calls a host function of nine parameters directly, so the wrapper is
@@ -280,7 +280,7 @@ The proposal's overview states that a suspending import suspends only when its
 function answers a promise that is still pending. Chromium 147 suspends on
 every call, even for a plain value or a resolved promise. The browser test
 `it_suspends_on_a_suspending_import_whose_promise_is_already_resolved`, in
-`rust/wasm-component-model-polyfill/src/baseline/jspi_switch_module.rs`, holds
+`rust/wcmp/src/baseline/jspi_switch_module.rs`, holds
 the measured behavior down.
 
 The proposal for upstream is the two functions and the failure helper, since a

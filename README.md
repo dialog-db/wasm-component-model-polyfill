@@ -56,7 +56,7 @@ export. The same code compiles natively and for `wasm32-unknown-unknown` with
 `wasm-bindgen`.
 
 ```rust
-use wasm_component_model_polyfill::*;
+use wcmp::*;
 
 async fn run(wasm: &[u8]) -> Result<String> {
     // The engine owns the feature gates. The store owns guest state
@@ -295,10 +295,10 @@ ways:
 The test suite runs two `.wast` corpora on both targets: the [Component Model
 test corpus] and the [Wasmtime component tests]. Every directive the polyfill
 does not pass is listed, with a reason, in
-`rust/wasm-component-model-polyfill/tests/corpus/expected-failures.txt` and two
-overlays beside it, one for the browser and one for running without a suspend
-provider. The harness fails when a listed directive starts to pass or an
-unlisted one fails, so the lists stay current.
+`rust/wcmp/tests/corpus/expected-failures.txt` and two overlays beside it, one
+for the browser and one for running without a suspend provider. The harness
+fails when a listed directive starts to pass or an unlisted one fails, so the
+lists stay current.
 
 Directives passed, with pass percentage, as of 2026-09-27. `tests conformance`
 prints the current numbers.
@@ -360,15 +360,15 @@ command, or the run measures a stale tree.
 
 ## Repository layout
 
-| Path                                  | Contents                                                                        |
-| ------------------------------------- | ------------------------------------------------------------------------------- |
-| `rust/wasm-component-model-polyfill/` | The library crate, its baseline tests, and the conformance harness and corpora. |
-| `rust/wcmp-macros/`                   | Procedural macros: a cross-target `#[test]`, `#[bench]`, `wasm!`, `component!`. |
-| `rust/wcmp-smoke/`                    | The end-to-end smoke test, one host program for both targets.                   |
-| `rust/wcmp-bench/`                    | The benchmark suite, one definition measured on both targets.                   |
-| `rust/vendor/`                        | The two patched runtime-layer backends.                                         |
-| `project/design/`                     | The Project Design Documents (PDDs), one per design decision.                   |
-| `project/kanban/`                     | The project board.                                                              |
+| Path                | Contents                                                                        |
+| ------------------- | ------------------------------------------------------------------------------- |
+| `rust/wcmp/`        | The library crate, its baseline tests, and the conformance harness and corpora. |
+| `rust/wcmp-macros/` | Procedural macros: a cross-target `#[test]`, `#[bench]`, `wasm!`, `component!`. |
+| `rust/wcmp-smoke/`  | The end-to-end smoke test, one host program for both targets.                   |
+| `rust/wcmp-bench/`  | The benchmark suite, one definition measured on both targets.                   |
+| `rust/vendor/`      | The two patched runtime-layer backends.                                         |
+| `project/design/`   | The Project Design Documents (PDDs), one per design decision.                   |
+| `project/kanban/`   | The project board.                                                              |
 
 ## Design documents
 
