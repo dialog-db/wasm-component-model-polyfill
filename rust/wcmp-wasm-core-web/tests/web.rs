@@ -1407,3 +1407,103 @@ async fn it_traps_a_suspension_outside_every_resumable_call() {
         "{outcome:?}"
     );
 }
+
+#[wcmp_macros::test]
+async fn it_reads_the_kind_of_a_trap_after_a_resumption() {
+    let engine = engine();
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    let wait = Func::new_suspending(&mut store, FuncType::new([], [ValType::I32]), |_, _, _| {
+        Ok(Poll::Pending)
+    })
+    .expect("the store makes a suspending host function");
+    let module = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (import "host" "wait" (func $wait (result i32)))
+              (tag $oops (param i32))
+              ;; 1 divided by the result of `wait`.
+              (func (export "divide") (result i32)
+                i32.const 1
+                call $wait
+                i32.div_s)
+              ;; Throws the result of `wait`, which nothing catches.
+              (func (export "throw")
+                call $wait
+                throw $oops)
+              (func (export "payload") (param exnref) (result i32)
+                block $caught (result i32)
+                  try_table (catch $oops $caught)
+                    local.get 0
+                    throw_ref
+                  end
+                  unreachable
+                end))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    let instance = Instance::instantiate(&mut store, &module, &[wait.into()])
+        .await
+        .expect("the module instantiates");
+    let divide = func(&mut store, instance, "divide");
+    let throw = func(&mut store, instance, "throw");
+    let payload = func(&mut store, instance, "payload");
+
+    // The resumed stack runs on a microtask, and its trap reaches the host
+    // as the reason its promise gave, which reads as the first stretch's
+    // trap would.
+    let mut results = [Val::I32(0)];
+    let Ok(ResumableCall::Suspended(handle)) =
+        divide.call_resumable(&mut store, &[], &mut results).await
+    else {
+        panic!("the call suspends in `wait`");
+    };
+    match handle
+        .resume(&mut store, &[Val::I32(0)], &mut results)
+        .await
+    {
+        Err(Error::Trap(TrapKind::IntegerDivisionByZero)) => {}
+        other => panic!("the resumed call traps on the division: {other:?}"),
+    }
+
+    // An exception that nothing catches in the resumed stack is rooted in
+    // the store, and the host gives it back to a guest.
+    let Ok(ResumableCall::Suspended(handle)) = throw.call_resumable(&mut store, &[], &mut []).await
+    else {
+        panic!("the call suspends in `wait`");
+    };
+    let exception = match handle.resume(&mut store, &[Val::I32(7)], &mut []).await {
+        Err(Error::Trap(TrapKind::UncaughtException(exception))) => exception,
+        other => panic!("the resumed call fails with an uncaught exception: {other:?}"),
+    };
+    let mut read = [Val::I32(0)];
+    payload
+        .call(&mut store, &[Val::ExnRef(Some(exception))], &mut read)
+        .expect("the guest catches the exception");
+    assert_eq!(read[0].i32(), Some(7), "the guest reads the payload");
+}
+
+#[wcmp_macros::test]
+async fn it_reads_the_kind_of_a_trap_in_the_start_function() {
+    let engine = engine();
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    let module = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (func $start unreachable)
+              (start $start))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    match Instance::instantiate(&mut store, &module, &[]).await {
+        Err(Error::Trap(TrapKind::UnreachableCodeReached)) => {}
+        other => panic!("the instantiation traps in the start function: {other:?}"),
+    }
+}

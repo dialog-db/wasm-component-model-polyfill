@@ -155,8 +155,28 @@
 //!
 //! The backend declares
 //! [`host_suspension`](wcmp_wasm_core::Capability::HostSuspension) where
-//! the browser has both. A trap is [`TrapKind::Other`](wcmp_wasm_core::TrapKind::Other), with the
-//! browser's message, except the trap of a host function that failed.
+//! the browser has both.
+//!
+//! # Traps
+//!
+//! The browser gives a trap as an error object with a message that each
+//! engine words its own way, and no trap code. The backend reads the
+//! [`TrapKind`](wcmp_wasm_core::TrapKind) from the message with a table of
+//! the messages of V8, SpiderMonkey, and JavaScriptCore, each cited from
+//! the engine's source. Each kind reads with Wasmtime's message, so a trap
+//! reads the same from every browser. A message that the table does not
+//! know, or that names more than one kind, is
+//! [`TrapKind::Other`](wcmp_wasm_core::TrapKind::Other) with the engine's
+//! message, never a wrong kind. A trap reads the same way in a resumable
+//! call, before or after a resumption, and in a start function that the
+//! browser runs after the instantiation returns.
+//!
+//! An exception that no guest caught reaches the host as a
+//! `WebAssembly.Exception`. The backend throws it back into a generated
+//! module that catches it as an `exnref` and roots it in the store's table
+//! of exceptions, and the call fails with
+//! [`TrapKind::UncaughtException`](wcmp_wasm_core::TrapKind::UncaughtException).
+//! The host gives the exception back to a guest of the same store.
 //!
 //! # Host functions
 //!
@@ -251,6 +271,7 @@ mod probes;
 mod returns;
 mod store;
 mod suspended;
+mod traps;
 mod type_registry;
 mod values;
 mod wrapper;

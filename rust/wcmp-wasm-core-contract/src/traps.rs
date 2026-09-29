@@ -261,7 +261,42 @@ const FIXTURE: [Fixture; 5] = [
 /// does not run. Each trap runs in a store of its own, so one trap cannot
 /// leave a store in a state that changes the next.
 pub async fn it_raises_each_core_trap_the_capabilities_permit(engine: &Engine) {
+    it_raises_each_core_trap_allowing(engine, &[]).await;
+}
+
+/// A trap of the fixture whose engine words it with a message that names
+/// more than one kind, so that the backend reports [`TrapKind::Other`] with
+/// that message rather than a kind that could be wrong.
+pub struct AmbiguousTrap {
+    /// The export of the fixture that raises the trap.
+    pub export: &'static str,
+    /// The engine's message for the trap, which the backend reports as it
+    /// is.
+    pub message: &'static str,
+}
+
+/// [`it_raises_each_core_trap_the_capabilities_permit`], where each trap of
+/// `ambiguous` may come back as [`TrapKind::Other`] with its engine's
+/// message instead of its kind.
+///
+/// An allowance holds only while it is needed. Where the backend reports
+/// the trap's own kind with Wasmtime's message, the allowance is stale and
+/// the test fails, so that it goes away once the engine words the trap
+/// apart. An allowance that names no export of the fixture fails too.
+pub async fn it_raises_each_core_trap_allowing(engine: &Engine, ambiguous: &[AmbiguousTrap]) {
     let mut failures = Vec::new();
+    for allowance in ambiguous {
+        if !FIXTURE
+            .iter()
+            .flat_map(|fixture| fixture.traps)
+            .any(|trap| trap.export == allowance.export)
+        {
+            failures.push(format!(
+                "`{}`: the allowance names no trap of the fixture",
+                allowance.export
+            ));
+        }
+    }
     let mut raised = 0;
     for fixture in FIXTURE
         .iter()
@@ -271,15 +306,34 @@ pub async fn it_raises_each_core_trap_the_capabilities_permit(engine: &Engine) {
             let mut store = support::store(engine, ());
             let instance = support::instance(&mut store, fixture.bytes, &[]).await;
             let raise = support::func(&mut store, instance, trap.export);
-            match raise.call(&mut store, &[], &mut []) {
-                Err(Error::Trap(kind))
+            let allowance = ambiguous
+                .iter()
+                .find(|allowance| allowance.export == trap.export);
+            match (raise.call(&mut store, &[], &mut []), allowance) {
+                (Err(Error::Trap(kind)), None)
                     if mem::discriminant(&kind) == mem::discriminant(&trap.kind)
                         && kind.to_string() == trap.message => {}
-                other => failures.push(format!(
-                    "`{}`: expected {:?} with {:?}, got {other:?}{}",
+                (Err(Error::Trap(TrapKind::Other(message))), Some(allowance))
+                    if message == allowance.message => {}
+                (Err(Error::Trap(kind)), Some(allowance))
+                    if mem::discriminant(&kind) == mem::discriminant(&trap.kind)
+                        && kind.to_string() == trap.message =>
+                {
+                    failures.push(format!(
+                        "`{}`: stale allowance: the backend reports {:?} with {:?}, so the \
+                         engine no longer words the trap as {:?}; remove the allowance",
+                        trap.export, trap.kind, trap.message, allowance.message,
+                    ));
+                }
+                (other, allowance) => failures.push(format!(
+                    "`{}`: expected {:?} with {:?}{}, got {other:?}{}",
                     trap.export,
                     trap.kind,
                     trap.message,
+                    match allowance {
+                        Some(allowance) => format!(" or Other with {:?}", allowance.message),
+                        None => String::new(),
+                    },
                     match &other {
                         Err(error) => format!(" with {:?}", error.to_string()),
                         Ok(()) => String::new(),

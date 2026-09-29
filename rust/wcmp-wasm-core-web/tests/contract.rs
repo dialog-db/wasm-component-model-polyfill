@@ -1,18 +1,39 @@
 //! The backend contract of the runtime layer, on the browser backend.
 //!
-//! The browser backend does not map a trap to its kind yet. So the two
-//! tests of the contract for trap kinds do not run here. Every other test
-//! of the contract does.
+//! Every test of the contract runs here. The trap fixture runs with the
+//! one allowance below.
 
 #![cfg(target_arch = "wasm32")]
 
 use wcmp_wasm_core::Engine;
+use wcmp_wasm_core_contract::AmbiguousTrap;
 use wcmp_wasm_core_web::Web;
 
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 fn engine() -> Engine {
     Engine::with_backend(Web::new())
+}
+
+/// The traps of the fixture that the browser's engine words with a message
+/// of more than one kind, which the backend reports as `Other` with that
+/// message.
+///
+/// V8 words a truncation of a NaN, which Wasmtime calls
+/// `BadConversionToInteger`, and a truncation of a float outside the range
+/// of the integer, which Wasmtime calls `IntegerOverflow`, with one message,
+/// the template `WasmTrapFloatUnrepresentable` of
+/// <https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h>.
+/// The test fails as stale once the backend reports `BadConversionToInteger`
+/// for the trap.
+const AMBIGUOUS: &[AmbiguousTrap] = &[AmbiguousTrap {
+    export: "bad_conversion_to_integer",
+    message: "float unrepresentable in integer range",
+}];
+
+#[wcmp_macros::test]
+async fn it_raises_each_core_trap_the_capabilities_permit() {
+    wcmp_wasm_core_contract::it_raises_each_core_trap_allowing(&engine(), AMBIGUOUS).await;
 }
 
 wcmp_wasm_core_contract::contract_tests!(
@@ -34,6 +55,7 @@ wcmp_wasm_core_contract::contract_tests!(
     it_passes_a_gc_object_back_to_its_guest,
     it_passes_an_exnref_back_to_its_guest,
     it_refuses_host_suspension_where_it_is_not_declared,
+    it_fails_with_an_exception_that_nothing_catches,
     it_resumes_calls_that_wait_at_once_in_any_order,
     it_runs_a_resumption_in_flight_to_its_next_stop_when_the_store_drops,
     it_finishes_a_resumable_call_that_does_not_suspend,

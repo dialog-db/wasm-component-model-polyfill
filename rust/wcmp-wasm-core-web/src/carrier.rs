@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use js_sys::{Array, Function, Object, WebAssembly};
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_encoder::{
     AbstractHeapType, BlockType, CodeSection, EntityType, ExportKind, ExportSection,
@@ -37,6 +38,14 @@ pub struct Carrier {
     exns: Option<WebAssembly::Table>,
     modules: HashMap<FuncType, WebAssembly::Module>,
     functions: HashMap<u64, Function>,
+    catcher: Option<Catcher>,
+}
+
+/// The generated module that roots an exception which reached the host,
+/// and the JavaScript function that throws the exception back into it.
+struct Catcher {
+    root: Function,
+    _rethrow: Closure<dyn Fn(JsValue) -> core::result::Result<(), JsValue>>,
 }
 
 /// How a carrier takes or gives one value of the guest function's type.
@@ -61,7 +70,84 @@ impl Carrier {
             exns: None,
             modules: HashMap::new(),
             functions: HashMap::new(),
+            catcher: None,
         }
+    }
+
+    /// Roots the exception `exception`, a `WebAssembly.Exception` that no
+    /// guest caught, in the table of exceptions, and returns its handle.
+    ///
+    /// The JavaScript API gives the exception to the host as an object, and
+    /// has no way to put it in a table of `exnref`. A guest does. So the
+    /// backend throws the object back into a generated module, which
+    /// catches it as an `exnref` and adds it to the table:
+    ///
+    /// ```text
+    /// (func (export "root") (param externref) (result i32)
+    ///   block $caught (result exnref)
+    ///     try_table (catch_all_ref $caught)
+    ///       local.get 0
+    ///       call $rethrow                 ;; JavaScript: throws the object
+    ///     end
+    ///     i32.const -1
+    ///     return
+    ///   end
+    ///   i32.const 1
+    ///   table.grow $exns)                 ;; the index of the exception
+    /// ```
+    ///
+    /// The JavaScript API throws an exception object into a guest as the
+    /// exception it wraps, so the handle names the exception the guest
+    /// threw, with its tag and its payload.
+    pub fn root(&mut self, exception: &JsValue) -> Result<ExnRef> {
+        let root = match &self.catcher {
+            Some(catcher) => catcher.root.clone(),
+            None => {
+                let rethrow = Closure::<dyn Fn(JsValue) -> core::result::Result<(), JsValue>>::new(
+                    |exception| Err(exception),
+                );
+                let bytes = wcmp_macros::wasm!(
+                    r#"
+                    (module
+                      (import "" "exns" (table $exns 0 exnref))
+                      (import "" "rethrow" (func $rethrow (param externref)))
+                      (func (export "root") (param externref) (result i32)
+                        block $caught (result exnref)
+                          try_table (catch_all_ref $caught)
+                            local.get 0
+                            call $rethrow
+                          end
+                          i32.const -1
+                          return
+                        end
+                        i32.const 1
+                        table.grow $exns))
+                    "#
+                );
+                let exns = self.exns()?.clone();
+                let imports =
+                    js::object(&[("exns", exns.into()), ("rethrow", rethrow.as_ref().clone())])
+                        .and_then(|imports| js::object(&[("", imports.into())]))
+                        .map_err(|error| errors::backend(errors::message(&error)))?;
+                let exports = instantiate(bytes, &imports)?;
+                let root = js::get(&exports, "root")
+                    .ok()
+                    .and_then(|root| root.dyn_into::<Function>().ok())
+                    .ok_or_else(|| errors::backend("the catcher exports no function"))?;
+                self.catcher = Some(Catcher {
+                    root: root.clone(),
+                    _rethrow: rethrow,
+                });
+                root
+            }
+        };
+        let index = root
+            .call1(&JsValue::UNDEFINED, exception)
+            .map_err(|error| errors::backend(errors::message(&error)))?
+            .as_f64()
+            .filter(|index| *index >= 0.0)
+            .ok_or_else(|| errors::backend("the table of exceptions did not grow"))?;
+        Ok(ExnRef::from_raw(self.id, index as u64))
     }
 
     /// Whether a call of a function of type `ty` needs a carrier.

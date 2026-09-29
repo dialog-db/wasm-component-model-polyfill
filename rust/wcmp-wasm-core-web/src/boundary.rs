@@ -21,6 +21,11 @@ pub struct Boundary {
     pub imports: Vec<ImportType>,
     /// The exports, in the order the module declares them.
     pub exports: Vec<ExportType>,
+    /// Whether a memory of the module, imported or its own, is shared.
+    ///
+    /// The memory section comes before the export section, so the reader
+    /// sees every memory. The store reads a trap of an atomic wait by it.
+    pub shared_memory: bool,
 }
 
 /// The index spaces of a module, as far as the boundary needs them.
@@ -102,7 +107,12 @@ impl Boundary {
                 _ => {}
             }
         }
-        Ok(Self { imports, exports })
+        let shared_memory = spaces.memories.iter().any(|memory| memory.shared);
+        Ok(Self {
+            imports,
+            exports,
+            shared_memory,
+        })
     }
 }
 

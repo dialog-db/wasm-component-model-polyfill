@@ -58,6 +58,10 @@ pub struct WebStore {
     bridges: HashMap<(u64, u64), Bridge>,
     calls: Rc<Calls>,
     wrappers: Wrappers,
+    /// Whether a memory of an instance of the store is shared. A guest
+    /// waits only on a memory of an instance, so where none is shared, a
+    /// wait that the engine refused was on a memory that is not shared.
+    shared_memory: bool,
     /// The functions of JavaScript Promise Integration, where the browser
     /// has them.
     jspi: Option<Rc<Jspi>>,
@@ -89,6 +93,7 @@ impl WebStore {
             bridges: HashMap::new(),
             calls,
             wrappers,
+            shared_memory: false,
             jspi,
             promising: HashMap::new(),
         }
@@ -147,7 +152,8 @@ impl WebStore {
     ///
     /// A host function that fails inside the call traps the guest, and the
     /// call fails with [`TrapKind::Host`](wcmp_wasm_core::TrapKind::Host)
-    /// and the host function's own error.
+    /// and the host function's own error. Any other failure is as
+    /// [`errors::guest`] reads it.
     fn apply(&mut self, function: &Function, args: &Array) -> Result<JsValue> {
         let calls = self.calls.clone();
         let entry = calls.enter(self, None);
@@ -155,7 +161,7 @@ impl WebStore {
         let failure = entry.leave();
         returned.map_err(|error| match failure {
             Some(failure) => Error::Trap(TrapKind::Host(failure)),
-            None => errors::call(&error),
+            None => errors::guest(&error, &mut self.carrier, self.shared_memory),
         })
     }
 
@@ -282,6 +288,9 @@ impl WebStore {
             .downcast_ref::<WebModule>()
             .ok_or(Error::WrongEngine)?;
         let object = self.imports_object(module.imports(), imports)?;
+        // The start function can wait on a memory of the instance, so the
+        // store counts its memories before it runs, here or later.
+        self.shared_memory |= module.shared_memory();
         let webassembly = js::webassembly().map_err(|error| errors::call(&error))?;
         let calls = self.calls.clone();
         let flight = Flight::new(calls.next_id(), false, &calls);
@@ -319,7 +328,12 @@ impl WebStore {
                 host: Some(host), ..
             } => return Err(Error::Trap(TrapKind::Host(host))),
             Stop::Failed { reason, .. } => {
-                return Err(errors::instantiate(&reason, module.imports()));
+                return Err(errors::instantiate(
+                    &reason,
+                    module.imports(),
+                    &mut self.carrier,
+                    self.shared_memory,
+                ));
             }
             Stop::Suspended => {
                 return Err(errors::backend("an instantiation suspended"));
@@ -418,7 +432,9 @@ impl WebStore {
 
     /// How the resumable call `flight`, whose results `returns` tells how
     /// to read, ends where it stopped at `stop`: with its results in
-    /// `results`, or with a handle where it waits.
+    /// `results`, or with a handle where it waits. A guest that trapped,
+    /// in its first stretch or in a resumed one, fails the call as
+    /// [`errors::guest`] reads the reason its promise gave.
     pub fn finish_resumable(
         &mut self,
         flight: Rc<Flight>,
@@ -438,7 +454,11 @@ impl WebStore {
             Stop::Failed {
                 host: Some(host), ..
             } => Err(Error::Trap(TrapKind::Host(host))),
-            Stop::Failed { reason, .. } => Err(errors::call(&reason)),
+            Stop::Failed { reason, .. } => Err(errors::guest(
+                &reason,
+                &mut self.carrier,
+                self.shared_memory,
+            )),
         }
     }
 

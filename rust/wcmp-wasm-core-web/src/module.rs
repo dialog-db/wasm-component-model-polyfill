@@ -28,6 +28,11 @@ impl WebModule {
     pub fn module(&self) -> &WebAssembly::Module {
         &self.module
     }
+
+    /// Whether a memory of the module, imported or its own, is shared.
+    pub fn shared_memory(&self) -> bool {
+        self.boundary.shared_memory
+    }
 }
 
 impl BackendModule for WebModule {

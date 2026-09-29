@@ -80,8 +80,8 @@ pub use crate::tags::{
     it_describes_a_tag_at_the_boundary, it_links_a_tag_from_one_instance_into_another,
 };
 pub use crate::traps::{
-    it_fails_with_an_exception_that_nothing_catches,
-    it_raises_each_core_trap_the_capabilities_permit,
+    AmbiguousTrap, it_fails_with_an_exception_that_nothing_catches,
+    it_raises_each_core_trap_allowing, it_raises_each_core_trap_the_capabilities_permit,
 };
 
 /// The attribute each generated test carries, reached through this crate
