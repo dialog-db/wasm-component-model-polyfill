@@ -6,15 +6,15 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::rc::Rc;
 
-use js_sys::{Array, Function, Object, Reflect, Uint8Array, WebAssembly};
+use js_sys::{Array, Function, Object, Promise, Reflect, Uint8Array, WebAssembly};
 use wasm_bindgen::{JsCast, JsValue};
 use wcmp_wasm_core::backend::{
-    BackendModule, BackendStore, BoxFuture, HostFunc, RawHandle, StoreData,
+    BackendModule, BackendStore, BackendSuspendedCall, BoxFuture, HostFunc, RawHandle, StoreData,
 };
 use wcmp_wasm_core::{
     AnyRef, Capability, Error, Extern, ExternRef, ExternType, Func, FuncType, Global, GlobalType,
-    HeapType, I31, ImportType, Instance, Memory, MemoryType, Mutability, Result, Table, TableType,
-    Tag, TagType, Val, ValType,
+    HeapType, I31, ImportType, Instance, Memory, MemoryType, Mutability, Result, ResumableCall,
+    SuspendedCall, Table, TableType, Tag, TagType, TrapKind, Val, ValType,
 };
 
 use crate::accessor::Accessor;
@@ -22,9 +22,13 @@ use crate::bridge::Bridge;
 use crate::calls::Calls;
 use crate::carrier::Carrier;
 use crate::errors;
+use crate::flight::{Flight, Stop};
 use crate::js;
+use crate::jspi::Jspi;
 use crate::module::WebModule;
 use crate::objects::{GlobalObject, InstanceObject, MemoryObject, Objects, TableObject, TagObject};
+use crate::returns::Returns;
+use crate::suspended::WebSuspendedCall;
 use crate::type_registry::TypeRegistry;
 use crate::values::{self, Kind};
 use crate::wrapper::{self, Wrappers};
@@ -35,6 +39,11 @@ use crate::wrapper::{self, Wrappers};
 /// The browser owns each instance and each object an instance makes. The
 /// store holds the JavaScript value of each, which keeps it alive for the
 /// life of the store.
+///
+/// The store lives in a [`StoreCell`](crate::cell::StoreCell), which its
+/// owner holds, and a host function receives the store itself. So the
+/// methods here serve a host function directly, and the owner's methods
+/// serve the host.
 pub struct WebStore {
     data: StoreData,
     types: Rc<TypeRegistry>,
@@ -49,12 +58,20 @@ pub struct WebStore {
     bridges: HashMap<(u64, u64), Bridge>,
     calls: Rc<Calls>,
     wrappers: Wrappers,
+    /// The functions of JavaScript Promise Integration, where the browser
+    /// has them.
+    jspi: Option<Rc<Jspi>>,
+    /// `WebAssembly.promising` over each function the host called as a
+    /// resumable call, by the index of its handle and whether the call
+    /// went through its carrier.
+    promising: HashMap<(u64, bool), Function>,
 }
 
 impl WebStore {
     /// The store whose engine data is `data`, over the concrete types
-    /// `types` of the backend.
-    pub fn new(data: StoreData, types: Rc<TypeRegistry>) -> Self {
+    /// `types` of the backend, with the functions of JavaScript Promise
+    /// Integration `jspi` where the browser has them.
+    pub fn new(data: StoreData, types: Rc<TypeRegistry>, jspi: Option<Rc<Jspi>>) -> Self {
         let objects = Objects::new(data.id());
         let carrier = Carrier::new(data.id());
         let multi_memory = data
@@ -62,7 +79,7 @@ impl WebStore {
             .capabilities()
             .contains(Capability::MultiMemory);
         let calls = Rc::new(Calls::new());
-        let wrappers = Wrappers::new(calls.clone());
+        let wrappers = Wrappers::new(calls.clone(), jspi.clone());
         Self {
             data,
             types,
@@ -72,7 +89,14 @@ impl WebStore {
             bridges: HashMap::new(),
             calls,
             wrappers,
+            jspi,
+            promising: HashMap::new(),
         }
+    }
+
+    /// What the host functions of the store share with it.
+    pub fn calls(&self) -> &Rc<Calls> {
+        &self.calls
     }
 
     /// Runs the host function `func` of type `ty` in this store, a guest's
@@ -80,13 +104,17 @@ impl WebStore {
     /// returns its results as the wrapper carries them.
     ///
     /// The host function receives this store, and can call back into a
-    /// guest through it, at any depth.
+    /// guest through it, at any depth. A suspending host function that
+    /// answers "not yet" gives [`Poll::Pending`] where `suspends`, where
+    /// its call may suspend. Anywhere else, "not yet" is an error, and the
+    /// guest traps.
     pub fn call_host(
         &mut self,
         ty: &FuncType,
         func: &HostFunc,
         args: Vec<JsValue>,
-    ) -> anyhow::Result<Vec<JsValue>> {
+        suspends: bool,
+    ) -> anyhow::Result<Poll<Vec<JsValue>>> {
         let params = wrapper::params(&mut self.objects, &self.types, self.data.id(), ty, args)?;
         let mut results = ty
             .results()
@@ -95,17 +123,23 @@ impl WebStore {
             .collect::<Vec<_>>();
         match func.call(self, &params, &mut results)? {
             Poll::Ready(()) => {}
-            Poll::Pending => anyhow::bail!(
+            Poll::Pending if !func.is_suspending() => anyhow::bail!(
                 "a host function that is not suspending answered \"not yet\" to a guest"
             ),
+            Poll::Pending if !suspends => anyhow::bail!(
+                "a suspending host function answered \"not yet\" where its call cannot \
+                 suspend: the call is not a resumable call, or a frame of the host lies \
+                 between the start of the resumable call and the host function"
+            ),
+            Poll::Pending => return Ok(Poll::Pending),
         }
-        Ok(wrapper::results(
+        Ok(Poll::Ready(wrapper::results(
             &self.objects,
             &mut self.carrier,
             &self.types,
             ty,
             &results,
-        )?)
+        )?))
     }
 
     /// Calls the guest function `function` with `args`, where the host
@@ -116,10 +150,296 @@ impl WebStore {
     /// and the host function's own error.
     fn apply(&mut self, function: &Function, args: &Array) -> Result<JsValue> {
         let calls = self.calls.clone();
-        let entry = calls.enter(self);
+        let entry = calls.enter(self, None);
         let returned = Reflect::apply(function, &JsValue::UNDEFINED, args);
-        drop(entry);
-        returned.map_err(|error| calls.trap().unwrap_or_else(|| errors::call(&error)))
+        let failure = entry.leave();
+        returned.map_err(|error| match failure {
+            Some(failure) => Error::Trap(TrapKind::Host(failure)),
+            None => errors::call(&error),
+        })
+    }
+
+    /// The function to call for a call of `func` with `params`, its
+    /// arguments, and how to read its results into `len` slots.
+    ///
+    /// Where the backend knows the type of the function, the call must
+    /// match it, and a function whose type holds a `v128` or an `exnref`
+    /// is called through its carrier.
+    fn prepare(
+        &mut self,
+        func: Func,
+        params: &[Val],
+        len: usize,
+    ) -> Result<(Function, Array, Returns)> {
+        let object = self.objects.func(func)?;
+        let function = object.function.clone();
+        let ty = object.ty.clone();
+        if let Some(ty) = &ty {
+            if params.len() != ty.params().len() || len != ty.results().len() {
+                return Err(values::mismatch(format!(
+                    "the function takes {} parameters and gives {} results, and the call \
+                     gave {} parameters and {} result slots",
+                    ty.params().len(),
+                    ty.results().len(),
+                    params.len(),
+                    len
+                )));
+            }
+            for (value, ty) in params.iter().zip(ty.params()) {
+                values::check(value, ty, &self.types)?;
+            }
+            if Carrier::needed(ty) {
+                let (carrier, args) =
+                    self.carrier
+                        .arguments(&self.objects, (func.index(), &function), ty, params)?;
+                let returns = Returns {
+                    ty: Some(ty.clone()),
+                    carried: true,
+                };
+                return Ok((carrier, args, returns));
+            }
+        }
+        let args = params
+            .iter()
+            .map(|value| values::to_js(&self.objects, value))
+            .collect::<Result<Array>>()?;
+        Ok((function, args, Returns { ty, carried: false }))
+    }
+
+    /// Writes to `results` the results of a call that `returned` gave,
+    /// read as `returns` says.
+    fn read_results(
+        &mut self,
+        returns: &Returns,
+        returned: JsValue,
+        results: &mut [Val],
+    ) -> Result<()> {
+        let kinds = match &returns.ty {
+            Some(ty) => {
+                if results.len() != ty.results().len() {
+                    return Err(values::mismatch(format!(
+                        "the function gives {} results, and the call gave {} result slots",
+                        ty.results().len(),
+                        results.len()
+                    )));
+                }
+                if returns.carried {
+                    return self.carrier.results(
+                        &mut self.objects,
+                        &self.types,
+                        ty,
+                        returned,
+                        results,
+                    );
+                }
+                ty.results().iter().map(|ty| self.kind(ty)).collect()
+            }
+            // The JavaScript API does not tell the type of a function
+            // reference a guest handed out, so the slots tell the kinds of
+            // the results.
+            None => results.iter().map(Kind::of_val).collect::<Vec<_>>(),
+        };
+        match results {
+            [] => {}
+            [result] => *result = values::from_js(&mut self.objects, returned, kinds[0])?,
+            results => {
+                let returned = returned
+                    .dyn_into::<Array>()
+                    .map_err(|_| values::mismatch("the call gave one result".to_string()))?;
+                if returned.length() as usize != results.len() {
+                    return Err(values::mismatch(format!(
+                        "the call gave {} results for {} slots",
+                        returned.length(),
+                        results.len()
+                    )));
+                }
+                for (index, (slot, kind)) in results.iter_mut().zip(kinds).enumerate() {
+                    *slot = values::from_js(&mut self.objects, returned.get(index as u32), kind)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Starts the instantiation of `module` with `imports`, and answers
+    /// its flight, which ends once the browser settles the instantiation.
+    ///
+    /// `WebAssembly.instantiate`, and never `new WebAssembly.Instance`,
+    /// which the browser refuses for a module above its limit. The start
+    /// function of the module can call a host function. Chromium runs it
+    /// inside the call of `WebAssembly.instantiate`, where a lease reaches
+    /// the store. A browser that runs it later, as the JavaScript API
+    /// allows, runs it as the instantiation's flight, which reaches the
+    /// store through its cell while its permit holds. So no pointer to the
+    /// store outlives this method.
+    pub fn start_instantiation(
+        &mut self,
+        module: &dyn BackendModule,
+        imports: &[Extern],
+    ) -> Result<Rc<Flight>> {
+        let module = module
+            .as_any()
+            .downcast_ref::<WebModule>()
+            .ok_or(Error::WrongEngine)?;
+        let object = self.imports_object(module.imports(), imports)?;
+        let webassembly = js::webassembly().map_err(|error| errors::call(&error))?;
+        let calls = self.calls.clone();
+        let flight = Flight::new(calls.next_id(), false, &calls);
+        calls.run_flight(&flight);
+        calls.instantiating(&flight);
+        let entry = calls.enter(self, Some(flight.clone()));
+        let started = js::call_method(
+            &webassembly,
+            "instantiate",
+            &[module.module().clone().into(), object.into()],
+        );
+        if let Some(failure) = entry.leave() {
+            flight.fail(failure);
+        }
+        let promise = started
+            .and_then(|promise| promise.dyn_into::<Promise>())
+            .unwrap_or_else(|error| Promise::reject(&error));
+        flight.watch(&promise);
+        Ok(flight)
+    }
+
+    /// The instance of `module` whose instantiation stopped at `stop`.
+    pub fn finish_instantiation(
+        &mut self,
+        module: &dyn BackendModule,
+        stop: Stop,
+    ) -> Result<Instance> {
+        let module = module
+            .as_any()
+            .downcast_ref::<WebModule>()
+            .ok_or(Error::WrongEngine)?;
+        let instance = match stop {
+            Stop::Returned(instance) => instance,
+            Stop::Failed {
+                host: Some(host), ..
+            } => return Err(Error::Trap(TrapKind::Host(host))),
+            Stop::Failed { reason, .. } => {
+                return Err(errors::instantiate(&reason, module.imports()));
+            }
+            Stop::Suspended => {
+                return Err(errors::backend("an instantiation suspended"));
+            }
+        };
+        let instance = instance
+            .dyn_into::<WebAssembly::Instance>()
+            .map_err(|_| errors::backend("the instantiation gave no instance"))?;
+        Ok(self.objects.add_instance(InstanceObject {
+            exports: instance.exports(),
+            types: module.exports().to_vec(),
+            handles: HashMap::new(),
+        }))
+    }
+
+    /// Starts a resumable call of `func` with `params`, whose results fill
+    /// `len` slots, and answers its flight and how to read its results.
+    ///
+    /// The call runs through `WebAssembly.promising`, synchronously, until
+    /// it returns, fails, or first suspends, and its first stretch reaches
+    /// the store through a lease. A host function that failed in that
+    /// stretch fails the call at once. Otherwise the flight tells where
+    /// the call stopped, at once where it suspended, and once the browser
+    /// settles its promise where it returned or trapped.
+    pub fn start_resumable(
+        &mut self,
+        func: Func,
+        params: &[Val],
+        len: usize,
+    ) -> Result<(Rc<Flight>, Returns)> {
+        let jspi = self
+            .jspi
+            .clone()
+            .ok_or(Error::Unsupported(Capability::HostSuspension))?;
+        let (function, args, returns) = self.prepare(func, params, len)?;
+        let promising = match self.promising.entry((func.index(), returns.carried)) {
+            Entry::Occupied(entry) => entry.get().clone(),
+            Entry::Vacant(entry) => entry.insert(jspi.promising(&function)?).clone(),
+        };
+        let calls = self.calls.clone();
+        let flight = Flight::new(calls.next_id(), true, &calls);
+        calls.run_flight(&flight);
+        let entry = calls.enter(self, Some(flight.clone()));
+        let started = Reflect::apply(&promising, &JsValue::UNDEFINED, &args);
+        let failure = entry.leave();
+        let promise = started
+            .and_then(|promise| promise.dyn_into::<Promise>())
+            .unwrap_or_else(|error| Promise::reject(&error));
+        flight.watch(&promise);
+        match failure {
+            Some(failure) => Err(Error::Trap(TrapKind::Host(failure))),
+            None => Ok((flight, returns)),
+        }
+    }
+
+    /// Resumes `flight`, a resumable call of this store that waits, with
+    /// `import_results`, the results of the suspending host function.
+    ///
+    /// The stack of the call runs on a microtask, after the code that
+    /// resumed it returned, and reaches the store as the flight.
+    pub fn start_resume(&mut self, flight: &Rc<Flight>, import_results: &[Val]) -> Result<()> {
+        if !flight.belongs_to(&self.calls) {
+            return Err(Error::WrongStore);
+        }
+        let frame = flight
+            .frame()
+            .ok_or_else(|| errors::backend("the call does not wait"))?;
+        let ty = self
+            .calls
+            .frame_type(frame)
+            .ok_or_else(|| errors::backend("the call lost the frame it waits in"))?;
+        if import_results.len() != ty.results().len() {
+            return Err(values::mismatch(format!(
+                "the suspending host function gives {} results, and the resumption gave {}",
+                ty.results().len(),
+                import_results.len()
+            )));
+        }
+        let carried = wrapper::results(
+            &self.objects,
+            &mut self.carrier,
+            &self.types,
+            &ty,
+            import_results,
+        )?;
+        let (frame, resolve) = flight
+            .resume()
+            .ok_or_else(|| errors::backend("the call does not wait"))?;
+        self.calls.set_results(frame, carried);
+        self.calls.run_flight(flight);
+        resolve
+            .call0(&JsValue::UNDEFINED)
+            .map(|_| ())
+            .map_err(|error| errors::call(&error))
+    }
+
+    /// How the resumable call `flight`, whose results `returns` tells how
+    /// to read, ends where it stopped at `stop`: with its results in
+    /// `results`, or with a handle where it waits.
+    pub fn finish_resumable(
+        &mut self,
+        flight: Rc<Flight>,
+        returns: Returns,
+        stop: Stop,
+        results: &mut [Val],
+    ) -> Result<ResumableCall> {
+        match stop {
+            Stop::Suspended => Ok(ResumableCall::Suspended(SuspendedCall::new(
+                self.data.id(),
+                Box::new(WebSuspendedCall { flight, returns }),
+            ))),
+            Stop::Returned(returned) => {
+                self.read_results(&returns, returned, results)?;
+                Ok(ResumableCall::Finished)
+            }
+            Stop::Failed {
+                host: Some(host), ..
+            } => Err(Error::Trap(TrapKind::Host(host))),
+            Stop::Failed { reason, .. } => Err(errors::call(&reason)),
+        }
     }
 
     /// The imports object of an instantiation of a module whose imports are
@@ -307,33 +627,13 @@ impl BackendStore for WebStore {
         module: &'a dyn BackendModule,
         imports: &'a [Extern],
     ) -> BoxFuture<'a, Result<Instance>> {
+        // A host function instantiates with the store it received. The
+        // future cannot outlive the host function, which cannot wait for
+        // it, so no guest of the store runs while it holds the store.
         Box::pin(async move {
-            let module = module
-                .as_any()
-                .downcast_ref::<WebModule>()
-                .ok_or(Error::WrongEngine)?;
-            let object = self.imports_object(module.imports(), imports)?;
-            // `WebAssembly.instantiate`, and never `new WebAssembly.Instance`,
-            // which the browser refuses for a module above its limit. The
-            // start function of the module can call a host function, so the
-            // host functions reach the store until the instantiation ends.
-            let calls = self.calls.clone();
-            let entry = calls.enter(self);
-            let instantiated = WebAssembly::instantiate_module(module.module(), &object).await;
-            drop(entry);
-            let instance = instantiated
-                .map_err(|error| {
-                    calls
-                        .trap()
-                        .unwrap_or_else(|| errors::instantiate(&error, module.imports()))
-                })?
-                .dyn_into::<WebAssembly::Instance>()
-                .map_err(|_| errors::backend("the instantiation gave no instance"))?;
-            Ok(self.objects.add_instance(InstanceObject {
-                exports: instance.exports(),
-                types: module.exports().to_vec(),
-                handles: HashMap::new(),
-            }))
+            let flight = self.start_instantiation(module, imports)?;
+            let stop = flight.stop().await;
+            self.finish_instantiation(module, stop)
         })
     }
 
@@ -356,9 +656,6 @@ impl BackendStore for WebStore {
     }
 
     fn func_new(&mut self, ty: FuncType, func: HostFunc) -> Result<Func> {
-        if func.is_suspending() {
-            return Err(Error::Unsupported(Capability::HostSuspension));
-        }
         let function = self.wrappers.make(&ty, func, &mut self.carrier)?;
         Ok(self.objects.add_func(function, Some(ty)))
     }
@@ -368,72 +665,45 @@ impl BackendStore for WebStore {
     }
 
     fn func_call(&mut self, func: Func, params: &[Val], results: &mut [Val]) -> Result<()> {
-        let object = self.objects.func(func)?;
-        let function = object.function.clone();
-        let ty = object.ty.clone();
-        let kinds = match &ty {
-            Some(ty) => {
-                if params.len() != ty.params().len() || results.len() != ty.results().len() {
-                    return Err(values::mismatch(format!(
-                        "the function takes {} parameters and gives {} results, and the call \
-                         gave {} parameters and {} result slots",
-                        ty.params().len(),
-                        ty.results().len(),
-                        params.len(),
-                        results.len()
-                    )));
-                }
-                for (value, ty) in params.iter().zip(ty.params()) {
-                    values::check(value, ty, &self.types)?;
-                }
-                if Carrier::needed(ty) {
-                    let (carrier, args) = self.carrier.arguments(
-                        &self.objects,
-                        (func.index(), &function),
-                        ty,
-                        params,
-                    )?;
-                    let returned = self.apply(&carrier, &args)?;
-                    return self.carrier.results(
-                        &mut self.objects,
-                        &self.types,
-                        ty,
-                        returned,
-                        results,
-                    );
-                }
-                ty.results().iter().map(|ty| self.kind(ty)).collect()
-            }
-            // The JavaScript API does not tell the type of a function
-            // reference a guest handed out, so the slots tell the kinds of
-            // the results.
-            None => results.iter().map(Kind::of_val).collect::<Vec<_>>(),
-        };
-        let args = params
-            .iter()
-            .map(|value| values::to_js(&self.objects, value))
-            .collect::<Result<Array>>()?;
+        let (function, args, returns) = self.prepare(func, params, results.len())?;
         let returned = self.apply(&function, &args)?;
-        match results {
-            [] => {}
-            [result] => *result = values::from_js(&mut self.objects, returned, kinds[0])?,
-            results => {
-                let returned = returned
-                    .dyn_into::<Array>()
-                    .map_err(|_| values::mismatch("the call gave one result".to_string()))?;
-                if returned.length() as usize != results.len() {
-                    return Err(values::mismatch(format!(
-                        "the call gave {} results for {} slots",
-                        returned.length(),
-                        results.len()
-                    )));
-                }
-                for (index, (slot, kind)) in results.iter_mut().zip(kinds).enumerate() {
-                    *slot = values::from_js(&mut self.objects, returned.get(index as u32), kind)?;
-                }
-            }
-        }
-        Ok(())
+        self.read_results(&returns, returned, results)
+    }
+
+    fn func_call_resumable<'a>(
+        &'a mut self,
+        func: Func,
+        params: &'a [Val],
+        results: &'a mut [Val],
+    ) -> BoxFuture<'a, Result<ResumableCall>> {
+        // A host function makes a resumable call with the store it
+        // received. The call's first stretch runs at once, on a stack of
+        // its own. A call that suspends there ends on the future's first
+        // poll. One that returns ends only once the browser settles its
+        // promise, which the host function, which cannot wait, never sees.
+        Box::pin(async move {
+            let (flight, returns) = self.start_resumable(func, params, results.len())?;
+            let stop = flight.stop().await;
+            self.finish_resumable(flight, returns, stop, results)
+        })
+    }
+
+    fn resume_call<'a>(
+        &'a mut self,
+        call: Box<dyn BackendSuspendedCall>,
+        import_results: &'a [Val],
+        results: &'a mut [Val],
+    ) -> BoxFuture<'a, Result<ResumableCall>> {
+        // The store a host function received resumes no call. JavaScript
+        // Promise Integration runs a resumed stack on a microtask, after
+        // the host function and the guest below it returned, so the
+        // resumption could not end while the host function waits for it.
+        let _ = (call, import_results, results);
+        Box::pin(core::future::ready(Err(errors::backend(
+            "a host function cannot resume a call in the browser: JavaScript Promise \
+             Integration runs the resumed call on a microtask, after the host function \
+             returns, so resume it from the store outside every host function",
+        ))))
     }
 
     fn memory_new(&mut self, ty: MemoryType) -> Result<Memory> {

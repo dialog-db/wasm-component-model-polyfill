@@ -11,12 +11,13 @@ use wasm_encoder::{
     FunctionSection, ImportSection, TypeSection,
 };
 use wcmp_wasm_core::backend::{HostFunc, RawHandle, StoreId};
-use wcmp_wasm_core::{ExnRef, FuncType, HeapType, Result, Val, ValType};
+use wcmp_wasm_core::{Capability, Error, ExnRef, FuncType, HeapType, Result, Val, ValType};
 
 use crate::calls::Calls;
 use crate::carrier::Carrier;
 use crate::errors;
 use crate::js;
+use crate::jspi::Jspi;
 use crate::objects::Objects;
 use crate::type_registry::TypeRegistry;
 use crate::values::{self, Kind};
@@ -45,10 +46,27 @@ use crate::values::{self, Kind};
 /// break JavaScript Promise Integration, which admits only WebAssembly
 /// frames between the start of a stack and a suspension.
 ///
-/// The five JavaScript functions are the store's, and each wrapper
-/// instance imports them with the index of its host function as a global.
-/// So the store makes one module for each type of host function, and one
-/// instance for each host function.
+/// The wrapper of a suspending host function goes on where `invoke`
+/// answers that the host function said "not yet" inside a resumable call:
+///
+/// ```text
+///   status = invoke(frame)
+///   if status == failed: unreachable
+///   if status == suspended:
+///     suspend(frame)                ;; a `WebAssembly.Suspending` import
+///     if resumed(frame): unreachable ;; the call may not reach its store
+///   result(frame, each result) ...  ;; the results the host resumed with
+/// ```
+///
+/// The stack suspends inside `suspend` until the host resumes the call, and
+/// runs on from there on a microtask. The wrapper calls `suspend` only on
+/// "not yet", because Chromium suspends on every call of a suspending
+/// import, even one whose promise already resolved.
+///
+/// The JavaScript functions are the store's, and each wrapper instance
+/// imports them with the index of its host function as a global. So the
+/// store makes one module for each type of host function, suspending or
+/// not, and one instance for each host function.
 ///
 /// The JavaScript API carries a float as a `Number`, which can change the
 /// bits of a NaN, and carries no `v128` and no `exnref`. So the wrapper
@@ -59,11 +77,12 @@ use crate::values::{self, Kind};
 /// the wrong type traps instead of throwing.
 pub struct Wrappers {
     calls: Rc<Calls>,
+    jspi: Option<Rc<Jspi>>,
     imports: Option<Imports>,
-    modules: HashMap<FuncType, WebAssembly::Module>,
+    modules: HashMap<(FuncType, bool), WebAssembly::Module>,
 }
 
-/// The five JavaScript functions that each wrapper of a store imports.
+/// The JavaScript functions that each wrapper of a store imports.
 ///
 /// The store keeps each closure for its own life, and the functions fail
 /// with the store.
@@ -73,6 +92,11 @@ struct Imports {
     invoke: Closure<dyn Fn(u32) -> i32>,
     result: Closure<dyn Fn(u32, u32) -> JsValue>,
     leave: Closure<dyn Fn(u32)>,
+    resumed: Closure<dyn Fn(u32) -> i32>,
+    suspend: Closure<dyn Fn(u32) -> JsValue>,
+    /// `suspend` as a `WebAssembly.Suspending` import, made the first
+    /// time a suspending host function needs it.
+    suspending: Option<JsValue>,
 }
 
 /// How a wrapper carries one value between the guest and the host.
@@ -99,10 +123,12 @@ enum Carry {
 
 impl Wrappers {
     /// The wrappers of the store whose host functions share `calls`, none
-    /// yet.
-    pub fn new(calls: Rc<Calls>) -> Self {
+    /// yet. `jspi` makes the wrappers of suspending host functions, where
+    /// the browser has it.
+    pub fn new(calls: Rc<Calls>, jspi: Option<Rc<Jspi>>) -> Self {
         Self {
             calls,
+            jspi,
             imports: None,
             modules: HashMap::new(),
         }
@@ -112,13 +138,17 @@ impl Wrappers {
     /// type `ty`: the export of a new wrapper instance.
     ///
     /// `carrier` holds the store's table of exceptions, which the wrapper
-    /// imports where `ty` has an `exnref`.
+    /// imports where `ty` has an `exnref`. A suspending host function
+    /// needs JavaScript Promise Integration, and is
+    /// [`Error::Unsupported`](wcmp_wasm_core::Error::Unsupported) without
+    /// it.
     pub fn make(
         &mut self,
         ty: &FuncType,
         func: HostFunc,
         carrier: &mut Carrier,
     ) -> Result<Function> {
+        let suspending = func.is_suspending();
         let carries = ty
             .params()
             .iter()
@@ -128,27 +158,45 @@ impl Wrappers {
         let uses_exns = carries
             .iter()
             .any(|carry| matches!(carry, Carry::Exn { .. } | Carry::NoExn));
-        let module = match self.modules.get(ty) {
+        let suspend = match (suspending, &self.jspi) {
+            (false, _) => None,
+            (true, Some(jspi)) => Some(jspi.clone()),
+            (true, None) => return Err(Error::Unsupported(Capability::HostSuspension)),
+        };
+        let key = (ty.clone(), suspending);
+        let module = match self.modules.get(&key) {
             Some(module) => module.clone(),
             None => {
-                let bytes = generate(ty, uses_exns)?;
+                let bytes = generate(ty, uses_exns, suspending)?;
                 let module = WebAssembly::Module::new(&js_sys::Uint8Array::from(&bytes[..]).into())
                     .map_err(|error| errors::backend(errors::message(&error)))?;
-                self.modules.insert(ty.clone(), module.clone());
+                self.modules.insert(key, module.clone());
                 module
             }
         };
         let index = self.calls.add(ty.clone(), func);
         let imports = self.imports();
-        let namespace = js::object(&[
+        let mut entries = vec![
             ("enter", imports.enter.as_ref().clone()),
             ("arg", imports.arg.as_ref().clone()),
             ("invoke", imports.invoke.as_ref().clone()),
             ("result", imports.result.as_ref().clone()),
             ("leave", imports.leave.as_ref().clone()),
             ("host", JsValue::from_f64(f64::from(index))),
-        ])
-        .map_err(|error| errors::call(&error))?;
+        ];
+        if let Some(jspi) = suspend {
+            let suspending = match &imports.suspending {
+                Some(suspending) => suspending.clone(),
+                None => {
+                    let suspending = jspi.suspending(imports.suspend.as_ref().unchecked_ref())?;
+                    imports.suspending = Some(suspending.clone());
+                    suspending
+                }
+            };
+            entries.push(("suspend", suspending));
+            entries.push(("resumed", imports.resumed.as_ref().clone()));
+        }
+        let namespace = js::object(&entries).map_err(|error| errors::call(&error))?;
         if uses_exns {
             js::set(&namespace, "exns", carrier.exns()?).map_err(|error| errors::call(&error))?;
         }
@@ -163,12 +211,14 @@ impl Wrappers {
             .ok_or_else(|| errors::backend("the wrapper exports no function"))
     }
 
-    /// The five JavaScript functions of the store, made the first time a
-    /// host function needs them.
-    fn imports(&mut self) -> &Imports {
+    /// The JavaScript functions of the store, made the first time a host
+    /// function needs them.
+    fn imports(&mut self) -> &mut Imports {
         let calls = &self.calls;
         self.imports.get_or_insert_with(|| {
-            let (enter, arg, invoke, result, leave) = (
+            let (enter, arg, invoke, result, leave, resumed, suspend) = (
+                calls.clone(),
+                calls.clone(),
                 calls.clone(),
                 calls.clone(),
                 calls.clone(),
@@ -181,6 +231,9 @@ impl Wrappers {
                 invoke: Closure::new(move |frame: u32| invoke.invoke(frame)),
                 result: Closure::new(move |frame: u32, index: u32| result.result(frame, index)),
                 leave: Closure::new(move |frame: u32| leave.close(frame)),
+                resumed: Closure::new(move |frame: u32| resumed.resumed(frame)),
+                suspend: Closure::new(move |frame: u32| suspend.suspend(frame)),
+                suspending: None,
             }
         })
     }
@@ -448,17 +501,20 @@ fn position(types: &[wasm_encoder::ValType], ty: wasm_encoder::ValType) -> u32 {
 ///   (import "" "enter" (func $enter (param i32) (result i32)))
 ///   (import "" "invoke" (func $invoke (param i32) (result i32)))
 ///   (import "" "leave" (func $leave (param i32)))
+///   (import "" "suspend" (func $suspend (param i32)))  ;; where suspending
+///   (import "" "resumed" (func $resumed (param i32) (result i32)))
 ///   (import "" "arg" (func (param i32 T)))            ;; for each carried T
 ///   (import "" "result" (func (param i32 i32) (result T)))
 ///   (import "" "host" (global $host i32))
 ///   (import "" "exns" (table $exns 0 exnref))        ;; where `ty` has one
 ///   (func (export "call") (type $ty) (local $frame i32) (local $index i32)
+///     (local $status i32)
 ///     ...))
 /// ```
 ///
 /// The JavaScript API gives one import of the same name the same function
 /// whatever its type, so `arg` and `result` each serve every type.
-fn generate(ty: &FuncType, uses_exns: bool) -> Result<Vec<u8>> {
+fn generate(ty: &FuncType, uses_exns: bool, suspending: bool) -> Result<Vec<u8>> {
     use wasm_encoder::ValType as Encoded;
     let params = ty.params().iter().map(carry).collect::<Result<Vec<_>>>()?;
     let results = ty.results().iter().map(carry).collect::<Result<Vec<_>>>()?;
@@ -489,12 +545,16 @@ fn generate(ty: &FuncType, uses_exns: bool) -> Result<Vec<u8>> {
     let first_arg_type = 3;
     let first_result_type = first_arg_type + arg_types.len() as u32;
 
-    // The functions: `enter`, `invoke`, `leave`, each `arg`, each
-    // `result`, then the wrapper's own.
+    // The functions: `enter`, `invoke`, `leave`, `suspend` and `resumed`
+    // where the host function is suspending, each `arg`, each `result`,
+    // then the wrapper's own. `suspend` has the type of `leave`, and
+    // `resumed` the type of `invoke`.
     const ENTER: u32 = 0;
     const INVOKE: u32 = 1;
     const LEAVE: u32 = 2;
-    let first_arg = 3;
+    const SUSPEND: u32 = 3;
+    const RESUMED: u32 = 4;
+    let first_arg = if suspending { 5 } else { 3 };
     let first_result = first_arg + arg_types.len() as u32;
     let call = first_result + result_types.len() as u32;
 
@@ -502,6 +562,10 @@ fn generate(ty: &FuncType, uses_exns: bool) -> Result<Vec<u8>> {
     imports.import("", "enter", EntityType::Function(1));
     imports.import("", "invoke", EntityType::Function(1));
     imports.import("", "leave", EntityType::Function(2));
+    if suspending {
+        imports.import("", "suspend", EntityType::Function(2));
+        imports.import("", "resumed", EntityType::Function(1));
+    }
     for index in 0..arg_types.len() as u32 {
         imports.import("", "arg", EntityType::Function(first_arg_type + index));
     }
@@ -547,9 +611,10 @@ fn generate(ty: &FuncType, uses_exns: bool) -> Result<Vec<u8>> {
 
     let frame = params.len() as u32;
     let index = frame + 1;
+    let status = frame + 2;
     let arg = |carry: Carry| first_arg + position(&arg_types, carry.arg());
     let result = |carry: Carry| first_result + position(&result_types, carry.result());
-    let mut body = wasm_encoder::Function::new([(2, Encoded::I32)]);
+    let mut body = wasm_encoder::Function::new([(3, Encoded::I32)]);
     let mut code = body.instructions();
     code.global_get(0).call(ENTER).local_set(frame);
     for (local, carry) in params.iter().enumerate() {
@@ -596,8 +661,21 @@ fn generate(ty: &FuncType, uses_exns: bool) -> Result<Vec<u8>> {
             }
         }
     }
-    code.local_get(frame)
-        .call(INVOKE)
+    code.local_get(frame).call(INVOKE).local_set(status);
+    if suspending {
+        // 2: the host function said "not yet" inside a resumable call.
+        code.local_get(status)
+            .i32_const(2)
+            .i32_eq()
+            .if_(BlockType::Empty)
+            .local_get(frame)
+            .call(SUSPEND)
+            .local_get(frame)
+            .call(RESUMED)
+            .local_set(status)
+            .end();
+    }
+    code.local_get(status)
         .if_(BlockType::Empty)
         .unreachable()
         .end();

@@ -113,7 +113,14 @@ impl Func {
     /// later, with the results of that host function.
     ///
     /// The call is asynchronous because the browser delivers its end
-    /// through a promise. The backend must declare
+    /// through a promise. The first stretch of the call runs on the
+    /// future's first poll, so a call that suspends there ends on that
+    /// poll, even inside a host function, which cannot wait. A call that
+    /// finishes or traps can end only once the browser settles its promise.
+    /// Where the future drops before the call ends, the host has the store
+    /// back, as for [`SuspendedCall::resume`](crate::SuspendedCall::resume).
+    ///
+    /// The backend must declare
     /// [`host_suspension`](Capability::HostSuspension). Where it does not,
     /// this is [`Error::Unsupported`](crate::Error::Unsupported).
     pub async fn call_resumable(

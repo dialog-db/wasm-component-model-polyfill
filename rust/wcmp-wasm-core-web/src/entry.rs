@@ -1,36 +1,47 @@
-//! A call from a store into a guest, while it runs.
+//! A synchronous call from a store into a guest, while it runs.
 
 use std::rc::Rc;
 
 use crate::calls::Calls;
-use crate::store::WebStore;
 
-/// A call from a store into a guest, while it runs: the host functions of
-/// the store reach the store until the entry drops.
+/// A synchronous call from a store into a guest, while it runs: the host
+/// functions of the store reach the store through its lease until the
+/// entry leaves.
 ///
-/// [`Calls::enter`] makes one. Its drop puts back the store a guest ran in
-/// before, and closes every frame of a host function that the call opened
-/// and did not close.
+/// [`Calls::enter`] makes one. When it leaves, or drops, the lease ends,
+/// and every frame of a host function that the call opened and did not
+/// close closes.
 pub struct Entry {
     calls: Rc<Calls>,
-    previous: *mut WebStore,
-    frames: usize,
+    depth: Option<usize>,
 }
 
 impl Entry {
-    /// The entry into `calls`, which puts back the store `previous` and
-    /// the first `frames` frames when it drops.
-    pub fn new(calls: Rc<Calls>, previous: *mut WebStore, frames: usize) -> Self {
+    /// The entry of the lease at `depth` of `calls`.
+    pub fn new(calls: Rc<Calls>, depth: usize) -> Self {
         Self {
             calls,
-            previous,
-            frames,
+            depth: Some(depth),
         }
+    }
+
+    /// Ends the lease, and answers the error of the host function that
+    /// trapped the call, where one did.
+    ///
+    /// A host function that fails traps the guest at once, and the trap
+    /// unwinds WebAssembly frames alone up to the call. So the error found
+    /// here is the error of the call's own trap.
+    pub fn leave(mut self) -> Option<anyhow::Error> {
+        self.depth
+            .take()
+            .and_then(|depth| self.calls.leave_entry(depth))
     }
 }
 
 impl Drop for Entry {
     fn drop(&mut self) {
-        self.calls.leave_entry(self.previous, self.frames);
+        if let Some(depth) = self.depth.take() {
+            self.calls.leave_entry(depth);
+        }
     }
 }

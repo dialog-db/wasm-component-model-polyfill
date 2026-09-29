@@ -1,11 +1,15 @@
 //! What the browser backend holds beyond the backend contract: the probes
 //! of its capabilities, a module above the browser's limit for a
 //! synchronous compile, linking by the objects of the browser, the externs
-//! the browser makes, host functions through their wrapper modules, and
-//! how memory access crosses into JavaScript.
+//! the browser makes, host functions through their wrapper modules, how
+//! memory access crosses into JavaScript, and what host suspension does
+//! inside a host function.
 
 #![cfg(target_arch = "wasm32")]
 
+use core::future::Future;
+use core::pin::pin;
+use core::task::{Context, Poll, Waker};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -16,8 +20,8 @@ use wcmp_macros::wasm;
 use wcmp_wasm_core::backend::RawHandle;
 use wcmp_wasm_core::{
     Caller, Capabilities, Capability, Engine, Error, Extern, ExternRef, Func, FuncType, Global,
-    GlobalType, Instance, Memory, MemoryType, Module, Mutability, RefType, Store, Table, TableType,
-    TrapKind, Val, ValType,
+    GlobalType, Instance, Memory, MemoryType, Module, Mutability, RefType, ResumableCall, Store,
+    SuspendedCall, Table, TableType, TrapKind, Val, ValType,
 };
 use wcmp_wasm_core_web::Web;
 
@@ -74,7 +78,7 @@ fn with_webassembly_property<R>(name: &str, value: &JsValue, body: impl FnOnce()
 }
 
 #[wcmp_macros::test]
-fn it_declares_what_chromium_implements_and_not_host_suspension() {
+fn it_declares_what_chromium_implements() {
     let capabilities = engine().capabilities();
 
     for capability in [
@@ -86,10 +90,10 @@ fn it_declares_what_chromium_implements_and_not_host_suspension() {
         Capability::Gc,
         Capability::RelaxedSimd,
         Capability::Threads,
+        Capability::HostSuspension,
     ] {
         assert!(capabilities.contains(capability), "declares {capability}");
     }
-    assert!(!capabilities.contains(Capability::HostSuspension));
     assert!(Web::new().has_jspi(), "Chromium has JSPI");
 }
 
@@ -102,7 +106,10 @@ async fn it_loads_and_declares_less_where_a_probe_fails() {
     // probe module.
     let refuse = Closure::<dyn Fn(JsValue) -> bool>::new(|_| false);
     let refusing = with_webassembly_property("validate", refuse.as_ref(), engine);
-    assert_eq!(refusing.capabilities(), Capabilities::empty());
+    // Host suspension rests on JavaScript Promise Integration, which no
+    // probe module tests.
+    let unprobed = Capabilities::empty().with(Capability::HostSuspension);
+    assert_eq!(refusing.capabilities(), unprobed);
     assert!(
         declared.iter().count() > refusing.capabilities().iter().count(),
         "the backend declares less: {declared:?} before"
@@ -126,7 +133,7 @@ async fn it_loads_and_declares_less_where_a_probe_fails() {
         Err(JsValue::from_str("the probe throws"))
     });
     let throwing = with_webassembly_property("validate", throw.as_ref(), engine);
-    assert_eq!(throwing.capabilities(), Capabilities::empty());
+    assert_eq!(throwing.capabilities(), unprobed);
 }
 
 #[wcmp_macros::test]
@@ -146,6 +153,26 @@ async fn it_loads_without_javascript_promise_integration() {
         .call(&mut store, &[], &mut result)
         .expect("the call succeeds");
     assert_eq!(result[0].i32(), Some(42));
+}
+
+#[wcmp_macros::test]
+fn it_declares_host_suspension_only_where_both_functions_of_jspi_exist() {
+    for name in ["Suspending", "promising"] {
+        let backend = with_webassembly_property(name, &JsValue::UNDEFINED, Web::new);
+        assert!(!backend.has_jspi(), "the backend read no `{name}`");
+        let engine = Engine::with_backend(backend);
+        assert!(
+            !engine.capabilities().contains(Capability::HostSuspension),
+            "without `{name}`"
+        );
+    }
+    let backend = Web::new();
+    assert!(backend.has_jspi());
+    assert!(
+        Engine::with_backend(backend)
+            .capabilities()
+            .contains(Capability::HostSuspension)
+    );
 }
 
 /// A module above the browser's limit for a synchronous compile: a memory
@@ -1197,4 +1224,186 @@ async fn it_reads_and_writes_guest_memory_from_a_host_function() {
         "the host function reaches memory through its accessor"
     );
     assert_eq!(memory.load_u32(&store, 132).ok(), Some(0x0403_0202));
+}
+
+/// Polls `future` once, as a host function, which cannot wait, does.
+fn poll_once<F: Future>(future: F) -> Poll<F::Output> {
+    pin!(future)
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+}
+
+/// What the store of the test of suspension inside a host function holds:
+/// the guest function that waits, the call a host function started and
+/// that waits, and what the host function's resumption gave.
+#[derive(Default)]
+struct Inside {
+    run: Option<Func>,
+    waiting: Option<SuspendedCall>,
+    resumed: Option<Result<(), Error>>,
+}
+
+#[wcmp_macros::test]
+async fn it_starts_a_resumable_call_inside_a_host_function_and_resumes_it_outside() {
+    let engine = engine();
+    let mut store = Store::new(&engine, Inside::default()).expect("the engine makes a store");
+    let wait = Func::new_suspending(
+        &mut store,
+        FuncType::new([ValType::I32], [ValType::I32]),
+        |_, _, _| Ok(Poll::Pending),
+    )
+    .expect("the store makes a suspending host function");
+    // A resumable call from a host function runs on a stack of its own,
+    // so only WebAssembly frames lie between its start and `wait`, and it
+    // suspends on the future's first poll.
+    let start = Func::new(
+        &mut store,
+        FuncType::new([], []),
+        |mut caller: Caller<'_, Inside>, _, _| {
+            let run = caller
+                .data()
+                .run
+                .ok_or_else(|| anyhow::anyhow!("the guest function is not set"))?;
+            let mut results = [Val::I32(0)];
+            let Poll::Ready(outcome) =
+                poll_once(run.call_resumable(&mut caller, &[Val::I32(3)], &mut results))
+            else {
+                anyhow::bail!("the call did not suspend at once");
+            };
+            match outcome? {
+                ResumableCall::Suspended(handle) => caller.data_mut().waiting = Some(handle),
+                other => anyhow::bail!("the call did not suspend: {other:?}"),
+            }
+            Ok(())
+        },
+    )
+    .expect("the store makes a host function");
+    // A host function cannot resume a call: the browser would run it only
+    // after the host function returned.
+    let resume = Func::new(
+        &mut store,
+        FuncType::new([], []),
+        |mut caller: Caller<'_, Inside>, _, _| {
+            let handle = caller
+                .data_mut()
+                .waiting
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("no call waits"))?;
+            let mut results = [Val::I32(0)];
+            let resumed = match poll_once(handle.resume(&mut caller, &[Val::I32(4)], &mut results))
+            {
+                Poll::Ready(outcome) => outcome.map(|_| ()),
+                Poll::Pending => Ok(()),
+            };
+            caller.data_mut().resumed = Some(resumed);
+            Ok(())
+        },
+    )
+    .expect("the store makes a host function");
+    let module = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (import "host" "wait" (func $wait (param i32) (result i32)))
+              (import "host" "start" (func $start))
+              (import "host" "resume" (func $resume))
+              (func (export "run") (param i32) (result i32)
+                local.get 0
+                call $wait
+                local.get 0
+                i32.add)
+              (func (export "start") call $start)
+              (func (export "resume") call $resume))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    let instance = Instance::instantiate(
+        &mut store,
+        &module,
+        &[wait.into(), start.into(), resume.into()],
+    )
+    .await
+    .expect("the module instantiates");
+    let export = |store: &mut Store<Inside>, name| {
+        instance
+            .get_export(store, name)
+            .expect("the instance belongs to the store")
+            .and_then(Extern::into_func)
+            .expect("the instance exports the function")
+    };
+    let run = export(&mut store, "run");
+    store.data_mut().run = Some(run);
+
+    export(&mut store, "start")
+        .call(&mut store, &[], &mut [])
+        .expect("the host function starts the call");
+    let handle = store.data_mut().waiting.take().expect("the call waits");
+    let mut results = [Val::I32(0)];
+    let outcome = handle
+        .resume(&mut store, &[Val::I32(10)], &mut results)
+        .await;
+    assert!(
+        matches!(outcome, Ok(ResumableCall::Finished)),
+        "{outcome:?}"
+    );
+    assert_eq!(results[0].i32(), Some(13));
+
+    export(&mut store, "start")
+        .call(&mut store, &[], &mut [])
+        .expect("the host function starts the call");
+    export(&mut store, "resume")
+        .call(&mut store, &[], &mut [])
+        .expect("the host function returns");
+    match store.data_mut().resumed.take() {
+        Some(Err(Error::Backend { message })) => {
+            assert!(message.contains("cannot resume"), "{message}");
+        }
+        other => panic!("the resumption fails with a backend error: {other:?}"),
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_traps_a_suspension_outside_every_resumable_call() {
+    let engine = engine();
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    let wait = Func::new_suspending(&mut store, FuncType::new([], []), |_, _, _| {
+        Ok(Poll::Pending)
+    })
+    .expect("the store makes a suspending host function");
+    let module = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (import "host" "wait" (func $wait))
+              (func (export "run") call $wait))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    let instance = Instance::instantiate(&mut store, &module, &[wait.into()])
+        .await
+        .expect("the module instantiates");
+    let run = instance
+        .get_export(&mut store, "run")
+        .expect("the instance belongs to the store")
+        .and_then(Extern::into_func)
+        .expect("the instance exports `run`");
+    match run.call(&mut store, &[], &mut []) {
+        Err(Error::Trap(TrapKind::Host(error))) => {
+            assert!(error.to_string().contains("cannot suspend"), "{error}");
+        }
+        other => panic!("the call traps with the host's error: {other:?}"),
+    }
+    // Inside a resumable call, the same host function suspends the call.
+    let mut results = [];
+    let outcome = run.call_resumable(&mut store, &[], &mut results).await;
+    assert!(
+        matches!(outcome, Ok(ResumableCall::Suspended(_))),
+        "{outcome:?}"
+    );
 }

@@ -41,6 +41,20 @@ impl SuspendedCall {
     /// function that runs in it. A call resumed with a store other than its
     /// own is [`Error::WrongStore`](crate::Error::WrongStore).
     ///
+    /// Where the future drops before the resumption ends, the host has the
+    /// store back. A backend that runs the rest of the call on a microtask
+    /// lets it run on, but the call no longer reaches the store: it traps
+    /// the next time it would, and nothing waits for its end. Only where the
+    /// store drops first does the call run to its next suspension or its
+    /// end with the state of the store, since nothing else can reach it
+    /// then.
+    ///
+    /// A host function cannot wait, and a backend that runs the rest of
+    /// the call on a microtask runs it only after the host function
+    /// returned. So there, a resumption from inside a host function fails
+    /// with [`Error::Backend`](crate::Error::Backend), and the call drops
+    /// without a resumption. Resume a call from the store itself.
+    ///
     /// The backend must declare
     /// [`host_suspension`](Capability::HostSuspension). Where it does not,
     /// this is [`Error::Unsupported`](crate::Error::Unsupported).

@@ -67,7 +67,12 @@ pub use crate::references::{
     it_passes_an_exnref_back_to_its_guest, it_reads_an_externref_the_guest_hands_back,
     it_reads_an_i31ref,
 };
-pub use crate::suspension::it_refuses_host_suspension_where_it_is_not_declared;
+pub use crate::suspension::{
+    it_gives_the_store_back_when_the_future_of_a_resumption_drops,
+    it_refuses_host_suspension_where_it_is_not_declared,
+    it_resumes_calls_that_wait_at_once_in_any_order,
+    it_runs_a_resumption_in_flight_to_its_next_stop_when_the_store_drops,
+};
 pub use crate::tags::{
     it_describes_a_tag_at_the_boundary, it_links_a_tag_from_one_instance_into_another,
 };
@@ -110,6 +115,9 @@ macro_rules! contract_tests {
             it_passes_a_gc_object_back_to_its_guest,
             it_passes_an_exnref_back_to_its_guest,
             it_refuses_host_suspension_where_it_is_not_declared,
+            it_resumes_calls_that_wait_at_once_in_any_order,
+            it_runs_a_resumption_in_flight_to_its_next_stop_when_the_store_drops,
+            it_gives_the_store_back_when_the_future_of_a_resumption_drops,
             it_reads_and_writes_a_memory,
             it_grows_a_memory_up_to_its_maximum,
             it_lends_the_bytes_of_a_range,

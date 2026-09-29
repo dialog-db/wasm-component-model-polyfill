@@ -6,12 +6,13 @@ use std::rc::Rc;
 use js_sys::{Uint8Array, WebAssembly};
 use wasm_bindgen::JsCast;
 use wcmp_wasm_core::backend::{Backend, BackendModule, BackendStore, BoxFuture, StoreData};
-use wcmp_wasm_core::{Capabilities, Result};
+use wcmp_wasm_core::{Capabilities, Capability, Result};
 
 use crate::boundary::Boundary;
 use crate::errors;
 use crate::jspi::Jspi;
 use crate::module::WebModule;
+use crate::owner::Owner;
 use crate::probes;
 use crate::store::WebStore;
 use crate::type_registry::TypeRegistry;
@@ -22,11 +23,14 @@ use crate::type_registry::TypeRegistry;
 /// A host hands one to
 /// [`Engine::with_backend`](wcmp_wasm_core::Engine::with_backend). The
 /// backend probes the browser when it is made, and declares the
-/// capabilities whose probe the browser accepts. Two values of this type
+/// capabilities whose probe the browser accepts, and
+/// [`host_suspension`](wcmp_wasm_core::Capability::HostSuspension) where
+/// the browser has both functions of JavaScript Promise Integration. Two
+/// values of this type
 /// share nothing: each numbers its own concrete types.
 pub struct Web {
     capabilities: Capabilities,
-    jspi: Option<Jspi>,
+    jspi: Option<Rc<Jspi>>,
     types: Rc<TypeRegistry>,
 }
 
@@ -37,9 +41,10 @@ impl Web {
     /// reads the two functions of JavaScript Promise Integration. A browser
     /// without a feature loads the backend and declares less.
     pub fn new() -> Self {
+        let jspi = Jspi::read().map(Rc::new);
         Self {
-            capabilities: probes::capabilities(),
-            jspi: Jspi::read(),
+            capabilities: capabilities(probes::capabilities(), jspi.is_some()),
+            jspi,
             types: Rc::default(),
         }
     }
@@ -47,9 +52,9 @@ impl Web {
     /// Whether the browser has both functions of JavaScript Promise
     /// Integration, `WebAssembly.Suspending` and `WebAssembly.promising`.
     ///
-    /// The backend does not declare
-    /// [`host_suspension`](wcmp_wasm_core::Capability::HostSuspension) yet,
-    /// whatever the answer: it does not suspend a call through them.
+    /// The backend declares
+    /// [`host_suspension`](wcmp_wasm_core::Capability::HostSuspension)
+    /// exactly where it does.
     pub fn has_jspi(&self) -> bool {
         self.jspi.is_some()
     }
@@ -96,7 +101,22 @@ impl Backend for Web {
     }
 
     fn new_store(&self, data: StoreData) -> Result<Box<dyn BackendStore>> {
-        Ok(Box::new(WebStore::new(data, self.types.clone())))
+        Ok(Box::new(Owner::new(WebStore::new(
+            data,
+            self.types.clone(),
+            self.jspi.clone(),
+        ))))
+    }
+}
+
+/// The capabilities of a backend whose probes found `probed`: those, and
+/// `host_suspension` where the browser has both functions of JavaScript
+/// Promise Integration.
+fn capabilities(probed: Capabilities, jspi: bool) -> Capabilities {
+    if jspi {
+        probed.with(Capability::HostSuspension)
+    } else {
+        probed.without(Capability::HostSuspension)
     }
 }
 
@@ -121,6 +141,16 @@ mod tests {
             .expect("the backend compiles its own modules")
             .module()
             .clone()
+    }
+
+    #[wcmp_macros::test]
+    fn it_declares_host_suspension_only_with_both_functions_of_jspi() {
+        let probed = Capabilities::empty().with(Capability::Gc);
+        assert_eq!(
+            capabilities(probed, true),
+            probed.with(Capability::HostSuspension)
+        );
+        assert_eq!(capabilities(probed, false), probed);
     }
 
     #[wcmp_macros::test]

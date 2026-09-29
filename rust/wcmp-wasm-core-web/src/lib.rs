@@ -153,9 +153,9 @@
 //! JavaScript Promise Integration, `WebAssembly.Suspending` and
 //! `WebAssembly.promising`, and keeps them.
 //!
-//! The backend does not declare
-//! [`host_suspension`](wcmp_wasm_core::Capability::HostSuspension) yet. A
-//! trap is [`TrapKind::Other`](wcmp_wasm_core::TrapKind::Other), with the
+//! The backend declares
+//! [`host_suspension`](wcmp_wasm_core::Capability::HostSuspension) where
+//! the browser has both. A trap is [`TrapKind::Other`](wcmp_wasm_core::TrapKind::Other), with the
 //! browser's message, except the trap of a host function that failed.
 //!
 //! # Host functions
@@ -178,6 +178,57 @@
 //! source, and no call shares a buffer with another. The closure receives
 //! the store, and can call back into a guest, which can call the same host
 //! function again, at any depth.
+//!
+//! # Host suspension
+//!
+//! JavaScript Promise Integration (JSPI) fills host suspension. A resumable
+//! call goes through `WebAssembly.promising`, which runs the guest function
+//! on a stack of its own, synchronously, until it returns, traps, or first
+//! suspends. The wrapper of a suspending host function imports a
+//! `WebAssembly.Suspending` function, and calls it only where the host
+//! function answered "not yet" and the guest that called it runs directly
+//! in a resumable call, with only WebAssembly frames since the start of
+//! the call. The stack then waits on a promise, and the call ends as
+//! [`ResumableCall::Suspended`](wcmp_wasm_core::ResumableCall::Suspended)
+//! with a handle. Where a frame of the host lies between the start of the
+//! call and the host function, or where no resumable call runs, "not yet"
+//! traps the guest with
+//! [`TrapKind::Host`](wcmp_wasm_core::TrapKind::Host). The backend traps
+//! it itself, and never lets the browser throw its own `SuspendError` into
+//! a guest, which a guest could catch.
+//!
+//! A resumption resolves the promise of the handle, with the results of
+//! the suspending host function in the frame of its call. The browser
+//! resumes the stack on a microtask, after the code that resumed it
+//! returned, so a resumption is asynchronous. A call that returns or traps
+//! ends when the browser settles the promise of its stack. Any number of
+//! calls can wait at once in one store, each on its own stack, and the host
+//! resumes them in any order. A handle holds no store.
+//!
+//! A resumed stack, and a start function that a browser runs after
+//! `WebAssembly.instantiate` returned, run while no method of the store
+//! does. Each is a flight: it reaches the store through the allocation that
+//! owns the store, never through a pointer that a borrow made, and only
+//! while its permit holds. The permit is the store's epoch at the moment
+//! the flight started or resumed, and every method of the store that the
+//! host calls moves the epoch on. So:
+//!
+//! - A future of `call_resumable`, `resume`, or `instantiate` that drops
+//!   before its call stops gives the store back to the host. The call runs
+//!   on, on its microtask, and traps as soon as it resumes or calls a host
+//!   function, without reaching the store. The same holds for a future
+//!   that the host forgets and then uses the store.
+//! - A store that drops while a resumption is under way stays allocated
+//!   until the resumed call reaches its next suspension or its end. Nothing
+//!   else can reach the store then, so the call runs on as it would have,
+//!   host functions included. A handle that waits drops without a
+//!   resumption, and its stack never runs again.
+//! - A host function cannot resume a call. The resumed stack would run only
+//!   after the host function returned, so the resumption could not end
+//!   while the host function waits for it. It fails with
+//!   [`Error::Backend`](wcmp_wasm_core::Error::Backend), and the call drops.
+//!   A host function can start a resumable call: the call runs on a stack
+//!   of its own, and where it suspends, its future ends on its first poll.
 
 mod accessor;
 mod backend;
@@ -185,16 +236,21 @@ mod boundary;
 mod bridge;
 mod calls;
 mod carrier;
+mod cell;
 mod code;
 mod dispatcher;
 mod entry;
 mod errors;
+mod flight;
 mod js;
 mod jspi;
 mod module;
 mod objects;
+mod owner;
 mod probes;
+mod returns;
 mod store;
+mod suspended;
 mod type_registry;
 mod values;
 mod wrapper;
