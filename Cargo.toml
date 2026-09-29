@@ -8,6 +8,7 @@ members = [
   "rust/wcmp-smoke",
   "rust/wcmp-wasm-core",
   "rust/wcmp-wasm-core-contract",
+  "rust/wcmp-wasm-core-faithfulness",
   "rust/wcmp-wasm-core-wasmtime",
   "rust/wcmp-wasm-core-web",
 ]
@@ -82,6 +83,9 @@ path = "./rust/wcmp-wasm-core"
 
 [workspace.dependencies.wcmp-wasm-core-contract]
 path = "./rust/wcmp-wasm-core-contract"
+
+[workspace.dependencies.wcmp-wasm-core-faithfulness]
+path = "./rust/wcmp-wasm-core-faithfulness"
 
 [profile.dev]
 opt-level = 1

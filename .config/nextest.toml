@@ -10,11 +10,23 @@
 # The ordinary lanes (`tests native|web <profile>`): every test, with
 # the conformance corpus in its provider-allowed state. The Zena test
 # that holds all three subjects to the record reads the browser's run
-# from a file, so only `tests zena` runs it.
+# from a file, so only `tests zena` runs it. The faithfulness suite of
+# each backend of the runtime layer runs in its own lane.
 [profile.default]
-default-filter = "not test(/without_a_provider$/) and not (binary(zena) and test(=it_holds_all_three_subjects_to_the_record_and_prints_the_report))"
+default-filter = "not test(/without_a_provider$/) and not (binary(zena) and test(=it_holds_all_three_subjects_to_the_record_and_prints_the_report)) and not binary(faithfulness)"
 
 # The `no-provider` lanes (`tests native|web no-provider`): the
 # conformance corpus alone, with the provider turned off.
 [profile.no-provider]
 default-filter = "binary(conformance) and test(/::it_passes_without_a_provider$/)"
+
+# The faithfulness lanes (`tests faithfulness <backend>`): the
+# specification test suite on one backend, one test per script, which
+# the menu command narrows to the backend's own test binary. The report
+# of the suite of every script is printed after the run.
+[profile.faithfulness]
+default-filter = "binary(faithfulness)"
+
+[[profile.faithfulness.overrides]]
+filter = "test(=it_reports_the_suite_of_each_script)"
+success-output = "final"

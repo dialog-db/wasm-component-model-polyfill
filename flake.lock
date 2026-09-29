@@ -424,6 +424,7 @@
         "llm-agents": "llm-agents_2",
         "nixos-config": "nixos-config",
         "nixpkgs": "nixpkgs_3",
+        "spec-testsuite": "spec-testsuite",
         "wasmtime-src": "wasmtime-src",
         "wbg-pool-src": "wbg-pool-src",
         "zena": "zena"
@@ -447,6 +448,23 @@
       "original": {
         "owner": "oxalica",
         "repo": "rust-overlay",
+        "type": "github"
+      }
+    },
+    "spec-testsuite": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1779915440,
+        "narHash": "sha256-OAF1b0lWZEfDSdsSO2p6bw7nnHdbDbNlGCWhYQuMyBY=",
+        "owner": "WebAssembly",
+        "repo": "testsuite",
+        "rev": "0dc0343c9876267d99a7577ed4fc2289406a7869",
+        "type": "github"
+      },
+      "original": {
+        "owner": "WebAssembly",
+        "repo": "testsuite",
+        "rev": "0dc0343c9876267d99a7577ed4fc2289406a7869",
         "type": "github"
       }
     },

@@ -37,6 +37,17 @@
       flake = false;
     };
 
+    # The official WebAssembly specification test suite, the faithfulness
+    # suite of the runtime layer, pinned by commit in the URL so that `nix
+    # flake update` cannot move it. The commit is the one Wasmtime
+    # 49.0.0-rc.1, the control's engine, pins as its own `spec_testsuite`
+    # submodule. Moving the pin is a deliberate change: every backend's
+    # expected failures are held against it.
+    spec-testsuite = {
+      url = "github:WebAssembly/testsuite/0dc0343c9876267d99a7577ed4fc2289406a7869";
+      flake = false;
+    };
+
     # The browser test runner, pinned by commit. wbg-pool is a member of the
     # dialog-db workspace and inherits that workspace's dependency table, so
     # the whole tree is fetched and one crate is built from it (see
@@ -67,6 +78,7 @@
       component-model-src,
       wasmtime-src,
       nixos-config,
+      spec-testsuite,
       wbg-pool-src,
       zena,
     }:
@@ -611,11 +623,17 @@
         # committed record, `tests/zena/record.txt`, and checks the
         # `compile` and `compose` stages on the bundle
         # `WCMP_ZENA_RECORD_CHECK` names.
-        withZenaScenarios =
+        #
+        # The faithfulness suite of the runtime layer
+        # (`rust/wcmp-wasm-core-faithfulness`) embeds every script of the
+        # pinned specification test suite at compile time, from the tree
+        # `WCMP_SPEC_TESTSUITE` names, and generates one test for each.
+        withTestInputs =
           derivation:
           derivation.overrideAttrs {
             WCMP_ZENA_SCENARIOS = "${zenaTestScenarios}/scenarios.bundle";
             WCMP_ZENA_RECORD_CHECK = "${zenaRecordCheck}/scenarios.bundle";
+            WCMP_SPEC_TESTSUITE = "${spec-testsuite}";
           };
 
         # The Wasmtime run against its own cases, compiled with the pinned
@@ -1214,6 +1232,8 @@
             summary ? false,
             # Cap the parallelism from available memory (web lanes).
             browser ? false,
+            # A filterset that narrows the profile's tests further.
+            filter ? null,
           }:
           let
             # Lanes that replay one archive under different profiles get
@@ -1234,6 +1254,11 @@
                 --archive-file "$archive/${package}.tar.zst" \
                 --extract-to "$workspace/archive" \
                 --extract-overwrite \
+            ''
+            + pkgs.lib.optionalString (filter != null) ''
+              -E ${pkgs.lib.escapeShellArg filter} \
+            ''
+            + ''
                 "$@"
             ''
             + pkgs.lib.optionalString summary conformanceSummaryCommand;
@@ -1338,6 +1363,21 @@
                 description = "Conformance progress per corpus on both targets (debug)";
                 command = conformanceSummaryCommand + conformanceSummaryFor "tests-web-debug";
               };
+              # The faithfulness suite of the runtime layer: the pinned
+              # specification test suite on one backend, through the
+              # `wcmp-wasm-core` trait alone, held to the backend's cited
+              # expected failures. Each backend is a leaf of its own.
+              faithfulness = {
+                description = "The pinned WebAssembly specification test suite on one backend of the runtime layer, for the floor and each capability the backend declares, then the suite of every script";
+                subcommands = {
+                  wasmtime = menuTestCommand {
+                    description = "The faithfulness suite on the Wasmtime backend (${system}, debug)";
+                    package = "tests-native-debug";
+                    nextestProfile = "faithfulness";
+                    filter = "binary_id(wcmp-wasm-core-wasmtime::faithfulness)";
+                  };
+                };
+              };
               regenerate = {
                 description = "Rewrite the shared expected-failure list from the native run with the suspend provider and the no-provider overlay from the native run without it (`--dry-run` only prints the diffs)";
                 command = regenerateExpectationsCommand;
@@ -1381,12 +1421,13 @@
               # the suspend provider allowed (the debug and release lanes)
               # and with it turned off (the `no-provider` lanes). The Zena
               # lane is the one run that holds the browser's and the native
-              # line of the record together. Each lane reports its
-              # wall-clock time, build included. Arguments after the leaf
-              # reach every nextest lane, and not the Zena lane, which takes
-              # none.
+              # line of the record together. The faithfulness lane runs the
+              # specification test suite on each backend of the runtime
+              # layer. Each lane reports its wall-clock time, build included.
+              # Arguments after the leaf reach every nextest lane, and not
+              # the Zena lane, which takes none.
               all = {
-                description = "Every lane, each timed: both targets in debug and release, the conformance corpus on both targets with the suspend provider off, so the corpus runs in all four states, and the Zena scenarios on all three subjects (grab a coffee)";
+                description = "Every lane, each timed: both targets in debug and release, the conformance corpus on both targets with the suspend provider off, so the corpus runs in all four states, the faithfulness suite on each backend of the runtime layer, and the Zena scenarios on all three subjects (grab a coffee)";
                 command = ''
                   status=0
                   lane() {
@@ -1402,7 +1443,7 @@
                     fi
                   }
                   for suite in "native debug" "native release" "native no-provider" \
-                    "web debug" "web release" "web no-provider"; do
+                    "web debug" "web release" "web no-provider" "faithfulness wasmtime"; do
                     lane "$suite" "$@"
                   done
                   lane zena
@@ -1590,7 +1631,7 @@
 
         # Bound here so the `workspace-deps-dev` package below can name the
         # same derivation the archive builds against.
-        testsNativeDebug = withZenaScenarios (buildTestArchive {
+        testsNativeDebug = withTestInputs (buildTestArchive {
           name = "native-debug";
           profile = "dev";
         });
@@ -1671,17 +1712,17 @@
           # profile) so they are what their names promise.
           tests-native-debug = testsNativeDebug;
 
-          tests-native-release = withZenaScenarios (buildTestArchive {
+          tests-native-release = withTestInputs (buildTestArchive {
             name = "native-release";
           });
 
-          tests-web-debug = withZenaScenarios (buildTestArchive {
+          tests-web-debug = withTestInputs (buildTestArchive {
             name = "web-debug";
             target = "wasm32-unknown-unknown";
             profile = "dev";
           });
 
-          tests-web-release = withZenaScenarios (buildTestArchive {
+          tests-web-release = withTestInputs (buildTestArchive {
             name = "web-release";
             target = "wasm32-unknown-unknown";
           });
@@ -1698,9 +1739,10 @@
           // markdown.checks
           // project.checks
           // {
-            # Clippy compiles every target, the `zena` test included, and
-            # that test embeds the Zena scenarios at compile time.
-            clippy = withZenaScenarios cargoChecks.clippy;
+            # Clippy compiles every target, the `zena` test and the
+            # faithfulness suite included, and both embed their inputs at
+            # compile time.
+            clippy = withTestInputs cargoChecks.clippy;
             # The web smoke page must still run, and report what the native
             # binary reports: see `smokeWebCheck`.
             smoke-web = smokeWebCheck;

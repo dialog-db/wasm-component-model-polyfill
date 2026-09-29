@@ -1,0 +1,31 @@
+[package]
+name = "wcmp-wasm-core-faithfulness"
+description = "The faithfulness suite of the runtime layer of the Wasm Component Model Polyfill: the official WebAssembly specification tests at a pinned revision, run on one backend through the trait alone"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+# Sorts each script into the floor or the capabilities it needs, with the
+# validator whose feature names the capability lexicon repeats. The
+# `features` feature is what gives the feature set its named flags, and
+# `simd` is what lets the validator read a vector instruction at all.
+wasmparser = { workspace = true, features = ["validate", "features", "simd"] }
+# Parses each script, and encodes each module of it to a binary.
+wast = { workspace = true }
+# `test` is the attribute each generated test carries.
+wcmp-macros = { workspace = true }
+wcmp-wasm-core = { workspace = true }
+
+[dev-dependencies]
+# The error a host function returns, which a host trap carries.
+anyhow = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = { workspace = true }
