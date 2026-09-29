@@ -62,6 +62,11 @@ fn trap_kind(store: &mut impl AsContextMut<Data = State>, error: wasmtime::Error
 
 /// The kind of the core trap `trap`, or `None` for a trap that is not a
 /// core trap, such as one of the Component Model's.
+///
+/// `OutOfFuel` and `Interrupt` map to the kinds the runtime layer reserves
+/// for them, never to [`TrapKind::Other`]. The backend turns on neither
+/// fuel nor epoch interruption, so Wasmtime raises neither today, but a
+/// trap of Wasmtime's always comes back as the kind of its own name.
 fn core_trap(trap: wasmtime::Trap) -> Option<TrapKind> {
     Some(match trap {
         wasmtime::Trap::StackOverflow => TrapKind::StackOverflow,
@@ -81,6 +86,8 @@ fn core_trap(trap: wasmtime::Trap) -> Option<TrapKind> {
         wasmtime::Trap::CastFailure => TrapKind::CastFailure,
         wasmtime::Trap::UnhandledTag => TrapKind::UnhandledTag,
         wasmtime::Trap::ContinuationAlreadyConsumed => TrapKind::ContinuationAlreadyConsumed,
+        wasmtime::Trap::OutOfFuel => TrapKind::OutOfFuel,
+        wasmtime::Trap::Interrupt => TrapKind::Interrupt,
         _ => return None,
     })
 }
@@ -123,5 +130,53 @@ pub fn instantiation(
                 .join(": "),
         },
         None => backend(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every core trap of Wasmtime's, the two reserved ones last.
+    const CORE_TRAPS: [wasmtime::Trap; 19] = [
+        wasmtime::Trap::StackOverflow,
+        wasmtime::Trap::MemoryOutOfBounds,
+        wasmtime::Trap::HeapMisaligned,
+        wasmtime::Trap::TableOutOfBounds,
+        wasmtime::Trap::IndirectCallToNull,
+        wasmtime::Trap::BadSignature,
+        wasmtime::Trap::IntegerOverflow,
+        wasmtime::Trap::IntegerDivisionByZero,
+        wasmtime::Trap::BadConversionToInteger,
+        wasmtime::Trap::UnreachableCodeReached,
+        wasmtime::Trap::AtomicWaitNonSharedMemory,
+        wasmtime::Trap::NullReference,
+        wasmtime::Trap::ArrayOutOfBounds,
+        wasmtime::Trap::AllocationTooLarge,
+        wasmtime::Trap::CastFailure,
+        wasmtime::Trap::UnhandledTag,
+        wasmtime::Trap::ContinuationAlreadyConsumed,
+        wasmtime::Trap::OutOfFuel,
+        wasmtime::Trap::Interrupt,
+    ];
+
+    #[wcmp_macros::test]
+    fn it_maps_each_core_trap_to_the_kind_of_its_name_and_message() {
+        for trap in CORE_TRAPS {
+            let kind = core_trap(trap).unwrap_or_else(|| panic!("{trap:?} is a core trap"));
+            assert_eq!(format!("{kind:?}"), format!("{trap:?}"));
+            assert_eq!(kind.to_string(), trap.to_string(), "{trap:?}");
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_leaves_a_trap_of_the_component_model_to_the_polyfill() {
+        for trap in [
+            wasmtime::Trap::CannotEnterComponent,
+            wasmtime::Trap::InvalidChar,
+            wasmtime::Trap::UncaughtException,
+        ] {
+            assert!(core_trap(trap).is_none(), "{trap:?}");
+        }
     }
 }

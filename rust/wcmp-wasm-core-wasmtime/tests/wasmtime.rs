@@ -1,6 +1,7 @@
 //! What the Wasmtime backend holds beyond the backend contract: the
 //! capabilities it declares, compiles and instantiations that finish at
-//! once, and continuation types at the boundary.
+//! once, continuation types at the boundary, and loans of memory that copy
+//! nothing.
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -10,7 +11,7 @@ use std::task::{Context, Poll, Waker};
 use wcmp_macros::wasm;
 use wcmp_wasm_core::{
     Capability, Engine, Error, ExportType, Extern, ExternType, FuncType, HeapType, Instance,
-    Module, RefType, Store, Val, ValType,
+    Memory, MemoryType, Module, RefType, Store, Val, ValType,
 };
 use wcmp_wasm_core_wasmtime::Wasmtime;
 
@@ -129,4 +130,54 @@ async fn it_lets_continuation_types_through_the_boundary() {
         .expect("the instance exports its function");
     let refused = take.call(&mut store, &[Val::ContRef(None)], &mut []);
     assert!(matches!(refused, Err(Error::Backend { .. })), "{refused:?}");
+}
+
+/// Where two nested loans of one memory lie: the address of the inner
+/// loan's first byte, and the addresses the outer loan spans.
+fn nested_loans(store: &Store<()>, memory: Memory) -> (usize, core::ops::Range<usize>) {
+    memory
+        .with_bytes(store, 0, 64, |outer| {
+            let outer = outer.as_ptr_range();
+            let inner = memory
+                .with_bytes(store, 16, 16, |inner| inner.as_ptr() as usize)
+                .expect("the range lies inside the memory");
+            (inner, outer.start as usize..outer.end as usize)
+        })
+        .expect("the range lies inside the memory")
+}
+
+#[wcmp_macros::test]
+fn it_lends_the_bytes_of_an_unshared_memory_without_a_copy() {
+    let engine = engine();
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    let memory =
+        Memory::new(&mut store, MemoryType::new(1, None)).expect("the store makes a memory");
+
+    // Two loans of one memory at once are two views of the memory's own
+    // bytes, as far apart as their offsets.
+    let (inner, outer) = nested_loans(&store, memory);
+    assert_eq!(inner, outer.start + 16);
+}
+
+#[wcmp_macros::test]
+fn it_lends_a_copy_of_a_shared_memory() {
+    let engine = engine();
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    let memory =
+        Memory::new(&mut store, MemoryType::shared(1, 1)).expect("the store makes a memory");
+    memory
+        .write(&mut store, 16, &[7; 16])
+        .expect("the range lies inside the memory");
+
+    // Each loan of a shared memory is a copy of its own, so the inner loan
+    // lies outside the outer one.
+    let (inner, outer) = nested_loans(&store, memory);
+    assert!(
+        !outer.contains(&inner),
+        "{inner:#x} lies outside {outer:#x?}"
+    );
+    let copied = memory
+        .with_bytes(&store, 16, 16, <[u8]>::to_vec)
+        .expect("the range lies inside the memory");
+    assert_eq!(copied, [7; 16]);
 }

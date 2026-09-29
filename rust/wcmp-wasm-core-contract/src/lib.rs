@@ -34,10 +34,12 @@
 mod boundary;
 mod compile;
 mod host_functions;
+mod memory;
 mod references;
 mod support;
 mod suspension;
 mod tags;
+mod traps;
 
 pub use crate::boundary::{
     it_instantiates_a_module_with_a_gc_global_and_an_exported_tag,
@@ -53,6 +55,12 @@ pub use crate::host_functions::{
     it_enters_a_host_function_again_at_any_depth,
     it_traps_with_the_host_error_that_no_guest_can_catch,
 };
+pub use crate::memory::{
+    it_addresses_a_64_bit_memory_with_the_same_methods,
+    it_copies_between_two_memories_of_one_store, it_grows_a_memory_up_to_its_maximum,
+    it_lends_the_bytes_of_a_range, it_reads_and_writes_a_memory,
+    it_refuses_a_range_outside_the_memory,
+};
 pub use crate::references::{
     it_calls_a_funcref_the_guest_hands_out, it_passes_a_gc_object_back_to_its_guest,
     it_passes_an_exnref_back_to_its_guest, it_reads_an_externref_the_guest_hands_back,
@@ -61,6 +69,10 @@ pub use crate::references::{
 pub use crate::suspension::it_refuses_host_suspension_where_it_is_not_declared;
 pub use crate::tags::{
     it_describes_a_tag_at_the_boundary, it_links_a_tag_from_one_instance_into_another,
+};
+pub use crate::traps::{
+    it_fails_with_an_exception_that_nothing_catches,
+    it_raises_each_core_trap_the_capabilities_permit,
 };
 
 /// The attribute each generated test carries, reached through this crate
@@ -96,6 +108,14 @@ macro_rules! contract_tests {
             it_passes_a_gc_object_back_to_its_guest,
             it_passes_an_exnref_back_to_its_guest,
             it_refuses_host_suspension_where_it_is_not_declared,
+            it_reads_and_writes_a_memory,
+            it_grows_a_memory_up_to_its_maximum,
+            it_lends_the_bytes_of_a_range,
+            it_refuses_a_range_outside_the_memory,
+            it_copies_between_two_memories_of_one_store,
+            it_addresses_a_64_bit_memory_with_the_same_methods,
+            it_raises_each_core_trap_the_capabilities_permit,
+            it_fails_with_an_exception_that_nothing_catches,
         );
     };
     (@each $engine:path; $($case:ident),* $(,)?) => {

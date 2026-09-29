@@ -303,23 +303,38 @@ impl<C: Context> BackendStore for WasmtimeStore<C> {
                     );
                 }
             }
-            _ => {
-                let bytes = match &source {
-                    MemoryObject::Unshared(source) => source.data(&self.inner)[from].to_vec(),
-                    MemoryObject::Shared(source) => source.data()[from]
-                        .iter()
-                        .map(|cell| atomic(cell).load(Ordering::SeqCst))
-                        .collect(),
+            // A shared memory is reached a byte at a time, atomically, and
+            // each byte moves straight from one memory to the other.
+            (MemoryObject::Unshared(source), MemoryObject::Shared(destination)) => {
+                let cells = &destination.data()[to];
+                for (byte, cell) in source.data(&self.inner)[from].iter().zip(cells) {
+                    atomic(cell).store(*byte, Ordering::SeqCst);
+                }
+            }
+            (MemoryObject::Shared(source), MemoryObject::Unshared(destination)) => {
+                let cells = &source.data()[from];
+                for (byte, cell) in destination.data_mut(&mut self.inner)[to]
+                    .iter_mut()
+                    .zip(cells)
+                {
+                    *byte = atomic(cell).load(Ordering::SeqCst);
+                }
+            }
+            (MemoryObject::Shared(source), MemoryObject::Shared(destination)) => {
+                let from = &source.data()[from];
+                let to = &destination.data()[to];
+                // The two can be one memory, with ranges that overlap. A copy
+                // toward lower addresses runs forward, and one toward higher
+                // addresses runs backward, so each byte is read before the
+                // copy writes over it.
+                let pairs = from.iter().zip(to);
+                let copy = |(read, write): (&UnsafeCell<u8>, &UnsafeCell<u8>)| {
+                    atomic(write).store(atomic(read).load(Ordering::SeqCst), Ordering::SeqCst);
                 };
-                match &destination {
-                    MemoryObject::Unshared(destination) => {
-                        destination.data_mut(&mut self.inner)[to].copy_from_slice(&bytes);
-                    }
-                    MemoryObject::Shared(destination) => {
-                        for (byte, cell) in bytes.iter().zip(&destination.data()[to]) {
-                            atomic(cell).store(*byte, Ordering::SeqCst);
-                        }
-                    }
+                if to.as_ptr() <= from.as_ptr() {
+                    pairs.for_each(copy);
+                } else {
+                    pairs.rev().for_each(copy);
                 }
             }
         }

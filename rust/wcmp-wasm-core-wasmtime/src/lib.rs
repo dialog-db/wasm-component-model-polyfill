@@ -69,6 +69,31 @@
 //! unchanged. Wasmtime lets a guest catch only an exception, and never a
 //! host error, so no guest catches the trap.
 //!
+//! # Memory
+//!
+//! Every memory method checks its range against the current size of the
+//! memory before it touches a byte, and refuses a range outside it with
+//! [`Error::MemoryOutOfBounds`](wcmp_wasm_core::Error::MemoryOutOfBounds).
+//! `with_bytes` lends the bytes of an unshared memory themselves, and copies
+//! nothing. `Memory::copy` between two unshared memories is one `memmove`
+//! from one memory to the other, with no buffer on the host.
+//!
+//! Wasmtime lends a shared memory only as cells that must be reached with
+//! atomic operations, because another agent can write it at any time. The
+//! backend follows the same rule: it never lends a shared memory as a slice.
+//! `with_bytes` copies the range with atomic reads and lends the copy, and
+//! every read and write of a shared memory is atomic.
+//!
+//! # Traps
+//!
+//! A core trap of Wasmtime's is the [`TrapKind`](wcmp_wasm_core::TrapKind)
+//! of the same name, with Wasmtime's message. That includes `OutOfFuel` and
+//! `Interrupt`, although the backend turns on neither fuel nor epoch
+//! interruption, so Wasmtime raises neither. An exception that no guest
+//! catches, Wasmtime's `ThrownException`, is `UncaughtException`, with the
+//! exception rooted in the store as an `exnref`. A trap that is not a core
+//! trap is `Other`, with Wasmtime's message.
+//!
 //! # Capabilities
 //!
 //! The backend declares every Wasm feature of the lexicon that Wasmtime
