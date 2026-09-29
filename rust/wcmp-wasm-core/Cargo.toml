@@ -1,0 +1,30 @@
+[package]
+name = "wcmp-wasm-core"
+description = "The runtime layer of the Wasm Component Model Polyfill: one trait over core WebAssembly, and the types, capabilities, trap kinds, and errors every backend shares"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The error a host function returns, which a trap carries back to the host
+# unchanged, as Wasmtime's own host errors are.
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# The feature set whose names the capability lexicon must match. The
+# `features` feature is what gives the set its named flags.
+wasmparser = { workspace = true, features = ["features"] }
+# Wasmtime's trap enum, whose messages the trap kinds must repeat. It is
+# the crate the polyfill already links on both targets, so the test runs in
+# the browser too.
+wasmtime-environ = { workspace = true }
+wcmp-macros = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = { workspace = true }

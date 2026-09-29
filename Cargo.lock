@@ -2329,6 +2329,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcmp-wasm-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "thiserror 2.0.18",
+ "tokio",
+ "wasm-bindgen-test",
+ "wasmparser 0.258.0",
+ "wasmtime-environ",
+ "wcmp-macros",
+]
+
+[[package]]
 name = "winapi"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

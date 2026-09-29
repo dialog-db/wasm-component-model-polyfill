@@ -6,6 +6,7 @@ members = [
   "rust/wcmp-scenario",
   "rust/wcmp-scenario-wasmtime",
   "rust/wcmp-smoke",
+  "rust/wcmp-wasm-core",
 ]
 # Each vendored backend keeps its own dependency table (it is upstream's
 # crate with local patches), so neither is a member.
