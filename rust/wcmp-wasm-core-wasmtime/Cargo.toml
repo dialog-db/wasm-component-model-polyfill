@@ -1,0 +1,23 @@
+[package]
+name = "wcmp-wasm-core-wasmtime"
+description = "The Wasmtime backend of the runtime layer of the Wasm Component Model Polyfill: the control, which runs beside the other backends so their results can be compared"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+# Wasmtime does not run in the browser, so the backend is native only. On
+# `wasm32-unknown-unknown` the library is empty, which keeps the workspace
+# building for the web lanes.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The error a host function returns, which the backend carries back to the
+# host unchanged.
+anyhow = { workspace = true }
+wasmtime = { workspace = true }
+wcmp-wasm-core = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+wcmp-macros = { workspace = true }
+wcmp-wasm-core-contract = { workspace = true }

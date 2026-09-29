@@ -2342,6 +2342,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcmp-wasm-core-contract"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "wcmp-macros",
+ "wcmp-wasm-core",
+]
+
+[[package]]
+name = "wcmp-wasm-core-wasmtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tokio",
+ "wasmtime",
+ "wcmp-macros",
+ "wcmp-wasm-core",
+ "wcmp-wasm-core-contract",
+]
+
+[[package]]
 name = "winapi"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

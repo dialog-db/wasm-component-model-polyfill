@@ -7,6 +7,8 @@ members = [
   "rust/wcmp-scenario-wasmtime",
   "rust/wcmp-smoke",
   "rust/wcmp-wasm-core",
+  "rust/wcmp-wasm-core-contract",
+  "rust/wcmp-wasm-core-wasmtime",
 ]
 # Each vendored backend keeps its own dependency table (it is upstream's
 # crate with local patches), so neither is a member.
@@ -73,6 +75,12 @@ path = "./rust/wcmp-macros"
 
 [workspace.dependencies.wcmp-scenario]
 path = "./rust/wcmp-scenario"
+
+[workspace.dependencies.wcmp-wasm-core]
+path = "./rust/wcmp-wasm-core"
+
+[workspace.dependencies.wcmp-wasm-core-contract]
+path = "./rust/wcmp-wasm-core-contract"
 
 [profile.dev]
 opt-level = 1

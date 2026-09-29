@@ -1,0 +1,17 @@
+[package]
+name = "wcmp-wasm-core-contract"
+description = "The backend contract tests of the runtime layer of the Wasm Component Model Polyfill: one set of tests, written against the trait alone, that every backend runs with its own engine"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+# The error a host function of a test returns.
+anyhow = { workspace = true }
+# `wasm!` assembles each test's module at compile time, on either target,
+# and `test` is the attribute each generated test carries.
+wcmp-macros = { workspace = true }
+wcmp-wasm-core = { workspace = true }
