@@ -9,6 +9,7 @@ members = [
   "rust/wcmp-wasm-core",
   "rust/wcmp-wasm-core-contract",
   "rust/wcmp-wasm-core-wasmtime",
+  "rust/wcmp-wasm-core-web",
 ]
 # Each vendored backend keeps its own dependency table (it is upstream's
 # crate with local patches), so neither is a member.

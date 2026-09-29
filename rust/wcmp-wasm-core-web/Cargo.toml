@@ -1,0 +1,29 @@
+[package]
+name = "wcmp-wasm-core-web"
+description = "The browser backend of the runtime layer of the Wasm Component Model Polyfill, over the WebAssembly JavaScript API"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+# The WebAssembly JavaScript API exists only in the browser, so the backend
+# is `wasm32` only. On every other target the library is empty, which keeps
+# the workspace building for the native lanes.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The WebAssembly JavaScript API, whose promises the backend awaits directly.
+js-sys = { workspace = true }
+wasm-bindgen = { workspace = true }
+# Encodes the carrier modules, which move a `v128` or an `exnref` across a
+# call that the JavaScript API cannot carry.
+wasm-encoder = { workspace = true }
+# Reads the boundary of a module, which the JavaScript API does not
+# describe with types.
+wasmparser = { workspace = true }
+# Assembles the probe modules and the table of exceptions at compile time.
+wcmp-macros = { workspace = true }
+wcmp-wasm-core = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = { workspace = true }
+wcmp-wasm-core-contract = { workspace = true }

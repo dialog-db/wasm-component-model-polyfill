@@ -2363,6 +2363,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcmp-wasm-core-web"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-test",
+ "wasm-encoder 0.258.0",
+ "wasmparser 0.258.0",
+ "wcmp-macros",
+ "wcmp-wasm-core",
+ "wcmp-wasm-core-contract",
+]
+
+[[package]]
 name = "winapi"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

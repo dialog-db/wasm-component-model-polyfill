@@ -879,6 +879,34 @@
             touch "$out"
           '';
 
+        # The browser backend never makes a function from a string of
+        # source, so it runs under a content security policy without
+        # `unsafe-eval`. Its crate holds no JavaScript file, and no Rust
+        # source of it names `eval`, the `Function` constructor or a way to
+        # reach it, or an inline or module JavaScript snippet of
+        # `wasm-bindgen`.
+        webBackendNoEvalCheck =
+          let
+            crate = pkgs.lib.fileset.toSource {
+              root = ./rust/wcmp-wasm-core-web;
+              fileset = ./rust/wcmp-wasm-core-web;
+            };
+          in
+          pkgs.runCommand "wcmp-web-backend-no-eval-check" { } ''
+            cd ${crate}
+            status=0
+            if find . -name '*.js' -o -name '*.mjs' | grep .; then
+              echo "The browser backend holds a JavaScript file." >&2
+              status=1
+            fi
+            if grep -rnE '\beval\b|new_with_args|new_no_args|"Function"|Reflect::construct|inline_js|module *= *"' src; then
+              echo "The browser backend names a way to make a function from source." >&2
+              status=1
+            fi
+            test "$status" = 0
+            touch "$out"
+          '';
+
         # The listing against the one checked in beside the crate. A `pub`
         # that reaches a workspace-internal type — a field, a constructor, a
         # method whose type no caller outside can name — is a line in the
@@ -1686,6 +1714,9 @@
             # Only the seam module names a runtime-layer crate: see
             # `runtimeLayerSeamCheck`.
             runtime-layer-seam = runtimeLayerSeamCheck;
+            # The browser backend makes no function from a string of
+            # source: see `webBackendNoEvalCheck`.
+            web-backend-no-eval = webBackendNoEvalCheck;
             # Every Zena scenario compiles, or keeps Zena's refusal, with the
             # pinned toolchain, its Rust partners build, and its
             # composition is made or keeps `wac`'s refusal; and the
