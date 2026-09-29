@@ -23,3 +23,4 @@ Found by the independent review of 127919 (rounds 1 and 2).
 
 ## Review notes
 
+- 2026-09-29: from the review of 3164da: a `TypeHandle` carries no engine id, so a handle from another engine names a wrong type without an error (the Wasmtime backend's `type_registry.rs:315-318` scans linearly). Consider it with the shape chosen here.
