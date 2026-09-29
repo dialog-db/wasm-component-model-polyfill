@@ -130,8 +130,9 @@ impl Flight {
     /// started or resumed it still waits for it, and the owner has not
     /// reached the store since. Each method of the owner moves the store's
     /// epoch on, so a flight whose permit is an earlier epoch finds that
-    /// the host took the store back, and the owner's references to the
-    /// store never meet the flight's.
+    /// the host took the store back. The owner also refuses the store while
+    /// a host function that a flight called runs. So the owner's references
+    /// to the store never meet the flight's.
     pub fn may_run(&self, epoch: u64, owner_dropped: bool) -> bool {
         owner_dropped || (!self.revoked.get() && self.permit.get() == epoch)
     }

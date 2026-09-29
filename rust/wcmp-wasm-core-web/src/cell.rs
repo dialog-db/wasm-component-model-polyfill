@@ -12,12 +12,15 @@ use crate::store::WebStore;
 /// reference, and not in a place that a borrow of the owner names.
 ///
 /// A reference made from [`StoreCell::get`] must be the only one in use
-/// while it lives. The store's owner makes one only after it moved the
-/// store's epoch on, which ends the permit of every flight, and only for
-/// the length of one of its methods, or of one step of its futures between
-/// two awaits. A flight makes one only while its permit holds, and only for
-/// the length of one call of a host function, which runs to its end before
-/// any other code of the page can run.
+/// while it lives. The store's owner makes one only where no host function
+/// that a flight called runs, and only after it moved the store's epoch on,
+/// which ends the permit of every flight, and only for the length of one
+/// of its methods, or of one step of its futures between two awaits. A
+/// flight makes one only while its permit holds, and only for the length
+/// of one call of a host function, which runs to its end before any other
+/// code of the page can run. That host function may reach the owner, since
+/// it can hold its store by a global, but the owner then refuses to make
+/// its reference.
 pub struct StoreCell {
     store: UnsafeCell<WebStore>,
 }

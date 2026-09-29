@@ -8,11 +8,12 @@ use std::rc::{Rc, Weak};
 
 use js_sys::Promise;
 use wasm_bindgen::JsValue;
-use wcmp_wasm_core::FuncType;
 use wcmp_wasm_core::backend::HostFunc;
+use wcmp_wasm_core::{FuncType, Result};
 
 use crate::cell::StoreCell;
 use crate::entry::Entry;
+use crate::errors;
 use crate::flight::{self, Flight};
 use crate::store::WebStore;
 
@@ -38,6 +39,14 @@ use crate::store::WebStore;
 ///   started it returned: the resumed stack of a resumable call, or the
 ///   start function of an instantiation. A flight reaches the store
 ///   through the store's cell, and only while its permit holds.
+///
+/// While a host function that a flight calls runs, the flight's reference
+/// to the store lives, and nothing else may reach the store. A host
+/// function can hold its own store by another path than its caller, such
+/// as a global, once the future that waited for the flight was forgotten
+/// and no longer borrows the store. So the store's owner asks
+/// [`Calls::claim`] before it reaches the store, and the claim fails while
+/// such a host function runs.
 pub struct Calls {
     /// The cell that owns the store.
     cell: RefCell<Weak<StoreCell>>,
@@ -60,6 +69,9 @@ pub struct Calls {
     /// The number of times the store's owner reached the store. A flight
     /// may reach the store only at the epoch of its permit.
     epoch: Cell<u64>,
+    /// The number of calls of a host function that a flight made and that
+    /// run now. While one runs, the store's owner may not reach the store.
+    hosting: Cell<u32>,
     /// Whether the store's owner dropped the store.
     owner_dropped: Cell<bool>,
     /// The number of the next lease or flight. `0` numbers none.
@@ -188,6 +200,28 @@ const SUSPENDED: i32 = 2;
 const TAKEN_BACK: &str = "the host took the store back before this call reached it: the future \
                           that waited for the call dropped, or the host used the store since";
 
+/// The error of the store's owner where a host function that a flight
+/// called runs, and holds the store through its caller.
+const HOSTING: &str = "a host function of a call that runs on its own holds the store: it reaches \
+                       the store through its caller, and not through the store itself";
+
+/// A call of a host function that a flight made, while it runs: the
+/// store's owner may not reach the store until it drops.
+struct Hosting<'a>(&'a Cell<u32>);
+
+impl<'a> Hosting<'a> {
+    fn new(hosting: &'a Cell<u32>) -> Self {
+        hosting.set(hosting.get() + 1);
+        Self(hosting)
+    }
+}
+
+impl Drop for Hosting<'_> {
+    fn drop(&mut self) {
+        self.0.set(self.0.get() - 1);
+    }
+}
+
 impl Calls {
     /// No host function, and no guest running.
     pub fn new() -> Self {
@@ -200,6 +234,7 @@ impl Calls {
             instantiations: RefCell::new(VecDeque::new()),
             running: RefCell::new(HashMap::new()),
             epoch: Cell::new(0),
+            hosting: Cell::new(0),
             owner_dropped: Cell::new(false),
             next_id: Cell::new(1),
         }
@@ -219,8 +254,20 @@ impl Calls {
 
     /// Records that the store's owner reaches the store: every flight's
     /// permit ends.
-    pub fn claim(&self) {
+    ///
+    /// [`Error::Backend`](wcmp_wasm_core::Error::Backend) where a host
+    /// function that a flight called runs, since the flight's reference to
+    /// the store lives until it returns. Only a host function that holds
+    /// its store by another path than its caller gets here then: the code
+    /// that waits for a flight borrows the store until its future drops,
+    /// a dropped future ends the flight's permit, and only a forgotten one
+    /// lets go of the store while the flight may still run.
+    pub fn claim(&self) -> Result<()> {
+        if self.hosting.get() > 0 {
+            return Err(errors::backend(HOSTING));
+        }
         self.epoch.set(self.epoch.get().wrapping_add(1));
+        Ok(())
     }
 
     /// Records that the store's owner dropped the store: every flight may
@@ -542,13 +589,17 @@ impl Calls {
                     .borrow()
                     .upgrade()
                     .ok_or_else(|| anyhow::anyhow!("the store of the call is gone"))?;
+                let _hosting = Hosting::new(&self.hosting);
                 // SAFETY: the flight's permit holds, so the owner has not
                 // reached the store since the flight was started or
                 // resumed, or the owner is gone, and no reference the
                 // owner made lives. No lease runs, so no method of the
-                // store runs either. The flight runs on a microtask, and
-                // this call of the host function ends before any other
-                // code of the page runs.
+                // store runs either. The flight runs on a microtask, so
+                // no other code of the page runs until the host function
+                // returns. The host function itself may hold its store by
+                // a global, but while `_hosting` lives the owner refuses
+                // to reach the store. So this is the one reference to the
+                // store until the call returns.
                 let store = unsafe { &mut *cell.get() };
                 // The flight keeps the cell while it runs, so `cell` is
                 // not the last reference, and the store does not drop

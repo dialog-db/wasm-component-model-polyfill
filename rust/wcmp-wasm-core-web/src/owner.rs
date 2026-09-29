@@ -26,6 +26,14 @@ use crate::suspended::WebSuspendedCall;
 /// the future that waited for it dropped or the host used the store since,
 /// finds its permit gone and traps without reaching the store.
 ///
+/// A forgotten future of the owner no longer borrows the store, yet its
+/// flight keeps its permit, so the flight's host function can hold the
+/// store by a global and reach it through the owner while the flight's own
+/// reference to the store lives. Each method here refuses the store then:
+/// a fallible one with [`Error::Backend`], and [`data`](BackendStore::data)
+/// and [`data_mut`](BackendStore::data_mut), which cannot fail, with a
+/// panic.
+///
 /// When the owner drops, the store drops with it, unless a flight runs.
 /// A flight that runs keeps the cell until it stops, and reaches the store
 /// until then, since nothing else can.
@@ -44,22 +52,30 @@ impl Owner {
     }
 
     /// The store, after every flight's permit ended.
-    fn store(&self) -> &WebStore {
-        self.calls.claim();
-        // SAFETY: `claim` ended every flight's permit, so no flight makes
-        // a reference to the store from here on, and a flight's reference
-        // lives only inside one call of a host function, which never runs
-        // beside this method. A lease lives only inside a method of the
-        // store, which borrows the owner.
-        unsafe { &*self.cell.get() }
+    ///
+    /// [`Error::Backend`] where a host function that a flight called runs
+    /// and reached the store through the owner: a host function that holds
+    /// its store by a global, after the host forgot the future that waited
+    /// for the flight.
+    fn store(&self) -> Result<&WebStore> {
+        self.calls.claim()?;
+        // SAFETY: `claim` succeeded, so no host function that a flight
+        // called runs, and no flight's reference to the store lives, since
+        // a flight makes one only for the length of one such call. `claim`
+        // also ended every flight's permit, so no flight makes a reference
+        // from here on. A lease lives only inside a method of the store,
+        // which borrows the owner, or inside a host function that a flight
+        // called, which `claim` ruled out.
+        Ok(unsafe { &*self.cell.get() })
     }
 
-    /// The store, mutably, after every flight's permit ended.
-    fn store_mut(&mut self) -> &mut WebStore {
-        self.calls.claim();
+    /// The store, mutably, after every flight's permit ended, or
+    /// [`Error::Backend`] where `store` is.
+    fn store_mut(&mut self) -> Result<&mut WebStore> {
+        self.calls.claim()?;
         // SAFETY: as in `store`, and `&mut self` makes this the owner's one
         // reference.
-        unsafe { &mut *self.cell.get() }
+        Ok(unsafe { &mut *self.cell.get() })
     }
 }
 
@@ -70,12 +86,25 @@ impl Drop for Owner {
 }
 
 impl BackendStore for Owner {
+    /// # Panics
+    ///
+    /// Where a host function that a flight called runs and reaches the
+    /// store through its owner, which refuses then.
     fn data(&self) -> &StoreData {
-        self.store().data()
+        match self.store() {
+            Ok(store) => store.data(),
+            Err(error) => panic!("{error}"),
+        }
     }
 
+    /// # Panics
+    ///
+    /// As [`data`](BackendStore::data).
     fn data_mut(&mut self) -> &mut StoreData {
-        self.store_mut().data_mut()
+        match self.store_mut() {
+            Ok(store) => store.data_mut(),
+            Err(error) => panic!("{error}"),
+        }
     }
 
     fn instantiate<'a>(
@@ -86,26 +115,26 @@ impl BackendStore for Owner {
         // Each step reaches the store anew, and holds no reference to it
         // across the await, while the start function can run.
         Box::pin(async move {
-            let flight = self.store_mut().start_instantiation(module, imports)?;
+            let flight = self.store_mut()?.start_instantiation(module, imports)?;
             let stop = flight.stop().await;
-            self.store_mut().finish_instantiation(module, stop)
+            self.store_mut()?.finish_instantiation(module, stop)
         })
     }
 
     fn instance_export(&mut self, instance: Instance, name: &str) -> Result<Option<Extern>> {
-        self.store_mut().instance_export(instance, name)
+        self.store_mut()?.instance_export(instance, name)
     }
 
     fn func_new(&mut self, ty: FuncType, func: HostFunc) -> Result<Func> {
-        self.store_mut().func_new(ty, func)
+        self.store_mut()?.func_new(ty, func)
     }
 
     fn func_ty(&self, func: Func) -> Result<Option<FuncType>> {
-        self.store().func_ty(func)
+        self.store()?.func_ty(func)
     }
 
     fn func_call(&mut self, func: Func, params: &[Val], results: &mut [Val]) -> Result<()> {
-        self.store_mut().func_call(func, params, results)
+        self.store_mut()?.func_call(func, params, results)
     }
 
     fn func_call_resumable<'a>(
@@ -116,10 +145,10 @@ impl BackendStore for Owner {
     ) -> BoxFuture<'a, Result<ResumableCall>> {
         Box::pin(async move {
             let (flight, returns) =
-                self.store_mut()
+                self.store_mut()?
                     .start_resumable(func, params, results.len())?;
             let stop = flight.stop().await;
-            self.store_mut()
+            self.store_mut()?
                 .finish_resumable(flight, returns, stop, results)
         })
     }
@@ -136,38 +165,38 @@ impl BackendStore for Owner {
                 .downcast::<WebSuspendedCall>()
                 .map_err(|_| Error::WrongStore)?;
             let WebSuspendedCall { flight, returns } = *call;
-            self.store_mut().start_resume(&flight, import_results)?;
+            self.store_mut()?.start_resume(&flight, import_results)?;
             // The resumed stack runs on a microtask, and reaches the store
             // as the flight, whose permit is the epoch from here until the
             // host next reaches the store.
             let stop = flight.stop().await;
-            self.store_mut()
+            self.store_mut()?
                 .finish_resumable(flight, returns, stop, results)
         })
     }
 
     fn memory_new(&mut self, ty: MemoryType) -> Result<Memory> {
-        self.store_mut().memory_new(ty)
+        self.store_mut()?.memory_new(ty)
     }
 
     fn memory_ty(&self, memory: Memory) -> Result<MemoryType> {
-        self.store().memory_ty(memory)
+        self.store()?.memory_ty(memory)
     }
 
     fn memory_size(&self, memory: Memory) -> Result<u64> {
-        self.store().memory_size(memory)
+        self.store()?.memory_size(memory)
     }
 
     fn memory_grow(&mut self, memory: Memory, pages: u64) -> Result<u64> {
-        self.store_mut().memory_grow(memory, pages)
+        self.store_mut()?.memory_grow(memory, pages)
     }
 
     fn memory_read(&self, memory: Memory, offset: u64, buffer: &mut [u8]) -> Result<()> {
-        self.store().memory_read(memory, offset, buffer)
+        self.store()?.memory_read(memory, offset, buffer)
     }
 
     fn memory_write(&mut self, memory: Memory, offset: u64, bytes: &[u8]) -> Result<()> {
-        self.store_mut().memory_write(memory, offset, bytes)
+        self.store_mut()?.memory_write(memory, offset, bytes)
     }
 
     fn memory_with_bytes(
@@ -177,7 +206,7 @@ impl BackendStore for Owner {
         len: usize,
         f: &mut dyn FnMut(&[u8]),
     ) -> Result<()> {
-        self.store().memory_with_bytes(memory, offset, len, f)
+        self.store()?.memory_with_bytes(memory, offset, len, f)
     }
 
     fn memory_copy(
@@ -188,99 +217,99 @@ impl BackendStore for Owner {
         destination_offset: u64,
         len: u64,
     ) -> Result<()> {
-        self.store_mut()
+        self.store_mut()?
             .memory_copy(source, source_offset, destination, destination_offset, len)
     }
 
     fn memory_load_u8(&self, memory: Memory, offset: u64) -> Result<u8> {
-        self.store().memory_load_u8(memory, offset)
+        self.store()?.memory_load_u8(memory, offset)
     }
 
     fn memory_load_u16(&self, memory: Memory, offset: u64) -> Result<u16> {
-        self.store().memory_load_u16(memory, offset)
+        self.store()?.memory_load_u16(memory, offset)
     }
 
     fn memory_load_u32(&self, memory: Memory, offset: u64) -> Result<u32> {
-        self.store().memory_load_u32(memory, offset)
+        self.store()?.memory_load_u32(memory, offset)
     }
 
     fn memory_load_u64(&self, memory: Memory, offset: u64) -> Result<u64> {
-        self.store().memory_load_u64(memory, offset)
+        self.store()?.memory_load_u64(memory, offset)
     }
 
     fn memory_store_u8(&mut self, memory: Memory, offset: u64, value: u8) -> Result<()> {
-        self.store_mut().memory_store_u8(memory, offset, value)
+        self.store_mut()?.memory_store_u8(memory, offset, value)
     }
 
     fn memory_store_u16(&mut self, memory: Memory, offset: u64, value: u16) -> Result<()> {
-        self.store_mut().memory_store_u16(memory, offset, value)
+        self.store_mut()?.memory_store_u16(memory, offset, value)
     }
 
     fn memory_store_u32(&mut self, memory: Memory, offset: u64, value: u32) -> Result<()> {
-        self.store_mut().memory_store_u32(memory, offset, value)
+        self.store_mut()?.memory_store_u32(memory, offset, value)
     }
 
     fn memory_store_u64(&mut self, memory: Memory, offset: u64, value: u64) -> Result<()> {
-        self.store_mut().memory_store_u64(memory, offset, value)
+        self.store_mut()?.memory_store_u64(memory, offset, value)
     }
 
     fn global_new(&mut self, ty: GlobalType, value: Val) -> Result<Global> {
-        self.store_mut().global_new(ty, value)
+        self.store_mut()?.global_new(ty, value)
     }
 
     fn global_ty(&self, global: Global) -> Result<GlobalType> {
-        self.store().global_ty(global)
+        self.store()?.global_ty(global)
     }
 
     fn global_get(&mut self, global: Global) -> Result<Val> {
-        self.store_mut().global_get(global)
+        self.store_mut()?.global_get(global)
     }
 
     fn global_set(&mut self, global: Global, value: Val) -> Result<()> {
-        self.store_mut().global_set(global, value)
+        self.store_mut()?.global_set(global, value)
     }
 
     fn table_new(&mut self, ty: TableType, init: Val) -> Result<Table> {
-        self.store_mut().table_new(ty, init)
+        self.store_mut()?.table_new(ty, init)
     }
 
     fn table_ty(&self, table: Table) -> Result<TableType> {
-        self.store().table_ty(table)
+        self.store()?.table_ty(table)
     }
 
     fn table_size(&self, table: Table) -> Result<u64> {
-        self.store().table_size(table)
+        self.store()?.table_size(table)
     }
 
     fn table_get(&mut self, table: Table, index: u64) -> Result<Val> {
-        self.store_mut().table_get(table, index)
+        self.store_mut()?.table_get(table, index)
     }
 
     fn table_set(&mut self, table: Table, index: u64, value: Val) -> Result<()> {
-        self.store_mut().table_set(table, index, value)
+        self.store_mut()?.table_set(table, index, value)
     }
 
     fn table_grow(&mut self, table: Table, delta: u64, init: Val) -> Result<u64> {
-        self.store_mut().table_grow(table, delta, init)
+        self.store_mut()?.table_grow(table, delta, init)
     }
 
     fn tag_ty(&self, tag: Tag) -> Result<TagType> {
-        self.store().tag_ty(tag)
+        self.store()?.tag_ty(tag)
     }
 
     fn extern_ref_new(&mut self, value: Box<dyn Any + Send + Sync>) -> Result<ExternRef> {
-        self.store_mut().extern_ref_new(value)
+        self.store_mut()?.extern_ref_new(value)
     }
 
     fn extern_ref_data(&self, extern_ref: ExternRef) -> Result<&(dyn Any + Send + Sync)> {
-        self.store().extern_ref_data(extern_ref)
+        self.store()?.extern_ref_data(extern_ref)
     }
 
     fn any_ref_from_i31(&mut self, value: I31) -> Result<AnyRef> {
-        self.store_mut().any_ref_from_i31(value)
+        self.store_mut()?.any_ref_from_i31(value)
     }
 
     fn any_ref_as_i31(&self, any_ref: AnyRef) -> Result<Option<I31>> {
-        self.store().any_ref_as_i31(any_ref)
+        self.store()?.any_ref_as_i31(any_ref)
     }
 }
