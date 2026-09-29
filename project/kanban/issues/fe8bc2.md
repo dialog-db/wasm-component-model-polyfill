@@ -23,3 +23,9 @@ Found by the independent review of f9f268 (finding F2).
 
 ## Review notes
 
+
+## Dispatch log
+
+- 2026-09-29: the trap-kind table from 10f282 (`769a2f56c`) is landed; `errors.rs` and `traps.rs` are its code. Card edf2c7 is in flight in the same crate (`calls.rs`, `owner.rs`, `flight.rs`).
+- 2026-09-29: implementor `card-fe8bc2-febeb164` dispatched.
+- 2026-09-29: implementor reported done at `2a553c3dd` (no engine text is read for link errors; new `linking.rs` names the failing import from the imports object and known extern types, with a conservative subtype check used only to name, never to refuse; every `LinkError` gives `Error::Link`, with empty names when no import explains it); `tests all` (web 1531/1531) and `lint` green. Design notes for the owner: PDD025 says the layer checks no subtypes, and `Error::Link` can now carry empty names. A 3-line `owner.rs` change may conflict with edf2c7. Implementor paused. Reviewer `review-fe8bc2-80e5de0a` launched; branch delivered.
