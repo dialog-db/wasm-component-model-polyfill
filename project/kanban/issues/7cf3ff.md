@@ -3,7 +3,7 @@ id: 7cf3ff
 title: Transcode strings without copying the whole source to the host
 type: bug
 blocked_by: [67f37c]
-labels: [runtime-layer]
+labels: [runtime-layer, PDD025]
 created: 2026-09-30T20:41:24Z
 ---
 
@@ -21,3 +21,10 @@ Validate through `with_bytes`, and copy with `Memory::copy` or in bounded chunks
 
 ## Review notes
 
+
+## Dispatch log
+
+- 2026-09-30: pulled into the PDD025 thread at the owner's request (label added).
+- 2026-09-30: run memory-heavy tests one at a time (the Wasmi lane's `memory-hogs` nextest group exists for this); this VM has 16 GiB. Card c91d3d renames the faithfulness suite to fidelity in parallel; expect a small merge in the flake and nextest config.
+- 2026-09-30: implementor `card-7cf3ff-9af440f9` dispatched.
+- 2026-10-01: implementor reported done at `e207b7647` (64 KiB chunks lent through `with_bytes`; copy-only ops validated chunk by chunk then moved with `Memory::copy`, no host buffer; 10 new unit tests). Peak RSS on `big-strings.wast`: Wasmtime 4125 → 34 MiB, Wasmi 9230 → 5134 MiB (the rest is Wasmi zero-fill); `memory-hogs` now applies only to the Wasmi lane. One record moved fail to pass: web `wasmtime/big-strings.wast:342,379` (the old cause was the polyfill exhausting its own wasm32 heap, not V8). `tests all` and `lint` green. Implementor paused. Reviewer `review-7cf3ff-7946adee` launched; branch delivered.
