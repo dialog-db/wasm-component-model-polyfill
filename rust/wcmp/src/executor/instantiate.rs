@@ -23,8 +23,9 @@ use crate::linker::{HostFuncKind, ImportBinding, InstanceRegistration, Linker, R
 use crate::module::Module;
 use crate::resource::{HandleTables, ResourceTableRuntime, ResourceTypeId, TableId};
 use crate::runtime_layer::{
-    Extern as RuntimeExtern, Func as RuntimeFunc, Imports, Instance as RuntimeInstance,
-    ValType as CoreType,
+    Extern as RuntimeExtern, ExternType as RuntimeExternType, Func as RuntimeFunc, FuncType,
+    Imports, Instance as RuntimeInstance, ValType as CoreType, instantiate as instantiate_module,
+    substrate_failure,
 };
 use crate::store::ResourceRecord;
 use crate::store::StoreContext;
@@ -216,14 +217,14 @@ impl ReservedRecords {
 /// The store records the plan needs are reserved before it runs and
 /// taken back when it fails, so a failed instantiation leaves the
 /// store as it found it. See [`ReservedRecords`].
-pub fn instantiate<T: 'static>(
+pub async fn instantiate<T: 'static>(
     component: &Component,
     store: &mut StoreContext<'_, T>,
     linker: &Linker<T>,
     resolution: &Resolution,
 ) -> Result<Instance> {
     let mut reserved = ReservedRecords::reserve(store, component.ir().num_component_instances)?;
-    match run_plan(component, store, linker, resolution, &mut reserved) {
+    match run_plan(component, store, linker, resolution, &mut reserved).await {
         Ok(instance) => Ok(instance),
         Err(error) => {
             reserved.withdraw(store);
@@ -238,7 +239,7 @@ pub fn instantiate<T: 'static>(
 /// Every failure of the walk returns here, and the caller is what
 /// takes the reserved records back: a walk that returns an error has
 /// left the store holding them.
-fn run_plan<T: 'static>(
+async fn run_plan<T: 'static>(
     component: &Component,
     store: &mut StoreContext<'_, T>,
     linker: &Linker<T>,
@@ -377,7 +378,7 @@ fn run_plan<T: 'static>(
     // generated code and the polyfill share one flag per instance.
     let flags: Vec<InstanceFlags> = (0..ir.num_component_instances)
         .map(|_| InstanceFlags::new(store.internal().runtime_mut()))
-        .collect();
+        .collect::<Result<_>>()?;
 
     let abi_state = Arc::new(Mutex::new(
         AbiRuntimeState::with_slabs(
@@ -429,7 +430,7 @@ fn run_plan<T: 'static>(
                 blocking.push((index, builtin));
             }
             (Trampoline::Blocking(builtin), None) => {
-                trampolines.push(Some(builtin.trampoline(store)));
+                trampolines.push(Some(builtin.trampoline(store)?));
             }
         }
     }
@@ -437,11 +438,11 @@ fn run_plan<T: 'static>(
         let hosts = blocking
             .iter()
             .map(|(_, builtin)| {
-                let (try_part, finish_part) = builtin.parts(store);
-                (builtin.ty().clone(), try_part, finish_part)
+                let (try_part, finish_part) = builtin.parts(store)?;
+                Ok((builtin.ty().clone(), try_part, finish_part))
             })
-            .collect::<Vec<_>>();
-        let shims = provider.shims(store, &hosts)?;
+            .collect::<Result<Vec<_>>>()?;
+        let shims = provider.shims(store, &hosts).await?;
         for ((index, _), shim) in blocking.iter().zip(shims) {
             trampolines[*index] = Some(shim);
         }
@@ -456,6 +457,22 @@ fn run_plan<T: 'static>(
         trampolines,
         flags,
     };
+
+    // Under the host-suspension provider a thread starts through a start
+    // of its entry's type, which an instantiation makes before any
+    // guest code runs: a thread can start from inside a guest call,
+    // where nothing can wait for an instantiation. A thread entry is a
+    // function a core module exports, or a thread's start function.
+    if let Some(provider) = &provider {
+        let mut types = vec![
+            FuncType::new([CoreType::I32], []),
+            FuncType::new([CoreType::I64], []),
+        ];
+        for entry in ir.modules.iter() {
+            types.extend(entry_types(&entry.module));
+        }
+        provider.prepare_entries(store, &types).await?;
+    }
 
     for initializer in ir.initializers.iter() {
         match initializer {
@@ -479,7 +496,8 @@ fn run_plan<T: 'static>(
                     Some(index) => Some(instance_id_at(&abi_state, *index)?),
                     None => None,
                 };
-                let instance = instantiate_core(store, &entry.module, &runtime_imports, owner)?;
+                let instance =
+                    instantiate_core(store, &entry.module, &runtime_imports, owner).await?;
                 items.core_instances.push(instance);
             }
             Initializer::InstantiateImportedModule {
@@ -488,6 +506,11 @@ fn run_plan<T: 'static>(
                 imports,
             } => {
                 let module = lookup_module(linker, component, resolution, source)?;
+                if let Some(provider) = &provider {
+                    provider
+                        .prepare_entries(store, &entry_types(&module).collect::<Vec<_>>())
+                        .await?;
+                }
                 let mut runtime_imports = Imports::default();
                 for import in imports.iter() {
                     let value = resolve_source(ir, &items, store, &import.source)?;
@@ -501,7 +524,7 @@ fn run_plan<T: 'static>(
                     Some(index) => Some(instance_id_at(&abi_state, *index)?),
                     None => None,
                 };
-                let instance = instantiate_core(store, &module, &runtime_imports, owner)?;
+                let instance = instantiate_core(store, &module, &runtime_imports, owner).await?;
                 items.core_instances.push(instance);
             }
             Initializer::ExtractMemory { slot, source } => {
@@ -541,8 +564,15 @@ fn run_plan<T: 'static>(
                             "DefineResource directive resolved to a non-function item",
                         ));
                     };
-                    let ty = function.ty(store.internal().runtime());
-                    if ty.params() != [CoreType::I32] || !ty.results().is_empty() {
+                    // An engine that does not know the type of a function,
+                    // as the browser does not for some, leaves the check to
+                    // the call.
+                    let ty = function
+                        .ty(store.internal().runtime())
+                        .map_err(substrate_failure)?;
+                    if let Some(ty) = ty
+                        && (ty.params() != [CoreType::I32] || !ty.results().is_empty())
+                    {
                         return Err(Error::from(InstantiationError::SubstrateFailure(anyhow!(
                             "the destructor of a locally-defined resource must have the core type \
                              (func (param i32)), found {ty:?}"
@@ -614,7 +644,8 @@ fn run_plan<T: 'static>(
                 })?;
                 let start_table =
                     ThreadStartTable::new(store.internal().runtime_mut(), probe, table)
-                        .map_err(InstantiationError::SubstrateFailure)?;
+                        .await
+                        .map_err(substrate_failure)?;
                 let mut state = abi_state
                     .lock()
                     .map_err(|_| internal("ABI state poisoned"))?;
@@ -647,20 +678,21 @@ fn run_plan<T: 'static>(
 /// poisons the store. A module that declares none runs no guest code
 /// here, and a failure of its instantiation — an import the substrate
 /// refuses, a feature it lacks — leaves the store as it was.
-fn instantiate_core<T: 'static>(
+async fn instantiate_core<T: 'static>(
     store: &mut StoreContext<'_, T>,
     module: &Module,
     imports: &Imports,
     owner: Option<InstanceId>,
 ) -> Result<RuntimeInstance> {
     let start = StartTask::enter(store.internal().tables(), owner)?;
-    let instance = RuntimeInstance::new(store.internal().runtime_mut(), module.inner(), imports);
+    let instance =
+        instantiate_module(store.internal().runtime_mut(), module.inner(), imports).await;
     drop(start);
     instance.map_err(|error| {
         if module.has_start() {
             store.internal().poison();
         }
-        Error::from(InstantiationError::SubstrateFailure(error))
+        substrate_failure(error)
     })
 }
 
@@ -687,7 +719,7 @@ fn build_runtime_trampoline<T: 'static>(
             return Ok(if blocks {
                 Trampoline::Blocking(builtin)
             } else {
-                Trampoline::Plain(builtin.trampoline(store))
+                Trampoline::Plain(builtin.trampoline(store)?)
             });
         }
         TrampolineSpec::ResourceDrop { table_index } => {
@@ -696,117 +728,84 @@ fn build_runtime_trampoline<T: 'static>(
                 .get(table.resource_index)
                 .ok_or_else(|| internal("ResourceDrop.table_index names an unknown resource"))?;
             let calling = table_instance(component, *table_index)?;
-            Ok(build_resource_drop_trampoline(
+            build_resource_drop_trampoline(
                 store,
                 table,
                 runtime.clone(),
                 instance_flags(flags, calling)?,
-            ))
+            )
         }
         TrampolineSpec::ResourceNew { table_index } => {
             let table = resource_table(abi_state, *table_index)?;
             let calling = table_instance(component, *table_index)?;
-            Ok(build_resource_new_trampoline(
-                store,
-                table,
-                instance_flags(flags, calling)?,
-            ))
+            build_resource_new_trampoline(store, table, instance_flags(flags, calling)?)
         }
         TrampolineSpec::ResourceRep { table_index } => {
             let table = resource_table(abi_state, *table_index)?;
-            Ok(build_resource_rep_trampoline(store, table))
+            build_resource_rep_trampoline(store, table)
         }
         TrampolineSpec::Transcoder {
             op,
             from_memory,
             to_memory,
             signature,
-        } => Ok(build_transcoder(
+        } => build_transcoder(
             store,
             *op,
             *from_memory,
             *to_memory,
             signature,
             abi_state.clone(),
-        )),
-        TrampolineSpec::ResourceTransferOwn { signature } => Ok(build_resource_transfer(
-            store,
-            signature,
-            abi_state.clone(),
-            true,
-        )),
-        TrampolineSpec::ResourceTransferBorrow { signature } => Ok(build_resource_transfer(
-            store,
-            signature,
-            abi_state.clone(),
-            false,
-        )),
-        TrampolineSpec::EndTransfer { tables, signature } => Ok(build_end_transfer(
-            store,
-            tables.clone(),
-            signature,
-            abi_state.clone(),
-        )),
+        ),
+        TrampolineSpec::ResourceTransferOwn { signature } => {
+            build_resource_transfer(store, signature, abi_state.clone(), true)
+        }
+        TrampolineSpec::ResourceTransferBorrow { signature } => {
+            build_resource_transfer(store, signature, abi_state.clone(), false)
+        }
+        TrampolineSpec::EndTransfer { tables, signature } => {
+            build_end_transfer(store, tables.clone(), signature, abi_state.clone())
+        }
         TrampolineSpec::ErrorContextTransfer {
             instances,
             signature,
-        } => Ok(build_error_context_transfer(
-            store,
-            instances.clone(),
-            signature,
-            abi_state.clone(),
-        )),
+        } => build_error_context_transfer(store, instances.clone(), signature, abi_state.clone()),
         TrampolineSpec::Trap { signature, code } => build_trap(store, signature, *code),
         TrampolineSpec::EnterSyncCall { signature } => {
-            Ok(build_enter_sync_call(store, signature, abi_state.clone()))
+            build_enter_sync_call(store, signature, abi_state.clone())
         }
-        TrampolineSpec::ExitSyncCall { signature } => Ok(build_exit_sync_call(store, signature)),
+        TrampolineSpec::ExitSyncCall { signature } => build_exit_sync_call(store, signature),
         TrampolineSpec::ContextGet { slot, signature } => {
-            Ok(build_context_get(store, *slot, signature))
+            build_context_get(store, *slot, signature)
         }
         TrampolineSpec::ContextSet { slot, signature } => {
-            Ok(build_context_set(store, *slot, signature))
+            build_context_set(store, *slot, signature)
         }
         TrampolineSpec::BackpressureInc {
             instance,
             signature,
-        } => Ok(build_backpressure_inc(
-            store,
-            signature,
-            abi_state.clone(),
-            *instance,
-        )),
+        } => build_backpressure_inc(store, signature, abi_state.clone(), *instance),
         TrampolineSpec::BackpressureDec {
             instance,
             signature,
-        } => Ok(build_backpressure_dec(
-            store,
-            signature,
-            abi_state.clone(),
-            *instance,
-        )),
+        } => build_backpressure_dec(store, signature, abi_state.clone(), *instance),
         TrampolineSpec::TaskReturn {
             result,
             result_tuple,
             options,
             signature,
-        } => Ok(build_task_return(
+        } => build_task_return(
             store,
             result.clone(),
             *result_tuple,
             options,
             signature,
             abi_state.clone(),
-        )),
+        ),
         TrampolineSpec::WaitableSetNew {
             instance,
             signature,
-        } => Ok(build_waitable_set_new(
-            store,
-            *instance,
-            signature,
-            abi_state.clone(),
-        )),
+        } => build_waitable_set_new(store, *instance, signature, abi_state.clone()),
         TrampolineSpec::WaitableSetWait {
             options,
             cancellable,
@@ -824,75 +823,54 @@ fn build_runtime_trampoline<T: 'static>(
             options,
             cancellable,
             signature,
-        } => Ok(build_waitable_set_poll(
-            store,
-            options,
-            *cancellable,
-            signature,
-            abi_state.clone(),
-        )),
+        } => build_waitable_set_poll(store, options, *cancellable, signature, abi_state.clone()),
         TrampolineSpec::WaitableSetDrop {
             instance,
             signature,
-        } => Ok(build_waitable_set_drop(
-            store,
-            *instance,
-            signature,
-            abi_state.clone(),
-        )),
+        } => build_waitable_set_drop(store, *instance, signature, abi_state.clone()),
         TrampolineSpec::WaitableJoin {
             instance,
             signature,
-        } => Ok(build_waitable_join(
-            store,
-            *instance,
-            signature,
-            abi_state.clone(),
-        )),
+        } => build_waitable_join(store, *instance, signature, abi_state.clone()),
         TrampolineSpec::SubtaskDrop {
             instance,
             signature,
-        } => Ok(build_subtask_drop(
-            store,
-            *instance,
-            signature,
-            abi_state.clone(),
-        )),
+        } => build_subtask_drop(store, *instance, signature, abi_state.clone()),
         TrampolineSpec::StreamNew {
             instance,
             payload,
             signature,
-        } => Ok(build_stream_new(
+        } => build_stream_new(
             store,
             *instance,
             payload.clone(),
             signature,
             abi_state.clone(),
-        )),
+        ),
         TrampolineSpec::FutureNew {
             instance,
             payload,
             signature,
-        } => Ok(build_future_new(
+        } => build_future_new(
             store,
             *instance,
             payload.clone(),
             signature,
             abi_state.clone(),
-        )),
+        ),
         TrampolineSpec::DropEnd {
             kind,
             instance,
             payload,
             signature,
-        } => Ok(build_drop_end(
+        } => build_drop_end(
             store,
             *kind,
             *instance,
             payload.clone(),
             signature,
             abi_state.clone(),
-        )),
+        ),
         TrampolineSpec::Copy {
             kind,
             options,
@@ -909,7 +887,7 @@ fn build_runtime_trampoline<T: 'static>(
                 signature,
                 abi_state.clone(),
             );
-            return Ok(blocking_unless(options.async_, builtin, store));
+            return blocking_unless(options.async_, builtin, store);
         }
         TrampolineSpec::CancelCopy {
             kind,
@@ -927,14 +905,11 @@ fn build_runtime_trampoline<T: 'static>(
                 signature,
                 abi_state.clone(),
             );
-            return Ok(blocking_unless(*async_, builtin, store));
+            return blocking_unless(*async_, builtin, store);
         }
-        TrampolineSpec::PrepareCall { memory, signature } => Ok(build_prepare_call(
-            store,
-            *memory,
-            signature,
-            abi_state.clone(),
-        )),
+        TrampolineSpec::PrepareCall { memory, signature } => {
+            build_prepare_call(store, *memory, signature, abi_state.clone())
+        }
         TrampolineSpec::SyncStartCall {
             callback,
             signature,
@@ -975,32 +950,16 @@ fn build_runtime_trampoline<T: 'static>(
         TrampolineSpec::ThreadIndex {
             instance,
             signature,
-        } => Ok(build_thread_index(
-            store,
-            *instance,
-            signature,
-            abi_state.clone(),
-        )),
+        } => build_thread_index(store, *instance, signature, abi_state.clone()),
         TrampolineSpec::ThreadNewIndirect {
             instance,
             table,
             signature,
-        } => Ok(build_thread_new_indirect(
-            store,
-            *instance,
-            *table,
-            signature,
-            abi_state.clone(),
-        )),
+        } => build_thread_new_indirect(store, *instance, *table, signature, abi_state.clone()),
         TrampolineSpec::ThreadResumeLater {
             instance,
             signature,
-        } => Ok(build_thread_resume_later(
-            store,
-            *instance,
-            signature,
-            abi_state.clone(),
-        )),
+        } => build_thread_resume_later(store, *instance, signature, abi_state.clone()),
         TrampolineSpec::ThreadSuspend {
             instance,
             cancellable,
@@ -1066,33 +1025,20 @@ fn build_runtime_trampoline<T: 'static>(
                 abi_state.clone(),
             )));
         }
-        TrampolineSpec::ErrorContextNew { options, signature } => Ok(build_error_context_new(
-            store,
-            options,
-            signature,
-            abi_state.clone(),
-        )),
-        TrampolineSpec::ErrorContextDebugMessage { options, signature } => Ok(
-            build_error_context_debug_message(store, options, signature, abi_state.clone()),
-        ),
+        TrampolineSpec::ErrorContextNew { options, signature } => {
+            build_error_context_new(store, options, signature, abi_state.clone())
+        }
+        TrampolineSpec::ErrorContextDebugMessage { options, signature } => {
+            build_error_context_debug_message(store, options, signature, abi_state.clone())
+        }
         TrampolineSpec::ErrorContextDrop {
             instance,
             signature,
-        } => Ok(build_error_context_drop(
-            store,
-            *instance,
-            signature,
-            abi_state.clone(),
-        )),
+        } => build_error_context_drop(store, *instance, signature, abi_state.clone()),
         TrampolineSpec::TaskCancel {
             instance,
             signature,
-        } => Ok(build_task_cancel(
-            store,
-            *instance,
-            signature,
-            abi_state.clone(),
-        )),
+        } => build_task_cancel(store, *instance, signature, abi_state.clone()),
         TrampolineSpec::SubtaskCancel {
             instance,
             async_,
@@ -1125,12 +1071,12 @@ fn blocking_unless<T: 'static>(
     async_: bool,
     builtin: BlockingBuiltin<T>,
     store: &mut StoreContext<'_, T>,
-) -> Trampoline<T> {
-    if async_ {
-        Trampoline::Plain(builtin.trampoline(store))
+) -> Result<Trampoline<T>> {
+    Ok(if async_ {
+        Trampoline::Plain(builtin.trampoline(store)?)
     } else {
         Trampoline::Blocking(builtin)
-    }
+    })
 }
 
 /// The registration an import resolved to, and the item name to
@@ -1316,16 +1262,18 @@ fn build_imports<T: 'static>(
     entry: &ModuleEntry,
     sources: &[ImportSource],
 ) -> Result<Imports> {
-    let declared = entry.module.imports();
+    // The runtime layer describes every import of the module, in the
+    // order an instantiation takes them, whatever its type.
+    let declared = entry.module.inner().imports();
     if declared.len() != sources.len() {
         return Err(internal(
             "module's declared import count does not match the IR's per-module import sources",
         ));
     }
     let mut imports = Imports::default();
-    for (module_import, source) in declared.iter().zip(sources.iter()) {
+    for (module_import, source) in declared.zip(sources.iter()) {
         let value = resolve_source(ir, items, store, source)?;
-        imports.define(&module_import.module, &module_import.name, value);
+        imports.define(module_import.module(), module_import.name(), value);
     }
     Ok(imports)
 }
@@ -1351,7 +1299,7 @@ fn resolve_source<T: 'static>(
         ImportSource::InstanceFlags(idx) => items
             .flags
             .get(*idx)
-            .map(|flags| RuntimeExtern::Global(flags.global().clone()))
+            .map(|flags| RuntimeExtern::Global(*flags.global()))
             .ok_or_else(|| internal("ImportSource::InstanceFlags index is out of bounds")),
     }
 }
@@ -1385,7 +1333,8 @@ fn resolve_core_instance_export<T: 'static>(
         }
     };
     runtime_instance
-        .get_export(store.internal().runtime(), name)
+        .get_export(store.internal().runtime_mut(), name)
+        .map_err(substrate_failure)?
         .ok_or_else(|| internal("module did not export the named item at runtime"))
 }
 
@@ -1504,5 +1453,26 @@ fn resource_table(
         .flatten()
         .ok_or_else(|| {
             internal("resource trampoline names a table the instantiation does not hold")
+        })
+}
+
+/// The types a thread entry of `module` can have: the types of the
+/// functions it exports whose parameters and results are all numbers.
+/// A thread entry is a lifted core function, a callback, or a thread's
+/// start function, and the canonical ABI passes each only flat values,
+/// which are numbers. An export of any other type is not an entry, and
+/// a backend can refuse a wrapper for it: the browser's cannot name a
+/// concrete reference type in a host function.
+fn entry_types(module: &Module) -> impl Iterator<Item = FuncType> + '_ {
+    module
+        .inner()
+        .exports()
+        .filter_map(|export| match export.ty() {
+            RuntimeExternType::Func(ty)
+                if ty.params().iter().chain(ty.results()).all(CoreType::is_num) =>
+            {
+                Some(ty.clone())
+            }
+            _ => None,
         })
 }

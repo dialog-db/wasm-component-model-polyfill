@@ -27,7 +27,7 @@ use wcmp_macros::component;
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");
@@ -180,7 +180,7 @@ async fn it_crosses_a_host_trampoline_through_one_boundary_context() {
         "#
     );
 
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -353,3 +353,6 @@ async fn it_crosses_an_adapter_transcode_through_one_boundary_context() {
         .expect("a utf-16 round trip");
     assert_eq!(result.as_ref(), &[Val::String(wide)]);
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

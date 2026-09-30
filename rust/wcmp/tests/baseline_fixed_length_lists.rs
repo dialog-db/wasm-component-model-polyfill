@@ -71,7 +71,7 @@ fn bytes(values: &[u8]) -> Val {
 }
 
 async fn instantiate() -> (Store<()>, wcmp::Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("a component with fixed-length list types parses");
@@ -207,3 +207,6 @@ async fn it_rejects_a_wrong_length() {
         .expect_err("`[u32; 3]` does not match `list<u32, 4>`");
     assert!(matches!(err, Error::TypeMismatch(_)));
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

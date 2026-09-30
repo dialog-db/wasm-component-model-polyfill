@@ -16,7 +16,7 @@ use wcmp_macros::component;
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");
@@ -107,3 +107,6 @@ async fn it_raises_and_lowers_backpressure_from_a_realloc() {
          but the realloc ran {counted} times"
     );
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

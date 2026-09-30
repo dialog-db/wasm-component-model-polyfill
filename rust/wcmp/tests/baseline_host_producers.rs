@@ -392,7 +392,9 @@ async fn instantiate_with(bytes: &[u8], provider: bool) -> (Store<()>, Instance)
     let mut config = EngineConfig::new();
     config.wasm_component_model_more_async_builtins(true);
     config.suspend_provider(provider);
-    let engine = Engine::with_config(&config).expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine");
     let component = Component::new(&engine, bytes)
         .await
         .expect("the component parses");
@@ -1626,3 +1628,6 @@ async fn it_fails_a_synchronous_read_against_a_pending_producer_in_a_synchronous
         "a sync-typed call is in progress, got {failure}"
     );
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

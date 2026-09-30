@@ -22,8 +22,8 @@ use anyhow::anyhow;
 use crate::abi::layout::FlatType;
 use crate::error::{Error, ThreadCause};
 use crate::runtime_layer::{
-    AsContextMut, Extern as RuntimeExtern, Func as RuntimeFunc, Imports,
-    Instance as RuntimeInstance, Module as RuntimeModule, Table, Val as RuntimeVal,
+    AsContextMut, Extern as RuntimeExtern, Func as RuntimeFunc, Instance as RuntimeInstance,
+    Module as RuntimeModule, RuntimeError, Table, Val as RuntimeVal, into_anyhow,
 };
 
 /// The probe, as a core module binary. Its text is:
@@ -122,19 +122,17 @@ pub struct ThreadStartTable {
 impl ThreadStartTable {
     /// Give `table` an instance of `probe`, the compiled
     /// [`THREAD_START_PROBE`].
-    pub fn new(
+    pub async fn new(
         mut store: impl AsContextMut,
         probe: &RuntimeModule,
         table: Table,
-    ) -> anyhow::Result<Self> {
-        let mut imports = Imports::new();
-        imports.define("", "table", RuntimeExtern::Table(table.clone()));
-        let instance = RuntimeInstance::new(&mut store, probe, &imports)?;
-        let export = |name: &str| match instance.get_export(&store, name) {
+    ) -> Result<Self, RuntimeError> {
+        let instance = RuntimeInstance::instantiate(&mut store, probe, &[table.into()]).await?;
+        let mut export = |name: &str| match instance.get_export(&mut store, name)? {
             Some(RuntimeExtern::Func(func)) => Ok(func),
-            _ => Err(anyhow!(
-                "the thread start probe exports no `{name}` function"
-            )),
+            _ => Err(RuntimeError::Backend {
+                message: format!("the thread start probe exports no `{name}` function"),
+            }),
         };
         Ok(Self {
             classify: export("classify")?,
@@ -158,12 +156,13 @@ impl ThreadStartTable {
         index: u32,
         context: FlatType,
     ) -> anyhow::Result<Result<RuntimeFunc, Error>> {
-        if index >= self.table.size(&store) {
+        if u64::from(index) >= self.table.size(&store).map_err(into_anyhow)? {
             return Ok(Err(Error::Thread(ThreadCause::StartFunctionOutOfBounds)));
         }
         let mut class = [RuntimeVal::I32(0)];
         self.classify
-            .call(&mut store, &[RuntimeVal::I32(index as i32)], &mut class)?;
+            .call(&mut store, &[RuntimeVal::I32(index as i32)], &mut class)
+            .map_err(into_anyhow)?;
         let matches = match (&class[0], context) {
             (RuntimeVal::I32(EMPTY), _) => {
                 return Ok(Err(Error::Thread(ThreadCause::StartFunctionUninitialized)));
@@ -178,7 +177,8 @@ impl ThreadStartTable {
         }
         let mut entry = [RuntimeVal::FuncRef(None)];
         self.get
-            .call(&mut store, &[RuntimeVal::I32(index as i32)], &mut entry)?;
+            .call(&mut store, &[RuntimeVal::I32(index as i32)], &mut entry)
+            .map_err(into_anyhow)?;
         match entry {
             [RuntimeVal::FuncRef(Some(function))] => Ok(Ok(function)),
             _ => Err(anyhow!(
@@ -263,7 +263,7 @@ mod tests {
     /// probe, and the function that reads what a start function
     /// stored.
     async fn starts() -> (Store<()>, ThreadStartTable, RuntimeFunc) {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let probe = compile_module(&engine, THREAD_START_PROBE)
             .await
             .expect("the probe compiles");
@@ -272,15 +272,24 @@ mod tests {
             .expect("the start functions compile");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let runtime = store.internal().inner_mut();
-        let instance = RuntimeInstance::new(&mut *runtime, &starts, &Imports::new())
+        let instance = RuntimeInstance::instantiate(&mut *runtime, &starts, &[])
+            .await
             .expect("the start functions instantiate");
-        let Some(RuntimeExtern::Table(table)) = instance.get_export(&*runtime, "table") else {
+        let Some(RuntimeExtern::Table(table)) = instance
+            .get_export(&mut *runtime, "table")
+            .expect("the export")
+        else {
             panic!("the module exports its table");
         };
-        let Some(RuntimeExtern::Func(stored)) = instance.get_export(&*runtime, "stored") else {
+        let Some(RuntimeExtern::Func(stored)) = instance
+            .get_export(&mut *runtime, "stored")
+            .expect("the export")
+        else {
             panic!("the module exports `stored`");
         };
-        let table = ThreadStartTable::new(&mut *runtime, &probe, table).expect("the probe");
+        let table = ThreadStartTable::new(&mut *runtime, &probe, table)
+            .await
+            .expect("the probe");
         (store, table, stored)
     }
 

@@ -21,19 +21,22 @@
 ///
 /// 1. No provider, when the host turned the provider off through
 ///    [`EngineConfig::suspend_provider`].
-/// 2. The stack-switching provider, when the engine runs a probe
-///    thread that suspends and resumes through the WebAssembly
-///    stack-switching instructions.
-/// 3. The JSPI provider, when the browser offers JavaScript Promise
-///    Integration: its `WebAssembly` namespace has `Suspending` and
-///    `promising` as functions. This probe runs in the browser only.
+/// 2. The stack-switching provider, when the backend declares stack
+///    switching and runs a probe thread that suspends and resumes
+///    through the WebAssembly stack-switching instructions.
+/// 3. The host-suspension provider, when the backend declares host
+///    suspension: a host function that can answer "not yet", and a
+///    call of a guest that the host resumes later. The browser's
+///    backend declares it where the browser offers JavaScript
+///    Promise Integration.
 /// 4. No provider.
 ///
-/// The switch probe passes on the native engine on x86_64 Linux,
-/// where Wasmtime implements the stack-switching proposal. The JSPI
-/// probe passes in every current browser. An engine answers
-/// [`None`](Self::None) on every other native platform, and in an
-/// older browser such as Safari 26.
+/// The switch probe passes on the Wasmtime backend on x86_64 Linux,
+/// where Wasmtime implements the stack-switching proposal. The
+/// browser's backend declares host suspension in every current
+/// browser. An engine answers [`None`](Self::None) on a backend that
+/// declares neither, such as Wasmtime on another native platform or
+/// the browser's backend in an older browser such as Safari 26.
 ///
 /// Wasmtime has no counterpart to this answer, because its fibers
 /// always exist, so the names are the polyfill's own.
@@ -52,10 +55,11 @@ pub enum SuspendProviderKind {
     /// instructions, where the engine implements them. A thread it
     /// suspends resumes synchronously.
     StackSwitching,
-    /// The JSPI provider: JavaScript Promise Integration, in a
-    /// browser that ships it. A thread it suspends resumes on a
-    /// microtask.
-    Jspi,
+    /// The host-suspension provider: a suspending host function and
+    /// a resumable call, where the backend declares them. A thread it
+    /// suspends resumes when the driver of the store awaits it, which
+    /// in the browser is on a microtask.
+    HostSuspension,
     /// No provider: a blocking built-in runs the waiting work in a
     /// nested turn above the blocked call.
     None,

@@ -17,7 +17,7 @@ use crate::{Engine, Error, ResourceTypeId, Store, WaitableCause};
 /// A store with nothing instantiated in it: the records under test
 /// are the store's own, and no component is needed to reach them.
 fn store() -> Store<()> {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     Store::new(&engine, ()).expect("store")
 }
 

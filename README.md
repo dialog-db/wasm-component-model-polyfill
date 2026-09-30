@@ -19,11 +19,12 @@ provides:
   binary, resolves nested components and aliases, and compiles a fused adapter
   module for every call between two components. The same translator runs on
   every target.
-- **Core execution.** [`wasm_runtime_layer`] runs the core modules. Natively the
-  backend is Wasmtime 49, used only as a core-Wasm engine. In the browser the
-  backend is the `WebAssembly` JavaScript API through `js_wasm_runtime_layer`.
-  Both backends are vendored under `rust/vendor/` with small patches, described
-  in the `PATCHES.md` beside each.
+- **Core execution.** The polyfill's own runtime layer, `wcmp-wasm-core`, runs
+  the core modules on the backend the host chooses. `wcmp-wasm-core-wasmtime`
+  runs them on Wasmtime 49, used only as a core-Wasm engine, and
+  `wcmp-wasm-core-web` runs them on the browser's `WebAssembly` JavaScript API.
+  The polyfill has no backend of its own: the host hands one to
+  `Engine::with_backend`.
 - **The Component Model runtime.** Everything above core Wasm is the polyfill's
   own Rust: the Canonical ABI (lift, lower, string transcoding, `post-return`,
   `cabi_realloc`), one handle table per component instance for resources and
@@ -53,15 +54,18 @@ change between the two builds.
 
 The host below loads a component, lends it one host function, and calls a typed
 export. The same code compiles natively and for `wasm32-unknown-unknown` with
-`wasm-bindgen`.
+`wasm-bindgen`, and only the backend it names differs.
 
 ```rust
 use wcmp::*;
 
 async fn run(wasm: &[u8]) -> Result<String> {
-    // The engine owns the feature gates. The store owns guest state
-    // and the host data, `()` here.
-    let engine = Engine::new()?;
+    // The engine runs core Wasm on the backend the host names: Wasmtime
+    // natively, or `wcmp_wasm_core_web::Web::new()` in a browser. It owns
+    // the feature gates. The store owns guest state and the host data,
+    // `()` here.
+    let backend = wcmp_wasm_core_wasmtime::Wasmtime::new().expect("Wasmtime makes an engine");
+    let engine = Engine::with_backend(backend)?;
     let mut store = Store::new(&engine, ())?;
 
     // Compiling is awaited: the browser compiles large modules only
@@ -235,8 +239,8 @@ The notes use these terms:
 | Untyped values (`Val::Stream`, `Val::Future`)                                                                                          | ✅     | You can close them and convert them to typed values, as in Wasmtime. Untyped reads and writes will follow when Wasmtime adds them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `error-context.new`, `error-context.debug-message`, `error-context.drop`                                                               | 🔒     | Turn on with `wasm_component_model_error_context`, off by default as in Wasmtime. The debug message is kept exactly as the guest wrote it, as Wasmtime keeps it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | **Limits of the core runtime**                                                                                                         |        |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| Core modules that import or export exception tags                                                                                      | ⛔     | `wasm_runtime_layer` has no tag type.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| GC reference types in core modules (`i31ref`, typed function references, non-nullable refs)                                            | ⛔     | `wasm_runtime_layer` has no such value types.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Core modules that import or export exception tags                                                                                      | ✅     | A tag crosses the boundary of a core module, and links from one instance to another. The host cannot make a tag or throw an exception.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| GC reference types in core modules (`i31ref`, typed function references, non-nullable refs)                                            | 🟡     | A component whose core modules use them runs on a backend whose engine implements them, which Wasmtime and every current browser do. `Module::imports` and `Module::exports` describe only what a `CoreValueType` expresses: numbers, `funcref`, and `externref`. A host cannot instantiate a core module itself when the module imports anything else.                                                                                                                                                                                                                                                                         |
 | Wasm Core proposals                                                                                                                    | ⛔     | The core engine supplies these. The polyfill implements none of them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 ### Toward Component Model 1.0
@@ -257,14 +261,15 @@ tests. A host can notice these differences.
 
 Wasmtime runs each guest on a fiber, so a guest can always block where it
 stands. The polyfill runs on the one stack its target gives it, so it needs a
-suspend provider to pause a guest and resume it later. The engine picks one when
-it is built, and `Engine::suspend_provider()` says which:
+suspend provider to pause a guest and resume it later. The engine picks one from
+what its backend declares when it is built, and `Engine::suspend_provider()`
+says which:
 
-| Target                                                                                 | Provider                                |
-| -------------------------------------------------------------------------------------- | --------------------------------------- |
-| Native x86_64 Linux                                                                    | Stack switching (`StackSwitching`)      |
-| A browser with JSPI: every current browser                                             | JavaScript Promise Integration (`Jspi`) |
-| Other native platforms, older browsers such as Safari 26, or `suspend_provider(false)` | None (`None`)                           |
+| Backend                                                                                                             | Provider                           |
+| ------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| Wasmtime on x86_64 Linux, which declares stack switching                                                            | Stack switching (`StackSwitching`) |
+| The browser's backend in a browser with JSPI, every current browser, which declares host suspension                 | Host suspension (`HostSuspension`) |
+| Wasmtime on other native platforms, the browser's in older browsers such as Safari 26, or `suspend_provider(false)` | None (`None`)                      |
 
 Without a provider, a blocked guest runs the store's other work in nested turns
 until it can go on. That serves most blocks. A block that only a stack switch
@@ -272,10 +277,19 @@ can serve, such as a synchronous call to a host `async` function whose future is
 still pending, fails with `SchedulerCause::StackSwitchNeeded` instead of
 hanging. The [conformance](#conformance) table shows what that costs.
 
-Under JSPI, two rare shapes fail that pass natively: a host function used as a
-guest thread's start function, and a guest that blocks inside a destructor, a
-`post-return` function, or a core start function. No test in the corpora reaches
-either.
+Under host suspension in the browser, a few rare shapes differ from native:
+
+- A host function used as a guest thread's start function, and a guest that
+  blocks inside a destructor, a `post-return` function, or a core start
+  function, fail. No test in the corpora reaches either.
+- A guest thread that starts in place inside a guest call, where the thread that
+  starts it cannot suspend for its start, reports a trap in its first stretch
+  without the engine's reason. The browser reports that reason only to a caller
+  that awaits the call, and a host function cannot. One directive of the
+  conformance corpora reaches this.
+- Dropping the future of a call while a guest thread it resumed still runs traps
+  that thread: the next driver of the store fails with
+  `SchedulerCause::ThreadAbandoned`, and the store is poisoned.
 
 ### A trap poisons the store
 
@@ -392,7 +406,6 @@ your option.
 [WASI 0.3]: https://wasi.dev/releases/wasi-p3
 [Wasmtime]: https://github.com/bytecodealliance/wasmtime
 [`wasmtime-environ`]: https://docs.rs/wasmtime-environ
-[`wasm_runtime_layer`]: https://github.com/DouglasDwyer/wasm_runtime_layer
 [`wac`]: https://github.com/bytecodealliance/wac
 [Explainer]:
   https://github.com/WebAssembly/component-model/blob/main/design/mvp/Explainer.md

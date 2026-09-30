@@ -292,7 +292,7 @@ impl Wake for Idle {
 
 /// Instantiate [`WRITES`] into a store of its own.
 async fn instantiate() -> (Store<()>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, WRITES)
         .await
         .expect("the component parses");
@@ -732,6 +732,11 @@ async fn it_leaves_a_guest_write_pending_until_the_store_drops_when_a_reader_is_
 
     let tables = tables_of(&mut store);
     drop(store);
+    // In the browser the runtime layer keeps the store, and the host
+    // functions that hold the tables, for a guest call the browser has
+    // yet to settle. They drop once it settles.
+    #[cfg(target_arch = "wasm32")]
+    settle_until(|| tables.upgrade().is_none()).await;
     assert!(
         tables.upgrade().is_none(),
         "the leaked records go when the store drops"
@@ -893,6 +898,13 @@ async fn it_drops_every_record_producer_and_consumer_unpolled_when_the_store_dro
         "every producer and consumer, held or piped, drops with the store"
     );
     assert_eq!(counts.polls(), 0, "none of them is polled on the way out");
+    // The records and the ends went with the store above. The tables
+    // that held them are held by the store's host functions too, and
+    // in the browser the runtime layer keeps the store for a guest call
+    // that has handed over its results and that the browser has yet to
+    // settle. Those drop once the browser settles the call.
+    #[cfg(target_arch = "wasm32")]
+    settle_until(|| tables.upgrade().is_none()).await;
     assert!(
         tables.upgrade().is_none(),
         "every shared record and every end drops with the store"
@@ -1440,4 +1452,21 @@ async fn it_leaks_the_end_of_a_guarded_future_reader_that_drops_outside_a_poll()
         "a guard dropped outside a poll cannot reach the store"
     );
     assert_eq!(record_counts(&store), (2, 1), "its end leaks");
+}
+
+/// Let the browser run microtasks until `done` answers `true`, or give
+/// up after enough of them for any call the browser runs to have
+/// settled.
+#[cfg(target_arch = "wasm32")]
+async fn settle_until(done: impl Fn() -> bool) {
+    for _ in 0..64 {
+        if done() {
+            return;
+        }
+        wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(
+            &wasm_bindgen::JsValue::UNDEFINED,
+        ))
+        .await
+        .expect("a resolved promise");
+    }
 }

@@ -226,12 +226,13 @@ pub wcmp::SchedulerCause::RecursiveDriver
 pub wcmp::SchedulerCause::StackSwitchNeeded
 pub wcmp::SchedulerCause::StoreNotInPoll
 pub wcmp::SchedulerCause::TableFull
+pub wcmp::SchedulerCause::ThreadAbandoned
 pub enum wcmp::StreamResult
 pub wcmp::StreamResult::Cancelled
 pub wcmp::StreamResult::Completed
 pub wcmp::StreamResult::Dropped
 #[non_exhaustive] pub enum wcmp::SuspendProviderKind
-pub wcmp::SuspendProviderKind::Jspi
+pub wcmp::SuspendProviderKind::HostSuspension
 pub wcmp::SuspendProviderKind::None
 pub wcmp::SuspendProviderKind::StackSwitching
 #[non_exhaustive] pub enum wcmp::TaskCause
@@ -371,9 +372,9 @@ pub fn wcmp::Destination<'_, T>::take_buffer(&mut self) -> alloc::vec::Vec<T>
 pub struct wcmp::Engine
 impl wcmp::Engine
 pub fn wcmp::Engine::config(&self) -> &wcmp::EngineConfig
-pub fn wcmp::Engine::new() -> wcmp::Result<Self>
 pub fn wcmp::Engine::suspend_provider(&self) -> wcmp::SuspendProviderKind
-pub fn wcmp::Engine::with_config(config: &wcmp::EngineConfig) -> wcmp::Result<Self>
+pub fn wcmp::Engine::with_backend(backend: impl wcmp_wasm_core::contract::backend::Backend) -> wcmp::Result<Self>
+pub fn wcmp::Engine::with_config(self, config: &wcmp::EngineConfig) -> wcmp::Result<Self>
 pub struct wcmp::EngineConfig
 impl wcmp::EngineConfig
 pub fn wcmp::EngineConfig::new() -> Self
@@ -619,11 +620,12 @@ pub fn wcmp::Store<T>::as_context_mut(&mut self) -> wcmp::StoreContext<'_, T>
 pub fn wcmp::Store<T>::data(&self) -> &T
 pub fn wcmp::Store<T>::data_mut(&mut self) -> &mut T
 pub fn wcmp::Store<T>::hostcall_fuel(&self) -> usize
-pub fn wcmp::Store<T>::new(engine: &wcmp::Engine, data: T) -> wcmp::Result<Self>
 pub fn wcmp::Store<T>::resource_drop(&mut self, handle: wcmp::ResourceHandle) -> wcmp::Result<()>
 pub fn wcmp::Store<T>::resource_new(&self, type_id: wcmp::ResourceTypeId, rep: u32) -> wcmp::Result<wcmp::ResourceHandle>
 pub async fn wcmp::Store<T>::run_concurrent<R, F>(&mut self, body: F) -> wcmp::Result<R> where F: core::ops::async_function::AsyncFnOnce(&wcmp::Accessor<T>) -> R
 pub fn wcmp::Store<T>::set_hostcall_fuel(&mut self, fuel: usize)
+impl<T: core::marker::Send + 'static> wcmp::Store<T>
+pub fn wcmp::Store<T>::new(engine: &wcmp::Engine, data: T) -> wcmp::Result<Self>
 impl<T: 'static> core::ops::drop::Drop for wcmp::Store<T>
 pub fn wcmp::Store<T>::drop(&mut self)
 pub struct wcmp::StoreContext<'a, T: 'static>

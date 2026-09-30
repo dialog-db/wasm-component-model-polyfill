@@ -65,16 +65,17 @@
 //! contract with the instructions of the WebAssembly stack-switching
 //! proposal, over instances of the switch module the store keeps for
 //! its whole life, and [`SwitchProbe`] is what an engine runs when it
-//! is constructed to learn whether it can. In the browser,
-//! `JspiProvider` fills it through JavaScript Promise Integration,
-//! over instances of the other form, and [`JspiProbe`] is what an
-//! engine runs next to learn whether the browser offers that.
+//! is constructed to learn whether it can. On a backend that declares
+//! host suspension, such as the browser's, [`HostSuspensionProvider`]
+//! fills it through the runtime layer's suspending host functions and
+//! resumable calls, over instances of the other form.
 //! [`StoreProvider`] is the one a store runs its threads through.
 //!
-//! The JSPI provider resumes a thread on a microtask, never inside the
-//! call that asks for it. A resume is therefore made only from a turn
-//! of a driver, and the turn waits for the thread, an [`InFlight`]
-//! thread, before it runs anything else. A frame inside a guest call
+//! The host-suspension provider resumes a thread when the driver of the
+//! store awaits it, never inside the call that asks for it: in the
+//! browser the thread runs on a microtask. A resume is therefore made
+//! only from a turn of a driver, and the turn waits for the thread, an
+//! [`InFlight`] thread, before it runs anything else. A frame inside a guest call
 //! that has to resume a thread leaves the resumption to the store, and
 //! the trampoline it runs in leaves a [`Plan`] for the rest of its
 //! work: its shim suspends the thread it runs in, the scheduler runs
@@ -202,6 +203,7 @@ mod host_consumer;
 mod host_future;
 mod host_reader;
 mod host_result_lowering;
+mod host_suspension_provider;
 mod host_task;
 mod host_task_body;
 mod host_task_set;
@@ -212,9 +214,6 @@ mod instance_record;
 mod item;
 mod item_action;
 mod item_kind;
-mod jspi_probe;
-#[cfg(target_arch = "wasm32")]
-mod jspi_provider;
 mod lower_kind;
 mod outcome;
 mod pairing;
@@ -297,6 +296,7 @@ pub use guarded_future_reader::GuardedFutureReader;
 pub use guarded_stream_reader::GuardedStreamReader;
 pub use host_consumer::HostConsumer;
 pub use host_future::HostFuture;
+pub use host_suspension_provider::HostSuspensionProvider;
 pub use host_task::HostTask;
 pub use host_task_body::HostTaskBody;
 pub use host_writer::HostWriter;
@@ -304,9 +304,6 @@ pub use in_flight::InFlight;
 pub use instance_id::InstanceId;
 pub use item::Item;
 pub use item_kind::ItemKind;
-pub use jspi_probe::JspiProbe;
-#[cfg(target_arch = "wasm32")]
-pub use jspi_provider::JspiProvider;
 pub use lower_kind::LowerKind;
 pub use outcome::Outcome;
 pub use pairing::Pairing;

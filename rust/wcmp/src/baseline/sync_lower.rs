@@ -263,7 +263,12 @@ async fn caller<F>(bytes: &[u8], register: F) -> (Store<()>, Instance)
 where
     F: FnOnce(&mut Linker<()>),
 {
-    caller_on(Engine::new().expect("engine"), bytes, register).await
+    caller_on(
+        Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine"),
+        bytes,
+        register,
+    )
+    .await
 }
 
 /// Instantiate `bytes` as [`caller`] does, into a store of `engine`.
@@ -466,7 +471,7 @@ async fn it_returns_a_blocked_synchronous_lower_once_a_nested_turn_ran_a_sibling
     // that task's items run nowhere but in a turn. The one driver of
     // the store is inside the blocked call while it waits, so the
     // turns that run those items are the block's own nested ones.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let blocked_component =
         Component::new(&engine, AN_ASYNC_TYPED_TASK_CALLS_A_HOST_ASYNC_FUNCTION)
             .await
@@ -618,7 +623,9 @@ async fn it_fails_a_future_that_stays_pending_with_the_stack_switch_cause() {
     // future, as long as it takes.
     let mut config = EngineConfig::new();
     config.suspend_provider(false);
-    let engine = Engine::with_config(&config).expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine");
     let (mut store, instance) = caller_on(
         engine,
         AN_ASYNC_TYPED_TASK_CALLS_A_HOST_ASYNC_FUNCTION,
@@ -662,7 +669,7 @@ async fn it_fails_a_future_that_stays_pending_with_the_cannot_block_cause() {
 /// that mints a handle for it, and a host `async` function that takes
 /// a borrow and whose future is pending on its first poll.
 async fn lender() -> (Store<()>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, LENDS_A_BORROW_THROUGH_A_SYNCHRONOUS_LOWER)
         .await
         .expect("component parses");

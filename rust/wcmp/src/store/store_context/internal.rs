@@ -28,7 +28,7 @@ use crate::executor::ResourceDestructor;
 use crate::executor::ir::CanonOptions;
 use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId, TableId};
 use crate::runtime_layer::{
-    Backend, Func as RuntimeFunc, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
+    Func as RuntimeFunc, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
 };
 use crate::types::ResourceType;
 use crate::value::Val;
@@ -62,12 +62,12 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
     /// Borrow the core store's context, which is what every crossing
     /// of the canonical ABI and every call into the guest runs
     /// against.
-    pub fn runtime(self) -> &'b RuntimeContextMut<'a, StoreData<T>, Backend> {
+    pub fn runtime(self) -> &'b RuntimeContextMut<'a, StoreData<T>> {
         self.context.runtime()
     }
 
     /// Mutably borrow the core store's context.
-    pub fn runtime_mut(self) -> &'b mut RuntimeContextMut<'a, StoreData<T>, Backend> {
+    pub fn runtime_mut(self) -> &'b mut RuntimeContextMut<'a, StoreData<T>> {
         self.context.runtime_mut()
     }
 
@@ -325,17 +325,22 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
         self.context.provider()
     }
 
+    /// Run the store's flight, the start or the resume of a thread a
+    /// turn left for the driver, until the thread stops. A driver awaits
+    /// this whenever a turn ends in [`Outcome::Resuming`].
+    ///
+    /// The flight is the rest of the turn that left it, so a turn runs
+    /// for as long as the thread does, with the waker of the driver
+    /// that awaits it: a trampoline the thread calls finds the turn and
+    /// its waker, as it would inside the turn itself.
+    pub async fn fly(self) {
+        self.context.fly().await;
+    }
+
     /// Whether the store's owner dropped it while a thread the
     /// provider resumed had yet to run.
     pub fn dropped(self) -> bool {
         self.context.dropped()
-    }
-
-    /// Record that the store's owner dropped it while a thread the
-    /// provider resumed had yet to run.
-    #[cfg(target_arch = "wasm32")]
-    pub fn mark_dropped(self) {
-        self.context.mark_dropped();
     }
 
     /// Record that a trap happened in the store, and discard the
@@ -544,7 +549,7 @@ impl<'b, 'a, T: 'static> StoreContextRefInternal<'b, 'a, T> {
 /// calls with the borrow the runtime layer handed it.
 pub trait StoreContextInternalExt<'a, T: 'static> {
     /// The store a borrow of the core store reaches.
-    fn new(runtime: RuntimeContextMut<'a, StoreData<T>, Backend>) -> Self;
+    fn new(runtime: RuntimeContextMut<'a, StoreData<T>>) -> Self;
 
     /// The workspace-internal entries of this context.
     fn internal(&mut self) -> StoreContextInternal<'_, 'a, T>;
@@ -555,7 +560,7 @@ pub trait StoreContextInternalExt<'a, T: 'static> {
 }
 
 impl<'a, T: 'static> StoreContextInternalExt<'a, T> for StoreContext<'a, T> {
-    fn new(runtime: RuntimeContextMut<'a, StoreData<T>, Backend>) -> Self {
+    fn new(runtime: RuntimeContextMut<'a, StoreData<T>>) -> Self {
         StoreContext::from_runtime(runtime)
     }
 

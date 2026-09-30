@@ -876,8 +876,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::runtime_layer::{
-        AsContextMut, Func as RuntimeFunc, FuncType, Memory, MemoryType, Val as RuntimeVal,
-        ValType as CoreType,
+        AsContextMut, FuncType, Memory, MemoryType, Val as RuntimeVal, ValType as CoreType,
+        host_func,
     };
 
     use super::*;
@@ -963,7 +963,7 @@ mod tests {
         // host would still reserve one `Val` per element, which at
         // `0xFFFF_FFFF` elements is about 137 GiB, so the count is
         // measured against the page the length came with.
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let (options, instance) = one_page(&mut store);
         let mut ctx = BoundaryContext::new(
@@ -998,7 +998,7 @@ mod tests {
         // The same list at a length the page accounts for lifts, so
         // the refusal above is the count and nothing else about an
         // element that occupies no bytes.
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let (options, instance) = one_page(&mut store);
         let mut ctx = BoundaryContext::new(
@@ -1053,7 +1053,7 @@ mod tests {
         use crate::linker::ComponentValue;
         use crate::types::{FutureType, StreamType};
 
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let (options, instance) = one_page(&mut store);
         let mut ctx = BoundaryContext::new(
@@ -1108,7 +1108,7 @@ mod tests {
         )
         .expect("one page of guest memory");
         let next = Arc::new(AtomicU32::new(HEAP));
-        let realloc = RuntimeFunc::new(
+        let realloc = host_func(
             store.internal().inner_mut().as_context_mut(),
             FuncType::new([CoreType::I32; 4], [CoreType::I32]),
             move |_store, args, results| {
@@ -1120,14 +1120,16 @@ mod tests {
                 results[0] = RuntimeVal::I32(ptr as i32);
                 Ok(())
             },
-        );
+        )
+        .expect("the realloc");
         let instance = store
             .internal()
             .lock_tables()
             .expect("handle tables")
             .tasks
             .insert_instance();
-        let flags = InstanceFlags::new(store.internal().context().internal().runtime_mut());
+        let flags = InstanceFlags::new(store.internal().context().internal().runtime_mut())
+            .expect("the may-leave flag");
         let state = Arc::new(Mutex::new(
             AbiRuntimeState::with_slabs(
                 1,
@@ -1142,7 +1144,7 @@ mod tests {
         ));
         {
             let mut state = state.lock().expect("runtime state");
-            state.memories[0] = Some(memory.clone());
+            state.memories[0] = Some(memory);
             state.reallocs[0] = Some(realloc);
         }
         let declared = Arc::new(CanonOptions {
@@ -1225,7 +1227,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_lifts_a_list_of_u32_in_one_read_of_the_guest() {
         const LEN: usize = 1000;
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let (memory, options, instance) = with_realloc(&mut store);
         let bytes: Vec<u8> = (0..LEN as u32)
@@ -1256,7 +1258,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_lifts_a_list_of_records_in_one_read_of_the_guest() {
         const LEN: usize = 500;
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let (memory, options, instance) = with_realloc(&mut store);
         let bytes: Vec<u8> = (0..LEN).flat_map(point_bytes).collect();
@@ -1285,7 +1287,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_lowers_a_list_of_u32_in_one_write_to_the_guest() {
         const LEN: usize = 1000;
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let (memory, options, instance) = with_realloc(&mut store);
         let mut ctx = BoundaryContext::new(
@@ -1310,7 +1312,7 @@ mod tests {
         memory
             .read(
                 store.internal().inner_mut().as_context_mut(),
-                ptr as usize,
+                u64::from(ptr),
                 &mut written,
             )
             .expect("read the list back");
@@ -1323,7 +1325,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_lowers_a_list_of_records_in_one_write_to_the_guest() {
         const LEN: usize = 500;
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let (memory, options, instance) = with_realloc(&mut store);
         // The arena starts dirty, so a padding byte the lower leaves
@@ -1331,7 +1333,7 @@ mod tests {
         memory
             .write(
                 store.internal().inner_mut().as_context_mut(),
-                HEAP as usize,
+                u64::from(HEAP),
                 &[0xa5; LEN * 8],
             )
             .expect("dirty the realloc arena");
@@ -1361,7 +1363,7 @@ mod tests {
         memory
             .read(
                 store.internal().inner_mut().as_context_mut(),
-                ptr as usize,
+                u64::from(ptr),
                 &mut written,
             )
             .expect("read the list back");
@@ -1370,10 +1372,62 @@ mod tests {
     }
 
     #[wcmp_macros::test]
+    fn it_makes_as_many_accesses_for_a_list_of_ten_thousand_as_for_a_list_of_one() {
+        // The canonical ABI reaches the guest's memory a fixed number
+        // of times for one list of numbers, whatever its length: the
+        // lift reads the list's bytes once, and the lower writes them
+        // once. The test backend is Wasmtime natively and the browser's
+        // own engine in the web lane, so both backends hold the count.
+        let ty = ValueType::List(ListType::new(ValueType::Primitive(PrimitiveType::U32)));
+        let counts = [1_usize, 100, 10_000].map(|len| {
+            let engine =
+                Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
+            let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+            let (memory, options, instance) = with_realloc(&mut store);
+            // Two more pages hold the ten thousand elements, as the
+            // lift reads them and as the lower writes them again.
+            memory
+                .grow(store.internal().inner_mut().as_context_mut(), 2)
+                .expect("room for the longest list");
+            let bytes: Vec<u8> = (0..len as u32)
+                .flat_map(|i| (i * 7).to_le_bytes())
+                .collect();
+            memory
+                .write(store.internal().inner_mut().as_context_mut(), 0, &bytes)
+                .expect("write the list");
+            let mut ctx = BoundaryContext::new(
+                store.internal().inner_mut().as_context_mut(),
+                options,
+                instance,
+                None,
+            );
+
+            let lifted = lift_flat(&mut ctx, &ty, 0, len as u32);
+            let lifts = ctx.substrate_accesses();
+            let expected: Box<[Val]> = (0..len as u32).map(|i| Val::U32(i * 7)).collect();
+            assert_eq!(lifted, Val::List(expected), "the list of {len} lifts whole");
+            let (ptr, lowered) = lower_flat(&mut ctx, &ty, &lifted);
+            let lowers = ctx.substrate_accesses() - lifts;
+            assert_eq!(
+                lift_flat(&mut ctx, &ty, ptr, lowered),
+                lifted,
+                "the list of {len} lowers whole"
+            );
+            (len, lifts, lowers)
+        });
+
+        assert_eq!(
+            counts,
+            [(1, 1, 1), (100, 1, 1), (10_000, 1, 1)],
+            "each length is one read to lift and one write to lower"
+        );
+    }
+
+    #[wcmp_macros::test]
     fn it_reaches_the_guest_once_more_for_each_string_a_list_points_to() {
         // The list's own bytes cross once either way; what each
         // element points to lies outside them and crosses on its own.
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let (_memory, options, instance) = with_realloc(&mut store);
         let mut ctx = BoundaryContext::new(
@@ -1407,7 +1461,7 @@ mod tests {
     /// Write `bytes` at the start of a fresh guest memory and lift
     /// them as a list of `len` elements of `prim`.
     fn lift_written(prim: PrimitiveType, bytes: &[u8], len: u32) -> Result<Val> {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let (memory, options, instance) = with_realloc(&mut store);
         memory
@@ -1436,7 +1490,7 @@ mod tests {
     /// Lower `value` as a list of `prim`, then lift it back, and return
     /// the lifted list with the bytes the lower wrote.
     fn round_trip(prim: PrimitiveType, value: &Val, element_size: usize) -> (Val, Vec<u8>) {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let (memory, options, instance) = with_realloc(&mut store);
         let mut ctx = BoundaryContext::new(
@@ -1453,7 +1507,7 @@ mod tests {
         memory
             .read(
                 store.internal().inner_mut().as_context_mut(),
-                ptr as usize,
+                u64::from(ptr),
                 &mut written,
             )
             .expect("read the list back");

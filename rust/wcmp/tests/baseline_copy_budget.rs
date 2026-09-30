@@ -169,7 +169,7 @@ const VALUES: &[u8] = component!(
 /// Instantiate `bytes` into a store of its own, under the default
 /// engine configuration, with no imports.
 async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, bytes)
         .await
         .expect("the component parses");
@@ -498,7 +498,7 @@ const SENDER: &[u8] = component!(
 async fn it_charges_both_lists_a_guest_passes_a_host_import() {
     // Two lists of half the budget's elements each spend all of it,
     // and two of one element more pass it on the second list.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, SENDER)
         .await
         .expect("a component that sends lists parses");
@@ -549,3 +549,6 @@ async fn it_charges_both_lists_a_guest_passes_a_host_import() {
         "only the lists inside the budget reached the host"
     );
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

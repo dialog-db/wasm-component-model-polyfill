@@ -21,16 +21,6 @@ cm/binary/binary.wast:1248 validation expected rejection `non-zero reserved byte
 cm/binary/binary.wast:1257 validation expected rejection `non-zero reserved byte`, but the component parsed (wasmparser 0.258 still reads the byte as the `cancellable` immediate the corpus removed, and the polyfill honors that immediate as Wasmtime 49 does; the reference implementation does not pass this file either, see cm/nyi.txt)
 cm/binary/binary.wast:1266 validation expected rejection `non-zero reserved byte`, but the component parsed (wasmparser 0.258 still reads the byte as the `cancellable` immediate the corpus removed, and the polyfill honors that immediate as Wasmtime 49 does; the reference implementation does not pass this file either, see cm/nyi.txt)
 cm/binary/binary.wast:1275 validation expected rejection `non-zero reserved byte`, but the component parsed (wasmparser 0.258 still reads the byte as the `cancellable` immediate the corpus removed, and the polyfill honors that immediate as Wasmtime 49 does; the reference implementation does not pass this file either, see cm/nyi.txt)
-cm/linking/tags.wast:7 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
-cm/linking/tags.wast:31 cascade no instance to invoke
-cm/linking/tags.wast:32 cascade no instance to invoke
-cm/linking/tags.wast:36 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
-cm/linking/tags.wast:60 cascade no instance to invoke
-cm/linking/tags.wast:64 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
-cm/linking/tags.wast:89 cascade no instance to invoke
-cm/linking/tags.wast:93 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
-cm/linking/tags.wast:133 cascade no instance to invoke
-cm/linking/tags.wast:134 cascade no instance to invoke
 cm/validation/kebab.wast:149 validation expected rejection `import name `foobar` conflicts with previous name `foo-bar``, but the component parsed (the reference implementation does not pass this file either, see cm/nyi.txt)
 cm/validation/kebab.wast:154 validation expected rejection `import name `FOOBAR` conflicts with previous name `foo-bar``, but the component parsed (the reference implementation does not pass this file either, see cm/nyi.txt)
 cm/validation/kebab.wast:159 validation expected rejection `import name `foob-ar` conflicts with previous name `foo-bar``, but the component parsed (the reference implementation does not pass this file either, see cm/nyi.txt)
@@ -49,31 +39,8 @@ fixtures/wasi-http-same-instance.wast:2131 cascade no instance to invoke (given 
 fixtures/wasi-http.wast:4 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `wasi:http/types@0.3.0`: no registered linker instance satisfies import `wasi:http/types@0.3.0`
 fixtures/wasi-http.wast:2246 cascade no instance to invoke
 fixtures/wasi-http.wast:2249 cascade no instance to invoke
-wasmtime/alias-region-known-imported-entities.wast:13 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref i31) is not supported in the wasm_runtime_layer
-wasmtime/alias-region-known-imported-entities.wast:64 cascade no instance to invoke
-wasmtime/alias-region-known-imported-entities.wast:65 cascade no instance to invoke
-wasmtime/alias-region-known-imported-entities.wast:66 cascade no instance to invoke
-wasmtime/alias-region-multiple-instantiations.wast:15 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref i31) is not supported in the wasm_runtime_layer
-wasmtime/alias-region-multiple-instantiations.wast:89 cascade no instance to invoke
-wasmtime/alias-region-multiple-instantiations.wast:90 cascade no instance to invoke
-wasmtime/alias-region-multiple-instantiations.wast:91 cascade no instance to invoke
-wasmtime/alias-region-reexported-ambiguous-entities.wast:15 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref i31) is not supported in the wasm_runtime_layer
-wasmtime/alias-region-reexported-ambiguous-entities.wast:135 cascade no instance to invoke
-wasmtime/alias-region-reexported-ambiguous-entities.wast:136 cascade no instance to invoke
-wasmtime/alias-region-reexported-ambiguous-entities.wast:137 cascade no instance to invoke
-wasmtime/alias-region-reexported-ambiguous-entities.wast:138 cascade no instance to invoke
-wasmtime/alias-region-reexported-ambiguous-entities.wast:139 cascade no instance to invoke
-wasmtime/alias-region-reexported-ambiguous-entities.wast:140 cascade no instance to invoke
 wasmtime/alias-region-reexported-entities-to-imported-module.wast:14 substrate component rejected: unsupported component feature: non-nullable reference types in core module types (the runtime layer has no i31 reference type, so the polyfill refuses the core module type before instantiation)
 wasmtime/alias-region-reexported-entities-to-imported-module.wast:101 cascade no instance to invoke
 wasmtime/alias-region-reexported-entities-to-imported-module.wast:102 cascade no instance to invoke
 wasmtime/alias-region-reexported-entities-to-imported-module.wast:103 cascade no instance to invoke
-wasmtime/alias-region-reexported-known-entities.wast:14 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref i31) is not supported in the wasm_runtime_layer
-wasmtime/alias-region-reexported-known-entities.wast:89 cascade no instance to invoke
-wasmtime/alias-region-reexported-known-entities.wast:90 cascade no instance to invoke
-wasmtime/alias-region-reexported-known-entities.wast:91 cascade no instance to invoke
-wasmtime/exceptions.wast:168 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: ref type (ref (concrete func VMSharedTypeIndex(5))) is not supported in the wasm_runtime_layer
-wasmtime/exceptions.wast:237 cascade expected a trap `uncaught exception propagated out of component`, got `no instance to invoke`
-wasmtime/modules.wast:482 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
-wasmtime/modules.wast:485 cascade instantiation failed: link error: no registered linker instance satisfies import `tag-module`: no registered linker instance satisfies import `tag-module` (the component at line 482 did not instantiate)
-wasmtime/tags.wast:3 substrate component rejected: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer
+wasmtime/exceptions.wast:237 trap-message expected a trap `uncaught exception propagated out of component`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: resource destructor failed: thrown Wasm exception`

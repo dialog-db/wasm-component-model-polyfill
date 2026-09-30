@@ -282,13 +282,13 @@ fn export_signature(component: &Component, wire_name: &str) -> FunctionType {
 
 /// Parse `bytes` with the default engine configuration.
 async fn parse(bytes: &[u8]) -> Result<Component, Error> {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     Component::new(&engine, bytes).await
 }
 
 /// Instantiate `bytes` into a fresh store.
 async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");

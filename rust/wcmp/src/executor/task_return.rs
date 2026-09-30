@@ -68,9 +68,10 @@ use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CanonOptions, CoreSignature};
 use crate::internal::ErrorInternal;
 use crate::resource::HandleTables;
+use crate::runtime_layer::host_func;
 use crate::runtime_layer::{
-    AsContextMut, Backend, Func as RuntimeFunc, StoreContextMut as RuntimeContextMut,
-    Val as RuntimeVal, substrate_failure,
+    AsContextMut, Func as RuntimeFunc, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
+    substrate_failure,
 };
 use crate::store::StoreContextInternalExt;
 use crate::store::{StoreContext, StoreData};
@@ -88,10 +89,10 @@ pub fn build_task_return<T: 'static>(
     options: &CanonOptions,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
     let declared = Arc::new(options.clone());
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |store_ctx, args, _results| {
@@ -112,7 +113,7 @@ pub fn build_task_return<T: 'static>(
 /// what one call of the built-in does. The module documentation
 /// states the order of the traps.
 fn task_return<T: 'static>(
-    mut store_ctx: RuntimeContextMut<'_, StoreData<T>, Backend>,
+    mut store_ctx: RuntimeContextMut<'_, StoreData<T>>,
     declared: &Arc<CanonOptions>,
     result: Option<&ValueType>,
     result_tuple: usize,
@@ -273,7 +274,7 @@ fn current_task(tables: &Arc<Mutex<HandleTables>>) -> Result<Current> {
 /// stack afterwards, whichever way the crossing went, because the
 /// callee's core function or callback is still below this frame.
 pub fn cross_result_into_caller<T: 'static>(
-    store_ctx: &mut RuntimeContextMut<'_, StoreData<T>, Backend>,
+    store_ctx: &mut RuntimeContextMut<'_, StoreData<T>>,
     tables: &Arc<Mutex<HandleTables>>,
     task: TaskId,
     subtask: SubtaskId,
@@ -316,7 +317,7 @@ pub fn cross_result_into_caller<T: 'static>(
             .tasks
             .thread(bridge.caller_thread)
             .map(|thread| thread.task);
-        (bridge.return_.clone(), arguments, results, caller)
+        (bridge.return_, arguments, results, caller)
     };
 
     // The function is the caller's code, so the callee's scope comes
@@ -372,8 +373,8 @@ fn zero(ty: FlatType) -> RuntimeVal {
     match ty {
         FlatType::I32 => RuntimeVal::I32(0),
         FlatType::I64 => RuntimeVal::I64(0),
-        FlatType::F32 => RuntimeVal::F32(0.0),
-        FlatType::F64 => RuntimeVal::F64(0.0),
+        FlatType::F32 => RuntimeVal::F32(0),
+        FlatType::F64 => RuntimeVal::F64(0),
     }
 }
 
@@ -521,13 +522,15 @@ mod tests {
         /// A store holding one component instance and `memories`
         /// freshly created memories, one per runtime memory slot.
         fn new(memories: usize) -> Self {
-            let engine = Engine::new().expect("engine");
+            let engine =
+                Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
             let mut store: Store<()> = Store::new(&engine, ()).expect("store");
             let tables = store.internal().tables_handle();
             let instance = tables.lock().expect("records").tasks.insert_instance();
             // The built-in reads the instance's may-leave flag, which
             // an instantiation mints as a core global of the store.
-            let flags = InstanceFlags::new(store.internal().inner_mut().as_context_mut());
+            let flags = InstanceFlags::new(store.internal().inner_mut().as_context_mut())
+                .expect("the may-leave flag");
             let abi_state = Arc::new(Mutex::new(
                 AbiRuntimeState::with_slabs(
                     memories,
@@ -604,8 +607,9 @@ mod tests {
                 options,
                 &signature,
                 abi_state,
-            );
+            )?;
             func.call(self.store.internal().inner_mut(), args, &mut [])
+                .map_err(crate::runtime_layer::into_anyhow)
         }
 
         /// What the task resolved with, or `None` while it is
@@ -740,7 +744,7 @@ mod tests {
                 memory
                     .write(
                         records.store.internal().inner_mut(),
-                        16 + field as usize * 4,
+                        16 + u64::from(field) * 4,
                         &field.to_le_bytes(),
                     )
                     .expect("write the tuple into the guest's memory");

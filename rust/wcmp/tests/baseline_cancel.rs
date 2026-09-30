@@ -745,7 +745,7 @@ const SET_DROPPED: &[u8] = component!(
 /// and the cancel goes on without it, answering `BLOCKED`.
 ///
 /// `park-then-trap`'s callback traps on the event instead. In the
-/// browser the JSPI provider hands that failure over on a microtask,
+/// browser the host-suspension provider hands that failure over on a microtask,
 /// so the cancel leaves the callee's run to the store and fails once
 /// the store has taken the failure.
 ///
@@ -1388,7 +1388,9 @@ async fn instantiate(binary: &[u8]) -> (Store<()>, Instance) {
         .wasm_component_model_async_stackful(true)
         .wasm_component_model_threading(true)
         .wasm_component_model_more_async_builtins(true);
-    let engine = Engine::with_config(&config).expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine");
     let component = Component::new(&engine, binary)
         .await
         .expect("the component translates");
@@ -1789,7 +1791,9 @@ async fn instantiate_host_calls(provider: bool, drops: &Arc<Drops>) -> (Store<u3
     config
         .suspend_provider(provider)
         .wasm_component_model_more_async_builtins(true);
-    let engine = Engine::with_config(&config).expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine");
     let component = Component::new(&engine, HOST_CALLS)
         .await
         .expect("the component translates");
@@ -1911,3 +1915,6 @@ async fn it_resolves_a_host_callee_whose_future_completed_before_the_cancel_as_r
         );
     }
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

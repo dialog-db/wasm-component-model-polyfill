@@ -40,6 +40,22 @@ pub fn benchmarks() -> Vec<Benchmark> {
     .collect()
 }
 
+/// An engine over the backend the suite measures on this target:
+/// Wasmtime natively, and the browser's own engine in a browser.
+#[cfg(not(target_arch = "wasm32"))]
+fn engine() -> Result<Engine> {
+    let backend = wcmp_wasm_core_wasmtime::Wasmtime::new()
+        .map_err(|error| Error::Setup(format!("Wasmtime makes no engine: {error}")))?;
+    Ok(Engine::with_backend(backend)?)
+}
+
+/// An engine over the backend the suite measures on this target:
+/// Wasmtime natively, and the browser's own engine in a browser.
+#[cfg(target_arch = "wasm32")]
+fn engine() -> Result<Engine> {
+    Ok(Engine::with_backend(wcmp_wasm_core_web::Web::new())?)
+}
+
 /// Instantiate `bytes` into a store of its own, and hand back the
 /// engine, the store, and the instance.
 ///
@@ -47,7 +63,7 @@ pub fn benchmarks() -> Vec<Benchmark> {
 /// never part of a sample — except in `component-new`, where parsing
 /// one is the thing measured.
 async fn instantiate(bytes: &[u8]) -> Result<(Engine, Store<()>, Instance)> {
-    let engine = Engine::new()?;
+    let engine = engine()?;
     let component = Component::new(&engine, bytes).await?;
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ())?;
@@ -346,7 +362,7 @@ impl Future for RelayCall {
 async fn host_calls_in_flight(run: &mut Run) -> Result<()> {
     let calls = u32::try_from(run.case().number()).unwrap_or(u32::MAX);
     let relay = Relay::default();
-    let engine = Engine::new()?;
+    let engine = engine()?;
     let component = Component::new(&engine, guests::FAN_OUT).await?;
     let mut linker: Linker<()> = Linker::new(&engine);
     let answering = relay.clone();
@@ -383,7 +399,7 @@ async fn component_new(run: &mut Run) -> Result<()> {
             )));
         }
     };
-    let engine = Engine::new()?;
+    let engine = engine()?;
     run.moves_bytes(bytes.len() as u64);
     while run.iterate() {
         Component::new(&engine, bytes).await?;

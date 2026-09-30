@@ -1,8 +1,10 @@
-# Directives of `expected-failures.txt` that pass when no provider runs
-# the store's threads, and fail only under one. The harness drops them
-# from the expectations of such a run: a lane that turns the provider
-# off, a native build without the stack-switching proposal, and a
-# browser. One `<path>:<line> <reason>` per line, and each line must
-# name a directive the shared list names. `tests regenerate` neither
+# Directives of `expected-failures.txt` or `expected-failures.web.txt`
+# that pass when no provider runs the store's threads, and fail only
+# under one. The harness drops them from the expectations of such a
+# run: a lane that turns the provider off, a native build without the
+# stack-switching proposal, and a browser without JSPI. One
+# `<path>:<line> <reason>` per line, and each line must name a
+# directive one of those two lists names. `tests regenerate` neither
 # reads nor writes this list, so a line is written and removed by
 # hand.
+wasmtime/thread-transparency/reentrancy.wast:114 without a provider the thread runs in a nested turn on the caller's stack, so its trap reaches the caller whole; the web delta's line is the host-suspension provider's

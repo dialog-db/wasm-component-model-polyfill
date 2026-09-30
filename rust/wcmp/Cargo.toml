@@ -24,7 +24,6 @@ thiserror = { workspace = true }
 # Encodes the switch module, the core module the polyfill generates for
 # each store to switch stacks.
 wasm-encoder = { workspace = true }
-wasm_runtime_layer = { workspace = true }
 # `wasmtime-environ`'s `compile` feature gates the component-IR
 # `Translator` and the FACT adapter compiler. Despite the name, it
 # does not pull in Cranelift codegen or any host-only machinery — only
@@ -33,17 +32,14 @@ wasm_runtime_layer = { workspace = true }
 # target lets the polyfill share one component-translation path
 # instead of maintaining a parallel hand-rolled walker on the web.
 wasmtime-environ = { workspace = true, features = ["component-model", "compile"] }
+# The runtime layer the polyfill runs core WebAssembly through, over
+# whichever backend the host hands the engine.
+wcmp-wasm-core = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["rt", "sync"] }
-# Pulled in for its feature flag: `wasmtime_runtime_layer`'s default
-# `Backend` constructs a `wasmtime::Engine` whose GC support requires
-# at least one collector feature to be enabled in the dep graph.
-wasmtime = { workspace = true, features = ["gc-drc"] }
-wasmtime_runtime_layer = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js_wasm_runtime_layer = { workspace = true }
 # The wake after a yield crosses a macrotask boundary in the browser:
 # a self-wake from a microtask lands ahead of every network response
 # and timer and starves the page. Reaching `MessageChannel`, and the
@@ -67,8 +63,17 @@ wcmp-macros = { workspace = true }
 # The scenario model the `zena` test judges each Zena scenario with.
 wcmp-scenario = { workspace = true }
 
+# The backend the crate's own tests hand their engines natively: Wasmtime.
+# Wasmi declares host suspension, so the tests of the provider that fills
+# the scheduler's suspend capability with it run natively too.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+wcmp-wasm-core-wasmi = { workspace = true }
+wcmp-wasm-core-wasmtime = { workspace = true }
+
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = { workspace = true }
+# The backend the crate's own tests hand their engines in the browser.
+wcmp-wasm-core-web = { workspace = true }
 # A JavaScript promise wrapped as a future: what the browser half of
 # the host-task bound is there to take, and what the test of that
 # bound builds one from.

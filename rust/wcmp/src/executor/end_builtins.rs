@@ -50,6 +50,7 @@ use crate::error::{CopyCause, Error, TaskCause};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::CoreSignature;
 use crate::resource::{HandleTables, TableId};
+use crate::runtime_layer::host_func;
 use crate::runtime_layer::{AsContextMut, Func as RuntimeFunc, Val as RuntimeVal};
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
@@ -64,7 +65,7 @@ pub fn build_stream_new<T: 'static>(
     payload: Option<ValueType>,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     build_new(
         store,
         instance,
@@ -83,7 +84,7 @@ pub fn build_future_new<T: 'static>(
     payload: Option<ValueType>,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     build_new(
         store,
         instance,
@@ -103,9 +104,9 @@ pub fn build_drop_end<T: 'static>(
     payload: Option<ValueType>,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |mut store_ctx, args, _results| {
@@ -168,9 +169,9 @@ fn build_new<T: 'static>(
     kinds: [EndKind; 2],
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |mut store_ctx, _args, results| {

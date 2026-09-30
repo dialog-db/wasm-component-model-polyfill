@@ -935,6 +935,18 @@ pub enum SchedulerCause {
     #[error("blocking here requires a stack switch, but this thread cannot switch its stack")]
     StackSwitchNeeded,
 
+    /// A guest thread ran on after the driver that awaited it dropped,
+    /// and trapped. Under the host-suspension provider in the browser
+    /// a thread runs on a microtask once the driver awaits it, and the
+    /// runtime layer gives the store back to the host when that
+    /// driver's future drops: the thread traps the next time it
+    /// reaches the store, and nothing learns how it ended. The next
+    /// driver of the store fails with this cause, which is a trap and
+    /// poisons the store. A thread that had finished when its driver
+    /// dropped stopped, and fails nothing.
+    #[error("a guest thread trapped because the driver that ran it dropped before it stopped")]
+    ThreadAbandoned,
+
     /// An accessor reached for its store where no poll of that store
     /// was running: outside every poll, or from inside a poll of
     /// another store. The accessor is a token — it carries a store's

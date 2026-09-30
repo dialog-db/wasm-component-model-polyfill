@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use crate::error::{Error, Result};
 use crate::internal::ErrorInternal;
 use crate::runtime_layer::{
-    Backend, Engine as RuntimeEngine, Extern as RuntimeExtern, Func as RuntimeFunc, FuncType,
-    Imports, Instance as RuntimeInstance, Module as RuntimeModule, Val as RuntimeVal,
-    ValType as RuntimeValType, substrate_failure,
+    Engine as RuntimeEngine, Extern as RuntimeExtern, Func as RuntimeFunc, FuncType, Imports,
+    Instance as RuntimeInstance, Module as RuntimeModule, Val as RuntimeVal,
+    ValType as RuntimeValType, at_once, host_func, instantiate, substrate_failure,
 };
 use crate::store::{StoreContext, StoreContextInternalExt};
 
@@ -68,7 +68,7 @@ type Compiled = Arc<Mutex<HashMap<Vec<u8>, RuntimeModule>>>;
 /// it.
 #[derive(Clone)]
 pub struct StackSwitchingProvider {
-    engine: RuntimeEngine<Backend>,
+    engine: RuntimeEngine,
     compiled: Compiled,
     start: RuntimeFunc,
     resume: RuntimeFunc,
@@ -87,13 +87,11 @@ impl StackSwitchingProvider {
     /// does.
     pub fn instantiate<T: 'static>(
         store: &mut StoreContext<'_, T>,
-        engine: &RuntimeEngine<Backend>,
+        engine: &RuntimeEngine,
         compiled: &Arc<Mutex<HashMap<Vec<u8>, RuntimeModule>>>,
     ) -> Result<Self> {
         let module = compile(engine, compiled, SwitchModule::base())?;
-        let instance =
-            RuntimeInstance::new(store.internal().runtime_mut(), &module, &Imports::default())
-                .map_err(substrate_failure)?;
+        let instance = instantiate_at_once(store, &module, &Imports::default())?;
         let mut export = |name: &str| export_func(store, &instance, name);
         Ok(Self {
             engine: engine.clone(),
@@ -124,7 +122,7 @@ impl StackSwitchingProvider {
         }
         let parts = hosts
             .iter()
-            .map(|(_, try_part, finish_part)| (try_part.clone(), finish_part.clone()))
+            .map(|(_, try_part, finish_part)| (*try_part, *finish_part))
             .collect::<Vec<_>>();
         let instance = self.extension(store, &module, &parts)?;
         (0..module.shim_count())
@@ -153,23 +151,19 @@ impl StackSwitchingProvider {
         }
         let compiled = compile(&self.engine, &self.compiled, module.encode())?;
         let mut imports = Imports::default();
-        imports.define("base", "start", RuntimeExtern::Func(self.start.clone()));
-        imports.define("base", "suspend", RuntimeExtern::Func(self.suspend.clone()));
+        imports.define("base", "start", RuntimeExtern::Func(self.start));
+        imports.define("base", "suspend", RuntimeExtern::Func(self.suspend));
         for (i, (try_part, finish_part)) in hosts.iter().enumerate() {
-            imports.define(
-                "host",
-                &format!("try{i}"),
-                RuntimeExtern::Func(try_part.clone()),
-            );
+            imports.define("host", &format!("try{i}"), RuntimeExtern::Func(*try_part));
             imports.define(
                 "host",
                 &format!("finish{i}"),
-                RuntimeExtern::Func(finish_part.clone()),
+                RuntimeExtern::Func(*finish_part),
             );
         }
         for (j, ty) in module.entry_types().iter().enumerate() {
             let slot = self.finished.clone();
-            let recorder = RuntimeFunc::new(
+            let recorder = host_func(
                 store.internal().runtime_mut(),
                 FuncType::new(
                     [RuntimeValType::I32]
@@ -188,15 +182,10 @@ impl StackSwitchingProvider {
                         .insert(thread.cast_unsigned(), results.to_vec());
                     Ok(())
                 },
-            );
-            imports.define(
-                "host",
-                &format!("finished{j}"),
-                RuntimeExtern::Func(recorder),
-            );
+            )?;
+            imports.define("host", &format!("finished{j}"), recorder);
         }
-        RuntimeInstance::new(store.internal().runtime_mut(), &compiled, &imports)
-            .map_err(substrate_failure)
+        instantiate_at_once(store, &compiled, &imports)
     }
 
     /// The start for entries of type `ty`, made the first time a
@@ -212,7 +201,7 @@ impl StackSwitchingProvider {
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .find(|(wrapped, _)| wrapped == ty)
-            .map(|(_, start)| start.clone());
+            .map(|(_, start)| *start);
         if let Some(start) = known {
             return Ok(start);
         }
@@ -223,7 +212,7 @@ impl StackSwitchingProvider {
         self.starts
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push((ty.clone(), start.clone()));
+            .push((ty.clone(), start));
         Ok(start)
     }
 
@@ -273,10 +262,10 @@ impl<T: 'static> SuspendProvider<T> for StackSwitchingProvider {
         let index = thread.index();
         let arguments = [
             RuntimeVal::I32(index.cast_signed()),
-            RuntimeVal::FuncRef(Some(entry.clone())),
+            RuntimeVal::FuncRef(Some(*entry)),
         ]
         .into_iter()
-        .chain(args.iter().cloned())
+        .chain(args.iter().copied())
         .collect::<Vec<_>>();
         let mut status = [RuntimeVal::I32(0)];
         start
@@ -314,11 +303,7 @@ impl<T: 'static> SuspendProvider<T> for StackSwitchingProvider {
 
 /// The module `bytes` encode, compiled against `engine` once and kept
 /// in `compiled` for every later store of the engine.
-fn compile(
-    engine: &RuntimeEngine<Backend>,
-    compiled: &Compiled,
-    bytes: Vec<u8>,
-) -> Result<RuntimeModule> {
+fn compile(engine: &RuntimeEngine, compiled: &Compiled, bytes: Vec<u8>) -> Result<RuntimeModule> {
     let mut cache = compiled.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(module) = cache.get(&bytes) {
         return Ok(module.clone());
@@ -335,7 +320,24 @@ fn export_func<T: 'static>(
     name: &str,
 ) -> Result<RuntimeFunc> {
     instance
-        .get_export(store.internal().runtime(), name)
+        .get_export(store.internal().runtime_mut(), name)
+        .map_err(substrate_failure)?
         .and_then(RuntimeExtern::into_func)
         .ok_or_else(|| Error::internal("a switch module lacks one of its exports"))
+}
+
+/// Instantiate `module` in `store` with `imports`, on a backend that
+/// finishes an instantiation at once, as every backend that declares
+/// stack switching does. A store is made synchronously, and the
+/// provider is instantiated as it is made.
+fn instantiate_at_once<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    module: &RuntimeModule,
+    imports: &Imports,
+) -> Result<RuntimeInstance> {
+    at_once(instantiate(store.internal().runtime_mut(), module, imports))
+        .ok_or_else(|| {
+            Error::internal("the backend did not finish instantiating a switch module at once")
+        })?
+        .map_err(substrate_failure)
 }

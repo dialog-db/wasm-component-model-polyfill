@@ -44,6 +44,7 @@ use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CanonOptions, CoreSignature, DataModel, StringEncoding};
 use crate::internal::ErrorInternal;
 use crate::resource::{HandleTables, TableId};
+use crate::runtime_layer::host_func;
 use crate::runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal};
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
@@ -60,9 +61,9 @@ pub fn build_prepare_call<T: 'static>(
     memory: Option<usize>,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, args, _results| Ok(prepare_call(&tables, &abi_state, memory, args)?),
@@ -186,7 +187,7 @@ fn string_encoding(word: u32) -> Result<StringEncoding> {
 /// One `funcref` argument, which an adapter never passes as null.
 fn funcref_argument(args: &[RuntimeVal], index: usize) -> Result<RuntimeFunc> {
     match args.get(index) {
-        Some(RuntimeVal::FuncRef(Some(func))) => Ok(func.clone()),
+        Some(RuntimeVal::FuncRef(Some(func))) => Ok(*func),
         Some(RuntimeVal::FuncRef(None)) => Err(Error::internal(
             "an adapter passed a null function reference to the prepare intrinsic",
         )),

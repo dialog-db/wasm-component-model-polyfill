@@ -21,7 +21,7 @@ the other eight thread built-ins, and the context slots. A stackful
 export's core function runs as its task's implicit thread, and it does
 not take its instance exclusively. Natively on x86_64 Linux every
 thread entry runs on a stack of its own through the stack-switching
-provider, and in the browser through the JSPI provider: a blocking
+provider, and in the browser through the host-suspension provider: a blocking
 built-in suspends the thread, the five thread built-ins that suspend
 or switch suspend it the same way, and a switch starts or resumes the
 thread it names there. A thread of a sync-typed call suspends its
@@ -169,9 +169,10 @@ directives that fail beyond it without one. The harness applies it
 whenever the store runs no guest thread through a provider, on either
 target, because the nested turn is one code path on both: a lane that
 turns the provider off, a native build on a platform without the
-stack-switching proposal, and a browser without JSPI. A browser that
-ships JSPI answers the JSPI provider, which runs guest threads as the
-stack-switching provider does, so the overlay does not apply there. In
+stack-switching proposal, and a browser without JSPI. In a browser that
+ships JSPI the runtime layer declares host suspension, and the
+host-suspension provider runs guest threads as the stack-switching
+provider does, so the overlay does not apply there. In
 a browser the web delta applies beside it. Every line of the overlay
 carries the stack-switch reason, the text of the scheduler's
 stack-switch cause, and no line may name a directive the shared list
@@ -185,7 +186,7 @@ them: the ordinary lanes run the first, and `tests native no-provider`
 and `tests web no-provider` run only the second, from the debug
 archives. `tests all` runs the corpus in all four states. The native
 lanes run the stack-switching provider on the x86_64 Linux host, the
-web lanes run the JSPI provider in the flake's Chromium, and the
+web lanes run the host-suspension provider in the flake's Chromium, and the
 overlay holds the directives only a stack switch passes. The provider
 states of both targets pass the same directives, and the web delta is
 the only difference between them.
@@ -196,10 +197,11 @@ overlay from `it_reports_conformance_progress_without_a_provider`, which
 keeps only the failures the regenerated shared list does not name
 (`WCMP_REGENERATE_BASE` names that list). A directive that fails with
 a provider and passes without one has no place in either list, so the
-shared list names it, and `expected-passes.no-provider.txt` names it
-again: the harness drops the directive from the expectations of a run
-in which no provider runs the store's threads, and fails a run whose
-list names a directive the shared list does not. That list is written
+shared list or the web delta names it, and
+`expected-passes.no-provider.txt` names it again: the harness drops the
+directive from the expectations of a run in which no provider runs the
+store's threads, and fails a run whose list names a directive neither
+the shared list nor the web delta names. That list is written
 by hand, with the reason the directive passes without a provider, and
 `tests regenerate` neither reads nor writes it.
 
@@ -303,7 +305,7 @@ provider:
 | `wasmtime/async` | 387        | 387    | 100.0  | none                                                                   |
 | total            | 2434       | 2370   | 97.4   | deferred-feature 2, substrate 12, validation 20, cascade 30            |
 
-The browser runs its guest threads through the JSPI provider, so its
+The browser runs its guest threads through the host-suspension provider, so its
 summary is the native one, and the eleven lines of
 `expected-failures.web.txt` move eleven passing directives into
 `substrate`: `cm` passes 1095 (97.2%) with substrate 5, `cm/async` 392

@@ -78,7 +78,7 @@ const REALLOC_DURING_ARGUMENT_LOWERING: &[u8] = component!(
 
 #[wcmp_macros::test]
 async fn it_keeps_a_slot_a_realloc_set_away_from_the_export() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, REALLOC_DURING_ARGUMENT_LOWERING)
         .await
         .expect("component parses");
@@ -155,7 +155,7 @@ const REALLOC_DURING_RESULT_LOWERING: &[u8] = component!(
 
 #[wcmp_macros::test]
 async fn it_keeps_a_slot_a_realloc_set_away_from_the_task_that_called_the_host() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, REALLOC_DURING_RESULT_LOWERING)
         .await
         .expect("component parses");
@@ -288,7 +288,7 @@ async fn run_and_read_records(
     bytes: &[u8],
     arguments: Vec<Val>,
 ) -> (Result<Box<[Val]>>, Seen, bool, Result<Box<[Val]>>) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");

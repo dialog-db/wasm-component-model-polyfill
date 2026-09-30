@@ -304,7 +304,9 @@ const COMPOSED: &[u8] = component!(
 async fn instantiate() -> (Store<()>, Instance) {
     let mut config = EngineConfig::new();
     config.wasm_component_model_error_context(true);
-    let engine = Engine::with_config(&config).expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine");
     let component = Component::new(&engine, COMPOSED)
         .await
         .expect("component parses");

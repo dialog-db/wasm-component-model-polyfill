@@ -31,8 +31,8 @@ use crate::concurrency::{
 };
 use crate::internal::EngineInternal;
 use crate::runtime_layer::{
-    Extern as RuntimeExtern, Func as RuntimeFunc, FuncType, Imports, Instance as RuntimeInstance,
-    Module as RuntimeModule, Val as RuntimeVal, ValType as RuntimeValType,
+    Extern as RuntimeExtern, Func as RuntimeFunc, FuncType, Imports, Module as RuntimeModule,
+    Val as RuntimeVal, ValType as RuntimeValType, at_once, host_func, instantiate,
 };
 use crate::store::{StoreContext, StoreContextInternalExt, StoreInternalExt};
 use crate::{Engine, Store};
@@ -93,16 +93,29 @@ fn i32_to_i32() -> FuncType {
     FuncType::new([RuntimeValType::I32], [RuntimeValType::I32])
 }
 
+/// `values` as the old runtime layer printed them, with each float
+/// as a number rather than its bits.
+fn render(values: &[RuntimeVal]) -> Vec<String> {
+    values
+        .iter()
+        .map(|value| match value {
+            RuntimeVal::F32(bits) => format!("F32({:?})", f32::from_bits(*bits)),
+            RuntimeVal::F64(bits) => format!("F64({:?})", f64::from_bits(*bits)),
+            other => format!("{other:?}"),
+        })
+        .collect()
+}
+
 fn describe(status: &EntryStatus) -> String {
     match status {
         EntryStatus::Suspended => "suspended".to_owned(),
-        EntryStatus::Finished(results) => format!("finished with {results:?}"),
+        EntryStatus::Finished(results) => format!("finished with [{}]", render(results).join(", ")),
         EntryStatus::Running => "running".to_owned(),
     }
 }
 
 fn setup() -> Scenario {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let mut store = Store::new(&engine, ()).expect("store");
     let mut context = store.internal().context();
     let ready: Ready = Arc::default();
@@ -111,7 +124,7 @@ fn setup() -> Scenario {
     // The try and the finish of the blocking built-in the shim
     // stands for.
     let tried = ready.clone();
-    let try_part = RuntimeFunc::new(
+    let try_part = host_func(
         context.internal().runtime_mut(),
         i32_to_i32(),
         move |_store, args, results| {
@@ -122,8 +135,9 @@ fn setup() -> Scenario {
             results[0] = RuntimeVal::I32(i32::from(here));
             Ok(())
         },
-    );
-    let finish_part = RuntimeFunc::new(
+    )
+    .expect("the host function");
+    let finish_part = host_func(
         context.internal().runtime_mut(),
         i32_to_i32(),
         move |_store, args, results| {
@@ -133,7 +147,8 @@ fn setup() -> Scenario {
             results[0] = RuntimeVal::I32(key * 10);
             Ok(())
         },
-    );
+    )
+    .expect("the host function");
 
     let provider =
         StackSwitchingProvider::instantiate(&mut context, engine.inner(), engine.switch_modules())
@@ -145,11 +160,12 @@ fn setup() -> Scenario {
 
     let mut imports = Imports::default();
     imports.define("switch", "block", RuntimeExtern::Func(shim));
-    let middle = RuntimeInstance::new(
+    let middle = at_once(instantiate(
         context.internal().runtime_mut(),
         &RuntimeModule::new(engine.inner(), MIDDLE).expect("the module compiles"),
         &imports,
-    )
+    ))
+    .expect("the backend instantiates at once")
     .expect("the middle instance");
 
     // `spawn` starts the second thread as a nested start, from a
@@ -160,14 +176,11 @@ fn setup() -> Scenario {
         let provider = provider.clone();
         let second = second.clone();
         let spawned = spawned.clone();
-        RuntimeFunc::new(
+        host_func(
             context.internal().runtime_mut(),
             FuncType::new([RuntimeValType::I32], []),
             move |runtime, args, _results| {
-                let entry = second
-                    .lock()
-                    .expect("the second entry")
-                    .clone()
+                let entry = (*second.lock().expect("the second entry"))
                     .expect("the second entry is set before any thread runs");
                 let mut context = StoreContext::new(runtime);
                 let status = provider.start(&mut context, SECOND, &entry, &i32_to_i32(), args)?;
@@ -175,6 +188,7 @@ fn setup() -> Scenario {
                 Ok(())
             },
         )
+        .expect("the host function")
     };
 
     let mut imports = Imports::default();
@@ -182,19 +196,22 @@ fn setup() -> Scenario {
         "other",
         "middle",
         middle
-            .get_export(context.internal().runtime(), "middle")
+            .get_export(context.internal().runtime_mut(), "middle")
+            .expect("the export")
             .expect("middle"),
     );
     imports.define("host", "spawn", RuntimeExtern::Func(spawn));
-    let entries = RuntimeInstance::new(
+    let entries = at_once(instantiate(
         context.internal().runtime_mut(),
         &RuntimeModule::new(engine.inner(), ENTRIES).expect("the module compiles"),
         &imports,
-    )
+    ))
+    .expect("the backend instantiates at once")
     .expect("the entries instance");
     let mut entry = |name: &str| {
         entries
-            .get_export(context.internal().runtime(), name)
+            .get_export(context.internal().runtime_mut(), name)
+            .expect("the export")
             .and_then(RuntimeExtern::into_func)
             .expect("an entry export")
     };
@@ -356,7 +373,7 @@ fn it_encodes_an_extension_with_several_shims_and_entry_types() {
     // One extension module with two shims and two entry types, one
     // of which has no results and one several, compiles against the
     // engine that runs the provider.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let mut module = SwitchModule::new(SwitchForm::StackSwitching);
     module.shim(i32_to_i32());
     module.shim(FuncType::new(
@@ -383,13 +400,13 @@ fn it_runs_entries_with_no_results_and_with_several() {
     // base module's workers: a finished entry hands its results over
     // whatever their number and types, and one that suspended hands
     // them over when it finishes after a resume.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let mut store = Store::new(&engine, ()).expect("store");
     let mut context = store.internal().context();
     let ready: Ready = Arc::default();
 
     let tried = ready.clone();
-    let try_block = RuntimeFunc::new(
+    let try_block = host_func(
         context.internal().runtime_mut(),
         i32_to_i32(),
         move |_store, args, results| {
@@ -400,8 +417,9 @@ fn it_runs_entries_with_no_results_and_with_several() {
             results[0] = RuntimeVal::I32(i32::from(here));
             Ok(())
         },
-    );
-    let finish_block = RuntimeFunc::new(
+    )
+    .expect("the host function");
+    let finish_block = host_func(
         context.internal().runtime_mut(),
         i32_to_i32(),
         move |_store, args, results| {
@@ -411,12 +429,13 @@ fn it_runs_entries_with_no_results_and_with_several() {
             results[0] = RuntimeVal::I32(key * 10);
             Ok(())
         },
-    );
+    )
+    .expect("the host function");
     let pair_type = FuncType::new(
         [RuntimeValType::I64, RuntimeValType::F32],
         [RuntimeValType::I64, RuntimeValType::F64],
     );
-    let try_pair = RuntimeFunc::new(
+    let try_pair = host_func(
         context.internal().runtime_mut(),
         FuncType::new(
             [RuntimeValType::I64, RuntimeValType::F32],
@@ -426,8 +445,9 @@ fn it_runs_entries_with_no_results_and_with_several() {
             results[0] = RuntimeVal::I32(1);
             Ok(())
         },
-    );
-    let finish_pair = RuntimeFunc::new(
+    )
+    .expect("the host function");
+    let finish_pair = host_func(
         context.internal().runtime_mut(),
         pair_type.clone(),
         |_store, args, results| {
@@ -435,10 +455,11 @@ fn it_runs_entries_with_no_results_and_with_several() {
                 anyhow::bail!("the pair takes an i64 and an f32");
             };
             results[0] = RuntimeVal::I64(whole + 1);
-            results[1] = RuntimeVal::F64(f64::from(*part) * 2.0);
+            results[1] = RuntimeVal::F64((f64::from(f32::from_bits(*part)) * 2.0).to_bits());
             Ok(())
         },
-    );
+    )
+    .expect("the host function");
 
     let provider =
         StackSwitchingProvider::instantiate(&mut context, engine.inner(), engine.switch_modules())
@@ -453,22 +474,28 @@ fn it_runs_entries_with_no_results_and_with_several() {
         )
         .expect("the engine instantiates the extension with both shims");
     let mut imports = Imports::default();
-    imports.define("switch", "block", RuntimeExtern::Func(shims[0].clone()));
-    imports.define("switch", "pair", RuntimeExtern::Func(shims[1].clone()));
-    let entries = RuntimeInstance::new(
+    imports.define("switch", "block", shims[0]);
+    imports.define("switch", "pair", shims[1]);
+    let entries = at_once(instantiate(
         context.internal().runtime_mut(),
         &RuntimeModule::new(engine.inner(), ENTRY_TYPES).expect("the module compiles"),
         &imports,
-    )
+    ))
+    .expect("the backend instantiates at once")
     .expect("the entries instance");
     let mut entry = |name: &str| {
         entries
-            .get_export(context.internal().runtime(), name)
+            .get_export(context.internal().runtime_mut(), name)
+            .expect("the export")
             .and_then(RuntimeExtern::into_func)
             .expect("an entry export")
     };
     let (none, several, floats) = (entry("none"), entry("several"), entry("floats"));
-    let types = [&none, &several, &floats].map(|func| func.ty(context.internal().runtime()));
+    let types = [&none, &several, &floats].map(|func| {
+        func.ty(context.internal().runtime())
+            .expect("the type")
+            .expect("the engine knows the type of an export")
+    });
 
     let status = provider
         .start(&mut context, FIRST, &none, &types[0], &[])
@@ -501,7 +528,7 @@ fn it_runs_entries_with_no_results_and_with_several() {
             FIRST,
             &floats,
             &types[2],
-            &[RuntimeVal::F32(1.5), RuntimeVal::F64(2.0)],
+            &[RuntimeVal::from(1.5_f32), RuntimeVal::from(2.0_f64)],
         )
         .expect("the entry over floats starts");
     assert_eq!(describe(&status), "finished with [F32(3.5)]");

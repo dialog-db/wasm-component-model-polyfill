@@ -57,7 +57,9 @@ use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::{AsyncLift, CallbackTask};
 use crate::internal::ErrorInternal;
 use crate::resource::{HandleTables, TableId};
-use crate::runtime_layer::{Func as RuntimeFunc, Val as RuntimeVal, substrate_failure};
+use crate::runtime_layer::{
+    Func as RuntimeFunc, Val as RuntimeVal, ValType as RuntimeValType, substrate_failure,
+};
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 
@@ -294,10 +296,28 @@ impl Prepared {
             self.callee_async_typed,
             needs_exclusive,
         )?;
-        if !self.callee_async_typed {
-            return store.internal().run_switch_slot();
-        }
-        run_nested_start(store, self.subtask, self.instance, lower)
+        // The callee's thread may start as the store's flight, under a
+        // provider that runs a thread only once the driver awaits it,
+        // where the caller's thread can suspend for it: the start of a
+        // thread in place inside a host function cannot wait for its
+        // end, a trap's reason included. Only a start this frame makes
+        // may, and none it leaves to a later turn.
+        store
+            .internal()
+            .scheduler_mut()
+            .deferred_mut()
+            .may_defer_start = true;
+        let ran = if self.callee_async_typed {
+            run_nested_start(store, self.subtask, self.instance, lower)
+        } else {
+            store.internal().run_switch_slot()
+        };
+        store
+            .internal()
+            .scheduler_mut()
+            .deferred_mut()
+            .may_defer_start = false;
+        ran
     }
 
     /// Remove the subtask record of a call that failed, once the
@@ -392,7 +412,21 @@ fn start_call<T: 'static>(
     if let Err(error) = store.internal().enter_export_task(task) {
         return report.fail(store, error);
     }
-    let core_arguments = match call_start_function(store, subtask, callee.param_count) {
+    // The types of the callee's core function, which the engine knows
+    // for a function a guest exports. They type the slots of the
+    // values a call hands back: a backend over an engine whose calls do
+    // not carry the types of their values, as the browser's does not,
+    // reads each value as the type of its slot.
+    let callee_ty = match callee.function.ty(store.internal().runtime()) {
+        Ok(ty) => ty,
+        Err(error) => return report.fail(store, substrate_failure(error)),
+    };
+    let parameters = slots(
+        callee_ty.as_ref().map(|ty| ty.params()),
+        callee.param_count,
+        RuntimeVal::F64(0),
+    );
+    let core_arguments = match call_start_function(store, subtask, parameters) {
         Ok(arguments) => arguments,
         Err(error) => {
             let error = abandoned(store, task, error);
@@ -410,16 +444,18 @@ fn start_call<T: 'static>(
     // The callee's flat result types are the adapter's own, and the
     // adapter names only how many there are. A status word is an
     // `i32`, and a stackful callee returns nothing. A synchronously
-    // lifted callee's one flat result can be of any type, so its
-    // slot is filled with the widest flat value, which every backend
-    // overwrites with the value and the type the core function
-    // returned.
+    // lifted callee's one flat result can be of any type, which its
+    // core function's type says.
     let placeholder = match callee.lift {
         Some(_) => RuntimeVal::I32(0),
-        None => RuntimeVal::F64(0.0),
+        None => RuntimeVal::F64(0),
     };
-    let slots = vec![placeholder; callee.result_count];
-    let function = callee.function.clone();
+    let slots = slots(
+        callee_ty.as_ref().map(|ty| ty.results()),
+        callee.result_count,
+        placeholder,
+    );
+    let function = callee.function;
     let finish = move |store: &mut StoreContext<'_, T>, called: Result<Vec<RuntimeVal>>| {
         let outcome = match called {
             Err(error) => Err(abandoned(store, task, error)),
@@ -521,7 +557,7 @@ fn resolve_sync_lift<T: 'static>(
 fn call_start_function<T: 'static>(
     store: &mut StoreContext<'_, T>,
     subtask: SubtaskId,
-    param_count: usize,
+    mut results: Vec<RuntimeVal>,
 ) -> Result<Vec<RuntimeVal>> {
     let tables = store.internal().tables_handle();
     let (start, arguments) = {
@@ -540,14 +576,10 @@ fn call_start_function<T: 'static>(
         if bridge.caller.has_return_pointer() {
             arguments.pop();
         }
-        (bridge.start.clone(), arguments)
+        (bridge.start, arguments)
     };
-    // The callee's flat parameter types are the adapter's own, and
-    // the adapter names only how many there are. The slots are
-    // filled with the widest flat value, which every backend
-    // overwrites with the value and the type the start function
-    // returned.
-    let mut results = vec![RuntimeVal::F64(0.0); param_count];
+    // The start function hands back the callee's flat parameters, one
+    // for each slot of `results`, typed as the callee takes them.
     start
         .call(store.internal().runtime_mut(), &arguments, &mut results)
         .map_err(substrate_failure)?;
@@ -656,19 +688,19 @@ pub fn run_nested_start<T: 'static>(
     let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         store.internal().run_switch_slot()
     }));
+    // A thread that switched to a thread this frame cannot resume, or
+    // whose start this frame left to the store, left that to the
+    // store, and the frame goes on once the store has done it. The
+    // mark comes off then, and the instance's may-not-suspend flag
+    // goes back then, since the thread has not stopped before.
+    if matches!(ran, Ok(Ok(()))) && store.internal().defers_work() {
+        let deferred = store.internal().scheduler_mut().deferred_mut();
+        deferred.ends_nested_start = true;
+        deferred.nested_may_not_suspend = may_not_suspend.map(|old| (instance, old));
+        return Ok(());
+    }
     if let (Some(old), Ok(mut guard)) = (may_not_suspend, tables.lock()) {
         guard.tasks.set_may_not_suspend(instance, old);
-    }
-    // A thread that switched to a thread this frame cannot resume
-    // left that to the store, and the frame goes on once the store
-    // has done it. The mark comes off then.
-    if matches!(ran, Ok(Ok(()))) && store.internal().defers_work() {
-        store
-            .internal()
-            .scheduler_mut()
-            .deferred_mut()
-            .ends_nested_start = true;
-        return Ok(());
     }
     if let Ok(mut guard) = tables.lock() {
         guard.tasks.end_nested_start();
@@ -679,7 +711,7 @@ pub fn run_nested_start<T: 'static>(
 /// One `funcref` argument, which an adapter never passes as null.
 pub fn funcref_argument(args: &[RuntimeVal], index: usize) -> Result<RuntimeFunc> {
     match args.get(index) {
-        Some(RuntimeVal::FuncRef(Some(func))) => Ok(func.clone()),
+        Some(RuntimeVal::FuncRef(Some(func))) => Ok(*func),
         Some(RuntimeVal::FuncRef(None)) => Err(Error::internal(
             "an adapter started a call with a null function reference",
         )),
@@ -745,4 +777,24 @@ fn outstanding_borrows(count: u32) -> Error {
             count: count as usize,
         },
     })
+}
+
+/// The slots of `count` values that a call hands back, each typed as
+/// `types` says where the engine knows the types, and `fallback`
+/// otherwise.
+///
+/// A backend over an engine whose calls do not carry the types of
+/// their values, as the browser's does not, reads each value as the
+/// type of its slot, so a slot has the type of the value it takes
+/// wherever the polyfill knows it. A backend that knows the types
+/// overwrites every slot with the value and the type the call handed
+/// back.
+fn slots(types: Option<&[RuntimeValType]>, count: usize, fallback: RuntimeVal) -> Vec<RuntimeVal> {
+    match types {
+        Some(types) if types.len() == count => types
+            .iter()
+            .map(|ty| RuntimeVal::default_for_ty(ty).unwrap_or(fallback))
+            .collect(),
+        _ => vec![fallback; count],
+    }
 }

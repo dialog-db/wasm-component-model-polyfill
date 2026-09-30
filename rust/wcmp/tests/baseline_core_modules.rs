@@ -62,7 +62,8 @@ async fn it_exposes_a_module_typed_export_as_a_handle() {
         "#
     );
 
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("a component with module-typed exports parses");
@@ -166,7 +167,8 @@ async fn it_exposes_a_module_typed_export_as_a_handle() {
 
 #[wcmp_macros::test]
 async fn it_loads_a_core_module_from_bytes_and_instantiates_it() {
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
 
     let provider = Module::new(&engine, PROVIDER)
@@ -247,7 +249,8 @@ async fn it_reports_a_trapping_start_function_as_an_instantiation_error() {
         (module (global (export "g") i32 i32.const 6))
         "#
     );
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let provider = Module::new(&engine, WRONG_PROVIDER)
         .await
@@ -273,7 +276,8 @@ async fn it_reports_a_trapping_start_function_as_an_instantiation_error() {
 #[wcmp_macros::test]
 async fn it_refuses_bytes_that_are_not_a_core_module() {
     const COMPONENT: &[u8] = component!("(component)");
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     assert!(Module::new(&engine, COMPONENT).await.is_err());
     assert!(Module::new(&engine, b"not wasm").await.is_err());
 }
@@ -297,7 +301,8 @@ async fn it_instantiates_a_core_module_the_host_registered() {
         (module (func (export "f") (result i32) i32.const 101))
         "#
     );
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, IMPORTS_MODULE)
         .await
         .expect("a component importing a core module parses");
@@ -340,7 +345,8 @@ async fn it_instantiates_a_core_module_the_host_registered() {
 
 #[wcmp_macros::test]
 async fn it_reports_a_missing_module_import_as_a_link_error() {
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, IMPORTS_MODULE)
         .await
         .expect("component parses");
@@ -363,7 +369,8 @@ async fn it_reports_a_missing_module_import_as_a_link_error() {
 
 #[wcmp_macros::test]
 async fn it_rejects_a_registered_module_that_does_not_satisfy_the_declared_type() {
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, IMPORTS_MODULE)
         .await
         .expect("component parses");
@@ -476,7 +483,8 @@ async fn it_instantiates_a_module_registered_inside_an_instance_import() {
           (func (export "f") (result i32) i32.const 101))
         "#
     );
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -514,7 +522,8 @@ async fn it_re_exports_an_imported_module() {
         (module (func (export "f") (result i32) i32.const 7))
         "#
     );
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -539,3 +548,6 @@ async fn it_re_exports_an_imported_module() {
         .await
         .expect("the re-exported module instantiates");
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

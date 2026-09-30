@@ -4,9 +4,11 @@ use std::sync::Arc;
 
 use crate::engine::Engine;
 use crate::error::{Error, InstantiationError, Result};
-use crate::internal::{CoreExternInternal, CoreInstanceParts, ModuleInternal};
+use crate::internal::{
+    CoreExternInternal, CoreExternParts, CoreInstanceParts, ErrorInternal, ModuleInternal,
+};
 use crate::runtime_layer::{
-    Imports as RuntimeImports, Instance as RuntimeInstance, Module as RuntimeModule,
+    Imports as RuntimeImports, Module as RuntimeModule, Shared, instantiate, substrate_failure,
 };
 use crate::store::Store;
 use crate::store::StoreInternalExt;
@@ -33,8 +35,11 @@ use super::read;
 #[derive(Clone)]
 pub struct Module {
     /// The runtime-layer module.
-    inner: RuntimeModule,
+    inner: Shared<RuntimeModule>,
     imports: Arc<[ModuleImport]>,
+    /// Whether the module declares an import whose type the host's
+    /// description cannot express, which [`Self::imports`] leaves out.
+    undescribed_imports: bool,
     exports: Arc<[ModuleExport]>,
     /// Whether the module declares a `start` function.
     start: bool,
@@ -58,11 +63,22 @@ impl Module {
 
     /// The imports the module declares, in declaration order.
     /// [`Self::instantiate`] takes one value per entry, in this order.
+    ///
+    /// An import whose type a [`CoreValueType`] cannot express, such as
+    /// a reference to a garbage-collected type, is left out. The host
+    /// cannot supply one, so it cannot instantiate such a module, but a
+    /// component that holds the module still runs it.
+    ///
+    /// [`CoreValueType`]: crate::CoreValueType
     pub fn imports(&self) -> &[ModuleImport] {
         &self.imports
     }
 
-    /// The exports the module declares, in declaration order.
+    /// The exports the module declares, in declaration order. An export
+    /// whose type a [`CoreValueType`] cannot express is left out, as an
+    /// import is from [`Self::imports`].
+    ///
+    /// [`CoreValueType`]: crate::CoreValueType
     pub fn exports(&self) -> &[ModuleExport] {
         &self.exports
     }
@@ -72,7 +88,8 @@ impl Module {
     /// start function.
     ///
     /// The count of `imports` must match the declared count, and
-    /// every value must live in `store`; an item of the wrong kind or
+    /// every value must live in `store`. A module with an import that
+    /// [`Self::imports`] leaves out is refused as unsupported; an item of the wrong kind or
     /// type, and a start function that traps, surface as the runtime
     /// substrate's failure under [`Error::Instantiation`].
     ///
@@ -92,6 +109,11 @@ impl Module {
         store: &mut Store<T>,
         imports: &[CoreExtern],
     ) -> Result<CoreInstance> {
+        if self.undescribed_imports {
+            return Err(Error::unsupported(
+                "host instantiation of a core module with an import of a type the host cannot describe",
+            ));
+        }
         if imports.len() != self.imports.len() {
             return Err(Error::from(InstantiationError::ImportCount {
                 expected: self.imports.len(),
@@ -107,11 +129,10 @@ impl Module {
         store.internal().enter_guest()?;
         let mut runtime_imports = RuntimeImports::default();
         for (declared, supplied) in self.imports.iter().zip(imports) {
-            runtime_imports.define(&declared.module, &declared.name, supplied.inner().clone());
+            runtime_imports.define(&declared.module, &declared.name, *supplied.inner());
         }
         let inner =
-            match RuntimeInstance::new(store.internal().inner_mut(), &self.inner, &runtime_imports)
-            {
+            match instantiate(store.internal().inner_mut(), &self.inner, &runtime_imports).await {
                 Ok(inner) => inner,
                 Err(error) => {
                     // The module's `start` function is guest code, and
@@ -119,14 +140,29 @@ impl Module {
                     if self.start {
                         store.internal().poison();
                     }
-                    return Err(Error::from(InstantiationError::SubstrateFailure(error)));
+                    return Err(substrate_failure(error));
                 }
             };
-        Ok(CoreInstanceParts {
-            inner,
-            store_id: store.internal().id(),
-        }
-        .into())
+        let store_id = store.internal().id();
+        let exports = self
+            .exports
+            .iter()
+            .map(|export| {
+                let item = inner
+                    .get_export(store.internal().inner_mut(), &export.name)
+                    .map_err(substrate_failure)?
+                    .ok_or_else(|| {
+                        Error::internal("a core instance lacks an export its module declares")
+                    })?;
+                let parts = CoreExternParts {
+                    inner: item,
+                    store_id,
+                    ty: export.ty.clone(),
+                };
+                Ok((export.name.clone(), CoreExtern::from(parts)))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(CoreInstanceParts { exports }.into())
     }
 }
 
@@ -134,8 +170,9 @@ impl ModuleInternal for Module {
     fn from_compiled(inner: RuntimeModule, bytes: &[u8]) -> Result<Module> {
         let shape = read::read_shape(bytes)?;
         Ok(Self {
-            inner,
+            inner: Shared::new(inner),
             imports: shape.imports.into(),
+            undescribed_imports: shape.undescribed_imports,
             exports: shape.exports.into(),
             start: shape.start,
         })

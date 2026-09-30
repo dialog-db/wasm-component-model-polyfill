@@ -37,7 +37,7 @@ impl PolyfillRun {
     /// refuses fails before any scenario runs.
     pub fn new() -> Result<Self, Error> {
         let run = PolyfillRun {
-            engine: Engine::new()?,
+            engine: Engine::with_backend(crate::test_backend::backend())?,
         };
         run.linker()?;
         Ok(run)

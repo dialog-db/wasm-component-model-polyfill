@@ -105,8 +105,9 @@ use crate::internal::{
     AccessorInternal, ErrorInternal, HostCallInternal, HostResourceInternal, ResourceTypeIdInternal,
 };
 use crate::linker::{HostCall, HostFuncFuture, HostFuncKind, HostResource};
+use crate::runtime_layer::host_func;
 use crate::runtime_layer::{
-    AsContextMut, Backend, Func as RuntimeFunc, FuncType, Val as RuntimeVal, ValType as CoreType,
+    AsContextMut, Func as RuntimeFunc, FuncType, Val as RuntimeVal, ValType as CoreType,
 };
 use crate::store::StoreContextInternalExt;
 
@@ -230,10 +231,10 @@ pub fn build_resource_drop_trampoline<T: 'static>(
     table: ResourceTableRuntime,
     runtime: ResourceRuntime<T>,
     flags: InstanceFlags,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
     let func_type = FuncType::new([CoreType::I32], []);
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         func_type,
         move |mut store_ctx, args, _results| {
@@ -259,10 +260,9 @@ pub fn build_resource_drop_trampoline<T: 'static>(
                 ResourceDestructor::Host(body) => body(store_ctx.data_mut().host_mut(), rep)
                     .map_err(|err| anyhow::Error::new(err).context(DESTRUCTOR_FAILED))?,
                 ResourceDestructor::Local { function, .. } => {
-                    let destructor = function
+                    let destructor = *function
                         .lock()
-                        .map_err(|_| anyhow!("resource destructor slot poisoned"))?
-                        .clone();
+                        .map_err(|_| anyhow!("resource destructor slot poisoned"))?;
                     if let Some(destructor) = destructor {
                         destructor
                             .call(&mut store_ctx, &[RuntimeVal::I32(rep as i32)], &mut [])
@@ -285,10 +285,10 @@ pub fn build_resource_new_trampoline<T: 'static>(
     store: &mut StoreContext<'_, T>,
     table: ResourceTableRuntime,
     flags: InstanceFlags,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
     let func_type = FuncType::new([CoreType::I32], [CoreType::I32]);
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         func_type,
         move |mut store_ctx, args, results| {
@@ -308,10 +308,10 @@ pub fn build_resource_new_trampoline<T: 'static>(
 pub fn build_resource_rep_trampoline<T: 'static>(
     store: &mut StoreContext<'_, T>,
     table: ResourceTableRuntime,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
     let func_type = FuncType::new([CoreType::I32], [CoreType::I32]);
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         func_type,
         move |_store_ctx, args, results| {
@@ -628,7 +628,7 @@ enum HostOutcome {
 /// lower, or the status word of an asynchronous one.
 #[allow(clippy::too_many_arguments)]
 fn invoke_trampoline<T: 'static>(
-    mut store_ctx: crate::runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
+    mut store_ctx: crate::runtime_layer::StoreContextMut<'_, StoreData<T>>,
     signature: &Arc<Signature>,
     declared: &Arc<CanonOptions>,
     kind: LowerKind,
@@ -669,11 +669,7 @@ fn invoke_trampoline<T: 'static>(
     // failure travels past the pop that would have ended the subtask,
     // so the whole of it is one fallible step whose one error path
     // ends the subtask below.
-    let called = (|store_ctx: &mut crate::runtime_layer::StoreContextMut<
-        '_,
-        StoreData<T>,
-        Backend,
-    >|
+    let called = (|store_ctx: &mut crate::runtime_layer::StoreContextMut<'_, StoreData<T>>|
      -> Result<(HostOutcome, Option<usize>)> {
         let mut cursor = 0usize;
         let mut lift_ctx = BoundaryContext::new(
@@ -857,7 +853,7 @@ fn invoke_trampoline<T: 'static>(
 /// scope the pop uncovers.
 #[allow(clippy::too_many_arguments)]
 fn return_host_values<T: 'static>(
-    store_ctx: &mut crate::runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
+    store_ctx: &mut crate::runtime_layer::StoreContextMut<'_, StoreData<T>>,
     signature: &FunctionType,
     tables: &Arc<Mutex<HandleTables>>,
     options: BoundaryOptions,
@@ -902,7 +898,7 @@ fn return_host_values<T: 'static>(
 /// belongs to the caller's task.
 #[allow(clippy::too_many_arguments)]
 fn write_host_result<T: 'static>(
-    store_ctx: &mut crate::runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
+    store_ctx: &mut crate::runtime_layer::StoreContextMut<'_, StoreData<T>>,
     signature: &FunctionType,
     options: BoundaryOptions,
     instance: BoundaryInstance,
@@ -978,7 +974,7 @@ fn write_host_result<T: 'static>(
 /// subtask's index in the caller's handle table when it was not.
 #[allow(clippy::too_many_arguments)]
 fn start_host_call<T: 'static>(
-    store_ctx: &mut crate::runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
+    store_ctx: &mut crate::runtime_layer::StoreContextMut<'_, StoreData<T>>,
     signature: &Arc<Signature>,
     declared: &CanonOptions,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
@@ -1062,7 +1058,7 @@ fn start_host_call<T: 'static>(
 /// crossing runs.
 #[allow(clippy::too_many_arguments)]
 fn block_on_host_call<T: 'static>(
-    store_ctx: &mut crate::runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
+    store_ctx: &mut crate::runtime_layer::StoreContextMut<'_, StoreData<T>>,
     signature: &Arc<Signature>,
     declared: &CanonOptions,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
@@ -1135,7 +1131,7 @@ fn block_on_host_call<T: 'static>(
 /// the stack.
 #[allow(clippy::too_many_arguments)]
 fn write_produced<T: 'static>(
-    store_ctx: &mut crate::runtime_layer::StoreContextMut<'_, StoreData<T>, Backend>,
+    store_ctx: &mut crate::runtime_layer::StoreContextMut<'_, StoreData<T>>,
     signature: &FunctionType,
     tables: &Arc<Mutex<HandleTables>>,
     options: BoundaryOptions,

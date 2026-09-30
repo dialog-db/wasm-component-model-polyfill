@@ -233,7 +233,9 @@ const MASSIVE_WRITE: &[u8] = component!(
 async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
     let mut config = EngineConfig::new();
     config.wasm_component_model_more_async_builtins(true);
-    let engine = Engine::with_config(&config).expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine");
     let component = Component::new(&engine, bytes)
         .await
         .expect("the component parses");
@@ -512,3 +514,6 @@ async fn it_fails_a_write_of_a_value_past_the_copy_budget_with_the_budget_cause(
         "{message}"
     );
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

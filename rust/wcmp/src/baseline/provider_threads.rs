@@ -16,7 +16,7 @@
 //! checks that too, so the tests run in every lane: the native engine
 //! selects the stack-switching provider on x86_64 Linux and no
 //! provider elsewhere, and a browser that ships JavaScript Promise
-//! Integration runs every thread through the JSPI provider.
+//! Integration runs every thread through the host-suspension provider.
 
 #![cfg(test)]
 
@@ -525,12 +525,15 @@ fn engine(provider: bool) -> Engine {
     config.wasm_component_model_threading(true);
     config.wasm_component_model_more_async_builtins(true);
     config.suspend_provider(provider);
-    Engine::with_config(&config).expect("engine")
+    Engine::with_backend(crate::runtime_layer::test_backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine")
 }
 
 /// Whether `engine` runs guest threads through a provider: the
-/// stack-switching provider natively on x86_64 Linux, and the JSPI
-/// provider in a browser that ships JSPI.
+/// stack-switching provider natively on x86_64 Linux, and the
+/// host-suspension provider in a browser that ships JavaScript Promise
+/// Integration.
 fn has_provider(engine: &Engine) -> bool {
     engine.suspend_provider() != SuspendProviderKind::None
 }
@@ -1016,7 +1019,7 @@ async fn it_reuses_the_workers_of_finished_threads() {
     // each suspends once. A worker whose thread finished waits in the
     // switch module's pool, and the next thread runs on it, so the
     // store never holds more workers than it had threads alive at
-    // once, however many calls it runs. The JSPI provider has no
+    // once, however many calls it runs. The host-suspension provider has no
     // workers, since the browser keeps each stack, and runs the same
     // calls.
     let engine = engine(true);
@@ -1466,7 +1469,7 @@ async fn it_resumes_a_thread_of_its_own_instance_from_a_synchronous_export_and_n
     // the built-in, as the reference resumes a thread from inside the
     // trampoline and goes on in it once the thread stops. Under the
     // stack-switching provider the built-in resumes the worker in
-    // place. The JSPI provider cannot resume a stack from inside a
+    // place. The host-suspension provider cannot resume a stack from inside a
     // call, so `wake`'s own thread suspends as well, and the scheduler
     // resumes the worker, then `wake`. Either way no other item runs
     // and no host task is polled in between: the other instance's
@@ -1481,8 +1484,8 @@ async fn it_resumes_a_thread_of_its_own_instance_from_a_synchronous_export_and_n
     #[cfg(target_arch = "wasm32")]
     assert_eq!(
         engine.suspend_provider(),
-        SuspendProviderKind::Jspi,
-        "the web lane runs the JSPI provider"
+        SuspendProviderKind::HostSuspension,
+        "the web lane runs the host-suspension provider"
     );
     let notes: Notes = Arc::default();
     let mut linker = noting(&engine, &notes);
@@ -1644,7 +1647,7 @@ async fn it_resumes_a_suspended_thread_of_its_own_instance_from_a_blocked_synchr
     // through the provider from inside the yield, as the reference's
     // `canon_lift` runs a ready thread of the instance once a thread
     // of a sync-typed call blocks. Under the stack-switching provider
-    // the resume is made in place. The JSPI provider cannot resume a
+    // the resume is made in place. The host-suspension provider cannot resume a
     // stack from inside a call, so `wake`'s own thread suspends as
     // well, and the scheduler resumes the worker, then `wake`. Either
     // way nothing else runs and no host task is polled in between: the
@@ -1744,7 +1747,10 @@ async fn it_runs_nothing_in_a_store_dropped_while_a_resumed_thread_has_yet_to_ru
     // is freed then, and its host data with it, which notes `500`. A
     // later store of the same engine runs the export to its end.
     let engine = engine(true);
-    assert_eq!(engine.suspend_provider(), SuspendProviderKind::Jspi);
+    assert_eq!(
+        engine.suspend_provider(),
+        SuspendProviderKind::HostSuspension
+    );
     let notes: Notes = Arc::default();
     let mut linker = noting::<NotesItsDrop>(&engine, &notes);
     linker
@@ -1798,15 +1804,19 @@ async fn it_runs_nothing_in_a_store_dropped_while_a_resumed_thread_has_yet_to_ru
 
 #[cfg(target_arch = "wasm32")]
 #[wcmp_macros::test]
-async fn it_takes_the_stop_of_a_resume_whose_driver_was_dropped_on_the_next_call() {
+async fn it_fails_the_next_call_with_the_trap_of_a_thread_whose_driver_was_dropped() {
     // The first poll of the call resumes the export's thread, which
     // the browser runs on a microtask, and the test drops the call
-    // there. The resume stays with the store: the next call's driver
-    // takes the thread's stop before it does anything else, and runs
-    // its own thread to its end. The first thread went on in the
-    // meantime, so both threads dropped their handle.
+    // there. The runtime layer gives the store back to the host when
+    // the driver drops, so the thread traps the next time it reaches
+    // the store, and nothing learns how it ended. The next call's
+    // driver takes that stop before it does anything else, as the trap
+    // it is: the call fails with it, and the trap poisons the store.
     let engine = engine(true);
-    assert_eq!(engine.suspend_provider(), SuspendProviderKind::Jspi);
+    assert_eq!(
+        engine.suspend_provider(),
+        SuspendProviderKind::HostSuspension
+    );
     let notes: Notes = Arc::default();
     let mut linker = noting(&engine, &notes);
     linker
@@ -1830,15 +1840,24 @@ async fn it_takes_the_stop_of_a_resume_whose_driver_was_dropped_on_the_next_call
         "the resume outlived the call that made it"
     );
 
-    let result = run
+    let error = run
         .call(&mut store, &[])
         .await
-        .expect("the next call runs to its end");
-    assert_eq!(result.as_ref(), [Val::U32(7)]);
-    assert_eq!(
-        notes.lock().expect("notes").clone(),
-        vec![99, 99],
-        "the thread whose call was dropped ran on, and so did the next one"
+        .expect_err("the next call fails with the dropped thread's trap");
+    assert!(
+        matches!(
+            error,
+            Error::Scheduler(crate::SchedulerCause::ThreadAbandoned)
+        ),
+        "expected the abandoned thread's trap, got {error:?}"
+    );
+    let error = run
+        .call(&mut store, &[])
+        .await
+        .expect_err("the trap poisoned the store");
+    assert!(
+        matches!(error, Error::Task(crate::TaskCause::CannotEnter)),
+        "expected the cannot-enter cause, got {error:?}"
     );
 }
 
@@ -1914,11 +1933,11 @@ const STARTS_A_CALLEE_THAT_TRAPS: &[u8] = component!(
 #[wcmp_macros::test]
 async fn it_fails_a_thread_with_its_own_trap_or_host_error_before_and_after_it_suspends() {
     // A thread that fails before it first suspends fails its call with
-    // its own trap, as one that fails after a resumption does. The JSPI
-    // provider learns of a trap only from the rejection of the
-    // thread's promise, which the browser reports on a microtask, and
-    // the scheduler waits for it rather than reporting the start's
-    // failure without its reason. A host import's error is the failure
+    // its own trap, as one that fails after a resumption does. The
+    // host-suspension provider starts a thread from a turn as the
+    // store's flight, which the driver awaits, so the trap reaches the
+    // scheduler with its reason, even in the browser, which reports it
+    // on a microtask. A host import's error is the failure
     // either way, and one thread's host error does not leak into
     // another's failure. A failure is a trap, and a trap poisons the
     // store, so each call runs in a store of its own.
@@ -1966,7 +1985,7 @@ async fn it_fails_the_caller_of_a_nested_start_whose_callee_traps_before_it_susp
     // The caller's asynchronous lower starts the callee from inside
     // the start intrinsic, and the callee traps at once. The trap
     // fails the caller's call with the callee's own trap, and the
-    // caller never gets past the lower. Under the JSPI provider the
+    // caller never gets past the lower. Under the host-suspension provider the
     // intrinsic learns of the trap only on a microtask, so the caller's
     // thread suspends in the intrinsic's shim until the scheduler has
     // the trap, and fails there.

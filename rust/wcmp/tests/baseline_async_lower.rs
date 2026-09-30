@@ -533,11 +533,11 @@ where
 /// Every other store in this file carries `()`, because nothing else
 /// here reads the store from a registration. A registration that does
 /// read it needs a store with something in it to find.
-async fn caller_holding<T: 'static>(
+async fn caller_holding<T: Send + 'static>(
     data: T,
     register: impl FnOnce(&mut Linker<T>),
 ) -> (Store<T>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, CALLS_A_HOST_ASYNC_FUNCTION)
         .await
         .expect("component parses");
@@ -557,7 +557,7 @@ async fn instantiate<F>(binary: &[u8], register: F) -> (Store<()>, Instance)
 where
     F: FnOnce(&mut Linker<()>),
 {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, binary)
         .await
         .expect("component parses");
@@ -728,7 +728,7 @@ async fn it_refuses_an_asynchronous_lower_of_a_sync_typed_import() {
     // synchronous lower and nothing else, and the trampoline's
     // returned-at-once path is a concurrent registration's ready
     // future — the two tests above it.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let error = Component::new(&engine, CALLS_A_HOST_SYNC_FUNCTION)
         .await
         .expect_err("a sync-typed import cannot be lowered with the `async` option");
@@ -1115,7 +1115,7 @@ async fn it_fails_an_untyped_synchronous_call_with_the_same_mismatch() {
             (canon lift (core func $i "run"))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, SYNCHRONOUS_CALLER)
         .await
         .expect("component parses");
@@ -1150,7 +1150,7 @@ async fn it_fails_an_untyped_synchronous_call_with_the_same_mismatch() {
 /// mints a handle for it, and a host `async` function that takes a
 /// borrow and whose future is pending on its first poll.
 async fn lender() -> (Store<()>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, LENDS_A_BORROW_TO_A_HOST_ASYNC_FUNCTION)
         .await
         .expect("component parses");
@@ -1460,3 +1460,6 @@ async fn it_ends_the_entry_and_drops_the_other_call_when_one_calls_host_body_fai
         "the next driver fails with the cannot-enter cause, got {refused:?}"
     );
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

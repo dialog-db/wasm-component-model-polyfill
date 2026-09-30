@@ -1451,7 +1451,7 @@ const MILLISECOND: u64 = 1_000_000;
 /// `component` instantiated in a store of its own, through a linker
 /// with the test host functions.
 async fn instantiate(component: &[u8]) -> (Store<Host>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let mut linker = Linker::new(&engine);
     host::define(&mut linker).expect("the test host functions");
     let component = Component::new(&engine, component)
@@ -1900,3 +1900,6 @@ async fn it_refuses_a_link_whose_import_or_export_a_component_lacks_instead_of_s
         })
     );
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

@@ -5,7 +5,7 @@ use super::thread_id::ThreadId;
 
 /// A thread whose stop the scheduler waits for, under a provider that
 /// runs a thread on after the call that started or resumed it
-/// returned: a thread the JSPI provider resumed, which runs on a
+/// returned: a thread the host-suspension provider resumed, which runs on a
 /// microtask, or one whose start failed and whose trap the browser
 /// hands over on a microtask.
 ///

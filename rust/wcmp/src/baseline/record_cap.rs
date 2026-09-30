@@ -41,7 +41,7 @@ const TABLE_FULL: &str = "resource table has no free keys";
 
 /// Instantiate `NEW_SET` in a fresh store with nothing registered.
 async fn instantiate() -> (Store<()>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, NEW_SET)
         .await
         .expect("component parses");

@@ -833,7 +833,9 @@ async fn instantiate(binary: &[u8], provider: bool) -> (Store<()>, Instance) {
         .wasm_component_model_threading(true)
         .wasm_component_model_more_async_builtins(true)
         .suspend_provider(provider);
-    let engine = Engine::with_config(&config).expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine");
     assert_eq!(
         engine.suspend_provider() != SuspendProviderKind::None,
         provider,
@@ -1092,3 +1094,6 @@ async fn it_answers_one_from_a_cancellable_yield_on_the_real_stack_when_the_prov
         );
     }
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

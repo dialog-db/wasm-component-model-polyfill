@@ -515,8 +515,8 @@ fn zero_of_flat(t: FlatType) -> RuntimeVal {
     match t {
         FlatType::I32 => RuntimeVal::I32(0),
         FlatType::I64 => RuntimeVal::I64(0),
-        FlatType::F32 => RuntimeVal::F32(0.0),
-        FlatType::F64 => RuntimeVal::F64(0.0),
+        FlatType::F32 => RuntimeVal::F32(0),
+        FlatType::F64 => RuntimeVal::F64(0),
     }
 }
 
@@ -534,28 +534,20 @@ fn reinterpret_flat(
     position: AbiPosition,
 ) -> Result<RuntimeVal> {
     if from == to {
-        return Ok(slot.clone());
+        return Ok(*slot);
     }
     let mismatch = || invalid_encoding(ty, position, "flat slot reinterpretation not supported");
     Ok(match (slot, from, to) {
         // Lowering into the joined slot.
-        (RuntimeVal::F32(v), FlatType::F32, FlatType::I32) => RuntimeVal::I32(v.to_bits() as i32),
+        (RuntimeVal::F32(v), FlatType::F32, FlatType::I32) => RuntimeVal::I32(*v as i32),
         (RuntimeVal::I32(v), FlatType::I32, FlatType::I64) => RuntimeVal::I64(i64::from(*v as u32)),
-        (RuntimeVal::F32(v), FlatType::F32, FlatType::I64) => {
-            RuntimeVal::I64(i64::from(v.to_bits()))
-        }
-        (RuntimeVal::F64(v), FlatType::F64, FlatType::I64) => RuntimeVal::I64(v.to_bits() as i64),
+        (RuntimeVal::F32(v), FlatType::F32, FlatType::I64) => RuntimeVal::I64(i64::from(*v)),
+        (RuntimeVal::F64(v), FlatType::F64, FlatType::I64) => RuntimeVal::I64(*v as i64),
         // Lifting out of the joined slot.
-        (RuntimeVal::I32(v), FlatType::I32, FlatType::F32) => {
-            RuntimeVal::F32(f32::from_bits(*v as u32))
-        }
+        (RuntimeVal::I32(v), FlatType::I32, FlatType::F32) => RuntimeVal::F32(*v as u32),
         (RuntimeVal::I64(v), FlatType::I64, FlatType::I32) => RuntimeVal::I32(*v as i32),
-        (RuntimeVal::I64(v), FlatType::I64, FlatType::F32) => {
-            RuntimeVal::F32(f32::from_bits(*v as u32))
-        }
-        (RuntimeVal::I64(v), FlatType::I64, FlatType::F64) => {
-            RuntimeVal::F64(f64::from_bits(*v as u64))
-        }
+        (RuntimeVal::I64(v), FlatType::I64, FlatType::F32) => RuntimeVal::F32(*v as u32),
+        (RuntimeVal::I64(v), FlatType::I64, FlatType::F64) => RuntimeVal::F64(*v as u64),
         _ => return Err(mismatch()),
     })
 }
@@ -587,8 +579,8 @@ fn primitive_to_flat(
         (PrimitiveType::U32, Val::U32(v)) => RuntimeVal::I32(*v as i32),
         (PrimitiveType::S64, Val::S64(v)) => RuntimeVal::I64(*v),
         (PrimitiveType::U64, Val::U64(v)) => RuntimeVal::I64(*v as i64),
-        (PrimitiveType::F32, Val::F32(v)) => RuntimeVal::F32(*v),
-        (PrimitiveType::F64, Val::F64(v)) => RuntimeVal::F64(*v),
+        (PrimitiveType::F32, Val::F32(v)) => RuntimeVal::F32(v.to_bits()),
+        (PrimitiveType::F64, Val::F64(v)) => RuntimeVal::F64(v.to_bits()),
         (PrimitiveType::Char, Val::Char(c)) => RuntimeVal::I32(*c as i32),
         (PrimitiveType::String, _) => {
             return Err(Error::internal(
@@ -650,11 +642,11 @@ fn primitive_from_flat(
             _ => Err(mismatch()),
         },
         PrimitiveType::F32 => match take(cursor) {
-            Some(RuntimeVal::F32(v)) => Ok(Val::F32(v)),
+            Some(RuntimeVal::F32(v)) => Ok(Val::F32(f32::from_bits(v))),
             _ => Err(mismatch()),
         },
         PrimitiveType::F64 => match take(cursor) {
-            Some(RuntimeVal::F64(v)) => Ok(Val::F64(v)),
+            Some(RuntimeVal::F64(v)) => Ok(Val::F64(f64::from_bits(v))),
             _ => Err(mismatch()),
         },
         PrimitiveType::Char => match take(cursor) {

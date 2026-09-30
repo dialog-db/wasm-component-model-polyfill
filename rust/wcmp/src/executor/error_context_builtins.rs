@@ -53,9 +53,9 @@ use crate::error::{AbiPosition, Error, ErrorContextCause, TaskCause};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CanonOptions, CoreSignature};
 use crate::resource::{HandleLookupError, HandleTables, TableId};
+use crate::runtime_layer::host_func;
 use crate::runtime_layer::{
-    AsContextMut, Backend, Func as RuntimeFunc, StoreContextMut as RuntimeContextMut,
-    Val as RuntimeVal,
+    AsContextMut, Func as RuntimeFunc, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
 };
 use crate::store::StoreContextInternalExt;
 use crate::store::{StoreContext, StoreData};
@@ -73,10 +73,10 @@ pub fn build_error_context_new<T: 'static>(
     options: &CanonOptions,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
     let options = Arc::new(options.clone());
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |store_ctx, args, results| {
@@ -95,10 +95,10 @@ pub fn build_error_context_debug_message<T: 'static>(
     options: &CanonOptions,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
     let options = Arc::new(options.clone());
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |store_ctx, args, _results| {
@@ -115,9 +115,9 @@ pub fn build_error_context_drop<T: 'static>(
     instance: usize,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |mut store_ctx, args, _results| {
@@ -150,9 +150,9 @@ pub fn build_error_context_transfer<T: 'static>(
     instances: Arc<[usize]>,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, args, results| {
@@ -194,7 +194,7 @@ fn error_context_table(
 /// The body of the `error-context.new` built-in: the index of the
 /// new entry, or the trap.
 fn error_context_new<T: 'static>(
-    mut store_ctx: RuntimeContextMut<'_, StoreData<T>, Backend>,
+    mut store_ctx: RuntimeContextMut<'_, StoreData<T>>,
     options: &Arc<CanonOptions>,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     tables: &Arc<Mutex<HandleTables>>,
@@ -235,7 +235,7 @@ fn error_context_new<T: 'static>(
 
 /// The body of the `error-context.debug-message` built-in.
 fn error_context_debug_message<T: 'static>(
-    mut store_ctx: RuntimeContextMut<'_, StoreData<T>, Backend>,
+    mut store_ctx: RuntimeContextMut<'_, StoreData<T>>,
     options: &Arc<CanonOptions>,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     tables: &Arc<Mutex<HandleTables>>,

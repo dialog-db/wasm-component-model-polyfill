@@ -76,16 +76,16 @@ impl BoundaryOptions {
             instance: state.component_instances.get(declared.instance).copied(),
             memory: declared
                 .memory
-                .and_then(|slot| state.memories.get(slot).and_then(|m| m.clone())),
+                .and_then(|slot| state.memories.get(slot).and_then(|m| *m)),
             realloc: declared
                 .realloc
-                .and_then(|slot| state.reallocs.get(slot).and_then(|f| f.clone())),
+                .and_then(|slot| state.reallocs.get(slot).and_then(|f| *f)),
             post_return: declared
                 .post_return
-                .and_then(|slot| state.post_returns.get(slot).and_then(|f| f.clone())),
+                .and_then(|slot| state.post_returns.get(slot).and_then(|f| *f)),
             callback: declared
                 .callback
-                .and_then(|slot| state.callbacks.get(slot).and_then(|f| f.clone())),
+                .and_then(|slot| state.callbacks.get(slot).and_then(|f| *f)),
             string_encoding: declared.string_encoding,
             data_model: declared.data_model,
         }
@@ -100,13 +100,9 @@ impl BoundaryOptions {
         let state = abi_state
             .lock()
             .map_err(|_| Error::internal("ABI runtime state lock poisoned"))?;
-        let memory = state
-            .memories
-            .get(slot)
-            .and_then(|m| m.clone())
-            .ok_or_else(|| {
-                Error::internal("an adapter addressed a memory that is not extracted")
-            })?;
+        let memory = state.memories.get(slot).and_then(|m| *m).ok_or_else(|| {
+            Error::internal("an adapter addressed a memory that is not extracted")
+        })?;
         Ok(Self {
             declared: None,
             instance: None,

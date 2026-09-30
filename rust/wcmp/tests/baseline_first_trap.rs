@@ -562,7 +562,9 @@ fn engine(provider: bool, threading: bool) -> Engine {
     let mut config = EngineConfig::new();
     config.suspend_provider(provider);
     config.wasm_component_model_threading(threading);
-    Engine::with_config(&config).expect("engine")
+    Engine::with_backend(crate::test_backend::backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine")
 }
 
 async fn it_ends_a_later_driver_when_a_callback_task_that_resolved_traps_in_a_later_turn_with(
@@ -1061,3 +1063,6 @@ async fn it_ends_a_later_driver_when_a_thread_that_outlived_its_async_task_traps
             .await;
     }
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

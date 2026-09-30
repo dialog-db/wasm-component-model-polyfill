@@ -19,7 +19,8 @@ wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 #[wcmp_macros::test]
 async fn it_constructs_an_engine() {
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
 
     // Engines are advertised as cheap to clone; exercise that.
     let _clone = engine.clone();
@@ -27,7 +28,8 @@ async fn it_constructs_an_engine() {
 
 #[wcmp_macros::test]
 async fn it_constructs_a_store() {
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
 
     // Construct against an engine; confirm the host-data slot is reachable
     // through `data` and `data_mut`.
@@ -54,7 +56,8 @@ async fn it_loads_a_component_from_bytes() {
         "#
     );
 
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, GREETER)
         .await
         .expect("component parses");
@@ -105,7 +108,8 @@ async fn it_instantiates_a_component_through_a_linker() {
         "#
     );
 
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, ADDER)
         .await
         .expect("component parses");
@@ -147,7 +151,8 @@ async fn it_supports_multiple_independent_instances() {
         "#
     );
 
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, COUNTER)
         .await
         .expect("component parses");
@@ -221,7 +226,8 @@ async fn it_resolves_package_and_interface_identifiers_with_semver() {
         "#
     );
 
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, HARNESS)
         .await
         .expect("component parses");
@@ -278,7 +284,8 @@ async fn it_defines_an_untyped_host_function() {
         "#
     );
 
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -350,7 +357,8 @@ async fn it_defines_a_typed_host_function() {
         "#
     );
 
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -443,7 +451,8 @@ async fn it_defines_a_host_resource_with_a_sync_destructor() {
         dropped: dropped.clone(),
     };
 
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -520,7 +529,8 @@ async fn it_invokes_an_exported_component_function() {
         "#
     );
 
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -571,7 +581,7 @@ async fn it_dispatches_to_multiple_host_functions_in_one_interface() {
             (canon lift (core func $i "incr-then-decr"))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -644,7 +654,7 @@ async fn it_passes_a_string_argument_to_a_host_function() {
         "#
     );
 
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -709,7 +719,7 @@ async fn it_propagates_a_host_function_error_through_the_call() {
             (canon lift (core func $i "trigger"))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -772,7 +782,7 @@ async fn it_supports_typed_host_function_with_unit_result() {
             (canon lift (core func $i "go"))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -822,7 +832,7 @@ async fn it_rejects_a_component_whose_import_signature_disagrees_with_the_regist
             (canon lift (core func $i "go"))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -856,7 +866,7 @@ async fn it_rejects_a_call_whose_argument_count_disagrees_with_the_signature() {
             (canon lift (core func $i "id"))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -886,7 +896,7 @@ async fn it_rejects_a_typed_export_call_whose_argument_type_disagrees() {
             (canon lift (core func $i "id"))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -916,7 +926,7 @@ async fn it_resolves_an_unversioned_import_against_an_unversioned_registration()
             (canon lift (core func $i "answer"))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -950,7 +960,7 @@ async fn it_treats_an_empty_unmatched_interface_import_as_vacuous() {
             (canon lift (core func $i "noop"))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -989,7 +999,7 @@ async fn it_rejects_an_import_with_a_required_item_when_the_registration_version
             (canon lift (core func $i "go"))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -1026,7 +1036,7 @@ async fn it_inspects_a_components_imports_and_exports() {
             (canon lift (core func $i "answer"))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -1072,7 +1082,7 @@ const PLAIN_LOG: &[u8] = component!(
 
 #[wcmp_macros::test]
 async fn it_supports_a_plain_named_top_level_import() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, PLAIN_LOG)
         .await
         .expect("component parses");
@@ -1099,7 +1109,7 @@ async fn it_supports_a_plain_named_top_level_import() {
 
 #[wcmp_macros::test]
 async fn it_reports_an_unregistered_plain_named_import_as_unresolved() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, PLAIN_LOG)
         .await
         .expect("component parses");
@@ -1152,7 +1162,7 @@ async fn it_supports_a_plain_named_instance_import() {
             (canon lift (core func $i "run"))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -1247,7 +1257,8 @@ async fn it_navigates_instance_typed_exports() {
         "#
     );
 
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -1359,7 +1370,8 @@ async fn it_supports_a_typed_export_call_surface() {
         "#
     );
 
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -1420,7 +1432,7 @@ async fn it_rejects_a_call_made_through_a_different_store() {
             (canon lift (core func $i "one"))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -1474,7 +1486,9 @@ async fn it_reports_an_unsupported_feature_as_a_structured_error() {
     );
     let mut config = wcmp::EngineConfig::default();
     config.wasm_component_model_gc(true);
-    let engine = Engine::with_config(&config).expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine");
     let err = Component::new(&engine, COMPONENT)
         .await
         .expect_err("the garbage-collected data model is not supported yet");
@@ -1510,7 +1524,8 @@ async fn it_navigates_plain_named_instance_exports() {
         "#
     );
 
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("a component with plain-named instance exports parses");
@@ -1613,7 +1628,8 @@ const NESTED_IMPORT: &[u8] = component!(
 
 #[wcmp_macros::test]
 async fn it_links_an_import_nested_two_levels() {
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, NESTED_IMPORT)
         .await
         .expect("a component with a two-level import parses");
@@ -1717,7 +1733,8 @@ async fn it_links_a_resource_nested_two_levels() {
           (func (export "run") (canon lift (core func $i "run"))))
         "#
     );
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -1776,7 +1793,8 @@ async fn it_links_an_interface_named_import_with_a_nested_instance() {
           (func (export "run") (result u32) (canon lift (core func $i "run"))))
         "#
     );
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -1813,7 +1831,8 @@ async fn it_links_a_recursively_empty_instance_import_without_a_registration() {
               (export "y" (instance)))))))
         "#
     );
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, EMPTY).await.expect("parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
@@ -1851,7 +1870,8 @@ async fn it_rejects_a_registration_of_the_wrong_kind() {
             (export "f" (func (result u32))))))
         "#
     );
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
 
     let mut linker: Linker<()> = Linker::new(&engine);
@@ -1987,7 +2007,8 @@ async fn it_links_a_function_import_under_an_interface_name_through_the_root_nam
     // The host registers the function on the root view under the
     // import's whole name, as it would in Wasmtime, and the guest's
     // call reaches the closure.
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, INTERFACE_NAMED_FUNCTION)
         .await
         .expect("component parses");
@@ -2018,7 +2039,8 @@ async fn it_refuses_a_function_import_under_an_interface_name_with_no_root_regis
     // under the same identifier does not satisfy it either. The
     // import wants one host item; a linker instance holds an
     // interface's worth of them, and none of them is the import.
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, INTERFACE_NAMED_FUNCTION)
         .await
         .expect("component parses");
@@ -2067,7 +2089,8 @@ async fn it_refuses_a_registration_of_another_kind_under_an_interface_name() {
     // name looks like: an instance registered under the name the
     // component imports as a function is `expected func found
     // instance`, as it is for a plain name.
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, INTERFACE_NAMED_FUNCTION)
         .await
         .expect("component parses");
@@ -2131,7 +2154,8 @@ async fn it_links_a_function_import_under_an_interface_name_to_a_compatible_root
     // The host registered `@0.1.0`; the component imports `@0.1.3`.
     // Both sit on the `0.1` compatibility track, so the root
     // registration answers and the guest's call reaches its closure.
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, INTERFACE_NAMED_FUNCTION_LATER_PATCH)
         .await
         .expect("component parses");
@@ -2161,7 +2185,8 @@ async fn it_prefers_an_exact_root_registration_over_a_compatible_one() {
     // `@0.1.3` takes the exact registration. The two closures
     // differ, so the value the guest gets back names the one that
     // answered.
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, INTERFACE_NAMED_FUNCTION_LATER_PATCH)
         .await
         .expect("component parses");
@@ -2197,7 +2222,8 @@ async fn it_refuses_a_root_registration_on_another_compatibility_track() {
     // A registration on another track answers nothing, and the
     // unresolved import names the version the component asked for
     // rather than the one the host offered.
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, INTERFACE_NAMED_FUNCTION_LATER_PATCH)
         .await
         .expect("component parses");
@@ -2256,7 +2282,8 @@ async fn it_prefers_an_exact_linker_instance_over_a_compatible_one() {
         "#
     );
 
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -2289,7 +2316,8 @@ async fn it_prefers_an_exact_linker_instance_over_a_compatible_one() {
 async fn it_refuses_a_mismatched_signature_under_an_interface_name() {
     // The signature comparison runs too, and the diagnostic names
     // the root entry the registration was attached to.
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, INTERFACE_NAMED_FUNCTION)
         .await
         .expect("component parses");
@@ -2354,7 +2382,8 @@ async fn it_links_a_resource_import_under_an_interface_name_through_the_root_nam
     // The host registers the resource on the root view under the
     // import's whole name, and the identity it gets back mints a
     // handle the guest can drop: the destructor sees the host's rep.
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, INTERFACE_NAMED_RESOURCE)
         .await
         .expect("component parses");
@@ -2394,7 +2423,8 @@ async fn it_refuses_a_resource_import_under_an_interface_name_with_no_root_regis
     // under the same identifier does not satisfy it either, however
     // its items are labelled. The import wants one host resource,
     // and the root namespace is where one host item lives.
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, INTERFACE_NAMED_RESOURCE)
         .await
         .expect("component parses");
@@ -2469,7 +2499,8 @@ async fn it_links_a_module_import_under_an_interface_name_through_the_root_names
     // The host registers the module on the root view under the
     // import's whole name; the component instantiates it and the
     // lifted export returns the module's value.
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, INTERFACE_NAMED_MODULE)
         .await
         .expect("component parses");
@@ -2502,7 +2533,8 @@ async fn it_refuses_a_module_import_under_an_interface_name_with_no_root_registr
     // unresolved import naming the interface-named import, and a
     // linker instance under the same identifier holds items rather
     // than the single item the import asks for.
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, INTERFACE_NAMED_MODULE)
         .await
         .expect("component parses");
@@ -2569,7 +2601,8 @@ async fn it_drops_a_type_import_under_an_interface_name_before_resolution() {
     // resolver never sees the type sort. The resolver's refusal of
     // a type import is covered as a unit test of `resolve_root`,
     // which is the only way to present that arm a type at all.
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, INTERFACE_NAMED_TYPE)
         .await
         .expect("component parses");
@@ -2628,7 +2661,8 @@ async fn it_refuses_a_second_function_registration_under_one_name() {
     // taken once. The first registration of each pair stands and the
     // second is refused, whichever of the four made either of them:
     // the rule is the name map's, not the entry's.
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let iface: InterfaceIdentifier = ANSWERS.parse().expect("identifier parses");
 
     let mut linker: Linker<()> = Linker::new(&engine);
@@ -2687,7 +2721,8 @@ async fn it_refuses_a_second_function_registration_under_one_name() {
 async fn it_refuses_a_second_resource_or_module_registration_under_one_name() {
     // The two resource entries and the module entry take a name the
     // same way the function entries do, and give it out once.
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let module = Module::new(&engine, PROVIDES_F)
         .await
         .expect("the module compiles");
@@ -2733,7 +2768,8 @@ async fn it_refuses_a_registration_under_a_name_another_kind_took() {
     // surely as registering an item does, though addressing the
     // same nested instance twice is not a registration at all and
     // answers with the entry already there.
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let module = Module::new(&engine, PROVIDES_F)
         .await
         .expect("the module compiles");
@@ -2775,7 +2811,8 @@ async fn it_refuses_a_duplicate_on_a_nested_view_as_it_does_on_the_root() {
     // name a nested instance gives out is not the name its parent
     // gives out, so the same name registered on both is two
     // registrations, not a duplicate.
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let mut linker: Linker<()> = Linker::new(&engine);
     let mut root = linker.root();
 
@@ -2797,7 +2834,8 @@ async fn it_keeps_the_first_registration_when_it_refuses_the_second() {
     // The refusal is not a half-registration: what stood under the
     // name before the refused call is what the component links
     // against afterwards.
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let component = Component::new(&engine, INTERFACE_NAMED_FUNCTION)
         .await
         .expect("component parses");
@@ -2835,7 +2873,8 @@ async fn it_lets_a_later_registration_win_when_shadowing_is_allowed() {
     // The escape hatch. A linker told to allow shadowing takes every
     // kind's second registration, and the last one made is the one
     // the resolver sees.
-    let engine = Engine::new().expect("engine construction succeeds");
+    let engine =
+        Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let module = Module::new(&engine, PROVIDES_F)
         .await
         .expect("the module compiles");
@@ -2924,3 +2963,6 @@ async fn it_lets_a_later_registration_win_when_shadowing_is_allowed() {
         "the last registration made is the one the resolver saw",
     );
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

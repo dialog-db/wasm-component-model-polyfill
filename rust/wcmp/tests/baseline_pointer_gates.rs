@@ -135,7 +135,7 @@ const LISTS: &[u8] = component!(
 /// name. Neither body is ever reached: the list each is called with
 /// fails the gate while the arguments are still being lifted.
 async fn lists() -> (Store<()>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, LISTS)
         .await
         .expect("a component that hands lists to the host parses");
@@ -248,7 +248,7 @@ const LIST_IN_MEMORY: &[u8] = component!(
 
 /// Instantiate [`LIST_IN_MEMORY`], which imports nothing.
 async fn list_in_memory() -> (Store<()>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, LIST_IN_MEMORY)
         .await
         .expect("a component whose result is a list parses");
@@ -317,7 +317,7 @@ const RETURN_POINTERS: &[u8] = component!(
 
 /// Instantiate [`RETURN_POINTERS`], which imports nothing.
 async fn return_pointers() -> (Store<()>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, RETURN_POINTERS)
         .await
         .expect("a component with a spilled result parses");
@@ -412,7 +412,7 @@ const SPILLED_ARGUMENTS: &[u8] = component!(
 /// can say both that a good address arrives and that a bad one never
 /// does.
 async fn spilled_arguments(reached: std::sync::Arc<AtomicUsize>) -> (Store<()>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, SPILLED_ARGUMENTS)
         .await
         .expect("a component with a spilled parameter tuple parses");
@@ -502,3 +502,6 @@ async fn it_bounds_a_spilled_argument_tuple_as_a_whole() {
         "the host was not reached with a half-lifted tuple"
     );
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

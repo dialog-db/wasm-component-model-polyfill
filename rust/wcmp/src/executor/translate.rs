@@ -776,7 +776,9 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
     // through is compiled once per component that extracts a table
     // for one; see `ThreadStartTable` for what it answers.
     let thread_start_probe = if state.num_runtime_tables > 0 {
-        Some(compile_module(engine, THREAD_START_PROBE).await?)
+        Some(crate::runtime_layer::Shared::new(
+            compile_module(engine, THREAD_START_PROBE).await?,
+        ))
     } else {
         None
     };

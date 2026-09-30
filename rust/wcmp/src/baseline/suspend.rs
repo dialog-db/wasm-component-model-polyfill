@@ -51,7 +51,7 @@ const CALLS_THE_HOST: &[u8] = component!(
 
 #[wcmp_macros::test]
 async fn it_reads_the_schedulers_state_from_a_host_function_called_by_the_guest() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, CALLS_THE_HOST)
         .await
         .expect("component parses");

@@ -2,9 +2,8 @@
 //!
 //! [`CoreInstance`]: super::CoreInstance
 
-use crate::internal::{CoreExternInternal, CoreExternParts, CoreExternTypeInternal};
+use crate::internal::{CoreExternInternal, CoreExternParts};
 use crate::runtime_layer::Extern as RuntimeExtern;
-use crate::store::StoreInternalExt;
 use crate::store::{Store, StoreId};
 
 use super::core_extern_type::CoreExternType;
@@ -30,6 +29,8 @@ pub struct CoreExtern {
     inner: RuntimeExtern,
     /// The identity of the store the item lives in.
     store_id: StoreId,
+    /// The type the module that exports the item declares for it.
+    ty: CoreExternType,
 }
 
 impl From<CoreExternParts> for CoreExtern {
@@ -37,6 +38,7 @@ impl From<CoreExternParts> for CoreExtern {
         Self {
             inner: parts.inner,
             store_id: parts.store_id,
+            ty: parts.ty,
         }
     }
 }
@@ -52,9 +54,12 @@ impl CoreExternInternal for CoreExtern {
 }
 
 impl CoreExtern {
-    /// The type of the item.
+    /// The type of the item, as the module that exports it declares
+    /// it. The type of an item never changes, so the store is not
+    /// read.
     pub fn ty<T: 'static>(&self, store: &Store<T>) -> CoreExternType {
-        CoreExternType::from_runtime(&self.inner.ty(store.internal_ref().inner()))
+        let _ = store;
+        self.ty.clone()
     }
 }
 
@@ -65,6 +70,7 @@ impl core::fmt::Debug for CoreExtern {
             RuntimeExtern::Global(_) => "global",
             RuntimeExtern::Memory(_) => "memory",
             RuntimeExtern::Table(_) => "table",
+            RuntimeExtern::Tag(_) => "tag",
         };
         f.debug_struct("CoreExtern").field("kind", &kind).finish()
     }

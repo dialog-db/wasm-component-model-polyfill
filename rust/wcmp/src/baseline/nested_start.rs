@@ -161,7 +161,9 @@ async fn instantiate_with(bytes: &[u8], provider: bool) -> (Store<()>, Instance)
     let mut config = EngineConfig::new();
     config.wasm_component_model_more_async_builtins(true);
     config.suspend_provider(provider);
-    let engine = Engine::with_config(&config).expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine");
     let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");
@@ -283,7 +285,10 @@ async fn it_fails_a_callee_that_returned_to_a_sync_lower_and_waits_on_its_caller
 /// Whether the engine runs guest threads through a provider on this
 /// target.
 fn has_provider() -> bool {
-    Engine::new().expect("engine").suspend_provider() != SuspendProviderKind::None
+    Engine::with_backend(crate::runtime_layer::test_backend())
+        .expect("engine")
+        .suspend_provider()
+        != SuspendProviderKind::None
 }
 
 #[wcmp_macros::test]

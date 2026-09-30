@@ -1089,12 +1089,12 @@ fn stories(engine: &Engine) -> Vec<(&'static Story, Body<'_>)> {
 /// through its asynchronous API and paint between stories; natively
 /// the futures complete at once.
 pub async fn run(reporter: &mut impl Reporter) -> Vec<Step> {
-    let engine = match Engine::new() {
+    let engine = match configured_engine(&EngineConfig::new()) {
         Ok(engine) => engine,
         Err(err) => {
             let step = Step {
                 story: &ENGINE_AND_STORE,
-                outcome: Outcome::Failed(format!("Engine::new failed: {err}")),
+                outcome: Outcome::Failed(format!("Engine::with_backend failed: {err}")),
                 millis: 0.0,
             };
             reporter.begin(1);
@@ -1150,6 +1150,19 @@ pub fn all_passed(steps: &[Step]) -> bool {
 
 fn fail(err: impl std::fmt::Display) -> String {
     err.to_string()
+}
+
+/// An engine configured with `config`, over the backend the smoke test
+/// runs on: Wasmtime natively, and the browser's own engine in a page.
+/// The polyfill has no backend of its own, so the host names one.
+fn configured_engine(config: &EngineConfig) -> Result<Engine, Error> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let backend = wcmp_wasm_core_wasmtime::Wasmtime::new().map_err(|error| Error::Internal {
+        message: format!("Wasmtime makes no engine: {error}"),
+    })?;
+    #[cfg(target_arch = "wasm32")]
+    let backend = wcmp_wasm_core_web::Web::new();
+    Engine::with_backend(backend)?.with_config(config)
 }
 
 fn expect<T: PartialEq + std::fmt::Debug>(what: &str, got: T, wanted: T) -> Result<(), String> {
@@ -1602,7 +1615,7 @@ async fn memory64(engine: &Engine) -> Result<String, String> {
 /// The default engine validates with Wasmtime's feature gates, and a
 /// host opts into a gated feature through the engine configuration.
 async fn engine_configuration() -> Result<String, String> {
-    let strict = Engine::new().map_err(fail)?;
+    let strict = configured_engine(&EngineConfig::new()).map_err(fail)?;
     let rejection = match Component::new(&strict, IMPLEMENTS).await {
         Ok(_) => return Err("the default engine accepted `implements`".to_owned()),
         Err(Error::InvalidComponentBinary { message, .. }) if message.contains("cm-implements") => {
@@ -1612,7 +1625,7 @@ async fn engine_configuration() -> Result<String, String> {
     };
     let mut config = EngineConfig::new();
     config.wasm_component_model_implements(true);
-    let permissive = Engine::with_config(&config).map_err(fail)?;
+    let permissive = configured_engine(&config).map_err(fail)?;
     let component = Component::new(&permissive, IMPLEMENTS)
         .await
         .map_err(fail)?;
@@ -1630,7 +1643,7 @@ async fn engine_configuration() -> Result<String, String> {
 fn provider_name(kind: SuspendProviderKind) -> &'static str {
     match kind {
         SuspendProviderKind::StackSwitching => "stack switching",
-        SuspendProviderKind::Jspi => "JSPI (JavaScript Promise Integration)",
+        SuspendProviderKind::HostSuspension => "JSPI (JavaScript Promise Integration)",
         SuspendProviderKind::None => "none",
         _ => "unknown",
     }
@@ -1648,7 +1661,7 @@ async fn suspend_provider(engine: &Engine) -> Result<String, String> {
     )?;
     let mut config = EngineConfig::new();
     config.suspend_provider(false);
-    let off = Engine::with_config(&config).map_err(fail)?;
+    let off = configured_engine(&config).map_err(fail)?;
     expect(
         "the provider of an engine with suspending off",
         off.suspend_provider(),
@@ -2260,7 +2273,7 @@ fn suspending_engine(suspending: bool) -> Result<Engine, String> {
     config.wasm_component_model_async_stackful(true);
     config.wasm_component_model_threading(true);
     config.suspend_provider(suspending);
-    Engine::with_config(&config).map_err(fail)
+    configured_engine(&config).map_err(fail)
 }
 
 /// A linker whose `tally` records each value the guest hands it.
@@ -2579,7 +2592,7 @@ async fn guest_threads() -> Result<String, String> {
 async fn suspending_off() -> Result<String, String> {
     let mut config = EngineConfig::new();
     config.suspend_provider(false);
-    let plain = Engine::with_config(&config).map_err(fail)?;
+    let plain = configured_engine(&config).map_err(fail)?;
     expect(
         "the provider of an engine with suspending off",
         plain.suspend_provider(),
@@ -2644,7 +2657,7 @@ async fn cancel_a_slow_host_call(engine: &Engine) -> Result<String, String> {
     let evidence = cancel_a_slow_host_call_on(engine).await?;
     let mut config = EngineConfig::new();
     config.suspend_provider(false);
-    let off = Engine::with_config(&config).map_err(fail)?;
+    let off = configured_engine(&config).map_err(fail)?;
     let again = cancel_a_slow_host_call_on(&off).await?;
     expect(
         "the story with suspending turned off",
@@ -2892,7 +2905,7 @@ async fn error_between_components(engine: &Engine) -> Result<String, String> {
     }
     let mut config = EngineConfig::new();
     config.wasm_component_model_error_context(true);
-    let engine = Engine::with_config(&config).map_err(traced)?;
+    let engine = configured_engine(&config).map_err(traced)?;
     let saving = Component::new(&engine, STORE_AND_CALLER)
         .await
         .map_err(traced)?;
@@ -3028,7 +3041,7 @@ fn cancelling_engine(suspending: bool) -> Result<Engine, String> {
     config.wasm_component_model_threading(true);
     config.wasm_component_model_more_async_builtins(true);
     config.suspend_provider(suspending);
-    Engine::with_config(&config).map_err(fail)
+    configured_engine(&config).map_err(fail)
 }
 
 /// The program in [`CANCELLED_WORKER`] calls the library's `work`,

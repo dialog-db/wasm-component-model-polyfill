@@ -139,7 +139,7 @@ mod tests {
 
     #[wcmp_macros::test]
     async fn it_reaches_the_host_data_and_returns_the_closures_value() {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store = Store::new(&engine, "host data".to_owned()).expect("store");
 
         let seen = store
@@ -169,7 +169,7 @@ mod tests {
 
     #[wcmp_macros::test]
     async fn it_refuses_an_accessor_used_inside_another_accessors_closure() {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store = Store::new(&engine, ()).expect("store");
 
         let seen = store
@@ -195,7 +195,7 @@ mod tests {
 
     #[wcmp_macros::test]
     async fn it_refuses_a_reach_made_outside_any_poll_of_the_store() {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store = Store::new(&engine, ()).expect("store");
 
         // The token outlives the poll it was handed to: it borrows
@@ -218,7 +218,7 @@ mod tests {
 
     #[wcmp_macros::test]
     async fn it_refuses_a_reach_with_the_token_of_another_store() {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut first = Store::new(&engine, ()).expect("store");
         let mut second = Store::new(&engine, ()).expect("store");
 
@@ -246,7 +246,7 @@ mod tests {
 
     #[wcmp_macros::test]
     async fn it_refuses_a_reach_with_a_token_typed_by_other_host_data() {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store = Store::new(&engine, "host data".to_owned()).expect("store");
 
         // A token is built from a store's identity, which says
@@ -282,7 +282,7 @@ mod tests {
     fn it_ends_the_turn_an_embedders_closure_panicked_out_of() {
         use super::super::driver::Driver;
 
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store = Store::new(&engine, ()).expect("store");
 
         {
@@ -308,7 +308,7 @@ mod tests {
             !store.internal().turn_in_flight(),
             "the turn the closure ran inside is over"
         );
-        let mut driver = Box::pin(Driver::new(
+        let mut driver = Box::pin(Driver::run(
             store.internal().context(),
             None,
             |_store, _waker| Some(Ok(())),
@@ -321,7 +321,7 @@ mod tests {
 
     #[wcmp_macros::test]
     async fn it_reaches_the_store_again_after_a_reach_that_panicked() {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store = Store::new(&engine, ()).expect("store");
 
         // The store the panicking reach took out of the slot went
@@ -355,7 +355,7 @@ mod tests {
 
     #[wcmp_macros::test]
     async fn it_refuses_a_nested_run_concurrent_entered_from_inside_the_closure() {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store = Store::new(&engine, ()).expect("store");
 
         let seen = store

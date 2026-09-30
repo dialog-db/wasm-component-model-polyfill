@@ -119,7 +119,7 @@ fn future_of_a_string() -> ValueType {
 /// The function type of the named root import or export of
 /// [`STREAMS_AND_FUTURES`].
 async fn function_type(wire_name: &str, import: bool) -> FunctionType {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, STREAMS_AND_FUTURES)
         .await
         .expect("a component whose function types carry streams and futures translates");
@@ -233,7 +233,7 @@ async fn it_refuses_a_stream_of_char_at_validation() {
           (type (stream char)))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let err = match Component::new(&engine, STREAM_OF_CHAR).await {
         Ok(_) => panic!("`stream<char>` must not translate"),
         Err(err) => err,
@@ -293,7 +293,7 @@ fn linker_for_every_kind(engine: &Engine, ran: Arc<AtomicBool>) -> Linker<()> {
 async fn it_links_host_functions_that_carry_streams_and_futures() {
     // The host's declared types match the projection of each import,
     // so both link and the component instantiates.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let ran = Arc::new(AtomicBool::new(false));
     let linker = linker_for_every_kind(&engine, ran.clone());
     instantiate(&engine, &linker, STREAMS_AND_FUTURES).await;
@@ -304,7 +304,7 @@ async fn it_links_host_functions_that_carry_streams_and_futures() {
 async fn it_refuses_to_lower_a_value_that_is_not_a_stream_into_a_synchronous_export() {
     // The host passes a stream as the readable end it holds, so any
     // other value fails the lower before the guest runs.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let linker = linker_for_every_kind(&engine, Arc::new(AtomicBool::new(false)));
     let (mut store, instance) = instantiate(&engine, &linker, STREAMS_AND_FUTURES).await;
 
@@ -319,7 +319,7 @@ async fn it_refuses_to_lower_a_value_that_is_not_a_stream_into_a_synchronous_exp
 
 #[wcmp_macros::test]
 async fn it_refuses_to_lower_a_value_that_is_not_a_future_into_an_async_export() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let linker = linker_for_every_kind(&engine, Arc::new(AtomicBool::new(false)));
     let (mut store, instance) = instantiate(&engine, &linker, STREAMS_AND_FUTURES).await;
 
@@ -345,7 +345,7 @@ fn assert_host_value_mismatch(err: Error) {
 async fn it_hands_the_host_a_future_from_an_export_result() {
     // The guest returns an index; the lift takes the end it names out
     // of the guest's table and hands the host the end.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let linker: Linker<()> = Linker::new(&engine);
     let (mut store, instance) = instantiate(&engine, &linker, RETURNS_A_FUTURE).await;
 
@@ -400,7 +400,7 @@ fn failure_chain(error: &Error) -> String {
 async fn it_hands_a_host_function_a_stream_for_its_parameter() {
     // The guest passes an index to the host; the lift of the parameter
     // takes the end out of the guest's table before the body runs.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let received = Arc::new(AtomicBool::new(false));
     let body_received = received.clone();
     let mut linker: Linker<()> = Linker::new(&engine);
@@ -435,3 +435,6 @@ async fn it_hands_a_host_function_a_stream_for_its_parameter() {
         "the host body received the stream"
     );
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

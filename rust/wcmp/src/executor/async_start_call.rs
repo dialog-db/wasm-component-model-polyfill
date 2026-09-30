@@ -75,7 +75,7 @@ use super::start_call::{Prepared, funcref_argument, lock, post_return_at};
 ///
 /// The intrinsic is a blocking built-in, although it never waits on
 /// a condition: a callee it starts can switch to a suspended thread
-/// before it first suspends, and under the JSPI provider the
+/// before it first suspends, and under the host-suspension provider the
 /// intrinsic cannot resume that thread from inside the caller's
 /// call. It then leaves the rest of the start to the scheduler as a
 /// plan, the caller's thread suspends in the intrinsic's shim, and

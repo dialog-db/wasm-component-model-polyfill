@@ -336,7 +336,7 @@ const TRAPS_AFTER_THE_GATE_UNDER_AN_ASYNC_CALLER: &[u8] = component!(
 );
 
 async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");
@@ -384,27 +384,6 @@ fn subtask_count(store: &Store<()>) -> usize {
         .expect("handle tables")
         .tasks
         .subtask_count()
-}
-
-/// How many core function records the browser's backend holds for
-/// this store.
-///
-/// The browser backend records a `funcref` a host function received
-/// as an argument in the store, because the JS object it arrives as
-/// is not a handle the host can hold on its own. Nothing removes
-/// such a record, so the count is what says whether a repeated call
-/// keeps making them. The native backend has no such record, so the
-/// measurement is the browser's alone.
-#[cfg(target_arch = "wasm32")]
-fn function_record_count(store: &mut Store<()>) -> usize {
-    use crate::runtime_layer::AsContextMut;
-
-    store
-        .internal()
-        .inner_mut()
-        .as_context_mut()
-        .inner
-        .func_count()
 }
 
 /// Whether any component instance of the store is held exclusively
@@ -569,7 +548,7 @@ async fn it_runs_no_callback_of_a_dead_callee_whose_word_would_be_the_exit_word(
     // no longer holds would fail with the polyfill's own invariant
     // cause there, and would have run guest code for a dead task
     // first. The item goes with the record, so neither happens.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, EXITS_FROM_ITS_CALLBACK_AFTER_A_YIELD)
         .await
         .expect("component parses");
@@ -852,50 +831,6 @@ async fn it_ends_the_callers_wait_when_the_callees_start_fails() {
     assert_eq!(subtask_count(&store), 0, "the subtask left the store");
 }
 
-#[cfg(target_arch = "wasm32")]
-#[wcmp_macros::test]
-async fn it_records_the_functions_of_a_prepared_call_once_however_often_it_runs() {
-    // Each prepared call hands the host three `funcref` arguments:
-    // the two functions the adapter generated for the call, and the
-    // callee's core function. Each of them arrives as a JS object,
-    // which the browser backend has to record in the store before
-    // the host can call it back, and a record outlives the call that
-    // made it: the prepare intrinsic keeps its functions until the
-    // call it prepared starts. The functions are the same three
-    // objects every time, though, so the second call and every call
-    // after it reuses what the first one recorded, and a store that
-    // runs the same call all day holds the records of one.
-    let (mut store, instance) = instantiate(RESOLVES_AT_ONCE).await;
-    let run = instance.get_func("run").expect("the caller's export");
-    let before_any_call = function_record_count(&mut store);
-
-    let result = run
-        .call(&mut store, &[Val::U32(1)])
-        .await
-        .expect("the call returns");
-    assert_eq!(result.as_ref(), &[Val::U32(3)]);
-    let after_one_call = function_record_count(&mut store);
-    assert!(
-        after_one_call > before_any_call,
-        "the first call records the functions it converted, \
-         so there is something for a later call to reuse \
-         ({before_any_call} before, {after_one_call} after)"
-    );
-
-    for _ in 0..8 {
-        let result = run
-            .call(&mut store, &[Val::U32(1)])
-            .await
-            .expect("the call returns");
-        assert_eq!(result.as_ref(), &[Val::U32(3)]);
-    }
-    assert_eq!(
-        function_record_count(&mut store),
-        after_one_call,
-        "eight more calls of the same export record no further functions"
-    );
-}
-
 /// The page side of the content-security-policy test below.
 ///
 /// `install_policy` adds the policy to the document, which the
@@ -1031,7 +966,8 @@ async fn it_runs_a_prepared_call_under_a_policy_without_unsafe_eval() {
             results[0] = RuntimeVal::I32(total);
             Ok(())
         },
-    );
+    )
+    .expect("a host function of nine parameters");
     let arguments: Vec<RuntimeVal> = (1..=PARAMETERS as i32).map(RuntimeVal::I32).collect();
     let mut results = [RuntimeVal::I32(0)];
     sum.call(

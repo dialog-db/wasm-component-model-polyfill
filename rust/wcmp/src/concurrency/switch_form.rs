@@ -10,9 +10,8 @@ pub enum SwitchForm {
     /// WebAssembly stack-switching proposal, and keeps each suspended
     /// thread in a table of continuations.
     StackSwitching,
-    /// The form that suspends through JavaScript Promise Integration:
-    /// a shim suspends by calling an import made with
-    /// `WebAssembly.Suspending`, and a thread starts through
-    /// `WebAssembly.promising`.
-    Jspi,
+    /// The form that suspends through the runtime layer's host
+    /// suspension: a shim suspends by calling a suspending host
+    /// function, and a thread starts as a resumable call.
+    HostSuspension,
 }

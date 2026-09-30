@@ -876,9 +876,11 @@
 
         # The polyfill reaches its runtime layer through one seam module,
         # `src/runtime_layer.rs`, so moving to another runtime layer changes
-        # one file. Every other Rust source of the crate, its tests
-        # included, names neither the runtime layer's crate nor a backend
-        # crate, even in a comment.
+        # one file. Every other source of the library names neither the
+        # runtime layer's crate nor a backend crate, even in a comment. Two
+        # places may name a backend, because the polyfill has none of its
+        # own and a host always names one: the tests, and the examples of
+        # the documentation, which run as tests.
         runtimeLayerSeamCheck =
           let
             sources = pkgs.lib.fileset.toSource {
@@ -888,7 +890,9 @@
           in
           pkgs.runCommand "wcmp-runtime-layer-seam-check" { } ''
             cd ${sources}
-            if grep -rnE 'wasm(time)?_runtime_layer' . | grep -v '^\./src/runtime_layer\.rs:'; then
+            if grep -rnE 'wasm(time)?_runtime_layer|wcmp_wasm_core' src \
+              | grep -v '^src/runtime_layer\.rs:' \
+              | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//[/!]'; then
               echo >&2
               echo "Only src/runtime_layer.rs may name a runtime-layer crate." >&2
               echo "Reach the names above through crate::runtime_layer instead." >&2
@@ -930,9 +934,22 @@
         # method whose type no caller outside can name — is a line in the
         # listing, so it arrives as a diff in review rather than as a piece
         # of surface nobody noticed was nameable.
+        #
+        # No public signature names a type of the runtime layer, so a host
+        # names only the backend it chose. The one line that names the
+        # runtime layer at all is the engine's constructor, whose parameter
+        # is bounded by the trait every backend implements.
         publicApiCheck =
           pkgs.runCommand "wcmp-public-api-check" { }
             ''
+              if grep -nE 'wasm(time)?_runtime_layer|wcmp_wasm_core' \
+                ${publicApiListing}/public-api.txt \
+                | grep -v 'pub fn wcmp::Engine::with_backend('; then
+                echo >&2
+                echo "A public signature above names the runtime layer. Only" >&2
+                echo "Engine::with_backend may, through the bound of its backend." >&2
+                exit 1
+              fi
               if ! diff -u ${./rust/wcmp/public-api.txt} \
                 ${publicApiListing}/public-api.txt; then
                 echo >&2

@@ -3,14 +3,14 @@
 use core::task::Waker;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-#[cfg(target_arch = "wasm32")]
-use crate::concurrency::JspiProvider;
-use crate::concurrency::{Accessor, Outcome, Scheduler, StackSwitchingProvider, StoreProvider};
+use crate::concurrency::{
+    Accessor, HostSuspensionProvider, Outcome, Scheduler, StackSwitchingProvider, StoreProvider,
+};
 use crate::engine::Engine;
 use crate::error::Result;
 use crate::internal::EngineInternal;
 use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId};
-use crate::runtime_layer::{AsContextMut, Backend};
+use crate::runtime_layer::{AsContextMut, MaybeSend, Store as RuntimeStore, substrate_failure};
 use crate::suspend_provider_kind::SuspendProviderKind;
 
 use super::store_context::StoreContext;
@@ -104,7 +104,7 @@ pub mod internal;
 ///
 /// ```compile_fail
 /// # use wcmp::{Engine, Store};
-/// let engine = Engine::new().unwrap();
+/// let engine = Engine::with_backend(wcmp_wasm_core_wasmtime::Wasmtime::new().unwrap()).unwrap();
 /// let mut store = Store::new(&engine, ()).unwrap();
 /// let _ = store.scheduler_mut();
 /// ```
@@ -113,7 +113,7 @@ pub mod internal;
 ///
 /// ```compile_fail
 /// # use wcmp::{Engine, Store};
-/// let engine = Engine::new().unwrap();
+/// let engine = Engine::with_backend(wcmp_wasm_core_wasmtime::Wasmtime::new().unwrap()).unwrap();
 /// let store = Store::new(&engine, ()).unwrap();
 /// let _ = store.lock_tables();
 /// ```
@@ -122,7 +122,7 @@ pub mod internal;
 ///
 /// ```compile_fail
 /// # use wcmp::{Engine, Store};
-/// let engine = Engine::new().unwrap();
+/// let engine = Engine::with_backend(wcmp_wasm_core_wasmtime::Wasmtime::new().unwrap()).unwrap();
 /// let mut store = Store::new(&engine, ()).unwrap();
 /// let _ = store.inner_mut();
 /// ```
@@ -146,7 +146,7 @@ pub mod internal;
 /// ```compile_fail
 /// # use wcmp::{Engine, Store};
 /// use wcmp::StoreInternalExt;
-/// let engine = Engine::new().unwrap();
+/// let engine = Engine::with_backend(wcmp_wasm_core_wasmtime::Wasmtime::new().unwrap()).unwrap();
 /// let mut store = Store::new(&engine, ()).unwrap();
 /// let _ = store.internal();
 /// ```
@@ -158,7 +158,7 @@ pub mod internal;
 /// ```compile_fail
 /// # use wcmp::{Engine, Store};
 /// # use core::task::Waker;
-/// let engine = Engine::new().unwrap();
+/// let engine = Engine::with_backend(wcmp_wasm_core_wasmtime::Wasmtime::new().unwrap()).unwrap();
 /// let mut store = Store::new(&engine, ()).unwrap();
 /// let _ = store.turn(Waker::noop());
 /// ```
@@ -170,9 +170,29 @@ pub mod internal;
 ///
 /// [`StoreInternalExt`]: super::StoreInternalExt
 pub struct Store<T: 'static> {
-    inner: crate::runtime_layer::Store<StoreData<T>, Backend>,
+    inner: crate::runtime_layer::Store<StoreData<T>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + 'static> Store<T> {
+    /// Construct a `Store` against an [`Engine`] and an initial value
+    /// for the host-data slot.
+    ///
+    /// When the engine selected a suspend provider, the store
+    /// instantiates it here and keeps it for its whole life, and the
+    /// construction fails when the backend refuses that instantiation.
+    /// The construction also fails when the backend refuses to make a
+    /// store, which no backend does today.
+    ///
+    /// Natively the host data must be `Send`, as it must be for
+    /// Wasmtime's asynchronous API, because the store moves with the
+    /// futures that drive it. In the browser it need not be.
+    pub fn new(engine: &Engine, data: T) -> Result<Self> {
+        Self::build(engine, data)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 impl<T: 'static> Store<T> {
     /// Construct a `Store` against an [`Engine`] and an initial value
     /// for the host-data slot.
@@ -180,12 +200,27 @@ impl<T: 'static> Store<T> {
     /// When the engine selected a suspend provider, the store
     /// instantiates it here and keeps it for its whole life, and the
     /// construction fails when the backend refuses that instantiation.
-    /// A store of an engine with no provider is constructed
-    /// infallibly.
+    /// The construction also fails when the backend refuses to make a
+    /// store, which no backend does today.
+    ///
+    /// Natively the host data must be `Send`, as it must be for
+    /// Wasmtime's asynchronous API, because the store moves with the
+    /// futures that drive it. In the browser it need not be.
     pub fn new(engine: &Engine, data: T) -> Result<Self> {
-        let mut store = Self {
-            inner: crate::runtime_layer::Store::new(engine.inner(), StoreData::new(data)),
-        };
+        Self::build(engine, data)
+    }
+}
+
+impl<T: 'static> Store<T> {
+    /// Construct a store, as [`new`](Self::new) states, on either
+    /// target. Workspace-internal.
+    fn build(engine: &Engine, data: T) -> Result<Self>
+    where
+        StoreData<T>: MaybeSend,
+    {
+        let inner =
+            RuntimeStore::new(engine.inner(), StoreData::new(data)).map_err(substrate_failure)?;
+        let mut store = Self { inner };
         // The provider the engine selected is instantiated in the
         // store once, here, and stays in it for the store's life.
         let provider = match engine.suspend_provider() {
@@ -196,11 +231,9 @@ impl<T: 'static> Store<T> {
                     engine.switch_modules(),
                 )?,
             )),
-            #[cfg(target_arch = "wasm32")]
-            SuspendProviderKind::Jspi => Some(StoreProvider::Jspi(JspiProvider::instantiate(
-                &mut store.context(),
-                engine.switch_modules(),
-            )?)),
+            SuspendProviderKind::HostSuspension => Some(StoreProvider::HostSuspension(
+                HostSuspensionProvider::instantiate(&mut store.context(), engine.switch_modules())?,
+            )),
             _ => None,
         };
         if let Some(provider) = provider {
@@ -473,17 +506,10 @@ impl<T: 'static> Store<T> {
         context.internal().run_concurrent(body).await
     }
 
-    /// Borrow the wrapped runtime-layer store.
-    ///
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    fn inner(&self) -> &crate::runtime_layer::Store<StoreData<T>, Backend> {
-        &self.inner
-    }
-
     /// Mutably borrow the wrapped runtime-layer store.
     ///
     /// Workspace-internal; not re-exported by `lib.rs`.
-    fn inner_mut(&mut self) -> &mut crate::runtime_layer::Store<StoreData<T>, Backend> {
+    fn inner_mut(&mut self) -> &mut crate::runtime_layer::Store<StoreData<T>> {
         &mut self.inner
     }
 }
@@ -492,19 +518,16 @@ impl<T: 'static> Drop for Store<T> {
     /// Drop the store, and with it every task, host task, and
     /// suspended thread, with no destructor run.
     ///
-    /// A thread the JSPI provider resumed runs on a microtask, after
-    /// the turn that resumed it returned, and reaches the store as it
-    /// runs. A store dropped between the two stays allocated until
-    /// then, marked dropped. The thread's shim finds the mark, has the
-    /// store freed on a later microtask, and traps, so the thread's
-    /// stack unwinds where it suspended and runs no guest code, host
-    /// import, or destructor. The host's data drops with the store
-    /// then, on that later microtask.
+    /// A thread the host-suspension provider resumed can run on after
+    /// the driver that awaited it dropped, as it does in the browser,
+    /// where it runs on a microtask. The runtime layer then keeps the
+    /// store allocated for the thread until it stops, and the store is
+    /// marked dropped here. The thread's shim finds the mark and traps,
+    /// so the thread's stack unwinds where it suspended and runs no
+    /// guest code, host import, or destructor. The host's data drops
+    /// with the store once the thread stopped.
     fn drop(&mut self) {
-        let mut context = self.context();
-        if let Some(provider) = context.internal().provider() {
-            provider.retain_if_resuming(&mut context);
-        }
+        self.store_data_mut().mark_dropped();
     }
 }
 
@@ -535,7 +558,7 @@ mod tests {
 
     #[wcmp_macros::test]
     fn it_runs_no_destructor_when_the_store_is_dropped() {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store = Store::new(&engine, ()).expect("store");
 
         // A resource the host holds, whose destructor would run if

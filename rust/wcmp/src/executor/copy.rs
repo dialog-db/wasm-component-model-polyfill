@@ -165,9 +165,7 @@ use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CanonOptions, CoreSignature};
 use crate::internal::ErrorInternal;
 use crate::resource::{HandleTables, TableId};
-use crate::runtime_layer::{
-    AsContextMut, Backend, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
-};
+use crate::runtime_layer::{AsContextMut, StoreContextMut as RuntimeContextMut, Val as RuntimeVal};
 use crate::store::StoreContextInternalExt;
 use crate::store::{StoreContext, StoreData};
 use crate::types::{ListType, ValueType};
@@ -483,7 +481,7 @@ impl Builtin {
     /// compare with the other end's.
     fn guest_buffer<T: 'static>(
         &self,
-        store_ctx: &mut RuntimeContextMut<'_, StoreData<T>, Backend>,
+        store_ctx: &mut RuntimeContextMut<'_, StoreData<T>>,
         caller: InstanceId,
         pointer: u32,
         count: u32,
@@ -553,7 +551,7 @@ impl MoveSide {
     /// scope, marked as one side of a move between two guests.
     fn context<'a, T: 'static>(
         &self,
-        store_ctx: RuntimeContextMut<'a, StoreData<T>, Backend>,
+        store_ctx: RuntimeContextMut<'a, StoreData<T>>,
         tables: &Arc<Mutex<HandleTables>>,
     ) -> anyhow::Result<BoundaryContext<'a, StoreData<T>>> {
         let (options, instance) =
@@ -577,7 +575,7 @@ impl MoveSide {
 /// owned handle from the writer's table to the reader's as a call
 /// moves one.
 fn move_values<T: 'static>(
-    store_ctx: &mut RuntimeContextMut<'_, StoreData<T>, Backend>,
+    store_ctx: &mut RuntimeContextMut<'_, StoreData<T>>,
     tables: &Arc<Mutex<HandleTables>>,
     writer: EndId,
     reader: EndId,
@@ -663,7 +661,7 @@ fn move_values<T: 'static>(
 /// times the size of a number type, and both ranges it spans were
 /// checked against their memories when their copies started.
 fn move_bytes<T: 'static>(
-    store_ctx: &mut RuntimeContextMut<'_, StoreData<T>, Backend>,
+    store_ctx: &mut RuntimeContextMut<'_, StoreData<T>>,
     tables: &Arc<Mutex<HandleTables>>,
     source: &MoveSide,
     destination: &MoveSide,

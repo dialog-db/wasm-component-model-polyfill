@@ -591,7 +591,7 @@ const RETURNS_AND_KEEPS_RUNNING: &[u8] = component!(
 );
 
 async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");

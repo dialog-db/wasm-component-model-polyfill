@@ -458,7 +458,7 @@ fn future_of<T: ComponentValue>() -> FutureType {
 
 /// Instantiate the handler `bytes` with the host's `wasi:http/types`.
 async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance, Shared, Resources) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, bytes)
         .await
         .expect("the handler translates");
@@ -965,3 +965,6 @@ async fn it_traps_the_same_instance_drain_on_a_non_number_payload() {
         "`drain` trapped on the same-instance rule, not on {error:?}"
     );
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

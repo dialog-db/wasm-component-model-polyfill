@@ -14,7 +14,7 @@ use crate::abi::signature::Signature;
 use crate::component::ExternalName;
 use crate::concurrency::{EndKind, LowerKind};
 use crate::module::Module;
-use crate::runtime_layer::Module as RuntimeModule;
+use crate::runtime_layer::{Module as RuntimeModule, Shared};
 use crate::types::{ResourceType, ValueType};
 
 /// The executor's IR for a single parsed component.
@@ -102,7 +102,7 @@ pub struct ExecutorIr {
     /// tells its type, compiled once for the component when it
     /// declares a `thread.new-indirect`, and `None` otherwise. Each
     /// extracted table gets an instance of it.
-    pub thread_start_probe: Option<RuntimeModule>,
+    pub thread_start_probe: Option<Shared<RuntimeModule>>,
     /// The number of component instances the component contains,
     /// counting nested components. Each carries a `may_leave` flags
     /// global that adapter modules import through

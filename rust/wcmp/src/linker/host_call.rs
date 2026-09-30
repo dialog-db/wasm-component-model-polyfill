@@ -36,7 +36,7 @@ use crate::types::ValueType;
 ///
 /// ```rust
 /// # use wcmp::{Engine, HostCall, Linker, Result};
-/// let engine = Engine::new().unwrap();
+/// let engine = Engine::with_backend(wcmp_wasm_core_wasmtime::Wasmtime::new().unwrap()).unwrap();
 /// let mut linker: Linker<u32> = Linker::new(&engine);
 /// linker
 ///     .root()
@@ -50,7 +50,7 @@ use crate::types::ValueType;
 ///
 /// ```compile_fail
 /// # use wcmp::{Engine, HostCall, Linker, Result};
-/// let engine = Engine::new().unwrap();
+/// let engine = Engine::with_backend(wcmp_wasm_core_wasmtime::Wasmtime::new().unwrap()).unwrap();
 /// let mut linker: Linker<u32> = Linker::new(&engine);
 /// linker
 ///     .root()

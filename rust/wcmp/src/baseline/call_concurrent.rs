@@ -279,7 +279,7 @@ struct TwoCalls {
 /// component that imports no `log` is instantiated all the same: a
 /// registration the component does not ask for is not linked.
 async fn instantiate(binary: &[u8]) -> (Store<()>, Instance, Log) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, binary)
         .await
         .expect("component parses");
@@ -308,7 +308,7 @@ async fn instantiate(binary: &[u8]) -> (Store<()>, Instance, Log) {
 /// resource registered under the label the component imports it by,
 /// and hand back the identity a host handle is minted against.
 async fn instantiate_borrow_holder() -> (Store<()>, Instance, ResourceTypeId) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, BORROW_HOLDER)
         .await
         .expect("component parses");
@@ -928,7 +928,7 @@ async fn it_gives_a_host_lend_back_when_the_awaited_future_resolves() {
     // still in the store when the future hands the result back: the
     // drop below therefore says that the resolution and not the
     // task's exit is what ended the lend.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, LENDS_AND_KEEPS_RUNNING)
         .await
         .expect("component parses");

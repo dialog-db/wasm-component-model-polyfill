@@ -144,7 +144,7 @@
 //!     // Create a new engine for instantiating a component. The
 //!     // polyfill owns its substrate selection, so there is no
 //!     // per-target engine type to thread in.
-//!     let engine = Engine::new().unwrap();
+//!     let engine = Engine::with_backend(wcmp_wasm_core_wasmtime::Wasmtime::new().unwrap()).unwrap();
 //!
 //!     // Create a store for managing component data and any custom
 //!     // user-defined state.

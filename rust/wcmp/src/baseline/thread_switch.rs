@@ -332,12 +332,15 @@ const STACK_SWITCH: &str =
 fn engine() -> Engine {
     let mut config = EngineConfig::new();
     config.wasm_component_model_threading(true);
-    Engine::with_config(&config).expect("engine")
+    Engine::with_backend(crate::runtime_layer::test_backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine")
 }
 
 /// Whether the engine runs guest threads through a provider: the
-/// stack-switching provider natively on x86_64 Linux, and the JSPI
-/// provider in a browser that ships JSPI.
+/// stack-switching provider natively on x86_64 Linux, and the
+/// host-suspension provider in a browser that ships JavaScript Promise
+/// Integration.
 fn has_provider() -> bool {
     engine().suspend_provider() != SuspendProviderKind::None
 }

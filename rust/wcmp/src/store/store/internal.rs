@@ -16,14 +16,12 @@
 //! borrow exactly as it was tied to `&mut self` before; the entries
 //! take `self` by value for that reason.
 //!
-//! Two entries of the public API — [`CoreInstance::get_export`] and
-//! [`CoreExtern::ty`] — read the runtime-layer store through a
-//! shared borrow of the store the caller owns. [`StoreRefInternal`]
-//! is the same wrapper over that shared borrow, carrying the
-//! entries that need no mutable access.
+//! An entry of the public API that takes a shared borrow of the store,
+//! such as [`CoreInstance::get_export`], reads the store's identity
+//! through it. [`StoreRefInternal`] is the same wrapper over that
+//! shared borrow, carrying the entries that need no mutable access.
 //!
 //! [`CoreInstance::get_export`]: crate::CoreInstance::get_export
-//! [`CoreExtern::ty`]: crate::CoreExtern::ty
 
 use core::task::Waker;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -31,7 +29,6 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::concurrency::{Outcome, Scheduler};
 use crate::error::{Error, Result, TaskCause};
 use crate::resource::HandleTables;
-use crate::runtime_layer::Backend;
 
 use super::super::store_context::StoreContext;
 use super::super::store_context::internal::StoreContextInternalExt;
@@ -99,7 +96,7 @@ impl<'a, T: 'static> StoreInternal<'a, T> {
     }
 
     /// Mutably borrow the wrapped runtime-layer store.
-    pub fn inner_mut(self) -> &'a mut crate::runtime_layer::Store<StoreData<T>, Backend> {
+    pub fn inner_mut(self) -> &'a mut crate::runtime_layer::Store<StoreData<T>> {
         self.store.inner_mut()
     }
 
@@ -132,9 +129,9 @@ impl<'a, T: 'static> StoreRefInternal<'a, T> {
         Self { store }
     }
 
-    /// Borrow the wrapped runtime-layer store.
-    pub fn inner(self) -> &'a crate::runtime_layer::Store<StoreData<T>, Backend> {
-        self.store.inner()
+    /// The store's process-unique identity.
+    pub fn id(self) -> StoreId {
+        self.store.id()
     }
 
     /// The store's handle tables.

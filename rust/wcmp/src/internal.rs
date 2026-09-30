@@ -36,11 +36,10 @@ use crate::executor::ir::{CanonOptions, ExecutorIr};
 use crate::identifier::InterfaceIdentifier;
 use crate::instance::{ExportedFunction, ExportedModule, Func, Instance, TypedFunc};
 use crate::linker::{DestructorBody, InstanceRegistration, Resolution};
-use crate::module::{CoreExternType, CoreValueType, Module};
+use crate::module::{CoreExtern, CoreExternType, CoreValueType, Module};
 use crate::resource::ResourceTableRuntime;
 use crate::runtime_layer::{
-    Backend, Extern as RuntimeExtern, ExternType as RuntimeExternType, Instance as RuntimeInstance,
-    Module as RuntimeModule, RefType, ValType as RuntimeValType,
+    Extern as RuntimeExtern, Instance as RuntimeInstance, Module as RuntimeModule,
 };
 use crate::store::{StoreContext, StoreId};
 use crate::types::ValueType;
@@ -54,7 +53,7 @@ pub trait ComponentInternal {
 /// The crate-internal face of [`Engine`](crate::Engine).
 pub trait EngineInternal {
     /// Borrow the wrapped runtime-layer engine.
-    fn inner(&self) -> &crate::runtime_layer::Engine<Backend>;
+    fn inner(&self) -> &crate::runtime_layer::Engine;
 
     /// The switch modules the stores of the engine instantiate,
     /// compiled once each, by their bytes.
@@ -291,7 +290,7 @@ pub trait LinkerInternal<T: 'static> {
 
     /// Drive the runtime substrate against an already-resolved
     /// import binding.
-    fn instantiate_resolved(
+    async fn instantiate_resolved(
         &self,
         store: &mut StoreContext<'_, T>,
         component: &Component,
@@ -315,10 +314,9 @@ pub trait ModuleInternal {
 
 /// The parts a [`CoreInstance`](crate::CoreInstance) is built from.
 pub struct CoreInstanceParts {
-    /// The runtime-layer instance.
-    pub inner: RuntimeInstance,
-    /// The identity of the store the instance lives in.
-    pub store_id: StoreId,
+    /// The exports of the instance, by name, in the order the module
+    /// declares them.
+    pub exports: Vec<(String, CoreExtern)>,
 }
 
 /// The parts a [`CoreExtern`](crate::CoreExtern) is built from.
@@ -327,6 +325,8 @@ pub struct CoreExternParts {
     pub inner: RuntimeExtern,
     /// The identity of the store the item lives in.
     pub store_id: StoreId,
+    /// The type the module that exports the item declares for it.
+    pub ty: CoreExternType,
 }
 
 /// The crate-internal face of [`CoreExtern`](crate::CoreExtern).
@@ -339,21 +339,8 @@ pub trait CoreExternInternal {
 }
 
 /// The crate-internal face of
-/// [`CoreExternType`](crate::CoreExternType).
-pub trait CoreExternTypeInternal {
-    /// Project a runtime-layer extern type.
-    fn from_runtime(ty: &RuntimeExternType) -> CoreExternType;
-}
-
-/// The crate-internal face of
 /// [`CoreValueType`](crate::CoreValueType).
 pub trait CoreValueTypeInternal {
-    /// Project a runtime-layer value type.
-    fn from_runtime(ty: RuntimeValType) -> CoreValueType;
-
-    /// Project a runtime-layer reference type.
-    fn from_runtime_ref(ty: RefType) -> CoreValueType;
-
     /// Project a translator value type.
     fn from_translator(ty: &wasmtime_environ::WasmValType) -> Result<CoreValueType>;
 }

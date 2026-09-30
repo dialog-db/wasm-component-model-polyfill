@@ -24,7 +24,7 @@ wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 /// the component the bytes parse to. Panics if the export is absent
 /// or not a function.
 async fn export_signature(bytes: &[u8], wire_name: &str) -> FunctionType {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");
@@ -52,7 +52,7 @@ async fn export_result(bytes: &[u8], wire_name: &str) -> ValueType {
 
 /// Resolve the [`InstanceType`] of an interface-typed import.
 async fn import_instance(bytes: &[u8], wire_name: &str) -> InstanceType {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");
@@ -566,7 +566,9 @@ async fn it_projects_an_error_context_wherever_a_value_appears() {
     );
     let mut config = wcmp::EngineConfig::default();
     config.wasm_component_model_error_context(true);
-    let engine = Engine::with_config(&config).expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -588,3 +590,6 @@ async fn it_projects_an_error_context_wherever_a_value_appears() {
         Some(ValueType::Option(OptionType::new(ValueType::ErrorContext)))
     );
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

@@ -101,7 +101,7 @@ fn chain(err: &Error) -> String {
 
 /// Instantiate `bytes` and call its `run` export with `arguments`.
 async fn run(bytes: &[u8], arguments: Vec<Val>) -> Result<Box<[Val]>, Error> {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");
@@ -117,7 +117,7 @@ async fn run(bytes: &[u8], arguments: Vec<Val>) -> Result<Box<[Val]>, Error> {
 
 #[wcmp_macros::test]
 async fn it_translates_and_instantiates_a_task_return_definition() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, DEFINES_TASK_RETURN)
         .await
         .expect("the `task.return` definition translates");
@@ -162,3 +162,6 @@ async fn it_refuses_a_return_from_a_realloc() {
         "expected the cannot-leave cause, got {text}"
     );
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

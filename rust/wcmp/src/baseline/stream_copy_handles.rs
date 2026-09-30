@@ -145,7 +145,7 @@ const HANDLES: &[u8] = component!(
 
 /// Instantiate `binary` in a fresh store with nothing registered.
 async fn instantiate(binary: &[u8]) -> (Store<()>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, binary)
         .await
         .expect("component parses");

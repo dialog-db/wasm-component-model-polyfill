@@ -139,7 +139,7 @@ async fn it_leaves_the_store_as_it_found_it_when_a_start_function_traps() {
     // instance record before the core module whose `start` function
     // traps is instantiated, so every record the attempt added is in
     // the store when the trap comes back.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let works = Component::new(&engine, REGISTERS_RESOURCES)
         .await
         .expect("component parses");
@@ -183,7 +183,7 @@ async fn it_leaves_the_store_as_it_found_it_when_a_resource_runtime_does_not_lin
     // resolver would not hand it a resolution that misses, so the
     // executor is driven here with one that names a root entry the
     // linker does not hold.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let works = Component::new(&engine, REGISTERS_RESOURCES)
         .await
         .expect("component parses");
@@ -206,7 +206,7 @@ async fn it_leaves_the_store_as_it_found_it_when_a_resource_runtime_does_not_lin
     // through the store again afterwards.
     let error = {
         let mut context = store.internal().context();
-        match crate::executor::instantiate(&works, &mut context, &linker, &resolution) {
+        match crate::executor::instantiate(&works, &mut context, &linker, &resolution).await {
             Ok(_) => panic!("the resource import resolves to no registration"),
             Err(error) => error,
         }
@@ -233,7 +233,7 @@ async fn it_puts_back_the_resource_name_a_failed_instantiation_displaced() {
     // registrations back has to put the tier back with the label, or
     // the store would render nothing for the identity where it
     // rendered the fallback before.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let quiet = Component::new(&engine, QUIET)
         .await
         .expect("component parses");

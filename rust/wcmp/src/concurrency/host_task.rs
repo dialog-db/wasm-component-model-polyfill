@@ -352,7 +352,7 @@ mod tests {
 
     #[wcmp_macros::test]
     async fn it_reaches_the_host_data_through_the_accessor_the_poll_hands_it() {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store = Store::new(&engine, "host data".to_owned()).expect("store");
         let table = TableId::fresh();
         let subtask = store
@@ -484,7 +484,7 @@ mod tests {
 
     #[wcmp_macros::test]
     async fn it_holds_the_accessor_across_an_await_and_reaches_the_host_data_later() {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store = Store::new(&engine, "host data".to_owned()).expect("store");
         let table = TableId::fresh();
         let subtask = store

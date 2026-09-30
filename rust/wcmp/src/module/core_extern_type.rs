@@ -1,8 +1,6 @@
 //! The type of one import or export of a core module.
 
 use super::core_value_type::CoreValueType;
-use crate::internal::{CoreExternTypeInternal, CoreValueTypeInternal};
-use crate::runtime_layer::ExternType as RuntimeExternType;
 
 /// The type of a core module's import or export: a function, a
 /// global, a linear memory, a table, or an exception tag. Sizes are
@@ -54,38 +52,4 @@ pub enum CoreExternType {
         /// The parameter types of the exception, in order.
         params: Vec<CoreValueType>,
     },
-}
-
-impl CoreExternTypeInternal for CoreExternType {
-    fn from_runtime(ty: &RuntimeExternType) -> CoreExternType {
-        match ty {
-            RuntimeExternType::Func(func) => Self::Func {
-                params: func
-                    .params()
-                    .iter()
-                    .map(|ty| CoreValueType::from_runtime(*ty))
-                    .collect(),
-                results: func
-                    .results()
-                    .iter()
-                    .map(|ty| CoreValueType::from_runtime(*ty))
-                    .collect(),
-            },
-            RuntimeExternType::Global(global) => Self::Global {
-                content: CoreValueType::from_runtime(global.content()),
-                mutable: global.mutable(),
-            },
-            RuntimeExternType::Memory(memory) => Self::Memory {
-                minimum_pages: u64::from(memory.initial_pages()),
-                maximum_pages: memory.maximum_pages().map(u64::from),
-                memory64: false,
-                shared: false,
-            },
-            RuntimeExternType::Table(table) => Self::Table {
-                element: CoreValueType::from_runtime_ref(table.element()),
-                minimum: u64::from(table.minimum()),
-                maximum: table.maximum().map(u64::from),
-            },
-        }
-    }
 }

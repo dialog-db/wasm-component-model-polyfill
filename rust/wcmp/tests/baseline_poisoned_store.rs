@@ -159,7 +159,7 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
         let component = Component::new(&engine, TRIGGERS)
             .await
             .expect("component parses");
@@ -617,7 +617,7 @@ impl Drop for Pend {
 
 #[wcmp_macros::test]
 async fn it_discards_queued_guest_work_and_drops_host_futures_when_a_trap_poisons_the_store() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, DISCARDS)
         .await
         .expect("component parses");
@@ -856,3 +856,6 @@ async fn it_leaves_the_store_usable_when_a_pipe_of_the_hosts_own_fails() {
         .assert_usable("a failed pipe of the host's own")
         .await;
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

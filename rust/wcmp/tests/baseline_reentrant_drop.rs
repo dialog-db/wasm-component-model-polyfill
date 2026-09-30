@@ -109,7 +109,7 @@ const REENTRANT_DROP: &[u8] = component!(
 
 #[wcmp_macros::test]
 async fn it_runs_a_destructor_that_re_enters_its_own_drop() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, REENTRANT_DROP)
         .await
         .expect("component parses");
@@ -142,3 +142,6 @@ async fn it_runs_a_destructor_that_re_enters_its_own_drop() {
         "the second destructor run happened inside the first, not after it"
     );
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

@@ -1,13 +1,16 @@
 //! Reading the imports and exports of a core module binary.
 //!
 //! The runtime layer describes a module's imports and exports too,
-//! but the browser backend enumerates them from a hash map, so their
-//! order differs between targets. The executor pairs a module's
-//! imports positionally with the values a component supplies, and
-//! [`Module::imports`] promises declaration order, so the polyfill
-//! reads both lists from the binary itself.
+//! and the polyfill describes them to the host with its own types,
+//! which express fewer than the runtime layer. The host reads a
+//! module's imports and exports through [`Module::imports`] and
+//! [`Module::exports`], in declaration order, so the polyfill
+//! reads both lists from the binary itself. The executor pairs the
+//! imports of a component's module through the runtime layer's own
+//! list, which describes every type.
 //!
 //! [`Module::imports`]: super::Module::imports
+//! [`Module::exports`]: super::Module::exports
 
 use wasmtime_environ::wasmparser::{
     CompositeInnerType, ExternalKind, FuncType, GlobalType, MemoryType, Parser, Payload, RefType,
@@ -25,9 +28,15 @@ use super::module_import::ModuleImport;
 /// The declared imports and exports of a validated core module, in
 /// declaration order.
 pub struct ModuleShape {
-    /// The imports, in declaration order.
+    /// The imports, in declaration order, but for any whose type the
+    /// host's description cannot express.
     pub imports: Vec<ModuleImport>,
-    /// The exports, in declaration order.
+    /// Whether an import was left out of `imports` because the host's
+    /// description cannot express its type. The host cannot supply
+    /// such an import, so it cannot instantiate the module itself.
+    pub undescribed_imports: bool,
+    /// The exports, in declaration order, but for any whose type the
+    /// host's description cannot express.
     pub exports: Vec<ModuleExport>,
     /// Whether the module declares a `start` function, which its
     /// instantiation runs.
@@ -55,6 +64,7 @@ struct IndexSpaces {
 pub fn read_shape(bytes: &[u8]) -> Result<ModuleShape> {
     let mut spaces = IndexSpaces::default();
     let mut imports = Vec::new();
+    let mut undescribed_imports = false;
     let mut raw_exports = Vec::new();
     let mut start = false;
     for payload in Parser::new(0).parse_all(bytes) {
@@ -73,7 +83,10 @@ pub fn read_shape(bytes: &[u8]) -> Result<ModuleShape> {
                 for group in reader {
                     for entry in group.map_err(parse_error)? {
                         let (_, import) = entry.map_err(parse_error)?;
-                        imports.push(read_import(&mut spaces, &import)?);
+                        match read_import(&mut spaces, &import)? {
+                            Some(import) => imports.push(import),
+                            None => undescribed_imports = true,
+                        }
                     }
                 }
             }
@@ -119,12 +132,12 @@ pub fn read_shape(bytes: &[u8]) -> Result<ModuleShape> {
                 let type_index = *spaces.funcs.get(index).ok_or_else(out_of_range)?;
                 spaces.func_type(type_index)?
             }
-            ExternalKind::Table => table_type(spaces.tables.get(index).ok_or_else(out_of_range)?)?,
-            ExternalKind::Memory => {
-                memory_type(spaces.memories.get(index).ok_or_else(out_of_range)?)
-            }
+            ExternalKind::Table => table_type(spaces.tables.get(index).ok_or_else(out_of_range)?),
+            ExternalKind::Memory => Some(memory_type(
+                spaces.memories.get(index).ok_or_else(out_of_range)?,
+            )),
             ExternalKind::Global => {
-                global_type(spaces.globals.get(index).ok_or_else(out_of_range)?)?
+                global_type(spaces.globals.get(index).ok_or_else(out_of_range)?)
             }
             ExternalKind::Tag => {
                 spaces.tag_type(spaces.tags.get(index).ok_or_else(out_of_range)?)?
@@ -135,23 +148,31 @@ pub fn read_shape(bytes: &[u8]) -> Result<ModuleShape> {
                 ));
             }
         };
-        exports.push(ModuleExport {
-            name: export.name.to_owned(),
-            ty,
-        });
+        // An export whose type the host's description cannot express
+        // is left out of it. Nothing of the host's reaches it, and a
+        // component that aliases it reaches it through the runtime
+        // layer, which describes every type.
+        if let Some(ty) = ty {
+            exports.push(ModuleExport {
+                name: export.name.to_owned(),
+                ty,
+            });
+        }
     }
     Ok(ModuleShape {
         imports,
+        undescribed_imports,
         exports,
         start,
     })
 }
 
-/// Record one import in the index spaces and project its type.
+/// Record one import in the index spaces and project its type, or
+/// `None` where the host's description cannot express its type.
 fn read_import(
     spaces: &mut IndexSpaces,
     import: &wasmtime_environ::wasmparser::Import<'_>,
-) -> Result<ModuleImport> {
+) -> Result<Option<ModuleImport>> {
     let ty = match import.ty {
         TypeRef::Func(index) => {
             spaces.funcs.push(index);
@@ -159,15 +180,15 @@ fn read_import(
         }
         TypeRef::Table(table) => {
             spaces.tables.push(table);
-            table_type(&table)?
+            table_type(&table)
         }
         TypeRef::Memory(memory) => {
             spaces.memories.push(memory);
-            memory_type(&memory)
+            Some(memory_type(&memory))
         }
         TypeRef::Global(global) => {
             spaces.globals.push(global);
-            global_type(&global)?
+            global_type(&global)
         }
         TypeRef::Tag(tag) => {
             spaces.tags.push(tag);
@@ -179,15 +200,18 @@ fn read_import(
             ));
         }
     };
-    Ok(ModuleImport {
+    Ok(ty.map(|ty| ModuleImport {
         module: import.module.to_owned(),
         name: import.name.to_owned(),
         ty,
-    })
+    }))
 }
 
 impl IndexSpaces {
-    fn func_type(&self, type_index: u32) -> Result<CoreExternType> {
+    /// The type of a function of the type at `type_index`, or `None`
+    /// where the host's description cannot express one of its
+    /// parameters or results.
+    fn func_type(&self, type_index: u32) -> Result<Option<CoreExternType>> {
         let func = self
             .types
             .get(type_index as usize)
@@ -195,32 +219,36 @@ impl IndexSpaces {
             .ok_or_else(|| {
                 Error::internal("a core function names a type that is not a function type")
             })?;
-        Ok(CoreExternType::Func {
-            params: func
-                .params()
-                .iter()
-                .map(value_type)
-                .collect::<Result<Vec<_>>>()?,
-            results: func
-                .results()
-                .iter()
-                .map(value_type)
-                .collect::<Result<Vec<_>>>()?,
-        })
+        let params = func
+            .params()
+            .iter()
+            .map(value_type)
+            .collect::<Option<Vec<_>>>();
+        let results = func
+            .results()
+            .iter()
+            .map(value_type)
+            .collect::<Option<Vec<_>>>();
+        Ok(params
+            .zip(results)
+            .map(|(params, results)| CoreExternType::Func { params, results }))
     }
 
-    fn tag_type(&self, tag: &TagType) -> Result<CoreExternType> {
-        let CoreExternType::Func { params, .. } = self.func_type(tag.func_type_idx)? else {
-            return Err(Error::internal(
+    /// The type of `tag`, or `None` where the host's description
+    /// cannot express one of its parameters.
+    fn tag_type(&self, tag: &TagType) -> Result<Option<CoreExternType>> {
+        match self.func_type(tag.func_type_idx)? {
+            Some(CoreExternType::Func { params, .. }) => Ok(Some(CoreExternType::Tag { params })),
+            Some(_) => Err(Error::internal(
                 "a tag's function type projected to a non-function",
-            ));
-        };
-        Ok(CoreExternType::Tag { params })
+            )),
+            None => Ok(None),
+        }
     }
 }
 
-fn table_type(table: &TableType) -> Result<CoreExternType> {
-    Ok(CoreExternType::Table {
+fn table_type(table: &TableType) -> Option<CoreExternType> {
+    Some(CoreExternType::Table {
         element: ref_type(&table.element_type)?,
         minimum: table.initial,
         maximum: table.maximum,
@@ -236,15 +264,17 @@ fn memory_type(memory: &MemoryType) -> CoreExternType {
     }
 }
 
-fn global_type(global: &GlobalType) -> Result<CoreExternType> {
-    Ok(CoreExternType::Global {
+fn global_type(global: &GlobalType) -> Option<CoreExternType> {
+    Some(CoreExternType::Global {
         content: value_type(&global.content_type)?,
         mutable: global.mutable,
     })
 }
 
-fn value_type(ty: &ValType) -> Result<CoreValueType> {
-    Ok(match ty {
+/// The host's description of `ty`, or `None` where it has none: a
+/// reference type other than `funcref` and `externref`.
+fn value_type(ty: &ValType) -> Option<CoreValueType> {
+    Some(match ty {
         ValType::I32 => CoreValueType::I32,
         ValType::I64 => CoreValueType::I64,
         ValType::F32 => CoreValueType::F32,
@@ -254,21 +284,19 @@ fn value_type(ty: &ValType) -> Result<CoreValueType> {
     })
 }
 
-fn ref_type(reference: &RefType) -> Result<CoreValueType> {
-    if reference.is_nullable() {
-        if reference.is_func_ref() {
-            return Ok(CoreValueType::FuncRef);
-        }
-        if reference.is_extern_ref() {
-            return Ok(CoreValueType::ExternRef);
-        }
-        return Err(Error::unsupported(
-            "garbage-collection reference types in core module types",
-        ));
+/// The host's description of `reference`, which is `funcref` or
+/// `externref`, or `None` for any other reference type.
+fn ref_type(reference: &RefType) -> Option<CoreValueType> {
+    if !reference.is_nullable() {
+        return None;
     }
-    Err(Error::unsupported(
-        "non-nullable reference types in core module types",
-    ))
+    if reference.is_func_ref() {
+        Some(CoreValueType::FuncRef)
+    } else if reference.is_extern_ref() {
+        Some(CoreValueType::ExternRef)
+    } else {
+        None
+    }
 }
 
 fn parse_error(err: wasmtime_environ::wasmparser::BinaryReaderError) -> Error {

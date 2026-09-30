@@ -201,7 +201,7 @@ impl Future for PendingOnce {
 
 /// Instantiate `binary` in a fresh store with nothing registered.
 async fn instantiate(binary: &[u8]) -> (Store<()>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, binary)
         .await
         .expect("component parses");
@@ -218,7 +218,7 @@ async fn instantiate(binary: &[u8]) -> (Store<()>, Instance) {
 /// is ready one poll after the call, so that every call it makes
 /// starts rather than returning at once.
 async fn host_caller() -> (Store<()>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, DROPS_A_HOST_SUBTASK)
         .await
         .expect("component parses");

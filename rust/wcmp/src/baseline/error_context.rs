@@ -188,7 +188,9 @@ const DECLARES_DROP: &[u8] = component!(
 fn engine(gate: bool) -> Engine {
     let mut config = EngineConfig::new();
     config.wasm_component_model_error_context(gate);
-    Engine::with_config(&config).expect("engine")
+    Engine::with_backend(crate::runtime_layer::test_backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine")
 }
 
 /// Instantiate `binary` in a fresh store of an engine whose
@@ -533,7 +535,10 @@ async fn it_refuses_each_built_in_as_unsupported_with_the_gate_off() {
         ("error-context.debug-message", DECLARES_DEBUG_MESSAGE),
         ("error-context.drop", DECLARES_DROP),
     ] {
-        for closed in [Engine::new().expect("engine"), engine(false)] {
+        for closed in [
+            Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine"),
+            engine(false),
+        ] {
             let err = Component::new(&closed, binary)
                 .await
                 .expect_err("the gate is off");

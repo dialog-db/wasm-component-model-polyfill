@@ -3,15 +3,17 @@
 //! code.
 
 use super::in_flight::InFlight;
+use super::instance_id::InstanceId;
 use super::plan::Plan;
 
 /// What the scheduler has to do before anything else, under a
-/// provider that resumes a thread on a microtask rather than inside
-/// the call that asks for it, which is the JSPI provider.
+/// provider that runs a thread once the driver of the store awaits it
+/// rather than inside the call that asks for it, which is the
+/// host-suspension provider.
 ///
 /// A resume is made only where the store runs no guest code, which is
-/// a turn of a driver, and the thread runs after the turn returned
-/// control to the host executor. A frame that has to resume a thread
+/// a turn of a driver, and the thread runs once the turn returned
+/// control to the driver, which awaits it. A frame that has to resume a thread
 /// elsewhere leaves the resumption to the store, as the switch the
 /// thread would make: the thread is named to run next, and the frame
 /// goes no further. A frame that cannot wait for it suspends the
@@ -20,13 +22,12 @@ use super::plan::Plan;
 ///
 /// A turn that finds any of it runs it first and nothing else, in
 /// this order: the thread it resumed, the plans that stops left, the
-/// failure of a start, the thread named to run next, and the innermost
-/// plan.
-/// It returns control to the host executor while a thread runs, and
-/// takes up where it stopped once the thread stopped.
+/// start a frame left to the store, the thread named to run next, and
+/// the innermost plan. It returns control to the driver while a thread
+/// runs, and takes up where it stopped once the thread stopped.
 pub struct DeferredWork<T: 'static> {
-    /// The thread a turn resumed, which runs on a microtask, and whose
-    /// stop the scheduler waits for. Frames that run while it is set
+    /// The thread a turn resumed or started, which the driver runs, and
+    /// whose stop the scheduler waits for. Frames that run while it is set
     /// run inside that thread, so it is no work they left.
     pub resumed: Option<InFlight<T>>,
     /// Whether the resume of that thread was made and the frame that
@@ -34,10 +35,11 @@ pub struct DeferredWork<T: 'static> {
     /// frame goes no further: the thread runs once control is back
     /// with the executor, and the frames it runs are its own.
     pub resume_issued: bool,
-    /// The thread whose start failed before it first suspended, whose
-    /// failure the provider hands over on a microtask. The frame that
-    /// started it goes no further until the failure is handled.
-    pub failed_start: Option<InFlight<T>>,
+    /// The thread whose start a frame inside a guest call left to the
+    /// store, which the driver runs once the thread the frame runs in
+    /// has suspended for it. It holds the thread's scopes until then.
+    /// The frame that started it goes no further until it stops.
+    pub deferred_start: Option<InFlight<T>>,
     /// Whether the thread named to run next is a resumption a frame
     /// could not make where it stood.
     pub next_left: bool,
@@ -54,9 +56,19 @@ pub struct DeferredWork<T: 'static> {
     /// Whether the item that stopped last for the work still owes the
     /// evaluation of the waiting threads' conditions.
     pub note_owed: bool,
+    /// Whether the first part of the blocking built-in that runs now may
+    /// leave the start of a thread to the store, which the next start of
+    /// a thread takes: the built-in's thread suspends for the start
+    /// then, and leaves the rest of the built-in as a plan.
+    pub may_defer_start: bool,
     /// Whether a nested-start mark a trampoline put on the stack comes
     /// off once the work is done, rather than as the trampoline returns.
     pub ends_nested_start: bool,
+    /// The instance of a nested start that left work to the store, with
+    /// the may-not-suspend flag it had before the start cleared it. The
+    /// flag stays clear until the nested-start mark comes off, as it
+    /// would until the started thread first stopped.
+    pub nested_may_not_suspend: Option<(InstanceId, bool)>,
     /// Whether a thread-switch mark comes off then.
     pub ends_thread_switch: bool,
     /// Whether the nested turn that stopped last for the work stopped
@@ -77,7 +89,7 @@ impl<T: 'static> DeferredWork<T> {
     /// resumption left to the store, or a plan a stop left.
     pub fn pending(&self) -> bool {
         self.resume_issued
-            || self.failed_start.is_some()
+            || self.deferred_start.is_some()
             || self.next_left
             || !self.stopped.is_empty()
     }
@@ -89,11 +101,11 @@ impl<T: 'static> DeferredWork<T> {
         self.pending() || self.resumed.is_some() || !self.plans.is_empty() || self.turn_open
     }
 
-    /// The slot of the thread a turn resumed, or, with `failed_start`,
-    /// of the thread whose start failed.
-    pub fn in_flight(&mut self, failed_start: bool) -> &mut Option<InFlight<T>> {
-        if failed_start {
-            &mut self.failed_start
+    /// The slot of the thread a turn resumed, or, with `deferred_start`,
+    /// of the thread whose start a frame left to the store.
+    pub fn in_flight(&mut self, deferred_start: bool) -> &mut Option<InFlight<T>> {
+        if deferred_start {
+            &mut self.deferred_start
         } else {
             &mut self.resumed
         }
@@ -105,13 +117,15 @@ impl<T: 'static> Default for DeferredWork<T> {
         Self {
             resumed: None,
             resume_issued: false,
-            failed_start: None,
+            deferred_start: None,
             next_left: false,
             stopped: Vec::new(),
             plans: Vec::new(),
             request: None,
             note_owed: false,
+            may_defer_start: false,
             ends_nested_start: false,
+            nested_may_not_suspend: None,
             ends_thread_switch: false,
             stopped_at_end: false,
             turn_open: false,

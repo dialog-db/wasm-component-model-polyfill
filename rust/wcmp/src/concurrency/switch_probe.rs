@@ -2,8 +2,8 @@
 //! instructions of the WebAssembly stack-switching proposal.
 
 use crate::runtime_layer::{
-    Backend, Engine as RuntimeEngine, Imports, Instance as RuntimeInstance,
-    Module as RuntimeModule, Store as RuntimeStore, Val as RuntimeVal,
+    Capability, Engine as RuntimeEngine, Extern as RuntimeExtern, Instance as RuntimeInstance,
+    Module as RuntimeModule, Store as RuntimeStore, Val as RuntimeVal, at_once,
 };
 
 /// The probe that asks an engine whether it switches stacks with the
@@ -94,20 +94,29 @@ impl SwitchProbe {
     }
 
     /// Whether `engine` runs the probe's thread to the end through
-    /// one suspension. Every failure answers `false`: a module the
-    /// engine rejects, an instantiation or a call that fails, and any
-    /// answer but the one that passes.
-    pub fn passes(self, engine: &RuntimeEngine<Backend>) -> bool {
+    /// one suspension. Every failure answers `false`: a backend that
+    /// does not declare stack switching, a module the engine rejects,
+    /// an instantiation that fails or that does not finish at once,
+    /// a call that fails, and any answer but the one that passes.
+    pub fn passes(self, engine: &RuntimeEngine) -> bool {
+        if !engine.capabilities().contains(Capability::StackSwitching) {
+            return false;
+        }
         let Ok(module) = RuntimeModule::new(engine, self.module) else {
             return false;
         };
-        let mut store = RuntimeStore::new(engine, ());
-        let Ok(instance) = RuntimeInstance::new(&mut store, &module, &Imports::default()) else {
+        let Ok(mut store) = RuntimeStore::new(engine, ()) else {
+            return false;
+        };
+        let Some(Ok(instance)) = at_once(RuntimeInstance::instantiate(&mut store, &module, &[]))
+        else {
             return false;
         };
         let Some(run) = instance
-            .get_export(&store, "run")
-            .and_then(|export| export.into_func())
+            .get_export(&mut store, "run")
+            .ok()
+            .flatten()
+            .and_then(RuntimeExtern::into_func)
         else {
             return false;
         };

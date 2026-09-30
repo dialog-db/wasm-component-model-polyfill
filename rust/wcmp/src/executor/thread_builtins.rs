@@ -157,6 +157,7 @@ use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CoreParameter, CoreSignature};
 use crate::internal::ErrorInternal;
 use crate::resource::HandleTables;
+use crate::runtime_layer::host_func;
 use crate::runtime_layer::{
     AsContextMut, Func as RuntimeFunc, Val as RuntimeVal, substrate_failure,
 };
@@ -170,9 +171,9 @@ pub fn build_thread_index<T: 'static>(
     instance: usize,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |mut store_ctx, _args, results| {
@@ -206,13 +207,13 @@ pub fn build_thread_new_indirect<T: 'static>(
     table: usize,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
     let context_type = match signature.params.get(1) {
         Some(CoreParameter::Value(FlatType::I64)) => FlatType::I64,
         _ => FlatType::I32,
     };
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |mut store_ctx, args, results| {
@@ -264,9 +265,9 @@ pub fn build_thread_resume_later<T: 'static>(
     instance: usize,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |mut store_ctx, args, _results| {

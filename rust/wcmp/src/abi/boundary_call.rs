@@ -303,7 +303,7 @@ mod tests {
     /// global of that store, as an instantiation mints it, so what a
     /// call writes here is what a built-in of the same store reads.
     fn records() -> (Store<()>, InstanceId, BoundaryInstance) {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let instance = store
             .internal()
@@ -311,7 +311,8 @@ mod tests {
             .expect("handle tables")
             .tasks
             .insert_instance();
-        let flags = InstanceFlags::new(store.internal().context().internal().runtime_mut());
+        let flags = InstanceFlags::new(store.internal().context().internal().runtime_mut())
+            .expect("the may-leave flag");
         let tables = store.internal().tables_handle();
         let state = Arc::new(Mutex::new(
             AbiRuntimeState::with_slabs(
@@ -521,7 +522,7 @@ mod tests {
     fn it_does_nothing_for_a_crossing_that_reaches_no_records() {
         // A copy between two guest memories names no tables, so
         // there is nothing to push a task into and no flag to clear.
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let call = BoundaryCall::realloc(
             &BoundaryInstance::without_tables(None),
@@ -538,7 +539,7 @@ mod tests {
         // Entering it would run the realloc with no task, no fresh
         // thread, and nobody's flag cleared, so the entry fails
         // rather than handing back a guard that does nothing.
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let (tables, boundary) = records_without_an_instance();
         let Err(error) = BoundaryCall::realloc(
@@ -565,7 +566,7 @@ mod tests {
 
     #[wcmp_macros::test]
     fn it_refuses_a_post_return_whose_crossing_names_no_component_instance() {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let (_, boundary) = records_without_an_instance();
         let Err(error) = BoundaryCall::post_return(
@@ -587,7 +588,7 @@ mod tests {
         // rather than running the realloc with the flag of no
         // instance at all. The flag is cleared before the task is
         // pushed, so the refusal leaves no task behind either.
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let instance = store
             .internal()

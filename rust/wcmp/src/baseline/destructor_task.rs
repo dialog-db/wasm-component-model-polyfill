@@ -302,7 +302,7 @@ macro_rules! seen {
 /// Answers what the call produced, what the host saw during it, and
 /// what the store held after it.
 async fn run_with_probe(bytes: &[u8]) -> (Result<Box<[Val]>>, Seen, Seen) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");
@@ -423,7 +423,7 @@ async fn it_nests_a_task_for_a_destructor_that_drops_another_resource() {
 
 #[wcmp_macros::test]
 async fn it_runs_a_host_release_destructor_on_a_task_of_its_own() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, HOST_RELEASE)
         .await
         .expect("component parses");
@@ -559,7 +559,7 @@ async fn host_release_caller<F>(bytes: &[u8], register: F) -> Released
 where
     F: FnOnce(&mut Linker<()>),
 {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");
@@ -815,7 +815,7 @@ async fn it_fails_a_guest_drop_whose_destructor_blocks_with_the_cannot_block_cau
     // the handle is `async`-typed and may block, so without that flag
     // the seam would fail the block with the stack-switch cause
     // instead, because the host task it waits on is pending.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, GUEST_DROP_BLOCKS)
         .await
         .expect("component parses");
@@ -1060,7 +1060,7 @@ async fn it_calls_a_host_import_again_from_inside_its_own_call() {
     // stack. Both backends enter a host function at any depth, so the
     // second call returns, the destructor returns, and so does the
     // first call.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, RELEASE_CALLS_ITSELF_THROUGH_A_DESTRUCTOR)
         .await
         .expect("component parses");

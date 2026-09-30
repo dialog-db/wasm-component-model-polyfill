@@ -192,7 +192,9 @@ const DECLARES_THREAD_INDEX: &[u8] = component!(
 fn threading_engine() -> Engine {
     let mut config = EngineConfig::new();
     config.wasm_component_model_threading(true);
-    Engine::with_config(&config).expect("engine")
+    Engine::with_backend(crate::runtime_layer::test_backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine")
 }
 
 /// Instantiate `bytes` in a fresh store of an engine with the thread
@@ -376,7 +378,7 @@ async fn it_traps_each_built_in_when_the_instance_may_not_be_left() {
 
 #[wcmp_macros::test]
 async fn it_refuses_a_thread_built_in_as_unsupported_with_the_gate_off() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let err = Component::new(&engine, DECLARES_THREAD_INDEX)
         .await
         .expect_err("the gate is off by default");
@@ -471,7 +473,8 @@ async fn it_starts_a_thread_whose_start_function_takes_an_i64_in_a_64_bit_memory
             results: vec![FlatType::I32],
         },
         abi_state.clone(),
-    );
+    )
+    .expect("the built-in");
     let resume_later = build_thread_resume_later(
         &mut store.internal().context(),
         component_instance,
@@ -480,7 +483,8 @@ async fn it_starts_a_thread_whose_start_function_takes_an_i64_in_a_64_bit_memory
             results: Vec::new(),
         },
         abi_state,
-    );
+    )
+    .expect("the built-in");
 
     // A task of the instance is running, as it would be while the
     // guest's own call ran the built-ins.

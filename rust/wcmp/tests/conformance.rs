@@ -84,16 +84,17 @@ const EXPECTED_FAILURES_WEB: &str = include_str!("corpus/expected-failures.web.t
 /// provider, applied on top of the shared list whenever the store runs
 /// no guest thread through a provider, on either target: a lane that
 /// turns the provider off, a native build on a platform without the
-/// stack-switching proposal, and a browser without JSPI. A nested turn
+/// stack-switching proposal, and a browser without JavaScript Promise
+/// Integration, whose backend declares no host suspension. A nested turn
 /// is one code path on both targets, so one overlay serves both. Every
 /// line carries the stack-switch reason.
 const EXPECTED_FAILURES_NO_PROVIDER: &str =
     include_str!("corpus/expected-failures.no-provider.txt");
 
-/// The directives of the shared list that pass when no provider runs
-/// the store's threads, and fail only under one. The harness drops
-/// them from the expectations of such a run. Each names a directive
-/// the shared list names. The list is written by hand: `tests
+/// The directives of the shared list or the web delta that pass when no
+/// provider runs the store's threads, and fail only under one. The
+/// harness drops them from the expectations of such a run. Each names a
+/// directive one of those two lists names. The list is written by hand: `tests
 /// regenerate` neither reads nor writes it.
 const EXPECTED_PASSES_NO_PROVIDER: &str = include_str!("corpus/expected-passes.no-provider.txt");
 
@@ -105,8 +106,8 @@ struct Lists {
     web: Vec<Expectation>,
     /// What fails beyond `shared` without a provider.
     no_provider: Vec<Expectation>,
-    /// The directives of `shared` that pass without a provider, by
-    /// file and line.
+    /// The directives of `shared` or `web` that pass without a
+    /// provider, by file and line.
     passes_without_provider: Vec<(String, usize)>,
 }
 
@@ -123,9 +124,9 @@ impl Lists {
         .unwrap_or_else(|err| panic!("{err}"))
     }
 
-    /// Add the directives of the shared list that pass without a
-    /// provider, one `<path>:<line> <reason>` per line. A line that
-    /// names no directive of the shared list is refused, so the list
+    /// Add the directives of the shared list or the web delta that pass
+    /// without a provider, one `<path>:<line> <reason>` per line. A line
+    /// that names no directive of either list is refused, so the list
     /// cannot outlive the failure it excuses.
     fn with_passes(mut self, text: &str) -> Result<Self, String> {
         for (index, line) in text.lines().enumerate() {
@@ -147,11 +148,13 @@ impl Lists {
             if !self
                 .shared
                 .iter()
+                .chain(&self.web)
                 .any(|expectation| expectation.file == file && expectation.line == directive)
             {
                 return Err(format!(
                     "expected-passes.no-provider.txt:{number}: `{file}:{directive}` is not in \
-                     expected-failures.txt: the list excuses only a failure the shared list names"
+                     expected-failures.txt or expected-failures.web.txt: the list excuses only a \
+                     failure one of them names"
                 ));
             }
             self.passes_without_provider.push((file, directive));
@@ -215,7 +218,9 @@ impl Lists {
 /// rather than waiting in a nested turn.
 ///
 /// Every provider does: the stack-switching provider natively, and
-/// the JSPI provider in a browser that ships JSPI. Only an engine that
+/// the host-suspension provider on a backend that declares host
+/// suspension, such as the browser's where the browser ships
+/// JavaScript Promise Integration. Only an engine that
 /// answers none serves every block with the nested turn, and only
 /// then does the overlay apply.
 fn runs_threads_through(provider: SuspendProviderKind) -> bool {
@@ -280,7 +285,9 @@ struct Runner {
 
 impl Runner {
     async fn new(config: &EngineConfig, cm_corpus: bool) -> Self {
-        let engine = Engine::with_config(config).expect("engine");
+        let engine = Engine::with_backend(crate::test_backend::backend())
+            .and_then(|engine| engine.with_config(config))
+            .expect("engine");
         let mut linker = Linker::new(&engine);
         link_spectest(&engine, &mut linker).await;
         Self {
@@ -1644,6 +1651,23 @@ mod tests {
     }
 
     #[wcmp_macros::test]
+    async fn it_drops_a_web_directive_that_passes_without_a_provider_only_in_such_a_run() {
+        let lists = Lists::parse(SHARED, WEB, "")
+            .and_then(|lists| lists.with_passes("cm/x.wast:2 passes by another route\n"))
+            .expect("parses");
+        let web = if cfg!(target_arch = "wasm32") {
+            vec![1, 2]
+        } else {
+            vec![1]
+        };
+        assert_eq!(
+            lines(&lists.applying(SuspendProviderKind::HostSuspension)),
+            web
+        );
+        assert_eq!(lines(&lists.applying(SuspendProviderKind::None)), [1]);
+    }
+
+    #[wcmp_macros::test]
     async fn it_refuses_a_pass_without_a_provider_the_shared_list_does_not_name() {
         let err = Lists::parse(SHARED, "", "")
             .and_then(|lists| lists.with_passes("cm/x.wast:7 not a failure of the shared list\n"))
@@ -1662,10 +1686,13 @@ mod tests {
             lines(&lists.applying(SuspendProviderKind::StackSwitching)),
             [1]
         );
-        // The JSPI provider runs guest threads as the stack-switching
+        // The host-suspension provider runs guest threads as the stack-switching
         // provider does, so a store of an engine that selected it
         // blocks as one under that provider does.
-        assert_eq!(lines(&lists.applying(SuspendProviderKind::Jspi)), [1]);
+        assert_eq!(
+            lines(&lists.applying(SuspendProviderKind::HostSuspension)),
+            [1]
+        );
         assert_eq!(lines(&lists.applying(SuspendProviderKind::None)), [1, 3]);
     }
 
@@ -1695,7 +1722,8 @@ mod tests {
         // Allowed, the overlay applies only if the engine found no
         // provider that runs the store's threads, which is what a
         // target without one answers.
-        let answer = Engine::with_config(&engine_config(PATH, TEXT))
+        let answer = Engine::with_backend(crate::test_backend::backend())
+            .and_then(|engine| engine.with_config(&engine_config(PATH, TEXT)))
             .expect("engine")
             .suspend_provider();
         let on = report_file(PATH, TEXT, &lists, true).await;
@@ -1934,3 +1962,6 @@ macro_rules! corpus_test {
 }
 
 include!("conformance/manifest.rs");
+
+#[path = "support/backend.rs"]
+mod test_backend;

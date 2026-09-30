@@ -191,7 +191,7 @@ type Outcome = (Result<Box<[Val]>>, Result<Box<[Val]>>, Vec<u32>);
 ///
 /// The polling stops once both calls have resolved.
 async fn two_callers() -> Outcome {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, TWO_CALLERS_OF_ONE_CALLEE)
         .await
         .expect("component parses");
@@ -273,7 +273,10 @@ async fn two_callers() -> Outcome {
 /// second entry once its own callee has answered.
 #[wcmp_macros::test]
 async fn it_runs_two_callers_that_synchronously_lower_one_async_export() {
-    let provider = Engine::new().expect("engine").suspend_provider() != SuspendProviderKind::None;
+    let provider = Engine::with_backend(crate::test_backend::backend())
+        .expect("engine")
+        .suspend_provider()
+        != SuspendProviderKind::None;
     let (first, second, log) = two_callers().await;
 
     assert_eq!(
@@ -302,3 +305,6 @@ async fn it_runs_two_callers_that_synchronously_lower_one_async_export() {
         );
     }
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

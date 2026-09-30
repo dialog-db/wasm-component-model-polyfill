@@ -579,7 +579,7 @@ mod tests {
 
     #[wcmp_macros::test]
     async fn it_awaits_and_then_reaches_the_host_data_through_the_accessor() {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store = Store::new(&engine, "host data".to_owned()).expect("store");
         let mut registration = InstanceRegistration::<String>::new();
 
@@ -627,7 +627,7 @@ mod tests {
 
     #[wcmp_macros::test]
     async fn it_fails_a_call_whose_result_vector_is_not_the_declared_length() {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store = Store::new(&engine, ()).expect("store");
         let mut registration = InstanceRegistration::<()>::new();
 
@@ -672,7 +672,7 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     #[wcmp_macros::test]
     async fn it_takes_a_closure_whose_block_awaits_a_promise_in_the_browser() {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store = Store::new(&engine, "host data".to_owned()).expect("store");
         let mut registration = InstanceRegistration::<String>::new();
 

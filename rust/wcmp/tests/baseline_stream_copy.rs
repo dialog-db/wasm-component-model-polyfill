@@ -604,7 +604,9 @@ const PARKED_WRITER: &[u8] = component!(
 async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
     let mut config = EngineConfig::new();
     config.wasm_component_model_more_async_builtins(true);
-    let engine = Engine::with_config(&config).expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine");
     let component = Component::new(&engine, bytes)
         .await
         .expect("the component parses");
@@ -1338,3 +1340,6 @@ async fn it_moves_an_inner_readable_end_from_the_writers_table_into_the_readers(
         "the inner end left the writer's table: {failure}"
     );
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

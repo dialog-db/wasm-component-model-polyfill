@@ -21,6 +21,8 @@ wasmparser = { workspace = true }
 # the executor's own timer is that on this target.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
+# The backend the smoke test runs on natively.
+wcmp-wasm-core-wasmtime = { workspace = true }
 
 # The browser half of the same wait is a `setTimeout`-backed promise,
 # reached through the global the way the polyfill's own yield wake
@@ -31,3 +33,5 @@ tokio = { workspace = true, features = ["rt", "macros", "time"] }
 js-sys = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
+# The backend the smoke test runs on in the browser.
+wcmp-wasm-core-web = { workspace = true }

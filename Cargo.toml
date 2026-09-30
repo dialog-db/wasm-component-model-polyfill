@@ -99,6 +99,12 @@ path = "./rust/wcmp-wasm-core-faithfulness"
 [workspace.dependencies.wcmp-wasm-core-wasmi]
 path = "./rust/wcmp-wasm-core-wasmi"
 
+[workspace.dependencies.wcmp-wasm-core-wasmtime]
+path = "./rust/wcmp-wasm-core-wasmtime"
+
+[workspace.dependencies.wcmp-wasm-core-web]
+path = "./rust/wcmp-wasm-core-web"
+
 [profile.dev]
 opt-level = 1
 

@@ -164,7 +164,7 @@ const POST_RETURN_CALLS_ANOTHER_COMPONENT: &[u8] = component!(
 /// Instantiate `bytes` with a host `probe` function registered, so a
 /// guest that calls out to the host has something to reach.
 async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");
@@ -354,3 +354,6 @@ async fn it_lets_the_guest_call_out_while_no_call_of_the_polyfills_runs() {
     call(&mut store, &instance, "release", &[]).await;
     call(&mut store, &instance, "run", &[]).await;
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

@@ -102,7 +102,7 @@ fn entries(pairs: &[(&str, u32)]) -> Val {
 }
 
 async fn instantiate() -> (Store<()>, wcmp::Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("a component with map types parses");
@@ -235,3 +235,6 @@ async fn it_reports_a_value_or_type_that_is_not_a_map() {
         .expect_err("a list type does not match a map type");
     assert!(matches!(err, Error::TypeMismatch(_)));
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

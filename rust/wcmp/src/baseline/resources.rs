@@ -49,7 +49,7 @@ async fn it_runs_destructors_in_drop_order_for_multiple_handles() {
 
     let dropped: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
     let log = dropped.clone();
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -87,7 +87,7 @@ async fn it_runs_destructors_in_drop_order_for_multiple_handles() {
 async fn it_isolates_handle_tables_across_stores_with_the_same_engine() {
     // Two stores share the engine and linker but mint handles in
     // their own tables. Index assignment is independent.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let linker: Linker<()> = Linker::new(&engine);
     let _ = linker; // unused but proves shareability of the linker
     let store_a: Store<()> = Store::new(&engine, ()).expect("store a");
@@ -126,7 +126,7 @@ async fn it_rejects_a_handle_whose_type_id_is_not_registered_in_the_store() {
             (canon lift (core func $core "consume"))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -179,7 +179,7 @@ async fn it_rejects_a_completely_fabricated_handle_index() {
             (canon lift (core func $core "consume"))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -245,7 +245,7 @@ async fn it_supports_two_distinct_resource_types_in_one_interface() {
         alphas: Vec<u32>,
         betas: Vec<u32>,
     }
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -307,7 +307,7 @@ async fn it_reuses_freed_handle_indices_after_drop() {
             (canon lift (core func $core "consume"))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -366,7 +366,7 @@ async fn it_rejects_a_component_that_imports_an_unsatisfied_resource() {
             (canon lift (core func $core "noop"))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -422,7 +422,7 @@ const LOCAL_RESOURCE: &[u8] = component!(
 );
 
 async fn local_resource_instance() -> (Store<()>, crate::Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, LOCAL_RESOURCE)
         .await
         .expect("component parses");
@@ -461,7 +461,7 @@ async fn it_translates_and_instantiates_a_locally_defined_resource() {
 
 #[wcmp_macros::test]
 async fn it_mints_a_distinct_resource_type_identity_per_instantiation() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, LOCAL_RESOURCE)
         .await
         .expect("component parses");
@@ -542,7 +542,7 @@ async fn it_runs_the_in_binary_destructor_exactly_once_per_dropped_handle() {
 
 #[wcmp_macros::test]
 async fn it_rejects_a_handle_from_another_instance_of_the_same_component() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, LOCAL_RESOURCE)
         .await
         .expect("component parses");
@@ -588,7 +588,7 @@ async fn it_rejects_a_local_destructor_with_the_wrong_signature() {
             (canon lift (core func $i "make"))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let outcome = match Component::new(&engine, COMPONENT).await {
         Ok(component) => {
             let linker: Linker<()> = Linker::new(&engine);
@@ -639,7 +639,7 @@ const SHARED: &[u8] = component!(
 
 #[wcmp_macros::test]
 async fn it_shares_a_single_resource_type_across_two_imported_interfaces() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, SHARED)
         .await
         .expect("component parses");
@@ -709,7 +709,7 @@ async fn it_shares_a_single_resource_type_across_two_imported_interfaces() {
 
 #[wcmp_macros::test]
 async fn it_rejects_two_identities_for_one_declared_resource_type() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, SHARED)
         .await
         .expect("component parses");
@@ -792,7 +792,7 @@ const MINTER: &[u8] = component!(
 
 #[wcmp_macros::test]
 async fn it_lets_a_host_function_mint_a_resource_handle_during_a_guest_call() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, MINTER)
         .await
         .expect("component parses");
@@ -845,7 +845,7 @@ async fn it_lets_a_host_function_mint_a_resource_handle_during_a_guest_call() {
 
 #[wcmp_macros::test]
 async fn it_rejects_a_host_mint_against_an_unknown_resource_type() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, MINTER)
         .await
         .expect("component parses");
@@ -925,7 +925,7 @@ async fn it_supports_resource_constructor_and_method_shaped_exports() {
         "#
     );
 
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -1082,7 +1082,7 @@ fn borrower_linker(engine: &Engine, resource: HostResource<()>) -> (Linker<()>, 
 }
 
 async fn borrower_instance() -> (Store<()>, crate::Instance, ResourceTypeId) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, BORROWER)
         .await
         .expect("component parses");
@@ -1195,7 +1195,7 @@ async fn drop_attempt_instance(
     lent: Arc<Mutex<Option<ResourceHandle>>>,
     attempt: Arc<Mutex<ReleaseAttempt>>,
 ) -> (Store<()>, crate::Instance, ResourceTypeId) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, BORROWER)
         .await
         .expect("component parses");
@@ -1322,7 +1322,7 @@ fn chain(error: &Error) -> String {
 async fn recording_borrower_instance(
     seen: Arc<Mutex<Option<ResourceHandle>>>,
 ) -> (Store<()>, crate::Instance, ResourceTypeId) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, BORROWER)
         .await
         .expect("component parses");
@@ -1469,7 +1469,7 @@ async fn it_refuses_to_lower_a_lent_handle_again_as_an_own() {
     // table, which would leave the borrow the guest still holds
     // pointing at nothing. The removal is refused while the lend
     // stands, and the refusal travels out to the guest's call.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, GRABBER)
         .await
         .expect("component parses");
@@ -1559,7 +1559,7 @@ async fn it_lowers_a_borrow_into_the_defining_instance_through_the_hosts_entry()
     // in the host's table and lending it. The rep the guest reads
     // back is the entry's, and a handle the host has since released
     // names no entry to take one from, even on this path.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, LOCAL_BORROWER)
         .await
         .expect("component parses");
@@ -1626,7 +1626,7 @@ async fn it_allocates_from_index_one_in_each_nested_instance() {
           (export "dealloc-in2" (func $i2 "dealloc")))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -1755,7 +1755,7 @@ async fn it_lifts_a_borrow_out_of_the_defining_instance_through_its_table() {
     // straight back through the method, whose lower lands in the
     // defining instance and therefore does pass the rep. A method
     // that sees 1 read the caller's index as a rep.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, OUTER_DEFINES_INNER_BORROWS)
         .await
         .expect("component parses");
@@ -1783,7 +1783,7 @@ async fn it_lends_the_owning_handle_a_borrow_leaves_the_defining_instance_on() {
     // while the borrow it was given is still out. The lift of the
     // borrow lent the owner to the call, so the drop must trap; the
     // drop that follows the call in `run` is never reached.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, OUTER_DEFINES_INNER_BORROWS)
         .await
         .expect("component parses");
@@ -1812,7 +1812,7 @@ async fn it_lends_the_owning_handle_a_borrow_leaves_the_defining_instance_on() {
 /// A store whose host resource `thing` records every destructor run
 /// in the host data, plus the identity to mint with.
 async fn disposal_store() -> (Store<Vec<u32>>, ResourceTypeId, crate::Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, BORROWER)
         .await
         .expect("component parses");
@@ -1992,7 +1992,7 @@ async fn it_names_a_shared_resource_by_the_label_the_component_imported_it_under
     // `alias` sorts before `thing`, and the sweep visits labels in
     // sorted order, so a store that learned the sweep's names first
     // would render `alias` here.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, BORROWER)
         .await
         .expect("component parses");
@@ -2029,7 +2029,7 @@ async fn it_names_a_host_resource_no_component_imported() {
     // ever brings in still has a label — the linker knows it — so
     // the store learns it at instantiation and an error about one of
     // its handles renders it rather than nothing.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, BORROWER)
         .await
         .expect("component parses");
@@ -2073,7 +2073,7 @@ async fn it_sweeps_no_label_for_a_component_that_imports_no_resource() {
     // store: after such an instantiation, a handle of a resource the
     // linker holds renders no label, as it does in a store no
     // component has been instantiated into.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, LOCAL_RESOURCE)
         .await
         .expect("component parses");
@@ -2114,7 +2114,7 @@ async fn it_names_a_shared_resource_by_the_importer_after_an_earlier_instantiati
     // component in the store ever uses, and brings it in as `thing`.
     // A swept label is only ever a fallback, so the importer's label
     // takes over and the error still reads `thing`.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let quiet = Component::new(&engine, LOCAL_RESOURCE)
         .await
         .expect("component parses");
@@ -2162,7 +2162,7 @@ async fn it_names_an_unimported_resource_by_the_first_of_its_labels_in_order() {
     // keeps the first. `gizmo` sorts before `widget`, and it is the
     // root registration that holds `widget` here, so nothing but the
     // sort can be producing the answer.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, BORROWER)
         .await
         .expect("component parses");
@@ -2232,7 +2232,7 @@ async fn it_names_the_resource_type_a_refused_host_mint_asked_for() {
     // holds no table for. The refusal names that type, under the
     // name the store knows the identity by, exactly as the lower
     // path names the handle slot it refused.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, MINTER)
         .await
         .expect("component parses");
@@ -2321,7 +2321,7 @@ async fn it_reports_a_substrate_failure_when_a_local_destructor_traps() {
     // the release with the substrate-failure cause, at the
     // destructor's one argument — the resource's rep, not the own
     // handle the host released, so the failure names no value type.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, TRAPPING_LOCAL_RESOURCE)
         .await
         .expect("component parses");

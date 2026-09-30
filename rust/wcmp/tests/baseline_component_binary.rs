@@ -30,7 +30,7 @@ const CORE_MODULE: &[u8] = wasm!("(module)");
 
 #[wcmp_macros::test]
 async fn it_parses_the_component_preamble() {
-    let engine = Engine::new().expect("engine constructs");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine constructs");
     let component = Component::new(&engine, EMPTY_COMPONENT)
         .await
         .expect("empty component parses");
@@ -41,7 +41,7 @@ async fn it_parses_the_component_preamble() {
 
 #[wcmp_macros::test]
 async fn it_decodes_top_level_component_sections() {
-    let engine = Engine::new().expect("engine constructs");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine constructs");
     let component = Component::new(&engine, SECTION_RICH_COMPONENT)
         .await
         .expect("rich component parses");
@@ -87,7 +87,7 @@ async fn it_decodes_top_level_component_sections() {
 
 #[wcmp_macros::test]
 async fn it_rejects_a_malformed_component_binary() {
-    let engine = Engine::new().expect("engine constructs");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine constructs");
 
     // A truncated preamble: magic bytes plus a single byte of the
     // version word, leaving the rest unread.
@@ -129,7 +129,7 @@ fn large_component() -> Vec<u8> {
 
 #[wcmp_macros::test]
 async fn it_loads_a_component_larger_than_the_synchronous_compile_limit() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let bytes = large_component();
     assert!(
         bytes.len() > LARGE_PAYLOAD,
@@ -202,7 +202,7 @@ async fn it_compiles_byte_identical_core_modules_above_the_synchronous_limit() {
     // string on the engine, and a module built without one compiles
     // synchronously, which the browser refuses at this size. The
     // component compiling is what shows neither module did.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let bytes = duplicate_module_component(DUPLICATE_PAYLOAD);
     assert!(
         bytes.len() > 2 * DUPLICATE_PAYLOAD,
@@ -218,7 +218,7 @@ async fn it_instantiates_each_of_two_byte_identical_core_modules() {
     // The two modules share one compile, and each instantiation of it
     // is its own: calls through one export leave the other's counter
     // where it was.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let bytes = duplicate_module_component(64);
     let component = Component::new(&engine, &bytes)
         .await
@@ -257,7 +257,7 @@ async fn it_returns_send_futures_on_native() {
     fn assert_send<T: Send>(future: T) -> T {
         future
     }
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = assert_send(Component::new(&engine, EMPTY_COMPONENT))
         .await
         .expect("compile the component");
@@ -279,7 +279,7 @@ async fn it_validates_with_wasmtimes_feature_gates() {
         (component (import "a" (implements "a:b/c") (instance)))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let err = Component::new(&engine, IMPLEMENTS)
         .await
         .expect_err("`implements` is off by default");
@@ -295,7 +295,9 @@ async fn it_validates_with_wasmtimes_feature_gates() {
 
     let mut config = EngineConfig::new();
     config.wasm_component_model_implements(true);
-    let engine = Engine::with_config(&config).expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine");
     Component::new(&engine, IMPLEMENTS)
         .await
         .expect("an engine that opts in accepts `implements`");
@@ -313,3 +315,6 @@ async fn it_validates_with_wasmtimes_feature_gates() {
         .expect_err("a nested projection is rejected");
     assert!(matches!(err, Error::InvalidComponentBinary { .. }));
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

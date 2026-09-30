@@ -16,7 +16,7 @@
 use crate::abi::options::BoundaryOptions;
 use crate::error::AbiCause;
 use crate::executor::ir::DataModel;
-use crate::runtime_layer::{Backend, StoreContextMut, Val as RuntimeVal};
+use crate::runtime_layer::{StoreContextMut, Val as RuntimeVal, into_anyhow};
 
 /// Which canonical-ABI strategy a crossing performs its accesses
 /// under.
@@ -47,7 +47,7 @@ impl AbiStrategy {
     /// Load `length` bytes at `offset` through `options`.
     pub fn load<T: 'static>(
         &self,
-        store: &mut StoreContextMut<'_, T, Backend>,
+        store: &mut StoreContextMut<'_, T>,
         options: &BoundaryOptions,
         offset: usize,
         length: usize,
@@ -61,8 +61,8 @@ impl AbiStrategy {
                 #[cfg(test)]
                 count_access(|(reads, writes)| (reads + 1, writes));
                 memory
-                    .read(&mut *store, offset, &mut buffer)
-                    .map_err(AbiCause::SubstrateFailure)?;
+                    .read(&mut *store, offset as u64, &mut buffer)
+                    .map_err(|error| AbiCause::SubstrateFailure(into_anyhow(error)))?;
                 Ok(buffer)
             }
             Self::Lazy => Err(AbiCause::UnsupportedDataModel),
@@ -72,7 +72,7 @@ impl AbiStrategy {
     /// Store `bytes` at `offset` through `options`.
     pub fn store<T: 'static>(
         &self,
-        store: &mut StoreContextMut<'_, T, Backend>,
+        store: &mut StoreContextMut<'_, T>,
         options: &BoundaryOptions,
         offset: usize,
         bytes: &[u8],
@@ -86,8 +86,8 @@ impl AbiStrategy {
                 #[cfg(test)]
                 count_access(|(reads, writes)| (reads, writes + 1));
                 memory
-                    .write(&mut *store, offset, bytes)
-                    .map_err(AbiCause::SubstrateFailure)
+                    .write(&mut *store, offset as u64, bytes)
+                    .map_err(|error| AbiCause::SubstrateFailure(into_anyhow(error)))
             }
             Self::Lazy => Err(AbiCause::UnsupportedDataModel),
         }
@@ -99,17 +99,14 @@ impl AbiStrategy {
     /// Wasmtime does: aligned as asked, and inside the memory.
     pub fn allocate<T: 'static>(
         &self,
-        store: &mut StoreContextMut<'_, T, Backend>,
+        store: &mut StoreContextMut<'_, T>,
         options: &BoundaryOptions,
         size: usize,
         alignment: usize,
     ) -> Result<usize, AbiCause> {
         match self {
             Self::Eager => {
-                let realloc = options
-                    .realloc()
-                    .ok_or(AbiCause::ReallocUnavailable)?
-                    .clone();
+                let realloc = *options.realloc().ok_or(AbiCause::ReallocUnavailable)?;
                 let args = [
                     RuntimeVal::I32(0), // old_ptr
                     RuntimeVal::I32(0), // old_size
@@ -122,7 +119,7 @@ impl AbiStrategy {
                 // the error a `cabi_realloc` failed with.
                 realloc
                     .call(&mut *store, &args, &mut results)
-                    .map_err(AbiCause::ReallocFailed)?;
+                    .map_err(|error| AbiCause::ReallocFailed(into_anyhow(error)))?;
                 let RuntimeVal::I32(ptr) = results[0] else {
                     return Err(AbiCause::ReallocFailed(anyhow::anyhow!(
                         "cabi_realloc returned a non-i32 pointer"
@@ -153,13 +150,16 @@ impl AbiStrategy {
     /// strategy addresses a store of a bounded size.
     pub fn size<T: 'static>(
         &self,
-        store: &mut StoreContextMut<'_, T, Backend>,
+        store: &mut StoreContextMut<'_, T>,
         options: &BoundaryOptions,
     ) -> Option<usize> {
         match self {
             Self::Eager => {
-                let memory = options.memory()?.clone();
-                Some(memory.current_pages(&*store) as usize * 65536)
+                let memory = *options.memory()?;
+                memory
+                    .size(&*store)
+                    .ok()
+                    .and_then(|size| usize::try_from(size).ok())
             }
             Self::Lazy => None,
         }

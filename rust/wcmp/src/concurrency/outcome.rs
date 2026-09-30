@@ -26,10 +26,11 @@ pub enum Outcome {
     /// Nothing is ready and no host task is pending. Only the
     /// driver's own condition can still be true.
     Idle,
-    /// A thread the turn resumed runs on after the turn returned, on
-    /// a microtask, and the turn waits for it to stop: it runs
-    /// nothing else in between. The driver returns pending, and the
-    /// provider wakes it once the thread stopped. Only a provider that
-    /// resumes a thread on a microtask, the JSPI provider, leads here.
+    /// A thread the turn started or resumed runs once the turn returned,
+    /// as the store's flight, and the turn waits for it to stop: it runs
+    /// nothing else in between. The driver awaits the flight, and runs
+    /// its next turn once the thread stopped. Only a provider that runs a
+    /// thread once the driver awaits it, the host-suspension provider,
+    /// leads here.
     Resuming,
 }

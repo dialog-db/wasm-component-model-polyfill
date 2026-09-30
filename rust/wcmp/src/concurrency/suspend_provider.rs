@@ -65,9 +65,9 @@ use super::thread_id::ThreadId;
 ///
 /// A resumption can complete at once or later. The stack-switching
 /// provider resumes a thread inside the call that asks for it, which
-/// returns when the thread suspends again or finishes. The JSPI
-/// provider resumes a thread on a microtask, never inside that call,
-/// so its resume answers [`EntryStatus::Running`], and the caller
+/// returns when the thread suspends again or finishes. The
+/// host-suspension provider resumes a thread once the driver of the
+/// store awaits it, never inside that call, so its resume answers [`EntryStatus::Running`], and the caller
 /// learns where the thread stopped from
 /// [`poll_stop`](Self::poll_stop). The scheduler treats both the same
 /// way: a turn that resumes a thread waits until the thread stops,

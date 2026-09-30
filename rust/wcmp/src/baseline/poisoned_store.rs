@@ -67,7 +67,7 @@ async fn assert_usable(store: &mut Store<()>, instance: &Instance, after: &str) 
 
 #[wcmp_macros::test]
 async fn it_leaves_the_store_usable_after_an_arity_mismatch_a_recursive_driver_or_a_link_error() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let linker: Linker<()> = Linker::new(&engine);
     let component = Component::new(&engine, OK).await.expect("component parses");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");

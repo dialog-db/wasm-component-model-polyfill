@@ -5,13 +5,13 @@
 use std::borrow::Cow;
 
 use wasm_encoder::{
-    BlockType, CodeSection, ConstExpr, ContType, ElementSection, Elements, EntityType, ExportKind,
-    ExportSection, Function, FunctionSection, GlobalSection, GlobalType, Handle, HeapType,
-    ImportSection, Instruction, Module, RefType, TableSection, TableType, TagKind, TagSection,
-    TagType, TypeSection, ValType,
+    AbstractHeapType, BlockType, CodeSection, ConstExpr, ContType, ElementSection, Elements,
+    EntityType, ExportKind, ExportSection, Function, FunctionSection, GlobalSection, GlobalType,
+    Handle, HeapType, ImportSection, Instruction, Module, RefType, TableSection, TableType,
+    TagKind, TagSection, TagType, TypeSection, ValType,
 };
 
-use crate::runtime_layer::{FuncType, ValType as RuntimeValType};
+use crate::runtime_layer::{FuncType, HeapType as RuntimeHeapType, ValType as RuntimeValType};
 
 use super::switch_form::SwitchForm;
 
@@ -150,47 +150,48 @@ use super::switch_form::SwitchForm;
 /// and `funcref`; the tags, the continuation types, and the tables of
 /// continuations stay inside the base module.
 ///
-/// # The JSPI form
+/// # The host-suspension form
 ///
-/// The JSPI form, [`SwitchForm::Jspi`], uses JavaScript Promise
-/// Integration, and is one module with no base: it keeps no suspended
-/// thread itself, because the browser keeps each suspended stack. A
-/// shim suspends by calling one more import, `suspend`, which the host
-/// makes with `WebAssembly.Suspending`. A thread starts through
-/// `WebAssembly.promising` over the form's start, which calls the
-/// entry wrapper directly, so the stack a promising call begins holds
-/// only WebAssembly frames from its start to the shim:
+/// The host-suspension form, [`SwitchForm::HostSuspension`], uses the
+/// runtime layer's host suspension, and is one module with no base: it
+/// keeps no suspended thread itself, because the backend keeps each
+/// suspended call. A shim suspends by calling one more import,
+/// `suspend`, which the host makes as a suspending host function that
+/// answers "not yet". A thread starts as a resumable call of the
+/// form's start, which calls the entry wrapper directly, so the stack
+/// a resumable call begins holds only WebAssembly frames from its
+/// start to the shim:
 ///
 /// ```text
 /// export start(thread, entry, args):
 ///     $entries[thread] = entry
 ///     entry wrapper(thread, args)
 ///
-/// suspend in a shim:  host.suspend()   // a WebAssembly.Suspending import
+/// suspend in a shim:  host.suspend()   // a suspending host function
 /// ```
 ///
-/// The function behind `suspend` answers a promise the host holds,
-/// and the host resumes the thread by resolving it. The resumed shim
-/// tries the built-in again, as in the other form. The shim calls
-/// `suspend` only when the built-in is not ready, because a call of a
-/// suspending import always suspends: Chromium 147 suspends even when
-/// the function answers a plain value or a resolved promise, although
-/// the proposal's overview states the opposite. A promising call
-/// answers a promise and never the entry's results, and a wrapper in
-/// JavaScript would put a frame that is not WebAssembly between the
-/// start of the stack and the suspension, which traps. The entry
-/// wrapper in WebAssembly is therefore how the host learns at once
-/// that an entry finished. The form has no resume export: a thread
-/// resumes when its promise resolves.
+/// The resumable call then ends suspended, and the host resumes the
+/// thread by resuming that call. The resumed shim tries the built-in
+/// again, as in the other form. The shim calls `suspend` only when the
+/// built-in is not ready, because a call of a suspending import can
+/// always suspend: in the browser, where the backend fills host
+/// suspension with JavaScript Promise Integration, Chromium 147
+/// suspends even when the function answers a plain value or a resolved
+/// promise, although the proposal's overview states the opposite. A
+/// resumable call in the browser ends only once a promise settles, and
+/// a frame that is not WebAssembly between the start of the stack and
+/// the suspension traps. The entry wrapper in WebAssembly is therefore
+/// how the host learns at once that an entry finished. The form has no
+/// resume export: a thread resumes when its call resumes.
 ///
-/// The JSPI form imports from the module `host` the tries, the
-/// finishes, and the `finished` recorders the extension module does,
-/// and `suspend`, of type `[] -> []`, last. It exports `shim{i}` for
-/// each shim and `start{j}` for each entry type. `start{j}` takes the
-/// thread index, the entry as a `funcref`, and the entry's parameters,
-/// and answers nothing. The entry reaches the wrapper through a table
-/// of functions, indexed by thread, which the start fills and grows on
-/// demand.
+/// The host-suspension form imports from the module `host` the tries,
+/// the finishes, and the `finished` recorders the extension module
+/// does, and `suspend`, of type `[] -> []`, last. It exports `shim{i}`
+/// for each shim and `start{j}` for each entry type. `start{j}` takes
+/// the thread index, the entry as a `funcref`, and the entry's
+/// parameters, and answers nothing. The entry reaches the wrapper
+/// through a table of functions, indexed by thread, which the start
+/// fills and grows on demand.
 #[derive(Clone, Debug)]
 pub struct SwitchModule {
     form: SwitchForm,
@@ -372,11 +373,11 @@ impl SwitchModule {
     }
 
     /// Encode the module this value describes: an extension module in
-    /// the stack-switching form, and the whole module in the JSPI form.
+    /// the stack-switching form, and the whole module in the host-suspension form.
     pub fn encode(&self) -> Vec<u8> {
         match self.form {
             SwitchForm::StackSwitching => self.encode_extension(),
-            SwitchForm::Jspi => self.encode_jspi(),
+            SwitchForm::HostSuspension => self.encode_host_suspension(),
         }
     }
 
@@ -750,8 +751,8 @@ fn run(body: &mut Function, cont_type: u32, operands: impl FnOnce(&mut Function)
 
 /// The body of a shim of type `ty`, over its try and finish imports,
 /// which suspends by calling `suspend`: the base module's `suspend`
-/// in the stack-switching form, and the `WebAssembly.Suspending`
-/// import in the JSPI form. A try that answers
+/// in the stack-switching form, and the suspending host function
+/// import in the host-suspension form. A try that answers
 /// [`DROPPED`](SwitchModule::DROPPED) makes it trap, which no guest
 /// handler catches, so the stack unwinds at once and runs no guest
 /// code on the way.
@@ -902,6 +903,12 @@ fn results(ty: &FuncType) -> impl ExactSizeIterator<Item = ValType> + Clone + '_
 }
 
 /// The encoder's name for a runtime-layer value type.
+///
+/// The types of a switch module are those of the canonical ABI's flat
+/// values and of the function references it passes, so a concrete
+/// heap type never reaches it. The runtime layer keeps a concrete
+/// type opaque, so one would become a `funcref`, and the engine would
+/// refuse to link the module with a structured error.
 fn value_type(ty: RuntimeValType) -> ValType {
     match ty {
         RuntimeValType::I32 => ValType::I32,
@@ -909,8 +916,28 @@ fn value_type(ty: RuntimeValType) -> ValType {
         RuntimeValType::F32 => ValType::F32,
         RuntimeValType::F64 => ValType::F64,
         RuntimeValType::V128 => ValType::V128,
-        RuntimeValType::FuncRef => ValType::FUNCREF,
-        RuntimeValType::ExternRef => ValType::EXTERNREF,
+        RuntimeValType::Ref(reference) => {
+            let ty = match reference.heap {
+                RuntimeHeapType::Func | RuntimeHeapType::Concrete(_) => AbstractHeapType::Func,
+                RuntimeHeapType::Extern => AbstractHeapType::Extern,
+                RuntimeHeapType::Any => AbstractHeapType::Any,
+                RuntimeHeapType::Eq => AbstractHeapType::Eq,
+                RuntimeHeapType::I31 => AbstractHeapType::I31,
+                RuntimeHeapType::Struct => AbstractHeapType::Struct,
+                RuntimeHeapType::Array => AbstractHeapType::Array,
+                RuntimeHeapType::Exn => AbstractHeapType::Exn,
+                RuntimeHeapType::Cont => AbstractHeapType::Cont,
+                RuntimeHeapType::NoFunc => AbstractHeapType::NoFunc,
+                RuntimeHeapType::NoExtern => AbstractHeapType::NoExtern,
+                RuntimeHeapType::None => AbstractHeapType::None,
+                RuntimeHeapType::NoExn => AbstractHeapType::NoExn,
+                RuntimeHeapType::NoCont => AbstractHeapType::NoCont,
+            };
+            ValType::Ref(RefType {
+                nullable: reference.nullable,
+                heap_type: HeapType::Abstract { shared: false, ty },
+            })
+        }
     }
 }
 
@@ -921,10 +948,10 @@ fn index(value: usize) -> u32 {
 }
 
 impl SwitchModule {
-    /// Encode the JSPI form: one module, with no base, whose shims
+    /// Encode the host-suspension form: one module, with no base, whose shims
     /// suspend through the host's `suspend` import and whose starts
     /// call the entry wrappers directly.
-    fn encode_jspi(&self) -> Vec<u8> {
+    fn encode_host_suspension(&self) -> Vec<u8> {
         let shims = index(self.shims.len());
         let entries = index(self.entries.len());
         // The imports are the tries and the finishes, the `finished`
@@ -1004,12 +1031,16 @@ impl SwitchModule {
             self.entries.iter().zip(&entry_types).enumerate()
         {
             functions.function(*wrapper_type);
-            code.function(&jspi_wrapper_body(ty, *entry_type, 2 * shims + index(j)));
+            code.function(&host_suspension_wrapper_body(
+                ty,
+                *entry_type,
+                2 * shims + index(j),
+            ));
         }
         for (j, (ty, (_, _, _, start_type))) in self.entries.iter().zip(&entry_types).enumerate() {
             let j = index(j);
             functions.function(*start_type);
-            code.function(&promising_start_body(ty, wrapper(j)));
+            code.function(&resumable_start_body(ty, wrapper(j)));
             exports.export(
                 &format!("start{j}"),
                 ExportKind::Func,
@@ -1029,14 +1060,15 @@ impl SwitchModule {
     }
 }
 
-/// The table of thread entries of the JSPI form, its one table.
-const JSPI_ENTRIES: u32 = 0;
+/// The table of thread entries of the host-suspension form, its one
+/// table.
+const HOST_SUSPENSION_ENTRIES: u32 = 0;
 
-/// The body of the JSPI form's entry wrapper for entries of type
+/// The body of the host-suspension form's entry wrapper for entries of type
 /// `ty`. Local 0 is the thread index and the entry's parameters follow
 /// it; the entry's results are spilled to locals of their own, so that
 /// the `finished` import receives the thread index first.
-fn jspi_wrapper_body(ty: &FuncType, entry_type: u32, finished_import: u32) -> Function {
+fn host_suspension_wrapper_body(ty: &FuncType, entry_type: u32, finished_import: u32) -> Function {
     let arguments = index(ty.params().len());
     let spilled = 1 + arguments;
     let mut body = Function::new(results(ty).map(|ty| (1, ty)));
@@ -1046,7 +1078,7 @@ fn jspi_wrapper_body(ty: &FuncType, entry_type: u32, finished_import: u32) -> Fu
     body.instruction(&Instruction::LocalGet(0));
     body.instruction(&Instruction::CallIndirect {
         type_index: entry_type,
-        table_index: JSPI_ENTRIES,
+        table_index: HOST_SUSPENSION_ENTRIES,
     });
     for result in (0..index(ty.results().len())).rev() {
         body.instruction(&Instruction::LocalSet(spilled + result));
@@ -1060,21 +1092,21 @@ fn jspi_wrapper_body(ty: &FuncType, entry_type: u32, finished_import: u32) -> Fu
     body
 }
 
-/// The body of the JSPI start for entries of type `ty`, which the
-/// host calls through `WebAssembly.promising`. Local 0 is the thread
+/// The body of the host-suspension start for entries of type `ty`, which the
+/// host calls as a resumable call. Local 0 is the thread
 /// index, local 1 the entry, and the entry's parameters follow. It
 /// puts the entry in the thread's slot of the table and calls the
-/// wrapper, so the stack the promising call begins holds only
+/// wrapper, so the stack the resumable call begins holds only
 /// WebAssembly frames.
-fn promising_start_body(ty: &FuncType, wrapper: u32) -> Function {
+fn resumable_start_body(ty: &FuncType, wrapper: u32) -> Function {
     let arguments = index(ty.params().len());
     let mut body = Function::new([]);
-    grow_to_hold(&mut body, JSPI_ENTRIES, HeapType::FUNC, |body| {
+    grow_to_hold(&mut body, HOST_SUSPENSION_ENTRIES, HeapType::FUNC, |body| {
         body.instruction(&Instruction::LocalGet(0));
     });
     body.instruction(&Instruction::LocalGet(0));
     body.instruction(&Instruction::LocalGet(1));
-    body.instruction(&Instruction::TableSet(JSPI_ENTRIES));
+    body.instruction(&Instruction::TableSet(HOST_SUSPENSION_ENTRIES));
     body.instruction(&Instruction::LocalGet(0));
     for local in 2..2 + arguments {
         body.instruction(&Instruction::LocalGet(local));
@@ -1086,7 +1118,7 @@ fn promising_start_body(ty: &FuncType, wrapper: u32) -> Function {
 
 #[cfg(test)]
 mod tests {
-    use crate::runtime_layer::Module as RuntimeModule;
+    use crate::runtime_layer::{ExternType as RuntimeExternType, Module as RuntimeModule};
 
     use super::*;
     use crate::Engine;
@@ -1097,20 +1129,20 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    fn it_encodes_a_jspi_form_that_needs_no_stack_switching() {
-        // The JSPI form has no tag, no continuation type, and no
+    fn it_encodes_a_host_suspension_form_that_needs_no_stack_switching() {
+        // The host-suspension form has no tag, no continuation type, and no
         // table of continuations, so every engine compiles it, the
         // browser included, whether or not it switches stacks.
-        let mut module = SwitchModule::new(SwitchForm::Jspi);
+        let mut module = SwitchModule::new(SwitchForm::HostSuspension);
         module.shim(i32_to_i32());
         module.entry(i32_to_i32());
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let compiled = RuntimeModule::new(engine.inner(), &module.encode())
-            .expect("the engine compiles the JSPI form");
+            .expect("the engine compiles the host-suspension form");
 
         let mut imports = compiled
-            .imports(engine.inner())
-            .map(|import| format!("{}.{}", import.module, import.name))
+            .imports()
+            .map(|import| format!("{}.{}", import.module(), import.name()))
             .collect::<Vec<_>>();
         imports.sort();
         assert_eq!(
@@ -1124,27 +1156,28 @@ mod tests {
         );
 
         let mut exports = compiled
-            .exports(engine.inner())
-            .map(|export| export.name.to_owned())
+            .exports()
+            .map(|export| export.name().to_owned())
             .collect::<Vec<_>>();
         exports.sort();
         assert_eq!(
             exports,
             ["shim0", "start0"],
-            "the form has no resume: a thread resumes when its promise resolves"
+            "the form has no resume: a thread resumes when its call resumes"
         );
         assert_eq!(
             compiled
-                .get_export(engine.inner(), "start0")
-                .and_then(|ty| ty.try_into_func().ok()),
-            Some(FuncType::new(
+                .exports()
+                .find(|export| export.name() == "start0")
+                .map(|export| export.ty().clone()),
+            Some(RuntimeExternType::Func(FuncType::new(
                 [
                     RuntimeValType::I32,
-                    RuntimeValType::FuncRef,
+                    RuntimeValType::FUNCREF,
                     RuntimeValType::I32
                 ],
                 []
-            )),
+            ))),
             "a start takes the thread index, the entry, and the entry's \
              parameters, and answers nothing"
         );

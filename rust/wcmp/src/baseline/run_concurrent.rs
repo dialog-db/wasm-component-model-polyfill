@@ -64,7 +64,7 @@ fn cause(outcome: Poll<Result<()>>) -> String {
 
 #[wcmp_macros::test]
 async fn it_runs_its_closure_with_an_accessor_that_reaches_the_host_data() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let mut store: Store<Vec<String>> =
         Store::new(&engine, vec!["first".to_owned()]).expect("store");
 
@@ -96,7 +96,7 @@ async fn it_runs_its_closure_with_an_accessor_that_reaches_the_host_data() {
 
 #[wcmp_macros::test]
 async fn it_refuses_a_driver_entered_from_inside_the_closure() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
 
     let seen = store
@@ -129,7 +129,7 @@ const NOT_IN_POLL: &str = "scheduler error: an accessor reached its store outsid
 
 #[wcmp_macros::test]
 async fn it_refuses_a_reach_made_outside_any_poll() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let mut store: Store<Vec<String>> = Store::new(&engine, Vec::new()).expect("store");
 
     // The accessor borrows nothing, so nothing stops it outliving
@@ -157,7 +157,7 @@ async fn it_refuses_a_reach_made_outside_any_poll() {
 
 #[wcmp_macros::test]
 async fn it_refuses_a_reach_with_the_accessor_of_another_store() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let mut first: Store<Vec<String>> = Store::new(&engine, Vec::new()).expect("store");
     let mut second: Store<Vec<String>> = Store::new(&engine, Vec::new()).expect("store");
 
@@ -186,7 +186,7 @@ async fn it_refuses_a_reach_with_the_accessor_of_another_store() {
 
 #[wcmp_macros::test]
 async fn it_refuses_a_reach_with_an_accessor_typed_by_other_host_data() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let mut store: Store<Vec<String>> =
         Store::new(&engine, vec!["host data".to_owned()]).expect("store");
 
@@ -223,7 +223,7 @@ async fn it_refuses_a_reach_with_an_accessor_typed_by_other_host_data() {
 
 #[wcmp_macros::test]
 async fn it_calls_an_export_once_the_entry_has_returned() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, DOUBLES)
         .await
         .expect("component parses");

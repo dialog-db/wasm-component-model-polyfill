@@ -35,7 +35,7 @@ mod imp {
     /// The provider this target offers an engine that is allowed one.
     pub fn offered() -> SuspendProviderKind {
         if has_function("Suspending") && has_function("promising") {
-            SuspendProviderKind::Jspi
+            SuspendProviderKind::HostSuspension
         } else {
             SuspendProviderKind::None
         }

@@ -474,7 +474,9 @@ async fn instantiate_with(
     // The `async` cancels need the more-async-builtins feature.
     let mut config = EngineConfig::new();
     config.wasm_component_model_more_async_builtins(true);
-    let engine = Engine::with_config(&config).expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine");
     let component = Component::new(&engine, WRITES_TO_THE_HOST)
         .await
         .expect("the component parses");
@@ -1186,7 +1188,7 @@ async fn run_until_dropped(store: &mut Store<()>, log: &Shared) {
 
 #[wcmp_macros::test]
 async fn it_copies_a_host_stream_piped_to_a_host_consumer_inside_a_turn() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let reader = StreamReader::new(&mut store.as_context_mut(), b"no guest".to_vec())
         .expect("a stream the host writes");
@@ -1212,7 +1214,7 @@ async fn it_copies_a_host_stream_piped_to_a_host_consumer_inside_a_turn() {
 
 #[wcmp_macros::test]
 async fn it_hands_a_host_futures_value_to_a_host_consumer_inside_a_turn() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let reader = FutureReader::new(&mut store.as_context_mut(), async { Ok::<_, Error>(5u32) })
         .expect("a future the host writes");
@@ -1570,7 +1572,7 @@ impl StreamProducer<()> for Silent {
 
 #[wcmp_macros::test]
 async fn it_drops_the_producer_of_a_host_stream_the_host_closes() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let dropped = Arc::new(Mutex::new(false));
     let mut stream = StreamReader::new(&mut store.as_context_mut(), Silent(dropped.clone()))
@@ -1735,7 +1737,7 @@ impl StreamConsumer<()> for TakesOneReader {
 
 #[wcmp_macros::test]
 async fn it_moves_out_of_the_writers_table_only_the_inner_ends_a_consumer_takes() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, NESTED_TO_THE_HOST)
         .await
         .expect("the component parses");
@@ -1787,3 +1789,6 @@ async fn it_moves_out_of_the_writers_table_only_the_inner_ends_a_consumer_takes(
         "{failure}"
     );
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

@@ -79,7 +79,7 @@ const YIELDS: u32 = 300;
 /// Call the spinner for `times` yields and hand back the number of
 /// resumptions the guest counted.
 async fn spin(times: u32) -> u32 {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, SPINS)
         .await
         .expect("component parses");
@@ -253,3 +253,6 @@ mod browser {
         );
     }
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

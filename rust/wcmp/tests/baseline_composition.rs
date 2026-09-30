@@ -13,7 +13,7 @@ use wcmp_macros::component;
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 async fn instantiate(bytes: &[u8]) -> (Store<()>, wcmp::Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");
@@ -407,7 +407,7 @@ async fn it_lowers_a_lifted_function_of_the_same_component() {
             (with "" (instance (export "" (func $f2)))))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, CALLS_ITS_OWN_LIFT)
         .await
         .expect("component parses");
@@ -520,3 +520,6 @@ async fn it_copies_strings_between_a_32_bit_and_a_64_bit_component() {
         );
     }
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

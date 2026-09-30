@@ -1009,7 +1009,8 @@ mod tests {
         // registered interface key is matched: `@0.1.0` answers an
         // import of `@0.1.3`, and an exact registration answers
         // ahead of it.
-        let engine = crate::Engine::new().expect("engine construction succeeds");
+        let engine = crate::Engine::with_backend(crate::runtime_layer::test_backend())
+            .expect("engine construction succeeds");
         let mut linker: Linker<()> = Linker::new(&engine);
         let register = |linker: &mut Linker<()>, name: &str| {
             linker
@@ -1081,7 +1082,8 @@ mod tests {
     /// built by hand for that reason.
     #[wcmp_macros::test]
     fn it_refuses_an_import_whose_sort_the_root_namespace_cannot_hold() {
-        let engine = crate::Engine::new().expect("engine construction succeeds");
+        let engine = crate::Engine::with_backend(crate::runtime_layer::test_backend())
+            .expect("engine construction succeeds");
         let linker: Linker<()> = Linker::new(&engine);
         let name = "pdd-tests:host/point@0.1.0";
         for ty in [

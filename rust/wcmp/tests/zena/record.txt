@@ -29,26 +29,26 @@
 # header is not the one the build compiled with.
 
 async-sleep wasmtime pass
-async-sleep web parse "component sleeper: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 8)) is not supported in the wasm_runtime_layer"
-async-sleep native parse "component sleeper: instantiation error: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer"
+async-sleep web pass
+async-sleep native pass
 classes-and-arrays wasmtime pass
-classes-and-arrays web parse "component shapes: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 1)) is not supported in the wasm_runtime_layer"
+classes-and-arrays web pass
 classes-and-arrays native pass
 console-output wasmtime pass
-console-output web parse "component printer: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 8)) is not supported in the wasm_runtime_layer"
-console-output native parse "component printer: instantiation error: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer"
+console-output web pass
+console-output native pass
 custom-world wasmtime pass
-custom-world web parse "component relay: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 8)) is not supported in the wasm_runtime_layer"
-custom-world native parse "component relay: instantiation error: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer"
+custom-world web pass
+custom-world native pass
 exceptions wasmtime pass
-exceptions web parse "component halver: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 4)) is not supported in the wasm_runtime_layer"
-exceptions native parse "component halver: instantiation error: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer"
+exceptions web pass
+exceptions native pass
 rust-imports-zena-composition wasmtime pass
-rust-imports-zena-composition web parse "component importer: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 8)) is not supported in the wasm_runtime_layer"
-rust-imports-zena-composition native parse "component importer: instantiation error: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer"
+rust-imports-zena-composition web pass
+rust-imports-zena-composition native pass
 rust-imports-zena-run-time wasmtime pass
-rust-imports-zena-run-time web parse "component exporter: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 8)) is not supported in the wasm_runtime_layer"
-rust-imports-zena-run-time native parse "component exporter: instantiation error: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer"
+rust-imports-zena-run-time web pass
+rust-imports-zena-run-time native pass
 rust-link-run-time wasmtime pass
 rust-link-run-time web pass
 rust-link-run-time native pass
@@ -56,17 +56,17 @@ scalar-export wasmtime pass
 scalar-export web pass
 scalar-export native pass
 string-roundtrip wasmtime pass
-string-roundtrip web parse "component strings: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 8)) is not supported in the wasm_runtime_layer"
-string-roundtrip native parse "component strings: instantiation error: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer"
+string-roundtrip web pass
+string-roundtrip native pass
 zena-imports-rust-composition wasmtime pass
-zena-imports-rust-composition web parse "component importer: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 8)) is not supported in the wasm_runtime_layer"
-zena-imports-rust-composition native parse "component importer: instantiation error: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer"
+zena-imports-rust-composition web pass
+zena-imports-rust-composition native pass
 zena-imports-rust-run-time wasmtime pass
-zena-imports-rust-run-time web parse "component importer: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 8)) is not supported in the wasm_runtime_layer"
-zena-imports-rust-run-time native parse "component importer: instantiation error: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer"
+zena-imports-rust-run-time web pass
+zena-imports-rust-run-time native pass
 zena-link-composition wasmtime pass
-zena-link-composition web parse "component importer: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 8)) is not supported in the wasm_runtime_layer"
-zena-link-composition native parse "component importer: instantiation error: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer"
+zena-link-composition web pass
+zena-link-composition native pass
 zena-link-run-time wasmtime pass
-zena-link-run-time web parse "component exporter: instantiation error: the runtime substrate failed to instantiate the component: reference type (ref null (module 8)) is not supported in the wasm_runtime_layer"
-zena-link-run-time native parse "component exporter: instantiation error: the runtime substrate failed to instantiate the component: tags are not supported in the wasm_runtime_layer"
+zena-link-run-time web pass
+zena-link-run-time native pass

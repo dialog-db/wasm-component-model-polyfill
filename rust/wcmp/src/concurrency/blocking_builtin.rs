@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 
+use crate::runtime_layer::host_func;
 use crate::runtime_layer::{Func as RuntimeFunc, FuncType, Val as RuntimeVal, ValType};
 use crate::store::{StoreContext, StoreContextInternalExt};
 
@@ -149,10 +150,10 @@ impl<T: 'static> BlockingBuiltin<T> {
 
     /// The host function a guest imports when the engine has no
     /// provider: the whole built-in, which waits where it stands.
-    pub fn trampoline(&self, store: &mut StoreContext<'_, T>) -> RuntimeFunc {
+    pub fn trampoline(&self, store: &mut StoreContext<'_, T>) -> crate::error::Result<RuntimeFunc> {
         let begin = self.begin.clone();
         let fallback = self.fallback.clone();
-        RuntimeFunc::new(
+        host_func(
             store.internal().runtime_mut(),
             self.ty.clone(),
             move |store_ctx, args, results| {
@@ -170,24 +171,23 @@ impl<T: 'static> BlockingBuiltin<T> {
 
     /// The try and the finish host functions the built-in's shim
     /// calls under a provider.
-    pub fn parts(&self, store: &mut StoreContext<'_, T>) -> (RuntimeFunc, RuntimeFunc) {
+    pub fn parts(
+        &self,
+        store: &mut StoreContext<'_, T>,
+    ) -> crate::error::Result<(RuntimeFunc, RuntimeFunc)> {
         let begin = self.begin.clone();
         let fallback = self.fallback.clone();
         let switches = self.switches.clone();
-        let try_part = RuntimeFunc::new(
+        let try_part = host_func(
             store.internal().runtime_mut(),
             FuncType::new(self.ty.params().iter().copied(), [ValType::I32]),
             move |store_ctx, args, results| {
                 let mut store = StoreContext::new(store_ctx);
                 if store.internal().dropped() {
                     // The owner dropped the store while this thread's
-                    // resume was under way, and the store was kept
-                    // only for this call. The shim traps on the
-                    // answer, so the store is freed once the stack
-                    // has unwound.
-                    if let Some(provider) = store.internal().provider() {
-                        provider.release_dropped(&mut store);
-                    }
+                    // resume was under way, and the runtime layer kept
+                    // the store only for this thread. The shim traps on
+                    // the answer, so no guest code runs in the store.
                     results[0] = RuntimeVal::I32(SwitchModule::DROPPED);
                     return Ok(());
                 }
@@ -201,8 +201,8 @@ impl<T: 'static> BlockingBuiltin<T> {
                 results[0] = RuntimeVal::I32(i32::from(ready));
                 Ok(())
             },
-        );
-        let finish_part = RuntimeFunc::new(
+        )?;
+        let finish_part = host_func(
             store.internal().runtime_mut(),
             self.ty.clone(),
             move |store_ctx, _args, results| {
@@ -210,8 +210,8 @@ impl<T: 'static> BlockingBuiltin<T> {
                 let values = SuspendSeam::finish_block(&mut store)?;
                 deliver(results, values)
             },
-        );
-        (try_part, finish_part)
+        )?;
+        Ok((try_part, finish_part))
     }
 }
 

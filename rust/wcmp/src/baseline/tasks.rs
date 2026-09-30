@@ -103,7 +103,7 @@ const COMPOSED: &[u8] = component!(
 /// export with `argument`. Returns what the host saw during the call
 /// and what the store holds after it.
 async fn run_with_probe(bytes: &[u8], argument: u32) -> (Val, Seen, Seen) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");
@@ -215,7 +215,7 @@ async fn it_shares_the_exports_signature_and_options_with_the_task_of_every_call
     // each is what every handle for the export holds and what the
     // task record of every call points at. The host reads the task
     // on the stack from inside two calls, through two handles.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, CALLS_THE_HOST)
         .await
         .expect("component parses");
@@ -343,7 +343,7 @@ const LENDS_THEN_FAILS: &[u8] = component!(
 
 #[wcmp_macros::test]
 async fn it_gives_back_a_borrow_lent_to_a_host_call_whose_parameter_lift_failed() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, LENDS_THEN_FAILS)
         .await
         .expect("component parses");

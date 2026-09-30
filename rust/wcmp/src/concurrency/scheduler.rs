@@ -1514,7 +1514,7 @@ impl<T: 'static> Scheduler<T> {
     /// the store. A thread suspended in the provider stays parked: its
     /// resumption is an item, which no turn of a poisoned store runs.
     ///
-    /// The work the JSPI provider leaves to the store, in the browser,
+    /// The work the host-suspension provider leaves to the store, in the browser,
     /// is not let go of: a resume already issued, a failed start, the
     /// thread named to run next, the switchers, and the plans. A later
     /// driver's turn carries that work forward before it runs any item,
@@ -1670,7 +1670,7 @@ mod tests {
     type Log = Arc<Mutex<Vec<&'static str>>>;
 
     fn store() -> Store<()> {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         Store::new(&engine, ()).expect("store")
     }
 

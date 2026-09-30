@@ -13,7 +13,7 @@ use crate::runtime_layer::Val as RuntimeVal;
 /// A provider that runs a thread on after the call that asked for it
 /// returns answers [`Running`](Self::Running) instead, and the caller
 /// learns where the thread stopped later, from the provider's
-/// `poll_stop`. The JSPI provider answers it for every resume, since
+/// `poll_stop`. The host-suspension provider answers it for every resume, since
 /// a resumed stack runs on a microtask, and for a start whose thread
 /// failed before it first suspended, since the browser hands over the
 /// failure on a microtask too.
@@ -27,7 +27,7 @@ pub enum EntryStatus {
     Suspended,
     /// The thread runs on, or has failed, after the call returned,
     /// and the provider's `poll_stop` answers where it stopped.
-    // Only the JSPI provider answers it, and it exists in the browser
+    // Only the host-suspension provider answers it, and it exists in the browser
     // alone.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     Running,

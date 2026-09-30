@@ -18,6 +18,8 @@ wcmp-macros = { workspace = true }
 # work, never a sleep.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
+# The backend the suite measures natively.
+wcmp-wasm-core-wasmtime = { workspace = true }
 
 # The browser half reads `performance.now()` off the global the way the
 # polyfill's own scheduler reaches `setTimeout`, so the suite works on a
@@ -26,6 +28,8 @@ tokio = { workspace = true, features = ["rt", "macros"] }
 js-sys = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
+# The backend the suite measures in the browser.
+wcmp-wasm-core-web = { workspace = true }
 
 # The harness's own tests run on both targets through
 # `#[wcmp_macros::test]`, which needs the browser runner on the web.

@@ -148,7 +148,7 @@ async fn it_passes_a_record_argument_to_a_host_function() {
         FunctionParameter, FunctionType, InterfaceIdentifier, PrimitiveType, RecordField,
         RecordType, ValField, ValueType,
     };
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -237,7 +237,7 @@ async fn it_returns_a_record_from_an_export() {
     );
 
     use crate::{InterfaceIdentifier, ValField};
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -369,7 +369,7 @@ async fn it_passes_a_variant_argument_to_a_host_function() {
         FunctionParameter, FunctionType, InterfaceIdentifier, PrimitiveType, ValueType,
         VariantCase, VariantType,
     };
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -543,7 +543,7 @@ async fn it_passes_an_enum_argument_to_a_host_function() {
     use crate::{
         EnumType, FunctionParameter, FunctionType, InterfaceIdentifier, PrimitiveType, ValueType,
     };
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -630,7 +630,7 @@ async fn it_passes_a_flags_argument_to_a_host_function() {
     use crate::{
         FlagsType, FunctionParameter, FunctionType, InterfaceIdentifier, PrimitiveType, ValueType,
     };
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -901,7 +901,7 @@ async fn it_tracks_resource_handles_in_a_handle_table() {
     // canonical-ABI's index-allocation rules hold — the freed slot
     // is reused, never aliased while live.
     use crate::ResourceTypeId;
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let store: Store<()> = Store::new(&engine, ()).expect("store");
 
     // Two distinct registered resource types live in the same
@@ -1086,7 +1086,7 @@ async fn it_supports_typed_export_calls() {
             (canon lift (core func $i "id"))))
         "#
     );
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -1178,7 +1178,7 @@ async fn it_observes_cabi_realloc_alignment_for_record_allocations() {
         "#
     );
 
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");
@@ -1229,7 +1229,7 @@ async fn it_observes_cabi_realloc_alignment_for_record_allocations() {
 // --------------------------------------------------------------
 
 async fn instantiate(component: &[u8]) -> (Store<()>, crate::Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, component)
         .await
         .expect("component parses");
@@ -1355,7 +1355,7 @@ async fn it_spills_a_wide_parameter_tuple_when_calling_a_host_function() {
         "#
     );
     use crate::{FunctionParameter, FunctionType, InterfaceIdentifier, PrimitiveType, ValueType};
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, COMPONENT)
         .await
         .expect("component parses");

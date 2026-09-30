@@ -247,7 +247,7 @@ impl Fixture {
     /// The fixture, with `boom` set to release the resource on its
     /// poll `at`.
     async fn new(at: u32) -> Self {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let resource = Component::new(&engine, TRAPPING_RESOURCE)
             .await
             .expect("the resource component parses");

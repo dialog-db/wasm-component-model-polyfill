@@ -12,6 +12,7 @@ use crate::internal::ErrorInternal;
 use crate::resource::{
     HandleLookupError, HandleTables, ResourceHandle, ResourceHandleParts, ResourceTypeId,
 };
+use crate::runtime_layer::HostFrames;
 use crate::types::{ResourceType, ValueType};
 
 use super::resource_record::ResourceRecord;
@@ -70,6 +71,8 @@ pub struct StoreData<T: 'static> {
     /// The copy budget each crossing starts with, in bytes of host
     /// values: what Wasmtime calls the store's hostcall fuel.
     hostcall_fuel: usize,
+    /// How many host functions of the polyfill run in the store now.
+    host_frames: usize,
 }
 
 /// The copy budget a crossing starts with unless the host sets
@@ -99,6 +102,12 @@ impl LearnedName {
     }
 }
 
+impl<T: 'static> HostFrames for StoreData<T> {
+    fn host_frames(&mut self) -> &mut usize {
+        &mut self.host_frames
+    }
+}
+
 impl<T: 'static> StoreData<T> {
     /// Construct the data of a fresh store around the host's `data`:
     /// a new identity, empty tables, no registered destructor, and
@@ -121,6 +130,7 @@ impl<T: 'static> StoreData<T> {
             dropped: false,
             poisoned: false,
             hostcall_fuel: DEFAULT_HOSTCALL_FUEL,
+            host_frames: 0,
         }
     }
 
@@ -197,17 +207,31 @@ impl<T: 'static> StoreData<T> {
         self.provider.as_ref()
     }
 
-    /// Whether the owner dropped the store while a resumed thread had
-    /// yet to run. Workspace-internal.
+    /// Whether the owner dropped the store, which a resumed thread
+    /// that runs on after it reads. Workspace-internal.
     pub fn dropped(&self) -> bool {
         self.dropped
     }
 
-    /// Record that the owner dropped the store while a resumed thread
-    /// had yet to run. Workspace-internal.
-    #[cfg(target_arch = "wasm32")]
+    /// Record that the owner dropped the store, and drop everything the
+    /// polyfill keeps in it: the scheduler with its queued items, host
+    /// tasks, and suspended threads, the provider, the destructors, and
+    /// the handle tables with every record and end. No destructor runs.
+    ///
+    /// The runtime layer can keep the store allocated after its owner
+    /// dropped it, for a guest call that runs on until it stops, as the
+    /// browser's backend does for a call that runs on a microtask. The
+    /// polyfill's state goes at once all the same, and such a call finds
+    /// the mark, and nothing else of the store. The host's data drops
+    /// with the store itself. Workspace-internal.
     pub fn mark_dropped(&mut self) {
         self.dropped = true;
+        let scheduler = std::mem::take(&mut self.scheduler);
+        let provider = self.provider.take();
+        let destructors = core::mem::take(&mut self.destructors);
+        let tables =
+            core::mem::replace(&mut self.tables, Arc::new(Mutex::new(HandleTables::new())));
+        drop((scheduler, provider, destructors, tables));
     }
 
     /// Whether a trap happened in the store. Workspace-internal.

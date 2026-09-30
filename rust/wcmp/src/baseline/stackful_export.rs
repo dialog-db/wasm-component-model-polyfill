@@ -82,7 +82,9 @@ const STACKFUL: &[u8] = component!(
 fn stackful_engine() -> Engine {
     let mut config = EngineConfig::new();
     config.wasm_component_model_async_stackful(true);
-    Engine::with_config(&config).expect("engine")
+    Engine::with_backend(crate::runtime_layer::test_backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine")
 }
 
 /// Instantiate [`STACKFUL`] into a fresh store of an engine that
@@ -152,7 +154,7 @@ fn chain(error: &Error) -> String {
 
 #[wcmp_macros::test]
 async fn it_refuses_a_stackful_lift_while_its_gate_is_off() {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let err = Component::new(&engine, STACKFUL)
         .await
         .expect_err("the default engine leaves the stackful gate off");

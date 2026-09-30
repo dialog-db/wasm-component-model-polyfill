@@ -1,10 +1,12 @@
 //! The polyfill's host-environment build-up.
 
+use core::future::poll_fn;
 use core::marker::PhantomData;
+use core::task::Poll;
 use std::collections::HashMap;
 
 use crate::component::Component;
-use crate::concurrency::Driver;
+use crate::concurrency::TurnGuard;
 use crate::engine::Engine;
 use crate::error::{Error, Result, SchedulerCause};
 use crate::identifier::InterfaceIdentifier;
@@ -224,23 +226,15 @@ impl<T: 'static> Linker<T> {
         // modules, which is guest code, so a store a trap poisoned
         // refuses it.
         store.internal().enter_guest()?;
-        let mut plan = Some(());
-        Driver::new(
-            store,
-            None,
-            move |store: &mut StoreContext<'_, T>, waker| {
-                plan.take()?;
-                Some(
-                    store
-                        .internal()
-                        .run_in_turn(waker, |store| {
-                            self.instantiate_resolved(store, component, &resolution)
-                        })
-                        .and_then(|outcome| outcome),
-                )
-            },
-        )
-        .await
+        // The plan runs inside a turn, as all guest work does, and the
+        // turn lasts until the plan is done: a core instantiation is
+        // asynchronous, and the turn waits for it with nothing else in
+        // between.
+        let waker = poll_fn(|context| Poll::Ready(context.waker().clone())).await;
+        let tables = store.internal().tables_handle();
+        let _turn = TurnGuard::enter(&tables, &waker);
+        self.instantiate_resolved(&mut store, component, &resolution)
+            .await
     }
 }
 
@@ -257,12 +251,12 @@ impl<T: 'static> LinkerInternal<T> for Linker<T> {
         &self.root
     }
 
-    fn instantiate_resolved(
+    async fn instantiate_resolved(
         &self,
         store: &mut StoreContext<'_, T>,
         component: &Component,
         resolution: &Resolution,
     ) -> Result<Instance> {
-        crate::executor::instantiate(component, store, self, resolution)
+        crate::executor::instantiate(component, store, self, resolution).await
     }
 }

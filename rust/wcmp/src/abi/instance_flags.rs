@@ -21,7 +21,10 @@
 
 use crate::error::{Error, Result};
 use crate::internal::ErrorInternal;
-use crate::runtime_layer::{AsContextMut, Global as RuntimeGlobal, Val as RuntimeVal};
+use crate::runtime_layer::{
+    AsContextMut, Global as RuntimeGlobal, GlobalType, Mutability, Val as RuntimeVal, ValType,
+    substrate_failure,
+};
 
 /// The may-leave flag of one component instance, as the core global
 /// the instance's adapters import.
@@ -37,10 +40,14 @@ impl InstanceFlags {
     /// instance may be left until an adapter is in the middle of
     /// translating values across its boundary, or the polyfill is in
     /// the middle of a call of its own into the guest.
-    pub fn new(mut store: impl AsContextMut) -> Self {
-        Self {
-            global: RuntimeGlobal::new(store.as_context_mut(), RuntimeVal::I32(1), true),
-        }
+    pub fn new(mut store: impl AsContextMut) -> Result<Self> {
+        let global = RuntimeGlobal::new(
+            store.as_context_mut(),
+            GlobalType::new(ValType::I32, Mutability::Var),
+            RuntimeVal::I32(1),
+        )
+        .map_err(substrate_failure)?;
+        Ok(Self { global })
     }
 
     /// The global itself, for the import table of an adapter module
@@ -52,11 +59,11 @@ impl InstanceFlags {
     /// Whether the instance may be left.
     pub fn may_leave(&self, mut store: impl AsContextMut) -> Result<bool> {
         match self.global.get(store.as_context_mut()) {
-            RuntimeVal::I32(value) => Ok(value != 0),
-            other => Err(Error::internal(format!(
-                "the may-leave flag of a component instance holds a {} rather than an i32",
-                other.ty()
+            Ok(RuntimeVal::I32(value)) => Ok(value != 0),
+            Ok(other) => Err(Error::internal(format!(
+                "the may-leave flag of a component instance holds {other:?} rather than an i32"
             ))),
+            Err(error) => Err(substrate_failure(error)),
         }
     }
 

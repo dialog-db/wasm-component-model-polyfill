@@ -44,7 +44,7 @@ use crate::concurrency::Scope;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::{CanonOptions, StringEncoding};
 use crate::internal::ErrorInternal;
-use crate::runtime_layer::{Backend, StoreContextMut, Val as RuntimeVal};
+use crate::runtime_layer::{StoreContextMut, Val as RuntimeVal, into_anyhow};
 use crate::store::StoreData;
 use crate::types::ValueType;
 
@@ -57,7 +57,7 @@ use crate::types::ValueType;
 /// holds the polyfill's `Store`.
 pub struct BoundaryContext<'a, T: 'static> {
     /// The runtime-layer store context the crossing runs in.
-    store: StoreContextMut<'a, T, Backend>,
+    store: StoreContextMut<'a, T>,
     /// The options of the crossing: memory, realloc, string
     /// encoding, and data model.
     options: BoundaryOptions,
@@ -135,7 +135,7 @@ impl<'a, T: 'static> BoundaryContext<'a, StoreData<T>> {
     /// `scope`. The tables the crossing resolves a handle against
     /// come off the instance, and the copy budget off the store.
     pub fn new(
-        store: StoreContextMut<'a, StoreData<T>, Backend>,
+        store: StoreContextMut<'a, StoreData<T>>,
         options: BoundaryOptions,
         instance: BoundaryInstance,
         scope: Option<Scope>,
@@ -162,7 +162,7 @@ impl<'a, T: 'static> BoundaryContext<'a, StoreData<T>> {
     /// reads through `source` and writes through `destination`, and
     /// carries no handles of its own.
     pub fn for_copy(
-        store: StoreContextMut<'a, StoreData<T>, Backend>,
+        store: StoreContextMut<'a, StoreData<T>>,
         destination: BoundaryOptions,
         source: BoundaryOptions,
         instance: BoundaryInstance,
@@ -538,7 +538,7 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
     /// runs inside the export's own task, as the reference calls it,
     /// so it takes no task of its own.
     pub fn post_return(&mut self, core_results: &[RuntimeVal]) -> Result<()> {
-        let Some(post_return) = self.options.post_return().cloned() else {
+        let Some(post_return) = self.options.post_return().copied() else {
             return Ok(());
         };
         let call = BoundaryCall::post_return(&self.instance, &mut self.store)?;
@@ -549,7 +549,7 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
                 Error::from(AbiError {
                     position: AbiPosition::Result,
                     valtype: None,
-                    cause: AbiCause::SubstrateFailure(cause),
+                    cause: AbiCause::SubstrateFailure(into_anyhow(cause)),
                 })
             });
         let ended = call.end(&mut self.store);
@@ -638,7 +638,7 @@ mod tests {
 
     #[wcmp_macros::test]
     fn it_builds_one_context_from_options_an_instance_and_a_scope() {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let tables = store.internal().tables_handle();
         let (instance, task) = {
@@ -698,7 +698,7 @@ mod tests {
 
     #[wcmp_macros::test]
     fn it_selects_the_eager_strategy_from_the_linear_memory_data_model() {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let instance = InstanceId::from_index(0);
         let tables = store.internal().tables_handle();
@@ -737,7 +737,7 @@ mod tests {
         // The call site is the same `BoundaryContext::new` every
         // crossing uses: only the data model of the options differs,
         // and the context selects the other strategy from it.
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let tables = store.internal().tables_handle();
         // The allocation below enters a `cabi_realloc` boundary
@@ -750,7 +750,8 @@ mod tests {
             .expect("handle tables")
             .tasks
             .insert_instance();
-        let flags = InstanceFlags::new(store.internal().inner_mut().as_context_mut());
+        let flags = InstanceFlags::new(store.internal().inner_mut().as_context_mut())
+            .expect("the may-leave flag");
         let (options, instance) = BoundaryInstance::resolve(
             &canon(DataModel::Gc),
             &state(instance, vec![flags]),
@@ -796,7 +797,7 @@ mod tests {
         // destination's: here the source is under the second
         // strategy, which implements no access, while the
         // destination is under the eager one.
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let instance = InstanceId::from_index(0);
         let state = state(instance, Vec::new());
@@ -826,7 +827,7 @@ mod tests {
 
     #[wcmp_macros::test]
     fn it_refuses_a_charge_past_the_copy_budget_and_spends_nothing_on_it() {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         assert_eq!(store.hostcall_fuel(), 128 << 20, "Wasmtime's default");
         // The context starts from the fuel the store holds when it is

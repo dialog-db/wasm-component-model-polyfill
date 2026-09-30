@@ -64,6 +64,7 @@ use crate::error::{Error, Result, TaskCause};
 use crate::executor::ir::{CoreParameter, CoreSignature, EndTableSpec, TranscodeOp};
 use crate::internal::ErrorInternal;
 use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime, TableId};
+use crate::runtime_layer::host_func;
 use crate::runtime_layer::{Func as RuntimeFunc, FuncType, Val as RuntimeVal, ValType as CoreType};
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
@@ -75,9 +76,9 @@ pub fn build_context_get<T: 'static>(
     store: &mut StoreContext<'_, T>,
     slot: usize,
     signature: &CoreSignature,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, _args, results| {
@@ -106,9 +107,9 @@ pub fn build_context_set<T: 'static>(
     store: &mut StoreContext<'_, T>,
     slot: usize,
     signature: &CoreSignature,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, args, _results| {
@@ -151,7 +152,7 @@ pub fn core_func_type(signature: &CoreSignature) -> FuncType {
 fn core_type_of_parameter(parameter: CoreParameter) -> CoreType {
     match parameter {
         CoreParameter::Value(slot) => core_type_of_flat(slot),
-        CoreParameter::FuncRef => CoreType::FuncRef,
+        CoreParameter::FuncRef => CoreType::FUNCREF,
     }
 }
 
@@ -176,11 +177,11 @@ pub fn build_trap<T: 'static>(
     let message = Trap::from_u8(code)
         .ok_or_else(|| Error::internal(format!("adapter imported an unknown trap code {code}")))?
         .to_string();
-    Ok(RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, _args, _results| Err(anyhow!("{message}")),
-    ))
+    )
 }
 
 /// Build the `enter-sync-call` intrinsic. The adapter passes the
@@ -192,9 +193,9 @@ pub fn build_enter_sync_call<T: 'static>(
     store: &mut StoreContext<'_, T>,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, args, _results| {
@@ -225,9 +226,9 @@ fn enter_sync_call_arguments(
 pub fn build_exit_sync_call<T: 'static>(
     store: &mut StoreContext<'_, T>,
     signature: &CoreSignature,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, _args, _results| exit_sync_call(&tables),
@@ -285,10 +286,10 @@ pub fn build_backpressure_inc<T: 'static>(
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
     instance: usize,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
     let index = instance as u32;
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, _args, _results| {
@@ -306,10 +307,10 @@ pub fn build_backpressure_dec<T: 'static>(
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
     instance: usize,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
     let index = instance as u32;
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, _args, _results| {
@@ -396,9 +397,9 @@ pub fn build_resource_transfer<T: 'static>(
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
     own: bool,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, args, results| {
@@ -500,9 +501,9 @@ pub fn build_end_transfer<T: 'static>(
     end_tables: Arc<[EndTableSpec]>,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |_store_ctx, args, results| {
@@ -562,10 +563,10 @@ pub fn build_transcoder<T: 'static>(
     to_memory: usize,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
-) -> RuntimeFunc {
+) -> crate::error::Result<RuntimeFunc> {
     let result_widths: Vec<FlatType> = signature.results.clone();
     let tables = store.internal().tables_handle();
-    RuntimeFunc::new(
+    host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |store_ctx, args, results| {
@@ -1082,7 +1083,7 @@ mod tests {
     fn it_holds_an_async_task_at_the_gate_while_the_counter_is_above_zero() {
         // Both moves of the counter go through the functions the
         // backpressure built-ins are built from.
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let tables = store.internal().tables_handle();
         let instance = tables.lock().expect("tables").tasks.insert_instance();
@@ -1136,7 +1137,7 @@ mod tests {
 
     #[wcmp_macros::test]
     fn it_opens_the_gate_for_the_next_turn_when_a_running_task_lowers_the_counter() {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store: Store<()> = Store::new(&engine, ()).expect("store");
         let tables = store.internal().tables_handle();
         let instance = tables.lock().expect("tables").tasks.insert_instance();

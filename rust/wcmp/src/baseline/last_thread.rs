@@ -170,7 +170,9 @@ fn threading_engine() -> Engine {
     let mut config = EngineConfig::new();
     config.wasm_component_model_async_stackful(true);
     config.wasm_component_model_threading(true);
-    Engine::with_config(&config).expect("engine")
+    Engine::with_backend(crate::runtime_layer::test_backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine")
 }
 
 /// Instantiate [`LAST_THREAD`] in a fresh store, with the host's

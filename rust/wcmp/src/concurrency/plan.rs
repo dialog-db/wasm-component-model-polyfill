@@ -1,6 +1,7 @@
 //! Work a trampoline left for the scheduler before its thread goes
 //! on.
 
+use super::instance_id::InstanceId;
 use super::readiness::Readiness;
 use super::seam_wait::SeamWait;
 use super::thread_id::ThreadId;
@@ -14,7 +15,7 @@ use super::thread_id::ThreadId;
 /// a synchronous call of a sync-typed function runs the ready threads
 /// of its own instance until its task resolves, and a thread a nested
 /// start began can switch to a suspended thread before it first
-/// suspends. The JSPI provider cannot resume a suspended stack from
+/// suspends. The host-suspension provider cannot resume a suspended stack from
 /// inside a synchronous frame. The trampoline therefore leaves what
 /// it has yet to do as a plan, and its shim suspends the thread it
 /// runs in as well. The scheduler takes the plan up where the store
@@ -58,6 +59,9 @@ pub struct Plan<T: 'static> {
     /// Whether the nested-start mark the trampoline put on the stack
     /// comes off once the work the trampoline left is done.
     pub ends_nested_start: bool,
+    /// The instance whose may-not-suspend flag goes back to the value
+    /// here once the nested-start mark comes off.
+    pub restores_may_not_suspend: Option<(InstanceId, bool)>,
     /// Whether the thread-switch mark the trampoline put on the stack
     /// comes off then.
     pub ends_thread_switch: bool,
@@ -79,6 +83,7 @@ impl<T: 'static> Plan<T> {
             then_wait: None,
             suspends: false,
             ends_nested_start: false,
+            restores_may_not_suspend: None,
             ends_thread_switch: false,
             note_owed: false,
         }

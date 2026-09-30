@@ -2,7 +2,6 @@
 
 use crate::error::{Error, Result};
 use crate::internal::{CoreValueTypeInternal, ErrorInternal};
-use crate::runtime_layer::{RefType, ValType as RuntimeValType};
 
 /// The type of a core WebAssembly value: a number, a vector, or a
 /// reference. These are the value types a core module's function
@@ -29,25 +28,6 @@ pub enum CoreValueType {
 }
 
 impl CoreValueTypeInternal for CoreValueType {
-    fn from_runtime(ty: RuntimeValType) -> CoreValueType {
-        match ty {
-            RuntimeValType::I32 => Self::I32,
-            RuntimeValType::I64 => Self::I64,
-            RuntimeValType::F32 => Self::F32,
-            RuntimeValType::F64 => Self::F64,
-            RuntimeValType::V128 => Self::V128,
-            RuntimeValType::FuncRef => Self::FuncRef,
-            RuntimeValType::ExternRef => Self::ExternRef,
-        }
-    }
-
-    fn from_runtime_ref(ty: RefType) -> CoreValueType {
-        match ty {
-            RefType::FuncRef => Self::FuncRef,
-            RefType::ExternRef => Self::ExternRef,
-        }
-    }
-
     fn from_translator(ty: &wasmtime_environ::WasmValType) -> Result<CoreValueType> {
         use wasmtime_environ::{WasmHeapType, WasmValType};
         Ok(match ty {

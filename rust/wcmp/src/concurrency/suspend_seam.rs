@@ -164,7 +164,7 @@ type Switches<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> bool;
 ///   instance includes its threads suspended in the provider whose
 ///   condition holds: the turn queues their resumptions and resumes
 ///   them through the provider, from inside the block. Under the
-///   JSPI provider that resumption is left to the store, as the
+///   host-suspension provider that resumption is left to the store, as the
 ///   paragraph on that provider below states, so the blocked thread
 ///   suspends as well, and the scheduler runs the resumption and then
 ///   the rest of the wait, held to the instance. That is the case of
@@ -218,7 +218,7 @@ type Switches<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> bool;
 /// imports again is a second call of a host function already on the
 /// stack, and both backends enter a host function at any depth.
 ///
-/// Under the JSPI provider a nested turn cannot resume a thread
+/// Under the host-suspension provider a nested turn cannot resume a thread
 /// suspended in the provider: the browser resumes a suspended stack
 /// on a microtask, never inside the call that asks for it. The
 /// fallback therefore runs as a [`SeamWait`], which stops where an
@@ -331,7 +331,7 @@ impl<T: 'static> SuspendSeam<T> {
     ///
     /// A first part or a wait that leaves work to the store, which is
     /// what an item or a start that has to resume a thread does under
-    /// the JSPI provider, cannot go on inside the guest call. The rest
+    /// the host-suspension provider, cannot go on inside the guest call. The rest
     /// of the built-in — its wait, if it has one, and its finish part
     /// — goes to the scheduler as a plan, the built-in's step waits
     /// for the plan's outcome, and this answers `None`: the try part
@@ -443,7 +443,7 @@ impl<T: 'static> SuspendSeam<T> {
     ///
     /// A first part that leaves work to the store, which a start
     /// intrinsic whose callee switched to a suspended thread does
-    /// under the JSPI provider, leaves a plan for the thread: the
+    /// under the host-suspension provider, leaves a plan for the thread: the
     /// scheduler does that work first, then records the built-in's
     /// condition on the thread and resumes it at once when the
     /// condition holds, as the try would have answered.
@@ -497,7 +497,22 @@ impl<T: 'static> SuspendSeam<T> {
             store.internal().scheduler_mut().keep_ready_block(values);
             return Ok(true);
         };
-        let step = begin(store, args)?;
+        // A thread the first part starts may start as the store's flight,
+        // under a provider that runs a thread once the driver awaits it,
+        // since this thread suspends for it here. Its end then reaches
+        // the scheduler whole, a trap's reason included.
+        store
+            .internal()
+            .scheduler_mut()
+            .deferred_mut()
+            .may_defer_start = true;
+        let step = begin(store, args);
+        store
+            .internal()
+            .scheduler_mut()
+            .deferred_mut()
+            .may_defer_start = false;
+        let step = step?;
         if store.internal().defers_work() {
             // The condition is recorded once the work is done, as it
             // would be once the first part returned. Until then the
@@ -938,7 +953,7 @@ mod tests {
     }
 
     fn store() -> Store<()> {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         Store::new(&engine, ()).expect("store")
     }
 
@@ -1257,7 +1272,7 @@ mod tests {
 
         // A later turn of a driver of the same store polls it again.
         let watched = slot.clone();
-        let mut driver = Box::pin(Driver::new(
+        let mut driver = Box::pin(Driver::run(
             store.internal().reborrow(),
             None,
             move |_store, _waker| watched.lock().expect("slot").is_some().then(|| Ok(())),
@@ -1701,7 +1716,7 @@ mod tests {
             ));
 
         let watched = seen.clone();
-        let mut driver = Box::pin(Driver::new(
+        let mut driver = Box::pin(Driver::run(
             store.internal().reborrow(),
             None,
             move |_store, _waker| watched.lock().expect("record").is_some().then(|| Ok(())),
@@ -1829,7 +1844,7 @@ mod tests {
             .scheduler_mut()
             .push_low_priority(marker(&log, "yielded"));
 
-        let mut driver = Box::pin(Driver::new(
+        let mut driver = Box::pin(Driver::run(
             store.internal().reborrow(),
             None,
             |_store: &mut StoreContext<'_, ()>, _waker: &Waker| -> Option<Result<()>> { None },
@@ -2561,7 +2576,7 @@ mod tests {
 
     #[wcmp_macros::test]
     async fn it_refuses_a_block_in_a_host_function_a_synchronous_export_called() {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let component = Component::new(&engine, CALLS_THE_HOST)
             .await
             .expect("component parses");
@@ -2659,7 +2674,7 @@ mod tests {
 
     #[wcmp_macros::test]
     async fn it_suspends_a_host_function_a_callback_export_called_until_a_host_task_completes() {
-        let engine = Engine::new().expect("engine");
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let component = Component::new(&engine, CALLBACK_CALLS_THE_HOST)
             .await
             .expect("component parses");

@@ -159,7 +159,7 @@ const ECHO: &[u8] = component!(
 
 /// Instantiate [`ECHO`] into a store of its own.
 async fn echo() -> (Store<()>, Instance) {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, ECHO)
         .await
         .expect("the echo component parses");
@@ -367,3 +367,6 @@ async fn it_round_trips_over_a_hundred_megabytes_in_one_copy_per_direction() {
         "the bytes came back as they went in"
     );
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;

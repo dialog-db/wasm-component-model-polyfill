@@ -176,7 +176,7 @@ const SYNCHRONOUS_LOWER_OF_AN_ASYNC_IMPORT: &[u8] = component!(
 
 /// Parse `bytes` with the default engine configuration.
 async fn parse(bytes: &[u8]) -> Result<Component, Error> {
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     Component::new(&engine, bytes).await
 }
 
@@ -252,7 +252,7 @@ async fn it_instantiates_a_component_whose_import_is_lowered_asynchronously() {
     // The lower's core signature is the one the guest module
     // imports, so the component only instantiates if the trampoline
     // was built with the asynchronous flattening.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, ASYNCHRONOUS_LOWER)
         .await
         .expect("component parses");
@@ -309,7 +309,7 @@ async fn it_calls_through_an_asynchronous_lower_without_memory() {
     // the call path never reads it: the parameters are lifted from
     // the flat slots, and the host's future produces no value to
     // lower. What the guest is answered with is the status word.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, ASYNCHRONOUS_LOWER_WITHOUT_MEMORY)
         .await
         .expect("component parses");
@@ -432,7 +432,7 @@ fn link_error(err: Error) -> LinkError {
 }
 
 /// Link `bytes` against `linker` and give back the failure.
-async fn link_failure<T: 'static>(
+async fn link_failure<T: Send + 'static>(
     engine: &Engine,
     linker: &Linker<T>,
     data: T,
@@ -453,7 +453,7 @@ async fn it_refuses_an_async_typed_import_satisfied_by_a_synchronous_registratio
     // `func_wrap` is a synchronous registration, and Wasmtime refuses
     // it for an `async func` import however well its signature fits.
     // The polyfill refuses it with the same text.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let mut linker: Linker<()> = Linker::new(&engine);
     linker
         .root()
@@ -485,7 +485,7 @@ async fn it_refuses_a_sync_typed_import_satisfied_by_a_concurrent_registration()
     // The other half of the rule. `answer` is satisfied the way it
     // wants, so the failure the component reaches is `double`'s:
     // `func_wrap_concurrent` is only for an `async func` import.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let mut linker: Linker<()> = Linker::new(&engine);
     linker
         .root()
@@ -525,7 +525,7 @@ async fn it_names_the_item_of_an_interface_import_the_rule_refuses() {
     // The message names it too, in the clause Wasmtime's error chain
     // puts between the import and the reason: an interface import
     // with several function items says which item failed.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let mut linker: Linker<()> = Linker::new(&engine);
     linker
         .instance(&"pdd-tests:host/answers@0.1.0".parse().expect("identifier"))
@@ -557,7 +557,7 @@ async fn it_links_both_concurrent_entries_for_an_async_typed_import() {
     // typed entry derives a signature whose `async_` is false, so a
     // link that reads the signature rather than the form would refuse
     // the first of the two.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, ASYNC_IMPORT)
         .await
         .expect("component parses");
@@ -608,7 +608,7 @@ async fn it_reads_the_registration_form_rather_than_its_declared_async_flag() {
     // effect still cannot serve the async-typed import, and a
     // concurrent registration that omits it still cannot serve the
     // sync-typed one.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
 
     let mut claims_async: Linker<()> = Linker::new(&engine);
     claims_async
@@ -666,7 +666,7 @@ async fn it_calls_a_concurrent_registration_through_a_synchronous_lower() {
     // the call returns. A future ready on its first poll gives it
     // there and then; the block that a future which is not yet ready
     // needs is proved in `baseline_sync_lower.rs`.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, SYNCHRONOUS_LOWER_OF_AN_ASYNC_IMPORT)
         .await
         .expect("component parses");
@@ -721,7 +721,7 @@ async fn it_holds_the_registration_form_of_an_import_under_an_interface_name() {
     // import: it reaches the same registration-kind check as one
     // named plainly, and the cause names the import rather than an
     // item inside it.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
 
     let mut synchronous: Linker<()> = Linker::new(&engine);
     synchronous
@@ -801,7 +801,7 @@ async fn it_links_a_concurrent_registration_for_an_async_import_under_an_interfa
     // the concurrent entry and the sync-typed one takes the
     // synchronous entry, both registered on the root view under the
     // interface names the component writes.
-    let engine = Engine::new().expect("engine");
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, ASYNC_IMPORT_UNDER_AN_INTERFACE_NAME)
         .await
         .expect("component parses");
@@ -828,3 +828,6 @@ async fn it_links_a_concurrent_registration_for_an_async_import_under_an_interfa
         .await
         .expect("the root registrations under the interface names satisfy both imports");
 }
+
+#[path = "support/backend.rs"]
+mod test_backend;
