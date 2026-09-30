@@ -936,6 +936,135 @@
             touch "$out"
           '';
 
+        # crane over this workspace's toolchain, which carries the `wasm32`
+        # target, for the two checks below that drive cargo themselves.
+        publishCrane = (katsuobushi.inputs.crane.mkLib pkgs).overrideToolchain (_: rustToolchain);
+
+        # The crates a consumer of the polyfill downloads: the polyfill, the
+        # runtime layer and its two published backends, and the macros the
+        # browser backend runs when it builds. The order is the order they
+        # publish in: each comes after every crate it depends on.
+        publishedCrates = [
+          "wcmp-macros"
+          "wcmp-wasm-core"
+          "wcmp-wasm-core-wasmtime"
+          "wcmp-wasm-core-web"
+          "wcmp"
+        ];
+
+        # The version every published crate carries, the workspace's.
+        publishedVersion = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
+
+        # `cargo package` for each published crate, natively and for
+        # `wasm32-unknown-unknown`, where the browser backend has its code.
+        # Nothing is published: the `.crate` files are the output.
+        #
+        # A package resolves its dependencies from the registry, and no
+        # registry holds these crates yet. Cargo stands in for one with the
+        # other packages of the same run, but not while crates.io is
+        # replaced, as the vendored crates of this build replace it. So the
+        # build keeps a registry directory of its own: the vendored crates,
+        # and each crate as it packages, in the order they publish in. The
+        # next crate verifies against that package, as it would against the
+        # registry.
+        packageCheck = publishCrane.mkCargoDerivation {
+          pname = "wcmp-package";
+          version = publishedVersion;
+          src = katsuobushi.inputs.nix-filter.lib {
+            root = ./.;
+            include = [
+              "Cargo.lock"
+              "Cargo.toml"
+              "rust"
+            ];
+          };
+          strictDeps = true;
+          nativeBuildInputs = commonBuildInputs;
+          # The verify step builds each package as its own workspace, under
+          # Cargo's default profile, so a dependency bundle of this
+          # workspace would not be reused.
+          cargoArtifacts = null;
+          # With crates.io replaced by a directory, cargo cannot infer which
+          # registry the packages are for, so it is told.
+          buildPhaseCargoCommand = ''
+            registry="$PWD/published-registry"
+            mkdir -p "$registry"
+            vendored=$(sed -n 's/^replace-with = "\(.*\)"$/\1/p' "$cargoVendorDir/config.toml")
+            ln -s "$(sed -n "/^\[source\.$vendored\]/,/^\[/ s/^directory = \"\(.*\)\"$/\1/p" \
+              "$cargoVendorDir/config.toml")"/* "$registry"/
+            publish() {
+              cargo \
+                --config 'source.crates-io.replace-with = "published"' \
+                --config "source.published.directory = \"$registry\"" \
+                package --offline --registry crates-io "$@"
+            }
+            for crate in ${pkgs.lib.concatStringsSep " " publishedCrates}; do
+              publish --package "$crate"
+              package="$crate-${publishedVersion}"
+              tar -xzf "target/package/$package.crate" -C "$registry"
+              printf '{"files":{},"package":"%s"}' \
+                "$(sha256sum "target/package/$package.crate" | cut -d ' ' -f 1)" \
+                >"$registry/$package/.cargo-checksum.json"
+            done
+            publish --target wasm32-unknown-unknown \
+              ${pkgs.lib.concatMapStringsSep " " (crate: "--package ${crate}") publishedCrates}
+          '';
+          installPhaseCommand = ''
+            mkdir -p "$out"
+            cp target/package/*.crate "$out"/
+          '';
+          doInstallCargoArtifacts = false;
+          doNotPostBuildInstallCargoBinaries = true;
+        };
+
+        # A crate outside the workspace, `rust/wcmp-downstream`, which
+        # depends on the polyfill and on a backend as a crates.io consumer
+        # does, with its own lock file and no `[patch]` section. It builds
+        # for the host and for `wasm32-unknown-unknown`. The source holds
+        # the consumer, the published crates, and the workspace manifest
+        # they inherit from, and nothing else of the workspace.
+        downstreamBuildCheck =
+          let
+            lock = ./rust/wcmp-downstream/Cargo.lock;
+          in
+          publishCrane.mkCargoDerivation {
+            pname = "wcmp-downstream-build";
+            version = "0.1.0";
+            src = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions (
+                [
+                  ./Cargo.toml
+                  ./rust/wcmp-downstream
+                ]
+                ++ map (crate: ./rust + "/${crate}") publishedCrates
+              );
+            };
+            cargoLock = lock;
+            cargoVendorDir = publishCrane.vendorCargoDeps { cargoLock = lock; };
+            postUnpack = ''
+              cd "$sourceRoot/rust/wcmp-downstream"
+              sourceRoot=.
+            '';
+            strictDeps = true;
+            nativeBuildInputs = commonBuildInputs;
+            cargoArtifacts = null;
+            buildPhaseCargoCommand = ''
+              if grep -nE '^[[:space:]]*(\[+[[:space:]]*patch\b|patch[[:space:]]*[.=])' Cargo.toml; then
+                echo "The downstream crate has a [patch] section, which a" >&2
+                echo "consumer from crates.io would not see." >&2
+                exit 1
+              fi
+              cargo build --locked --offline
+              cargo build --locked --offline --target wasm32-unknown-unknown
+            '';
+            installPhaseCommand = ''
+              touch "$out"
+            '';
+            doInstallCargoArtifacts = false;
+            doNotPostBuildInstallCargoBinaries = true;
+          };
+
         # The listing against the one checked in beside the crate. A `pub`
         # that reaches a workspace-internal type — a field, a constructor, a
         # method whose type no caller outside can name — is a line in the
@@ -1797,6 +1926,12 @@
             # The browser backend makes no function from a string of
             # source: see `webBackendNoEvalCheck`.
             web-backend-no-eval = webBackendNoEvalCheck;
+            # Every published crate packages, and a crate outside the
+            # workspace builds against the polyfill and a backend with no
+            # `[patch]` section: see `packageCheck` and
+            # `downstreamBuildCheck`.
+            package = packageCheck;
+            downstream-build = downstreamBuildCheck;
             # Every Zena scenario compiles, or keeps Zena's refusal, with the
             # pinned toolchain, its Rust partners build, and its
             # composition is made or keeps `wac`'s refusal; and the

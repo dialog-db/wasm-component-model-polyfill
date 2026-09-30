@@ -1,0 +1,30 @@
+# A crate outside the polyfill's workspace that depends on the polyfill and on
+# a backend as a crates.io consumer would. Each dependency names the version a
+# consumer would ask the registry for, and a path in place of the registry.
+#
+# The manifest has no `[patch]` section, and must never gain one: Cargo applies
+# a patch only in the root workspace, so a consumer would not see it. The
+# `downstream-build` flake check refuses a manifest that has one, and builds
+# this crate for the host and for `wasm32-unknown-unknown`.
+[package]
+name = "wcmp-downstream"
+description = "A consumer of the Wasm Component Model Polyfill from outside its workspace"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+edition = "2024"
+publish = false
+
+# Its own workspace, so the polyfill's workspace, with its profiles and its
+# dependency table, does not apply here, as it would not to a consumer.
+[workspace]
+
+[dependencies]
+wcmp = { version = "0.1.0", path = "../wcmp" }
+
+# One backend on each target: Wasmtime natively, and the browser's own engine
+# under `wasm32`, where Wasmtime does not run.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+wcmp-wasm-core-wasmtime = { version = "0.1.0", path = "../wcmp-wasm-core-wasmtime" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wcmp-wasm-core-web = { version = "0.1.0", path = "../wcmp-wasm-core-web" }

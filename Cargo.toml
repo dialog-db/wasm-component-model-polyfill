@@ -68,6 +68,10 @@ path = "./rust/wcmp"
 
 [workspace.dependencies.wcmp-macros]
 path = "./rust/wcmp-macros"
+# The browser backend runs these macros when it builds, so a published backend
+# depends on the published macros, and the path carries the version too. It
+# moves with the workspace version.
+version = "0.1.0"
 
 [workspace.dependencies.wcmp-scenario]
 path = "./rust/wcmp-scenario"
