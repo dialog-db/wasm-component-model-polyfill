@@ -12,10 +12,9 @@
 // a page that quietly lost its policy fails the check instead of
 // passing it for the wrong reason.
 //
-// `buildsAFunctionFromSource` is the same probe the browser test
-// `it_runs_a_prepared_call_under_a_policy_without_unsafe_eval` runs
-// (`rust/wcmp/tests/baseline_prepared_call.rs`),
-// written the same way on purpose: both build a function from source
+// `buildsAFunctionFromSource` is the same probe the browser tests of
+// `rust/wcmp/tests/baseline_content_security_policy.rs` run before and
+// after they install the policy, written the same way on purpose: both build a function from source
 // and call it, and read a throw as an enforced policy. Those two are
 // the only places the repository asks the browser that question, and an
 // answer that differed between them would make one of the two artifacts

@@ -905,8 +905,14 @@
         # source, so it runs under a content security policy without
         # `unsafe-eval`. Its crate holds no JavaScript file, and no Rust
         # source of it names `eval`, the `Function` constructor or a way to
-        # reach it, or an inline or module JavaScript snippet of
-        # `wasm-bindgen`.
+        # reach it (a string naming it, the `constructor` of another
+        # function, or a binding whose `js_name` is `Function`), a timer
+        # that takes a string of source, or an inline or module JavaScript
+        # snippet of `wasm-bindgen`. The list cannot name every way there
+        # is. The guard the browser itself enforces is the test that runs
+        # the polyfill under the policy
+        # (`rust/wcmp/tests/baseline_content_security_policy.rs`); this
+        # check catches the plain ways before any test runs.
         webBackendNoEvalCheck =
           let
             crate = pkgs.lib.fileset.toSource {
@@ -921,7 +927,7 @@
               echo "The browser backend holds a JavaScript file." >&2
               status=1
             fi
-            if grep -rnE '\beval\b|new_with_args|new_no_args|"Function"|Reflect::construct|inline_js|module *= *"' src; then
+            if grep -rnE '\beval\b|new_with_args|new_no_args|"Function"|Reflect::construct|inline_js|module *= *"|"constructor"|\.constructor\(|js_(name|class) *= *"?Function\b|set_?[tT]imeout|set_?[iI]nterval' src; then
               echo "The browser backend names a way to make a function from source." >&2
               status=1
             fi
