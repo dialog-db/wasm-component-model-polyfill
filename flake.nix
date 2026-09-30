@@ -890,7 +890,7 @@
           in
           pkgs.runCommand "wcmp-runtime-layer-seam-check" { } ''
             cd ${sources}
-            if grep -rnE 'wasm(time)?_runtime_layer|wcmp_wasm_core' src \
+            if grep -rn 'wcmp_wasm_core' src \
               | grep -v '^src/runtime_layer\.rs:' \
               | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//[/!]'; then
               echo >&2
@@ -948,7 +948,7 @@
         publicApiCheck =
           pkgs.runCommand "wcmp-public-api-check" { }
             ''
-              if grep -nE 'wasm(time)?_runtime_layer|wcmp_wasm_core' \
+              if grep -n 'wcmp_wasm_core' \
                 ${publicApiListing}/public-api.txt \
                 | grep -v 'pub fn wcmp::Engine::with_backend('; then
                 echo >&2

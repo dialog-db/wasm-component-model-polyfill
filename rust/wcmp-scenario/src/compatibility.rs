@@ -143,7 +143,7 @@ mod tests {
         // A reason longer than any line of the report, which must come
         // through whole.
         let long = format!(
-            "component sleeper: instantiation error: {}reference type (ref null (module 8)) is not supported in the wasm_runtime_layer",
+            "component sleeper: instantiation error: {}reference type (ref null (module 8)) is not supported by the runtime layer",
             "the runtime substrate failed to instantiate the component: ".repeat(3)
         );
         // The reports come in no particular order: the report puts the

@@ -375,15 +375,15 @@ command, or the run measures a stale tree.
 
 ## Repository layout
 
-| Path                | Contents                                                                        |
-| ------------------- | ------------------------------------------------------------------------------- |
-| `rust/wcmp/`        | The library crate, its baseline tests, and the conformance harness and corpora. |
-| `rust/wcmp-macros/` | Procedural macros: a cross-target `#[test]`, `#[bench]`, `wasm!`, `component!`. |
-| `rust/wcmp-smoke/`  | The end-to-end smoke test, one host program for both targets.                   |
-| `rust/wcmp-bench/`  | The benchmark suite, one definition measured on both targets.                   |
-| `rust/vendor/`      | The two patched runtime-layer backends.                                         |
-| `project/design/`   | The Project Design Documents (PDDs), one per design decision.                   |
-| `project/kanban/`   | The project board.                                                              |
+| Path                    | Contents                                                                              |
+| ----------------------- | ------------------------------------------------------------------------------------- |
+| `rust/wcmp/`            | The library crate, its baseline tests, and the conformance harness and corpora.       |
+| `rust/wcmp-macros/`     | Procedural macros: a cross-target `#[test]`, `#[bench]`, `wasm!`, `component!`.       |
+| `rust/wcmp-smoke/`      | The end-to-end smoke test, one host program for both targets.                         |
+| `rust/wcmp-bench/`      | The benchmark suite, one definition measured on both targets.                         |
+| `rust/wcmp-wasm-core*/` | The runtime layer: its trait, one backend per engine, and the suites that prove them. |
+| `project/design/`       | The Project Design Documents (PDDs), one per design decision.                         |
+| `project/kanban/`       | The project board.                                                                    |
 
 ## Design documents
 
@@ -395,6 +395,14 @@ concurrency runtime, the callback export, subtasks and the asynchronous import,
 and streams and futures. `PDD022` designs the suspend providers, the stackful
 export, and the thread built-ins, and `PDD023` designs cancellation, error
 contexts, and the poisoned store. Both are built.
+
+## Acknowledgements
+
+The runtime layer keeps the shape of the runtime-layer crates by Douglas Dwyer,
+which the polyfill ran on, with local patches, until it wrote its own: one trait
+over core WebAssembly, and one backend for each engine. That work is prior art,
+licensed under either of the Apache License, Version 2.0 or the MIT license. No
+code from it remains in this repository.
 
 ## License
 

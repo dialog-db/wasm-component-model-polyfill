@@ -2858,11 +2858,3 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
-
-[[patch.unused]]
-name = "js_wasm_runtime_layer"
-version = "0.7.0"
-
-[[patch.unused]]
-name = "wasmtime_runtime_layer"
-version = "48.0.0"

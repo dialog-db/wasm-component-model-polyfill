@@ -1,7 +1,7 @@
 # Wasm Component Model Polyfill
 
-A Rust library that runs Wasm Component Model components on top of
-`wasm_runtime_layer`, natively and in the browser. Read
+A Rust library that runs Wasm Component Model components on top of its own
+runtime layer, `wcmp-wasm-core`, natively and in the browser. Read
 `project/design/README.md` for the design corpus and `project/kanban/README.md`
 for the board.
 

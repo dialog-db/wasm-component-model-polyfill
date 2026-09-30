@@ -13,12 +13,6 @@ members = [
   "rust/wcmp-wasm-core-wasmtime",
   "rust/wcmp-wasm-core-web",
 ]
-# Each vendored backend keeps its own dependency table (it is upstream's
-# crate with local patches), so neither is a member.
-exclude = [
-  "rust/vendor/js_wasm_runtime_layer",
-  "rust/vendor/wasmtime_runtime_layer",
-]
 resolver = "2"
 
 [workspace.package]
@@ -47,7 +41,6 @@ wasm-bindgen-test = "0.3"
 # Encodes the switch module the polyfill generates for each store. The
 # version is the one `wasmtime-environ` already links, so the graph keeps one.
 wasm-encoder = { version = "0.258", default-features = false, features = ["std"] }
-wasm_runtime_layer = "0.7"
 # Reads the canonical section of a test fixture to set the vestigial byte the
 # text format no longer spells. The version is the one `wasmtime-environ`
 # already links, so the graph keeps one.
@@ -68,11 +61,6 @@ wasmtime-environ = { version = "=49.0.0-rc.1", default-features = false, feature
 # scenarios. It moves with `wasmtime`: one Wasmtime runs the scenarios,
 # and it is this workspace's. Only the p2 and p3 interfaces are linked.
 wasmtime-wasi = { version = "=49.0.0-rc.1", default-features = false, features = ["p2", "p3"] }
-# The Wasmtime backend of the runtime layer has no 49 release. The version
-# requirement stays at the vendored crate's own 48, which the patch below
-# redirects to a copy built against Wasmtime 49.
-wasmtime_runtime_layer = "48"
-js_wasm_runtime_layer = "0.7"
 wat = "1"
 
 [workspace.dependencies.wcmp]
@@ -127,10 +115,3 @@ inherits = "release"
 opt-level = "s"
 debug = 0
 strip = "debuginfo"
-
-# Both backends of the runtime layer are vendored: the browser one patched for
-# memory and global imports and for host error propagation, the Wasmtime one
-# patched to build against Wasmtime 49. See the PATCHES.md beside each.
-[patch.crates-io]
-js_wasm_runtime_layer = { path = "rust/vendor/js_wasm_runtime_layer" }
-wasmtime_runtime_layer = { path = "rust/vendor/wasmtime_runtime_layer" }
