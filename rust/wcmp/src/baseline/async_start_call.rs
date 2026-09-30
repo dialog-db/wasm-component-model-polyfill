@@ -46,6 +46,7 @@
 
 use crate::internal::FuncInternal;
 use crate::resource::HandleKind;
+use crate::runtime_layer::Capability;
 use crate::store::StoreInternalExt;
 use crate::{Component, Engine, Error, Instance, Linker, Store, TaskCause, Val};
 use wcmp_macros::component;
@@ -592,11 +593,24 @@ const RETURNS_AND_KEEPS_RUNNING: &[u8] = component!(
 
 async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
     let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
-    let component = Component::new(&engine, bytes)
+    instantiate_over(&engine, bytes).await
+}
+
+/// Instantiate `bytes` over a backend that declares exception
+/// handling, which a callee that throws needs: Wasmtime natively where
+/// the lane chose Wasmi.
+async fn instantiate_throwing(bytes: &[u8]) -> (Store<()>, Instance) {
+    let backend = crate::runtime_layer::test_backend_declaring(Capability::Exceptions);
+    let engine = Engine::with_backend(backend).expect("engine");
+    instantiate_over(&engine, bytes).await
+}
+
+async fn instantiate_over(engine: &Engine, bytes: &[u8]) -> (Store<()>, Instance) {
+    let component = Component::new(engine, bytes)
         .await
         .expect("component parses");
-    let linker: Linker<()> = Linker::new(&engine);
-    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let linker: Linker<()> = Linker::new(engine);
+    let mut store: Store<()> = Store::new(engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
         .await
@@ -802,7 +816,7 @@ async fn it_fails_the_driver_that_ran_the_callback_when_the_callee_throws_after_
     // back and the handles the caller lent are given back. The lends
     // are on the subtask, so it is the cancellation of the call that
     // gives them back rather than the callee's task ending.
-    let (mut store, instance) = instantiate(THROWS_AFTER_YIELD).await;
+    let (mut store, instance) = instantiate_throwing(THROWS_AFTER_YIELD).await;
     let run = instance.get_func("run").expect("the caller's export");
     let err = run
         .call(&mut store, &[Val::U32(1)])

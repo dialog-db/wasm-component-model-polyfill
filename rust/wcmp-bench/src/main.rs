@@ -1,6 +1,7 @@
 //! The benchmark runner's entry point.
 //!
-//! Natively it prints the table, writes the JSON report where
+//! Natively it measures the backend `WCMP_BENCH_BACKEND` names,
+//! Wasmtime or Wasmi, prints the table, writes the JSON report where
 //! `WCMP_BENCH_REPORT` points, and exits non-zero when a benchmark
 //! failed. Under `wasm-bindgen` the page's `report` function receives
 //! the same two strings instead; `main` runs on instantiation and
@@ -24,7 +25,15 @@ async fn main() {
             }
         };
 
-    let report = wcmp_bench::measure(plan).await;
+    let backend = match wcmp_bench::backend() {
+        Ok(backend) => backend,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(2);
+        }
+    };
+
+    let report = wcmp_bench::measure(plan, backend).await;
     print!("{}", report.table());
 
     if let Ok(path) = std::env::var("WCMP_BENCH_REPORT") {
@@ -87,7 +96,7 @@ fn main() {
                     return;
                 }
             };
-        let report = wcmp_bench::measure(plan).await;
+        let report = wcmp_bench::measure(plan, "web").await;
         web::report(&report.table(), &report.json());
     });
 }

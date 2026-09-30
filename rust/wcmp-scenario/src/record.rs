@@ -19,9 +19,10 @@ const COMMENTS: &str = "\
 #   <scenario> <subject> <stage> \"<reason>\"
 #
 # The subject is `wasmtime`, the Wasmtime run, or the polyfill in the
-# browser (`web`) or natively (`native`). The reason is the text that
-# says why the subject stopped there, for a person to read. A run is held
-# to the stage alone. A pass has no reason.
+# browser (`web`), or natively over the Wasmtime backend (`native`) or
+# the Wasmi backend (`wasmi`). The reason is the text that says why the
+# subject stopped there, for a person to read. A run is held to the
+# stage alone. A pass has no reason.
 #
 # The stages, in the order a run meets them:
 #
@@ -103,7 +104,7 @@ impl Record {
     /// stopped on each scenario that exists. A run on one target has no
     /// report of the other target's subject, so only the stages of the
     /// subjects in `reports` are compared. Every scenario in `reports`
-    /// still needs a line for each of the three subjects.
+    /// still needs a line for every subject.
     ///
     /// Only the stages are compared. The reasons are for a person to
     /// read, and they change whenever the toolchain or the polyfill does.
@@ -238,9 +239,11 @@ mod tests {
             report("scalar", Subject::Wasmtime, Stage::Pass, ""),
             report("scalar", Subject::Web, Stage::Parse, "no tags"),
             report("scalar", Subject::Native, Stage::Instantiate, "no tags"),
+            report("scalar", Subject::Wasmi, Stage::Parse, "no gc"),
             report("refused", Subject::Wasmtime, Stage::Compile, "exit 1"),
             report("refused", Subject::Web, Stage::Compile, "exit 1"),
             report("refused", Subject::Native, Stage::Compile, "exit 1"),
+            report("refused", Subject::Wasmi, Stage::Compile, "exit 1"),
         ]
     }
 
@@ -276,9 +279,11 @@ mod tests {
                 "refused wasmtime compile \"exit 1\"",
                 "refused web compile \"exit 1\"",
                 "refused native compile \"exit 1\"",
+                "refused wasmi compile \"exit 1\"",
                 "scalar wasmtime pass",
                 "scalar web parse \"no tags\"",
                 "scalar native instantiate \"no tags\"",
+                "scalar wasmi parse \"no gc\"",
             ]
         );
         for stage in Stage::ALL {

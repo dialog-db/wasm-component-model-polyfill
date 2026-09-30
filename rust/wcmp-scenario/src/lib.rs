@@ -7,7 +7,8 @@
 //! A scenario is a small program, or a small group of programs, run by
 //! several subjects. The Wasmtime run goes first, natively, and sets the
 //! behavior the polyfill must match. The polyfill then runs the same
-//! scenario in the browser and natively. Each subject stops at one
+//! scenario in the browser, and natively over the Wasmtime and the Wasmi
+//! backends of its runtime layer. Each subject stops at one
 //! [`Stage`], and a [`Verdict`] pairs that stage with the text a person
 //! reads to learn why. A [`Report`] puts one [`Subject`]'s verdict on
 //! one scenario on one line.

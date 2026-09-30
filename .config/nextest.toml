@@ -13,7 +13,23 @@
 # from a file, so only `tests zena` runs it. The faithfulness suite of
 # each backend of the runtime layer runs in its own lane.
 [profile.default]
-default-filter = "not test(/without_a_provider$/) and not (binary(zena) and test(=it_holds_all_three_subjects_to_the_record_and_prints_the_report)) and not binary(faithfulness)"
+default-filter = "not test(/without_a_provider$/) and not (binary(zena) and test(=it_holds_every_subject_to_the_record_and_prints_the_report)) and not binary(faithfulness)"
+
+# The corpus files Wasmtime's runner marks `;;! hogs_memory = true`, and
+# the progress test, which runs every file in one process, each hold
+# memories of several GiB: `wasmtime/memory64.wast` declares one of
+# 65538 pages, and `wasmtime/big-strings.wast` grows each fresh instance
+# by 65530. A backend that commits a memory's pages as it grows (Wasmi
+# zero-fills a `Vec`) holds all of it, 4 to 5 GiB for either file, where
+# Wasmtime reserves the address space and commits only what the test
+# touches. They run one at a time, beside the other tests, so no two of
+# them hold such a memory together.
+[test-groups]
+memory-hogs = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = "binary(conformance) and (test(/^it_passes_wasmtime_(big_strings|memory64)(::|$)/) or test(/^it_reports_conformance_progress/))"
+test-group = "memory-hogs"
 
 # The `no-provider` lanes (`tests native|web no-provider`): the
 # conformance corpus alone, with the provider turned off.

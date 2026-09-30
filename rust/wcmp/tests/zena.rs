@@ -1,7 +1,9 @@
 //! The polyfill subjects of the Zena toolchain compatibility tests: each
 //! compiled Zena scenario run through the polyfill, in the browser on
-//! `wasm32-unknown-unknown` (the `web` subject) and natively (the
-//! `native` subject).
+//! `wasm32-unknown-unknown` (the `web` subject), and natively over the
+//! Wasmtime backend (the `native` subject) and over the Wasmi backend
+//! (the `wasmi` subject). A native lane runs the subject of the backend
+//! `WCMP_TEST_BACKEND` names.
 //!
 //! The build compiles every scenario under `tests/zena/scenarios` with
 //! the pinned Zena toolchain, runs each one through Wasmtime, and packs
@@ -39,7 +41,7 @@
 //! it in either direction, when a scenario has no line for a subject or
 //! a line names no scenario, and when the record was made from another
 //! Zena revision than the build compiled with. It compares the stages
-//! only; the reasons are for a person. Each target holds the Wasmtime
+//! only; the reasons are for a person. Each lane holds the Wasmtime
 //! stage and its own polyfill subject to the record. The tests also
 //! fail when the bundle or a scenario cannot be read or judged, which
 //! is a fault of the build or of the runner. The engine has the default
@@ -49,13 +51,14 @@
 //! holds every line of the record. `tests zena` runs the browser lane's
 //! scenario run first and keeps what it prints: each report on a line
 //! of its own after `PRINTED`. It then runs, natively,
-//! `it_holds_all_three_subjects_to_the_record_and_prints_the_report`,
+//! `it_holds_every_subject_to_the_record_and_prints_the_report`,
 //! which reads those lines from the file `WCMP_ZENA_WEB_RUN` names,
-//! adds the Wasmtime and native reports, prints the run's compatibility
-//! report, with the reason of each subject that stopped before `pass`,
-//! to the file `WCMP_ZENA_REPORT` names, and holds all three subjects
-//! to the record. `tests zena regenerate` sets `WCMP_ZENA_REGENERATE`
-//! to a file, and the test writes the record of the run there instead
+//! adds the Wasmtime report and the reports of both native subjects,
+//! which it runs over each backend whatever the lane chose, prints the
+//! run's compatibility report, with the reason of each subject that
+//! stopped before `pass`, to the file `WCMP_ZENA_REPORT` names, and
+//! holds every subject to the record. `tests zena regenerate` sets
+//! `WCMP_ZENA_REGENERATE` to a file, and the test writes the record of the run there instead
 //! of holding the run to the committed one. The nextest profiles leave
 //! that test out of every other lane.
 
@@ -76,7 +79,7 @@ use wcmp_scenario::{
 
 use bundle::{Program, Scenario};
 use host::Host;
-use runner::PolyfillRun;
+use runner::{PolyfillRun, subject_of_run};
 
 #[cfg(target_arch = "wasm32")]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
@@ -138,8 +141,8 @@ fn polyfill() -> PolyfillRun {
     PolyfillRun::new().unwrap_or_else(|error| panic!("the polyfill run: {error}"))
 }
 
-/// Run `scenario` through the polyfill on this target and report where
-/// it stopped.
+/// Run `scenario` through the polyfill subject `polyfill` and report
+/// where it stopped.
 async fn report(polyfill: &PolyfillRun, scenario: &Scenario) -> Report {
     let verdict = polyfill
         .run(scenario)
@@ -147,7 +150,7 @@ async fn report(polyfill: &PolyfillRun, scenario: &Scenario) -> Report {
         .unwrap_or_else(|error| panic!("scenario {}: {error}", scenario.name));
     Report {
         scenario: scenario.name.clone(),
-        subject: Subject::polyfill(),
+        subject: polyfill.subject(),
         verdict,
     }
 }
@@ -200,12 +203,12 @@ async fn it_reports_a_mismatch_when_one_result_of_a_passing_scenario_changes() {
     if tampered.is_empty() {
         println!(
             "no Zena scenario passes on `{}` with a result to change",
-            Subject::polyfill()
+            polyfill.subject()
         );
     } else {
         println!(
             "`{}` reports `mismatch` for changed observations of: {}",
-            Subject::polyfill(),
+            polyfill.subject(),
             tampered.join(", ")
         );
     }
@@ -240,7 +243,7 @@ async fn it_gives_each_typed_call_the_outcome_of_the_same_untyped_call() {
                 Subject::Wasmtime,
                 (!wasmtime.is_empty()).then_some(wasmtime),
             ),
-            (Subject::polyfill(), observed),
+            (polyfill.subject(), observed),
         ];
         for (subject, outcomes) in subjects {
             let Some(outcomes) = outcomes else {
@@ -329,11 +332,16 @@ fn with_one_result_changed(observations: &Observations) -> Option<Observations> 
     Some(changed)
 }
 
-/// Where the Wasmtime run and this target's polyfill subject stopped on
+/// Where the Wasmtime run and this run's polyfill subject stopped on
 /// every scenario in `bundle`: the Wasmtime stage from the observations
 /// the build wrote, and the polyfill's from a run here.
 async fn subjects(bundle: &[u8]) -> Vec<Report> {
-    let polyfill = polyfill();
+    subjects_of(&polyfill(), bundle).await
+}
+
+/// Where the Wasmtime run and the polyfill subject `polyfill` stopped on
+/// every scenario in `bundle`.
+async fn subjects_of(polyfill: &PolyfillRun, bundle: &[u8]) -> Vec<Report> {
     let mut reports = Vec::new();
     for scenario in
         bundle::scenarios(bundle).unwrap_or_else(|error| panic!("a Zena bundle: {error}"))
@@ -343,7 +351,7 @@ async fn subjects(bundle: &[u8]) -> Vec<Report> {
             subject: Subject::Wasmtime,
             verdict: scenario.observations.verdict.clone(),
         });
-        reports.push(report(&polyfill, &scenario).await);
+        reports.push(report(polyfill, &scenario).await);
     }
     reports
 }
@@ -361,35 +369,33 @@ fn committed_record() -> Record {
         .unwrap_or_else(|error| panic!("tests/zena/record.txt: {error}"))
 }
 
-/// The polyfill subject of the other target.
-fn other_polyfill() -> Subject {
-    match Subject::polyfill() {
-        Subject::Web => Subject::Native,
-        _ => Subject::Web,
-    }
-}
-
-/// A record at `pin` that holds `reports` and, for the other target's
-/// polyfill subject, which this target cannot run, a copy of this
-/// target's line. The gate compares no stage of that subject here, so
-/// the record matches the run.
+/// A record at `pin` that holds `reports` and, for each other polyfill
+/// subject, which this run does not run, a copy of this run's line. The
+/// gate compares no stage of those subjects here, so the record matches
+/// the run.
 fn record_of(pin: &str, reports: &[Report]) -> Record {
+    let own = subject_of_run();
     let mut lines = reports.to_vec();
-    lines.extend(
-        reports
-            .iter()
-            .filter(|report| report.subject == Subject::polyfill())
-            .map(|report| Report {
-                subject: other_polyfill(),
-                ..report.clone()
-            }),
-    );
+    for other in Subject::ALL {
+        if other == Subject::Wasmtime || other == own {
+            continue;
+        }
+        lines.extend(
+            reports
+                .iter()
+                .filter(|report| report.subject == own)
+                .map(|report| Report {
+                    subject: other,
+                    ..report.clone()
+                }),
+        );
+    }
     Record::new("zena", pin, lines)
 }
 
 /// What a failing gate says after its differences: how to write the
 /// record again from a run.
-const REGENERATE: &str = "`tests zena regenerate` writes the record again from all three subjects, the browser included; `tests zena regenerate --dry-run` prints the difference it would write.";
+const REGENERATE: &str = "`tests zena regenerate` writes the record again from every subject, the browser included; `tests zena regenerate --dry-run` prints the difference it would write.";
 
 /// One line per item, for a failure message.
 fn lines<T: core::fmt::Display>(items: &[T]) -> String {
@@ -438,10 +444,18 @@ fn browser_reports() -> Vec<Report> {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[wcmp_macros::test]
-async fn it_holds_all_three_subjects_to_the_record_and_prints_the_report() {
+async fn it_holds_every_subject_to_the_record_and_prints_the_report() {
     let browser = browser_reports();
-    let mut reports = subjects(BUNDLE).await;
+    // Both native subjects run here, whatever backend the run chose.
+    let wasmtime = PolyfillRun::over(test_backend::Kind::Wasmtime)
+        .unwrap_or_else(|error| panic!("the polyfill run over Wasmtime: {error}"));
+    let wasmi = PolyfillRun::over(test_backend::Kind::Wasmi)
+        .unwrap_or_else(|error| panic!("the polyfill run over Wasmi: {error}"));
     let bundled = zena_scenarios();
+    let mut reports = subjects_of(&wasmtime, BUNDLE).await;
+    for scenario in &bundled {
+        reports.push(report(&wasmi, scenario).await);
+    }
     let mut scenarios: Vec<&str> = bundled
         .iter()
         .map(|scenario| scenario.name.as_str())
@@ -475,7 +489,7 @@ async fn it_holds_all_three_subjects_to_the_record_and_prints_the_report() {
     let differences = committed_record().differences(&pin, &reports);
     assert!(
         differences.is_empty(),
-        "the Zena run of all three subjects differs from tests/zena/record.txt:\n{}where this run stopped:\n{}{REGENERATE}",
+        "the Zena run of every subject differs from tests/zena/record.txt:\n{}where this run stopped:\n{}{REGENERATE}",
         lines(&differences),
         lines(&run.lines)
     );
@@ -537,7 +551,7 @@ async fn it_fails_the_gate_once_for_a_missing_line_and_once_for_a_line_of_no_sce
     let mut record = record_of(&pin, &reports);
     record
         .lines
-        .retain(|line| !(line.scenario == SCALAR_EXPORT && line.subject == Subject::polyfill()));
+        .retain(|line| !(line.scenario == SCALAR_EXPORT && line.subject == subject_of_run()));
     let stray: Report = "no-such-scenario wasmtime pass".parse().unwrap();
     record.lines.push(stray.clone());
     assert_eq!(
@@ -545,7 +559,7 @@ async fn it_fails_the_gate_once_for_a_missing_line_and_once_for_a_line_of_no_sce
         [
             Difference::Missing {
                 scenario: SCALAR_EXPORT.to_string(),
-                subject: Subject::polyfill(),
+                subject: subject_of_run(),
             },
             Difference::Unknown(stray),
         ]
@@ -623,6 +637,52 @@ async fn it_records_compose_for_every_subject_of_a_composition_wac_refuses() {
 
     let refused = Verdict::not_composed(&program.name, status, &program.compose_log);
     assert_every_subject_stops(&scenario.name, &refused, &program.compose_log).await;
+}
+
+/// Zena compiles to WebAssembly GC, so a component it builds from a
+/// program with strings, arrays, or classes has a core module that uses
+/// GC. Wasmi declares neither GC nor exception handling, so over Wasmi
+/// `Component::new` refuses each such component with `Unsupported` that
+/// names one of the two, and never panics. A component that uses
+/// neither, a Zena program of scalars alone or a Rust partner,
+/// translates. The test runs over Wasmi whatever backend the lane
+/// chose.
+#[cfg(not(target_arch = "wasm32"))]
+#[wcmp_macros::test]
+async fn it_refuses_every_zena_component_over_wasmi_with_the_gc_or_exceptions_capability() {
+    use wasmparser::{Validator, WasmFeatures};
+
+    let engine = Engine::with_backend(test_backend::Kind::Wasmi.backend()).expect("engine");
+    let without = WasmFeatures::all()
+        - WasmFeatures::GC
+        - WasmFeatures::EXCEPTIONS
+        - WasmFeatures::LEGACY_EXCEPTIONS;
+    let mut refused = Vec::new();
+    let mut translated = Vec::new();
+    for scenario in zena_scenarios() {
+        for program in &scenario.programs {
+            let Some(component) = &program.component else {
+                continue;
+            };
+            let name = format!("{}/{}", scenario.name, program.name);
+            let needs = Validator::new_with_features(without)
+                .validate_all(component)
+                .is_err();
+            match Component::new(&engine, component).await {
+                Err(wcmp::Error::Unsupported { feature })
+                    if needs && (feature == "gc" || feature == "exceptions") =>
+                {
+                    refused.push(format!("{name}: {feature}"));
+                }
+                Err(error) => panic!("{name}: refused with {error:?}, not a missing capability"),
+                Ok(_) if needs => panic!("{name}: Wasmi translated a component that uses GC"),
+                Ok(_) => translated.push(name),
+            }
+        }
+    }
+    assert!(!refused.is_empty(), "no Zena component was refused");
+    println!("refused over Wasmi:\n{}", lines(&refused));
+    println!("translated over Wasmi:\n{}", lines(&translated));
 }
 
 /// The scenario `name` of the record-check bundle.

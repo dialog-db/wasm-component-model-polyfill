@@ -41,18 +41,26 @@ pub use wcmp_wasm_core::{
     Val, ValType,
 };
 
-/// The backend the crate's own tests hand their engines: Wasmtime
-/// natively, and the browser's engine in the browser.
-#[cfg(all(test, not(target_arch = "wasm32")))]
+/// The choice of the tests' backend, which the crate's integration
+/// tests share.
+#[cfg(test)]
+#[path = "../tests/support/backend.rs"]
+mod test_backends;
+
+/// The backend the crate's own tests hand their engines: natively the
+/// one `WCMP_TEST_BACKEND` names, Wasmtime or Wasmi, and the browser's
+/// engine in the browser.
+#[cfg(test)]
 pub fn test_backend() -> impl Backend {
-    wcmp_wasm_core_wasmtime::Wasmtime::new().expect("Wasmtime makes an engine")
+    test_backends::backend()
 }
 
-/// The backend the crate's own tests hand their engines: Wasmtime
-/// natively, and the browser's engine in the browser.
-#[cfg(all(test, target_arch = "wasm32"))]
-pub fn test_backend() -> impl Backend {
-    wcmp_wasm_core_web::Web::new()
+/// The backend of the crate's tests where it declares `capability`,
+/// and natively Wasmtime where it does not, for a test of a feature
+/// that needs the capability.
+#[cfg(test)]
+pub fn test_backend_declaring(capability: Capability) -> impl Backend {
+    test_backends::backend_declaring(capability)
 }
 
 /// A backend that declares host suspension, for the crate's tests of

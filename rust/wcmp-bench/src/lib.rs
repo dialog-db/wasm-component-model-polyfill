@@ -42,7 +42,9 @@ pub use crate::measurement::Measurement;
 pub use crate::plan::Plan;
 pub use crate::report::Report;
 pub use crate::run::Run;
-pub use crate::suite::benchmarks;
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::suite::BACKEND_VARIABLE;
+pub use crate::suite::{backend, benchmarks};
 
 /// The target a report was measured on, as it appears in the report.
 #[cfg(not(target_arch = "wasm32"))]
@@ -52,17 +54,19 @@ pub const TARGET: &str = "native";
 #[cfg(target_arch = "wasm32")]
 pub const TARGET: &str = "wasm32-unknown-unknown";
 
-/// Measure every benchmark in the suite under `plan`, in the order
-/// [`benchmarks`] lists them, and return the report.
+/// Measure every benchmark in the suite under `plan` on `backend`, in
+/// the order [`benchmarks`] lists them, and return the report.
+/// `backend` is the name [`backend()`] answered, which the report
+/// carries.
 ///
 /// A benchmark that fails is recorded with its error and the run goes
 /// on: one broken guest does not cost the other numbers.
-pub async fn measure(plan: Plan) -> Report {
+pub async fn measure(plan: Plan, backend: &'static str) -> Report {
     let mut measurements = Vec::new();
     for benchmark in benchmarks() {
         measurements.push(benchmark.measure(plan).await);
     }
-    Report::new(TARGET, plan, measurements)
+    Report::new(TARGET, backend, plan, measurements)
 }
 
 // The suite's own unit tests reach a browser in the web lane, where

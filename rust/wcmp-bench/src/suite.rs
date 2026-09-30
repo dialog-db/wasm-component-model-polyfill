@@ -40,17 +40,53 @@ pub fn benchmarks() -> Vec<Benchmark> {
     .collect()
 }
 
-/// An engine over the backend the suite measures on this target:
-/// Wasmtime natively, and the browser's own engine in a browser.
+/// The variable that names the backend the suite measures natively:
+/// `wasmtime`, the default, or `wasmi`. One native build measures
+/// either, so `bench wasmi` runs the binary `bench native` built.
+#[cfg(not(target_arch = "wasm32"))]
+pub const BACKEND_VARIABLE: &str = "WCMP_BENCH_BACKEND";
+
+/// The backend the suite measures on this run, as a report names it:
+/// natively the one `WCMP_BENCH_BACKEND` names, Wasmtime when it is
+/// unset, and in a browser the browser's own engine.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn backend() -> Result<&'static str> {
+    match std::env::var(BACKEND_VARIABLE) {
+        Err(std::env::VarError::NotPresent) => Ok("wasmtime"),
+        Ok(name) if name == "wasmtime" => Ok("wasmtime"),
+        Ok(name) if name == "wasmi" => Ok("wasmi"),
+        Ok(name) => Err(Error::Setup(format!(
+            "{BACKEND_VARIABLE}={name} names no backend (`wasmtime` or `wasmi`)"
+        ))),
+        Err(error) => Err(Error::Setup(format!("{BACKEND_VARIABLE}: {error}"))),
+    }
+}
+
+/// The backend the suite measures on this run, as a report names it:
+/// natively the one `WCMP_BENCH_BACKEND` names, Wasmtime when it is
+/// unset, and in a browser the browser's own engine.
+#[cfg(target_arch = "wasm32")]
+#[allow(clippy::unnecessary_wraps)]
+pub fn backend() -> Result<&'static str> {
+    Ok("web")
+}
+
+/// An engine over the backend the suite measures on this run:
+/// Wasmtime or Wasmi natively, as [`backend`] answers, and the
+/// browser's own engine in a browser.
 #[cfg(not(target_arch = "wasm32"))]
 fn engine() -> Result<Engine> {
+    if backend()? == "wasmi" {
+        return Ok(Engine::with_backend(wcmp_wasm_core_wasmi::Wasmi::new())?);
+    }
     let backend = wcmp_wasm_core_wasmtime::Wasmtime::new()
         .map_err(|error| Error::Setup(format!("Wasmtime makes no engine: {error}")))?;
     Ok(Engine::with_backend(backend)?)
 }
 
-/// An engine over the backend the suite measures on this target:
-/// Wasmtime natively, and the browser's own engine in a browser.
+/// An engine over the backend the suite measures on this run:
+/// Wasmtime or Wasmi natively, as [`backend`] answers, and the
+/// browser's own engine in a browser.
 #[cfg(target_arch = "wasm32")]
 fn engine() -> Result<Engine> {
     Ok(Engine::with_backend(wcmp_wasm_core_web::Web::new())?)

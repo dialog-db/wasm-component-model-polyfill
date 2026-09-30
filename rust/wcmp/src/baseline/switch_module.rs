@@ -17,7 +17,9 @@
 //! order.
 //!
 //! Wasmtime 49 implements the stack-switching proposal on x86_64
-//! Linux only, and no browser ships it, so the tests run there alone.
+//! Linux only, and no browser ships it, so the tests run there alone,
+//! over Wasmtime whatever backend the lane chose: Wasmi does not
+//! declare stack switching.
 
 #![cfg(all(target_arch = "x86_64", target_os = "linux"))]
 
@@ -31,8 +33,9 @@ use crate::concurrency::{
 };
 use crate::internal::EngineInternal;
 use crate::runtime_layer::{
-    Extern as RuntimeExtern, Func as RuntimeFunc, FuncType, Imports, Module as RuntimeModule,
-    Val as RuntimeVal, ValType as RuntimeValType, at_once, host_func, instantiate,
+    Capability, Extern as RuntimeExtern, Func as RuntimeFunc, FuncType, Imports,
+    Module as RuntimeModule, Val as RuntimeVal, ValType as RuntimeValType, at_once, host_func,
+    instantiate, test_backend_declaring,
 };
 use crate::store::{StoreContext, StoreContextInternalExt, StoreInternalExt};
 use crate::{Engine, Store};
@@ -115,7 +118,8 @@ fn describe(status: &EntryStatus) -> String {
 }
 
 fn setup() -> Scenario {
-    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
+    let engine =
+        Engine::with_backend(test_backend_declaring(Capability::StackSwitching)).expect("engine");
     let mut store = Store::new(&engine, ()).expect("store");
     let mut context = store.internal().context();
     let ready: Ready = Arc::default();
@@ -373,7 +377,8 @@ fn it_encodes_an_extension_with_several_shims_and_entry_types() {
     // One extension module with two shims and two entry types, one
     // of which has no results and one several, compiles against the
     // engine that runs the provider.
-    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
+    let engine =
+        Engine::with_backend(test_backend_declaring(Capability::StackSwitching)).expect("engine");
     let mut module = SwitchModule::new(SwitchForm::StackSwitching);
     module.shim(i32_to_i32());
     module.shim(FuncType::new(
@@ -400,7 +405,8 @@ fn it_runs_entries_with_no_results_and_with_several() {
     // base module's workers: a finished entry hands its results over
     // whatever their number and types, and one that suspended hands
     // them over when it finishes after a resume.
-    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
+    let engine =
+        Engine::with_backend(test_backend_declaring(Capability::StackSwitching)).expect("engine");
     let mut store = Store::new(&engine, ()).expect("store");
     let mut context = store.internal().context();
     let ready: Ready = Arc::default();

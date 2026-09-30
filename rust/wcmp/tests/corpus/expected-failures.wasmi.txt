@@ -1,0 +1,70 @@
+# Directives that fail only on the Wasmi backend, applied on top of
+# `expected-failures.txt` when a native run hands its engines Wasmi
+# (`WCMP_TEST_BACKEND=wasmi`, the `tests native wasmi` lane). Same line
+# shape: `<path>:<line> <category> <reason>`. Only a difference of the
+# backend belongs here (Wasmi against Wasmtime), such as a component
+# that needs a capability Wasmi does not declare, which fails with
+# `Unsupported` and the capability's name; a polyfill gap goes in the
+# shared list so every backend records it. `tests regenerate` rewrites
+# it from the Wasmi run, from the failures the shared list does not name.
+
+cm/binary/binary.wast:892 substrate component rejected: unsupported component feature: gc
+cm/linking/tags.wast:7 substrate component rejected: unsupported component feature: exceptions
+cm/linking/tags.wast:31 cascade no instance to invoke
+cm/linking/tags.wast:32 cascade no instance to invoke
+cm/linking/tags.wast:36 substrate component rejected: unsupported component feature: exceptions
+cm/linking/tags.wast:60 cascade no instance to invoke
+cm/linking/tags.wast:64 substrate component rejected: unsupported component feature: exceptions
+cm/linking/tags.wast:89 cascade no instance to invoke
+cm/linking/tags.wast:93 substrate component rejected: unsupported component feature: exceptions
+cm/linking/tags.wast:133 cascade no instance to invoke
+cm/linking/tags.wast:134 cascade no instance to invoke
+cm/linking/tags.wast:137 substrate expected rejection `export `f` for core instance 0 is not a tag`, got `component rejected: invalid component binary at offset 0: exceptions proposal not enabled (at offset 0x3d)`
+cm/linking/tags.wast:145 substrate expected rejection `unknown tag 0: tag index out of bounds`, got `component rejected: invalid component binary at offset 0: exceptions proposal not enabled (at offset 0x3a)`
+cm/validation/instantiation.wast:421 substrate expected rejection `mismatch in the shared flag for memories`, got `component rejected: invalid component binary at offset 0: threads must be enabled for shared memories (at offset 0x15)`
+wasmtime/alias-region-known-imported-entities.wast:13 substrate component rejected: unsupported component feature: gc
+wasmtime/alias-region-known-imported-entities.wast:64 cascade no instance to invoke
+wasmtime/alias-region-known-imported-entities.wast:65 cascade no instance to invoke
+wasmtime/alias-region-known-imported-entities.wast:66 cascade no instance to invoke
+wasmtime/alias-region-multiple-instantiations.wast:15 substrate component rejected: unsupported component feature: gc
+wasmtime/alias-region-multiple-instantiations.wast:89 cascade no instance to invoke
+wasmtime/alias-region-multiple-instantiations.wast:90 cascade no instance to invoke
+wasmtime/alias-region-multiple-instantiations.wast:91 cascade no instance to invoke
+wasmtime/alias-region-reexported-ambiguous-entities.wast:15 substrate component rejected: unsupported component feature: gc
+wasmtime/alias-region-reexported-ambiguous-entities.wast:135 cascade no instance to invoke
+wasmtime/alias-region-reexported-ambiguous-entities.wast:136 cascade no instance to invoke
+wasmtime/alias-region-reexported-ambiguous-entities.wast:137 cascade no instance to invoke
+wasmtime/alias-region-reexported-ambiguous-entities.wast:138 cascade no instance to invoke
+wasmtime/alias-region-reexported-ambiguous-entities.wast:139 cascade no instance to invoke
+wasmtime/alias-region-reexported-ambiguous-entities.wast:140 cascade no instance to invoke
+wasmtime/alias-region-reexported-known-entities.wast:14 substrate component rejected: unsupported component feature: gc
+wasmtime/alias-region-reexported-known-entities.wast:89 cascade no instance to invoke
+wasmtime/alias-region-reexported-known-entities.wast:90 cascade no instance to invoke
+wasmtime/alias-region-reexported-known-entities.wast:91 cascade no instance to invoke
+wasmtime/async/exceptions.wast:21 substrate component rejected: unsupported component feature: exceptions
+wasmtime/async/exceptions.wast:67 cascade no definition named `A`
+wasmtime/async/exceptions.wast:68 cascade expected a trap `thrown Wasm exception`, got `no instance to invoke`
+wasmtime/async/exceptions.wast:69 cascade no definition named `A`
+wasmtime/async/exceptions.wast:70 cascade expected a trap `thrown Wasm exception`, got `no instance to invoke`
+wasmtime/async/exceptions.wast:73 substrate component rejected: unsupported component feature: exceptions
+wasmtime/async/exceptions.wast:143 cascade no definition named `A`
+wasmtime/async/exceptions.wast:144 cascade expected a trap `thrown Wasm exception`, got `no instance to invoke`
+wasmtime/async/exceptions.wast:145 cascade no definition named `A`
+wasmtime/async/exceptions.wast:146 cascade expected a trap `thrown Wasm exception`, got `no instance to invoke`
+wasmtime/async/exceptions.wast:149 substrate component rejected: unsupported component feature: exceptions
+wasmtime/async/exceptions.wast:215 cascade no definition named `A`
+wasmtime/async/exceptions.wast:216 cascade expected a trap `thrown Wasm exception`, got `no instance to invoke`
+wasmtime/async/exceptions.wast:217 cascade no definition named `A`
+wasmtime/async/exceptions.wast:218 cascade expected a trap `thrown Wasm exception`, got `no instance to invoke`
+wasmtime/exceptions.wast:22 substrate component rejected: unsupported component feature: exceptions
+wasmtime/exceptions.wast:50 cascade expected a trap `uncaught exception propagated out of component`, got `no instance to invoke`
+wasmtime/exceptions.wast:54 substrate component rejected: unsupported component feature: exceptions
+wasmtime/exceptions.wast:85 cascade no instance to invoke
+wasmtime/exceptions.wast:90 substrate component rejected: unsupported component feature: exceptions
+wasmtime/exceptions.wast:127 cascade expected a trap `uncaught exception propagated out of component`, got `no instance to invoke`
+wasmtime/exceptions.wast:132 substrate component rejected: unsupported component feature: exceptions
+wasmtime/exceptions.wast:161 cascade expected a trap `uncaught exception propagated out of component`, got `no instance to invoke`
+wasmtime/exceptions.wast:168 substrate component rejected: unsupported component feature: function_references
+wasmtime/modules.wast:482 substrate component rejected: unsupported component feature: exceptions
+wasmtime/modules.wast:485 substrate component rejected: unsupported component feature: exceptions
+wasmtime/tags.wast:3 substrate component rejected: unsupported component feature: exceptions

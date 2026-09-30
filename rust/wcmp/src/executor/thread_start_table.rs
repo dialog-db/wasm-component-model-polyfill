@@ -14,8 +14,15 @@
 //! result, which both backends turn into a function the host can
 //! call. `ref.test` of a function type is part of the GC proposal,
 //! which every current browser ships and Wasmtime enables by
-//! default. Both targets take the same path, so a native run tests
-//! the one the browser takes.
+//! default. Both take the same path, so a native run over Wasmtime
+//! tests the one the browser takes.
+//!
+//! A backend without `gc` cannot compile the probe, and does not need
+//! it: every native backend reads a table entry and the type of the
+//! function in it. Without GC there are no recursion groups and no
+//! subtypes, so two function types are the same exactly where their
+//! parameters and results are, which is how `call_indirect` compares
+//! them there. The host reads the entry and compares its type itself.
 
 use anyhow::anyhow;
 
@@ -23,7 +30,7 @@ use crate::abi::layout::FlatType;
 use crate::error::{Error, ThreadCause};
 use crate::runtime_layer::{
     AsContextMut, Extern as RuntimeExtern, Func as RuntimeFunc, Instance as RuntimeInstance,
-    Module as RuntimeModule, RuntimeError, Table, Val as RuntimeVal, into_anyhow,
+    Module as RuntimeModule, RuntimeError, Table, Val as RuntimeVal, ValType, into_anyhow,
 };
 
 /// The probe, as a core module binary. Its text is:
@@ -111,22 +118,26 @@ const TAKES_I64: i32 = 2;
 const OTHER_TYPE: i32 = 3;
 
 /// One table a `thread.new-indirect` reads start functions out of,
-/// with the probe instance that reads it.
+/// with the probe instance that reads it, or none where the host
+/// reads it.
 #[derive(Clone)]
 pub struct ThreadStartTable {
     table: Table,
-    classify: RuntimeFunc,
-    get: RuntimeFunc,
+    probe: Option<(RuntimeFunc, RuntimeFunc)>,
 }
 
 impl ThreadStartTable {
     /// Give `table` an instance of `probe`, the compiled
-    /// [`THREAD_START_PROBE`].
+    /// [`THREAD_START_PROBE`], or, with no probe, have the host read
+    /// it, over a backend without `gc`.
     pub async fn new(
         mut store: impl AsContextMut,
-        probe: &RuntimeModule,
+        probe: Option<&RuntimeModule>,
         table: Table,
     ) -> Result<Self, RuntimeError> {
+        let Some(probe) = probe else {
+            return Ok(Self { table, probe: None });
+        };
         let instance = RuntimeInstance::instantiate(&mut store, probe, &[table.into()]).await?;
         let mut export = |name: &str| match instance.get_export(&mut store, name)? {
             Some(RuntimeExtern::Func(func)) => Ok(func),
@@ -135,8 +146,7 @@ impl ThreadStartTable {
             }),
         };
         Ok(Self {
-            classify: export("classify")?,
-            get: export("get")?,
+            probe: Some((export("classify")?, export("get")?)),
             table,
         })
     }
@@ -159,8 +169,11 @@ impl ThreadStartTable {
         if u64::from(index) >= self.table.size(&store).map_err(into_anyhow)? {
             return Ok(Err(Error::Thread(ThreadCause::StartFunctionOutOfBounds)));
         }
+        let Some((classify, get)) = &self.probe else {
+            return self.read_on_the_host(store, index, context);
+        };
         let mut class = [RuntimeVal::I32(0)];
-        self.classify
+        classify
             .call(&mut store, &[RuntimeVal::I32(index as i32)], &mut class)
             .map_err(into_anyhow)?;
         let matches = match (&class[0], context) {
@@ -176,8 +189,7 @@ impl ThreadStartTable {
             return Ok(Err(Error::Thread(ThreadCause::StartFunctionType)));
         }
         let mut entry = [RuntimeVal::FuncRef(None)];
-        self.get
-            .call(&mut store, &[RuntimeVal::I32(index as i32)], &mut entry)
+        get.call(&mut store, &[RuntimeVal::I32(index as i32)], &mut entry)
             .map_err(into_anyhow)?;
         match entry {
             [RuntimeVal::FuncRef(Some(function))] => Ok(Ok(function)),
@@ -186,12 +198,51 @@ impl ThreadStartTable {
             )),
         }
     }
+
+    /// [`start_function`](Self::start_function) without the probe: the
+    /// host reads the entry at `index`, which is in bounds, and
+    /// compares the parameters and results of its function with
+    /// `(context) -> ()`.
+    fn read_on_the_host(
+        &self,
+        mut store: impl AsContextMut,
+        index: u32,
+        context: FlatType,
+    ) -> anyhow::Result<Result<RuntimeFunc, Error>> {
+        let entry = self
+            .table
+            .get(&mut store, u64::from(index))
+            .map_err(into_anyhow)?;
+        let function = match entry {
+            RuntimeVal::FuncRef(Some(function)) => function,
+            RuntimeVal::FuncRef(None) => {
+                return Ok(Err(Error::Thread(ThreadCause::StartFunctionUninitialized)));
+            }
+            _ => return Err(anyhow!("a thread start table holds no function references")),
+        };
+        let ty = function
+            .ty(&store)
+            .map_err(into_anyhow)?
+            .ok_or_else(|| anyhow!("the backend does not know the type of a table entry"))?;
+        let param = match context {
+            FlatType::I32 => ValType::I32,
+            FlatType::I64 => ValType::I64,
+            _ => return Ok(Err(Error::Thread(ThreadCause::StartFunctionType))),
+        };
+        if ty.params() == [param] && ty.results().is_empty() {
+            Ok(Ok(function))
+        } else {
+            Ok(Err(Error::Thread(ThreadCause::StartFunctionType)))
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::executor::compile_module;
+    use crate::internal::EngineInternal;
+    use crate::runtime_layer::Capability;
     use crate::store::StoreInternalExt;
     use crate::{Engine, Store};
 
@@ -259,38 +310,68 @@ mod tests {
         assert_eq!(THREAD_START_PROBE, PROBE_TEXT);
     }
 
-    /// A store with an instance of [`STARTS`], its table behind the
-    /// probe, and the function that reads what a start function
-    /// stored.
-    async fn starts() -> (Store<()>, ThreadStartTable, RuntimeFunc) {
+    /// Who reads a table: the probe, or the host.
+    #[derive(Debug, Clone, Copy)]
+    enum Reader {
+        Probe,
+        Host,
+    }
+
+    /// The readers the test backend runs: the probe where it declares
+    /// `gc`, and natively the host, which the browser cannot be,
+    /// because it does not tell the type of a table's function.
+    fn readers(engine: &Engine) -> Vec<Reader> {
+        let mut readers = Vec::new();
+        if engine.inner().capabilities().contains(Capability::Gc) {
+            readers.push(Reader::Probe);
+        }
+        if cfg!(not(target_arch = "wasm32")) {
+            readers.push(Reader::Host);
+        }
+        readers
+    }
+
+    /// For each reader of the test backend, a store with an instance
+    /// of [`STARTS`], its table behind the reader, and the function
+    /// that reads what a start function stored.
+    async fn starts() -> Vec<(Reader, Store<()>, ThreadStartTable, RuntimeFunc)> {
         let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
-        let probe = compile_module(&engine, THREAD_START_PROBE)
-            .await
-            .expect("the probe compiles");
         let starts = compile_module(&engine, STARTS)
             .await
             .expect("the start functions compile");
-        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-        let runtime = store.internal().inner_mut();
-        let instance = RuntimeInstance::instantiate(&mut *runtime, &starts, &[])
-            .await
-            .expect("the start functions instantiate");
-        let Some(RuntimeExtern::Table(table)) = instance
-            .get_export(&mut *runtime, "table")
-            .expect("the export")
-        else {
-            panic!("the module exports its table");
-        };
-        let Some(RuntimeExtern::Func(stored)) = instance
-            .get_export(&mut *runtime, "stored")
-            .expect("the export")
-        else {
-            panic!("the module exports `stored`");
-        };
-        let table = ThreadStartTable::new(&mut *runtime, &probe, table)
-            .await
-            .expect("the probe");
-        (store, table, stored)
+        let mut each = Vec::new();
+        for reader in readers(&engine) {
+            let probe = match reader {
+                Reader::Probe => Some(
+                    compile_module(&engine, THREAD_START_PROBE)
+                        .await
+                        .expect("the probe compiles"),
+                ),
+                Reader::Host => None,
+            };
+            let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+            let runtime = store.internal().inner_mut();
+            let instance = RuntimeInstance::instantiate(&mut *runtime, &starts, &[])
+                .await
+                .expect("the start functions instantiate");
+            let Some(RuntimeExtern::Table(table)) = instance
+                .get_export(&mut *runtime, "table")
+                .expect("the export")
+            else {
+                panic!("the module exports its table");
+            };
+            let Some(RuntimeExtern::Func(stored)) = instance
+                .get_export(&mut *runtime, "stored")
+                .expect("the export")
+            else {
+                panic!("the module exports `stored`");
+            };
+            let table = ThreadStartTable::new(&mut *runtime, probe.as_ref(), table)
+                .await
+                .expect("the reader");
+            each.push((reader, store, table, stored));
+        }
+        each
     }
 
     /// Read the entry at `index` as a start function taking
@@ -303,7 +384,7 @@ mod tests {
     ) -> Result<RuntimeFunc, Error> {
         table
             .start_function(store.internal().inner_mut(), index, context)
-            .expect("the probe runs")
+            .expect("the reader runs")
     }
 
     /// Call `function` with `context` and answer what it stored.
@@ -329,59 +410,71 @@ mod tests {
 
     #[wcmp_macros::test]
     async fn it_reads_a_start_function_that_takes_an_i32() {
-        let (mut store, table, stored) = starts().await;
-        let function = read(&mut store, &table, 0, FlatType::I32).expect("an `(i32) -> ()`");
-        assert_eq!(run(&mut store, &stored, &function, RuntimeVal::I32(7)), 7);
+        for (reader, mut store, table, stored) in starts().await {
+            let function = read(&mut store, &table, 0, FlatType::I32)
+                .unwrap_or_else(|err| panic!("{reader:?}: an `(i32) -> ()`: {err:?}"));
+            assert_eq!(
+                run(&mut store, &stored, &function, RuntimeVal::I32(7)),
+                7,
+                "{reader:?}"
+            );
+        }
     }
 
     #[wcmp_macros::test]
     async fn it_reads_a_start_function_that_takes_an_i64() {
         // The context of a thread in a 64-bit memory is an address in
         // it, so a value past four gigabytes has to arrive whole.
-        let (mut store, table, stored) = starts().await;
-        let function = read(&mut store, &table, 1, FlatType::I64).expect("an `(i64) -> ()`");
-        let context = 0x1_0000_0007_i64;
-        assert_eq!(
-            run(&mut store, &stored, &function, RuntimeVal::I64(context)),
-            context
-        );
-    }
-
-    #[wcmp_macros::test]
-    async fn it_fails_a_start_function_of_another_type_with_wasmtimes_message() {
-        let (mut store, table, _) = starts().await;
-        for (index, context) in [(0, FlatType::I64), (1, FlatType::I32), (2, FlatType::I32)] {
-            let err = read(&mut store, &table, index, context).err();
-            assert!(
-                matches!(err, Some(Error::Thread(ThreadCause::StartFunctionType))),
-                "entry {index} taken as `({context:?}) -> ()` gave {err:?}"
+        for (reader, mut store, table, stored) in starts().await {
+            let function = read(&mut store, &table, 1, FlatType::I64)
+                .unwrap_or_else(|err| panic!("{reader:?}: an `(i64) -> ()`: {err:?}"));
+            let context = 0x1_0000_0007_i64;
+            assert_eq!(
+                run(&mut store, &stored, &function, RuntimeVal::I64(context)),
+                context,
+                "{reader:?}"
             );
         }
     }
 
     #[wcmp_macros::test]
+    async fn it_fails_a_start_function_of_another_type_with_wasmtimes_message() {
+        for (reader, mut store, table, _) in starts().await {
+            for (index, context) in [(0, FlatType::I64), (1, FlatType::I32), (2, FlatType::I32)] {
+                let err = read(&mut store, &table, index, context).err();
+                assert!(
+                    matches!(err, Some(Error::Thread(ThreadCause::StartFunctionType))),
+                    "{reader:?}: entry {index} taken as `({context:?}) -> ()` gave {err:?}"
+                );
+            }
+        }
+    }
+
+    #[wcmp_macros::test]
     async fn it_fails_an_empty_entry_with_wasmtimes_message() {
-        let (mut store, table, _) = starts().await;
-        let err = read(&mut store, &table, 3, FlatType::I32).err();
-        assert!(
-            matches!(
-                err,
-                Some(Error::Thread(ThreadCause::StartFunctionUninitialized))
-            ),
-            "got {err:?}"
-        );
+        for (reader, mut store, table, _) in starts().await {
+            let err = read(&mut store, &table, 3, FlatType::I32).err();
+            assert!(
+                matches!(
+                    err,
+                    Some(Error::Thread(ThreadCause::StartFunctionUninitialized))
+                ),
+                "{reader:?}: got {err:?}"
+            );
+        }
     }
 
     #[wcmp_macros::test]
     async fn it_fails_an_index_past_the_end_of_the_table() {
-        let (mut store, table, _) = starts().await;
-        let err = read(&mut store, &table, 4, FlatType::I32).err();
-        assert!(
-            matches!(
-                err,
-                Some(Error::Thread(ThreadCause::StartFunctionOutOfBounds))
-            ),
-            "got {err:?}"
-        );
+        for (reader, mut store, table, _) in starts().await {
+            let err = read(&mut store, &table, 4, FlatType::I32).err();
+            assert!(
+                matches!(
+                    err,
+                    Some(Error::Thread(ThreadCause::StartFunctionOutOfBounds))
+                ),
+                "{reader:?}: got {err:?}"
+            );
+        }
     }
 }

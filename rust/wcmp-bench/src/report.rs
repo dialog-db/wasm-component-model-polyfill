@@ -6,24 +6,32 @@ use crate::json;
 use crate::measurement::Measurement;
 use crate::plan::Plan;
 
-/// Every measurement of one run, with the target and the plan that
-/// produced them.
+/// Every measurement of one run, with the target, the backend, and the
+/// plan that produced them.
 ///
 /// [`Report::json`] writes the shape both targets share, so a native
 /// report and a browser report differ only in `target` and in the
-/// numbers themselves. [`Report::table`] renders the same content for
-/// a reader.
+/// numbers themselves, and two native reports in `backend`.
+/// [`Report::table`] renders the same content for a reader.
 pub struct Report {
     target: &'static str,
+    backend: &'static str,
     plan: Plan,
     measurements: Vec<Measurement>,
 }
 
 impl Report {
-    /// The report of `measurements`, taken on `target` under `plan`.
-    pub fn new(target: &'static str, plan: Plan, measurements: Vec<Measurement>) -> Self {
+    /// The report of `measurements`, taken on `target` over `backend`
+    /// under `plan`.
+    pub fn new(
+        target: &'static str,
+        backend: &'static str,
+        plan: Plan,
+        measurements: Vec<Measurement>,
+    ) -> Self {
         Self {
             target,
+            backend,
             plan,
             measurements,
         }
@@ -32,6 +40,11 @@ impl Report {
     /// The target the run measured.
     pub fn target(&self) -> &'static str {
         self.target
+    }
+
+    /// The backend of the runtime layer the run measured.
+    pub fn backend(&self) -> &'static str {
+        self.backend
     }
 
     /// The measurements, in the order the suite lists its benchmarks.
@@ -77,6 +90,7 @@ impl Report {
 
         let mut out = String::new();
         let _ = writeln!(out, "target: {}", self.target);
+        let _ = writeln!(out, "backend: {}", self.backend);
         let _ = writeln!(
             out,
             "plan: warm-up {} iterations, {} samples, {} ms per sample, batch at most {}",
@@ -114,8 +128,9 @@ impl Report {
     /// The report as JSON, for tooling.
     pub fn json(&self) -> String {
         let mut out = format!(
-            "{{\"target\":\"{}\",\"plan\":{},\"benchmarks\":[",
+            "{{\"target\":\"{}\",\"backend\":\"{}\",\"plan\":{},\"benchmarks\":[",
             json::escape(self.target),
+            json::escape(self.backend),
             self.plan.json()
         );
         for (index, measurement) in self.measurements.iter().enumerate() {

@@ -108,7 +108,9 @@ fn stop_counting() -> Allocated {
 /// lowered pointer and length are returned unchanged, so one call is
 /// one lower into guest memory and one lift back out of it. Its
 /// allocator bumps and grows the memory as a payload needs, so a
-/// payload of any size the memory can reach fits.
+/// payload of any size the memory can reach fits. `reset` puts the
+/// bump back at the start, so a later payload reuses memory an earlier
+/// one grew.
 const ECHO: &[u8] = component!(
     r#"
     (component
@@ -140,7 +142,8 @@ const ECHO: &[u8] = component!(
           i32.const 0 i32.const 0 i32.const 4 i32.const 8 call $realloc local.set $ret
           local.get $ret local.get $ptr i32.store
           local.get $ret local.get $len i32.store offset=4
-          local.get $ret))
+          local.get $ret)
+        (func (export "reset") i32.const 16 global.set $bump))
       (core instance $i (instantiate $m))
       (func (export "echo-string") (param "s" string) (result string)
         (canon lift (core func $i "echo")
@@ -153,7 +156,8 @@ const ECHO: &[u8] = component!(
       (func (export "echo-numbers") (param "xs" (list u32)) (result (list u32))
         (canon lift (core func $i "echo")
           (memory (core memory $i "memory"))
-          (realloc (core func $i "cabi_realloc")))))
+          (realloc (core func $i "cabi_realloc"))))
+      (func (export "reset") (canon lift (core func $i "reset"))))
     "#
 );
 
@@ -185,6 +189,25 @@ where
         .expect("the export has the typed signature")
 }
 
+/// Grow the echo's memory to hold a payload of `len` bytes, and put
+/// its bump back at the start, so a call that follows grows nothing.
+/// Wasmi grows a memory by reallocating the host vector that holds
+/// it, which the counter would take for a copy of the payload that
+/// the crossing made; Wasmtime maps its memory and the counter never
+/// sees it.
+async fn grown(store: &mut Store<()>, instance: &Instance, len: usize) {
+    typed::<(Vec<u8>,), Vec<u8>>(instance, "echo-bytes")
+        .call(&mut *store, (vec![0; len],))
+        .await
+        .expect("the warm-up echoes");
+    instance
+        .get_func("reset")
+        .expect("the export")
+        .call(&mut *store, &[])
+        .await
+        .expect("the bump resets");
+}
+
 /// `len` bytes of a pattern that no two neighbouring positions share.
 fn pattern(len: usize) -> Vec<u8> {
     (0..len).map(|index| (index % 251) as u8).collect()
@@ -201,6 +224,7 @@ async fn it_round_trips_a_byte_vector_without_a_val_per_element() {
     let echo_bytes = typed::<(Vec<u8>,), Vec<u8>>(&instance, "echo-bytes");
 
     let payload = pattern(PAYLOAD);
+    grown(&mut store, &instance, PAYLOAD).await;
     let expected = payload.clone();
     start_counting(PAYLOAD / 2);
     let returned = echo_bytes
@@ -234,6 +258,7 @@ async fn it_round_trips_a_string_without_a_val_per_element() {
         .cycle()
         .take(PAYLOAD / 2)
         .collect();
+    grown(&mut store, &instance, payload.len()).await;
     let expected = payload.clone();
     start_counting(payload.len() / 2);
     let returned = echo_string
@@ -339,6 +364,7 @@ async fn it_round_trips_over_a_hundred_megabytes_in_one_copy_per_direction() {
     let echo_bytes = typed::<(Vec<u8>,), Vec<u8>>(&instance, "echo-bytes");
 
     let payload = pattern(OVER_A_HUNDRED_MEGABYTES);
+    grown(&mut store, &instance, OVER_A_HUNDRED_MEGABYTES).await;
     start_counting(OVER_A_HUNDRED_MEGABYTES / 2);
     let returned = echo_bytes
         .call(&mut store, (payload,))

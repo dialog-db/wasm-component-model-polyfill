@@ -13,6 +13,7 @@ that a change can be read on both targets from one definition.
 
 ```
 bench native
+bench wasmi
 bench web
 ```
 
@@ -21,20 +22,23 @@ measurement itself is deliberately not a derivation: a derivation's output is
 cached, and a cached benchmark result is a stale one. Nix builds the binary; the
 menu command measures with it, every time.
 
-`bench native` runs the suite as a plain binary. `bench web` serves the same
-suite, compiled to `wasm32-unknown-unknown` and bundled by `wasm-bindgen`, and
-drives it in headless Chromium through the same WebDriver plumbing the browser
-tests use.
+`bench native` runs the suite as a plain binary over the Wasmtime backend of the
+runtime layer, and `bench wasmi` runs the same binary over the Wasmi backend: it
+sets `WCMP_BENCH_BACKEND=wasmi`, so it builds nothing more. `bench web` serves
+the same suite, compiled to `wasm32-unknown-unknown` and bundled by
+`wasm-bindgen`, and drives it in headless Chromium through the same WebDriver
+plumbing the browser tests use.
 
-Both write a JSON report under the cargo target directory, as the conformance
+Each writes a JSON report under the cargo target directory, as the conformance
 summary does:
 
 ```
 $CARGO_TARGET_DIR/bench/native.json
+$CARGO_TARGET_DIR/bench/wasmi.json
 $CARGO_TARGET_DIR/bench/web.json
 ```
 
-Both also print a table. Run controls follow the leaf as `key=value` words, and
+Each also prints a table. Run controls follow the leaf as `key=value` words, and
 mean the same thing on either target:
 
 | control            | default | what it does                               |
@@ -131,7 +135,8 @@ report quotes:
 The JSON carries the same fields per benchmark, plus `min_ns`, `p10_ns`,
 `p90_ns`, the per-iteration payload size, and the error when a benchmark failed.
 Its shape is identical on both targets, so two reports can be diffed or joined
-on `name`.
+on `name`. Its `target` and `backend` name where it was measured: `native` over
+`wasmtime` or `wasmi`, or `wasm32-unknown-unknown` over `web`.
 
 ## What does not compare across targets
 

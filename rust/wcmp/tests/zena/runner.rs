@@ -7,12 +7,15 @@ use wcmp::{
     ExternalName, Func, FunctionType, Instance, InstanceItem, Linker, LinkerInstance,
     PrimitiveType, Store, TypeMismatchPosition, Val, ValueType,
 };
-use wcmp_scenario::{Call, Link, Outcome, Run, Stage, Typed, TypedSignature, Value, Verdict};
+use wcmp_scenario::{
+    Call, Link, Outcome, Run, Stage, Subject, Typed, TypedSignature, Value, Verdict,
+};
 
 use crate::bundle::Scenario;
 use crate::host::{self, Host};
 
-/// The polyfill subject: one engine, shared by every scenario it runs.
+/// A polyfill subject: one engine, shared by every scenario it runs,
+/// over the backend of the subject.
 ///
 /// The engine has the default configuration, so the suspend provider
 /// is on wherever the target has one. Each scenario gets a linker with
@@ -20,6 +23,7 @@ use crate::host::{self, Host};
 /// its own, whose standard output the test host keeps.
 pub struct PolyfillRun {
     engine: Engine,
+    subject: Subject,
 }
 
 /// The instances of one scenario, each under its program's name. The
@@ -32,15 +36,37 @@ type Instances = Arc<Mutex<Vec<(String, Instance)>>>;
 type Components<'a> = Vec<(&'a str, Component)>;
 
 impl PolyfillRun {
-    /// An engine with the default configuration. A linker with the test
-    /// host functions is built once here, so a definition the polyfill
-    /// refuses fails before any scenario runs.
+    /// The polyfill subject of this run, over the backend of the run: the
+    /// browser's in the browser, and natively the one `WCMP_TEST_BACKEND`
+    /// names.
     pub fn new() -> Result<Self, Error> {
-        let run = PolyfillRun {
-            engine: Engine::with_backend(crate::test_backend::backend())?,
-        };
+        Self::with_engine(
+            Engine::with_backend(crate::test_backend::backend())?,
+            subject_of_run(),
+        )
+    }
+
+    /// The native polyfill subject over the backend `kind`, whatever the
+    /// run chose: [`Subject::Native`] over Wasmtime, and
+    /// [`Subject::Wasmi`] over Wasmi.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn over(kind: crate::test_backend::Kind) -> Result<Self, Error> {
+        Self::with_engine(Engine::with_backend(kind.backend())?, native_subject(kind))
+    }
+
+    /// The subject `subject`, over `engine`, which has the default
+    /// configuration. A linker with the test host functions is built
+    /// once here, so a definition the polyfill refuses fails before any
+    /// scenario runs.
+    fn with_engine(engine: Engine, subject: Subject) -> Result<Self, Error> {
+        let run = PolyfillRun { engine, subject };
         run.linker()?;
         Ok(run)
+    }
+
+    /// The subject this run reports as.
+    pub fn subject(&self) -> Subject {
+        self.subject
     }
 
     /// A linker with the test host functions.
@@ -575,4 +601,26 @@ fn from_val(val: &Val) -> Option<Value> {
         Val::String(value) => Value::String(value.clone()),
         _ => return None,
     })
+}
+
+/// The polyfill subject of this run: the browser.
+#[cfg(target_arch = "wasm32")]
+pub fn subject_of_run() -> Subject {
+    Subject::Web
+}
+
+/// The polyfill subject of this run: the subject of the backend
+/// `WCMP_TEST_BACKEND` names.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn subject_of_run() -> Subject {
+    native_subject(crate::test_backend::Kind::of_run())
+}
+
+/// The native polyfill subject over the backend `kind`.
+#[cfg(not(target_arch = "wasm32"))]
+fn native_subject(kind: crate::test_backend::Kind) -> Subject {
+    match kind {
+        crate::test_backend::Kind::Wasmtime => Subject::Native,
+        crate::test_backend::Kind::Wasmi => Subject::Wasmi,
+    }
 }

@@ -18,7 +18,9 @@ wcmp-macros = { workspace = true }
 # work, never a sleep.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
-# The backend the suite measures natively.
+# The backends the suite measures natively: Wasmtime, and Wasmi when
+# `WCMP_BENCH_BACKEND` names it.
+wcmp-wasm-core-wasmi = { workspace = true }
 wcmp-wasm-core-wasmtime = { workspace = true }
 
 # The browser half reads `performance.now()` off the global the way the

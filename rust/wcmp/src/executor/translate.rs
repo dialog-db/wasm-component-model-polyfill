@@ -39,7 +39,7 @@ use crate::engine::Engine;
 use crate::error::{Error, Result};
 
 use crate::module::Module;
-use crate::runtime_layer::Capabilities;
+use crate::runtime_layer::{Capabilities, Capability};
 use crate::types::{PrimitiveType, ValueType};
 
 use super::ir::{
@@ -791,14 +791,17 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
 
     // The probe a `thread.new-indirect` reads its start function
     // through is compiled once per component that extracts a table
-    // for one; see `ThreadStartTable` for what it answers.
-    let thread_start_probe = if state.num_runtime_tables > 0 {
-        Some(crate::runtime_layer::Shared::new(
-            compile_module(engine, THREAD_START_PROBE).await?,
-        ))
-    } else {
-        None
-    };
+    // for one, where the backend declares `gc`, which the probe
+    // needs; see `ThreadStartTable` for what it answers, and for how
+    // the host reads the table without it.
+    let thread_start_probe =
+        if state.num_runtime_tables > 0 && capabilities.contains(Capability::Gc) {
+            Some(crate::runtime_layer::Shared::new(
+                compile_module(engine, THREAD_START_PROBE).await?,
+            ))
+        } else {
+            None
+        };
 
     Ok(Translation {
         imports,

@@ -6,7 +6,8 @@ use core::str::FromStr;
 use crate::error::Error;
 
 /// One run of a scenario: the Wasmtime run, or the polyfill in the
-/// browser or natively.
+/// browser or natively, over the Wasmtime or the Wasmi backend of its
+/// runtime layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Subject {
     /// The Wasmtime run, which goes first and sets the behavior the
@@ -14,16 +15,24 @@ pub enum Subject {
     Wasmtime,
     /// The polyfill in the browser.
     Web,
-    /// The polyfill natively.
+    /// The polyfill natively, over the Wasmtime backend.
     Native,
+    /// The polyfill natively, over the Wasmi backend.
+    Wasmi,
 }
 
 impl Subject {
     /// Every subject, in the order a scenario meets them.
-    pub const ALL: [Subject; 3] = [Subject::Wasmtime, Subject::Web, Subject::Native];
+    pub const ALL: [Subject; 4] = [
+        Subject::Wasmtime,
+        Subject::Web,
+        Subject::Native,
+        Subject::Wasmi,
+    ];
 
-    /// The polyfill subject of the target this code was built for:
-    /// [`Subject::Web`] on `wasm32`, and [`Subject::Native`] elsewhere.
+    /// The polyfill subject of the target this code was built for, over
+    /// the target's default backend: [`Subject::Web`] on `wasm32`, and
+    /// [`Subject::Native`] elsewhere.
     pub const fn polyfill() -> Self {
         if cfg!(target_arch = "wasm32") {
             Subject::Web
@@ -38,6 +47,7 @@ impl Subject {
             Subject::Wasmtime => "wasmtime",
             Subject::Web => "web",
             Subject::Native => "native",
+            Subject::Wasmi => "wasmi",
         }
     }
 }

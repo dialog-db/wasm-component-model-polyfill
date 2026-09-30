@@ -57,8 +57,9 @@ wcmp = { workspace = true, features = ["wast-runner"] }
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
 wast = { workspace = true }
 # Sets the `cancellable` immediate in a test fixture, which the text format
-# no longer spells.
-wasmparser = { workspace = true }
+# no longer spells, and tells which Zena components need GC or exception
+# handling.
+wasmparser = { workspace = true, features = ["validate", "features", "simd"] }
 wcmp-macros = { workspace = true }
 # The scenario model the `zena` test judges each Zena scenario with.
 wcmp-scenario = { workspace = true }

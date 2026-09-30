@@ -1376,8 +1376,9 @@ mod tests {
         // The canonical ABI reaches the guest's memory a fixed number
         // of times for one list of numbers, whatever its length: the
         // lift reads the list's bytes once, and the lower writes them
-        // once. The test backend is Wasmtime natively and the browser's
-        // own engine in the web lane, so both backends hold the count.
+        // once. The test backend is Wasmtime or Wasmi natively, as the
+        // lane chooses, and the browser's own engine in the web lane,
+        // so every backend holds the count.
         let ty = ValueType::List(ListType::new(ValueType::Primitive(PrimitiveType::U32)));
         let counts = [1_usize, 100, 10_000].map(|len| {
             let engine =

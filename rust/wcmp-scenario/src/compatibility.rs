@@ -12,9 +12,10 @@ use crate::verdict::Verdict;
 /// The subjects of an entry, in order, each with the name the report
 /// gives it. The browser leads, because it is the subject that matters
 /// most.
-const SUBJECTS: [(&str, Subject); 3] = [
+const SUBJECTS: [(&str, Subject); 4] = [
     ("Browser", Subject::Web),
     ("Native", Subject::Native),
+    ("Wasmi", Subject::Wasmi),
     ("Wasmtime", Subject::Wasmtime),
 ];
 
@@ -24,8 +25,10 @@ const SUBJECTS: [(&str, Subject); 3] = [
 ///
 /// The report prints a header line that names the toolchain and the
 /// pin, then a list with one entry per scenario in the order of their
-/// names. Under each entry come the subjects `Browser`, `Native`, and
-/// `Wasmtime`, in that order, one per line. A line whose stage is
+/// names. Under each entry come the subjects `Browser`, `Native`, `Wasmi`,
+/// and `Wasmtime`, in that order, one per line. `Native` is the polyfill
+/// over the Wasmtime backend, and `Wasmi` the polyfill over the Wasmi
+/// backend. A line whose stage is
 /// `pass` holds only the stage. A line whose stage comes before `pass`
 /// also holds the reason in parentheses, whole, as the run observed it.
 /// A reason of several lines keeps them all; each line after the first
@@ -40,19 +43,21 @@ const SUBJECTS: [(&str, Subject); 3] = [
 /// - async-sleep
 ///   - Browser: parse (reference type (ref null (module 8)) is not supported)
 ///   - Native: parse (tags are not supported)
+///   - Wasmi: parse (unsupported feature: gc)
 ///   - Wasmtime: pass
 /// - scalar-export
 ///   - Browser: pass
 ///   - Native: pass
+///   - Wasmi: pass
 ///   - Wasmtime: pass
 ///
-/// Passes: Browser 1/2, Native 1/2, Wasmtime 2/2
+/// Passes: Browser 1/2, Native 1/2, Wasmi 1/2, Wasmtime 2/2
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Compatibility {
     toolchain: String,
     pin: String,
-    entries: Vec<(String, [Option<Verdict>; 3])>,
+    entries: Vec<(String, [Option<Verdict>; SUBJECTS.len()])>,
 }
 
 impl Compatibility {
@@ -60,7 +65,7 @@ impl Compatibility {
     /// observed `reports`. When two reports name the same scenario and
     /// subject, the first one counts.
     pub fn new(toolchain: impl Into<String>, pin: impl Into<String>, reports: &[Report]) -> Self {
-        let mut entries: BTreeMap<&str, [Option<Verdict>; 3]> = BTreeMap::new();
+        let mut entries: BTreeMap<&str, [Option<Verdict>; SUBJECTS.len()]> = BTreeMap::new();
         for report in reports {
             let verdicts = entries.entry(&report.scenario).or_default();
             let column = SUBJECTS
@@ -158,6 +163,11 @@ mod tests {
             ),
             report(
                 "strings",
+                Subject::Wasmi,
+                Verdict::new(Stage::Parse, "unsupported feature: gc"),
+            ),
+            report(
+                "strings",
                 Subject::Web,
                 Verdict::new(Stage::Link, "no import `wcmp:scenario/host`"),
             ),
@@ -167,6 +177,7 @@ mod tests {
                 Verdict::new(Stage::Parse, &long),
             ),
             report("async-sleep", Subject::Native, Verdict::pass()),
+            report("async-sleep", Subject::Wasmi, Verdict::pass()),
             report(
                 "async-sleep",
                 Subject::Wasmtime,
@@ -177,6 +188,7 @@ mod tests {
             ),
             report("scalar-export", Subject::Native, Verdict::pass()),
             report("scalar-export", Subject::Web, Verdict::pass()),
+            report("scalar-export", Subject::Wasmi, Verdict::pass()),
             report("scalar-export", Subject::Wasmtime, Verdict::pass()),
         ];
         assert_eq!(
@@ -188,17 +200,20 @@ zena at {PIN}
 - async-sleep
   - Browser: parse ({long})
   - Native: pass
+  - Wasmi: pass
   - Wasmtime: mismatch (call 1 returned 4u32 where 3u32 was expected)
 - scalar-export
   - Browser: pass
   - Native: pass
+  - Wasmi: pass
   - Wasmtime: pass
 - strings
   - Browser: link (no import `wcmp:scenario/host`)
   - Native: parse (tags are not supported)
+  - Wasmi: parse (unsupported feature: gc)
   - Wasmtime: pass
 
-Passes: Browser 1/3, Native 2/3, Wasmtime 2/3
+Passes: Browser 1/3, Native 2/3, Wasmi 2/3, Wasmtime 2/3
 "
             )
         );
@@ -213,6 +228,7 @@ Passes: Browser 1/3, Native 2/3, Wasmtime 2/3
                 Verdict::not_compiled("main", 1, "refused.zena:1:1 - Error\n  expected `;`"),
             ),
             report("refused", Subject::Native, Verdict::new(Stage::Compile, "")),
+            report("refused", Subject::Wasmi, Verdict::new(Stage::Compile, "")),
             report(
                 "refused",
                 Subject::Wasmtime,
@@ -229,10 +245,11 @@ zena at {PIN}
   - Browser: compile (program main did not compile (exit 1): refused.zena:1:1 - Error
       expected `;`)
   - Native: compile
+  - Wasmi: compile
   - Wasmtime: compile (program main did not compile (exit 1): refused.zena:1:1 - Error
       expected `;`)
 
-Passes: Browser 0/1, Native 0/1, Wasmtime 0/1
+Passes: Browser 0/1, Native 0/1, Wasmi 0/1, Wasmtime 0/1
 "
             )
         );
@@ -253,9 +270,10 @@ zena at {PIN}
 - scalar-export
   - Browser: no report
   - Native: pass
+  - Wasmi: no report
   - Wasmtime: pass
 
-Passes: Browser 0/1, Native 1/1, Wasmtime 1/1
+Passes: Browser 0/1, Native 1/1, Wasmi 0/1, Wasmtime 1/1
 "
             )
         );
@@ -269,7 +287,7 @@ Passes: Browser 0/1, Native 1/1, Wasmtime 1/1
                 "\
 zena at {PIN}
 
-Passes: Browser 0/0, Native 0/0, Wasmtime 0/0
+Passes: Browser 0/0, Native 0/0, Wasmi 0/0, Wasmtime 0/0
 "
             )
         );

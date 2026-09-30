@@ -11,9 +11,13 @@
 //! so the list stays current.
 //!
 //! The shared list records the best case: the failures under a
-//! suspend provider. Two overlays go on top of it. The web overlay,
+//! suspend provider. Three overlays go on top of it. The web overlay,
 //! `expected-failures.web.txt`, holds what only the browser does
-//! differently and applies on `wasm32-unknown-unknown`. The
+//! differently and applies on `wasm32-unknown-unknown`. The Wasmi
+//! overlay, `expected-failures.wasmi.txt`, holds what only the Wasmi
+//! backend does differently and applies natively when
+//! `WCMP_TEST_BACKEND` names Wasmi, as the `tests native wasmi` lane
+//! does. The
 //! no-provider overlay, `expected-failures.no-provider.txt`, holds
 //! what fails beyond the shared list in a nested turn, and applies
 //! whenever the store runs no guest thread through a provider, on
@@ -80,6 +84,12 @@ const EXPECTED_FAILURES: &str = include_str!("corpus/expected-failures.txt");
 /// browser's summary.
 const EXPECTED_FAILURES_WEB: &str = include_str!("corpus/expected-failures.web.txt");
 
+/// The Wasmi delta, applied on top of the shared list when a native run
+/// hands its engines the Wasmi backend (`WCMP_TEST_BACKEND=wasmi`):
+/// differences of that backend against Wasmtime, such as a component
+/// that needs a capability Wasmi does not declare.
+const EXPECTED_FAILURES_WASMI: &str = include_str!("corpus/expected-failures.wasmi.txt");
+
 /// The overlay of directives that fail only without a suspend
 /// provider, applied on top of the shared list whenever the store runs
 /// no guest thread through a provider, on either target: a lane that
@@ -104,6 +114,8 @@ struct Lists {
     shared: Vec<Expectation>,
     /// What only the browser does differently.
     web: Vec<Expectation>,
+    /// What only the Wasmi backend does differently.
+    wasmi: Vec<Expectation>,
     /// What fails beyond `shared` without a provider.
     no_provider: Vec<Expectation>,
     /// The directives of `shared` or `web` that pass without a
@@ -120,8 +132,29 @@ impl Lists {
             EXPECTED_FAILURES_WEB,
             EXPECTED_FAILURES_NO_PROVIDER,
         )
+        .and_then(|lists| lists.with_wasmi(EXPECTED_FAILURES_WASMI))
         .and_then(|lists| lists.with_passes(EXPECTED_PASSES_NO_PROVIDER))
         .unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    /// Add the Wasmi delta. No line may name a directive the shared list
+    /// names: the delta lists only what fails beyond it on Wasmi.
+    fn with_wasmi(mut self, text: &str) -> Result<Self, String> {
+        let wasmi = parse_expectations(text)
+            .map_err(|err| format!("expected-failures.wasmi.txt: {err}"))?;
+        if let Some(twice) = wasmi.iter().find(|delta| {
+            self.shared
+                .iter()
+                .any(|line| line.file == delta.file && line.line == delta.line)
+        }) {
+            return Err(format!(
+                "expected-failures.wasmi.txt: `{}:{}` is in expected-failures.txt too: the \
+                 delta lists only what fails beyond the shared list",
+                twice.file, twice.line
+            ));
+        }
+        self.wasmi = wasmi;
+        Ok(self)
     }
 
     /// Add the directives of the shared list or the web delta that pass
@@ -185,20 +218,32 @@ impl Lists {
         Ok(Self {
             shared,
             web,
+            wasmi: Vec::new(),
             no_provider,
             passes_without_provider: Vec::new(),
         })
     }
 
-    /// The expectations a run on this target judges a file by, for an
-    /// engine whose provider query answered `provider`: the shared
-    /// list, the web delta in a browser, and, when the store runs no
-    /// guest thread through a provider, the overlay in place of the
-    /// shared directives that pass without one.
+    /// The expectations a run on this target and on the backend of the
+    /// run judges a file by, for an engine whose provider query answered
+    /// `provider`.
     fn applying(&self, provider: SuspendProviderKind) -> Vec<Expectation> {
+        self.applying_on(crate::test_backend::name(), provider)
+    }
+
+    /// The expectations a run on the backend named `backend` judges a
+    /// file by, for an engine whose provider query answered `provider`:
+    /// the shared list, the web delta in a browser, the Wasmi delta on
+    /// Wasmi, and, when the store runs no guest thread through a
+    /// provider, the overlay in place of the shared directives that pass
+    /// without one.
+    fn applying_on(&self, backend: &str, provider: SuspendProviderKind) -> Vec<Expectation> {
         let mut all = self.shared.clone();
         if cfg!(target_arch = "wasm32") {
             all.extend(self.web.iter().cloned());
+        }
+        if backend == "wasmi" {
+            all.extend(self.wasmi.iter().cloned());
         }
         if !runs_threads_through(provider) {
             all.retain(|expectation| {
@@ -1392,7 +1437,9 @@ async fn progress(suspend_provider: bool) {
     #[cfg(target_arch = "wasm32")]
     println!("\nwasm32-unknown-unknown{state}\n{}", summary.table());
     #[cfg(not(target_arch = "wasm32"))]
-    {
+    if crate::test_backend::name() == "wasmi" {
+        wasmi_progress(state, suspend_provider, &summary, &reports);
+    } else {
         println!("\nnative{state}\n{}", summary.table());
         // The browser's run cannot print for a passing test, so its
         // summary is projected here from the delta it applies. The
@@ -1416,18 +1463,44 @@ async fn progress(suspend_provider: bool) {
             if suspend_provider {
                 regenerate_expectations(&list, &reports);
             } else {
-                let base = match std::env::var("WCMP_REGENERATE_BASE") {
-                    Ok(base) => std::fs::read_to_string(&base).unwrap_or_else(|err| {
-                        panic!("cannot read the shared expectation list {base}: {err}")
-                    }),
-                    Err(_) => EXPECTED_FAILURES.to_owned(),
-                };
-                let beyond = report::beyond(&reports, &base)
-                    .unwrap_or_else(|err| panic!("the shared list: {err}"));
-                regenerate_expectations(&list, &beyond);
+                regenerate_beyond_the_shared_list(&list, &reports);
             }
         }
     }
+}
+
+/// The progress of a native run on the Wasmi backend: its table, the
+/// JSON copy where `WCMP_CONFORMANCE_SUMMARY` points, and, when
+/// `WCMP_REGENERATE_EXPECTATIONS` names a list, the Wasmi delta
+/// rewritten from the failures the shared list does not name. The
+/// browser's projection belongs to the Wasmtime run, whose results the
+/// web delta is written against.
+#[cfg(not(target_arch = "wasm32"))]
+fn wasmi_progress(state: &str, suspend_provider: bool, summary: &Summary, reports: &[FileReport]) {
+    println!("\nnative on wasmi{state}\n{}", summary.table());
+    if suspend_provider && let Ok(target) = std::env::var("WCMP_CONFORMANCE_SUMMARY") {
+        std::fs::write(&target, summary.json())
+            .unwrap_or_else(|err| panic!("cannot write the summary to {target}: {err}"));
+        println!("summary written to {target}");
+    }
+    if suspend_provider && let Ok(list) = std::env::var("WCMP_REGENERATE_EXPECTATIONS") {
+        regenerate_beyond_the_shared_list(&list, reports);
+    }
+}
+
+/// Rewrite the overlay or delta `list` from the failures of `reports`
+/// that the shared list does not name: the list `WCMP_REGENERATE_BASE`
+/// names, or the one the harness compiled in.
+#[cfg(not(target_arch = "wasm32"))]
+fn regenerate_beyond_the_shared_list(list: &str, reports: &[FileReport]) {
+    let base = match std::env::var("WCMP_REGENERATE_BASE") {
+        Ok(base) => std::fs::read_to_string(&base)
+            .unwrap_or_else(|err| panic!("cannot read the shared expectation list {base}: {err}")),
+        Err(_) => EXPECTED_FAILURES.to_owned(),
+    };
+    let beyond =
+        report::beyond(reports, &base).unwrap_or_else(|err| panic!("the shared list: {err}"));
+    regenerate_expectations(list, &beyond);
 }
 
 /// The directives whose block only a frame below the blocked thread
@@ -1694,6 +1767,29 @@ mod tests {
             [1]
         );
         assert_eq!(lines(&lists.applying(SuspendProviderKind::None)), [1, 3]);
+    }
+
+    #[wcmp_macros::test]
+    async fn it_applies_the_wasmi_delta_on_wasmi_alone() {
+        let lists = Lists::parse(SHARED, "", &overlay(3))
+            .and_then(|lists| lists.with_wasmi("cm/x.wast:4 substrate unsupported feature: gc\n"))
+            .expect("parses");
+        let provider = SuspendProviderKind::HostSuspension;
+        assert_eq!(lines(&lists.applying_on("wasmi", provider)), [1, 4]);
+        assert_eq!(lines(&lists.applying_on("wasmtime", provider)), [1]);
+        assert_eq!(
+            lines(&lists.applying_on("wasmi", SuspendProviderKind::None)),
+            [1, 3, 4]
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_rejects_a_wasmi_line_the_shared_list_already_names() {
+        let err = Lists::parse(SHARED, "", "")
+            .and_then(|lists| lists.with_wasmi(SHARED))
+            .err()
+            .expect("rejected");
+        assert!(err.starts_with("expected-failures.wasmi.txt:"), "{err}");
     }
 
     #[wcmp_macros::test]

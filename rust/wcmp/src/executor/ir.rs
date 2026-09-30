@@ -100,8 +100,9 @@ pub struct ExecutorIr {
     pub num_runtime_tables: usize,
     /// The module that reads a start function out of a table and
     /// tells its type, compiled once for the component when it
-    /// declares a `thread.new-indirect`, and `None` otherwise. Each
-    /// extracted table gets an instance of it.
+    /// declares a `thread.new-indirect` and the backend declares `gc`,
+    /// and `None` otherwise. Each extracted table gets an instance of
+    /// it, or, with none, the host reads the table.
     pub thread_start_probe: Option<Shared<RuntimeModule>>,
     /// The number of component instances the component contains,
     /// counting nested components. Each carries a `may_leave` flags

@@ -639,9 +639,9 @@ async fn run_plan<T: 'static>(
                         "ExtractTable directive resolved to a non-table item",
                     ));
                 };
-                let probe = ir.thread_start_probe.as_ref().ok_or_else(|| {
-                    internal("ExtractTable directive in a component with no thread start probe")
-                })?;
+                // No probe where the backend lacks `gc`: the host
+                // reads the table.
+                let probe = ir.thread_start_probe.as_deref();
                 let start_table =
                     ThreadStartTable::new(store.internal().runtime_mut(), probe, table)
                         .await

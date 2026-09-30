@@ -5,9 +5,10 @@
 #   <scenario> <subject> <stage> "<reason>"
 #
 # The subject is `wasmtime`, the Wasmtime run, or the polyfill in the
-# browser (`web`) or natively (`native`). The reason is the text that
-# says why the subject stopped there, for a person to read. A run is held
-# to the stage alone. A pass has no reason.
+# browser (`web`), or natively over the Wasmtime backend (`native`) or
+# the Wasmi backend (`wasmi`). The reason is the text that says why the
+# subject stopped there, for a person to read. A run is held to the
+# stage alone. A pass has no reason.
 #
 # The stages, in the order a run meets them:
 #
@@ -31,42 +32,56 @@
 async-sleep wasmtime pass
 async-sleep web pass
 async-sleep native pass
+async-sleep wasmi parse "component sleeper: unsupported component feature: gc"
 classes-and-arrays wasmtime pass
 classes-and-arrays web pass
 classes-and-arrays native pass
+classes-and-arrays wasmi parse "component shapes: unsupported component feature: gc"
 console-output wasmtime pass
 console-output web pass
 console-output native pass
+console-output wasmi parse "component printer: unsupported component feature: gc"
 custom-world wasmtime pass
 custom-world web pass
 custom-world native pass
+custom-world wasmi parse "component relay: unsupported component feature: gc"
 exceptions wasmtime pass
 exceptions web pass
 exceptions native pass
+exceptions wasmi parse "component halver: unsupported component feature: gc"
 rust-imports-zena-composition wasmtime pass
 rust-imports-zena-composition web pass
 rust-imports-zena-composition native pass
+rust-imports-zena-composition wasmi parse "component importer: unsupported component feature: gc"
 rust-imports-zena-run-time wasmtime pass
 rust-imports-zena-run-time web pass
 rust-imports-zena-run-time native pass
+rust-imports-zena-run-time wasmi parse "component exporter: unsupported component feature: gc"
 rust-link-run-time wasmtime pass
 rust-link-run-time web pass
 rust-link-run-time native pass
+rust-link-run-time wasmi pass
 scalar-export wasmtime pass
 scalar-export web pass
 scalar-export native pass
+scalar-export wasmi pass
 string-roundtrip wasmtime pass
 string-roundtrip web pass
 string-roundtrip native pass
+string-roundtrip wasmi parse "component strings: unsupported component feature: gc"
 zena-imports-rust-composition wasmtime pass
 zena-imports-rust-composition web pass
 zena-imports-rust-composition native pass
+zena-imports-rust-composition wasmi parse "component importer: unsupported component feature: gc"
 zena-imports-rust-run-time wasmtime pass
 zena-imports-rust-run-time web pass
 zena-imports-rust-run-time native pass
+zena-imports-rust-run-time wasmi parse "component importer: unsupported component feature: gc"
 zena-link-composition wasmtime pass
 zena-link-composition web pass
 zena-link-composition native pass
+zena-link-composition wasmi parse "component importer: unsupported component feature: gc"
 zena-link-run-time wasmtime pass
 zena-link-run-time web pass
 zena-link-run-time native pass
+zena-link-run-time wasmi parse "component exporter: unsupported component feature: gc"

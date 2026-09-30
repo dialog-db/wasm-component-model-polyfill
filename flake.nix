@@ -1140,27 +1140,49 @@
         # replays the tests against the local workspace via
         # `--workspace-remap`. Anything the operator types after the leaf
         # (`tests native debug --no-fail-fast`) reaches nextest.
-        # The conformance progress summary: replays only the summary test
-        # from the native debug archive with its output shown, and writes
-        # the JSON copy under the cargo target directory.
         # The conformance progress summary on one target: replays only the
-        # summary test from the archive with its output shown. The native
-        # run also writes the JSON copy under the cargo target directory.
-        conformanceSummaryFor = package: ''
-          echo "== conformance progress: ${package}"
-          archive=$(nix build --no-link --print-out-paths .#${package})
-          summary="''${CARGO_TARGET_DIR:-target}/conformance/summary.json"
-          mkdir -p "$(dirname "$summary")" "''${XDG_CACHE_HOME:-$HOME/.cache}/wcmp-tests/${package}-summary"
-          WCMP_CONFORMANCE_SUMMARY="$summary" cargo nextest run \
-            --workspace-remap ./ \
-            --archive-file "$archive/${package}.tar.zst" \
-            --extract-to "''${XDG_CACHE_HOME:-$HOME/.cache}/wcmp-tests/${package}-summary" \
-            --extract-overwrite \
-            --no-capture \
-            -E 'test(=it_reports_conformance_progress)'
-          rm -rf "''${XDG_CACHE_HOME:-$HOME/.cache}/wcmp-tests/${package}-summary"
-        '';
-        conformanceSummaryCommand = conformanceSummaryFor "tests-native-debug";
+        # summary test from the archive with its output shown. A native
+        # run also writes the JSON copy under the cargo target directory,
+        # `summary.json` on Wasmtime and `summary.wasmi.json` on Wasmi.
+        # `backend` names the native backend the run hands its engines
+        # (`WCMP_TEST_BACKEND`); the archive is the same for both.
+        conformanceSummaryFor =
+          {
+            package,
+            backend ? null,
+          }:
+          let
+            label = if backend == null then package else "${package} on ${backend}";
+            scratch = if backend == null then "${package}-summary" else "${package}-${backend}-summary";
+            file = if backend == null then "summary.json" else "summary.${backend}.json";
+          in
+          ''
+            echo "== conformance progress: ${label}"
+            archive=$(nix build --no-link --print-out-paths .#${package})
+            summary="''${CARGO_TARGET_DIR:-target}/conformance/${file}"
+            mkdir -p "$(dirname "$summary")" "''${XDG_CACHE_HOME:-$HOME/.cache}/wcmp-tests/${scratch}"
+          ''
+          + pkgs.lib.optionalString (backend != null) ''
+            export WCMP_TEST_BACKEND=${backend}
+          ''
+          + ''
+            WCMP_CONFORMANCE_SUMMARY="$summary" cargo nextest run \
+              --workspace-remap ./ \
+              --archive-file "$archive/${package}.tar.zst" \
+              --extract-to "''${XDG_CACHE_HOME:-$HOME/.cache}/wcmp-tests/${scratch}" \
+              --extract-overwrite \
+              --no-capture \
+              -E 'test(=it_reports_conformance_progress)'
+            rm -rf "''${XDG_CACHE_HOME:-$HOME/.cache}/wcmp-tests/${scratch}"
+          ''
+          + pkgs.lib.optionalString (backend != null) ''
+            unset WCMP_TEST_BACKEND
+          '';
+        conformanceSummaryCommand = conformanceSummaryFor { package = "tests-native-debug"; };
+        conformanceSummaryWasmiCommand = conformanceSummaryFor {
+          package = "tests-native-debug";
+          backend = "wasmi";
+        };
 
         # `tests regenerate`: rewrites `tests/corpus/expected-failures.txt`
         # from a native run, in place of the hand loop that blanked the
@@ -1175,10 +1197,12 @@
         # it. A second run, with the suspend provider turned off, then
         # rewrites `expected-failures.no-provider.txt` the same way from
         # the failures the regenerated shared list does not name
-        # (`WCMP_REGENERATE_BASE` names that list). The runs always write
-        # copies under the lane workspace and the diffs are printed;
-        # `--dry-run` stops there, which is also how to read the live
-        # reason of a directive a list already names.
+        # (`WCMP_REGENERATE_BASE` names that list). A third run, on the
+        # Wasmi backend, rewrites `expected-failures.wasmi.txt` from the
+        # failures of that backend the shared list does not name. The runs
+        # always write copies under the lane workspace and the diffs are
+        # printed; `--dry-run` stops there, which is also how to read the
+        # live reason of a directive a list already names.
         regenerateExpectationsCommand = ''
           corpus="$(git rev-parse --show-toplevel)"/rust/wcmp/tests/corpus
           dry=""
@@ -1198,8 +1222,10 @@
           trap 'rm -rf "$workspace"' EXIT
           shared="$workspace/expected-failures.txt"
           overlay="$workspace/expected-failures.no-provider.txt"
+          wasmi="$workspace/expected-failures.wasmi.txt"
           cp "$corpus/expected-failures.txt" "$shared"
           cp "$corpus/expected-failures.no-provider.txt" "$overlay"
+          cp "$corpus/expected-failures.wasmi.txt" "$wasmi"
           # One progress test per run: the overlay's run reads the shared
           # list the first run wrote, so the two cannot run side by side.
           regenerate() {
@@ -1216,7 +1242,10 @@
             regenerate it_reports_conformance_progress
           WCMP_REGENERATE_EXPECTATIONS="$overlay" WCMP_REGENERATE_BASE="$shared" \
             regenerate it_reports_conformance_progress_without_a_provider
-          for name in expected-failures.txt expected-failures.no-provider.txt; do
+          WCMP_TEST_BACKEND=wasmi WCMP_REGENERATE_EXPECTATIONS="$wasmi" \
+            WCMP_REGENERATE_BASE="$shared" regenerate it_reports_conformance_progress
+          for name in expected-failures.txt expected-failures.no-provider.txt \
+            expected-failures.wasmi.txt; do
             echo
             if diff -u "$corpus/$name" "$workspace/$name"; then
               echo "tests regenerate: $name is current, nothing to write"
@@ -1285,13 +1314,14 @@
         '';
 
         # `tests zena` and `tests zena regenerate`: the Zena scenarios on
-        # all three subjects, from the debug archives. One target cannot
+        # every subject, from the debug archives. One target cannot
         # run the other's subject, so each lane alone holds only the
         # Wasmtime line and its own polyfill line to the record. This
         # command runs the browser's scenario run first and keeps its
         # output, whose report lines the native `zena` test then reads
-        # (`WCMP_ZENA_WEB_RUN`), adds the Wasmtime and native reports to,
-        # and holds to every line of the record. It writes the
+        # (`WCMP_ZENA_WEB_RUN`), adds the Wasmtime report and the reports
+        # of the polyfill over the Wasmtime and the Wasmi backends to, and
+        # holds to every line of the record. It writes the
         # compatibility report of the run (`WCMP_ZENA_REPORT`), which is
         # printed last, after a failure's differences too. `regenerate`
         # has the test write the record of the run
@@ -1345,7 +1375,7 @@
           fi
           rm -rf "$workspace/archive"
           mkdir -p "$workspace/archive"
-          echo "== the Wasmtime run and the native subject (${system}, debug)"
+          echo "== the Wasmtime run and the native subjects over Wasmtime and Wasmi (${system}, debug)"
           export WCMP_ZENA_WEB_RUN="$workspace/web-run.txt"
           export WCMP_ZENA_REPORT="$workspace/report.txt"
           if [ -n "$regenerate" ]; then
@@ -1353,7 +1383,7 @@
           fi
           status=0
           replay "$native/tests-native-debug.tar.zst" \
-            it_holds_all_three_subjects_to_the_record_and_prints_the_report || status=$?
+            it_holds_every_subject_to_the_record_and_prints_the_report || status=$?
           if [ -s "$WCMP_ZENA_REPORT" ]; then
             echo
             cat "$WCMP_ZENA_REPORT"
@@ -1387,11 +1417,21 @@
             browser ? false,
             # A filterset that narrows the profile's tests further.
             filter ? null,
+            # The native backend the polyfill's tests hand their engines
+            # (`WCMP_TEST_BACKEND`), when it is not Wasmtime. A native
+            # archive runs on either backend, so a lane of another
+            # backend replays the build of the Wasmtime lane.
+            backend ? null,
           }:
           let
-            # Lanes that replay one archive under different profiles get
-            # workspaces of their own.
-            lane = if nextestProfile == "default" then package else "${package}-${nextestProfile}";
+            # Lanes that replay one archive under different profiles or
+            # on different backends get workspaces of their own.
+            lane =
+              pkgs.lib.concatStringsSep "-" (
+                [ package ]
+                ++ pkgs.lib.optional (backend != null) backend
+                ++ pkgs.lib.optional (nextestProfile != "default") nextestProfile
+              );
           in
           {
             inherit description;
@@ -1400,6 +1440,9 @@
             ''
             + testWorkspace lane
             + pkgs.lib.optionalString browser (browserPool + browserTestThreads)
+            + pkgs.lib.optionalString (backend != null) ''
+              export WCMP_TEST_BACKEND=${backend}
+            ''
             + ''
               cargo nextest run \
                 --profile ${nextestProfile} \
@@ -1414,7 +1457,12 @@
             + ''
                 "$@"
             ''
-            + pkgs.lib.optionalString summary conformanceSummaryCommand;
+            # The summary always replays the native debug archive, on the
+            # lane's backend.
+            + pkgs.lib.optionalString summary (conformanceSummaryFor {
+              package = "tests-native-debug";
+              inherit backend;
+            });
           };
 
         commands = {
@@ -1447,12 +1495,21 @@
             description = "Measure the polyfill on one target with the benchmark suite";
             subcommands = {
               native = {
-                description = "Run the benchmark suite on ${system}";
+                description = "Run the benchmark suite on ${system} over the Wasmtime backend";
                 command = ''
                   report="''${CARGO_TARGET_DIR:-target}/bench/native.json"
                   mkdir -p "$(dirname "$report")"
                   binary=$(nix build --no-link --print-out-paths .#bench-native)
                   WCMP_BENCH_REPORT="$report" "$binary"/bin/wcmp-bench "$@"
+                '';
+              };
+              wasmi = {
+                description = "Run the benchmark suite on ${system} over the Wasmi backend, with the binary `bench native` builds";
+                command = ''
+                  report="''${CARGO_TARGET_DIR:-target}/bench/wasmi.json"
+                  mkdir -p "$(dirname "$report")"
+                  binary=$(nix build --no-link --print-out-paths .#bench-native)
+                  WCMP_BENCH_BACKEND=wasmi WCMP_BENCH_REPORT="$report" "$binary"/bin/wcmp-bench "$@"
                 '';
               };
               web = {
@@ -1489,6 +1546,17 @@
                     package = "tests-native-debug";
                     nextestProfile = "no-provider";
                   };
+                  # The polyfill's tests on the Wasmi backend, from the
+                  # archive the debug lane builds. The runtime layer's own
+                  # crates choose no backend at run time, so only the
+                  # polyfill's tests run again.
+                  wasmi = menuTestCommand {
+                    description = "The polyfill's unit and integration tests on the Wasmi backend, from the debug lane's build (${system}, debug)";
+                    package = "tests-native-debug";
+                    backend = "wasmi";
+                    filter = "package(wcmp)";
+                    summary = true;
+                  };
                 };
               };
               web = {
@@ -1514,7 +1582,10 @@
               };
               conformance = {
                 description = "Conformance progress per corpus on both targets (debug)";
-                command = conformanceSummaryCommand + conformanceSummaryFor "tests-web-debug";
+                command =
+                  conformanceSummaryCommand
+                  + conformanceSummaryWasmiCommand
+                  + conformanceSummaryFor { package = "tests-web-debug"; };
               };
               # The faithfulness suite of the runtime layer: the pinned
               # specification test suite on one backend, through the
@@ -1545,7 +1616,7 @@
                 };
               };
               regenerate = {
-                description = "Rewrite the shared expected-failure list from the native run with the suspend provider and the no-provider overlay from the native run without it (`--dry-run` only prints the diffs)";
+                description = "Rewrite the shared expected-failure list from the native run with the suspend provider, the no-provider overlay from the native run without it, and the Wasmi delta from the run on the Wasmi backend (`--dry-run` only prints the diffs)";
                 command = regenerateExpectationsCommand;
               };
               # The end-to-end smoke test (`rust/wcmp-smoke`): one host
@@ -1580,20 +1651,22 @@
                 };
               };
               zena = {
-                description = "The Zena scenarios on all three subjects, held to every line of tests/zena/record.txt, then the compatibility report: the pin, each scenario with the stage of Browser, Native, and Wasmtime and the reason of each that stopped before pass, and pass counts (`tests zena regenerate [--dry-run]` writes the record again from all three, the browser included, or only prints the difference)";
+                description = "The Zena scenarios on every subject, held to every line of tests/zena/record.txt, then the compatibility report: the pin, each scenario with the stage of Browser, Native (the polyfill over Wasmtime), Wasmi, and Wasmtime and the reason of each that stopped before pass, and pass counts (`tests zena regenerate [--dry-run]` writes the record again from every subject, the browser included, or only prints the difference)";
                 command = zenaCommand;
               };
               # The conformance corpus runs in four states: each target with
               # the suspend provider allowed (the debug and release lanes)
-              # and with it turned off (the `no-provider` lanes). The Zena
-              # lane is the one run that holds the browser's and the native
-              # line of the record together. The faithfulness lane runs the
-              # specification test suite on each backend of the runtime
-              # layer. Each lane reports its wall-clock time, build included.
+              # and with it turned off (the `no-provider` lanes). The Wasmi
+              # lane replays the native debug archive on the Wasmi backend,
+              # so it adds no build. The Zena lane is the one run that holds
+              # the browser's line and both native lines of the record
+              # together. The faithfulness lane runs the specification test
+              # suite on each backend of the runtime layer. Each lane reports
+              # its wall-clock time, build included.
               # Arguments after the leaf reach every nextest lane, and not
               # the Zena lane, which takes none.
               all = {
-                description = "Every lane, each timed: both targets in debug and release, the conformance corpus on both targets with the suspend provider off, so the corpus runs in all four states, the faithfulness suite on each backend of the runtime layer, and the Zena scenarios on all three subjects (grab a coffee)";
+                description = "Every lane, each timed: both targets in debug and release, the conformance corpus on both targets with the suspend provider off, so the corpus runs in all four states, the polyfill's tests and the corpus on the Wasmi backend, the faithfulness suite on each backend of the runtime layer, and the Zena scenarios on every subject (grab a coffee)";
                 command = ''
                   status=0
                   lane() {
@@ -1609,7 +1682,7 @@
                     fi
                   }
                   for suite in "native debug" "native release" "native no-provider" \
-                    "web debug" "web release" "web no-provider" "faithfulness wasmi" \
+                    "native wasmi" "web debug" "web release" "web no-provider" "faithfulness wasmi" \
                     "faithfulness wasmtime" "faithfulness web"; do
                     lane "$suite" "$@"
                   done

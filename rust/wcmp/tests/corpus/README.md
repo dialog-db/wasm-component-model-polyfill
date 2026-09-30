@@ -163,6 +163,38 @@ produce and must not invent; the delta holds only substrate
 differences, eleven lines today, and each one is written by hand from
 the failure a `tests web debug` run prints.
 
+`expected-failures.wasmi.txt` is the Wasmi delta: the harness applies it
+on top of the shared list in a native run whose engines take the Wasmi
+backend, which `WCMP_TEST_BACKEND=wasmi` asks for. The `tests native
+wasmi` lane sets it and replays the archive the native debug lane built,
+so the Wasmi lane adds no build. Like the web delta, it holds only
+differences of the backend (Wasmi against Wasmtime), and no line may name
+a directive the shared list names. A component that needs a capability
+Wasmi does not declare, such as exception handling or GC, fails at
+`Component::new` with `Unsupported` and the name of the capability.
+`tests regenerate` rewrites the delta from a third progress run, on
+Wasmi, from the failures the regenerated shared list does not name.
+
+Two files of Wasmtime's suite carry `;;! hogs_memory = true`, and both
+take several GiB of memory on Wasmi. `wasmtime/memory64.wast` declares a
+64-bit memory of 65538 pages. `wasmtime/big-strings.wast` grows the
+memory of each fresh instance of `$A` by 65530 pages, its `realloc` grows
+the callee's memory toward the length of a string of up to 3 GiB, and the
+polyfill's transcoder reads the whole source string into the host before
+it transcodes. Wasmtime reserves a memory's address space and commits only
+the pages a guest touches. Wasmi backs a memory with a `Vec` and
+zero-fills it as it grows (`wasmi_core` 2.0.0,
+`crates/core/src/memory/buffer.rs:143`), so it holds every page. Measured
+alone in the debug build, `memory64.wast` peaks at 22 MiB on Wasmtime and
+3.6 GiB on Wasmi, and `big-strings.wast` at 4.1 GiB on Wasmtime (the
+transcoder's copies) and 9.2 GiB on Wasmi. The progress test, which runs
+every file in one process, peaks with `big-strings.wast`. Both files pass
+on Wasmi. Wasmtime's own runner skips such files only under its pooling
+allocator (`crates/test-util/src/wast.rs` at `cb091c33cece`). Here they
+stay in every lane, and `.config/nextest.toml` puts the two files and the
+progress test in a test group that runs one at a time, so no two of them
+hold such memories together.
+
 The shared list records the best case: the failures under a suspend
 provider. `expected-failures.no-provider.txt` is the overlay of the
 directives that fail beyond it without one. The harness applies it
@@ -253,11 +285,13 @@ pass without the relaxation.
 The test `it_reports_conformance_progress` runs every file in one
 process and prints a summary per corpus directory: directives, passes,
 the pass percentage, and the expected failures per category. The
-`tests conformance` menu command runs only that test on both targets.
-The native run prints its own table and the browser's table projected
-from `expected-failures.web.txt` (exact while `tests web debug`
-passes, since the browser's test runner shows no output for a passing
-test), and writes both as JSON to `$CARGO_TARGET_DIR/conformance/`.
+`tests conformance` menu command runs only that test on both targets,
+and natively a second time on Wasmi. The native run prints its own
+table and the browser's table projected from `expected-failures.web.txt`
+(exact while `tests web debug` passes, since the browser's test runner
+shows no output for a passing test), and writes both as JSON to
+`$CARGO_TARGET_DIR/conformance/`. The Wasmi run prints its own table
+and writes it as `summary.wasmi.json` beside them.
 
 ## Fixtures
 
@@ -319,6 +353,30 @@ before the bounds check Wasmtime reaches, and three in
 `wasmtime/memory64.wast` need allocations past 4 GiB that 32-bit code
 in the browser cannot address. No line of the delta is a difference
 of the polyfill.
+
+On the Wasmi backend the 60 lines of `expected-failures.wasmi.txt` fail
+beyond the shared list. Each `substrate` line is a component that needs
+a capability Wasmi does not declare, and `Component::new` refuses it
+with `Unsupported` and the capability's name: exception handling in
+`cm/linking/tags.wast`, `wasmtime/exceptions.wast`, `wasmtime/tags.wast`,
+`wasmtime/modules.wast`, and `wasmtime/async/exceptions.wast`, GC in
+`cm/binary/binary.wast` and the four `wasmtime/alias-region-*` files, and
+typed function references in one module of `wasmtime/exceptions.wast`.
+Three are `assert_invalid` directives that the validator refuses for the
+missing proposal before it reaches the error the directive expects: two
+in `cm/linking/tags.wast`, and one shared memory in
+`cm/validation/instantiation.wast`, which needs threads. Each `cascade`
+line follows one of them. The summary of the `tests all` run of
+2026-09-30 on Wasmi, where the native run passed 2409 of 2440:
+
+| Corpus           | Directives | Passed | Pass % | Expected failures by category                                          |
+| ---------------- | ---------- | ------ | ------ | ---------------------------------------------------------------------- |
+| `cm`             | 1126       | 1092   | 97.0   | substrate 8, validation 20, cascade 6                                  |
+| `cm/async`       | 393        | 393    | 100.0  | none                                                                   |
+| `fixtures`       | 65         | 59     | 90.8   | deferred-feature 2, cascade 4                                          |
+| `wasmtime`       | 469        | 433    | 92.3   | substrate 13, trap-message 1, cascade 22                               |
+| `wasmtime/async` | 387        | 372    | 96.1   | substrate 3, cascade 12                                                |
+| total            | 2440       | 2349   | 96.3   | deferred-feature 2, substrate 24, validation 20, trap-message 1, cascade 44 |
 
 Without a provider, the 56 lines of `expected-failures.no-provider.txt`
 fail beyond the shared list, 32 in `cm/async` and 24 in
