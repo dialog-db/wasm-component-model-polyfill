@@ -19,11 +19,18 @@ use wasmtime_environ::wasmparser::WasmFeatures;
 /// projections in extern names have no setter: Wasmtime rejects them
 /// too.
 ///
+/// The configuration selects no core Wasm feature above Wasm 2.0 that
+/// a backend can declare, such as GC or exception handling. Those
+/// follow the capabilities of the backend the engine was made with: a
+/// component whose core code needs one the backend lacks fails with
+/// [`Error::Unsupported`] that names it.
+///
 /// The suspend provider is allowed by default. A host turns it off
 /// with [`suspend_provider`](Self::suspend_provider), a setting
 /// Wasmtime has no counterpart to.
 ///
 /// [`Engine`]: crate::Engine
+/// [`Error::Unsupported`]: crate::Error::Unsupported
 #[derive(Clone, Debug)]
 pub struct EngineConfig {
     features: WasmFeatures,

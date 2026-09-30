@@ -66,7 +66,9 @@ pub trait EngineInternal {
 
 /// The crate-internal face of [`EngineConfig`](crate::EngineConfig).
 pub trait EngineConfigInternal {
-    /// The validator features this configuration selects.
+    /// The validator features this configuration selects. The translator
+    /// replaces each core feature a backend can declare with what the
+    /// backend declares.
     fn wasm_features(&self) -> WasmFeatures;
 
     /// Whether the host lets the engine select a suspend provider.

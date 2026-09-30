@@ -167,9 +167,12 @@ pub enum Error {
     ErrorContext(#[source] ErrorContextCause),
 
     /// The component uses a Component Model feature the polyfill
-    /// does not implement yet. The feature is named so a caller can
-    /// tell "not built yet" from "broken". Reaching this variant is
-    /// never a bug in the caller's component.
+    /// does not implement yet, or a Wasm feature the backend does not
+    /// declare. The feature is named so a caller can tell "not built
+    /// yet" from "broken". A Wasm feature is named as the backend's
+    /// capability lexicon names it, for example `gc` or
+    /// `multi_memory`. Reaching this variant is never a bug in the
+    /// caller's component.
     #[error("unsupported component feature: {feature}")]
     Unsupported {
         /// A short description of the unsupported feature, for

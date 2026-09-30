@@ -44,6 +44,7 @@ mod thread_builtins;
 mod thread_start_table;
 mod thread_yield;
 mod translate;
+mod translator_features;
 
 pub mod intrinsics;
 pub mod ir;

@@ -24,14 +24,14 @@ use wasmtime_environ::component::{
     TypeResourceTable, TypeResourceTableIndex, TypeStreamTableIndex, UnsafeIntrinsic,
 };
 use wasmtime_environ::prelude::Error as TranslatorError;
-use wasmtime_environ::wasmparser::Validator;
+use wasmtime_environ::wasmparser::{Validator, WasmFeatures};
 use wasmtime_environ::{
     EntityIndex as EnvironEntityIndex, ScopeVec, Tunables, WasmError, WasmHeapType, WasmValType,
 };
 
 use crate::abi::layout::FlatType;
 use crate::abi::signature::Signature;
-use crate::internal::{EngineConfigInternal, ErrorInternal, ModuleInternal};
+use crate::internal::{EngineConfigInternal, EngineInternal, ErrorInternal, ModuleInternal};
 
 use crate::component::{ComponentExport, ComponentImport, ExternType, ExternalName, TypeProjector};
 use crate::concurrency::{EndKind, LowerKind};
@@ -39,6 +39,7 @@ use crate::engine::Engine;
 use crate::error::{Error, Result};
 
 use crate::module::Module;
+use crate::runtime_layer::Capabilities;
 use crate::types::{PrimitiveType, ValueType};
 
 use super::ir::{
@@ -48,6 +49,9 @@ use super::ir::{
     ResourceTableSpec, StringEncoding, TrampolineSpec, TranscodeOp,
 };
 use super::thread_start_table::THREAD_START_PROBE;
+use super::translator_features::{
+    missing_capability, require_single_memories, translator_features,
+};
 use super::{compile_module, compile_modules};
 
 /// The slot the [`TrampolineSpec`] of each trampoline of a component
@@ -75,12 +79,25 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
     // and provides the enter- and exit-sync-call intrinsics an adapter
     // imports under that setting.
     let tunables = Tunables::default_u32();
-    let mut validator = Validator::new_with_features(engine.config().wasm_features());
+    // The features follow the capabilities of the backend, so the
+    // translator accepts only core code the backend can compile, and
+    // its adapters carry an exception barrier only where the backend
+    // declares exception handling.
+    let capabilities = engine.inner().capabilities();
+    let features = translator_features(engine.config().wasm_features(), capabilities);
+    let mut validator = Validator::new_with_features(features);
     let mut types = ComponentTypesBuilder::new(&validator);
 
     let (translation, modules) = Translator::new(&tunables, &mut validator, &mut types, &scope)
         .translate(bytes)
-        .map_err(translation_error)?;
+        .map_err(|err| refusal(err, bytes, features, capabilities))?;
+    // The translator ran with multi-memory on for its adapters. A
+    // module with two memories, over a backend without them, fails
+    // here, before any module compiles.
+    require_single_memories(
+        capabilities,
+        modules.values().map(|module| module.module.memories.len()),
+    )?;
 
     // The builder knows how many resource, stream, future, and
     // error-context tables the component has; the finished types
@@ -1380,6 +1397,23 @@ const GATE_REFUSALS: &[(&str, Option<&str>)] = &[
     ("requires the component model threading feature", None),
     ("requires the component model error-context feature", None),
 ];
+
+/// Map a refusal of the translator, which validated `bytes` with
+/// `features` over a backend that declares `capabilities`. Where the
+/// component would validate with a capability the backend lacks, the
+/// refusal is [`Error::Unsupported`] with the name of that capability;
+/// otherwise it is the translator's own failure.
+fn refusal(
+    err: TranslatorError,
+    bytes: &[u8],
+    features: WasmFeatures,
+    capabilities: Capabilities,
+) -> Error {
+    match missing_capability(bytes, features, capabilities) {
+        Some(capability) => Error::unsupported(capability.name()),
+        None => translation_error(err),
+    }
+}
 
 /// Map a translator failure onto the polyfill's error model. A
 /// validation failure keeps the byte offset the translator reports;
