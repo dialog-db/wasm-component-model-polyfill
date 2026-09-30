@@ -3,8 +3,9 @@
 //! synchronous compile, linking by the objects of the browser, the externs
 //! the browser makes, host functions through their wrapper modules, how
 //! memory access crosses into JavaScript, what host suspension does
-//! inside a host function, and what a host function finds where it holds
-//! its store by a global after the host forgot a future of the store.
+//! inside a host function, what a resumable call that never suspends
+//! costs, and what a host function finds where it holds its store by a
+//! global after the host forgot a future of the store.
 
 #![cfg(target_arch = "wasm32")]
 
@@ -2016,4 +2017,206 @@ async fn it_refuses_the_stack_of_a_forgotten_resumption_its_store_by_a_global() 
 
     let reached = reached().await;
     assert_refused(reached, &unpark());
+}
+
+/// Runs `body`, and counts the calls of `Promise.prototype.then`
+/// meanwhile: the hook through which the backend learns that the promise
+/// of a resumable call settled, and through which it frees a store's cell
+/// later.
+fn promise_hooks<R>(body: impl FnOnce() -> R) -> (R, u32) {
+    let prototype = property(&property(&js_sys::global(), "Promise"), "prototype");
+    let then = property(&prototype, "then");
+    let count = Rc::new(Cell::new(0));
+    let apply = Closure::<dyn Fn(JsValue, JsValue, JsValue) -> Result<JsValue, JsValue>>::new({
+        let count = count.clone();
+        move |target: JsValue, this: JsValue, args: JsValue| {
+            count.set(count.get() + 1);
+            Reflect::apply(
+                target.unchecked_ref::<Function>(),
+                &this,
+                args.unchecked_ref(),
+            )
+        }
+    });
+    Reflect::set(
+        &prototype,
+        &"then".into(),
+        &proxy(&then, "apply", apply.as_ref()),
+    )
+    .expect("the prototype is writable");
+    let result = body();
+    Reflect::set(&prototype, &"then".into(), &then).expect("the prototype is writable");
+    (result, count.get())
+}
+
+#[wcmp_macros::test]
+async fn it_ends_a_resumable_call_that_returns_at_once_without_a_promise_hook() {
+    let engine = engine();
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    let wait = Func::new_suspending(
+        &mut store,
+        FuncType::new([ValType::I32], [ValType::I32]),
+        |_, _, _| Ok(Poll::Pending),
+    )
+    .expect("the store makes a suspending host function");
+    let module = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (import "host" "wait" (func $wait (param i32) (result i32)))
+              (func (export "pair") (param i32) (result i32 i64)
+                local.get 0
+                i32.const 1
+                i32.add
+                local.get 0
+                i64.extend_i32_s
+                i64.const 2
+                i64.mul)
+              (func (export "halve") (param f64) (result f64)
+                local.get 0
+                f64.const 2
+                f64.div)
+              (func (export "wait") (param i32) (result i32)
+                local.get 0
+                call $wait))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    let instance = Instance::instantiate(&mut store, &module, &[wait.into()])
+        .await
+        .expect("the module instantiates");
+    let pair = instance
+        .get_export(&mut store, "pair")
+        .expect("the instance belongs to the store")
+        .and_then(Extern::into_func)
+        .expect("the instance exports `pair`");
+    let halve = instance
+        .get_export(&mut store, "halve")
+        .expect("the instance belongs to the store")
+        .and_then(Extern::into_func)
+        .expect("the instance exports `halve`");
+    let run = instance
+        .get_export(&mut store, "wait")
+        .expect("the instance belongs to the store")
+        .and_then(Extern::into_func)
+        .expect("the instance exports `wait`");
+
+    // Each call goes twice, so the second finds its entrance made.
+    for x in [20, 5] {
+        let mut results = [Val::I32(0), Val::I64(0)];
+        let (outcome, hooks) = promise_hooks(|| {
+            poll_once(pair.call_resumable(&mut store, &[Val::I32(x)], &mut results))
+        });
+        assert!(
+            matches!(outcome, Poll::Ready(Ok(ResumableCall::Finished))),
+            "a call that returns in its first stretch ends on the first poll: {outcome:?}"
+        );
+        assert_eq!(hooks, 0, "a call that never suspends hooks no promise");
+        assert_eq!(results[0].i32(), Some(x + 1));
+        assert_eq!(results[1].i64(), Some(i64::from(x) * 2));
+
+        // The two steps of a resumable call, as the polyfill makes it, and
+        // a function whose float crosses through a carrier.
+        let mut results = [Val::F64(0)];
+        let (outcome, hooks) = promise_hooks(|| {
+            let mut resumption = halve
+                .start_resumable(&mut store, &[Val::F64(9.0f64.to_bits())])
+                .expect("the call starts");
+            poll_once(resumption.stop(&mut store, &mut results))
+        });
+        assert!(
+            matches!(outcome, Poll::Ready(Ok(ResumableCall::Finished))),
+            "{outcome:?}"
+        );
+        assert_eq!(hooks, 0, "a call through a carrier hooks no promise either");
+        assert!(matches!(results[0], Val::F64(bits) if f64::from_bits(bits) == 4.5));
+    }
+
+    // A call that suspends hooks its promise, for the end of a later
+    // stretch.
+    let mut results = [Val::I32(0)];
+    let (outcome, hooks) =
+        promise_hooks(|| poll_once(run.call_resumable(&mut store, &[Val::I32(1)], &mut results)));
+    assert!(
+        matches!(outcome, Poll::Ready(Ok(ResumableCall::Suspended(_)))),
+        "{outcome:?}"
+    );
+    assert!(hooks > 0, "a call that suspends hooks its promise");
+}
+
+/// What the store of the test of a call nested in the first stretch of
+/// another holds: the guest function both call, and how the nested call
+/// ended.
+#[derive(Default)]
+struct Nested {
+    run: Option<Func>,
+    inner: Option<bool>,
+}
+
+#[wcmp_macros::test]
+async fn it_traps_a_call_that_traps_after_a_nested_call_of_its_function_returned() {
+    let engine = engine();
+    let mut store = Store::new(&engine, Nested::default()).expect("the engine makes a store");
+    // The nested call goes through the same entrance as the call around
+    // it, and records its own return there, before the outer call traps.
+    let nest = Func::new(
+        &mut store,
+        FuncType::new([], []),
+        |mut caller: Caller<'_, Nested>, _, _| {
+            let run = caller
+                .data()
+                .run
+                .ok_or_else(|| anyhow::anyhow!("the guest function is not set"))?;
+            let mut results = [Val::I32(0)];
+            let polled = poll_once(run.call_resumable(&mut caller, &[Val::I32(0)], &mut results));
+            let finished = matches!(polled, Poll::Ready(Ok(ResumableCall::Finished)));
+            caller.data_mut().inner = Some(finished && results[0].i32() == Some(7));
+            Ok(())
+        },
+    )
+    .expect("the store makes a host function");
+    let module = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (import "host" "nest" (func $nest))
+              (func (export "run") (param i32) (result i32)
+                local.get 0
+                if
+                  call $nest
+                  unreachable
+                end
+                i32.const 7))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    let instance = Instance::instantiate(&mut store, &module, &[nest.into()])
+        .await
+        .expect("the module instantiates");
+    let run = instance
+        .get_export(&mut store, "run")
+        .expect("the instance belongs to the store")
+        .and_then(Extern::into_func)
+        .expect("the instance exports `run`");
+    store.data_mut().run = Some(run);
+
+    let mut results = [Val::I32(0)];
+    let outcome = run
+        .call_resumable(&mut store, &[Val::I32(1)], &mut results)
+        .await;
+    assert!(
+        matches!(outcome, Err(Error::Trap(TrapKind::UnreachableCodeReached))),
+        "the outer call traps, although the nested call returned last: {outcome:?}"
+    );
+    assert_eq!(
+        store.data_mut().inner.take(),
+        Some(true),
+        "the nested call returned 7 in its first stretch"
+    );
 }

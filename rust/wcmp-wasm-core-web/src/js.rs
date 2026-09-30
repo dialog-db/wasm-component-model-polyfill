@@ -19,6 +19,26 @@ pub fn set(target: &JsValue, key: &str, value: &JsValue) -> Result<(), JsValue> 
     Reflect::set(target, &JsValue::from_str(key), value).map(|_| ())
 }
 
+thread_local! {
+    /// The key `value`, made once. A key made from a Rust string crosses
+    /// into JavaScript and decodes its bytes each time, and the host reads
+    /// or writes the value of a global on every call of a guest.
+    static VALUE: JsValue = JsValue::from_str("value");
+}
+
+/// The property `value` of `target`: the value of a global.
+pub fn get_value(target: &JsValue) -> Result<JsValue, JsValue> {
+    VALUE.with(|key| Reflect::get(target, key))
+}
+
+/// Sets the property `value` of `target`, the value of a global, to
+/// `value`.
+pub fn set_value(target: &JsValue, value: &JsValue) -> Result<(), JsValue> {
+    VALUE
+        .with(|key| Reflect::set(target, key, value))
+        .map(|_| ())
+}
+
 /// Calls the method `name` of `target` with `args`.
 pub fn call_method(target: &JsValue, name: &str, args: &[JsValue]) -> Result<JsValue, JsValue> {
     let method = get(target, name)?.dyn_into::<Function>()?;

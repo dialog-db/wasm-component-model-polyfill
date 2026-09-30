@@ -233,7 +233,16 @@
 //! the suspending host function in the frame of its call. The browser
 //! resumes the stack on a microtask, after the code that resumed it
 //! returned, so a resumption is asynchronous. A call that returns or traps
-//! ends when the browser settles the promise of its stack. Any number of
+//! ends when the browser settles the promise of its stack, with one
+//! exception. A call that returns in its first stretch, before it ever
+//! suspends, has ended by the time `WebAssembly.promising` returns, since
+//! it goes through a generated entrance module that records its return and
+//! its results where the host reads them at once. Such a call makes no
+//! JavaScript closure and no handler of a promise, as a plain call makes
+//! none. The entrance imports the guest function with its type, so a
+//! function whose type holds a reference to a concrete type, or does not
+//! link to the type the entrance imports it with, reads its end from its
+//! promise. Any number of
 //! calls can wait at once in one store, each on its own stack, and the host
 //! resumes them in any order. A handle holds no store.
 //!
@@ -275,6 +284,7 @@ mod carrier;
 mod cell;
 mod code;
 mod dispatcher;
+mod entrance;
 mod entry;
 mod errors;
 mod flight;

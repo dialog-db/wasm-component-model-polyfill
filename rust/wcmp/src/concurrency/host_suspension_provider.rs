@@ -52,12 +52,17 @@ type Compiled = Arc<Mutex<HashMap<Vec<u8>, RuntimeModule>>>;
 /// A resumable call ends through a future, because the browser runs a
 /// call's stack on a microtask and delivers its end through a promise.
 /// The future borrows the store, and a host function cannot wait for
-/// it. So a start or a resume made where the store runs no guest code,
-/// in a turn of a driver, becomes the store's flight: the provider
-/// answers [`EntryStatus::Running`], the turn ends, and the driver
-/// awaits the flight through [`fly`](Self::fly) with nothing else in
-/// between. [`poll_stop`](SuspendProvider::poll_stop) then answers
-/// where the thread stopped. A start made from inside a guest call, a
+/// it. So a resume made where the store runs no guest code, in a turn
+/// of a driver, becomes the store's flight: the provider answers
+/// [`EntryStatus::Running`], the turn ends, and the driver awaits the
+/// flight through [`fly`](Self::fly) with nothing else in between.
+/// [`poll_stop`](SuspendProvider::poll_stop) then answers where the
+/// thread stopped. A start made there runs in place up to the thread's
+/// first stop, which a backend sees on the first poll of a call that
+/// suspends or finishes in its first stretch. Only a start whose call
+/// has not stopped by then, one that trapped in the browser, becomes
+/// the store's flight, under way, so that the trap's reason reaches the
+/// scheduler whole. A start made from inside a guest call, a
 /// nested start, becomes the store's flight too, through
 /// [`defer_start`](Self::defer_start), where the thread that makes it
 /// can suspend for it and leave the rest of its built-in as a plan.
@@ -505,6 +510,53 @@ impl HostSuspensionProvider {
         Ok(EntryStatus::Running)
     }
 
+    /// Start `thread` with `start`, called with `arguments`, where the
+    /// store runs no guest code: in place, up to the thread's first stop.
+    ///
+    /// A backend sees a call that suspends or finishes in its first
+    /// stretch stop on the first poll of its wait, the browser's included,
+    /// so such a start answers where the thread stopped at once, and the
+    /// driver's turn goes on. A call that has not stopped there is one
+    /// that trapped in the browser, which learns the reason only once the
+    /// browser settles the call. It becomes the store's flight, under way,
+    /// and the provider answers [`EntryStatus::Running`]: the driver awaits
+    /// the thread's stop, so its end reaches the scheduler whole, the
+    /// trap's reason included.
+    fn start_at_rest<T: 'static>(
+        &self,
+        store: &mut StoreContext<'_, T>,
+        thread: u32,
+        start: RuntimeFunc,
+        arguments: &[RuntimeVal],
+    ) -> Result<EntryStatus> {
+        self.threads().running.push(Running { thread, frames: 0 });
+        let runtime = store.internal().runtime_mut();
+        let mut resumption = match start.start_resumable(&mut *runtime, arguments) {
+            Ok(resumption) => resumption,
+            Err(error) => {
+                let mut threads = self.threads();
+                threads.leave(thread);
+                return threads.stopped(&self.finished, thread, Err(error));
+            }
+        };
+        let mut results: [RuntimeVal; 0] = [];
+        let outcome = at_once(resumption.stop(&mut *runtime, &mut results));
+        let mut threads = self.threads();
+        threads.leave(thread);
+        match outcome {
+            Some(outcome) => threads.stopped(&self.finished, thread, outcome),
+            // The entry wrapper handed over the results of an entry that
+            // finished, and the thread reaches the store no more.
+            None if lock(&self.finished).contains_key(&thread) => {
+                finished_with(lock(&self.finished).remove(&thread))
+            }
+            None => {
+                threads.flight = Some(Flight::Underway { thread, resumption });
+                Ok(EntryStatus::Running)
+            }
+        }
+    }
+
     /// Run the store's flight, the start or the resume a turn left for
     /// the driver, to the thread's next stop, and keep where it
     /// stopped for [`poll_stop`](SuspendProvider::poll_stop). A store
@@ -584,16 +636,8 @@ impl<T: 'static> SuspendProvider<T> for HostSuspensionProvider {
             threads.waiting.remove(&index);
         }
         lock(&self.finished).remove(&index);
-        // A start becomes the store's flight where the store runs no guest
-        // code, which is where its end reaches the scheduler whole, a
-        // trap's reason included.
         if self.at_rest(store) {
-            self.threads().flight = Some(Flight::Start {
-                thread: index,
-                start,
-                arguments,
-            });
-            return Ok(EntryStatus::Running);
+            return self.start_at_rest(store, index, start, &arguments);
         }
         let frames = host_frames(store);
         self.threads().running.push(Running {

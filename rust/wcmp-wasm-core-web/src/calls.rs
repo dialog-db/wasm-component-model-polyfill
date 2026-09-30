@@ -24,10 +24,12 @@ use crate::store::WebStore;
 /// A guest calls a host function through its wrapper module, which reaches
 /// the host through JavaScript functions: `enter`, `arg`, `invoke`,
 /// `result`, and `leave`, and for a suspending host function `suspend` and
-/// `resumed`. Each is a method here. A call of a host function opens a
-/// frame of its own, which holds its arguments and its results, so no call
-/// shares a buffer with another. A frame outlives the stack that holds it
-/// where the stack suspends, so the frames are numbered, and not a stack.
+/// `resumed`, or, for a host function of few arguments, `direct` in place
+/// of `enter`, `arg`, and `invoke`. Each is a method here. A call of a host
+/// function opens a frame of its own, which holds its arguments and its
+/// results, so no call shares a buffer with another. A frame outlives the
+/// stack that holds it where the stack suspends, so the frames are
+/// numbered, and not a stack.
 ///
 /// A host function reaches the store in one of two ways:
 ///
@@ -478,7 +480,44 @@ impl Calls {
     /// call that the trap ends.
     pub fn invoke(&self, frame: u32) -> i32 {
         let reach = self.reach();
-        match self.run(frame, &reach) {
+        self.invoke_in(frame, &reach)
+    }
+
+    /// `direct{K}`: `enter`, an `arg` for each of `args`, and `invoke`, in
+    /// one call, for the host function `func`. Answers the number of the
+    /// frame, shifted left by two bits, and the status that `invoke`
+    /// answers in the two low bits.
+    ///
+    /// Where the host function returned and gives no results, the frame
+    /// closes here, since the wrapper has nothing to read from it: the
+    /// wrapper calls `leave` only after a resumption, or to close a frame
+    /// that holds results.
+    pub fn direct(&self, func: u32, args: Vec<JsValue>) -> i32 {
+        let reach = self.reach();
+        let frame = self.frames.borrow_mut().insert(Frame {
+            owner: reach.id(),
+            parked: None,
+            func,
+            args,
+            results: Vec::new(),
+        });
+        let status = self.invoke_in(frame, &reach);
+        let bare = status == RETURNED
+            && self
+                .frames
+                .borrow_mut()
+                .get_mut(frame)
+                .is_some_and(|frame| frame.results.is_empty());
+        if bare {
+            self.close(frame);
+        }
+        ((frame << 2) | status.cast_unsigned()).cast_signed()
+    }
+
+    /// `invoke` of the frame `frame`, whose host function reaches the store
+    /// where `reach` says.
+    fn invoke_in(&self, frame: u32, reach: &Reach) -> i32 {
+        match self.run(frame, reach) {
             Ok(Poll::Ready(results)) => {
                 self.set_results(frame, results);
                 RETURNED
@@ -486,7 +525,7 @@ impl Calls {
             Ok(Poll::Pending) => SUSPENDED,
             Err(error) => {
                 self.frames.borrow_mut().remove(frame);
-                self.fail(&reach, error);
+                self.fail(reach, error);
                 FAILED
             }
         }

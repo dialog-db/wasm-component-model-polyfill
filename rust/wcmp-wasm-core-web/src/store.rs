@@ -21,7 +21,8 @@ use wcmp_wasm_core::{
 use crate::accessor::Accessor;
 use crate::bridge::Bridge;
 use crate::calls::Calls;
-use crate::carrier::Carrier;
+use crate::carrier::{self, Carrier};
+use crate::entrance::Entrance;
 use crate::errors;
 use crate::flight::{Flight, Stop};
 use crate::js;
@@ -68,10 +69,12 @@ pub struct WebStore {
     /// The functions of JavaScript Promise Integration, where the browser
     /// has them.
     jspi: Option<Rc<Jspi>>,
-    /// `WebAssembly.promising` over each function the host called as a
-    /// resumable call, by the index of its handle and whether the call
-    /// went through its carrier.
-    promising: HashMap<(u64, bool), Function>,
+    /// The entrance of each function the host called as a resumable call,
+    /// by the index of its handle and whether the call went through its
+    /// carrier.
+    entrances: HashMap<(u64, bool), Rc<Entrance>>,
+    /// Each entrance module the store compiled, by its bytes.
+    entrance_modules: HashMap<Vec<u8>, WebAssembly::Module>,
 }
 
 impl WebStore {
@@ -98,7 +101,8 @@ impl WebStore {
             wrappers,
             shared_memory: false,
             jspi,
-            promising: HashMap::new(),
+            entrances: HashMap::new(),
+            entrance_modules: HashMap::new(),
         }
     }
 
@@ -372,12 +376,15 @@ impl WebStore {
     /// Starts a resumable call of `func` with `params`, whose results fill
     /// `len` slots, and answers its flight and how to read its results.
     ///
-    /// The call runs through `WebAssembly.promising`, synchronously, until
-    /// it returns, fails, or first suspends, and its first stretch reaches
-    /// the store through a lease. A host function that failed in that
-    /// stretch fails the call at once. Otherwise the flight tells where
-    /// the call stopped, at once where it suspended, and once the browser
-    /// settles its promise where it returned or trapped.
+    /// The call runs through `WebAssembly.promising` over the function's
+    /// [`Entrance`], synchronously, until it returns, fails, or first
+    /// suspends, and its first stretch reaches the store through a lease. A
+    /// host function that failed in that stretch fails the call at once. A
+    /// call that returned there, where its entrance recorded the return,
+    /// has stopped at once too, and the store sets nothing up for its
+    /// promise. Otherwise the flight tells where the call stopped: at once
+    /// where it suspended, and once the browser settles its promise where
+    /// it returned or trapped.
     pub fn start_resumable(
         &mut self,
         func: Func,
@@ -389,20 +396,42 @@ impl WebStore {
             .clone()
             .ok_or(Error::Unsupported(Capability::HostSuspension))?;
         let (function, args, returns) = self.prepare(func, params, len)?;
-        let promising = match self.promising.entry((func.index(), returns.carried)) {
+        let entrance = match self.entrances.entry((func.index(), returns.carried)) {
             Entry::Occupied(entry) => entry.get().clone(),
-            Entry::Vacant(entry) => entry.insert(jspi.promising(&function)?).clone(),
+            Entry::Vacant(entry) => {
+                let seen = returns
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| carrier::seen(ty, returns.carried));
+                let entrance = Entrance::new(&jspi, &function, seen, &mut self.entrance_modules)?;
+                entry.insert(Rc::new(entrance)).clone()
+            }
         };
         let calls = self.calls.clone();
         let flight = Flight::new(calls.next_id(), true, &calls);
+        let token = Entrance::token(flight.id());
+        if entrance.records() {
+            args.push(&JsValue::from(token));
+        }
         calls.run_flight(&flight);
         let entry = calls.enter(self, Some(flight.clone()));
-        let started = Reflect::apply(&promising, &JsValue::UNDEFINED, &args);
+        let started = Reflect::apply(entrance.promising(), &JsValue::UNDEFINED, &args);
         let failure = entry.leave();
-        let promise = started
-            .and_then(|promise| promise.dyn_into::<Promise>())
-            .unwrap_or_else(|error| Promise::reject(&error));
-        flight.watch(&promise);
+        let returned = match (&failure, flight.frame()) {
+            (None, None) => entrance.returned(token),
+            _ => None,
+        };
+        match returned {
+            // The call returned in its first stretch. It has stopped, and
+            // its promise, which the browser fulfilled, needs no handler.
+            Some(returned) => flight.returned(returned),
+            None => {
+                let promise = started
+                    .and_then(|promise| promise.dyn_into::<Promise>())
+                    .unwrap_or_else(|error| Promise::reject(&error));
+                flight.watch(&promise);
+            }
+        }
         match failure {
             Some(failure) => Err(Error::Trap(TrapKind::Host(failure))),
             None => Ok((flight, returns)),
@@ -744,8 +773,10 @@ impl BackendStore for WebStore {
         // A host function makes a resumable call with the store it
         // received. The call's first stretch runs at once, on a stack of
         // its own. A call that suspends there ends on the future's first
-        // poll. One that returns ends only once the browser settles its
-        // promise, which the host function, which cannot wait, never sees.
+        // poll, and so does one that returns there where its entrance
+        // records the return. One that traps ends only once the browser
+        // settles its promise, which the host function, which cannot wait,
+        // never sees.
         Box::pin(async move {
             let (flight, returns) = self.start_resumable(func, params, results.len())?;
             let stop = flight.stop().await;
@@ -1016,7 +1047,11 @@ impl BackendStore for WebStore {
     fn global_get(&mut self, global: Global) -> Result<Val> {
         let object = self.objects.global(global)?;
         let kind = self.kind(object.ty.content());
-        let value = js::get(&object.global, "value").map_err(|error| errors::call(&error))?;
+        let value = if number(kind) {
+            object.global.value()
+        } else {
+            js::get_value(&object.global).map_err(|error| errors::call(&error))?
+        };
         values::from_js(&mut self.objects, value, kind)
     }
 
@@ -1026,8 +1061,13 @@ impl BackendStore for WebStore {
             return Err(values::mismatch("the global is immutable".to_string()));
         }
         values::check(&value, object.ty.content(), &self.types)?;
+        let kind = self.kind(object.ty.content());
         let value = values::to_js(&self.objects, &value)?;
-        js::set(&object.global, "value", &value).map_err(|error| errors::call(&error))
+        if number(kind) {
+            object.global.set_value(&value);
+            return Ok(());
+        }
+        js::set_value(&object.global, &value).map_err(|error| errors::call(&error))
     }
 
     fn table_new(&mut self, ty: TableType, init: Val) -> Result<Table> {
@@ -1156,6 +1196,15 @@ fn extern_kind(ty: &ExternType) -> &'static str {
 }
 
 /// The name of the kind of `external`.
+/// Whether a global of `kind` holds a number, whose value the JavaScript
+/// API reads and writes without fail once the value matches the type. So
+/// the store reads and writes it directly, and not through `Reflect`, which
+/// a global of `v128` or of a reference to an exception needs, since the
+/// JavaScript API throws for either.
+fn number(kind: Kind) -> bool {
+    matches!(kind, Kind::I32 | Kind::I64 | Kind::F32 | Kind::F64)
+}
+
 fn kind_of_extern(external: &Extern) -> &'static str {
     match external {
         Extern::Func(_) => "a function",

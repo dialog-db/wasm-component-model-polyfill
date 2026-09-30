@@ -237,6 +237,18 @@ impl Flight {
         let _ = js::call_method(promise, "then", &[returned, failed]);
     }
 
+    /// Ends the flight at once: its call returned `value` in its first
+    /// stretch, and the store read the return without its promise, which
+    /// nothing then watches.
+    ///
+    /// This runs inside a method of the store, while the owner of the
+    /// store, or a flight whose host function runs, keeps the store's cell.
+    /// So the cell that this flight kept is not the last, and the store
+    /// does not drop here.
+    pub fn returned(self: &Rc<Self>, value: JsValue) {
+        end(&Rc::downgrade(self), State::Returned(value));
+    }
+
     /// The flight's next stop.
     ///
     /// Where the future drops before the flight stops, the flight loses
@@ -286,7 +298,7 @@ impl Flight {
 /// Ends the flight `flight`, whose promise settled, at `state`.
 ///
 /// This runs as the handler of a promise, where no code of the store
-/// runs, so the store may drop here.
+/// runs, so the store may drop here, or from [`Flight::returned`].
 fn end(flight: &Weak<Flight>, state: State) {
     let Some(flight) = flight.upgrade() else {
         return;

@@ -365,6 +365,35 @@ fn required(ty: &FuncType) -> bool {
         .any(|ty| matches!(slot(ty), Some(Slot::V128 | Slot::Exn { .. } | Slot::NoExn)))
 }
 
+/// The types with which the JavaScript API calls a function of type `ty`,
+/// its parameters and its results: those of its carrier where `through`,
+/// the call goes through one, and otherwise the function's own. `None`
+/// where a generated module cannot name one of them: a reference to a
+/// concrete type.
+pub fn seen(
+    ty: &FuncType,
+    through: bool,
+) -> Option<(Vec<wasm_encoder::ValType>, Vec<wasm_encoder::ValType>)> {
+    if through {
+        return Some((
+            ty.params().iter().flat_map(carried).collect(),
+            ty.results().iter().flat_map(carried).collect(),
+        ));
+    }
+    let own = |types: &[ValType]| {
+        types
+            .iter()
+            .map(|ty| match slot(ty)? {
+                Slot::Plain(ty) => Some(ty),
+                Slot::F32 => Some(wasm_encoder::ValType::F32),
+                Slot::F64 => Some(wasm_encoder::ValType::F64),
+                Slot::V128 | Slot::Exn { .. } | Slot::NoExn => None,
+            })
+            .collect::<Option<Vec<_>>>()
+    };
+    Some((own(ty.params())?, own(ty.results())?))
+}
+
 /// Whether a call of a function of type `ty` goes without a carrier, where
 /// the engine refused the carrier with `error`.
 ///

@@ -42,9 +42,20 @@ use crate::values::{self, Kind};
 ///
 /// Each call of a host function has its own frame, so no call shares a
 /// buffer with another, and a host function of any number of parameters
-/// passes them one at a time. The wrapper is WebAssembly, so it does not
-/// break JavaScript Promise Integration, which admits only WebAssembly
-/// frames between the start of a stack and a suspension.
+/// passes them one at a time. Each of those calls crosses from WebAssembly
+/// into Rust, so a host function whose arguments carry at most [`DIRECT`]
+/// values makes one call in place of `enter`, the `arg`s, and `invoke`:
+///
+/// ```text
+///   frame, status = direct(host, each parameter)
+///   if status: unreachable
+///   result(frame, each result)
+///   leave(frame)                    ;; where it has results
+/// ```
+///
+/// The wrapper is WebAssembly, so it does not break JavaScript Promise
+/// Integration, which admits only WebAssembly frames between the start of
+/// a stack and a suspension.
 ///
 /// The wrapper of a suspending host function goes on where `invoke`
 /// answers that the host function said "not yet" inside a resumable call:
@@ -99,6 +110,32 @@ struct Imports {
     /// `suspend` as a `WebAssembly.Suspending` import, made the first
     /// time a suspending host function needs it.
     suspending: Option<JsValue>,
+    /// `direct{K}`, for each number `K` of carried arguments up to
+    /// [`DIRECT`]: the index of the host function, then the arguments.
+    direct0: Closure<dyn Fn(u32) -> i32>,
+    direct1: Closure<dyn Fn(u32, JsValue) -> i32>,
+    direct2: Closure<dyn Fn(u32, JsValue, JsValue) -> i32>,
+    direct3: Closure<dyn Fn(u32, JsValue, JsValue, JsValue) -> i32>,
+    direct4: Closure<dyn Fn(u32, JsValue, JsValue, JsValue, JsValue) -> i32>,
+}
+
+/// The most values a wrapper carries to the host in one `direct` call. A
+/// host function whose arguments carry more goes through `enter`, `arg`,
+/// and `invoke`.
+const DIRECT: usize = 4;
+
+impl Imports {
+    /// `direct{K}` for `carried` values, where there is one.
+    fn direct(&self, carried: usize) -> Option<JsValue> {
+        Some(match carried {
+            0 => self.direct0.as_ref().clone(),
+            1 => self.direct1.as_ref().clone(),
+            2 => self.direct2.as_ref().clone(),
+            3 => self.direct3.as_ref().clone(),
+            4 => self.direct4.as_ref().clone(),
+            _ => return None,
+        })
+    }
 }
 
 /// How a wrapper carries one value between the guest and the host.
@@ -186,6 +223,9 @@ impl Wrappers {
             ("leave", imports.leave.as_ref().clone()),
             ("host", JsValue::from_f64(f64::from(index))),
         ];
+        if let Some(direct) = imports.direct(width(ty)?) {
+            entries.push(("direct", direct));
+        }
         if let Some(jspi) = suspend {
             let suspending = match &imports.suspending {
                 Some(suspending) => suspending.clone(),
@@ -236,6 +276,34 @@ impl Wrappers {
                 resumed: Closure::new(move |frame: u32| resumed.resumed(frame)),
                 suspend: Closure::new(move |frame: u32| suspend.suspend(frame)),
                 suspending: None,
+                direct0: {
+                    let calls = calls.clone();
+                    Closure::new(move |func: u32| calls.direct(func, Vec::new()))
+                },
+                direct1: {
+                    let calls = calls.clone();
+                    Closure::new(move |func: u32, a: JsValue| calls.direct(func, vec![a]))
+                },
+                direct2: {
+                    let calls = calls.clone();
+                    Closure::new(move |func: u32, a: JsValue, b: JsValue| {
+                        calls.direct(func, vec![a, b])
+                    })
+                },
+                direct3: {
+                    let calls = calls.clone();
+                    Closure::new(move |func: u32, a: JsValue, b: JsValue, c: JsValue| {
+                        calls.direct(func, vec![a, b, c])
+                    })
+                },
+                direct4: {
+                    let calls = calls.clone();
+                    Closure::new(
+                        move |func: u32, a: JsValue, b: JsValue, c: JsValue, d: JsValue| {
+                            calls.direct(func, vec![a, b, c, d])
+                        },
+                    )
+                },
             }
         })
     }
@@ -253,11 +321,7 @@ pub fn params(
     ty: &FuncType,
     args: Vec<JsValue>,
 ) -> Result<Vec<Val>> {
-    let width: usize = ty
-        .params()
-        .iter()
-        .map(|ty| carry(ty).map(Carry::width))
-        .sum::<Result<_>>()?;
+    let width = width(ty)?;
     if args.len() != width {
         return Err(values::mismatch(format!(
             "the wrapper carried {} values for {width}",
@@ -294,6 +358,15 @@ pub fn params(
             })
         })
         .collect()
+}
+
+/// The number of values the wrapper carries to the host for the arguments
+/// of a host function of type `ty`.
+fn width(ty: &FuncType) -> Result<usize> {
+    ty.params()
+        .iter()
+        .map(|ty| carry(ty).map(Carry::width))
+        .sum()
 }
 
 /// The results `results` of a host function of type `ty`, as the wrapper
@@ -500,7 +573,9 @@ fn position(types: &[wasm_encoder::ValType], ty: wasm_encoder::ValType) -> u32 {
 ///
 /// ```text
 /// (module
-///   (import "" "enter" (func $enter (param i32) (result i32)))
+///   (import "" "direct" (func $direct (param i32 T ...) (result i32)))
+///                                                 ;; where it carries few
+///   (import "" "enter" (func $enter (param i32) (result i32)))  ;; otherwise
 ///   (import "" "invoke" (func $invoke (param i32) (result i32)))
 ///   (import "" "leave" (func $leave (param i32)))
 ///   (import "" "suspend" (func $suspend (param i32)))  ;; where suspending
@@ -514,15 +589,31 @@ fn position(types: &[wasm_encoder::ValType], ty: wasm_encoder::ValType) -> u32 {
 ///     ...))
 /// ```
 ///
+/// A host function whose arguments carry at most [`DIRECT`] values goes
+/// through `direct`, which takes them all at once, opens the frame, and
+/// runs the host function: one call where `enter`, an `arg` for each value,
+/// and `invoke` would make several. It answers the frame shifted left by
+/// two bits, and the status in the two low bits. For a host function with
+/// no results, `direct` closes the frame where the call returned, and the
+/// wrapper calls `leave` only after a resumption.
+///
 /// The JavaScript API gives one import of the same name the same function
-/// whatever its type, so `arg` and `result` each serve every type.
+/// whatever its type, so `direct`, `arg`, and `result` each serve every
+/// type.
 fn generate(ty: &FuncType, uses_exns: bool, suspending: bool) -> Result<Vec<u8>> {
     use wasm_encoder::ValType as Encoded;
     let params = ty.params().iter().map(carry).collect::<Result<Vec<_>>>()?;
     let results = ty.results().iter().map(carry).collect::<Result<Vec<_>>>()?;
+    let carried_args = params
+        .iter()
+        .flat_map(|carry| core::iter::repeat_n(carry.arg(), carry.width()))
+        .collect::<Vec<_>>();
+    let direct = carried_args.len() <= DIRECT;
     let mut arg_types = Vec::new();
-    for carry in &params {
-        join(&mut arg_types, carry.arg());
+    if !direct {
+        for carry in &params {
+            join(&mut arg_types, carry.arg());
+        }
     }
     let mut result_types = Vec::new();
     for carry in &results {
@@ -530,7 +621,7 @@ fn generate(ty: &FuncType, uses_exns: bool, suspending: bool) -> Result<Vec<u8>>
     }
 
     // The types: the wrapper's own, then `enter` and `invoke`, `leave`,
-    // each `arg`, and each `result`.
+    // each `arg`, each `result`, and `direct`.
     let mut types = TypeSection::new();
     types.ty().function(
         params.iter().map(|carry| carry.encoded()),
@@ -546,38 +637,54 @@ fn generate(ty: &FuncType, uses_exns: bool, suspending: bool) -> Result<Vec<u8>>
     }
     let first_arg_type = 3;
     let first_result_type = first_arg_type + arg_types.len() as u32;
+    let direct_type = first_result_type + result_types.len() as u32;
+    types.ty().function(
+        [Encoded::I32]
+            .into_iter()
+            .chain(carried_args.iter().copied())
+            .collect::<Vec<_>>(),
+        [Encoded::I32],
+    );
 
-    // The functions: `enter`, `invoke`, `leave`, `suspend` and `resumed`
-    // where the host function is suspending, each `arg`, each `result`,
-    // then the wrapper's own. `suspend` has the type of `leave`, and
-    // `resumed` the type of `invoke`.
-    const ENTER: u32 = 0;
-    const INVOKE: u32 = 1;
-    const LEAVE: u32 = 2;
-    const SUSPEND: u32 = 3;
-    const RESUMED: u32 = 4;
-    let first_arg = if suspending { 5 } else { 3 };
-    let first_result = first_arg + arg_types.len() as u32;
-    let call = first_result + result_types.len() as u32;
-
+    // The functions: `direct`, or `enter` and `invoke`, then `leave`,
+    // `suspend` and `resumed` where the host function is suspending, each
+    // `arg`, each `result`, then the wrapper's own. `suspend` has the type
+    // of `leave`, and `resumed` the type of `invoke`.
     let mut imports = ImportSection::new();
-    imports.import("", "enter", EntityType::Function(1));
-    imports.import("", "invoke", EntityType::Function(1));
-    imports.import("", "leave", EntityType::Function(2));
-    if suspending {
-        imports.import("", "suspend", EntityType::Function(2));
-        imports.import("", "resumed", EntityType::Function(1));
-    }
+    // Only functions come before the global and the table, so the number
+    // of imports so far is the index of the next function.
+    let import = |imports: &mut ImportSection, name: &str, ty: u32| {
+        let index = imports.len();
+        imports.import("", name, EntityType::Function(ty));
+        index
+    };
+    let (enter, invoke) = if direct {
+        let direct = import(&mut imports, "direct", direct_type);
+        (direct, direct)
+    } else {
+        (
+            import(&mut imports, "enter", 1),
+            import(&mut imports, "invoke", 1),
+        )
+    };
+    let leave = import(&mut imports, "leave", 2);
+    let (suspend, resumed) = if suspending {
+        (
+            import(&mut imports, "suspend", 2),
+            import(&mut imports, "resumed", 1),
+        )
+    } else {
+        (0, 0)
+    };
+    let first_arg = imports.len();
     for index in 0..arg_types.len() as u32 {
-        imports.import("", "arg", EntityType::Function(first_arg_type + index));
+        import(&mut imports, "arg", first_arg_type + index);
     }
+    let first_result = imports.len();
     for index in 0..result_types.len() as u32 {
-        imports.import(
-            "",
-            "result",
-            EntityType::Function(first_result_type + index),
-        );
+        import(&mut imports, "result", first_result_type + index);
     }
+    let call = imports.len();
     imports.import(
         "",
         "host",
@@ -618,52 +725,36 @@ fn generate(ty: &FuncType, uses_exns: bool, suspending: bool) -> Result<Vec<u8>>
     let result = |carry: Carry| first_result + position(&result_types, carry.result());
     let mut body = wasm_encoder::Function::new([(3, Encoded::I32)]);
     let mut code = body.instructions();
-    code.global_get(0).call(ENTER).local_set(frame);
-    for (local, carry) in params.iter().enumerate() {
-        let local = local as u32;
-        match *carry {
-            Carry::Same(_) | Carry::Internal(_) => {
-                code.local_get(frame).local_get(local).call(arg(*carry));
-            }
-            Carry::F32 => {
-                code.local_get(frame)
-                    .local_get(local)
-                    .i32_reinterpret_f32()
-                    .call(arg(*carry));
-            }
-            Carry::F64 => {
-                code.local_get(frame)
-                    .local_get(local)
-                    .i64_reinterpret_f64()
-                    .call(arg(*carry));
-            }
-            Carry::V128 => {
-                for lane in 0..2 {
-                    code.local_get(frame)
-                        .local_get(local)
-                        .i64x2_extract_lane(lane)
-                        .call(arg(*carry));
-                }
-            }
-            Carry::Exn { .. } => {
-                code.local_get(frame)
-                    .local_get(local)
-                    .ref_is_null()
-                    .if_(BlockType::Result(Encoded::I32))
-                    .i32_const(-1)
-                    .else_()
-                    .local_get(local)
-                    .i32_const(1)
-                    .table_grow(0)
-                    .end()
-                    .call(arg(*carry));
-            }
-            Carry::NoExn => {
-                code.local_get(frame).i32_const(-1).call(arg(*carry));
+    if direct {
+        code.global_get(0);
+        for (local, carry) in params.iter().enumerate() {
+            for lane in 0..carry.width() as u8 {
+                push_carried(&mut code, local as u32, *carry, lane);
             }
         }
+        code.call(invoke)
+            .local_tee(status)
+            .i32_const(2)
+            .i32_shr_u()
+            .local_set(frame)
+            .local_get(status)
+            .i32_const(3)
+            .i32_and()
+            .local_set(status);
+    } else {
+        code.global_get(0).call(enter).local_set(frame);
+        for (local, carry) in params.iter().enumerate() {
+            for lane in 0..carry.width() as u8 {
+                code.local_get(frame);
+                push_carried(&mut code, local as u32, *carry, lane);
+                code.call(arg(*carry));
+            }
+        }
+        code.local_get(frame).call(invoke).local_set(status);
     }
-    code.local_get(frame).call(INVOKE).local_set(status);
+    // A frame that `direct` closed, of a call that returned with no
+    // results, needs no `leave`.
+    let closed = direct && results.is_empty();
     if suspending {
         // 2: the host function said "not yet" inside a resumable call.
         // `resumed` answers 2 again where the resumed call parks, and the
@@ -674,15 +765,24 @@ fn generate(ty: &FuncType, uses_exns: bool, suspending: bool) -> Result<Vec<u8>>
             .if_(BlockType::Empty)
             .loop_(BlockType::Empty)
             .local_get(frame)
-            .call(SUSPEND)
+            .call(suspend)
             .local_get(frame)
-            .call(RESUMED)
+            .call(resumed)
             .local_tee(status)
             .i32_const(2)
             .i32_eq()
             .br_if(0)
-            .end()
             .end();
+        if closed {
+            // The resumed call returned, and its frame is still open.
+            code.local_get(status)
+                .i32_eqz()
+                .if_(BlockType::Empty)
+                .local_get(frame)
+                .call(leave)
+                .end();
+        }
+        code.end();
     }
     code.local_get(status)
         .if_(BlockType::Empty)
@@ -744,9 +844,47 @@ fn generate(ty: &FuncType, uses_exns: bool, suspending: bool) -> Result<Vec<u8>>
         }
         carried += carry.width() as i32;
     }
-    code.local_get(frame).call(LEAVE).end();
+    if !closed {
+        code.local_get(frame).call(leave);
+    }
+    code.end();
     let mut section = CodeSection::new();
     section.function(&body);
     module.section(&section);
     Ok(module.finish())
+}
+
+/// Pushes the carried value `lane` of the parameter `local`, which the
+/// wrapper carries as `carry`: the one value, or for a `v128` one of its
+/// two halves.
+fn push_carried(code: &mut wasm_encoder::InstructionSink<'_>, local: u32, carry: Carry, lane: u8) {
+    use wasm_encoder::ValType as Encoded;
+    match carry {
+        Carry::Same(_) | Carry::Internal(_) => {
+            code.local_get(local);
+        }
+        Carry::F32 => {
+            code.local_get(local).i32_reinterpret_f32();
+        }
+        Carry::F64 => {
+            code.local_get(local).i64_reinterpret_f64();
+        }
+        Carry::V128 => {
+            code.local_get(local).i64x2_extract_lane(lane);
+        }
+        Carry::Exn { .. } => {
+            code.local_get(local)
+                .ref_is_null()
+                .if_(BlockType::Result(Encoded::I32))
+                .i32_const(-1)
+                .else_()
+                .local_get(local)
+                .i32_const(1)
+                .table_grow(0)
+                .end();
+        }
+        Carry::NoExn => {
+            code.i32_const(-1);
+        }
+    }
 }
