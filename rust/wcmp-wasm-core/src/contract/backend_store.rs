@@ -2,9 +2,11 @@
 
 use core::any::Any;
 
-use crate::call::ResumableCall;
+use crate::call::{ResumableCall, Resumption};
 use crate::capability::Capability;
-use crate::contract::{BackendModule, BackendSuspendedCall, BoxFuture, HostFunc, MaybeSend};
+use crate::contract::{
+    BackendModule, BackendResumption, BackendSuspendedCall, BoxFuture, HostFunc, MaybeSend,
+};
 use crate::error::{Error, Result};
 use crate::externs::{Extern, Func, Global, Instance, Memory, Table, Tag};
 use crate::store::StoreData;
@@ -107,6 +109,61 @@ pub trait BackendStore: MaybeSend {
         results: &'a mut [Val],
     ) -> BoxFuture<'a, Result<ResumableCall>> {
         let _ = (call, import_results, results);
+        Box::pin(core::future::ready(Err(Error::Unsupported(
+            Capability::HostSuspension,
+        ))))
+    }
+
+    /// Starts `func` as a resumable call, runs its first stretch, and
+    /// answers the call as a resumption that
+    /// [`stop_resumption`](BackendStore::stop_resumption) waits for.
+    ///
+    /// The engine reaches this method only where the backend declares
+    /// [`host_suspension`](Capability::HostSuspension).
+    fn func_start_resumable(&mut self, func: Func, params: &[Val]) -> Result<Resumption> {
+        let _ = (func, params);
+        Err(Error::Unsupported(Capability::HostSuspension))
+    }
+
+    /// Resumes `call`, a call of this store that waits, with
+    /// `import_results`, the results of the suspending host function, and
+    /// answers the call as a resumption that
+    /// [`stop_resumption`](BackendStore::stop_resumption) waits for.
+    ///
+    /// The engine reaches this method only where the backend declares
+    /// [`host_suspension`](Capability::HostSuspension), and only with a call
+    /// that this store made, as for
+    /// [`resume_call`](BackendStore::resume_call).
+    fn start_resume(
+        &mut self,
+        call: Box<dyn BackendSuspendedCall>,
+        import_results: &[Val],
+    ) -> Result<Resumption> {
+        let _ = (call, import_results);
+        Err(Error::Unsupported(Capability::HostSuspension))
+    }
+
+    /// Waits for the next stop of `resumption`, a call of this store that
+    /// runs, and answers how it ended. Where it finished, its results are in
+    /// `results`.
+    ///
+    /// Where the future drops before the call stops, the host has the store
+    /// back, and the call keeps its place: a backend that runs the call on a
+    /// microtask lets it run on until it would next reach the store, and it
+    /// waits there. A later wait grants it the store again and takes it up
+    /// from where it waits. So any number of waits may drop before one sees
+    /// the stop.
+    ///
+    /// The engine reaches this method only where the backend declares
+    /// [`host_suspension`](Capability::HostSuspension), only with a
+    /// resumption that this store made, and never again once a wait saw its
+    /// stop.
+    fn stop_resumption<'a>(
+        &'a mut self,
+        resumption: &'a mut dyn BackendResumption,
+        results: &'a mut [Val],
+    ) -> BoxFuture<'a, Result<ResumableCall>> {
+        let _ = (resumption, results);
         Box::pin(core::future::ready(Err(Error::Unsupported(
             Capability::HostSuspension,
         ))))

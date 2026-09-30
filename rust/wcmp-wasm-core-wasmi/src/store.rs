@@ -5,12 +5,13 @@ use core::ops::Range;
 use core::task::Poll;
 
 use wcmp_wasm_core::backend::{
-    BackendModule, BackendStore, BackendSuspendedCall, BoxFuture, HostFunc, StoreData,
+    BackendModule, BackendResumption, BackendStore, BackendSuspendedCall, BoxFuture, HostFunc,
+    StoreData,
 };
 use wcmp_wasm_core::{
     Capability, Error, Extern, ExternRef, Func, FuncType, Global, GlobalType, Instance, Memory,
-    MemoryType, Result, ResumableCall, SuspendedCall, Table, TableType, Tag, TagType, TrapKind,
-    Val,
+    MemoryType, Result, ResumableCall, Resumption, SuspendedCall, Table, TableType, Tag, TagType,
+    TrapKind, Val,
 };
 
 use crate::context::Context;
@@ -18,6 +19,7 @@ use crate::convert;
 use crate::errors;
 use crate::host_error::HostError;
 use crate::module::WasmiModule;
+use crate::resumption::WasmiResumption;
 use crate::state::State;
 use crate::suspended_call::WasmiSuspendedCall;
 use crate::suspension::Suspension;
@@ -154,14 +156,10 @@ impl<C: Context> WasmiStore<C> {
     /// runtime layer's resumption takes the handle too.
     fn resume_now(
         &mut self,
-        call: Box<dyn BackendSuspendedCall>,
+        call: WasmiSuspendedCall,
         import_results: &[Val],
         results: &mut [Val],
     ) -> Result<ResumableCall> {
-        let call = call
-            .into_any()
-            .downcast::<WasmiSuspendedCall>()
-            .map_err(|_| Error::WrongStore)?;
         let (call, result_types) = call.into_parts();
         let host_ty = call.host_func().ty(&self.inner);
         if import_results.len() != host_ty.results().len() || results.len() != result_types.len() {
@@ -186,6 +184,13 @@ impl<C: Context> WasmiStore<C> {
             .resume(&mut self.inner, &inputs, &mut outputs)
             .map_err(errors::trap)?;
         self.outcome(next, result_types, &outputs, results)
+    }
+
+    /// The resumption of a call that stopped at `outcome`, with its results
+    /// in `results` where it finished.
+    fn resumption(&self, outcome: ResumableCall, results: Vec<Val>) -> Resumption {
+        let store = self.inner.state().data().id();
+        Resumption::new(store, Box::new(WasmiResumption::new(outcome, results)))
     }
 
     /// The outcome of the runtime layer for Wasmi's outcome `call`, of a
@@ -225,6 +230,15 @@ impl<C: Context> WasmiStore<C> {
             wasmi::ResumableCall::OutOfFuel(_) => Err(Error::Trap(TrapKind::OutOfFuel)),
         }
     }
+}
+
+/// The call of the Wasmi backend that `call` is, or [`Error::WrongStore`]
+/// where another backend made it.
+fn downcast(call: Box<dyn BackendSuspendedCall>) -> Result<WasmiSuspendedCall> {
+    call.into_any()
+        .downcast::<WasmiSuspendedCall>()
+        .map(|call| *call)
+        .map_err(|_| Error::WrongStore)
 }
 
 /// A slot for each result of `types`, for Wasmi to fill.
@@ -310,11 +324,50 @@ impl<C: Context> BackendStore for WasmiStore<C> {
     ) -> BoxFuture<'a, Result<ResumableCall>> {
         // Wasmi resumes a call synchronously, so the future is ready on its
         // first poll.
-        Box::pin(core::future::ready(self.resume_now(
-            call,
-            import_results,
-            results,
-        )))
+        Box::pin(core::future::ready(
+            downcast(call).and_then(|call| self.resume_now(call, import_results, results)),
+        ))
+    }
+
+    fn func_start_resumable(&mut self, func: Func, params: &[Val]) -> Result<Resumption> {
+        // Wasmi runs the call to its first stop here, and the wait takes
+        // the stop.
+        let count = self
+            .inner
+            .state()
+            .func(func)?
+            .ty(&self.inner)
+            .results()
+            .len();
+        let mut results = vec![Val::I32(0); count];
+        let outcome = self.call_resumable_now(func, params, &mut results)?;
+        Ok(self.resumption(outcome, results))
+    }
+
+    fn start_resume(
+        &mut self,
+        call: Box<dyn BackendSuspendedCall>,
+        import_results: &[Val],
+    ) -> Result<Resumption> {
+        // Wasmi runs the call to its next stop here, and the wait takes the
+        // stop.
+        let call = downcast(call)?;
+        let mut results = vec![Val::I32(0); call.result_count()];
+        let outcome = self.resume_now(call, import_results, &mut results)?;
+        Ok(self.resumption(outcome, results))
+    }
+
+    fn stop_resumption<'a>(
+        &'a mut self,
+        resumption: &'a mut dyn BackendResumption,
+        results: &'a mut [Val],
+    ) -> BoxFuture<'a, Result<ResumableCall>> {
+        let stop = resumption
+            .as_any_mut()
+            .downcast_mut::<WasmiResumption>()
+            .ok_or(Error::WrongStore)
+            .and_then(|resumption| resumption.take(results));
+        Box::pin(core::future::ready(stop))
     }
 
     fn memory_new(&mut self, ty: MemoryType) -> Result<Memory> {

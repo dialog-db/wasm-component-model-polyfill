@@ -25,7 +25,10 @@ use crate::js;
 /// The flight may reach the store only while its permit holds (see
 /// [`Flight::may_run`]), and it keeps the store's cell alive from the
 /// moment it starts to run until its next stop, so a store that drops
-/// meanwhile keeps its state until then.
+/// meanwhile keeps its state until then. The stack of a resumable call that
+/// would reach the store without a permit parks instead, and keeps the cell
+/// no longer: it waits where it resumed until a wait grants it the store
+/// again, and runs on from there.
 pub struct Flight {
     /// The number of the flight. The frames of the host functions that its
     /// own guest calls carry it.
@@ -55,6 +58,15 @@ enum State {
     /// Its stack waits in a suspending host function, whose frame is
     /// `frame`. `resolve` resumes it.
     Suspended { frame: u32, resolve: Function },
+    /// Its resumed stack reached the store after the host took the store
+    /// back, and is on its way to wait again in the frame it resumed from.
+    Parking,
+    /// Its resumed stack waits again in the suspending host function whose
+    /// frame is `frame`, because it reached the store after the host took
+    /// the store back, until a wait takes the flight up. `resolve` lets it
+    /// run on. This is no stop: the call has not reached its next
+    /// suspension.
+    Parked { frame: u32, resolve: Function },
     /// It returned this value.
     Returned(JsValue),
     /// It failed with this reason.
@@ -110,11 +122,6 @@ impl Flight {
         Weak::ptr_eq(&self.calls, &Rc::downgrade(calls))
     }
 
-    /// Whether the stack of the flight waits in a suspending host function.
-    pub fn is_suspended(&self) -> bool {
-        matches!(*self.state.borrow(), State::Suspended { .. })
-    }
-
     /// Grants the flight the store at `epoch`, and keeps `cell` alive
     /// until the flight stops.
     pub fn grant(&self, epoch: u64, cell: Option<Rc<StoreCell>>) {
@@ -127,8 +134,8 @@ impl Flight {
     ///
     /// It may where the store's owner dropped the store, since nothing
     /// else can then reach it. Otherwise it may only while the code that
-    /// started or resumed it still waits for it, and the owner has not
-    /// reached the store since. Each method of the owner moves the store's
+    /// started, resumed, or last took it up still waits for it, and the
+    /// owner has not reached the store since. Each method of the owner moves the store's
     /// epoch on, so a flight whose permit is an earlier epoch finds that
     /// the host took the store back. The owner also refuses the store while
     /// a host function that a flight called runs. So the owner's references
@@ -147,10 +154,49 @@ impl Flight {
     /// is `frame`, until `resolve` resumes it, and wakes the code that
     /// waits. It answers the store's cell, which the flight no longer
     /// keeps, so that the caller frees it where no code of the store runs.
+    ///
+    /// A flight on its way to park (see [`Flight::park`]) waits there
+    /// instead: that is no stop, and nothing wakes.
     pub fn suspend(&self, frame: u32, resolve: Function) -> Option<Rc<StoreCell>> {
-        *self.state.borrow_mut() = State::Suspended { frame, resolve };
-        self.wake();
+        let mut state = self.state.borrow_mut();
+        if matches!(*state, State::Parking) {
+            *state = State::Parked { frame, resolve };
+        } else {
+            *state = State::Suspended { frame, resolve };
+            drop(state);
+            self.wake();
+        }
         self.keep.borrow_mut().take()
+    }
+
+    /// Records that the resumed stack reached the store after the host took
+    /// the store back, and goes to wait again in the frame it resumed from,
+    /// until a wait takes the flight up and [`Flight::unpark`] lets it run
+    /// on. Only a resumable call parks: its stack can wait.
+    pub fn park(&self) {
+        *self.state.borrow_mut() = State::Parking;
+    }
+
+    /// The resolver of the parked stack, which runs on from here, as it
+    /// would have had the host not taken the store back.
+    pub fn unpark(&self) -> Option<Function> {
+        let mut state = self.state.borrow_mut();
+        match core::mem::replace(&mut *state, State::Running) {
+            State::Parked { resolve, .. } => Some(resolve),
+            other => {
+                *state = other;
+                None
+            }
+        }
+    }
+
+    /// Whether the flight has yet to reach its next stop: it runs, or it
+    /// is parked.
+    pub fn runs(&self) -> bool {
+        matches!(
+            *self.state.borrow(),
+            State::Running | State::Parking | State::Parked { .. }
+        )
     }
 
     /// The frame and the resolver of the suspended stack, which runs
@@ -194,9 +240,11 @@ impl Flight {
     /// The flight's next stop.
     ///
     /// Where the future drops before the flight stops, the flight loses
-    /// its permit: the host has its store back, and the flight's stack
-    /// traps the next time it would reach the store, unless the store
-    /// drops first.
+    /// its permit: the host has its store back. The stack of a resumable
+    /// call parks the next time it would reach the store, until a later
+    /// wait grants it the store again, and the start function of an
+    /// instantiation traps there. Where the store drops first, the flight
+    /// runs on with the store, since nothing else can reach it.
     pub fn stop(self: &Rc<Self>) -> impl Future<Output = Stop> + use<> {
         let watch = Watch(self.clone());
         poll_fn(move |context| watch.0.poll_stop(context))
@@ -206,7 +254,7 @@ impl Flight {
     fn poll_stop(&self, context: &mut Context<'_>) -> Poll<Stop> {
         let mut state = self.state.borrow_mut();
         match &*state {
-            State::Running => {
+            State::Running | State::Parking | State::Parked { .. } => {
                 *self.waker.borrow_mut() = Some(context.waker().clone());
                 Poll::Pending
             }
@@ -255,9 +303,9 @@ fn end(flight: &Weak<Flight>, state: State) {
 
 impl Drop for Flight {
     fn drop(&mut self) {
-        // A suspended stack that nothing can resume any more: its frame
-        // closes, and the stack never runs again.
-        if let State::Suspended { frame, .. } = *self.state.get_mut()
+        // A suspended or parked stack that nothing can resume any more: its
+        // frame closes, and the stack never runs again.
+        if let State::Suspended { frame, .. } | State::Parked { frame, .. } = *self.state.get_mut()
             && let Some(calls) = self.calls.upgrade()
         {
             calls.close(frame);

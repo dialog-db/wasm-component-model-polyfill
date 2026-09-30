@@ -173,6 +173,7 @@ mod errors;
 mod host_error;
 mod module;
 mod refusal;
+mod resumption;
 mod state;
 mod store;
 mod suspended_call;

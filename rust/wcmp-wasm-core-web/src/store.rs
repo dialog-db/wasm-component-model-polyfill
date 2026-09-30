@@ -9,12 +9,13 @@ use std::rc::Rc;
 use js_sys::{Array, Function, Object, Promise, Reflect, Uint8Array, WebAssembly};
 use wasm_bindgen::{JsCast, JsValue};
 use wcmp_wasm_core::backend::{
-    BackendModule, BackendStore, BackendSuspendedCall, BoxFuture, HostFunc, RawHandle, StoreData,
+    BackendModule, BackendResumption, BackendStore, BackendSuspendedCall, BoxFuture, HostFunc,
+    RawHandle, StoreData,
 };
 use wcmp_wasm_core::{
     AnyRef, Capability, Error, Extern, ExternRef, ExternType, Func, FuncType, Global, GlobalType,
     HeapType, I31, ImportType, Instance, Memory, MemoryType, Mutability, Result, ResumableCall,
-    SuspendedCall, Table, TableType, Tag, TagType, TrapKind, Val, ValType,
+    Resumption, SuspendedCall, Table, TableType, Tag, TagType, TrapKind, Val, ValType,
 };
 
 use crate::accessor::Accessor;
@@ -28,6 +29,7 @@ use crate::jspi::Jspi;
 use crate::linking;
 use crate::module::WebModule;
 use crate::objects::{GlobalObject, InstanceObject, MemoryObject, Objects, TableObject, TagObject};
+use crate::resumption::WebResumption;
 use crate::returns::Returns;
 use crate::suspended::WebSuspendedCall;
 use crate::type_registry::TypeRegistry;
@@ -412,7 +414,7 @@ impl WebStore {
     ///
     /// The stack of the call runs on a microtask, after the code that
     /// resumed it returned, and reaches the store as the flight.
-    pub fn start_resume(&mut self, flight: &Rc<Flight>, import_results: &[Val]) -> Result<()> {
+    pub fn resume_flight(&mut self, flight: &Rc<Flight>, import_results: &[Val]) -> Result<()> {
         if !flight.belongs_to(&self.calls) {
             return Err(Error::WrongStore);
         }
@@ -446,6 +448,30 @@ impl WebStore {
             .call0(&JsValue::UNDEFINED)
             .map(|_| ())
             .map_err(|error| errors::call(&error))
+    }
+
+    /// The number of results of `func`, where the backend knows its type,
+    /// for a call that gives no slots for them yet: a resumable call
+    /// started as a [`Resumption`], whose wait gives the slots. A function
+    /// reference that a guest handed out has no known type, and the slots
+    /// of the wait tell its results.
+    fn result_count(&self, func: Func) -> Result<usize> {
+        Ok(self
+            .objects
+            .func(func)?
+            .ty
+            .as_ref()
+            .map_or(0, |ty| ty.results().len()))
+    }
+
+    /// Grants `flight`, a resumable call of this store that runs, the store
+    /// for the wait that begins here, and lets its stack run on where it
+    /// parked. See [`Calls::adopt`].
+    pub fn adopt(&mut self, flight: &Rc<Flight>) -> Result<()> {
+        if !flight.belongs_to(&self.calls) {
+            return Err(Error::WrongStore);
+        }
+        self.calls.adopt(flight)
     }
 
     /// How the resumable call `flight`, whose results `returns` tells how
@@ -640,6 +666,18 @@ fn view(object: &MemoryObject, offset: u64, len: u64) -> Result<Uint8Array> {
     ))
 }
 
+/// The error of a resumption that a host function makes with the store it
+/// received. JavaScript Promise Integration runs a resumed stack on a
+/// microtask, after the host function and the guest below it returned, so
+/// the resumption could not end while the host function waits for it.
+fn cannot_resume() -> Error {
+    errors::backend(
+        "a host function cannot resume a call in the browser: JavaScript Promise \
+         Integration runs the resumed call on a microtask, after the host function \
+         returns, so resume it from the store outside every host function",
+    )
+}
+
 impl BackendStore for WebStore {
     fn data(&self) -> &StoreData {
         &self.data
@@ -726,11 +764,47 @@ impl BackendStore for WebStore {
         // the host function and the guest below it returned, so the
         // resumption could not end while the host function waits for it.
         let _ = (call, import_results, results);
-        Box::pin(core::future::ready(Err(errors::backend(
-            "a host function cannot resume a call in the browser: JavaScript Promise \
-             Integration runs the resumed call on a microtask, after the host function \
-             returns, so resume it from the store outside every host function",
-        ))))
+        Box::pin(core::future::ready(Err(cannot_resume())))
+    }
+
+    fn func_start_resumable(&mut self, func: Func, params: &[Val]) -> Result<Resumption> {
+        // As for `func_call_resumable`: the first stretch runs here.
+        let len = self.result_count(func)?;
+        let (flight, returns) = self.start_resumable(func, params, len)?;
+        Ok(Resumption::new(
+            self.data.id(),
+            Box::new(WebResumption { flight, returns }),
+        ))
+    }
+
+    fn start_resume(
+        &mut self,
+        call: Box<dyn BackendSuspendedCall>,
+        import_results: &[Val],
+    ) -> Result<Resumption> {
+        // As for `resume_call`.
+        let _ = (call, import_results);
+        Err(cannot_resume())
+    }
+
+    fn stop_resumption<'a>(
+        &'a mut self,
+        resumption: &'a mut dyn BackendResumption,
+        results: &'a mut [Val],
+    ) -> BoxFuture<'a, Result<ResumableCall>> {
+        // A host function waits only for a call it started, whose stop is
+        // there on the first poll where the call suspended in its first
+        // stretch.
+        Box::pin(async move {
+            let resumption = resumption
+                .as_any_mut()
+                .downcast_mut::<WebResumption>()
+                .ok_or(Error::WrongStore)?;
+            let flight = resumption.flight.clone();
+            self.adopt(&flight)?;
+            let stop = flight.stop().await;
+            self.finish_resumable(flight, resumption.returns.clone(), stop, results)
+        })
     }
 
     fn memory_new(&mut self, ty: MemoryType) -> Result<Memory> {

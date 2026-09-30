@@ -7,13 +7,13 @@ use core::task::{Poll, Waker};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::error::{Error, Result, SchedulerCause};
+use crate::error::{Error, Result};
 use crate::internal::ErrorInternal;
 use crate::runtime_layer::{
     Extern as RuntimeExtern, Func as RuntimeFunc, FuncType, HostFrames, Imports,
-    Instance as RuntimeInstance, Module as RuntimeModule, ResumableCall, Shared, SuspendedCall,
-    TrapKind, Val as RuntimeVal, ValType as RuntimeValType, at_once, host_func, instantiate,
-    substrate_failure,
+    Instance as RuntimeInstance, Module as RuntimeModule, ResumableCall, Resumption, Shared,
+    SuspendedCall, TrapKind, Val as RuntimeVal, ValType as RuntimeValType, at_once, host_func,
+    instantiate, substrate_failure,
 };
 use crate::store::{StoreContext, StoreContextInternalExt};
 
@@ -82,10 +82,13 @@ type Compiled = Arc<Mutex<HashMap<Vec<u8>, RuntimeModule>>>;
 /// that number is the built-in's own.
 ///
 /// A store that drops drops its waiting calls with it, and no
-/// destructor runs. A flight that a driver no longer awaits, because
-/// its future dropped, loses the store: the backend traps the thread
-/// the next time it reaches the store, and the provider answers that
-/// the thread failed.
+/// destructor runs. Dropping a driver cancels nothing: a flight that a
+/// driver no longer awaits, because its future dropped, stays with the
+/// store as a resumption under way. The backend lets the thread run on
+/// as far as it can without the store, where it waits, and the next
+/// driver takes the flight up and awaits the thread's stop in its place,
+/// as Wasmtime lets the threads of a task whose host future dropped run
+/// on for other tasks of the component.
 ///
 /// The provider holds handles to the modules' functions and its
 /// state behind a lock, and nothing that borrows the store. It can
@@ -128,13 +131,19 @@ enum Flight {
     },
     /// The resume of `thread`, whose call waits in `call`.
     Resume { thread: u32, call: SuspendedCall },
+    /// The start or the resume of `thread` that runs as `resumption`,
+    /// whose driver dropped before the thread stopped. The next driver
+    /// takes it up.
+    Underway { thread: u32, resumption: Resumption },
 }
 
 impl Flight {
     /// The thread the flight runs.
     fn thread(&self) -> u32 {
         match self {
-            Self::Start { thread, .. } | Self::Resume { thread, .. } => *thread,
+            Self::Start { thread, .. }
+            | Self::Resume { thread, .. }
+            | Self::Underway { thread, .. } => *thread,
         }
     }
 }
@@ -151,9 +160,6 @@ struct Threads {
     /// Where each thread a flight ran stopped, by thread index, until
     /// [`poll_stop`](SuspendProvider::poll_stop) takes it.
     stops: HashMap<u32, Result<EntryStatus>>,
-    /// Whether the driver that awaited the last flight dropped before
-    /// the flight's thread stopped, which ended the turn it ran in.
-    abandoned: bool,
 }
 
 impl Threads {
@@ -208,32 +214,27 @@ fn state_lost() -> Error {
     Error::internal("the host-suspension provider lost its state")
 }
 
-/// Records that a flight ended without an answer when the driver that
-/// awaited it drops it first.
-struct Abandoned {
+/// Leaves a flight that runs to the next driver where the driver that
+/// awaited it drops it first. The flight's thread runs on as far as it can
+/// without the store, and waits there for the next driver, which takes the
+/// flight up and awaits the thread's stop in its place.
+struct Handoff {
     threads: Arc<Mutex<Threads>>,
-    finished: Finished,
     thread: u32,
-    armed: bool,
+    resumption: Option<Resumption>,
 }
 
-impl Drop for Abandoned {
+impl Drop for Handoff {
     fn drop(&mut self) {
-        if !self.armed {
+        let Some(resumption) = self.resumption.take() else {
             return;
-        }
-        let results = lock(&self.finished).remove(&self.thread);
+        };
         let mut threads = lock(&self.threads);
         threads.leave(self.thread);
-        // A thread whose entry finished stopped, whatever became of the
-        // call that ran it. Any other thread the backend traps the next
-        // time it reaches the store.
-        let stop = match results {
-            Some(results) => Ok(EntryStatus::Finished(results)),
-            None => Err(Error::Scheduler(SchedulerCause::ThreadAbandoned)),
-        };
-        threads.stops.insert(self.thread, stop);
-        threads.abandoned = true;
+        threads.flight = Some(Flight::Underway {
+            thread: self.thread,
+            resumption,
+        });
     }
 }
 
@@ -461,15 +462,6 @@ impl HostSuspensionProvider {
         host_frames(store) == 0 && threads.running.is_empty() && threads.flight.is_none()
     }
 
-    /// Whether the driver that awaited the last flight dropped before
-    /// the flight's thread stopped, which ended the turn that left the
-    /// flight. The next driver takes up the thread's stop, and then
-    /// begins a turn of its own. The answer is taken: a second ask
-    /// answers `false`.
-    pub fn take_abandoned(&self) -> bool {
-        core::mem::take(&mut self.threads().abandoned)
-    }
-
     /// Start `entry`, whose core type is `ty`, with `args` as `thread`,
     /// as the store's flight, from a frame inside a guest call whose
     /// thread suspends for it: its shim may suspend here, as
@@ -517,33 +509,47 @@ impl HostSuspensionProvider {
     /// the driver, to the thread's next stop, and keep where it
     /// stopped for [`poll_stop`](SuspendProvider::poll_stop). A store
     /// with no flight has nothing to run.
+    ///
+    /// Where the future drops before the thread stops, the flight stays
+    /// with the store, under way: the thread runs on as far as it can
+    /// without the store, and the next driver's `fly` takes it up and
+    /// runs it to that stop. Dropping a driver cancels nothing.
     pub async fn fly<T: 'static>(&self, store: &mut StoreContext<'_, T>) {
         let Some(flight) = self.threads().flight.take() else {
             return;
         };
         let thread = flight.thread();
         self.threads().running.push(Running { thread, frames: 0 });
-        let mut abandoned = Abandoned {
-            threads: Arc::clone(&self.threads),
-            finished: self.finished.clone(),
-            thread,
-            armed: true,
-        };
-        let mut results: [RuntimeVal; 0] = [];
         let runtime = store.internal().runtime_mut();
-        let outcome = match flight {
+        let resumption = match flight {
             Flight::Start {
                 start, arguments, ..
-            } => {
-                let call = start.call_resumable(runtime, &arguments, &mut results);
-                until_finished(call, &self.finished, thread).await
-            }
-            Flight::Resume { call, .. } => {
-                let call = call.resume(runtime, &[], &mut results);
-                until_finished(call, &self.finished, thread).await
-            }
+            } => start.start_resumable(&mut *runtime, &arguments),
+            Flight::Resume { call, .. } => call.start_resume(&mut *runtime, &[]),
+            Flight::Underway { resumption, .. } => Ok(resumption),
         };
-        abandoned.armed = false;
+        let outcome = match resumption {
+            Ok(resumption) => {
+                let mut handoff = Handoff {
+                    threads: Arc::clone(&self.threads),
+                    thread,
+                    resumption: Some(resumption),
+                };
+                let mut results: [RuntimeVal; 0] = [];
+                let outcome = match handoff.resumption.as_mut() {
+                    Some(resumption) => {
+                        let stop = resumption.stop(&mut *runtime, &mut results);
+                        until_finished(stop, &self.finished, thread).await
+                    }
+                    None => None,
+                };
+                // The thread stopped, or handed over its results and
+                // reaches the store no more: nothing is left to take up.
+                handoff.resumption = None;
+                outcome
+            }
+            Err(error) => Some(Err(error)),
+        };
         let mut threads = self.threads();
         threads.leave(thread);
         let stop = match outcome {
@@ -703,7 +709,7 @@ fn export_func<T: 'static>(
 /// itself ends once the backend settles it, which in the browser is
 /// on a microtask, and the driver does not wait for that end. The
 /// runtime layer keeps the store for such a call until it ends, and
-/// traps the call should it reach the store again.
+/// keeps the call from the store should it reach the store again.
 async fn until_finished<F: Future>(call: F, finished: &Finished, thread: u32) -> Option<F::Output> {
     let mut call = pin!(call);
     poll_fn(|context| match call.as_mut().poll(context) {

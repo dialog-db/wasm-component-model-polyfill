@@ -530,6 +530,20 @@ fn engine(provider: bool) -> Engine {
         .expect("engine")
 }
 
+/// An engine with the stackful async and threading features, over a
+/// backend that declares host suspension, so it selects the
+/// host-suspension provider on every target: Wasmi natively, and the
+/// browser's engine in the browser.
+fn suspending_engine() -> Engine {
+    let mut config = EngineConfig::new();
+    config.wasm_component_model_async_stackful(true);
+    config.wasm_component_model_threading(true);
+    config.wasm_component_model_more_async_builtins(true);
+    Engine::with_backend(crate::runtime_layer::test_suspending_backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine")
+}
+
 /// Whether `engine` runs guest threads through a provider: the
 /// stack-switching provider natively on x86_64 Linux, and the
 /// host-suspension provider in a browser that ships JavaScript Promise
@@ -1802,17 +1816,19 @@ async fn it_runs_nothing_in_a_store_dropped_while_a_resumed_thread_has_yet_to_ru
     assert_eq!(notes.lock().expect("notes").clone(), vec![500, 99]);
 }
 
-#[cfg(target_arch = "wasm32")]
 #[wcmp_macros::test]
-async fn it_fails_the_next_call_with_the_trap_of_a_thread_whose_driver_was_dropped() {
+async fn it_takes_the_stop_of_a_resume_whose_driver_was_dropped_on_the_next_call() {
     // The first poll of the call resumes the export's thread, which
     // the browser runs on a microtask, and the test drops the call
-    // there. The runtime layer gives the store back to the host when
-    // the driver drops, so the thread traps the next time it reaches
-    // the store, and nothing learns how it ended. The next call's
-    // driver takes that stop before it does anything else, as the trap
-    // it is: the call fails with it, and the trap poisons the store.
-    let engine = engine(true);
+    // there. The resume stays with the store: the next call's driver
+    // takes the thread's stop before it does anything else, and runs
+    // its own thread to its end. The first thread went on in the
+    // meantime, so both threads dropped their handle. Wasmi runs a
+    // resume to its stop inside the poll that makes it, so there no
+    // resume outlives its call: the first call ends in its first poll,
+    // and the next one runs as it would anyway. The test below drops a
+    // call whose thread waits, on every backend.
+    let engine = suspending_engine();
     assert_eq!(
         engine.suspend_provider(),
         SuspendProviderKind::HostSuspension
@@ -1830,34 +1846,99 @@ async fn it_fails_the_next_call_with_the_trap_of_a_thread_whose_driver_was_dropp
 
     {
         let mut call = Box::pin(run.call(&mut store, &[]));
-        assert!(
-            poll_once(&mut call).is_pending(),
-            "the resumed thread runs on a microtask"
-        );
+        let first = poll_once(&mut call);
+        #[cfg(target_arch = "wasm32")]
+        assert!(first.is_pending(), "the resumed thread runs on a microtask");
+        #[cfg(not(target_arch = "wasm32"))]
+        drop(first);
     }
+    #[cfg(target_arch = "wasm32")]
     assert!(
         store.internal().context().internal().deferred_busy(),
         "the resume outlived the call that made it"
     );
 
-    let error = run
+    let result = run
         .call(&mut store, &[])
         .await
-        .expect_err("the next call fails with the dropped thread's trap");
-    assert!(
-        matches!(
-            error,
-            Error::Scheduler(crate::SchedulerCause::ThreadAbandoned)
-        ),
-        "expected the abandoned thread's trap, got {error:?}"
+        .expect("the next call runs to its end");
+    assert_eq!(result.as_ref(), [Val::U32(7)]);
+    assert_eq!(
+        notes.lock().expect("notes").clone(),
+        vec![99, 99],
+        "the thread whose call was dropped ran on, and so did the next one"
     );
-    let error = run
+}
+
+#[wcmp_macros::test]
+async fn it_runs_the_thread_of_a_dropped_call_in_a_later_call() {
+    // The first poll of the call suspends the export's thread on
+    // `hold`, which stays pending until the test releases it, and the
+    // test drops the call there, on every backend that declares host
+    // suspension. Dropping the call cancels nothing: its task stays in
+    // the store. The next call's driver runs until its own task
+    // returns, which on every provider is before the first thread goes
+    // on, and a later call's driver runs the first thread on to its end,
+    // where it drops its handle.
+    let engine = suspending_engine();
+    assert_eq!(
+        engine.suspend_provider(),
+        SuspendProviderKind::HostSuspension
+    );
+    let notes: Notes = Arc::default();
+    let mut linker = noting(&engine, &notes);
+    let gate: Arc<Mutex<Gate>> = Arc::default();
+    let held = gate.clone();
+    linker
+        .root()
+        .func_wrap_concurrent("hold", move |_accessor: &Accessor<()>, (): ()| {
+            let gated = Gated {
+                gate: held.clone(),
+                value: 0,
+            };
+            async move { gated.await.map(|_| ()) }
+        })
+        .expect("the registration");
+    let (mut store, instance) = instantiate(&engine, &linker, HOLDS_A_HANDLE_ACROSS_A_BLOCK).await;
+    let run = func(&instance, "run");
+
+    {
+        let mut call = Box::pin(run.call(&mut store, &[]));
+        assert!(
+            poll_once(&mut call).is_pending(),
+            "the thread waits on `hold`"
+        );
+    }
+    assert!(notes.lock().expect("notes").is_empty());
+    let waker = {
+        let mut gate = gate.lock().expect("gate");
+        gate.released = true;
+        gate.waker.take()
+    };
+    if let Some(waker) = waker {
+        waker.wake();
+    }
+
+    let result = run
         .call(&mut store, &[])
         .await
-        .expect_err("the trap poisoned the store");
-    assert!(
-        matches!(error, Error::Task(crate::TaskCause::CannotEnter)),
-        "expected the cannot-enter cause, got {error:?}"
+        .expect("the next call runs to its end");
+    assert_eq!(result.as_ref(), [Val::U32(7)]);
+    assert_eq!(
+        notes.lock().expect("notes").clone(),
+        vec![99],
+        "the next call's own thread ran to its end"
+    );
+
+    let result = run
+        .call(&mut store, &[])
+        .await
+        .expect("a later call runs to its end");
+    assert_eq!(result.as_ref(), [Val::U32(7)]);
+    assert_eq!(
+        notes.lock().expect("notes").clone(),
+        vec![99, 99, 99],
+        "the thread whose call was dropped ran on, and so did the later one"
     );
 }
 

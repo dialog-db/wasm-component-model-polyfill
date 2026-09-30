@@ -2,7 +2,7 @@
 
 use core::task::Poll;
 
-use crate::call::ResumableCall;
+use crate::call::{ResumableCall, Resumption};
 use crate::capability::Capability;
 use crate::checks;
 use crate::contract::HostFunc;
@@ -119,6 +119,7 @@ impl Func {
     /// finishes or traps can end only once the browser settles its promise.
     /// Where the future drops before the call ends, the host has the store
     /// back, as for [`SuspendedCall::resume`](crate::SuspendedCall::resume).
+    /// [`start_resumable`](Self::start_resumable) keeps the call instead.
     ///
     /// The backend must declare
     /// [`host_suspension`](Capability::HostSuspension). Where it does not,
@@ -138,5 +139,33 @@ impl Func {
         checks::same_store(backend, *self)?;
         checks::values_in_store(backend, params)?;
         backend.func_call_resumable(*self, params, results).await
+    }
+
+    /// Starts the function as a resumable call, and answers the call as a
+    /// [`Resumption`], whose [`stop`](Resumption::stop) waits for its end or
+    /// its suspension.
+    ///
+    /// This is [`call_resumable`](Self::call_resumable) in two steps. The
+    /// first stretch of the call runs here, so a call that suspends there
+    /// has stopped before the first wait. The handle keeps the call where a
+    /// wait's future drops, and a later wait takes it up.
+    ///
+    /// The backend must declare
+    /// [`host_suspension`](Capability::HostSuspension). Where it does not,
+    /// this is [`Error::Unsupported`](crate::Error::Unsupported).
+    pub fn start_resumable(
+        &self,
+        mut store: impl AsContextMut,
+        params: &[Val],
+    ) -> Result<Resumption> {
+        let mut store = store.as_context_mut();
+        store
+            .engine()
+            .capabilities()
+            .require(Capability::HostSuspension)?;
+        let backend = store.backend_mut();
+        checks::same_store(backend, *self)?;
+        checks::values_in_store(backend, params)?;
+        backend.func_start_resumable(*self, params)
     }
 }

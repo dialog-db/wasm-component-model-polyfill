@@ -191,8 +191,9 @@ const RETURNED: i32 = 0;
 const FAILED: i32 = 1;
 
 /// The status that `invoke` returns to the wrapper of a suspending host
-/// function that answered "not yet" where the call may suspend. The
-/// wrapper then calls `suspend`.
+/// function that answered "not yet" where the call may suspend, and that
+/// `resumed` returns where the resumed call parks. The wrapper then calls
+/// `suspend`.
 const SUSPENDED: i32 = 2;
 
 /// The error of a flight that reaches its store after the host took the
@@ -330,6 +331,29 @@ impl Calls {
         self.running
             .borrow_mut()
             .insert(flight.id(), flight.clone());
+    }
+
+    /// Takes up `flight`, a resumable call of the store, for a wait that
+    /// borrows the store until the flight stops: grants it the store again,
+    /// as [`Calls::run_flight`] does, and lets its stack run on where it
+    /// parked. A flight that stopped already needs nothing: the wait takes
+    /// its stop.
+    ///
+    /// The wait borrows the store from here until the flight stops, so the
+    /// flight's reference to the store meets no other, as for a flight that
+    /// was just started or resumed.
+    pub fn adopt(&self, flight: &Rc<Flight>) -> Result<()> {
+        if !flight.runs() {
+            return Ok(());
+        }
+        self.run_flight(flight);
+        match flight.unpark() {
+            Some(resolve) => resolve
+                .call0(&JsValue::UNDEFINED)
+                .map(|_| ())
+                .map_err(|error| errors::call(&error)),
+            None => Ok(()),
+        }
     }
 
     /// Records that `flight`, an instantiation, waits for the browser.
@@ -518,7 +542,11 @@ impl Calls {
 
     /// `resumed`: the resumed stack of a resumable call that waited in the
     /// frame `frame` runs again. Answers [`RETURNED`] where the call may
-    /// reach its store, and [`FAILED`] otherwise, and the wrapper traps.
+    /// reach its store. Where the host took the store back, the flight
+    /// parks: this answers [`SUSPENDED`], and the wrapper waits in
+    /// `suspend` again, until a wait takes the flight up and lets it run on
+    /// ([`Calls::adopt`]). Where no flight waited in the frame, this answers
+    /// [`FAILED`], and the wrapper traps.
     pub fn resumed(&self, frame: u32) -> i32 {
         let flight = self
             .frames
@@ -532,12 +560,18 @@ impl Calls {
                 drop(previous);
                 RETURNED
             }
-            flight => {
+            // Nothing waits for the flight now, and the host may hold the
+            // store. The stack waits again, without reaching the store, and
+            // `suspend` finds the flight where it finds the one that runs.
+            Some(flight) => {
+                flight.park();
+                let previous = self.current.borrow_mut().replace(flight);
+                drop(previous);
+                SUSPENDED
+            }
+            None => {
                 let closed = self.frames.borrow_mut().remove(frame);
                 drop(closed);
-                if let Some(flight) = flight {
-                    flight.fail(anyhow::anyhow!(TAKEN_BACK));
-                }
                 FAILED
             }
         }

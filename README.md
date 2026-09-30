@@ -287,9 +287,6 @@ Under host suspension in the browser, a few rare shapes differ from native:
   without the engine's reason. The browser reports that reason only to a caller
   that awaits the call, and a host function cannot. One directive of the
   conformance corpora reaches this.
-- Dropping the future of a call while a guest thread it resumed still runs traps
-  that thread: the next driver of the store fails with
-  `SchedulerCause::ThreadAbandoned`, and the store is poisoned.
 
 ### A trap poisons the store
 

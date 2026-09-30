@@ -242,13 +242,17 @@
 //! does. Each is a flight: it reaches the store through the allocation that
 //! owns the store, never through a pointer that a borrow made, and only
 //! while its permit holds. The permit is the store's epoch at the moment
-//! the flight started or resumed, and every method of the store that the
+//! the flight started or resumed, or a wait took it up, and every method of the store that the
 //! host calls moves the epoch on. So:
 //!
-//! - A future of `call_resumable`, `resume`, or `instantiate` that drops
-//!   before its call stops gives the store back to the host. The call runs
-//!   on, on its microtask, and traps as soon as it resumes or calls a host
-//!   function, without reaching the store. The same holds for a future
+//! - A future of `call_resumable`, `resume`, `stop`, or `instantiate` that
+//!   drops before its call stops gives the store back to the host. A
+//!   resumed stack runs on, on its microtask, and parks as soon as it
+//!   resumes, without reaching the store: it suspends again where it
+//!   resumed. The next `stop` of its `Resumption` grants it the store again
+//!   and lets it run on, and where nothing holds the `Resumption` any more,
+//!   it never runs again. A start function traps as soon as it calls a
+//!   host function, without reaching the store. The same holds for a future
 //!   that the host forgets and then uses the store.
 //! - A store that drops while a resumption is under way stays allocated
 //!   until the resumed call reaches its next suspension or its end. Nothing
@@ -281,6 +285,7 @@ mod module;
 mod objects;
 mod owner;
 mod probes;
+mod resumption;
 mod returns;
 mod store;
 mod suspended;

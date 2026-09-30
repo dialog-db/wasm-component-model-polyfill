@@ -51,17 +51,19 @@ use crate::values::{self, Kind};
 ///
 /// ```text
 ///   status = invoke(frame)
-///   if status == failed: unreachable
-///   if status == suspended:
+///   while status == suspended:
 ///     suspend(frame)                ;; a `WebAssembly.Suspending` import
-///     if resumed(frame): unreachable ;; the call may not reach its store
+///     status = resumed(frame)       ;; suspended again where the call parks
+///   if status == failed: unreachable
 ///   result(frame, each result) ...  ;; the results the host resumed with
 /// ```
 ///
 /// The stack suspends inside `suspend` until the host resumes the call, and
-/// runs on from there on a microtask. The wrapper calls `suspend` only on
-/// "not yet", because Chromium suspends on every call of a suspending
-/// import, even one whose promise already resolved.
+/// runs on from there on a microtask. Where the host took the store back in
+/// the meantime, the call parks: it suspends again, without reaching the
+/// store, until the host waits for it again. The wrapper calls `suspend`
+/// only on "not yet", because Chromium suspends on every call of a
+/// suspending import, even one whose promise already resolved.
 ///
 /// The JavaScript functions are the store's, and each wrapper instance
 /// imports them with the index of its host function as a global. So the
@@ -664,15 +666,22 @@ fn generate(ty: &FuncType, uses_exns: bool, suspending: bool) -> Result<Vec<u8>>
     code.local_get(frame).call(INVOKE).local_set(status);
     if suspending {
         // 2: the host function said "not yet" inside a resumable call.
+        // `resumed` answers 2 again where the resumed call parks, and the
+        // stack waits in `suspend` once more.
         code.local_get(status)
             .i32_const(2)
             .i32_eq()
             .if_(BlockType::Empty)
+            .loop_(BlockType::Empty)
             .local_get(frame)
             .call(SUSPEND)
             .local_get(frame)
             .call(RESUMED)
-            .local_set(status)
+            .local_tee(status)
+            .i32_const(2)
+            .i32_eq()
+            .br_if(0)
+            .end()
             .end();
     }
     code.local_get(status)

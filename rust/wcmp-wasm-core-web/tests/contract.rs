@@ -62,6 +62,7 @@ wcmp_wasm_core_contract::contract_tests!(
     it_traps_a_suspension_outside_a_resumable_call,
     it_traps_a_resumable_call_with_the_error_of_a_host_function,
     it_gives_the_store_back_when_the_future_of_a_resumption_drops,
+    it_takes_up_a_resumption_whose_wait_dropped,
     it_reads_and_writes_a_memory,
     it_grows_a_memory_up_to_its_maximum,
     it_lends_the_bytes_of_a_range,

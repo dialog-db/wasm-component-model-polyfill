@@ -226,7 +226,6 @@ pub wcmp::SchedulerCause::RecursiveDriver
 pub wcmp::SchedulerCause::StackSwitchNeeded
 pub wcmp::SchedulerCause::StoreNotInPoll
 pub wcmp::SchedulerCause::TableFull
-pub wcmp::SchedulerCause::ThreadAbandoned
 pub enum wcmp::StreamResult
 pub wcmp::StreamResult::Cancelled
 pub wcmp::StreamResult::Completed

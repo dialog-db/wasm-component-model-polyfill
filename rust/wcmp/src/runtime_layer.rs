@@ -37,8 +37,8 @@ pub use wcmp_wasm_core::backend::Backend;
 pub use wcmp_wasm_core::{
     AsContextMut, Caller, Capabilities, Capability, Engine, Error as RuntimeError, Extern,
     ExternType, Func, FuncType, Global, GlobalType, HeapType, Instance, MaybeSend, Memory, Module,
-    Mutability, ResumableCall, Store, StoreContextMut, SuspendedCall, Table, TrapKind, Val,
-    ValType,
+    Mutability, ResumableCall, Resumption, Store, StoreContextMut, SuspendedCall, Table, TrapKind,
+    Val, ValType,
 };
 
 /// The backend the crate's own tests hand their engines: Wasmtime

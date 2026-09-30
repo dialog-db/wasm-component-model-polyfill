@@ -412,6 +412,85 @@ pub async fn it_gives_the_store_back_when_the_future_of_a_resumption_drops(engin
     assert_eq!(log.events(), expected, "no host function ran again");
 }
 
+/// A call resumed in two steps, with a resumption and a wait for its stop,
+/// keeps its place where the future of a wait drops. One wait drops before
+/// it is polled, and one after its first poll, where the call is still under
+/// way. The host uses the store in between, and the call reaches the store
+/// no more meanwhile: its host functions do not run. The next wait takes
+/// the call up, and it runs on to its next suspension, host functions
+/// included. The handle of that suspension finishes the call, and the
+/// spent resumption answers no second stop.
+pub async fn it_takes_up_a_resumption_whose_wait_dropped(engine: &Engine) {
+    if !support::declares(engine, &[Capability::HostSuspension]) {
+        return;
+    }
+    let mut store = support::store(engine, 0u32);
+    let log = Log::default();
+    let (wait, note) = host_functions(&mut store, &log);
+    let instance = support::instance(&mut store, TWICE, &[wait.into(), note.into()]).await;
+    let run = support::func(&mut store, instance, "run");
+
+    let mut results = [Val::I32(0)];
+    let outcome = run
+        .call_resumable(&mut store, &[Val::I32(1)], &mut results)
+        .await;
+    let mut resumption = waiting(outcome)
+        .start_resume(&mut store, &[Val::I32(7)])
+        .expect("the call resumes");
+
+    let mut results = [Val::I32(0)];
+    drop(resumption.stop(&mut store, &mut results));
+    let first = {
+        let mut stop = pin!(resumption.stop(&mut store, &mut results));
+        poll_fn(|context| Poll::Ready(stop.as_mut().poll(context))).await
+    };
+    let outcome = match first {
+        Poll::Ready(outcome) => outcome,
+        // A backend that resumes on a microtask leaves the call under way.
+        Poll::Pending => {
+            *store.data_mut() += 1;
+            let_others_run(8).await;
+            assert_eq!(
+                log.events(),
+                [Event::Waits(1)],
+                "the call reaches the store no more while nothing waits for it"
+            );
+            resumption.stop(&mut store, &mut results).await
+        }
+    };
+    let again = waiting(outcome);
+    assert_eq!(
+        log.events(),
+        [Event::Waits(1), Event::Notes(7), Event::Waits(8)]
+    );
+
+    let mut results = [Val::I32(0)];
+    let outcome = again.resume(&mut store, &[Val::I32(9)], &mut results).await;
+    assert_eq!(finished(outcome, &results), [Some(9)]);
+    let spent = resumption.stop(&mut store, &mut results).await;
+    assert!(
+        matches!(spent, Err(Error::Backend { .. })),
+        "a resumption answers one stop: {spent:?}"
+    );
+}
+
+/// Lets the host's executor run other work `times` times, the browser's
+/// microtasks included, before it polls the caller again.
+async fn let_others_run(times: usize) {
+    for _ in 0..times {
+        let mut yielded = false;
+        poll_fn(|context| {
+            if yielded {
+                return Poll::Ready(());
+            }
+            yielded = true;
+            context.waker().wake_by_ref();
+            Poll::Pending
+        })
+        .await;
+    }
+}
+
 /// Whether `error` is the trap of a suspending host function that answered
 /// "not yet" where its call cannot suspend: [`TrapKind::Host`], with a
 /// message that says so, on every backend.

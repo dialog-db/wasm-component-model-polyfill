@@ -424,17 +424,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             if self.run_deferred_work(waker)?.is_pending() {
                 return Ok(Outcome::Resuming);
             }
-            let mut resume = core::mem::take(&mut self.scheduler_mut().deferred_mut().turn_open);
-            // A driver that dropped while it awaited a thread ended the
-            // turn it ran, and this driver took up the thread's stop in
-            // its place. It runs a turn of its own from here, as it would
-            // have had that turn ended before it.
-            if self
-                .provider()
-                .is_some_and(|provider| provider.take_abandoned())
-            {
-                resume = false;
-            }
+            let resume = core::mem::take(&mut self.scheduler_mut().deferred_mut().turn_open);
             let outcome = self.run_turn(waker, false, None, resume)?;
             if !self.defers_work() {
                 return Ok(outcome);

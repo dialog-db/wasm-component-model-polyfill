@@ -127,16 +127,6 @@ impl StoreProvider {
         }
     }
 
-    /// Whether the driver that awaited the store's last flight dropped
-    /// before the flight's thread stopped. Only the host-suspension
-    /// provider leaves a flight. The answer is taken.
-    pub fn take_abandoned(&self) -> bool {
-        match self {
-            Self::StackSwitching(_) => false,
-            Self::HostSuspension(provider) => provider.take_abandoned(),
-        }
-    }
-
     /// Run the store's flight, the start or the resume a turn left for
     /// the driver, until the thread stops. Only the host-suspension
     /// provider leaves one.

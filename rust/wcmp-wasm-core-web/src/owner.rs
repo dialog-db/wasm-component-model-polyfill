@@ -4,15 +4,17 @@ use core::any::Any;
 use std::rc::Rc;
 
 use wcmp_wasm_core::backend::{
-    BackendModule, BackendStore, BackendSuspendedCall, BoxFuture, HostFunc, StoreData,
+    BackendModule, BackendResumption, BackendStore, BackendSuspendedCall, BoxFuture, HostFunc,
+    StoreData,
 };
 use wcmp_wasm_core::{
     AnyRef, Error, Extern, ExternRef, Func, FuncType, Global, GlobalType, I31, Instance, Memory,
-    MemoryType, Result, ResumableCall, Table, TableType, Tag, TagType, Val,
+    MemoryType, Result, ResumableCall, Resumption, Table, TableType, Tag, TagType, Val,
 };
 
 use crate::calls::Calls;
 use crate::cell::StoreCell;
+use crate::resumption::WebResumption;
 use crate::store::WebStore;
 use crate::suspended::WebSuspendedCall;
 
@@ -24,7 +26,8 @@ use crate::suspended::WebSuspendedCall;
 /// the store's epoch on, which ends every permit, and only then reaches the
 /// store. A flight that runs after the host took the store back, because
 /// the future that waited for it dropped or the host used the store since,
-/// finds its permit gone and traps without reaching the store.
+/// finds its permit gone and does not reach the store: a resumed stack
+/// parks until a wait takes it up again, and a start function traps.
 ///
 /// A forgotten future of the owner no longer borrows the store, yet its
 /// flight keeps its permit, so the flight's host function can hold the
@@ -166,13 +169,56 @@ impl BackendStore for Owner {
                 .downcast::<WebSuspendedCall>()
                 .map_err(|_| Error::WrongStore)?;
             let WebSuspendedCall { flight, returns } = *call;
-            self.store_mut()?.start_resume(&flight, import_results)?;
+            self.store_mut()?.resume_flight(&flight, import_results)?;
             // The resumed stack runs on a microtask, and reaches the store
             // as the flight, whose permit is the epoch from here until the
             // host next reaches the store.
             let stop = flight.stop().await;
             self.store_mut()?
                 .finish_resumable(flight, returns, stop, results)
+        })
+    }
+
+    fn func_start_resumable(&mut self, func: Func, params: &[Val]) -> Result<Resumption> {
+        self.store_mut()?.func_start_resumable(func, params)
+    }
+
+    fn start_resume(
+        &mut self,
+        call: Box<dyn BackendSuspendedCall>,
+        import_results: &[Val],
+    ) -> Result<Resumption> {
+        let call = call
+            .into_any()
+            .downcast::<WebSuspendedCall>()
+            .map_err(|_| Error::WrongStore)?;
+        let WebSuspendedCall { flight, returns } = *call;
+        let store = self.store_mut()?;
+        store.resume_flight(&flight, import_results)?;
+        Ok(Resumption::new(
+            store.data().id(),
+            Box::new(WebResumption { flight, returns }),
+        ))
+    }
+
+    fn stop_resumption<'a>(
+        &'a mut self,
+        resumption: &'a mut dyn BackendResumption,
+        results: &'a mut [Val],
+    ) -> BoxFuture<'a, Result<ResumableCall>> {
+        Box::pin(async move {
+            let resumption = resumption
+                .as_any_mut()
+                .downcast_mut::<WebResumption>()
+                .ok_or(Error::WrongStore)?;
+            let flight = resumption.flight.clone();
+            // The wait takes the flight up: its permit is the epoch from
+            // here until the host next reaches the store, and a stack that
+            // parked while nothing waited for it runs on.
+            self.store_mut()?.adopt(&flight)?;
+            let stop = flight.stop().await;
+            self.store_mut()?
+                .finish_resumable(flight, resumption.returns.clone(), stop, results)
         })
     }
 

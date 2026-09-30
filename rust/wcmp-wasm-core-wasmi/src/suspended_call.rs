@@ -22,6 +22,11 @@ impl WasmiSuspendedCall {
         Self { call, results }
     }
 
+    /// The number of results of the call.
+    pub fn result_count(&self) -> usize {
+        self.results.len()
+    }
+
     /// Wasmi's handle of the call, and the types of the call's results.
     pub fn into_parts(self) -> (wasmi::ResumableCallHostTrap, Vec<wasmi::ValType>) {
         (self.call, self.results)

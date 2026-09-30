@@ -2,6 +2,7 @@
 
 mod backend;
 mod backend_module;
+mod backend_resumption;
 mod backend_store;
 mod backend_suspended_call;
 mod box_future;
@@ -13,6 +14,7 @@ mod raw_type_handle;
 
 pub use backend::Backend;
 pub use backend_module::BackendModule;
+pub use backend_resumption::BackendResumption;
 pub use backend_store::BackendStore;
 pub use backend_suspended_call::BackendSuspendedCall;
 pub use box_future::BoxFuture;

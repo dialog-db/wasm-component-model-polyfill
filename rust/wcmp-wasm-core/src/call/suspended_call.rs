@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use crate::call::ResumableCall;
+use crate::call::{ResumableCall, Resumption};
 use crate::capability::Capability;
 use crate::checks;
 use crate::contract::BackendSuspendedCall;
@@ -42,9 +42,11 @@ impl SuspendedCall {
     /// own is [`Error::WrongStore`](crate::Error::WrongStore).
     ///
     /// Where the future drops before the resumption ends, the host has the
-    /// store back. A backend that runs the rest of the call on a microtask
-    /// lets it run on, but the call no longer reaches the store: it traps
-    /// the next time it would, and nothing waits for its end. Only where the
+    /// store back, and the call is lost. A backend that runs the rest of the
+    /// call on a microtask lets it run on, but the call no longer reaches the
+    /// store: it stops the next time it would, never to run again, and
+    /// nothing waits for its end. [`start_resume`](Self::start_resume) keeps
+    /// the call instead. Only where the
     /// store drops first does the call run to its next suspension or its
     /// end with the state of the store, since nothing else can reach it
     /// then.
@@ -77,6 +79,38 @@ impl SuspendedCall {
         backend
             .resume_call(self.inner, import_results, results)
             .await
+    }
+
+    /// Resumes the call with `import_results`, the results of the
+    /// suspending host function, and answers the call as a [`Resumption`],
+    /// whose [`stop`](Resumption::stop) waits for its next suspension or its
+    /// end.
+    ///
+    /// This is [`resume`](Self::resume) in two steps. The handle keeps the
+    /// call where a wait's future drops, and a later wait takes it up. A
+    /// call resumed with a store other than its own is
+    /// [`Error::WrongStore`](crate::Error::WrongStore), and a resumption from
+    /// inside a host function fails as for [`resume`](Self::resume).
+    ///
+    /// The backend must declare
+    /// [`host_suspension`](Capability::HostSuspension). Where it does not,
+    /// this is [`Error::Unsupported`](crate::Error::Unsupported).
+    pub fn start_resume(
+        self,
+        mut store: impl AsContextMut,
+        import_results: &[Val],
+    ) -> Result<Resumption> {
+        let mut store = store.as_context_mut();
+        store
+            .engine()
+            .capabilities()
+            .require(Capability::HostSuspension)?;
+        let backend = store.backend_mut();
+        if backend.data().id() != self.store {
+            return Err(crate::Error::WrongStore);
+        }
+        checks::values_in_store(backend, import_results)?;
+        backend.start_resume(self.inner, import_results)
     }
 }
 

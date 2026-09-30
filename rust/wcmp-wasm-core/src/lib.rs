@@ -56,6 +56,11 @@
 //! are asynchronous, because the browser delivers the end of a resumed call
 //! through a promise.
 //!
+//! [`Func::start_resumable`] and [`SuspendedCall::start_resume`] split each
+//! step in two: they start the call and answer a [`Resumption`], and
+//! [`Resumption::stop`] waits for its stop. A wait whose future drops leaves
+//! the call with the handle, and a later wait takes it up again.
+//!
 //! # Traps and errors
 //!
 //! Every fallible method returns an [`Error`]. A trap is [`Error::Trap`],
@@ -78,7 +83,7 @@ mod store;
 mod types;
 mod values;
 
-pub use crate::call::{ResumableCall, SuspendedCall};
+pub use crate::call::{ResumableCall, Resumption, SuspendedCall};
 pub use crate::capability::{Capabilities, Capability};
 pub use crate::contract::{MaybeSend, MaybeSync};
 pub use crate::engine::Engine;
@@ -96,7 +101,7 @@ pub mod backend {
     //! The contract a backend implements.
     //!
     //! A backend is a crate that runs core WebAssembly on one engine. It
-    //! implements four traits:
+    //! implements five traits:
     //!
     //! - [`Backend`] for the engine: its capabilities, its compiles, and its
     //!   stores.
@@ -109,6 +114,9 @@ pub mod backend {
     //!   [`host_suspension`](crate::Capability::HostSuspension). The store
     //!   resumes the call, through [`BackendStore::resume_call`], so the
     //!   backend reaches its own concrete store when it resumes.
+    //! - [`BackendResumption`] for a call that runs, where the backend declares
+    //!   host suspension. The store waits for it, through
+    //!   [`BackendStore::stop_resumption`].
     //!
     //! A backend names the objects of a store with handles. It makes each
     //! handle with [`RawHandle::from_raw`], from the [`StoreId`] its
@@ -125,8 +133,8 @@ pub mod backend {
     //! it does not know. A backend never panics on a path a host can reach.
 
     pub use crate::contract::{
-        Backend, BackendModule, BackendStore, BackendSuspendedCall, BoxFuture, HostFunc, RawHandle,
-        RawTypeHandle,
+        Backend, BackendModule, BackendResumption, BackendStore, BackendSuspendedCall, BoxFuture,
+        HostFunc, RawHandle, RawTypeHandle,
     };
     pub use crate::store::{StoreData, StoreId};
 }

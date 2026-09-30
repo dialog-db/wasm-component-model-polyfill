@@ -73,6 +73,7 @@ pub use crate::suspension::{
     it_refuses_host_suspension_where_it_is_not_declared,
     it_resumes_calls_that_wait_at_once_in_any_order,
     it_runs_a_resumption_in_flight_to_its_next_stop_when_the_store_drops,
+    it_takes_up_a_resumption_whose_wait_dropped,
     it_traps_a_resumable_call_with_the_error_of_a_host_function,
     it_traps_a_suspension_outside_a_resumable_call,
 };
@@ -121,6 +122,7 @@ macro_rules! contract_tests {
             it_resumes_calls_that_wait_at_once_in_any_order,
             it_runs_a_resumption_in_flight_to_its_next_stop_when_the_store_drops,
             it_gives_the_store_back_when_the_future_of_a_resumption_drops,
+            it_takes_up_a_resumption_whose_wait_dropped,
             it_finishes_a_resumable_call_that_does_not_suspend,
             it_traps_a_suspension_outside_a_resumable_call,
             it_traps_a_resumable_call_with_the_error_of_a_host_function,
