@@ -498,6 +498,52 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
     /// read happens. A crossing that is not such a copy reads its
     /// own side, under its own strategy.
     pub fn read_source_bytes(&mut self, offset: usize, length: usize) -> Result<Vec<u8>> {
+        self.accesses += 1;
+        let (store, options, strategy) = self.source_side();
+        strategy
+            .load(store, options, offset, length)
+            .map_err(Self::unlabelled)
+    }
+
+    /// Lend the `length` bytes at `offset` of the side a copy between
+    /// two guest memories reads from to `f`, and return what `f`
+    /// returns. Natively the bytes are the guest's own, so the host
+    /// holds no copy of them; in the browser the host holds one copy
+    /// of the range while `f` runs.
+    pub fn with_source_bytes<R>(
+        &mut self,
+        offset: usize,
+        length: usize,
+        f: impl FnOnce(&[u8]) -> R,
+    ) -> Result<R> {
+        self.accesses += 1;
+        let (store, options, strategy) = self.source_side();
+        strategy
+            .with_bytes(store, options, offset, length, f)
+            .map_err(Self::unlabelled)
+    }
+
+    /// Whether `length` bytes at `offset` lie inside the side a copy
+    /// between two guest memories reads from. `true` when that side
+    /// addresses no bounded store, so the read reports the absence
+    /// itself.
+    pub fn source_in_bounds(&mut self, offset: usize, length: usize) -> bool {
+        let (store, options, strategy) = self.source_side();
+        match strategy.size(store, options) {
+            Some(size) => offset.checked_add(length).is_some_and(|end| end <= size),
+            None => true,
+        }
+    }
+
+    /// Copy the `length` bytes at `source_offset` of the side a copy
+    /// between two guest memories reads from to `offset` of the side
+    /// it writes to, guest to guest, with no buffer on the host.
+    pub fn copy_from_source(
+        &mut self,
+        source_offset: usize,
+        offset: usize,
+        length: usize,
+    ) -> Result<()> {
         let Self {
             store,
             options,
@@ -507,13 +553,30 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
             ..
         } = self;
         *accesses += 1;
-        let (options, strategy) = match source {
-            Some((source_options, source_strategy)) => (&*source_options, &*source_strategy),
-            None => (&*options, &*strategy),
+        let source = match source {
+            Some((source_options, source_strategy)) => (&*source_strategy, &*source_options),
+            None => (&*strategy, &*options),
         };
         strategy
-            .load(store, options, offset, length)
+            .copy(store, options, source, source_offset, offset, length)
             .map_err(Self::unlabelled)
+    }
+
+    /// The store, the options, and the strategy of the side a copy
+    /// between two guest memories reads from, which for any other
+    /// crossing is its own side.
+    fn source_side(&mut self) -> (&mut StoreContextMut<'a, T>, &BoundaryOptions, &AbiStrategy) {
+        let Self {
+            store,
+            options,
+            source,
+            strategy,
+            ..
+        } = self;
+        match source {
+            Some((source_options, source_strategy)) => (store, source_options, source_strategy),
+            None => (store, options, strategy),
+        }
     }
 
     /// Read `length` bytes at `offset` out of the side this crossing

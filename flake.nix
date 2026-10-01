@@ -1549,10 +1549,13 @@
                   # The polyfill's tests on the Wasmi backend, from the
                   # archive the debug lane builds. The runtime layer's own
                   # crates choose no backend at run time, so only the
-                  # polyfill's tests run again.
+                  # polyfill's tests run again. Its profile runs the tests
+                  # that hold memories of several GiB on Wasmi one at a
+                  # time.
                   wasmi = menuTestCommand {
                     description = "The polyfill's unit and integration tests on the Wasmi backend, from the debug lane's build (${system}, debug)";
                     package = "tests-native-debug";
+                    nextestProfile = "wasmi";
                     backend = "wasmi";
                     filter = "package(wcmp)";
                     summary = true;

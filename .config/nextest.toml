@@ -15,19 +15,23 @@
 [profile.default]
 default-filter = "not test(/without_a_provider$/) and not (binary(zena) and test(=it_holds_every_subject_to_the_record_and_prints_the_report)) and not binary(fidelity)"
 
-# The corpus files Wasmtime's runner marks `;;! hogs_memory = true`, and
-# the progress test, which runs every file in one process, each hold
-# memories of several GiB: `wasmtime/memory64.wast` declares one of
-# 65538 pages, and `wasmtime/big-strings.wast` grows each fresh instance
-# by 65530. A backend that commits a memory's pages as it grows (Wasmi
-# zero-fills a `Vec`) holds all of it, 4 to 5 GiB for either file, where
-# Wasmtime reserves the address space and commits only what the test
-# touches. They run one at a time, beside the other tests, so no two of
-# them hold such a memory together.
+# The Wasmi lane (`tests native wasmi`): the default profile's tests on
+# the Wasmi backend. The corpus files Wasmtime's runner marks
+# `;;! hogs_memory = true`, and the progress test, which runs every file
+# in one process, each hold memories of several GiB there:
+# `wasmtime/memory64.wast` declares one of 65538 pages, and
+# `wasmtime/big-strings.wast` grows each fresh instance by 65530. Wasmi
+# commits a memory's pages as it grows (it zero-fills a `Vec`), so it
+# holds all of it, 4 to 5 GiB for either file. They run one at a time,
+# beside the other tests, so no two of them hold such a memory together.
+# Wasmtime reserves the address space and commits only what a test
+# touches, so on Wasmtime and in the browser none of them is a hog.
 [test-groups]
 memory-hogs = { max-threads = 1 }
 
-[[profile.default.overrides]]
+[profile.wasmi]
+
+[[profile.wasmi.overrides]]
 filter = "binary(conformance) and (test(/^it_passes_wasmtime_(big_strings|memory64)(::|$)/) or test(/^it_reports_conformance_progress/))"
 test-group = "memory-hogs"
 

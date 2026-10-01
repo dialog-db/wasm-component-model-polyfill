@@ -178,22 +178,27 @@ Wasmi, from the failures the regenerated shared list does not name.
 Two files of Wasmtime's suite carry `;;! hogs_memory = true`, and both
 take several GiB of memory on Wasmi. `wasmtime/memory64.wast` declares a
 64-bit memory of 65538 pages. `wasmtime/big-strings.wast` grows the
-memory of each fresh instance of `$A` by 65530 pages, its `realloc` grows
-the callee's memory toward the length of a string of up to 3 GiB, and the
-polyfill's transcoder reads the whole source string into the host before
-it transcodes. Wasmtime reserves a memory's address space and commits only
-the pages a guest touches. Wasmi backs a memory with a `Vec` and
-zero-fills it as it grows (`wasmi_core` 2.0.0,
+memory of each fresh instance of `$A` by 65530 pages, and its `realloc`
+grows the callee's memory toward the length of a string of up to 3 GiB.
+The polyfill's transcoder lends the host 64 KiB of the source string at a
+time and copies between the two guest memories with no buffer on the
+host, so it adds no copy of the string. Wasmtime reserves a memory's
+address space and commits only the pages a guest touches. Wasmi backs a
+memory with a `Vec` and zero-fills it as it grows (`wasmi_core` 2.0.0,
 `crates/core/src/memory/buffer.rs:143`), so it holds every page. Measured
-alone in the debug build, `memory64.wast` peaks at 22 MiB on Wasmtime and
-3.6 GiB on Wasmi, and `big-strings.wast` at 4.1 GiB on Wasmtime (the
-transcoder's copies) and 9.2 GiB on Wasmi. The progress test, which runs
-every file in one process, peaks with `big-strings.wast`. Both files pass
-on Wasmi. Wasmtime's own runner skips such files only under its pooling
-allocator (`crates/test-util/src/wast.rs` at `cb091c33cece`). Here they
-stay in every lane, and `.config/nextest.toml` puts the two files and the
-progress test in a test group that runs one at a time, so no two of them
-hold such memories together.
+alone in the debug build, as the peak resident set of the run,
+`memory64.wast` peaks at 34 MiB on Wasmtime and 4112 MiB on Wasmi, and
+`big-strings.wast` at 34 MiB on Wasmtime and 5134 MiB on Wasmi. The
+progress test, which runs every file in one process, peaks at 171 MiB on
+Wasmtime and 5141 MiB on Wasmi. When the transcoder read the whole source
+string into the host, `big-strings.wast` peaked at 4125 MiB on Wasmtime
+and 9230 MiB on Wasmi. Both files pass on Wasmi. Wasmtime's own runner
+skips such files only under its pooling allocator
+(`crates/test-util/src/wast.rs` at `cb091c33cece`). Here they stay in
+every lane. The Wasmi lane runs under its own nextest profile, which puts
+the two files and the progress test in a test group that runs one at a
+time, so no two of them hold such memories together. The other lanes need
+no such group.
 
 The shared list records the best case: the failures under a suspend
 provider. `expected-failures.no-provider.txt` is the overlay of the

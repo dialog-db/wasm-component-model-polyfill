@@ -16,7 +16,7 @@
 use crate::abi::options::BoundaryOptions;
 use crate::error::AbiCause;
 use crate::executor::ir::DataModel;
-use crate::runtime_layer::{StoreContextMut, Val as RuntimeVal, into_anyhow};
+use crate::runtime_layer::{Memory, StoreContextMut, Val as RuntimeVal, into_anyhow};
 
 /// Which canonical-ABI strategy a crossing performs its accesses
 /// under.
@@ -66,6 +66,71 @@ impl AbiStrategy {
                 Ok(buffer)
             }
             Self::Lazy => Err(AbiCause::UnsupportedDataModel),
+        }
+    }
+
+    /// Lend the `length` bytes at `offset` through `options` to `f`,
+    /// and return what `f` returns. The runtime layer lends the
+    /// memory's own bytes where it can, so natively the read copies
+    /// nothing, and in the browser it copies the range once.
+    pub fn with_bytes<T: 'static, R>(
+        &self,
+        store: &mut StoreContextMut<'_, T>,
+        options: &BoundaryOptions,
+        offset: usize,
+        length: usize,
+        f: impl FnOnce(&[u8]) -> R,
+    ) -> Result<R, AbiCause> {
+        match self {
+            Self::Eager => {
+                let memory = options
+                    .memory()
+                    .ok_or(AbiCause::OutOfBoundsMemory { offset, length })?;
+                #[cfg(test)]
+                count_access(|(reads, writes)| (reads + 1, writes));
+                memory
+                    .with_bytes(&mut *store, offset as u64, length, f)
+                    .map_err(|error| AbiCause::SubstrateFailure(into_anyhow(error)))
+            }
+            Self::Lazy => Err(AbiCause::UnsupportedDataModel),
+        }
+    }
+
+    /// Copy the `length` bytes at `source_offset` of the side
+    /// `source` names to `offset` through `options`, from one guest
+    /// memory to the other with no buffer on the host. Both sides
+    /// must address linear memory.
+    pub fn copy<T: 'static>(
+        &self,
+        store: &mut StoreContextMut<'_, T>,
+        options: &BoundaryOptions,
+        source: (&AbiStrategy, &BoundaryOptions),
+        source_offset: usize,
+        offset: usize,
+        length: usize,
+    ) -> Result<(), AbiCause> {
+        match (source.0, self) {
+            (Self::Eager, Self::Eager) => {
+                let from = source.1.memory().ok_or(AbiCause::OutOfBoundsMemory {
+                    offset: source_offset,
+                    length,
+                })?;
+                let to = options
+                    .memory()
+                    .ok_or(AbiCause::OutOfBoundsMemory { offset, length })?;
+                #[cfg(test)]
+                count_access(|(reads, writes)| (reads + 1, writes + 1));
+                Memory::copy(
+                    &mut *store,
+                    from,
+                    source_offset as u64,
+                    to,
+                    offset as u64,
+                    length as u64,
+                )
+                .map_err(|error| AbiCause::SubstrateFailure(into_anyhow(error)))
+            }
+            _ => Err(AbiCause::UnsupportedDataModel),
         }
     }
 
