@@ -286,7 +286,34 @@
         # The Zena toolchain at the pin, as Zena's own flake builds it. The
         # public binary cache does not hold it, so a cold store builds the
         # whole Zena monorepo once per pin.
-        zenaToolchain = zena.packages.${system}.zena;
+        # Zena's package ships its CLI module precompiled (`zena.cwasm`) for
+        # the CPU of the machine that built the package. On a machine
+        # without the same features (a CI runner without AVX-VNNI, say),
+        # Wasmtime refuses it and Zena recompiles into the read-only store
+        # path, which fails, so every scenario stops at `compile`. Which
+        # machine built a cached copy is luck, so the `zena` here never uses
+        # it: it loads a copy of `zena.wasm` from the temporary directory
+        # (`ZENA_CLI_MODULE`), where Zena's own cache compiles it for the
+        # CPU it runs on and keeps the result for the rest of the build.
+        # Zena writes that cache atomically under a lock, and the copy is
+        # made atomically too, so parallel runs can share it.
+        zenaPackage = zena.packages.${system}.zena;
+        zenaToolchain = pkgs.writeShellApplication {
+          name = "zena";
+          runtimeInputs = [ pkgs.coreutils ];
+          text = ''
+            module_dir="''${TMPDIR:-/tmp}/zena-cli-module"
+            module="$module_dir/zena.wasm"
+            if [ ! -e "$module" ]; then
+              mkdir -p "$module_dir"
+              copy=$(mktemp "$module_dir/zena.wasm.XXXXXX")
+              cp ${zenaPackage}/lib/zena/packages/zena-cli/out/zena.wasm "$copy"
+              mv -f "$copy" "$module"
+            fi
+            export ZENA_CLI_MODULE="$module"
+            exec ${pkgs.lib.getExe zenaPackage} "$@"
+          '';
+        };
 
         # The revision of the `zena` input, which later steps compare with
         # the pin the Zena record names. An input with no revision, such
