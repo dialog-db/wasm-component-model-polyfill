@@ -1,4 +1,4 @@
-# The directives of the faithfulness suite that the browser's engine fails,
+# The directives of the fidelity suite that the browser's engine fails,
 # run through the browser backend of the runtime layer in the headless
 # Chrome of the web lane, whose engine is V8.
 #

@@ -118,7 +118,7 @@ pub fn report_suites(engine: &Engine) {
     }
 
     say(&format!(
-        "faithfulness suite: {} scripts of the pinned test suite; the backend declares {:?}",
+        "fidelity suite: {} scripts of the pinned test suite; the backend declares {:?}",
         SCRIPTS.len(),
         declared
     ));

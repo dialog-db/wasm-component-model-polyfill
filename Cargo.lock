@@ -2347,7 +2347,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "wcmp-wasm-core-faithfulness"
+name = "wcmp-wasm-core-fidelity"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2370,7 +2370,7 @@ dependencies = [
  "wcmp-macros",
  "wcmp-wasm-core",
  "wcmp-wasm-core-contract",
- "wcmp-wasm-core-faithfulness",
+ "wcmp-wasm-core-fidelity",
 ]
 
 [[package]]
@@ -2383,7 +2383,7 @@ dependencies = [
  "wcmp-macros",
  "wcmp-wasm-core",
  "wcmp-wasm-core-contract",
- "wcmp-wasm-core-faithfulness",
+ "wcmp-wasm-core-fidelity",
 ]
 
 [[package]]
@@ -2399,7 +2399,7 @@ dependencies = [
  "wcmp-macros",
  "wcmp-wasm-core",
  "wcmp-wasm-core-contract",
- "wcmp-wasm-core-faithfulness",
+ "wcmp-wasm-core-fidelity",
 ]
 
 [[package]]

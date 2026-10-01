@@ -354,18 +354,18 @@ menu, and `menu` prints it again. Every build and test goes through a menu
 command, never through bare `cargo`. Outside the shell, prefix a command with
 `nix develop -c`.
 
-| Command                        | What it does                                                                                   |
-| ------------------------------ | ---------------------------------------------------------------------------------------------- |
-| `build debug` / `release`      | Build the polyfill crate for both targets.                                                     |
-| `tests native debug`           | Unit and integration tests on the host.                                                        |
-| `tests web debug`              | The same tests in headless Chrome.                                                             |
-| `tests conformance`            | The conformance progress summary for both targets.                                             |
-| `tests faithfulness <backend>` | The WebAssembly spec tests on one backend of the runtime layer: `wasmi`, `wasmtime`, or `web`. |
-| `tests smoke native` / `web`   | The end-to-end smoke test as a binary or as a served page.                                     |
-| `tests all`                    | Every test archive, debug and release, native and web.                                         |
-| `bench native` / `web`         | The benchmark suite on one target.                                                             |
-| `lint`                         | Every check the flake declares (`nix flake check`).                                            |
-| `api list` / `update`          | Print or record the crate's public API snapshot.                                               |
+| Command                      | What it does                                                                                   |
+| ---------------------------- | ---------------------------------------------------------------------------------------------- |
+| `build debug` / `release`    | Build the polyfill crate for both targets.                                                     |
+| `tests native debug`         | Unit and integration tests on the host.                                                        |
+| `tests web debug`            | The same tests in headless Chrome.                                                             |
+| `tests conformance`          | The conformance progress summary for both targets.                                             |
+| `tests fidelity <backend>`   | The WebAssembly spec tests on one backend of the runtime layer: `wasmi`, `wasmtime`, or `web`. |
+| `tests smoke native` / `web` | The end-to-end smoke test as a binary or as a served page.                                     |
+| `tests all`                  | Every test archive, debug and release, native and web.                                         |
+| `bench native` / `web`       | The benchmark suite on one target.                                                             |
+| `lint`                       | Every check the flake declares (`nix flake check`).                                            |
+| `api list` / `update`        | Print or record the crate's public API snapshot.                                               |
 
 Nix sees only tracked files. Snapshot or commit before a `tests` or `lint`
 command, or the run measures a stale tree.

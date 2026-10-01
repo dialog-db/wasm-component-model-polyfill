@@ -21,4 +21,4 @@ wcmp-wasm-core = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
 wcmp-macros = { workspace = true }
 wcmp-wasm-core-contract = { workspace = true }
-wcmp-wasm-core-faithfulness = { workspace = true }
+wcmp-wasm-core-fidelity = { workspace = true }

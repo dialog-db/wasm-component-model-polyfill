@@ -1,6 +1,6 @@
 [package]
-name = "wcmp-wasm-core-faithfulness"
-description = "The faithfulness suite of the runtime layer of the Wasm Component Model Polyfill: the official WebAssembly specification tests at a pinned revision, run on one backend through the trait alone"
+name = "wcmp-wasm-core-fidelity"
+description = "The fidelity suite of the runtime layer of the Wasm Component Model Polyfill: the official WebAssembly specification tests at a pinned revision, run on one backend through the trait alone"
 version.workspace = true
 authors.workspace = true
 license.workspace = true

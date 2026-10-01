@@ -1,4 +1,4 @@
-//! The faithfulness suite on the browser backend: the specification test
+//! The fidelity suite on the browser backend: the specification test
 //! suite at the pinned revision, for the floor and for each capability the
 //! browser declares, run through the runtime layer.
 
@@ -15,6 +15,6 @@ fn engine() -> Engine {
 
 /// The directives the browser's engine fails, each with what explains it:
 /// a defect of the engine, or a limit that the web embedding requires.
-const EXPECTED_FAILURES: &str = include_str!("faithfulness/expected-failures.txt");
+const EXPECTED_FAILURES: &str = include_str!("fidelity/expected-failures.txt");
 
-wcmp_wasm_core_faithfulness::faithfulness_tests!(engine, EXPECTED_FAILURES);
+wcmp_wasm_core_fidelity::fidelity_tests!(engine, EXPECTED_FAILURES);

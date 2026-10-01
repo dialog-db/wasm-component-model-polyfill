@@ -1,4 +1,4 @@
-//! The faithfulness suite on the Wasmtime backend: the specification test
+//! The fidelity suite on the Wasmtime backend: the specification test
 //! suite at the pinned revision, for the floor and for each capability the
 //! backend declares, run through the runtime layer.
 
@@ -12,15 +12,15 @@ fn engine() -> Engine {
 }
 
 /// The directives Wasmtime fails, each with the defect that explains it.
-const EXPECTED_FAILURES: &str = include_str!("faithfulness/expected-failures.txt");
+const EXPECTED_FAILURES: &str = include_str!("fidelity/expected-failures.txt");
 
-wcmp_wasm_core_faithfulness::faithfulness_tests!(engine, EXPECTED_FAILURES);
+wcmp_wasm_core_fidelity::fidelity_tests!(engine, EXPECTED_FAILURES);
 
 /// The runner reports a directive the engine does not pass, on its line,
 /// so a script's test cannot pass by running nothing.
 #[wcmp_macros::test]
 async fn it_reports_each_directive_the_engine_does_not_pass() {
-    let run = wcmp_wasm_core_faithfulness::run_script(
+    let run = wcmp_wasm_core_fidelity::run_script(
         &engine(),
         r#"
         (module (func (export "one") (result i32) (i32.const 1)))
@@ -47,7 +47,7 @@ async fn it_reports_each_directive_the_engine_does_not_pass() {
 #[wcmp_macros::test]
 #[should_panic(expected = "stale expectation: fac.wast:89")]
 async fn it_fails_a_script_whose_listed_directive_passes() {
-    wcmp_wasm_core_faithfulness::check_script(
+    wcmp_wasm_core_fidelity::check_script(
         &engine(),
         "fac.wast",
         "fac.wast:89 https://github.com/bytecodealliance/wasmtime/issues/1 a directive that passes\n",
@@ -60,5 +60,5 @@ async fn it_fails_a_script_whose_listed_directive_passes() {
 #[wcmp_macros::test]
 #[should_panic(expected = "`fac.wast:89` cites no defect of the engine")]
 fn it_fails_the_check_of_an_expected_failure_without_a_citation() {
-    wcmp_wasm_core_faithfulness::check_expected_failures("fac.wast:89 the engine fails it\n");
+    wcmp_wasm_core_fidelity::check_expected_failures("fac.wast:89 the engine fails it\n");
 }

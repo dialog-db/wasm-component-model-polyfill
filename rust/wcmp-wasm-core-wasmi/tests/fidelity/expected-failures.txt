@@ -1,4 +1,4 @@
-# The directives of the faithfulness suite that Wasmi fails, run through
+# The directives of the fidelity suite that Wasmi fails, run through
 # the Wasmi backend of the runtime layer.
 #
 # One entry per line: `<script>:<line> <citation> <reason>`. The script is

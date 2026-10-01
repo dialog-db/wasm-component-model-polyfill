@@ -10,10 +10,10 @@
 # The ordinary lanes (`tests native|web <profile>`): every test, with
 # the conformance corpus in its provider-allowed state. The Zena test
 # that holds all three subjects to the record reads the browser's run
-# from a file, so only `tests zena` runs it. The faithfulness suite of
+# from a file, so only `tests zena` runs it. The fidelity suite of
 # each backend of the runtime layer runs in its own lane.
 [profile.default]
-default-filter = "not test(/without_a_provider$/) and not (binary(zena) and test(=it_holds_every_subject_to_the_record_and_prints_the_report)) and not binary(faithfulness)"
+default-filter = "not test(/without_a_provider$/) and not (binary(zena) and test(=it_holds_every_subject_to_the_record_and_prints_the_report)) and not binary(fidelity)"
 
 # The corpus files Wasmtime's runner marks `;;! hogs_memory = true`, and
 # the progress test, which runs every file in one process, each hold
@@ -36,13 +36,13 @@ test-group = "memory-hogs"
 [profile.no-provider]
 default-filter = "binary(conformance) and test(/::it_passes_without_a_provider$/)"
 
-# The faithfulness lanes (`tests faithfulness <backend>`): the
+# The fidelity lanes (`tests fidelity <backend>`): the
 # specification test suite on one backend, one test per script, which
 # the menu command narrows to the backend's own test binary. The report
 # of the suite of every script is printed after the run.
-[profile.faithfulness]
-default-filter = "binary(faithfulness)"
+[profile.fidelity]
+default-filter = "binary(fidelity)"
 
-[[profile.faithfulness.overrides]]
+[[profile.fidelity.overrides]]
 filter = "test(=it_reports_the_suite_of_each_script)"
 success-output = "final"

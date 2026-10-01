@@ -1,4 +1,4 @@
-# The directives of the faithfulness suite that Wasmtime fails, run
+# The directives of the fidelity suite that Wasmtime fails, run
 # through the Wasmtime backend of the runtime layer.
 #
 # One entry per line: `<script>:<line> <citation> <reason>`. The script is

@@ -30,4 +30,4 @@ wcmp-wasm-core = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = { workspace = true }
 wcmp-wasm-core-contract = { workspace = true }
-wcmp-wasm-core-faithfulness = { workspace = true }
+wcmp-wasm-core-fidelity = { workspace = true }

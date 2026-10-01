@@ -1,4 +1,4 @@
-//! Lists the scripts of the faithfulness suite, from the pinned
+//! Lists the scripts of the fidelity suite, from the pinned
 //! specification test suite that `WCMP_SPEC_TESTSUITE` names.
 //!
 //! The flake sets the variable on every derivation that compiles the
@@ -116,7 +116,7 @@ fn generate(scripts: &[(String, PathBuf)]) -> String {
         .expect("writing to a string");
     }
     source.push_str("];\n\n");
-    source.push_str("/// One test for each script of the suite. See `faithfulness_tests!`.\n");
+    source.push_str("/// One test for each script of the suite. See `fidelity_tests!`.\n");
     source.push_str("#[doc(hidden)]\n#[macro_export]\nmacro_rules! __script_tests {\n");
     source.push_str("    ($engine:path, $expected:path) => {\n");
     for (path, _) in scripts {

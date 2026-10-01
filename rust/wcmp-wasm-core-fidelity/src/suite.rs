@@ -9,7 +9,7 @@ use wcmp_wasm_core::{Capabilities, Capability};
 
 use crate::text;
 
-/// The part of the faithfulness suite that one script belongs to.
+/// The part of the fidelity suite that one script belongs to.
 ///
 /// The validator decides. The modules a script expects to be valid are the
 /// ones its `module` and `module definition` directives define, and the

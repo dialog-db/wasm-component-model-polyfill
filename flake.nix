@@ -37,7 +37,7 @@
       flake = false;
     };
 
-    # The official WebAssembly specification test suite, the faithfulness
+    # The official WebAssembly specification test suite, the fidelity
     # suite of the runtime layer, pinned by commit in the URL so that `nix
     # flake update` cannot move it. The commit is the one Wasmtime
     # 49.0.0-rc.1, the control's engine, pins as its own `spec_testsuite`
@@ -624,8 +624,8 @@
         # `compile` and `compose` stages on the bundle
         # `WCMP_ZENA_RECORD_CHECK` names.
         #
-        # The faithfulness suite of the runtime layer
-        # (`rust/wcmp-wasm-core-faithfulness`) embeds every script of the
+        # The fidelity suite of the runtime layer
+        # (`rust/wcmp-wasm-core-fidelity`) embeds every script of the
         # pinned specification test suite at compile time, from the tree
         # `WCMP_SPEC_TESTSUITE` names, and generates one test for each.
         withTestInputs =
@@ -1587,30 +1587,30 @@
                   + conformanceSummaryWasmiCommand
                   + conformanceSummaryFor { package = "tests-web-debug"; };
               };
-              # The faithfulness suite of the runtime layer: the pinned
+              # The fidelity suite of the runtime layer: the pinned
               # specification test suite on one backend, through the
               # `wcmp-wasm-core` trait alone, held to the backend's cited
               # expected failures. Each backend is a leaf of its own.
-              faithfulness = {
+              fidelity = {
                 description = "The pinned WebAssembly specification test suite on one backend of the runtime layer, for the floor and each capability the backend declares, then the suite of every script";
                 subcommands = {
                   wasmi = menuTestCommand {
-                    description = "The faithfulness suite on the Wasmi backend (${system}, debug)";
+                    description = "The fidelity suite on the Wasmi backend (${system}, debug)";
                     package = "tests-native-debug";
-                    nextestProfile = "faithfulness";
-                    filter = "binary_id(wcmp-wasm-core-wasmi::faithfulness)";
+                    nextestProfile = "fidelity";
+                    filter = "binary_id(wcmp-wasm-core-wasmi::fidelity)";
                   };
                   wasmtime = menuTestCommand {
-                    description = "The faithfulness suite on the Wasmtime backend (${system}, debug)";
+                    description = "The fidelity suite on the Wasmtime backend (${system}, debug)";
                     package = "tests-native-debug";
-                    nextestProfile = "faithfulness";
-                    filter = "binary_id(wcmp-wasm-core-wasmtime::faithfulness)";
+                    nextestProfile = "fidelity";
+                    filter = "binary_id(wcmp-wasm-core-wasmtime::fidelity)";
                   };
                   web = menuTestCommand {
-                    description = "The faithfulness suite on the browser backend (wasm32-unknown-unknown, debug)";
+                    description = "The fidelity suite on the browser backend (wasm32-unknown-unknown, debug)";
                     package = "tests-web-debug";
-                    nextestProfile = "faithfulness";
-                    filter = "binary_id(wcmp-wasm-core-web::faithfulness)";
+                    nextestProfile = "fidelity";
+                    filter = "binary_id(wcmp-wasm-core-web::fidelity)";
                     browser = true;
                   };
                 };
@@ -1660,13 +1660,13 @@
               # lane replays the native debug archive on the Wasmi backend,
               # so it adds no build. The Zena lane is the one run that holds
               # the browser's line and both native lines of the record
-              # together. The faithfulness lane runs the specification test
+              # together. The fidelity lane runs the specification test
               # suite on each backend of the runtime layer. Each lane reports
               # its wall-clock time, build included.
               # Arguments after the leaf reach every nextest lane, and not
               # the Zena lane, which takes none.
               all = {
-                description = "Every lane, each timed: both targets in debug and release, the conformance corpus on both targets with the suspend provider off, so the corpus runs in all four states, the polyfill's tests and the corpus on the Wasmi backend, the faithfulness suite on each backend of the runtime layer, and the Zena scenarios on every subject (grab a coffee)";
+                description = "Every lane, each timed: both targets in debug and release, the conformance corpus on both targets with the suspend provider off, so the corpus runs in all four states, the polyfill's tests and the corpus on the Wasmi backend, the fidelity suite on each backend of the runtime layer, and the Zena scenarios on every subject (grab a coffee)";
                 command = ''
                   status=0
                   lane() {
@@ -1682,8 +1682,8 @@
                     fi
                   }
                   for suite in "native debug" "native release" "native no-provider" \
-                    "native wasmi" "web debug" "web release" "web no-provider" "faithfulness wasmi" \
-                    "faithfulness wasmtime" "faithfulness web"; do
+                    "native wasmi" "web debug" "web release" "web no-provider" "fidelity wasmi" \
+                    "fidelity wasmtime" "fidelity web"; do
                     lane "$suite" "$@"
                   done
                   lane zena
@@ -1980,7 +1980,7 @@
           // project.checks
           // {
             # Clippy compiles every target, the `zena` test and the
-            # faithfulness suite included, and both embed their inputs at
+            # fidelity suite included, and both embed their inputs at
             # compile time.
             clippy = withTestInputs cargoChecks.clippy;
             # The web smoke page must still run, and report what the native

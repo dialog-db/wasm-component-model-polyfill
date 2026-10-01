@@ -1,6 +1,6 @@
 #![warn(missing_docs)]
 
-//! The faithfulness suite of the runtime layer of the Wasm Component Model
+//! The fidelity suite of the runtime layer of the Wasm Component Model
 //! Polyfill.
 //!
 //! A backend of `wcmp_wasm_core` declares a capability only where its
@@ -9,7 +9,7 @@
 //! flake pins, run on one backend through the types of `wcmp_wasm_core`
 //! alone. Nothing here names an engine, so every backend runs the same
 //! runner with an engine of its own. A backend's test file invokes
-//! [`faithfulness_tests!`] with a function that makes its engine and the
+//! [`fidelity_tests!`] with a function that makes its engine and the
 //! backend's list of expected failures:
 //!
 //! ```ignore
@@ -19,9 +19,9 @@
 //!     Engine::with_backend(MyBackend::new())
 //! }
 //!
-//! const EXPECTED_FAILURES: &str = include_str!("faithfulness/expected-failures.txt");
+//! const EXPECTED_FAILURES: &str = include_str!("fidelity/expected-failures.txt");
 //!
-//! wcmp_wasm_core_faithfulness::faithfulness_tests!(engine, EXPECTED_FAILURES);
+//! wcmp_wasm_core_fidelity::fidelity_tests!(engine, EXPECTED_FAILURES);
 //! ```
 //!
 //! # The scripts and their suites
@@ -131,7 +131,7 @@ pub mod __private {
 ///
 /// See the crate's documentation.
 #[macro_export]
-macro_rules! faithfulness_tests {
+macro_rules! fidelity_tests {
     ($engine:path, $expected:path $(,)?) => {
         $crate::__script_tests!($engine, $expected);
 
@@ -149,8 +149,8 @@ macro_rules! faithfulness_tests {
         fn it_embeds_the_pinned_testsuite() {
             assert!(
                 !$crate::SCRIPTS.is_empty(),
-                "the build embedded no script: the faithfulness suite runs through \
-                 `tests faithfulness`, which sets WCMP_SPEC_TESTSUITE to the pinned test suite"
+                "the build embedded no script: the fidelity suite runs through \
+                 `tests fidelity`, which sets WCMP_SPEC_TESTSUITE to the pinned test suite"
             );
         }
     };

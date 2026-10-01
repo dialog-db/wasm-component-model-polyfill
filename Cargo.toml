@@ -8,7 +8,7 @@ members = [
   "rust/wcmp-smoke",
   "rust/wcmp-wasm-core",
   "rust/wcmp-wasm-core-contract",
-  "rust/wcmp-wasm-core-faithfulness",
+  "rust/wcmp-wasm-core-fidelity",
   "rust/wcmp-wasm-core-wasmi",
   "rust/wcmp-wasm-core-wasmtime",
   "rust/wcmp-wasm-core-web",
@@ -85,8 +85,8 @@ version = "0.1.0"
 [workspace.dependencies.wcmp-wasm-core-contract]
 path = "./rust/wcmp-wasm-core-contract"
 
-[workspace.dependencies.wcmp-wasm-core-faithfulness]
-path = "./rust/wcmp-wasm-core-faithfulness"
+[workspace.dependencies.wcmp-wasm-core-fidelity]
+path = "./rust/wcmp-wasm-core-fidelity"
 
 [workspace.dependencies.wcmp-wasm-core-wasmi]
 path = "./rust/wcmp-wasm-core-wasmi"
