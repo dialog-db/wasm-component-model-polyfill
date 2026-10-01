@@ -1655,7 +1655,7 @@
                 };
               };
               web = {
-                description = "Unit and integration tests in headless Chrome (one browser per test in flight; parallelism follows available memory unless NEXTEST_TEST_THREADS or -j says otherwise)";
+                description = "Unit and integration tests in headless Chrome (one browser per test in flight, with parallelism following available memory unless NEXTEST_TEST_THREADS or -j says otherwise)";
                 subcommands = {
                   debug = menuTestCommand {
                     description = "Unit and integration tests (wasm32-unknown-unknown, debug)";
@@ -1727,7 +1727,7 @@
                     '';
                   };
                   web = {
-                    description = "Build the smoke test page and serve it (`nix run .#smoke-web`; a port after the leaf, 8765 by default)";
+                    description = "Build the smoke test page and serve it (`nix run .#smoke-web`, with a port after the leaf, 8765 by default)";
                     command = ''
                       nix run .#smoke-web -- "$@"
                     '';
@@ -1792,7 +1792,7 @@
           # --keep-going`, so its log carries each build's output and one
           # failed check does not stop the others.
           "lint" = {
-            description = "Every check the flake declares (nix flake check; arguments pass through)";
+            description = "Every check the flake declares (nix flake check, with arguments passed through)";
             command = ''
               nix flake check "$@"
             '';
@@ -1842,7 +1842,7 @@
             description = "Work with the project's binary cache (wcmp.cachix.org)";
             subcommands = {
               push = {
-                description = "Push what this machine built for CI (checks, the ci shell, the test archives' inputs), never the test archives or Claude Code; asks for a token if none is stored (`--dry-run` only summarizes, `--yes` skips the question)";
+                description = "Push what this machine built for CI (checks, the ci shell, the test archives' inputs), never the test archives or Claude Code, asking for a token if none is stored (`--dry-run` only summarizes, `--yes` skips the question)";
                 command = ''
                   WCMP_CACHE=wcmp WCMP_SYSTEM=${system} ${cachePush}/bin/wcmp-cache-push "$@"
                 '';
