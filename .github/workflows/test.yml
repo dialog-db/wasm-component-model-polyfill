@@ -14,13 +14,16 @@ concurrency:
 permissions:
   contents: read
 
+# Every job names its runner image rather than `ubuntu-latest`, so a new
+# Ubuntu (and its AppArmor rules, which headless Chrome depends on) arrives
+# by a deliberate change here, not on GitHub's migration date.
 jobs:
   lint_nix:
     name: 'Lint Nix'
-    runs-on: 'ubuntu-latest'
+    runs-on: 'ubuntu-24.04'
     steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/flake-checker-action@main
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/flake-checker-action@v14
         with:
           send-statistics: false
           ignore-missing-flake-lock: false
@@ -29,9 +32,9 @@ jobs:
   lint:
     name: 'Lint'
     needs: ['lint_nix']
-    runs-on: 'ubuntu-latest'
+    runs-on: 'ubuntu-24.04'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/prepare-runner
         with:
           cachix-auth-token: '${{ secrets.CACHIX_AUTH_TOKEN }}'
@@ -47,7 +50,7 @@ jobs:
   tests:
     name: 'Tests (${{ matrix.name }})'
     needs: ['lint']
-    runs-on: 'ubuntu-latest'
+    runs-on: 'ubuntu-24.04'
     strategy:
       fail-fast: false
       matrix:
@@ -74,7 +77,7 @@ jobs:
             lanes: |
               zena
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/prepare-runner
         with:
           cachix-auth-token: '${{ secrets.CACHIX_AUTH_TOKEN }}'
@@ -106,7 +109,7 @@ jobs:
     name: 'CI'
     if: always()
     needs: ['lint_nix', 'lint', 'tests']
-    runs-on: 'ubuntu-latest'
+    runs-on: 'ubuntu-24.04'
     steps:
       - name: 'Require every job to pass'
         env:

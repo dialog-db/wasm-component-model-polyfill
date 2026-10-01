@@ -18,7 +18,7 @@ runs:
 
     # Reclaims the runner's preinstalled software as one large /nix
     # volume, leaving the root filesystem only root-safe-haven (16GB).
-    - uses: wimpysworld/nothing-but-nix@main
+    - uses: wimpysworld/nothing-but-nix@v10
       with:
         root-safe-haven: '16384'
 
@@ -36,7 +36,7 @@ runs:
     # The test archives (4 to 7GB each) change with every commit, so they
     # are not pushed. Claude Code, which the sandbox guest in the dev shell
     # carries, is not ours to redistribute.
-    - uses: cachix/cachix-action@v16
+    - uses: cachix/cachix-action@v17
       with:
         name: wcmp
         authToken: '${{ inputs.cachix-auth-token }}'
