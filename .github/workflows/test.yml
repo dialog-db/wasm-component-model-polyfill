@@ -44,16 +44,26 @@ jobs:
     needs: ['lint_nix']
     runs-on: 'ubuntu-24.04'
     timeout-minutes: 300
+    env:
+      HAS_CACHIX_TOKEN: '${{ secrets.CACHIX_AUTH_TOKEN != '''' }}'
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/prepare-runner
-        with:
-          cachix-auth-token: '${{ secrets.CACHIX_AUTH_TOKEN }}'
       - name: 'Run lints'
         shell: bash
         run: |
           .github/scripts/watch-runner.sh \
             nix develop --accept-flake-config .#ci --command lint -L --keep-going
+      # Whatever the step above built, even when it failed, so the next
+      # run reuses it. Only where the secret exists: a pull request from a
+      # fork has no token and pushes nothing.
+      - name: 'Push to the binary cache'
+        if: always() && env.HAS_CACHIX_TOKEN == 'true'
+        shell: bash
+        env:
+          CACHIX_AUTH_TOKEN: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+        run: |
+          nix develop --accept-flake-config .#ci --command cache push --yes
 
   # The lanes of `tests all`, grouped by the archive they replay, so that
   # each archive is built once. The Zena lane builds both debug archives
@@ -64,6 +74,8 @@ jobs:
     needs: ['lint']
     runs-on: 'ubuntu-24.04'
     timeout-minutes: 240
+    env:
+      HAS_CACHIX_TOKEN: '${{ secrets.CACHIX_AUTH_TOKEN != '''' }}'
     strategy:
       fail-fast: false
       matrix:
@@ -92,8 +104,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/prepare-runner
-        with:
-          cachix-auth-token: '${{ secrets.CACHIX_AUTH_TOKEN }}'
       # Every lane runs even after one fails, as `tests all` does.
       - name: 'Run test lanes'
         shell: bash
@@ -117,6 +127,16 @@ jobs:
             fi
           done <<< "$LANES"
           exit "$status"
+      # Whatever the step above built, even when it failed, so the next
+      # run reuses it. Only where the secret exists: a pull request from a
+      # fork has no token and pushes nothing.
+      - name: 'Push to the binary cache'
+        if: always() && env.HAS_CACHIX_TOKEN == 'true'
+        shell: bash
+        env:
+          CACHIX_AUTH_TOKEN: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+        run: |
+          nix develop --accept-flake-config .#ci --command cache push --yes
 
   # The one status a branch protection rule needs to require.
   ci:

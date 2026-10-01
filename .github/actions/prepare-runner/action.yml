@@ -1,12 +1,6 @@
 name: 'Prepare runner'
 description: 'Frees disk, installs Nix with the project binary cache, and moves scratch space onto the Nix volume'
 
-inputs:
-  cachix-auth-token:
-    description: 'Push token for the wcmp cache; without it the cache is read-only'
-    required: false
-    default: ''
-
 runs:
   using: 'composite'
   steps:
@@ -49,14 +43,16 @@ runs:
           max-silent-time = 1800
           timeout = 10800
 
-    # The test archives (4 to 7GB each) change with every commit, so they
-    # are not pushed. Claude Code, which the sandbox guest carries, is not
-    # ours to redistribute.
+    # Pull only. A job pushes in its last step, with the `cache push` menu
+    # command: this action's push filter keeps a matching path from being
+    # pushed by name, but Cachix uploads every pushed path's closure, so
+    # pushing the sandbox check uploaded the guest and Claude Code with it.
+    # `cache push` leaves out the test archives, Claude Code, and every
+    # path whose closure holds one of them.
     - uses: cachix/cachix-action@v17
       with:
         name: wcmp
-        authToken: '${{ inputs.cachix-auth-token }}'
-        pushFilter: '(-tests-(native|web)-(debug|release)-|claude-code)'
+        skipPush: true
 
     # A test lane extracts its archive and starts its browsers under
     # $XDG_CACHE_HOME, which would otherwise be on the root filesystem.
