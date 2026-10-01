@@ -16,9 +16,9 @@ Survey candidate Wasm Core engines for a fourth backend, and write the findings 
 - **Proposals.** Support for each lexicon capability (`multi_memory`, `memory64`, `tail_call`, `exceptions`, `function_references`, `gc`, `relaxed_simd`, `threads`, `stack_switching`) and for `extended_const`, `wide_arithmetic`, and Wasm 3.0 as a whole; whether each is on by default, behind a flag, or experimental.
 - **Host suspension.** A way to suspend a guest in a host call and resume it later (resumable calls, stack switching, coroutines, fibers, or an async API), since the polyfill needs `host_suspension` for WASI 0.3.
 - **Embedding.** A Rust embedding API or a C API a Rust backend can wrap; how externs, references (including GC references) and host functions cross it; whether it runs on Linux x86_64 in the Nix build; licence.
-- **Faithfulness.** Its own spec-test pass rate at a pinned testsuite, if published; how it stores memory (mapped or allocated); traps and their messages.
+- **Fidelity.** Its own spec-test pass rate at a pinned testsuite, if published; how it stores memory (mapped or allocated); traps and their messages.
 - **Fit with the project's browsers.** The project weighs Safari above Firefox. An engine that shares a browser's implementation (for example JavaScriptCore, SpiderMonkey or V8 embedded natively) would add a native lane with that browser's semantics, which may matter more than a new engine family.
-- **Cost.** Build time and size in the Nix flake, maintenance activity, and how far it is from the `wcmp-wasm-core` trait (the contract tests and the faithfulness suite are the bar).
+- **Cost.** Build time and size in the Nix flake, maintenance activity, and how far it is from the `wcmp-wasm-core` trait (the contract tests and the fidelity suite are the bar).
 
 Candidates to consider include, but are not limited to: WAMR (wasm-micro-runtime), WasmEdge, Wasmer, V8 embedded natively (rusty_v8), SpiderMonkey embedded natively, JavaScriptCore embedded natively, Wizard, and any engine the survey finds that implements Wasm 3.0 with stack switching.
 
