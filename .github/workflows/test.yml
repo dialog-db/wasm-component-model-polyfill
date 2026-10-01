@@ -22,7 +22,9 @@ permissions:
 # room for a run with a cold binary cache. The lint and test steps run
 # under `.github/scripts/watch-runner.sh`, which prints free disk and
 # memory to the log as the step runs and fails the step, naming the
-# largest directories, before a full disk can stall the runner.
+# largest directories, before a full disk can stall the runner; and
+# under `.github/scripts/retry-downloads.sh`, which runs a step again
+# when Nix failed to download something, and only then.
 jobs:
   lint_nix:
     name: 'Lint Nix'
@@ -52,7 +54,7 @@ jobs:
       - name: 'Run lints'
         shell: bash
         run: |
-          .github/scripts/watch-runner.sh \
+          .github/scripts/watch-runner.sh .github/scripts/retry-downloads.sh \
             nix develop --accept-flake-config .#ci --command lint -L --keep-going
       # Whatever the step above built, even when it failed, so the next
       # run reuses it. Only where the secret exists: a pull request from a
@@ -63,7 +65,8 @@ jobs:
         env:
           CACHIX_AUTH_TOKEN: '${{ secrets.CACHIX_AUTH_TOKEN }}'
         run: |
-          nix develop --accept-flake-config .#ci --command cache push --yes
+          .github/scripts/retry-downloads.sh \
+            nix develop --accept-flake-config .#ci --command cache push --yes
 
   # The lanes of `tests all`, grouped by the archive they replay, so that
   # each archive is built once. The Zena lane builds both debug archives
@@ -116,7 +119,7 @@ jobs:
             started=$SECONDS
             echo "::group::tests $lane"
             # shellcheck disable=SC2086
-            if .github/scripts/watch-runner.sh \
+            if .github/scripts/watch-runner.sh .github/scripts/retry-downloads.sh \
               nix develop --accept-flake-config .#ci --command tests $lane; then
               echo "::endgroup::"
               echo "tests $lane: passed in $((SECONDS - started))s"
@@ -136,7 +139,8 @@ jobs:
         env:
           CACHIX_AUTH_TOKEN: '${{ secrets.CACHIX_AUTH_TOKEN }}'
         run: |
-          nix develop --accept-flake-config .#ci --command cache push --yes
+          .github/scripts/retry-downloads.sh \
+            nix develop --accept-flake-config .#ci --command cache push --yes
 
   # The one status a branch protection rule needs to require.
   ci:

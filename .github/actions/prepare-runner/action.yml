@@ -19,14 +19,39 @@ runs:
       with:
         preinstalled-runtimes: false
 
+    # nothing-but-nix makes its first /nix volume out of the free space
+    # on /mnt, all but mnt-safe-haven of it, and only later grows /nix
+    # into what purging frees on /, beyond root-safe-haven. Where /mnt is
+    # its own disk, that leaves root-safe-haven on /. Where /mnt is on the
+    # root filesystem, as on the current images, the first volume takes
+    # nearly all of / and root-safe-haven never applies; a 16GB
+    # mnt-safe-haven (at most a third of the free space, so the action's
+    # own size check passes) keeps that much on / from the start. The
+    # step prints both filesystems so a log shows which layout ran.
+    - name: 'Size the safe havens'
+      id: havens
+      shell: bash
+      run: |
+        df -h / /mnt
+        if [ "$(df --output=source / | tail -n 1)" = "$(df --output=source /mnt | tail -n 1)" ]; then
+          free=$(df -m --output=avail / | tail -n 1 | tr -d ' ')
+          haven=$(( free / 3 < 16384 ? free / 3 : 16384 ))
+          echo "/mnt is on the root filesystem: mnt-safe-haven ${haven}MB"
+        else
+          haven=1024
+          echo "/mnt is its own filesystem: mnt-safe-haven ${haven}MB"
+        fi
+        echo "mnt=$haven" >> "$GITHUB_OUTPUT"
+
     # Reclaims the rest of the runner as one large /nix volume, leaving
-    # root-safe-haven (40GB) on the root filesystem: some test runs leave
-    # build artifacts there, under $HOME and the runner's temp space, that
-    # nothing redirects onto /nix. A full root filesystem stalls the runner
-    # rather than failing the job.
+    # root-safe-haven (40GB) on the root filesystem when purging frees
+    # that much: some test runs leave build artifacts there, under $HOME
+    # and the runner's temp space, that nothing redirects onto /nix. A
+    # full root filesystem stalls the runner rather than failing the job.
     - uses: wimpysworld/nothing-but-nix@v10
       with:
         root-safe-haven: '40960'
+        mnt-safe-haven: '${{ steps.havens.outputs.mnt }}'
 
     # Nix builds under /nix/build, on the large volume, rather than /tmp.
     # One derivation at a time: each cargo build already uses every core,
