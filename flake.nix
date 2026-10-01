@@ -1510,6 +1510,23 @@
             });
           };
 
+        # `cache push`: see `nix/cache-push.sh`. Nix itself comes from the
+        # caller's PATH, so the push instantiates with the same Nix and
+        # store settings as the builds it pushes.
+        cachePush = pkgs.writeShellApplication {
+          name = "wcmp-cache-push";
+          runtimeInputs = with pkgs; [
+            cachix
+            coreutils
+            findutils
+            gawk
+            git
+            gnugrep
+            jq
+          ];
+          text = builtins.readFile ./nix/cache-push.sh;
+        };
+
         # Every menu command but the sandbox's, which is the whole menu of
         # the `ci` shell: the sandbox commands reference the guest VM, and a
         # shell that carries them has the guest's closure to realize.
@@ -1790,6 +1807,20 @@
               export PATH=${pkgs.wasm-tools}/bin:${wac-cli}/bin:${rustToolchain}/bin:$PATH
               "$(git rev-parse --show-toplevel)"/rust/wcmp/tests/corpus/fixtures/build.sh
             '';
+          };
+
+          # The project's binary cache, the one `nixConfig` names and CI
+          # pushes to.
+          "cache" = {
+            description = "Work with the project's binary cache (wcmp.cachix.org)";
+            subcommands = {
+              push = {
+                description = "Push what this machine built for CI (checks, the ci shell, the test archives' inputs), never the test archives or Claude Code; asks for a token if none is stored (`--dry-run` only summarizes, `--yes` skips the question)";
+                command = ''
+                  WCMP_CACHE=wcmp WCMP_SYSTEM=${system} ${cachePush}/bin/wcmp-cache-push "$@"
+                '';
+              };
+            };
           };
 
         }

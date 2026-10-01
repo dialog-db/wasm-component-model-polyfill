@@ -13,6 +13,9 @@ for the board.
   `build <profile>`, `tests native|web <profile>`, `tests all`,
   `tests conformance`, `tests fidelity <backend>`, `tests regenerate`,
   `tests smoke native|web|check`, `lint`. Each one builds a Nix derivation.
+- `cache push` uploads what this machine built for CI to `wcmp.cachix.org`,
+  never the test archives or Claude Code. It asks for a token and a
+  confirmation. Push only with the owner's OK, because the cache is public.
 - Outside the shell, prefix a command with `nix develop -c`, for example
   `nix develop -c tests native debug`.
 - Nix sees only tracked files. Commit (or at least snapshot with `jj`) before
