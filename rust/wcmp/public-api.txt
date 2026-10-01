@@ -23,7 +23,7 @@ pub wcmp::AbiCause::UnsupportedDataModel
 pub wcmp::AbiPosition::Argument(usize)
 pub wcmp::AbiPosition::Result
 impl core::fmt::Display for wcmp::AbiPosition
-pub fn wcmp::AbiPosition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn wcmp::AbiPosition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum wcmp::CopyCause
 pub wcmp::CopyCause::BufferNotAligned
 pub wcmp::CopyCause::BufferNotAligned::kind: wcmp::EndKind
@@ -90,7 +90,7 @@ pub wcmp::EndKind::FutureWritable
 pub wcmp::EndKind::StreamReadable
 pub wcmp::EndKind::StreamWritable
 impl core::fmt::Display for wcmp::EndKind
-pub fn wcmp::EndKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn wcmp::EndKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum wcmp::Error
 pub wcmp::Error::Abi(alloc::boxed::Box<wcmp::AbiError>)
 pub wcmp::Error::BackendEngineConstruction(anyhow::Error)
@@ -119,13 +119,13 @@ pub wcmp::Error::WrongTypeKind::actual: &'static str
 pub wcmp::Error::WrongTypeKind::expected: &'static str
 pub wcmp::Error::WrongTypeKind::index: u32
 impl core::convert::From<wcmp::AbiError> for wcmp::Error
-pub fn wcmp::Error::from(value: wcmp::AbiError) -> Self
+pub fn wcmp::Error::from(wcmp::AbiError) -> Self
 impl core::convert::From<wcmp::InstantiationError> for wcmp::Error
-pub fn wcmp::Error::from(value: wcmp::InstantiationError) -> Self
+pub fn wcmp::Error::from(wcmp::InstantiationError) -> Self
 impl core::convert::From<wcmp::LinkError> for wcmp::Error
-pub fn wcmp::Error::from(value: wcmp::LinkError) -> Self
+pub fn wcmp::Error::from(wcmp::LinkError) -> Self
 impl core::convert::From<wcmp::TypeMismatch> for wcmp::Error
-pub fn wcmp::Error::from(value: wcmp::TypeMismatch) -> Self
+pub fn wcmp::Error::from(wcmp::TypeMismatch) -> Self
 #[non_exhaustive] pub enum wcmp::ErrorContextCause
 pub wcmp::ErrorContextCause::DebugMessagePointerOutOfBounds
 pub wcmp::ErrorContextCause::NotAnErrorContext
@@ -143,9 +143,9 @@ pub enum wcmp::ExternalName
 pub wcmp::ExternalName::Interface(wcmp::InterfaceIdentifier)
 pub wcmp::ExternalName::Plain(alloc::string::String)
 impl wcmp::ExternalName
-pub fn wcmp::ExternalName::from_raw(raw: &str) -> Self
+pub fn wcmp::ExternalName::from_raw(&str) -> Self
 impl core::fmt::Display for wcmp::ExternalName
-pub fn wcmp::ExternalName::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn wcmp::ExternalName::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl wcmp::ExportLookup for wcmp::ExternalName
 pub fn wcmp::ExternalName::external_name(&self) -> wcmp::ExternalName
 #[non_exhaustive] pub enum wcmp::IdentifierParseError
@@ -165,7 +165,7 @@ pub wcmp::InstantiationError::UnsupportedSignature::export: alloc::string::Strin
 pub wcmp::InstantiationError::UnsupportedSignature::reason: &'static str
 pub wcmp::InstantiationError::WrongStore
 impl core::convert::From<wcmp::InstantiationError> for wcmp::Error
-pub fn wcmp::Error::from(value: wcmp::InstantiationError) -> Self
+pub fn wcmp::Error::from(wcmp::InstantiationError) -> Self
 #[non_exhaustive] pub enum wcmp::LinkError
 pub wcmp::LinkError::AmbiguousImport
 pub wcmp::LinkError::AmbiguousImport::candidates: alloc::vec::Vec<wcmp::InterfaceIdentifier>
@@ -198,7 +198,7 @@ pub wcmp::LinkError::UnsupportedRegistration
 pub wcmp::LinkError::UnsupportedRegistration::import: wcmp::ExternalName
 pub wcmp::LinkError::UnsupportedRegistration::reason: &'static str
 impl core::convert::From<wcmp::LinkError> for wcmp::Error
-pub fn wcmp::Error::from(value: wcmp::LinkError) -> Self
+pub fn wcmp::Error::from(wcmp::LinkError) -> Self
 pub enum wcmp::PrimitiveType
 pub wcmp::PrimitiveType::Bool
 pub wcmp::PrimitiveType::Char
@@ -218,7 +218,7 @@ pub wcmp::ReturnMismatchKind::Memory
 pub wcmp::ReturnMismatchKind::ResultType
 pub wcmp::ReturnMismatchKind::StringEncoding
 impl core::fmt::Display for wcmp::ReturnMismatchKind
-pub fn wcmp::ReturnMismatchKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn wcmp::ReturnMismatchKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum wcmp::SchedulerCause
 pub wcmp::SchedulerCause::CannotBlock
 pub wcmp::SchedulerCause::Deadlock
@@ -266,13 +266,13 @@ pub wcmp::TypeMismatchPosition::TypedExportSlot
 pub wcmp::TypeMismatchPosition::TypedExportSlot::export: alloc::string::String
 pub wcmp::TypeMismatchPosition::TypedExportSlot::slot: wcmp::AbiPosition
 impl core::fmt::Display for wcmp::TypeMismatchPosition
-pub fn wcmp::TypeMismatchPosition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn wcmp::TypeMismatchPosition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum wcmp::TypeRendering
 pub wcmp::TypeRendering::Arity(usize)
 pub wcmp::TypeRendering::Function(wcmp::FunctionType)
 pub wcmp::TypeRendering::Value(wcmp::ValueType)
 impl core::fmt::Display for wcmp::TypeRendering
-pub fn wcmp::TypeRendering::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn wcmp::TypeRendering::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum wcmp::Val
 pub wcmp::Val::Bool(bool)
 pub wcmp::Val::Borrow(wcmp::ResourceHandle)
@@ -333,19 +333,19 @@ pub wcmp::AbiError::cause: wcmp::AbiCause
 pub wcmp::AbiError::position: wcmp::AbiPosition
 pub wcmp::AbiError::valtype: core::option::Option<wcmp::ValueType>
 impl core::convert::From<wcmp::AbiError> for wcmp::Error
-pub fn wcmp::Error::from(value: wcmp::AbiError) -> Self
+pub fn wcmp::Error::from(wcmp::AbiError) -> Self
 pub struct wcmp::Accessor<T: 'static>
 impl<T: 'static> wcmp::Accessor<T>
-pub fn wcmp::Accessor<T>::with<R>(&self, body: impl core::ops::function::FnOnce(&mut wcmp::StoreContext<'_, T>) -> R) -> wcmp::Result<R>
+pub fn wcmp::Accessor<T>::with<R>(&self, impl core::ops::function::FnOnce(&mut wcmp::StoreContext<'_, T>) -> R) -> wcmp::Result<R>
 impl<T: 'static> core::clone::Clone for wcmp::Accessor<T>
 pub fn wcmp::Accessor<T>::clone(&self) -> Self
 pub struct wcmp::Component
 pub wcmp::Component::exports: alloc::boxed::Box<[wcmp::ComponentExport]>
 pub wcmp::Component::imports: alloc::boxed::Box<[wcmp::ComponentImport]>
 impl wcmp::Component
-pub async fn wcmp::Component::new(engine: &wcmp::Engine, bytes: &[u8]) -> wcmp::Result<Self>
+pub async fn wcmp::Component::new(&wcmp::Engine, &[u8]) -> wcmp::Result<Self>
 impl core::fmt::Debug for wcmp::Component
-pub fn wcmp::Component::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn wcmp::Component::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::ComponentExport
 pub wcmp::ComponentExport::name: wcmp::ExternalName
 pub wcmp::ComponentExport::ty: wcmp::ExternType
@@ -354,72 +354,72 @@ pub wcmp::ComponentImport::name: wcmp::ExternalName
 pub wcmp::ComponentImport::ty: wcmp::ExternType
 pub struct wcmp::CoreExtern
 impl wcmp::CoreExtern
-pub fn wcmp::CoreExtern::ty<T: 'static>(&self, store: &wcmp::Store<T>) -> wcmp::CoreExternType
+pub fn wcmp::CoreExtern::ty<T: 'static>(&self, &wcmp::Store<T>) -> wcmp::CoreExternType
 impl core::fmt::Debug for wcmp::CoreExtern
-pub fn wcmp::CoreExtern::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn wcmp::CoreExtern::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::CoreInstance
 impl wcmp::CoreInstance
-pub fn wcmp::CoreInstance::get_export<T: 'static>(&self, store: &wcmp::Store<T>, name: &str) -> core::option::Option<wcmp::CoreExtern>
+pub fn wcmp::CoreInstance::get_export<T: 'static>(&self, &wcmp::Store<T>, &str) -> core::option::Option<wcmp::CoreExtern>
 impl core::fmt::Debug for wcmp::CoreInstance
-pub fn wcmp::CoreInstance::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn wcmp::CoreInstance::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::Destination<'a, T>
 impl<T> wcmp::Destination<'_, T>
 pub fn wcmp::Destination<'_, T>::reborrow(&mut self) -> wcmp::Destination<'_, T>
 pub fn wcmp::Destination<'_, T>::remaining(&self) -> core::option::Option<usize>
-pub fn wcmp::Destination<'_, T>::set_buffer(&mut self, buffer: alloc::vec::Vec<T>)
+pub fn wcmp::Destination<'_, T>::set_buffer(&mut self, alloc::vec::Vec<T>)
 pub fn wcmp::Destination<'_, T>::take_buffer(&mut self) -> alloc::vec::Vec<T>
 pub struct wcmp::Engine
 impl wcmp::Engine
 pub fn wcmp::Engine::config(&self) -> &wcmp::EngineConfig
 pub fn wcmp::Engine::suspend_provider(&self) -> wcmp::SuspendProviderKind
-pub fn wcmp::Engine::with_backend(backend: impl wcmp_wasm_core::contract::backend::Backend) -> wcmp::Result<Self>
-pub fn wcmp::Engine::with_config(self, config: &wcmp::EngineConfig) -> wcmp::Result<Self>
+pub fn wcmp::Engine::with_backend(impl wcmp_wasm_core::contract::backend::Backend) -> wcmp::Result<Self>
+pub fn wcmp::Engine::with_config(self, &wcmp::EngineConfig) -> wcmp::Result<Self>
 pub struct wcmp::EngineConfig
 impl wcmp::EngineConfig
 pub fn wcmp::EngineConfig::new() -> Self
-pub fn wcmp::EngineConfig::suspend_provider(&mut self, enable: bool) -> &mut Self
-pub fn wcmp::EngineConfig::wasm_component_model_async_stackful(&mut self, enable: bool) -> &mut Self
-pub fn wcmp::EngineConfig::wasm_component_model_error_context(&mut self, enable: bool) -> &mut Self
-pub fn wcmp::EngineConfig::wasm_component_model_fixed_length_lists(&mut self, enable: bool) -> &mut Self
-pub fn wcmp::EngineConfig::wasm_component_model_gc(&mut self, enable: bool) -> &mut Self
-pub fn wcmp::EngineConfig::wasm_component_model_implements(&mut self, enable: bool) -> &mut Self
-pub fn wcmp::EngineConfig::wasm_component_model_map(&mut self, enable: bool) -> &mut Self
-pub fn wcmp::EngineConfig::wasm_component_model_memory64(&mut self, enable: bool) -> &mut Self
-pub fn wcmp::EngineConfig::wasm_component_model_more_async_builtins(&mut self, enable: bool) -> &mut Self
-pub fn wcmp::EngineConfig::wasm_component_model_threading(&mut self, enable: bool) -> &mut Self
+pub fn wcmp::EngineConfig::suspend_provider(&mut self, bool) -> &mut Self
+pub fn wcmp::EngineConfig::wasm_component_model_async_stackful(&mut self, bool) -> &mut Self
+pub fn wcmp::EngineConfig::wasm_component_model_error_context(&mut self, bool) -> &mut Self
+pub fn wcmp::EngineConfig::wasm_component_model_fixed_length_lists(&mut self, bool) -> &mut Self
+pub fn wcmp::EngineConfig::wasm_component_model_gc(&mut self, bool) -> &mut Self
+pub fn wcmp::EngineConfig::wasm_component_model_implements(&mut self, bool) -> &mut Self
+pub fn wcmp::EngineConfig::wasm_component_model_map(&mut self, bool) -> &mut Self
+pub fn wcmp::EngineConfig::wasm_component_model_memory64(&mut self, bool) -> &mut Self
+pub fn wcmp::EngineConfig::wasm_component_model_more_async_builtins(&mut self, bool) -> &mut Self
+pub fn wcmp::EngineConfig::wasm_component_model_threading(&mut self, bool) -> &mut Self
 impl core::default::Default for wcmp::EngineConfig
 pub fn wcmp::EngineConfig::default() -> Self
 pub struct wcmp::EnumType
 impl wcmp::EnumType
 pub fn wcmp::EnumType::cases(&self) -> &[alloc::string::String]
-pub fn wcmp::EnumType::new(cases: impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> Self
+pub fn wcmp::EnumType::new(impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> Self
 pub struct wcmp::ErrorContext
 impl wcmp::ComponentValue for wcmp::ErrorContext
-pub fn wcmp::ErrorContext::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn wcmp::ErrorContext::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn wcmp::ErrorContext::to_val(self) -> wcmp::Val
 pub fn wcmp::ErrorContext::value_type() -> wcmp::ValueType
 pub struct wcmp::ErrorContextAny
 pub struct wcmp::ExportInstance<'a>
 impl<'a> wcmp::ExportInstance<'a>
-pub fn wcmp::ExportInstance<'a>::func(&self, name: &str) -> core::option::Option<wcmp::Func>
-pub fn wcmp::ExportInstance<'a>::instance(&self, name: impl wcmp::ExportLookup) -> core::option::Option<wcmp::ExportInstance<'a>>
-pub fn wcmp::ExportInstance<'a>::module(&self, name: &str) -> core::option::Option<wcmp::Module>
+pub fn wcmp::ExportInstance<'a>::func(&self, &str) -> core::option::Option<wcmp::Func>
+pub fn wcmp::ExportInstance<'a>::instance(&self, impl wcmp::ExportLookup) -> core::option::Option<wcmp::ExportInstance<'a>>
+pub fn wcmp::ExportInstance<'a>::module(&self, &str) -> core::option::Option<wcmp::Module>
 pub fn wcmp::ExportInstance<'a>::name(&self) -> &wcmp::ExternalName
 pub struct wcmp::FixedLengthListType
 impl wcmp::FixedLengthListType
 pub fn wcmp::FixedLengthListType::element(&self) -> &wcmp::ValueType
 pub fn wcmp::FixedLengthListType::length(&self) -> u32
-pub fn wcmp::FixedLengthListType::new(element: wcmp::ValueType, length: u32) -> Self
+pub fn wcmp::FixedLengthListType::new(wcmp::ValueType, u32) -> Self
 impl core::fmt::Debug for wcmp::FixedLengthListType
-pub fn wcmp::FixedLengthListType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn wcmp::FixedLengthListType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::FlagsType
 impl wcmp::FlagsType
 pub fn wcmp::FlagsType::names(&self) -> &[alloc::string::String]
-pub fn wcmp::FlagsType::new(names: impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> Self
+pub fn wcmp::FlagsType::new(impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> Self
 pub struct wcmp::Func
 impl wcmp::Func
-pub async fn wcmp::Func::call<T: 'static>(&self, store: &mut wcmp::Store<T>, args: &[wcmp::Val]) -> wcmp::Result<alloc::boxed::Box<[wcmp::Val]>>
-pub async fn wcmp::Func::call_concurrent<T: 'static>(&self, accessor: &wcmp::Accessor<T>, args: &[wcmp::Val]) -> wcmp::Result<alloc::boxed::Box<[wcmp::Val]>>
+pub async fn wcmp::Func::call<T: 'static>(&self, &mut wcmp::Store<T>, &[wcmp::Val]) -> wcmp::Result<alloc::boxed::Box<[wcmp::Val]>>
+pub async fn wcmp::Func::call_concurrent<T: 'static>(&self, &wcmp::Accessor<T>, &[wcmp::Val]) -> wcmp::Result<alloc::boxed::Box<[wcmp::Val]>>
 pub fn wcmp::Func::ty(&self) -> &wcmp::FunctionType
 impl wcmp::Func
 pub fn wcmp::Func::typed<P, R>(self) -> wcmp::Result<wcmp::TypedFunc<P, R>> where P: wcmp::ComponentParameters, R: wcmp::ComponentResult
@@ -432,67 +432,67 @@ pub wcmp::FunctionType::parameters: alloc::vec::Vec<wcmp::FunctionParameter>
 pub wcmp::FunctionType::result: core::option::Option<wcmp::ValueType>
 pub struct wcmp::FutureAny
 impl wcmp::FutureAny
-pub fn wcmp::FutureAny::close<D: 'static>(&mut self, store: &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<()>
-pub fn wcmp::FutureAny::try_from_future_reader<T, D: 'static>(store: &mut wcmp::StoreContext<'_, D>, reader: wcmp::FutureReader<T>) -> wcmp::Result<Self>
+pub fn wcmp::FutureAny::close<D: 'static>(&mut self, &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<()>
+pub fn wcmp::FutureAny::try_from_future_reader<T, D: 'static>(&mut wcmp::StoreContext<'_, D>, wcmp::FutureReader<T>) -> wcmp::Result<Self>
 pub fn wcmp::FutureAny::try_into_future_reader<T: wcmp::ComponentValue>(self) -> wcmp::Result<wcmp::FutureReader<T>>
 pub struct wcmp::FutureReader<T>
 impl<T: wcmp::ComponentValue> wcmp::FutureReader<T>
-pub fn wcmp::FutureReader<T>::new<D: 'static>(store: &mut wcmp::StoreContext<'_, D>, producer: impl wcmp::FutureProducer<D, Item = T>) -> wcmp::Result<Self>
-pub fn wcmp::FutureReader<T>::pipe<D: 'static>(self, store: &mut wcmp::StoreContext<'_, D>, consumer: impl wcmp::FutureConsumer<D, Item = T>) -> wcmp::Result<()>
-pub fn wcmp::FutureReader<T>::try_from_future_any(future: wcmp::FutureAny) -> wcmp::Result<Self>
-pub fn wcmp::FutureReader<T>::try_into_future_any<D: 'static>(self, store: &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<wcmp::FutureAny>
+pub fn wcmp::FutureReader<T>::new<D: 'static>(&mut wcmp::StoreContext<'_, D>, impl wcmp::FutureProducer<D, Item = T>) -> wcmp::Result<Self>
+pub fn wcmp::FutureReader<T>::pipe<D: 'static>(self, &mut wcmp::StoreContext<'_, D>, impl wcmp::FutureConsumer<D, Item = T>) -> wcmp::Result<()>
+pub fn wcmp::FutureReader<T>::try_from_future_any(wcmp::FutureAny) -> wcmp::Result<Self>
+pub fn wcmp::FutureReader<T>::try_into_future_any<D: 'static>(self, &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<wcmp::FutureAny>
 impl<T> wcmp::FutureReader<T>
-pub fn wcmp::FutureReader<T>::close<D: 'static>(&mut self, store: &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<()>
-pub fn wcmp::FutureReader<T>::close_with<D: 'static>(&mut self, accessor: &wcmp::Accessor<D>) -> wcmp::Result<()>
-pub fn wcmp::FutureReader<T>::guard<D: 'static>(self, accessor: wcmp::Accessor<D>) -> wcmp::GuardedFutureReader<T, D>
+pub fn wcmp::FutureReader<T>::close<D: 'static>(&mut self, &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<()>
+pub fn wcmp::FutureReader<T>::close_with<D: 'static>(&mut self, &wcmp::Accessor<D>) -> wcmp::Result<()>
+pub fn wcmp::FutureReader<T>::guard<D: 'static>(self, wcmp::Accessor<D>) -> wcmp::GuardedFutureReader<T, D>
 impl<T, D: 'static> core::convert::From<wcmp::GuardedFutureReader<T, D>> for wcmp::FutureReader<T>
-pub fn wcmp::FutureReader<T>::from(guard: wcmp::GuardedFutureReader<T, D>) -> Self
+pub fn wcmp::FutureReader<T>::from(wcmp::GuardedFutureReader<T, D>) -> Self
 impl<T: wcmp::ComponentValue> wcmp::ComponentValue for wcmp::FutureReader<T>
-pub fn wcmp::FutureReader<T>::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn wcmp::FutureReader<T>::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn wcmp::FutureReader<T>::to_val(self) -> wcmp::Val
 pub fn wcmp::FutureReader<T>::value_type() -> wcmp::ValueType
 pub struct wcmp::FutureType
 impl wcmp::FutureType
-pub fn wcmp::FutureType::new(payload: core::option::Option<wcmp::ValueType>) -> Self
+pub fn wcmp::FutureType::new(core::option::Option<wcmp::ValueType>) -> Self
 pub fn wcmp::FutureType::payload(&self) -> core::option::Option<&wcmp::ValueType>
 pub struct wcmp::GuardedFutureReader<T, D: 'static>
 impl<T, D: 'static> wcmp::GuardedFutureReader<T, D>
 pub fn wcmp::GuardedFutureReader<T, D>::into_future(self) -> wcmp::FutureReader<T>
-pub fn wcmp::GuardedFutureReader<T, D>::new(accessor: wcmp::Accessor<D>, reader: wcmp::FutureReader<T>) -> Self
+pub fn wcmp::GuardedFutureReader<T, D>::new(wcmp::Accessor<D>, wcmp::FutureReader<T>) -> Self
 impl<T, D: 'static> core::convert::From<wcmp::GuardedFutureReader<T, D>> for wcmp::FutureReader<T>
-pub fn wcmp::FutureReader<T>::from(guard: wcmp::GuardedFutureReader<T, D>) -> Self
+pub fn wcmp::FutureReader<T>::from(wcmp::GuardedFutureReader<T, D>) -> Self
 impl<T, D: 'static> core::ops::drop::Drop for wcmp::GuardedFutureReader<T, D>
 pub fn wcmp::GuardedFutureReader<T, D>::drop(&mut self)
 pub struct wcmp::GuardedStreamReader<T, D: 'static>
 impl<T, D: 'static> wcmp::GuardedStreamReader<T, D>
 pub fn wcmp::GuardedStreamReader<T, D>::into_stream(self) -> wcmp::StreamReader<T>
-pub fn wcmp::GuardedStreamReader<T, D>::new(accessor: wcmp::Accessor<D>, reader: wcmp::StreamReader<T>) -> Self
+pub fn wcmp::GuardedStreamReader<T, D>::new(wcmp::Accessor<D>, wcmp::StreamReader<T>) -> Self
 impl<T, D: 'static> core::convert::From<wcmp::GuardedStreamReader<T, D>> for wcmp::StreamReader<T>
-pub fn wcmp::StreamReader<T>::from(guard: wcmp::GuardedStreamReader<T, D>) -> Self
+pub fn wcmp::StreamReader<T>::from(wcmp::GuardedStreamReader<T, D>) -> Self
 impl<T, D: 'static> core::ops::drop::Drop for wcmp::GuardedStreamReader<T, D>
 pub fn wcmp::GuardedStreamReader<T, D>::drop(&mut self)
 pub struct wcmp::HostCall<'a, T: 'static>
 impl<'a, T: 'static> wcmp::HostCall<'a, T>
 pub fn wcmp::HostCall<'a, T>::data(&self) -> &T
 pub fn wcmp::HostCall<'a, T>::data_mut(&mut self) -> &mut T
-pub fn wcmp::HostCall<'a, T>::resource_new(&self, type_id: wcmp::ResourceTypeId, rep: u32) -> wcmp::Result<wcmp::ResourceHandle>
+pub fn wcmp::HostCall<'a, T>::resource_new(&self, wcmp::ResourceTypeId, u32) -> wcmp::Result<wcmp::ResourceHandle>
 pub fn wcmp::HostCall<'a, T>::store(&mut self) -> &mut wcmp::StoreContext<'a, T>
 pub struct wcmp::HostResource<T>
 impl<T> wcmp::HostResource<T>
-pub fn wcmp::HostResource<T>::new(destructor: impl core::ops::function::Fn(&mut T, u32) -> wcmp::Result<()> + core::marker::Send + core::marker::Sync + 'static) -> Self
+pub fn wcmp::HostResource<T>::new(impl core::ops::function::Fn(&mut T, u32) -> wcmp::Result<()> + core::marker::Send + core::marker::Sync + 'static) -> Self
 pub fn wcmp::HostResource<T>::type_id(&self) -> wcmp::ResourceTypeId
 impl<T> core::clone::Clone for wcmp::HostResource<T>
 pub fn wcmp::HostResource<T>::clone(&self) -> Self
 pub struct wcmp::Instance
 impl wcmp::Instance
 pub fn wcmp::Instance::exports(&self) -> wcmp::InstanceExports<'_>
-pub fn wcmp::Instance::get_func(&self, name: &str) -> core::option::Option<wcmp::Func>
-pub fn wcmp::Instance::get_module(&self, name: &str) -> core::option::Option<wcmp::Module>
+pub fn wcmp::Instance::get_func(&self, &str) -> core::option::Option<wcmp::Func>
+pub fn wcmp::Instance::get_module(&self, &str) -> core::option::Option<wcmp::Module>
 pub struct wcmp::InstanceExports<'a>
 impl<'a> wcmp::InstanceExports<'a>
-pub fn wcmp::InstanceExports<'a>::func(&self, name: &str) -> core::option::Option<wcmp::Func>
-pub fn wcmp::InstanceExports<'a>::instance(&self, name: impl wcmp::ExportLookup) -> core::option::Option<wcmp::ExportInstance<'a>>
-pub fn wcmp::InstanceExports<'a>::module(&self, name: &str) -> core::option::Option<wcmp::Module>
+pub fn wcmp::InstanceExports<'a>::func(&self, &str) -> core::option::Option<wcmp::Func>
+pub fn wcmp::InstanceExports<'a>::instance(&self, impl wcmp::ExportLookup) -> core::option::Option<wcmp::ExportInstance<'a>>
+pub fn wcmp::InstanceExports<'a>::module(&self, &str) -> core::option::Option<wcmp::Module>
 pub struct wcmp::InstanceItem
 pub wcmp::InstanceItem::name: alloc::string::String
 pub wcmp::InstanceItem::ty: wcmp::ExternType
@@ -501,50 +501,50 @@ pub wcmp::InstanceType::items: alloc::vec::Vec<wcmp::InstanceItem>
 pub struct wcmp::InterfaceIdentifier
 impl wcmp::InterfaceIdentifier
 pub fn wcmp::InterfaceIdentifier::name(&self) -> &str
-pub fn wcmp::InterfaceIdentifier::new(package: wcmp::PackageName, name: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn wcmp::InterfaceIdentifier::new(wcmp::PackageName, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn wcmp::InterfaceIdentifier::package(&self) -> &wcmp::PackageName
 impl core::fmt::Display for wcmp::InterfaceIdentifier
-pub fn wcmp::InterfaceIdentifier::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn wcmp::InterfaceIdentifier::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::str::traits::FromStr for wcmp::InterfaceIdentifier
 pub type wcmp::InterfaceIdentifier::Err = wcmp::IdentifierParseError
-pub fn wcmp::InterfaceIdentifier::from_str(input: &str) -> core::result::Result<Self, Self::Err>
+pub fn wcmp::InterfaceIdentifier::from_str(&str) -> core::result::Result<Self, Self::Err>
 impl wcmp::ExportLookup for wcmp::InterfaceIdentifier
 pub fn wcmp::InterfaceIdentifier::external_name(&self) -> wcmp::ExternalName
 pub struct wcmp::Linker<T: 'static>
 impl<T: 'static> wcmp::Linker<T>
-pub fn wcmp::Linker<T>::allow_shadowing(&mut self, allow: bool) -> &mut Self
-pub fn wcmp::Linker<T>::instance(&mut self, id: &wcmp::InterfaceIdentifier) -> wcmp::LinkerInstance<'_, T>
-pub async fn wcmp::Linker<T>::instantiate(&self, store: &mut wcmp::Store<T>, component: &wcmp::Component) -> wcmp::Result<wcmp::Instance>
-pub fn wcmp::Linker<T>::new(engine: &wcmp::Engine) -> Self
+pub fn wcmp::Linker<T>::allow_shadowing(&mut self, bool) -> &mut Self
+pub fn wcmp::Linker<T>::instance(&mut self, &wcmp::InterfaceIdentifier) -> wcmp::LinkerInstance<'_, T>
+pub async fn wcmp::Linker<T>::instantiate(&self, &mut wcmp::Store<T>, &wcmp::Component) -> wcmp::Result<wcmp::Instance>
+pub fn wcmp::Linker<T>::new(&wcmp::Engine) -> Self
 pub fn wcmp::Linker<T>::root(&mut self) -> wcmp::LinkerInstance<'_, T>
 pub struct wcmp::LinkerInstance<'a, T: 'static>
 impl<'a, T: 'static> wcmp::LinkerInstance<'a, T>
-pub fn wcmp::LinkerInstance<'a, T>::func_new(&mut self, name: impl core::convert::Into<alloc::string::String>, ty: wcmp::FunctionType, func: impl for<'c> core::ops::function::Fn(wcmp::HostCall<'c, T>, &[wcmp::Val], &mut [wcmp::Val]) -> wcmp::Result<()> + core::marker::Send + core::marker::Sync + 'static) -> wcmp::Result<()>
-pub fn wcmp::LinkerInstance<'a, T>::func_new_concurrent<F, Fut>(&mut self, name: impl core::convert::Into<alloc::string::String>, ty: wcmp::FunctionType, func: F) -> wcmp::Result<()> where F: core::ops::function::Fn(&wcmp::Accessor<T>, alloc::vec::Vec<wcmp::Val>) -> Fut + core::marker::Send + core::marker::Sync + 'static, Fut: wcmp::HostFuture
-pub fn wcmp::LinkerInstance<'a, T>::func_wrap<Params, Ret, F>(&mut self, name: impl core::convert::Into<alloc::string::String>, func: F) -> wcmp::Result<()> where Params: wcmp::ComponentParameters, Ret: wcmp::ComponentResult, F: for<'c> core::ops::function::Fn(wcmp::HostCall<'c, T>, Params) -> wcmp::Result<Ret> + core::marker::Send + core::marker::Sync + 'static
-pub fn wcmp::LinkerInstance<'a, T>::func_wrap_concurrent<Params, Ret, F, Fut>(&mut self, name: impl core::convert::Into<alloc::string::String>, func: F) -> wcmp::Result<()> where Params: wcmp::ComponentParameters, Ret: wcmp::ComponentResult, F: core::ops::function::Fn(&wcmp::Accessor<T>, Params) -> Fut + core::marker::Send + core::marker::Sync + 'static, Fut: wcmp::HostFuture<wcmp::Result<Ret>>
-pub fn wcmp::LinkerInstance<'a, T>::instance(&mut self, name: impl core::convert::Into<alloc::string::String>) -> wcmp::LinkerInstance<'_, T>
-pub fn wcmp::LinkerInstance<'a, T>::module(&mut self, name: impl core::convert::Into<alloc::string::String>, module: &wcmp::Module) -> wcmp::Result<()>
-pub fn wcmp::LinkerInstance<'a, T>::resource(&mut self, label: impl core::convert::Into<alloc::string::String>, destructor: impl core::ops::function::Fn(&mut T, u32) -> wcmp::Result<()> + core::marker::Send + core::marker::Sync + 'static) -> wcmp::Result<wcmp::ResourceTypeId>
-pub fn wcmp::LinkerInstance<'a, T>::resource_with(&mut self, label: impl core::convert::Into<alloc::string::String>, resource: wcmp::HostResource<T>) -> wcmp::Result<wcmp::ResourceTypeId>
+pub fn wcmp::LinkerInstance<'a, T>::func_new(&mut self, impl core::convert::Into<alloc::string::String>, wcmp::FunctionType, impl for<'c> core::ops::function::Fn(wcmp::HostCall<'c, T>, &[wcmp::Val], &mut [wcmp::Val]) -> wcmp::Result<()> + core::marker::Send + core::marker::Sync + 'static) -> wcmp::Result<()>
+pub fn wcmp::LinkerInstance<'a, T>::func_new_concurrent<F, Fut>(&mut self, impl core::convert::Into<alloc::string::String>, wcmp::FunctionType, F) -> wcmp::Result<()> where F: core::ops::function::Fn(&wcmp::Accessor<T>, alloc::vec::Vec<wcmp::Val>) -> Fut + core::marker::Send + core::marker::Sync + 'static, Fut: wcmp::HostFuture
+pub fn wcmp::LinkerInstance<'a, T>::func_wrap<Params, Ret, F>(&mut self, impl core::convert::Into<alloc::string::String>, F) -> wcmp::Result<()> where Params: wcmp::ComponentParameters, Ret: wcmp::ComponentResult, F: for<'c> core::ops::function::Fn(wcmp::HostCall<'c, T>, Params) -> wcmp::Result<Ret> + core::marker::Send + core::marker::Sync + 'static
+pub fn wcmp::LinkerInstance<'a, T>::func_wrap_concurrent<Params, Ret, F, Fut>(&mut self, impl core::convert::Into<alloc::string::String>, F) -> wcmp::Result<()> where Params: wcmp::ComponentParameters, Ret: wcmp::ComponentResult, F: core::ops::function::Fn(&wcmp::Accessor<T>, Params) -> Fut + core::marker::Send + core::marker::Sync + 'static, Fut: wcmp::HostFuture<wcmp::Result<Ret>>
+pub fn wcmp::LinkerInstance<'a, T>::instance(&mut self, impl core::convert::Into<alloc::string::String>) -> wcmp::LinkerInstance<'_, T>
+pub fn wcmp::LinkerInstance<'a, T>::module(&mut self, impl core::convert::Into<alloc::string::String>, &wcmp::Module) -> wcmp::Result<()>
+pub fn wcmp::LinkerInstance<'a, T>::resource(&mut self, impl core::convert::Into<alloc::string::String>, impl core::ops::function::Fn(&mut T, u32) -> wcmp::Result<()> + core::marker::Send + core::marker::Sync + 'static) -> wcmp::Result<wcmp::ResourceTypeId>
+pub fn wcmp::LinkerInstance<'a, T>::resource_with(&mut self, impl core::convert::Into<alloc::string::String>, wcmp::HostResource<T>) -> wcmp::Result<wcmp::ResourceTypeId>
 pub struct wcmp::ListType
 impl wcmp::ListType
 pub fn wcmp::ListType::element(&self) -> &wcmp::ValueType
-pub fn wcmp::ListType::new(element: wcmp::ValueType) -> Self
+pub fn wcmp::ListType::new(wcmp::ValueType) -> Self
 pub struct wcmp::MapType
 impl wcmp::MapType
 pub fn wcmp::MapType::entry(&self) -> wcmp::ValueType
 pub fn wcmp::MapType::key(&self) -> &wcmp::ValueType
-pub fn wcmp::MapType::new(key: wcmp::ValueType, value: wcmp::ValueType) -> Self
+pub fn wcmp::MapType::new(wcmp::ValueType, wcmp::ValueType) -> Self
 pub fn wcmp::MapType::value(&self) -> &wcmp::ValueType
 pub struct wcmp::Module
 impl wcmp::Module
 pub fn wcmp::Module::exports(&self) -> &[wcmp::ModuleExport]
 pub fn wcmp::Module::imports(&self) -> &[wcmp::ModuleImport]
-pub async fn wcmp::Module::instantiate<T: 'static>(&self, store: &mut wcmp::Store<T>, imports: &[wcmp::CoreExtern]) -> wcmp::Result<wcmp::CoreInstance>
-pub async fn wcmp::Module::new(engine: &wcmp::Engine, bytes: &[u8]) -> wcmp::Result<Self>
+pub async fn wcmp::Module::instantiate<T: 'static>(&self, &mut wcmp::Store<T>, &[wcmp::CoreExtern]) -> wcmp::Result<wcmp::CoreInstance>
+pub async fn wcmp::Module::new(&wcmp::Engine, &[u8]) -> wcmp::Result<Self>
 impl core::fmt::Debug for wcmp::Module
-pub fn wcmp::Module::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn wcmp::Module::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::ModuleExport
 pub wcmp::ModuleExport::name: alloc::string::String
 pub wcmp::ModuleExport::ty: wcmp::CoreExternType
@@ -557,33 +557,33 @@ pub wcmp::ModuleType::exports: alloc::vec::Vec<wcmp::ModuleExport>
 pub wcmp::ModuleType::imports: alloc::vec::Vec<wcmp::ModuleImport>
 pub struct wcmp::OptionType
 impl wcmp::OptionType
-pub fn wcmp::OptionType::new(payload: wcmp::ValueType) -> Self
+pub fn wcmp::OptionType::new(wcmp::ValueType) -> Self
 pub fn wcmp::OptionType::payload(&self) -> &wcmp::ValueType
 impl core::fmt::Debug for wcmp::OptionType
-pub fn wcmp::OptionType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn wcmp::OptionType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::PackageName
 impl wcmp::PackageName
 pub fn wcmp::PackageName::name(&self) -> &str
 pub fn wcmp::PackageName::namespace(&self) -> &str
-pub fn wcmp::PackageName::new(namespace: impl core::convert::Into<alloc::string::String>, name: impl core::convert::Into<alloc::string::String>, version: core::option::Option<semver::Version>) -> Self
-pub fn wcmp::PackageName::set_version(&mut self, version: core::option::Option<semver::Version>)
+pub fn wcmp::PackageName::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, core::option::Option<semver::Version>) -> Self
+pub fn wcmp::PackageName::set_version(&mut self, core::option::Option<semver::Version>)
 pub fn wcmp::PackageName::version(&self) -> core::option::Option<&semver::Version>
 impl core::fmt::Display for wcmp::PackageName
-pub fn wcmp::PackageName::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn wcmp::PackageName::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::str::traits::FromStr for wcmp::PackageName
 pub type wcmp::PackageName::Err = wcmp::IdentifierParseError
-pub fn wcmp::PackageName::from_str(input: &str) -> core::result::Result<Self, Self::Err>
+pub fn wcmp::PackageName::from_str(&str) -> core::result::Result<Self, Self::Err>
 pub struct wcmp::RecordField
 impl wcmp::RecordField
 pub fn wcmp::RecordField::name(&self) -> &str
-pub fn wcmp::RecordField::new(name: impl core::convert::Into<alloc::string::String>, ty: wcmp::ValueType) -> Self
+pub fn wcmp::RecordField::new(impl core::convert::Into<alloc::string::String>, wcmp::ValueType) -> Self
 pub fn wcmp::RecordField::ty(&self) -> &wcmp::ValueType
 pub struct wcmp::RecordType
 impl wcmp::RecordType
 pub fn wcmp::RecordType::fields(&self) -> &[wcmp::RecordField]
-pub fn wcmp::RecordType::new(fields: impl core::iter::traits::collect::IntoIterator<Item = wcmp::RecordField>) -> Self
+pub fn wcmp::RecordType::new(impl core::iter::traits::collect::IntoIterator<Item = wcmp::RecordField>) -> Self
 impl core::fmt::Debug for wcmp::RecordType
-pub fn wcmp::RecordType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn wcmp::RecordType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::ResourceHandle
 impl wcmp::ResourceHandle
 pub fn wcmp::ResourceHandle::index(&self) -> u32
@@ -592,25 +592,25 @@ pub fn wcmp::ResourceHandle::type_id(&self) -> wcmp::ResourceTypeId
 pub struct wcmp::ResourceType
 impl wcmp::ResourceType
 pub fn wcmp::ResourceType::index(&self) -> core::option::Option<usize>
-pub fn wcmp::ResourceType::indexed(label: impl core::convert::Into<alloc::string::String>, index: usize) -> Self
+pub fn wcmp::ResourceType::indexed(impl core::convert::Into<alloc::string::String>, usize) -> Self
 pub fn wcmp::ResourceType::label(&self) -> &str
-pub fn wcmp::ResourceType::new(label: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn wcmp::ResourceType::new(impl core::convert::Into<alloc::string::String>) -> Self
 impl core::cmp::Eq for wcmp::ResourceType
 impl core::cmp::PartialEq for wcmp::ResourceType
-pub fn wcmp::ResourceType::eq(&self, other: &Self) -> bool
+pub fn wcmp::ResourceType::eq(&self, &Self) -> bool
 impl core::hash::Hash for wcmp::ResourceType
-pub fn wcmp::ResourceType::hash<H: core::hash::Hasher>(&self, state: &mut H)
+pub fn wcmp::ResourceType::hash<H: core::hash::Hasher>(&self, &mut H)
 pub struct wcmp::ResourceTypeId(_)
 pub struct wcmp::ResultType
 impl wcmp::ResultType
 pub fn wcmp::ResultType::err(&self) -> core::option::Option<&wcmp::ValueType>
-pub fn wcmp::ResultType::new(ok: core::option::Option<wcmp::ValueType>, err: core::option::Option<wcmp::ValueType>) -> Self
+pub fn wcmp::ResultType::new(core::option::Option<wcmp::ValueType>, core::option::Option<wcmp::ValueType>) -> Self
 pub fn wcmp::ResultType::ok(&self) -> core::option::Option<&wcmp::ValueType>
 impl core::fmt::Debug for wcmp::ResultType
-pub fn wcmp::ResultType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn wcmp::ResultType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::Source<'a, T>
 impl<T> wcmp::Source<'_, T>
-pub fn wcmp::Source<'_, T>::read<D: 'static>(&mut self, store: &mut wcmp::StoreContext<'_, D>, buffer: &mut alloc::vec::Vec<T>, count: usize) -> wcmp::Result<()> where T: wcmp::ComponentValue
+pub fn wcmp::Source<'_, T>::read<D: 'static>(&mut self, &mut wcmp::StoreContext<'_, D>, &mut alloc::vec::Vec<T>, usize) -> wcmp::Result<()> where T: wcmp::ComponentValue
 pub fn wcmp::Source<'_, T>::reborrow(&mut self) -> wcmp::Source<'_, T>
 pub fn wcmp::Source<'_, T>::remaining(&self) -> usize
 pub struct wcmp::Store<T: 'static>
@@ -619,12 +619,12 @@ pub fn wcmp::Store<T>::as_context_mut(&mut self) -> wcmp::StoreContext<'_, T>
 pub fn wcmp::Store<T>::data(&self) -> &T
 pub fn wcmp::Store<T>::data_mut(&mut self) -> &mut T
 pub fn wcmp::Store<T>::hostcall_fuel(&self) -> usize
-pub fn wcmp::Store<T>::resource_drop(&mut self, handle: wcmp::ResourceHandle) -> wcmp::Result<()>
-pub fn wcmp::Store<T>::resource_new(&self, type_id: wcmp::ResourceTypeId, rep: u32) -> wcmp::Result<wcmp::ResourceHandle>
-pub async fn wcmp::Store<T>::run_concurrent<R, F>(&mut self, body: F) -> wcmp::Result<R> where F: core::ops::async_function::AsyncFnOnce(&wcmp::Accessor<T>) -> R
-pub fn wcmp::Store<T>::set_hostcall_fuel(&mut self, fuel: usize)
+pub fn wcmp::Store<T>::resource_drop(&mut self, wcmp::ResourceHandle) -> wcmp::Result<()>
+pub fn wcmp::Store<T>::resource_new(&self, wcmp::ResourceTypeId, u32) -> wcmp::Result<wcmp::ResourceHandle>
+pub async fn wcmp::Store<T>::run_concurrent<R, F>(&mut self, F) -> wcmp::Result<R> where F: core::ops::async_function::AsyncFnOnce(&wcmp::Accessor<T>) -> R
+pub fn wcmp::Store<T>::set_hostcall_fuel(&mut self, usize)
 impl<T: core::marker::Send + 'static> wcmp::Store<T>
-pub fn wcmp::Store<T>::new(engine: &wcmp::Engine, data: T) -> wcmp::Result<Self>
+pub fn wcmp::Store<T>::new(&wcmp::Engine, T) -> wcmp::Result<Self>
 impl<T: 'static> core::ops::drop::Drop for wcmp::Store<T>
 pub fn wcmp::Store<T>::drop(&mut self)
 pub struct wcmp::StoreContext<'a, T: 'static>
@@ -632,182 +632,182 @@ impl<'a, T: 'static> wcmp::StoreContext<'a, T>
 pub fn wcmp::StoreContext<'a, T>::data(&self) -> &T
 pub fn wcmp::StoreContext<'a, T>::data_mut(&mut self) -> &mut T
 pub fn wcmp::StoreContext<'a, T>::hostcall_fuel(&self) -> usize
-pub fn wcmp::StoreContext<'a, T>::set_hostcall_fuel(&mut self, fuel: usize)
+pub fn wcmp::StoreContext<'a, T>::set_hostcall_fuel(&mut self, usize)
 pub struct wcmp::StreamAny
 impl wcmp::StreamAny
-pub fn wcmp::StreamAny::close<D: 'static>(&mut self, store: &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<()>
-pub fn wcmp::StreamAny::try_from_stream_reader<T, D: 'static>(store: &mut wcmp::StoreContext<'_, D>, reader: wcmp::StreamReader<T>) -> wcmp::Result<Self>
+pub fn wcmp::StreamAny::close<D: 'static>(&mut self, &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<()>
+pub fn wcmp::StreamAny::try_from_stream_reader<T, D: 'static>(&mut wcmp::StoreContext<'_, D>, wcmp::StreamReader<T>) -> wcmp::Result<Self>
 pub fn wcmp::StreamAny::try_into_stream_reader<T: wcmp::ComponentValue>(self) -> wcmp::Result<wcmp::StreamReader<T>>
 pub struct wcmp::StreamReader<T>
 impl<T: wcmp::ComponentValue> wcmp::StreamReader<T>
-pub fn wcmp::StreamReader<T>::new<D: 'static>(store: &mut wcmp::StoreContext<'_, D>, producer: impl wcmp::StreamProducer<D, Item = T>) -> wcmp::Result<Self>
-pub fn wcmp::StreamReader<T>::pipe<D: 'static>(self, store: &mut wcmp::StoreContext<'_, D>, consumer: impl wcmp::StreamConsumer<D, Item = T>) -> wcmp::Result<()>
-pub fn wcmp::StreamReader<T>::try_from_stream_any(stream: wcmp::StreamAny) -> wcmp::Result<Self>
-pub fn wcmp::StreamReader<T>::try_into_stream_any<D: 'static>(self, store: &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<wcmp::StreamAny>
+pub fn wcmp::StreamReader<T>::new<D: 'static>(&mut wcmp::StoreContext<'_, D>, impl wcmp::StreamProducer<D, Item = T>) -> wcmp::Result<Self>
+pub fn wcmp::StreamReader<T>::pipe<D: 'static>(self, &mut wcmp::StoreContext<'_, D>, impl wcmp::StreamConsumer<D, Item = T>) -> wcmp::Result<()>
+pub fn wcmp::StreamReader<T>::try_from_stream_any(wcmp::StreamAny) -> wcmp::Result<Self>
+pub fn wcmp::StreamReader<T>::try_into_stream_any<D: 'static>(self, &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<wcmp::StreamAny>
 impl<T> wcmp::StreamReader<T>
-pub fn wcmp::StreamReader<T>::close<D: 'static>(&mut self, store: &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<()>
-pub fn wcmp::StreamReader<T>::close_with<D: 'static>(&mut self, accessor: &wcmp::Accessor<D>) -> wcmp::Result<()>
-pub fn wcmp::StreamReader<T>::guard<D: 'static>(self, accessor: wcmp::Accessor<D>) -> wcmp::GuardedStreamReader<T, D>
+pub fn wcmp::StreamReader<T>::close<D: 'static>(&mut self, &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<()>
+pub fn wcmp::StreamReader<T>::close_with<D: 'static>(&mut self, &wcmp::Accessor<D>) -> wcmp::Result<()>
+pub fn wcmp::StreamReader<T>::guard<D: 'static>(self, wcmp::Accessor<D>) -> wcmp::GuardedStreamReader<T, D>
 impl<T, D: 'static> core::convert::From<wcmp::GuardedStreamReader<T, D>> for wcmp::StreamReader<T>
-pub fn wcmp::StreamReader<T>::from(guard: wcmp::GuardedStreamReader<T, D>) -> Self
+pub fn wcmp::StreamReader<T>::from(wcmp::GuardedStreamReader<T, D>) -> Self
 impl<T: wcmp::ComponentValue> wcmp::ComponentValue for wcmp::StreamReader<T>
-pub fn wcmp::StreamReader<T>::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn wcmp::StreamReader<T>::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn wcmp::StreamReader<T>::to_val(self) -> wcmp::Val
 pub fn wcmp::StreamReader<T>::value_type() -> wcmp::ValueType
 pub struct wcmp::StreamType
 impl wcmp::StreamType
-pub fn wcmp::StreamType::new(payload: core::option::Option<wcmp::ValueType>) -> Self
+pub fn wcmp::StreamType::new(core::option::Option<wcmp::ValueType>) -> Self
 pub fn wcmp::StreamType::payload(&self) -> core::option::Option<&wcmp::ValueType>
 pub struct wcmp::TupleType
 impl wcmp::TupleType
 pub fn wcmp::TupleType::elements(&self) -> &[wcmp::ValueType]
-pub fn wcmp::TupleType::new(elements: impl core::iter::traits::collect::IntoIterator<Item = wcmp::ValueType>) -> Self
+pub fn wcmp::TupleType::new(impl core::iter::traits::collect::IntoIterator<Item = wcmp::ValueType>) -> Self
 impl core::fmt::Debug for wcmp::TupleType
-pub fn wcmp::TupleType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn wcmp::TupleType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::TypeMismatch
 pub wcmp::TypeMismatch::actual: wcmp::TypeRendering
 pub wcmp::TypeMismatch::expected: wcmp::TypeRendering
 pub wcmp::TypeMismatch::position: wcmp::TypeMismatchPosition
 impl core::convert::From<wcmp::TypeMismatch> for wcmp::Error
-pub fn wcmp::Error::from(value: wcmp::TypeMismatch) -> Self
+pub fn wcmp::Error::from(wcmp::TypeMismatch) -> Self
 pub struct wcmp::TypedFunc<P, R>
 impl<P, R> wcmp::TypedFunc<P, R> where P: wcmp::ComponentParameters, R: wcmp::ComponentResult
-pub async fn wcmp::TypedFunc<P, R>::call<T: 'static>(&self, store: &mut wcmp::Store<T>, args: P) -> wcmp::Result<R>
-pub async fn wcmp::TypedFunc<P, R>::call_concurrent<T: 'static>(&self, accessor: &wcmp::Accessor<T>, args: P) -> wcmp::Result<R>
+pub async fn wcmp::TypedFunc<P, R>::call<T: 'static>(&self, &mut wcmp::Store<T>, P) -> wcmp::Result<R>
+pub async fn wcmp::TypedFunc<P, R>::call_concurrent<T: 'static>(&self, &wcmp::Accessor<T>, P) -> wcmp::Result<R>
 impl<P, R> core::fmt::Debug for wcmp::TypedFunc<P, R>
-pub fn wcmp::TypedFunc<P, R>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn wcmp::TypedFunc<P, R>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::ValField
 pub wcmp::ValField::name: alloc::string::String
 pub wcmp::ValField::value: wcmp::Val
 pub struct wcmp::VariantCase
 impl wcmp::VariantCase
 pub fn wcmp::VariantCase::name(&self) -> &str
-pub fn wcmp::VariantCase::new(name: impl core::convert::Into<alloc::string::String>, payload: core::option::Option<wcmp::ValueType>) -> Self
+pub fn wcmp::VariantCase::new(impl core::convert::Into<alloc::string::String>, core::option::Option<wcmp::ValueType>) -> Self
 pub fn wcmp::VariantCase::payload(&self) -> core::option::Option<&wcmp::ValueType>
 pub struct wcmp::VariantType
 impl wcmp::VariantType
 pub fn wcmp::VariantType::cases(&self) -> &[wcmp::VariantCase]
-pub fn wcmp::VariantType::new(cases: impl core::iter::traits::collect::IntoIterator<Item = wcmp::VariantCase>) -> Self
+pub fn wcmp::VariantType::new(impl core::iter::traits::collect::IntoIterator<Item = wcmp::VariantCase>) -> Self
 impl core::fmt::Debug for wcmp::VariantType
-pub fn wcmp::VariantType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn wcmp::VariantType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub trait wcmp::ComponentParameters: core::marker::Sized + core::marker::Send + core::marker::Sync + 'static
-pub fn wcmp::ComponentParameters::from_vals(vals: &[wcmp::Val]) -> wcmp::Result<Self>
+pub fn wcmp::ComponentParameters::from_vals(&[wcmp::Val]) -> wcmp::Result<Self>
 pub fn wcmp::ComponentParameters::into_vals(self) -> alloc::vec::Vec<wcmp::Val>
 pub fn wcmp::ComponentParameters::parameter_types() -> alloc::vec::Vec<wcmp::FunctionParameter>
 impl wcmp::ComponentParameters for ()
-pub fn ()::from_vals(vals: &[wcmp::Val]) -> wcmp::Result<Self>
+pub fn ()::from_vals(&[wcmp::Val]) -> wcmp::Result<Self>
 pub fn ()::into_vals(self) -> alloc::vec::Vec<wcmp::Val>
 pub fn ()::parameter_types() -> alloc::vec::Vec<wcmp::FunctionParameter>
 impl<A: wcmp::ComponentValue, B: wcmp::ComponentValue, C: wcmp::ComponentValue, D: wcmp::ComponentValue> wcmp::ComponentParameters for (A, B, C, D)
-pub fn (A, B, C, D)::from_vals(vals: &[wcmp::Val]) -> wcmp::Result<Self>
+pub fn (A, B, C, D)::from_vals(&[wcmp::Val]) -> wcmp::Result<Self>
 pub fn (A, B, C, D)::into_vals(self) -> alloc::vec::Vec<wcmp::Val>
 pub fn (A, B, C, D)::parameter_types() -> alloc::vec::Vec<wcmp::FunctionParameter>
 impl<A: wcmp::ComponentValue, B: wcmp::ComponentValue, C: wcmp::ComponentValue> wcmp::ComponentParameters for (A, B, C)
-pub fn (A, B, C)::from_vals(vals: &[wcmp::Val]) -> wcmp::Result<Self>
+pub fn (A, B, C)::from_vals(&[wcmp::Val]) -> wcmp::Result<Self>
 pub fn (A, B, C)::into_vals(self) -> alloc::vec::Vec<wcmp::Val>
 pub fn (A, B, C)::parameter_types() -> alloc::vec::Vec<wcmp::FunctionParameter>
 impl<A: wcmp::ComponentValue, B: wcmp::ComponentValue> wcmp::ComponentParameters for (A, B)
-pub fn (A, B)::from_vals(vals: &[wcmp::Val]) -> wcmp::Result<Self>
+pub fn (A, B)::from_vals(&[wcmp::Val]) -> wcmp::Result<Self>
 pub fn (A, B)::into_vals(self) -> alloc::vec::Vec<wcmp::Val>
 pub fn (A, B)::parameter_types() -> alloc::vec::Vec<wcmp::FunctionParameter>
 impl<A: wcmp::ComponentValue> wcmp::ComponentParameters for (A)
-pub fn (A)::from_vals(vals: &[wcmp::Val]) -> wcmp::Result<Self>
+pub fn (A)::from_vals(&[wcmp::Val]) -> wcmp::Result<Self>
 pub fn (A)::into_vals(self) -> alloc::vec::Vec<wcmp::Val>
 pub fn (A)::parameter_types() -> alloc::vec::Vec<wcmp::FunctionParameter>
 pub trait wcmp::ComponentResult: core::marker::Sized + core::marker::Send + core::marker::Sync + 'static
-pub fn wcmp::ComponentResult::from_val(val: core::option::Option<&wcmp::Val>) -> wcmp::Result<Self>
+pub fn wcmp::ComponentResult::from_val(core::option::Option<&wcmp::Val>) -> wcmp::Result<Self>
 pub fn wcmp::ComponentResult::into_val(self) -> core::option::Option<wcmp::Val>
 pub fn wcmp::ComponentResult::result_type() -> core::option::Option<wcmp::ValueType>
 impl wcmp::ComponentResult for ()
-pub fn ()::from_val(val: core::option::Option<&wcmp::Val>) -> wcmp::Result<Self>
+pub fn ()::from_val(core::option::Option<&wcmp::Val>) -> wcmp::Result<Self>
 pub fn ()::into_val(self) -> core::option::Option<wcmp::Val>
 pub fn ()::result_type() -> core::option::Option<wcmp::ValueType>
 impl<T: wcmp::ComponentValue> wcmp::ComponentResult for T
-pub fn T::from_val(val: core::option::Option<&wcmp::Val>) -> wcmp::Result<Self>
+pub fn T::from_val(core::option::Option<&wcmp::Val>) -> wcmp::Result<Self>
 pub fn T::into_val(self) -> core::option::Option<wcmp::Val>
 pub fn T::result_type() -> core::option::Option<wcmp::ValueType>
 pub trait wcmp::ComponentValue: core::marker::Sized + core::marker::Send + core::marker::Sync + 'static
-pub fn wcmp::ComponentValue::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn wcmp::ComponentValue::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn wcmp::ComponentValue::to_val(self) -> wcmp::Val
 pub fn wcmp::ComponentValue::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for alloc::string::String
-pub fn alloc::string::String::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn alloc::string::String::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn alloc::string::String::to_val(self) -> wcmp::Val
 pub fn alloc::string::String::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for bool
-pub fn bool::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn bool::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn bool::to_val(self) -> wcmp::Val
 pub fn bool::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for char
-pub fn char::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn char::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn char::to_val(self) -> wcmp::Val
 pub fn char::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for f32
-pub fn f32::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn f32::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn f32::to_val(self) -> wcmp::Val
 pub fn f32::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for f64
-pub fn f64::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn f64::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn f64::to_val(self) -> wcmp::Val
 pub fn f64::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for i16
-pub fn i16::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn i16::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn i16::to_val(self) -> wcmp::Val
 pub fn i16::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for i32
-pub fn i32::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn i32::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn i32::to_val(self) -> wcmp::Val
 pub fn i32::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for i64
-pub fn i64::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn i64::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn i64::to_val(self) -> wcmp::Val
 pub fn i64::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for i8
-pub fn i8::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn i8::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn i8::to_val(self) -> wcmp::Val
 pub fn i8::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for u16
-pub fn u16::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn u16::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn u16::to_val(self) -> wcmp::Val
 pub fn u16::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for u32
-pub fn u32::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn u32::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn u32::to_val(self) -> wcmp::Val
 pub fn u32::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for u64
-pub fn u64::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn u64::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn u64::to_val(self) -> wcmp::Val
 pub fn u64::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for u8
-pub fn u8::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn u8::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn u8::to_val(self) -> wcmp::Val
 pub fn u8::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for wcmp::ErrorContext
-pub fn wcmp::ErrorContext::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn wcmp::ErrorContext::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn wcmp::ErrorContext::to_val(self) -> wcmp::Val
 pub fn wcmp::ErrorContext::value_type() -> wcmp::ValueType
 impl<K: wcmp::ComponentValue + core::cmp::Eq + core::hash::Hash, V: wcmp::ComponentValue> wcmp::ComponentValue for std::collections::hash::map::HashMap<K, V>
-pub fn std::collections::hash::map::HashMap<K, V>::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn std::collections::hash::map::HashMap<K, V>::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn std::collections::hash::map::HashMap<K, V>::to_val(self) -> wcmp::Val
 pub fn std::collections::hash::map::HashMap<K, V>::value_type() -> wcmp::ValueType
 impl<T: wcmp::ComponentValue, const N: usize> wcmp::ComponentValue for [T; N]
-pub fn [T; N]::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn [T; N]::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn [T; N]::to_val(self) -> wcmp::Val
 pub fn [T; N]::value_type() -> wcmp::ValueType
 impl<T: wcmp::ComponentValue> wcmp::ComponentValue for alloc::vec::Vec<T>
-pub fn alloc::vec::Vec<T>::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn alloc::vec::Vec<T>::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn alloc::vec::Vec<T>::to_val(self) -> wcmp::Val
 pub fn alloc::vec::Vec<T>::value_type() -> wcmp::ValueType
 impl<T: wcmp::ComponentValue> wcmp::ComponentValue for core::option::Option<T>
-pub fn core::option::Option<T>::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn core::option::Option<T>::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn core::option::Option<T>::to_val(self) -> wcmp::Val
 pub fn core::option::Option<T>::value_type() -> wcmp::ValueType
 impl<T: wcmp::ComponentValue> wcmp::ComponentValue for wcmp::FutureReader<T>
-pub fn wcmp::FutureReader<T>::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn wcmp::FutureReader<T>::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn wcmp::FutureReader<T>::to_val(self) -> wcmp::Val
 pub fn wcmp::FutureReader<T>::value_type() -> wcmp::ValueType
 impl<T: wcmp::ComponentValue> wcmp::ComponentValue for wcmp::StreamReader<T>
-pub fn wcmp::StreamReader<T>::from_val(val: &wcmp::Val) -> wcmp::Result<Self>
+pub fn wcmp::StreamReader<T>::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn wcmp::StreamReader<T>::to_val(self) -> wcmp::Val
 pub fn wcmp::StreamReader<T>::value_type() -> wcmp::ValueType
 pub trait wcmp::ExportLookup
@@ -824,28 +824,28 @@ impl<T: wcmp::ExportLookup + ?core::marker::Sized> wcmp::ExportLookup for &T
 pub fn &T::external_name(&self) -> wcmp::ExternalName
 pub trait wcmp::FutureConsumer<D: 'static>: core::marker::Send + 'static
 pub type wcmp::FutureConsumer::Item
-pub fn wcmp::FutureConsumer::poll_consume(self: core::pin::Pin<&mut Self>, cx: &mut core::task::wake::Context<'_>, store: &mut wcmp::StoreContext<'_, D>, source: wcmp::Source<'_, Self::Item>, finish: bool) -> core::task::poll::Poll<wcmp::Result<()>>
+pub fn wcmp::FutureConsumer::poll_consume(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>, &mut wcmp::StoreContext<'_, D>, wcmp::Source<'_, Self::Item>, bool) -> core::task::poll::Poll<wcmp::Result<()>>
 pub trait wcmp::FutureProducer<D: 'static>: core::marker::Send + 'static
 pub type wcmp::FutureProducer::Item
-pub fn wcmp::FutureProducer::poll_produce(self: core::pin::Pin<&mut Self>, cx: &mut core::task::wake::Context<'_>, store: &mut wcmp::StoreContext<'_, D>, finish: bool) -> core::task::poll::Poll<wcmp::Result<core::option::Option<Self::Item>>>
+pub fn wcmp::FutureProducer::poll_produce(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>, &mut wcmp::StoreContext<'_, D>, bool) -> core::task::poll::Poll<wcmp::Result<core::option::Option<Self::Item>>>
 impl<D, Item, E, F> wcmp::FutureProducer<D> for F where D: 'static, E: core::convert::Into<wcmp::Error>, F: core::future::future::Future<Output = core::result::Result<Item, E>> + ?core::marker::Sized + core::marker::Send + 'static
 pub type F::Item = Item
-pub fn F::poll_produce(self: core::pin::Pin<&mut Self>, cx: &mut core::task::wake::Context<'_>, _store: &mut wcmp::StoreContext<'_, D>, finish: bool) -> core::task::poll::Poll<wcmp::Result<core::option::Option<Item>>>
+pub fn F::poll_produce(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>, &mut wcmp::StoreContext<'_, D>, bool) -> core::task::poll::Poll<wcmp::Result<core::option::Option<Item>>>
 pub trait wcmp::HostFuture<Out>: core::future::future::Future<Output = Out> + core::marker::Send + 'static
 impl<Out, F> wcmp::HostFuture<Out> for F where F: core::future::future::Future<Output = Out> + core::marker::Send + 'static
 pub trait wcmp::StreamConsumer<D: 'static>: core::marker::Send + 'static
 pub type wcmp::StreamConsumer::Item
-pub fn wcmp::StreamConsumer::poll_consume(self: core::pin::Pin<&mut Self>, cx: &mut core::task::wake::Context<'_>, store: &mut wcmp::StoreContext<'_, D>, source: wcmp::Source<'_, Self::Item>, finish: bool) -> core::task::poll::Poll<wcmp::Result<wcmp::StreamResult>>
+pub fn wcmp::StreamConsumer::poll_consume(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>, &mut wcmp::StoreContext<'_, D>, wcmp::Source<'_, Self::Item>, bool) -> core::task::poll::Poll<wcmp::Result<wcmp::StreamResult>>
 pub trait wcmp::StreamProducer<D: 'static>: core::marker::Send + 'static
 pub type wcmp::StreamProducer::Item
-pub fn wcmp::StreamProducer::poll_produce(self: core::pin::Pin<&mut Self>, cx: &mut core::task::wake::Context<'_>, store: &mut wcmp::StoreContext<'_, D>, destination: wcmp::Destination<'_, Self::Item>, finish: bool) -> core::task::poll::Poll<wcmp::Result<wcmp::StreamResult>>
+pub fn wcmp::StreamProducer::poll_produce(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>, &mut wcmp::StoreContext<'_, D>, wcmp::Destination<'_, Self::Item>, bool) -> core::task::poll::Poll<wcmp::Result<wcmp::StreamResult>>
 impl<D: 'static, T: core::marker::Send + 'static> wcmp::StreamProducer<D> for alloc::boxed::Box<[T]>
 pub type alloc::boxed::Box<[T]>::Item = T
-pub fn alloc::boxed::Box<[T]>::poll_produce(self: core::pin::Pin<&mut Self>, _cx: &mut core::task::wake::Context<'_>, _store: &mut wcmp::StoreContext<'_, D>, destination: wcmp::Destination<'_, T>, _finish: bool) -> core::task::poll::Poll<wcmp::Result<wcmp::StreamResult>>
+pub fn alloc::boxed::Box<[T]>::poll_produce(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>, &mut wcmp::StoreContext<'_, D>, wcmp::Destination<'_, T>, bool) -> core::task::poll::Poll<wcmp::Result<wcmp::StreamResult>>
 impl<D: 'static, T: core::marker::Send + 'static> wcmp::StreamProducer<D> for core::iter::sources::empty::Empty<T>
 pub type core::iter::sources::empty::Empty<T>::Item = T
-pub fn core::iter::sources::empty::Empty<T>::poll_produce(self: core::pin::Pin<&mut Self>, _cx: &mut core::task::wake::Context<'_>, _store: &mut wcmp::StoreContext<'_, D>, destination: wcmp::Destination<'_, T>, _finish: bool) -> core::task::poll::Poll<wcmp::Result<wcmp::StreamResult>>
+pub fn core::iter::sources::empty::Empty<T>::poll_produce(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>, &mut wcmp::StoreContext<'_, D>, wcmp::Destination<'_, T>, bool) -> core::task::poll::Poll<wcmp::Result<wcmp::StreamResult>>
 impl<D: 'static, T: core::marker::Unpin + core::marker::Send + 'static> wcmp::StreamProducer<D> for alloc::vec::Vec<T>
 pub type alloc::vec::Vec<T>::Item = T
-pub fn alloc::vec::Vec<T>::poll_produce(self: core::pin::Pin<&mut Self>, _cx: &mut core::task::wake::Context<'_>, _store: &mut wcmp::StoreContext<'_, D>, destination: wcmp::Destination<'_, T>, _finish: bool) -> core::task::poll::Poll<wcmp::Result<wcmp::StreamResult>>
+pub fn alloc::vec::Vec<T>::poll_produce(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>, &mut wcmp::StoreContext<'_, D>, wcmp::Destination<'_, T>, bool) -> core::task::poll::Poll<wcmp::Result<wcmp::StreamResult>>
 pub type wcmp::Result<T> = core::result::Result<T, wcmp::Error>

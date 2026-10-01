@@ -8,9 +8,18 @@
   # everything it builds on this flake's nixpkgs.
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    # The systems list `eachDefaultSystem` reads (see `nix/systems.nix`).
+    # Katsuobushi's flake-utils follows this flake's, so that katsuobushi,
+    # whose nixpkgs is this one, is never evaluated for a system it dropped.
+    systems = {
+      url = "path:./nix/systems.nix";
+      flake = false;
+    };
     flake-utils.url = "github:numtide/flake-utils";
+    flake-utils.inputs.systems.follows = "systems";
     katsuobushi.url = "github:cdata/katsuobushi/v0.5.1";
     katsuobushi.inputs.nixpkgs.follows = "nixpkgs";
+    katsuobushi.inputs.flake-utils.follows = "flake-utils";
 
     # The agent harness that runs inside a sandbox VM. Pre-built upstream, so
     # it needs no unfree allowance, and newer than the nixpkgs build. It keeps
@@ -76,6 +85,7 @@
   outputs =
     {
       self,
+      systems,
       nixpkgs,
       flake-utils,
       katsuobushi,
@@ -92,8 +102,30 @@
         pkgs = import nixpkgs {
           inherit system;
           # The Rust helper applies rust-overlay internally, so only the
-          # katsuobushi overlay (menu helpers) is needed here.
-          overlays = [ katsuobushi.overlays.default ];
+          # katsuobushi overlay (menu helpers) and the Trunk fix below are
+          # needed here.
+          overlays = [
+            katsuobushi.overlays.default
+            # Trunk, which builds the smoke test page, vendors libdeflate
+            # 1.23, whose x86 code names the `evex512` target attribute that
+            # GCC 16 removed; the nixpkgs build fails on x86_64 Linux and
+            # cache.nixos.org has no copy. libdeflate names the attribute
+            # only while `__EVEX512__` is undefined, so defining it for the
+            # C that cc-rs compiles leaves the attribute out. (A GCC 15
+            # stdenv does not help: the cargo hook hands cc-rs the default
+            # compiler.) Remove this once nixpkgs' Trunk builds again.
+            (final: prev: {
+              trunk =
+                if prev.stdenv.hostPlatform.system == "x86_64-linux" then
+                  prev.trunk.overrideAttrs (old: {
+                    env = (old.env or { }) // {
+                      CFLAGS_x86_64_unknown_linux_gnu = "-D__EVEX512__";
+                    };
+                  })
+                else
+                  prev.trunk;
+            })
+          ];
           config = {
             allowUnfreePredicate =
               pkg:
@@ -116,7 +148,7 @@
 
         # The sandbox guest is a Linux microvm, so the sandbox app, its
         # checks, and the lifecycle commands exist on Linux only.
-        isLinux = pkgs.stdenv.isLinux;
+        isLinux = pkgs.stdenv.hostPlatform.isLinux;
 
         # The agent sandbox: a hermetic microvm guest that a delegated agent
         # works in, with its blast radius bounded by the VM. `sandbox status`
@@ -748,7 +780,7 @@
         # Chrome differs by platform: Darwin uses google-chrome (unfree)
         # because chromium is unmaintained there; everything else uses
         # chromium.
-        chrome = if pkgs.stdenv.isDarwin then pkgs.google-chrome else pkgs.chromium;
+        chrome = if pkgs.stdenv.hostPlatform.isDarwin then pkgs.google-chrome else pkgs.chromium;
         chromePath = "${chrome}/bin/${chrome.meta.mainProgram}";
 
         # Headless Chrome refuses to start under the Nix build sandbox on
