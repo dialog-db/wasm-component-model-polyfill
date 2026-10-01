@@ -1,0 +1,118 @@
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+name: 'Test'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint_nix:
+    name: 'Lint Nix'
+    runs-on: 'ubuntu-latest'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/flake-checker-action@main
+        with:
+          send-statistics: false
+          ignore-missing-flake-lock: false
+
+  # Every check the flake declares (`nix flake check`).
+  lint:
+    name: 'Lint'
+    needs: ['lint_nix']
+    runs-on: 'ubuntu-latest'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare-runner
+        with:
+          cachix-auth-token: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - name: 'Run lints'
+        shell: bash
+        run: |
+          nix develop --accept-flake-config --command lint
+
+  # The lanes of `tests all`, grouped by the archive they replay, so that
+  # each archive is built once. The Zena lane builds both debug archives
+  # itself. The test jobs wait for `lint`, so a run that fails it spends no
+  # runner time on tests.
+  tests:
+    name: 'Tests (${{ matrix.name }})'
+    needs: ['lint']
+    runs-on: 'ubuntu-latest'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: 'native debug'
+            lanes: |
+              native debug
+              native no-provider
+              native wasmi
+              fidelity wasmi
+              fidelity wasmtime
+          - name: 'native release'
+            lanes: |
+              native release
+          - name: 'web debug'
+            lanes: |
+              web debug
+              web no-provider
+              fidelity web
+          - name: 'web release'
+            lanes: |
+              web release
+          - name: 'zena'
+            lanes: |
+              zena
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare-runner
+        with:
+          cachix-auth-token: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      # Every lane runs even after one fails, as `tests all` does.
+      - name: 'Run test lanes'
+        shell: bash
+        env:
+          LANES: '${{ matrix.lanes }}'
+        run: |
+          status=0
+          while read -r lane; do
+            [ -n "$lane" ] || continue
+            started=$SECONDS
+            echo "::group::tests $lane"
+            # shellcheck disable=SC2086
+            if nix develop --accept-flake-config --command tests $lane; then
+              echo "::endgroup::"
+              echo "tests $lane: passed in $((SECONDS - started))s"
+            else
+              echo "::endgroup::"
+              echo "::error title=tests $lane::failed after $((SECONDS - started))s"
+              status=1
+            fi
+          done <<< "$LANES"
+          exit "$status"
+
+  # The one status a branch protection rule needs to require.
+  ci:
+    name: 'CI'
+    if: always()
+    needs: ['lint_nix', 'lint', 'tests']
+    runs-on: 'ubuntu-latest'
+    steps:
+      - name: 'Require every job to pass'
+        env:
+          RESULTS: '${{ join(needs.*.result, '' '') }}'
+        run: |
+          echo "results: $RESULTS"
+          for result in $RESULTS; do
+            [ "$result" = success ] || exit 1
+          done

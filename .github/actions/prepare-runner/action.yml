@@ -1,0 +1,52 @@
+name: 'Prepare runner'
+description: 'Frees disk, installs Nix with the project binary cache, and moves scratch space onto the Nix volume'
+
+inputs:
+  cachix-auth-token:
+    description: 'Push token for the wcmp cache; without it the cache is read-only'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    # NOTE: AppArmor became more restrictive in Ubuntu 24.04 and gets in
+    # the way of headless Chrome; it should be safe to disable it.
+    # SEE: https://github.com/NixOS/nixpkgs/issues/121694#issuecomment-2159420924
+    # SEE: https://github.com/actions/runner-images/issues/10015
+    - uses: cisagov/action-disable-apparmor@v1
+
+    # Reclaims the runner's preinstalled software as one large /nix
+    # volume, leaving the root filesystem only root-safe-haven (16GB).
+    - uses: wimpysworld/nothing-but-nix@main
+      with:
+        root-safe-haven: '16384'
+
+    # Nix builds under /nix/build, on the large volume, rather than /tmp.
+    # One derivation at a time: each cargo build already uses every core,
+    # and two at once can exhaust the runner's 16GB, as they do in a
+    # sandbox VM of the same size.
+    - uses: cachix/install-nix-action@v31
+      with:
+        nix_path: nixpkgs=channel:nixos-unstable
+        extra_nix_config: |
+          build-dir = /nix/build
+          max-jobs = 1
+
+    # The test archives (4 to 7GB each) change with every commit, so they
+    # are not pushed. Claude Code, which the sandbox guest in the dev shell
+    # carries, is not ours to redistribute.
+    - uses: cachix/cachix-action@v16
+      with:
+        name: wcmp
+        authToken: '${{ inputs.cachix-auth-token }}'
+        pushFilter: '(-tests-(native|web)-(debug|release)-|claude-code)'
+
+    # A test lane extracts its archive and starts its browsers under
+    # $XDG_CACHE_HOME, which would otherwise be on the root filesystem.
+    - name: 'Move scratch space onto the Nix volume'
+      shell: bash
+      run: |
+        sudo mkdir -p /nix/scratch
+        sudo chown "$(id --user):$(id --group)" /nix/scratch
+        echo "XDG_CACHE_HOME=/nix/scratch" >> "$GITHUB_ENV"

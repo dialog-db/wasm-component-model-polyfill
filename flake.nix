@@ -20,20 +20,13 @@
 
     # Project-data sources for the sandbox guest. `flake = false` fetches the
     # tree only; `nix flake update` moves the pins. The two reference repos
-    # are the ones a design review cites side by side with this crate; the
-    # config repo holds the owner's universal agent rules.
+    # are the ones a design review cites side by side with this crate.
     component-model-src = {
       url = "github:WebAssembly/component-model";
       flake = false;
     };
     wasmtime-src = {
       url = "github:bytecodealliance/wasmtime";
-      flake = false;
-    };
-    # A private repo, so it is fetched over SSH with the host's keys. Only
-    # the tree matters, hence the shallow clone.
-    nixos-config = {
-      url = "git+ssh://git@github.com/cdata/nixos-config.git?shallow=1";
       flake = false;
     };
 
@@ -68,6 +61,18 @@
     zena.url = "github:elematic/zena";
   };
 
+  # The project's binary cache. CI pushes to it, so a shell or a build that
+  # CI has made comes down instead of rebuilding. Nix asks before it uses a
+  # flake's settings; `--accept-flake-config` skips the question.
+  nixConfig = {
+    extra-substituters = [
+      "https://wcmp.cachix.org"
+    ];
+    extra-trusted-public-keys = [
+      "wcmp.cachix.org-1:5qVYDJO8yXbHEM2CKOv9/XeE1asTVay7FmxFpAmxAt0="
+    ];
+  };
+
   outputs =
     {
       self,
@@ -77,7 +82,6 @@
       llm-agents,
       component-model-src,
       wasmtime-src,
-      nixos-config,
       spec-testsuite,
       wbg-pool-src,
       zena,
@@ -128,14 +132,16 @@
 
           # Beyond the Anthropic+Nix baseline, the guest reaches the cargo
           # registry (a dependency bump made inside the VM), the Rust dist
-          # server (a toolchain the host has not built yet), and docs.rs
-          # (the preferred place to read a dependency's API).
+          # server (a toolchain the host has not built yet), docs.rs (the
+          # preferred place to read a dependency's API), and the project's
+          # binary cache, which serves its NARs from its own host.
           allowedOrigins = [
             "static.rust-lang.org"
             "crates.io"
             "index.crates.io"
             "static.crates.io"
             "docs.rs"
+            "wcmp.cachix.org"
           ];
 
           # The agent harness and nothing else: every build and test tool
@@ -161,17 +167,14 @@
             }
           ];
 
-          # The owner's universal agent rules, read-only, so the guest agent
-          # works under the same global instructions as a host session.
-          homeFiles.".claude/CLAUDE.md" = {
-            source = nixos-config;
-            path = "AGENTS.md";
-            mode = "immutable";
-          };
-
           # Untracked, project-local Claude Code configuration (a
           # `.claude/settings.json` pins the in-guest model, for example).
-          # Carried when present; a missing path is skipped at launch.
+          # The owner's universal agent rules travel here too, as an
+          # untracked `.claude/CLAUDE.md`, rather than as a flake input: the
+          # repository that holds them is private, and every input must be
+          # fetchable by CI and by anyone who clones this one. Carried when
+          # present; a missing path is skipped at launch. Symlinks that leave
+          # the tree are dropped, so the file must be a copy.
           workspaceContext = [ ".claude" ];
 
           # Resources, sized around the browser lanes. `tests web` starts one
@@ -198,6 +201,16 @@
               # check`) would otherwise start every cargo check at once and
               # exhaust the VM's memory.
               nix.settings.max-jobs = 1;
+
+              # The binary cache `nixConfig` names, for what the host has not
+              # built and CI has. The guest's menu commands pass no
+              # `--accept-flake-config`, so the daemon is told directly. The
+              # `extra-` forms add to the cache.nixos.org entries rather than
+              # replace them.
+              nix.settings.extra-substituters = [ "https://wcmp.cachix.org" ];
+              nix.settings.extra-trusted-public-keys = [
+                "wcmp.cachix.org-1:5qVYDJO8yXbHEM2CKOv9/XeE1asTVay7FmxFpAmxAt0="
+              ];
 
               # The guest routes every process through its egress proxy with
               # `HTTP_PROXY` and friends. The browser lane talks to ChromeDriver

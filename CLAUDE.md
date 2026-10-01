@@ -19,6 +19,9 @@ for the board.
   `lint` or a `tests` command, or the run measures a stale tree.
 - The flake supplies Chrome, ChromeDriver, and `wbg-pool`, the pooled runner the
   browser lanes go through. No manual Chrome setup is needed.
+- GitHub Actions (`.github/workflows/test.yml`) runs `lint` and every lane of
+  `tests all` through the same menu commands. Every flake input must stay
+  publicly fetchable, or CI cannot evaluate the flake.
 - `sandbox` (Linux only) launches and drives agent VMs. `sandbox status` is the
   host preflight; it needs `HARNESS_OAUTH_TOKEN` exported on the host.
 

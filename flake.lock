@@ -335,23 +335,6 @@
         "type": "github"
       }
     },
-    "nixos-config": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1787508976,
-        "narHash": "sha256-F6W1rIgudEiw1DNbojwZO3Rs67LyFvp6qUfWxZLzoa0=",
-        "ref": "refs/heads/main",
-        "rev": "82b93d6f58bbbedea8b689547f16ff7baf66c4a6",
-        "shallow": true,
-        "type": "git",
-        "url": "ssh://git@github.com/cdata/nixos-config.git"
-      },
-      "original": {
-        "shallow": true,
-        "type": "git",
-        "url": "ssh://git@github.com/cdata/nixos-config.git"
-      }
-    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1781607440,
@@ -422,7 +405,6 @@
         "flake-utils": "flake-utils",
         "katsuobushi": "katsuobushi",
         "llm-agents": "llm-agents_2",
-        "nixos-config": "nixos-config",
         "nixpkgs": "nixpkgs_3",
         "spec-testsuite": "spec-testsuite",
         "wasmtime-src": "wasmtime-src",
