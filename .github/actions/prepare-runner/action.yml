@@ -56,16 +56,20 @@ runs:
     # Nix builds under /nix/build, on the large volume, rather than /tmp.
     # One derivation at a time: each cargo build already uses every core,
     # and two at once can exhaust the runner's 16GB, as they do in a
-    # sandbox VM of the same size. A build that prints nothing for half an
-    # hour, or runs for three, is stopped and named in the log rather than
-    # holding the job until its time limit.
+    # sandbox VM of the same size. A build that prints nothing for an hour
+    # and a half, or runs for three hours, is stopped and named in the log
+    # rather than holding the job until its time limit. The silence allowed
+    # is long because the release profile builds each crate as one codegen
+    # unit with thin LTO: cargo prints nothing while one large crate
+    # compiles on one thread or links, and on a 4-vCPU runner the release
+    # test archive stayed silent for more than half an hour.
     - uses: cachix/install-nix-action@v31
       with:
         nix_path: nixpkgs=channel:nixos-unstable
         extra_nix_config: |
           build-dir = /nix/build
           max-jobs = 1
-          max-silent-time = 1800
+          max-silent-time = 5400
           timeout = 10800
 
     # Pull only. A job pushes in its last step, with the `cache push` menu
