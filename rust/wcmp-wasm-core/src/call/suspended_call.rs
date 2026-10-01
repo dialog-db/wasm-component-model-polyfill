@@ -72,7 +72,7 @@ impl SuspendedCall {
             .capabilities()
             .require(Capability::HostSuspension)?;
         let backend = store.backend_mut();
-        if backend.data().id() != self.store {
+        if backend.id() != self.store {
             return Err(crate::Error::WrongStore);
         }
         checks::values_in_store(backend, import_results)?;
@@ -106,7 +106,7 @@ impl SuspendedCall {
             .capabilities()
             .require(Capability::HostSuspension)?;
         let backend = store.backend_mut();
-        if backend.data().id() != self.store {
+        if backend.id() != self.store {
             return Err(crate::Error::WrongStore);
         }
         checks::values_in_store(backend, import_results)?;

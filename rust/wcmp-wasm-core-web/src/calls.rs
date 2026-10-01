@@ -205,8 +205,9 @@ const TAKEN_BACK: &str = "the host took the store back before this call reached 
 
 /// The error of the store's owner where a host function that a flight
 /// called runs, and holds the store through its caller.
-const HOSTING: &str = "a host function of a call that runs on its own holds the store: it reaches \
-                       the store through its caller, and not through the store itself";
+const HOSTING: &str = "the store refused this use: a host function that a resumed or started \
+                       guest call called is running, and holds the store through its caller \
+                       until it returns";
 
 /// A call of a host function that a flight made, while it runs: the
 /// store's owner may not reach the store until it drops.

@@ -4,8 +4,9 @@
 //! the browser makes, host functions through their wrapper modules, how
 //! memory access crosses into JavaScript, what host suspension does
 //! inside a host function, what a resumable call that never suspends
-//! costs, and what a host function finds where it holds its store by a
-//! global after the host forgot a future of the store.
+//! costs, and what each operation answers to a host function that holds
+//! its store past its caller, by a global or a capture, after the host
+//! forgot a future of the store.
 
 #![cfg(target_arch = "wasm32")]
 
@@ -23,9 +24,9 @@ use wasm_bindgen::{JsCast, JsValue};
 use wcmp_macros::wasm;
 use wcmp_wasm_core::backend::RawHandle;
 use wcmp_wasm_core::{
-    Caller, Capabilities, Capability, Engine, Error, Extern, ExternRef, Func, FuncType, Global,
-    GlobalType, Instance, Memory, MemoryType, Module, Mutability, RefType, ResumableCall, Store,
-    SuspendedCall, Table, TableType, TrapKind, Val, ValType,
+    AnyRef, Caller, Capabilities, Capability, Engine, Error, Extern, ExternRef, Func, FuncType,
+    Global, GlobalType, I31, Instance, Memory, MemoryType, Module, Mutability, RefType,
+    ResumableCall, Store, SuspendedCall, Table, TableType, Tag, TrapKind, Val, ValType,
 };
 use wcmp_wasm_core_web::Web;
 
@@ -1822,12 +1823,232 @@ async fn it_reads_the_kind_of_a_trap_in_the_start_function() {
     }
 }
 
-/// A store that the host parked where a host function can reach it by a
-/// global, past its caller, and what that host function found there.
+/// A value that a host function captures although the browser makes it
+/// neither `Send` nor `Sync`, as a host function must be.
+struct Shared<V>(V);
+
+impl<V> core::ops::Deref for Shared<V> {
+    type Target = V;
+
+    fn deref(&self) -> &V {
+        &self.0
+    }
+}
+
+// SAFETY: `wasm32` without the atomics feature has one thread, and no way
+// to make another, so no value can be sent to or shared with one.
+#[cfg(not(target_feature = "atomics"))]
+unsafe impl<V> Send for Shared<V> {}
+
+// SAFETY: as for `Send` above.
+#[cfg(not(target_feature = "atomics"))]
+unsafe impl<V> Sync for Shared<V> {}
+
+/// An object of each kind that a store owns, made before a host function
+/// reaches the store past its caller and tries each operation on them.
+struct Objects {
+    module: Module,
+    instance: Instance,
+    func: Func,
+    memory: Memory,
+    global: Global,
+    table: Table,
+    tag: Tag,
+    extern_ref: ExternRef,
+    any_ref: AnyRef,
+}
+
+/// An object of each kind in `store`.
+async fn objects(engine: &Engine, store: &mut Store<u32>) -> Shared<Objects> {
+    let module = Module::compile(engine, wasm!(r#"(module (tag (export "oops")))"#))
+        .await
+        .expect("the module compiles");
+    let instance = Instance::instantiate(&mut *store, &module, &[])
+        .await
+        .expect("the module instantiates");
+    let tag = instance
+        .get_export(&mut *store, "oops")
+        .expect("the instance belongs to the store")
+        .and_then(Extern::into_tag)
+        .expect("the instance exports `oops`");
+    Shared(Objects {
+        func: Func::new(&mut *store, FuncType::new([], []), |_, _, _| Ok(()))
+            .expect("the store makes a host function"),
+        memory: Memory::new(&mut *store, MemoryType::new(1, None)).expect("a memory"),
+        global: Global::new(
+            &mut *store,
+            GlobalType::new(ValType::I32, Mutability::Var),
+            Val::I32(0),
+        )
+        .expect("the store makes a global"),
+        table: Table::new(
+            &mut *store,
+            TableType::new(RefType::FUNCREF, 1, None),
+            Val::FuncRef(None),
+        )
+        .expect("the store makes a table"),
+        extern_ref: ExternRef::new(&mut *store, ()).expect("the store makes an `externref`"),
+        any_ref: AnyRef::from_i31(&mut *store, I31::new_i32(5).expect("5 fits"))
+            .expect("the store makes an `i31ref`"),
+        module,
+        instance,
+        tag,
+    })
+}
+
+/// What each operation that a host function tried on a store it reached
+/// past its caller answered, by the name of the operation.
+type Reached = Vec<(&'static str, Result<(), Error>)>;
+
+/// What `outcome` says about the store, without the value it carries.
+fn done<T>(outcome: Result<T, Error>) -> Result<(), Error> {
+    outcome.map(drop)
+}
+
+/// What `future` says about the store on its first poll. A future that is
+/// not ready answers `Ok`, which no refusal is.
+fn ready<T>(future: impl Future<Output = Result<T, Error>>) -> Result<(), Error> {
+    match poll_once(future) {
+        Poll::Ready(outcome) => done(outcome),
+        Poll::Pending => Ok(()),
+    }
+}
+
+/// Tries every fallible operation of the runtime layer on `store`, which
+/// a host function reached past its caller, over `objects`.
+fn sweep(store: &mut Store<u32>, objects: &Objects) -> Reached {
+    // Neither needs the store itself, so neither panics where the store is
+    // refused.
+    assert!(
+        store
+            .engine()
+            .capabilities()
+            .contains(Capability::HostSuspension),
+        "the store names its engine"
+    );
+    assert!(format!("{store:?}").starts_with("Store"));
+
+    let Objects {
+        module,
+        instance,
+        func,
+        memory,
+        global,
+        table,
+        tag,
+        extern_ref,
+        any_ref,
+    } = objects;
+    let i32_type = GlobalType::new(ValType::I32, Mutability::Var);
+    let funcref_type = TableType::new(RefType::FUNCREF, 1, None);
+    let five = I31::new_i32(5).expect("5 fits");
+    let mut buffer = [0; 4];
+    vec![
+        (
+            "Instance::instantiate",
+            ready(Instance::instantiate(&mut *store, module, &[])),
+        ),
+        (
+            "Instance::get_export",
+            done(instance.get_export(&mut *store, "oops")),
+        ),
+        (
+            "Func::new",
+            done(Func::new(&mut *store, FuncType::new([], []), |_, _, _| {
+                Ok(())
+            })),
+        ),
+        (
+            "Func::new_suspending",
+            done(Func::new_suspending(
+                &mut *store,
+                FuncType::new([], []),
+                |_, _, _| Ok(Poll::Ready(())),
+            )),
+        ),
+        ("Func::ty", done(func.ty(&*store))),
+        ("Func::call", done(func.call(&mut *store, &[], &mut []))),
+        (
+            "Func::call_resumable",
+            ready(func.call_resumable(&mut *store, &[], &mut [])),
+        ),
+        (
+            "Func::start_resumable",
+            done(func.start_resumable(&mut *store, &[])),
+        ),
+        (
+            "Memory::new",
+            done(Memory::new(&mut *store, MemoryType::new(1, None))),
+        ),
+        ("Memory::ty", done(memory.ty(&*store))),
+        ("Memory::size", done(memory.size(&*store))),
+        ("Memory::grow", done(memory.grow(&mut *store, 1))),
+        ("Memory::read", done(memory.read(&*store, 0, &mut buffer))),
+        ("Memory::write", done(memory.write(&mut *store, 0, b"edge"))),
+        (
+            "Memory::with_bytes",
+            done(memory.with_bytes(&*store, 0, 4, |_| ())),
+        ),
+        (
+            "Memory::copy",
+            done(Memory::copy(&mut *store, memory, 0, memory, 4, 4)),
+        ),
+        ("Memory::load_u8", done(memory.load_u8(&*store, 0))),
+        ("Memory::load_u16", done(memory.load_u16(&*store, 0))),
+        ("Memory::load_u32", done(memory.load_u32(&*store, 0))),
+        ("Memory::load_u64", done(memory.load_u64(&*store, 0))),
+        ("Memory::store_u8", done(memory.store_u8(&mut *store, 0, 1))),
+        (
+            "Memory::store_u16",
+            done(memory.store_u16(&mut *store, 0, 1)),
+        ),
+        (
+            "Memory::store_u32",
+            done(memory.store_u32(&mut *store, 0, 1)),
+        ),
+        (
+            "Memory::store_u64",
+            done(memory.store_u64(&mut *store, 0, 1)),
+        ),
+        (
+            "Global::new",
+            done(Global::new(&mut *store, i32_type, Val::I32(1))),
+        ),
+        ("Global::ty", done(global.ty(&*store))),
+        ("Global::get", done(global.get(&mut *store))),
+        ("Global::set", done(global.set(&mut *store, Val::I32(1)))),
+        (
+            "Table::new",
+            done(Table::new(&mut *store, funcref_type, Val::FuncRef(None))),
+        ),
+        ("Table::ty", done(table.ty(&*store))),
+        ("Table::size", done(table.size(&*store))),
+        ("Table::get", done(table.get(&mut *store, 0))),
+        (
+            "Table::set",
+            done(table.set(&mut *store, 0, Val::FuncRef(None))),
+        ),
+        (
+            "Table::grow",
+            done(table.grow(&mut *store, 1, Val::FuncRef(None))),
+        ),
+        ("Tag::ty", done(tag.ty(&*store))),
+        ("ExternRef::new", done(ExternRef::new(&mut *store, ()))),
+        ("ExternRef::data", done(extern_ref.data(&*store))),
+        (
+            "AnyRef::from_i31",
+            done(AnyRef::from_i31(&mut *store, five)),
+        ),
+        ("AnyRef::as_i31", done(any_ref.as_i31(&*store))),
+    ]
+}
+
+/// What host functions found on the store they reached past their
+/// callers, and the waker of the test that waits for it.
 #[derive(Default)]
 struct Parked {
     store: Option<Store<u32>>,
-    reached: Option<Result<ExternRef, Error>>,
+    reached: Option<Reached>,
     waker: Option<Waker>,
 }
 
@@ -1835,7 +2056,7 @@ thread_local! {
     static PARKED: RefCell<Parked> = RefCell::default();
 }
 
-/// Parks `store` where [`reach_parked_store`] finds it.
+/// Parks `store` where [`reach`] finds it.
 fn park(store: Store<u32>) {
     PARKED.with(|parked| parked.borrow_mut().store = Some(store));
 }
@@ -1847,17 +2068,24 @@ fn unpark() -> Store<u32> {
         .expect("the store is parked")
 }
 
-/// Reaches the parked store past the caller, as a host function that
-/// holds its store by a global does, and records what it found.
-fn reach_parked_store() {
+/// What a host function found on `store`, a store it reached past its
+/// caller, or found where it looked for none.
+fn sweep_found(store: Option<&mut Store<u32>>, objects: &Objects) -> Reached {
+    match store {
+        Some(store) => sweep(store, objects),
+        None => vec![(
+            "the store",
+            Err(Error::Backend {
+                message: "the host function found no store".to_string(),
+            }),
+        )],
+    }
+}
+
+/// Hands `reached` to the test that waits in [`reached`].
+fn report(reached: Reached) {
     let waker = PARKED.with(|parked| {
         let mut parked = parked.borrow_mut();
-        let reached = match parked.store.as_mut() {
-            Some(store) => ExternRef::new(store, ()),
-            None => Err(Error::Backend {
-                message: "no store is parked".to_string(),
-            }),
-        };
         parked.reached = Some(reached);
         parked.waker.take()
     });
@@ -1866,8 +2094,9 @@ fn reach_parked_store() {
     }
 }
 
-/// What [`reach_parked_store`] found, once a host function reached it.
-async fn reached() -> Result<ExternRef, Error> {
+/// What a host function found on the store it reached past its caller,
+/// once one did.
+async fn reached() -> Reached {
     core::future::poll_fn(|context| {
         PARKED.with(|parked| {
             let mut parked = parked.borrow_mut();
@@ -1884,39 +2113,68 @@ async fn reached() -> Result<ExternRef, Error> {
 }
 
 /// A host function that counts its calls through its caller, and then
-/// reaches the parked store past its caller.
-fn reach(store: &mut Store<u32>) -> Func {
+/// reaches the parked store past its caller, as a host function that
+/// holds its store by a global does, and tries every operation on it.
+fn reach(store: &mut Store<u32>, objects: Shared<Objects>) -> Func {
     Func::new(
         store,
         FuncType::new([], []),
-        |mut caller: Caller<'_, u32>, _, _| {
+        move |mut caller: Caller<'_, u32>, _, _| {
             *caller.data_mut() += 1;
-            reach_parked_store();
+            let mut store = PARKED.with(|parked| parked.borrow_mut().store.take());
+            let reached = sweep_found(store.as_mut(), &objects);
+            PARKED.with(|parked| parked.borrow_mut().store = store);
+            report(reached);
             Ok(())
         },
     )
     .expect("the store makes a host function")
 }
 
-/// Asserts that a host function reached its store past its caller and was
-/// refused, and that the store holds what its caller wrote.
-fn assert_refused(reached: Result<ExternRef, Error>, store: &Store<u32>) {
-    match reached {
-        Err(Error::Backend { message }) => {
-            assert!(message.contains("through its caller"), "{message}");
+/// A host function that counts its calls through its caller, and then
+/// reaches the store in `slot` past its caller, as a host function that
+/// captured its store does, and tries every operation on it.
+fn reach_captured(
+    store: &mut Store<u32>,
+    objects: Shared<Objects>,
+    slot: Shared<Rc<RefCell<Option<Store<u32>>>>>,
+) -> Func {
+    Func::new(
+        store,
+        FuncType::new([], []),
+        move |mut caller: Caller<'_, u32>, _, _| {
+            *caller.data_mut() += 1;
+            let reached = sweep_found(slot.borrow_mut().as_mut(), &objects);
+            report(reached);
+            Ok(())
+        },
+    )
+    .expect("the store makes a host function")
+}
+
+/// Asserts that a host function reached its store past its caller and
+/// that every operation it tried there was refused with an error, and
+/// that the store holds what its caller wrote.
+fn assert_refused(reached: Reached, store: &Store<u32>) {
+    assert!(!reached.is_empty(), "the host function tried the store");
+    for (operation, outcome) in reached {
+        match outcome {
+            Err(Error::Backend { message }) => {
+                assert!(
+                    message.contains("through its caller"),
+                    "{operation}: {message}"
+                );
+            }
+            other => panic!("the store refuses `{operation}` past the caller: {other:?}"),
         }
-        other => panic!("the store refuses a host function past its caller: {other:?}"),
     }
     assert_eq!(*store.data(), 1, "the host function reached its caller");
 }
 
-#[wcmp_macros::test]
-async fn it_refuses_the_start_function_of_a_forgotten_instantiation_its_store_by_a_global() {
-    let engine = engine();
-    let mut store = Store::new(&engine, 0u32).expect("the engine makes a store");
-    let reach = reach(&mut store);
-    let module = Module::compile(
-        &engine,
+/// A module whose start function calls `reach`.
+async fn starting(engine: &Engine) -> Module {
+    Module::compile(
+        engine,
         wasm!(
             r#"
             (module
@@ -1926,8 +2184,13 @@ async fn it_refuses_the_start_function_of_a_forgotten_instantiation_its_store_by
         ),
     )
     .await
-    .expect("the module compiles");
+    .expect("the module compiles")
+}
 
+/// Starts instantiating `module` with `imports` in `store` so that its
+/// start function runs on a microtask after the future let go of the
+/// store, and forgets the future.
+fn instantiate_and_forget(store: &mut Store<u32>, module: &Module, imports: &[Extern]) {
     // Chrome runs the start function of a module object inside
     // `WebAssembly.instantiate`. The JavaScript API lets a browser run it
     // on a later task, so this `instantiate` defers the real one to a
@@ -1951,8 +2214,7 @@ async fn it_refuses_the_start_function_of_a_forgotten_instantiation_its_store_by
             .expect("a promise has `then`")
     });
 
-    let imports = [reach.into()];
-    let mut instantiation = Box::pin(Instance::instantiate(&mut store, &module, &imports));
+    let mut instantiation = Box::pin(Instance::instantiate(store, module, imports));
     let polled = with_webassembly_property("instantiate", deferred.as_ref(), || {
         poll_once(&mut instantiation)
     });
@@ -1963,23 +2225,43 @@ async fn it_refuses_the_start_function_of_a_forgotten_instantiation_its_store_by
     // The forgotten future no longer borrows the store, and its
     // instantiation keeps its permit.
     core::mem::forget(instantiation);
-    park(store);
-
-    let reached = reached().await;
-    assert_refused(reached, &unpark());
 }
 
-#[wcmp_macros::test]
-async fn it_refuses_the_stack_of_a_forgotten_resumption_its_store_by_a_global() {
-    let engine = engine();
-    let mut store = Store::new(&engine, 0u32).expect("the engine makes a store");
-    let wait = Func::new_suspending(&mut store, FuncType::new([], []), |_, _, _| {
-        Ok(Poll::Pending)
-    })
-    .expect("the store makes a suspending host function");
-    let reach = reach(&mut store);
-    let module = Module::compile(
-        &engine,
+/// Calls `run` of `instance` as a resumable call, which suspends in its
+/// first stretch, resumes it so that its stack runs on a microtask after
+/// the future let go of the store, and forgets the future.
+async fn resume_and_forget(store: &mut Store<u32>, instance: Instance) {
+    let run = instance
+        .get_export(&mut *store, "run")
+        .expect("the instance belongs to the store")
+        .and_then(Extern::into_func)
+        .expect("the instance exports `run`");
+    let mut results: [Val; 0] = [];
+    let handle = match run.call_resumable(&mut *store, &[], &mut results).await {
+        Ok(ResumableCall::Suspended(handle)) => handle,
+        other => panic!("the call suspends: {other:?}"),
+    };
+
+    let mut resumption = Box::pin(handle.resume(store, &[], &mut results));
+    assert!(
+        poll_once(&mut resumption).is_pending(),
+        "the stack resumes after the resumption returned"
+    );
+    // The forgotten future no longer borrows the store, and its call
+    // keeps its permit.
+    core::mem::forget(resumption);
+}
+
+/// A suspending host function that answers "not yet".
+fn wait(store: &mut Store<u32>) -> Func {
+    Func::new_suspending(store, FuncType::new([], []), |_, _, _| Ok(Poll::Pending))
+        .expect("the store makes a suspending host function")
+}
+
+/// A module whose `run` waits once, and then calls `reach`.
+async fn waiting(engine: &Engine) -> Module {
+    Module::compile(
+        engine,
         wasm!(
             r#"
             (module
@@ -1990,29 +2272,137 @@ async fn it_refuses_the_stack_of_a_forgotten_resumption_its_store_by_a_global() 
         ),
     )
     .await
-    .expect("the module compiles");
-    let instance = Instance::instantiate(&mut store, &module, &[wait.into(), reach.into()])
-        .await
-        .expect("the module instantiates");
-    let run = instance
-        .get_export(&mut store, "run")
-        .expect("the instance belongs to the store")
-        .and_then(Extern::into_func)
-        .expect("the instance exports `run`");
-    let mut results: [Val; 0] = [];
-    let handle = match run.call_resumable(&mut store, &[], &mut results).await {
-        Ok(ResumableCall::Suspended(handle)) => handle,
-        other => panic!("the call suspends: {other:?}"),
-    };
+    .expect("the module compiles")
+}
 
-    let mut resumption = Box::pin(handle.resume(&mut store, &[], &mut results));
-    assert!(
-        poll_once(&mut resumption).is_pending(),
-        "the stack resumes after the resumption returned"
-    );
-    // The forgotten future no longer borrows the store, and its call
-    // keeps its permit.
-    core::mem::forget(resumption);
+#[wcmp_macros::test]
+async fn it_refuses_the_start_function_of_a_forgotten_instantiation_its_store_by_a_global() {
+    let engine = engine();
+    let mut store = Store::new(&engine, 0u32).expect("the engine makes a store");
+    let objects = objects(&engine, &mut store).await;
+    let reach = reach(&mut store, objects);
+    let module = starting(&engine).await;
+
+    instantiate_and_forget(&mut store, &module, &[reach.into()]);
+    park(store);
+
+    let reached = reached().await;
+    assert_refused(reached, &unpark());
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_the_stack_of_a_forgotten_resumption_its_store_by_a_global() {
+    let engine = engine();
+    let mut store = Store::new(&engine, 0u32).expect("the engine makes a store");
+    let objects = objects(&engine, &mut store).await;
+    let wait = wait(&mut store);
+    let reach = reach(&mut store, objects);
+    let instance = Instance::instantiate(
+        &mut store,
+        &waiting(&engine).await,
+        &[wait.into(), reach.into()],
+    )
+    .await
+    .expect("the module instantiates");
+
+    resume_and_forget(&mut store, instance).await;
+    park(store);
+
+    let reached = reached().await;
+    assert_refused(reached, &unpark());
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_the_stack_of_a_forgotten_resumption_the_store_it_captured() {
+    let engine = engine();
+    let mut store = Store::new(&engine, 0u32).expect("the engine makes a store");
+    let objects = objects(&engine, &mut store).await;
+    let slot = Rc::new(RefCell::new(None));
+    let wait = wait(&mut store);
+    let reach = reach_captured(&mut store, objects, Shared(slot.clone()));
+    let instance = Instance::instantiate(
+        &mut store,
+        &waiting(&engine).await,
+        &[wait.into(), reach.into()],
+    )
+    .await
+    .expect("the module instantiates");
+
+    resume_and_forget(&mut store, instance).await;
+    *slot.borrow_mut() = Some(store);
+
+    let reached = reached().await;
+    let store = slot.borrow_mut().take().expect("the store is in its slot");
+    assert_refused(reached, &store);
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_the_start_function_of_a_forgotten_instantiation_the_store_it_captured() {
+    let engine = engine();
+    let mut store = Store::new(&engine, 0u32).expect("the engine makes a store");
+    let objects = objects(&engine, &mut store).await;
+    let slot = Rc::new(RefCell::new(None));
+    let reach = reach_captured(&mut store, objects, Shared(slot.clone()));
+    let module = starting(&engine).await;
+
+    instantiate_and_forget(&mut store, &module, &[reach.into()]);
+    *slot.borrow_mut() = Some(store);
+
+    let reached = reached().await;
+    let store = slot.borrow_mut().take().expect("the store is in its slot");
+    assert_refused(reached, &store);
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_call_nested_in_a_host_function_of_a_forgotten_resumption_its_store() {
+    let engine = engine();
+    let mut store = Store::new(&engine, 0u32).expect("the engine makes a store");
+    let objects = objects(&engine, &mut store).await;
+    let wait = wait(&mut store);
+    let reach = reach(&mut store, objects);
+    // The host function of the resumed stack calls back into the guest
+    // through its caller. That synchronous call runs under a lease of the
+    // store, and the host function it reaches holds the store by a global.
+    let nest = Func::new(
+        &mut store,
+        FuncType::new([ValType::FUNCREF], []),
+        |mut caller: Caller<'_, u32>, params, _| {
+            let Some(Val::FuncRef(Some(inner))) = params.first() else {
+                anyhow::bail!("the guest passes the function to call");
+            };
+            inner.call(&mut caller, &[], &mut [])?;
+            Ok(())
+        },
+    )
+    .expect("the store makes a host function");
+    let module = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (import "host" "wait" (func $wait))
+              (import "host" "reach" (func $reach))
+              (import "host" "nest" (func $nest (param funcref)))
+              (func $inner call $reach)
+              (elem declare func $inner)
+              (func (export "run")
+                call $wait
+                ref.func $inner
+                call $nest))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    let instance = Instance::instantiate(
+        &mut store,
+        &module,
+        &[wait.into(), reach.into(), nest.into()],
+    )
+    .await
+    .expect("the module instantiates");
+
+    resume_and_forget(&mut store, instance).await;
     park(store);
 
     let reached = reached().await;

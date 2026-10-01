@@ -13,7 +13,7 @@ use crate::values::Val;
 /// [`Error::WrongStore`] where `handle` belongs to a store other than
 /// `store`.
 pub fn same_store(store: &dyn BackendStore, handle: impl RawHandle) -> Result<()> {
-    if handle.store_id() == store.data().id() {
+    if handle.store_id() == store.id() {
         Ok(())
     } else {
         Err(Error::WrongStore)

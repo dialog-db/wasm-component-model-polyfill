@@ -71,7 +71,7 @@ impl Resumption {
             .capabilities()
             .require(Capability::HostSuspension)?;
         let backend = store.backend_mut();
-        if backend.data().id() != self.store {
+        if backend.id() != self.store {
             return Err(Error::WrongStore);
         }
         let inner = self.inner.as_mut().ok_or_else(|| Error::Backend {

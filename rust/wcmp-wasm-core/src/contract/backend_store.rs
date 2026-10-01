@@ -7,9 +7,10 @@ use crate::capability::Capability;
 use crate::contract::{
     BackendModule, BackendResumption, BackendSuspendedCall, BoxFuture, HostFunc, MaybeSend,
 };
+use crate::engine::Engine;
 use crate::error::{Error, Result};
 use crate::externs::{Extern, Func, Global, Instance, Memory, Table, Tag};
-use crate::store::StoreData;
+use crate::store::{StoreData, StoreId};
 use crate::types::{FuncType, GlobalType, MemoryType, TableType, TagType};
 use crate::values::{AnyRef, ExternRef, I31, Val};
 
@@ -38,10 +39,37 @@ use crate::values::{AnyRef, ExternRef, I31, Val};
 /// [`memory_write`]: BackendStore::memory_write
 pub trait BackendStore: MaybeSend {
     /// The data the store was made with.
+    ///
+    /// A backend may refuse the store while a reference to it that this
+    /// one would alias lives, and this method cannot fail, so it panics
+    /// then. The engine reads the identity and the engine of the store
+    /// through [`id`](BackendStore::id) and
+    /// [`engine`](BackendStore::engine) instead, so that only a reach for
+    /// the host's data meets the panic.
     fn data(&self) -> &StoreData;
 
-    /// The data the store was made with, mutably.
+    /// The data the store was made with, mutably. It panics where
+    /// [`data`](BackendStore::data) does.
     fn data_mut(&mut self) -> &mut StoreData;
+
+    /// The identity of the store, as its data carries it.
+    ///
+    /// The default reads it through [`data`](BackendStore::data). A
+    /// backend whose `data` can panic keeps the identity beside the store
+    /// and replaces this method, so that the check of a handle never
+    /// panics.
+    fn id(&self) -> StoreId {
+        self.data().id()
+    }
+
+    /// The engine of the store, as its data carries it.
+    ///
+    /// The default reads it through [`data`](BackendStore::data). A
+    /// backend whose `data` can panic keeps the engine beside the store
+    /// and replaces this method, as it does [`id`](BackendStore::id).
+    fn engine(&self) -> &Engine {
+        self.data().engine()
+    }
 
     /// Instantiates `module` with `imports`, one extern for each import of
     /// the module, in order.

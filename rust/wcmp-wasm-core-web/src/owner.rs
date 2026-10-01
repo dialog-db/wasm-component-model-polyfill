@@ -5,11 +5,11 @@ use std::rc::Rc;
 
 use wcmp_wasm_core::backend::{
     BackendModule, BackendResumption, BackendStore, BackendSuspendedCall, BoxFuture, HostFunc,
-    StoreData,
+    StoreData, StoreId,
 };
 use wcmp_wasm_core::{
-    AnyRef, Error, Extern, ExternRef, Func, FuncType, Global, GlobalType, I31, Instance, Memory,
-    MemoryType, Result, ResumableCall, Resumption, Table, TableType, Tag, TagType, Val,
+    AnyRef, Engine, Error, Extern, ExternRef, Func, FuncType, Global, GlobalType, I31, Instance,
+    Memory, MemoryType, Result, ResumableCall, Resumption, Table, TableType, Tag, TagType, Val,
 };
 
 use crate::calls::Calls;
@@ -35,7 +35,10 @@ use crate::suspended::WebSuspendedCall;
 /// reference to the store lives. Each method here refuses the store then:
 /// a fallible one with [`Error::Backend`], and [`data`](BackendStore::data)
 /// and [`data_mut`](BackendStore::data_mut), which cannot fail, with a
-/// panic.
+/// panic. The owner keeps the store's identity and engine outside the
+/// cell, so [`id`](BackendStore::id) and [`engine`](BackendStore::engine)
+/// answer without the store, and the engine's checks of a handle never
+/// meet the panic.
 ///
 /// When the owner drops, the store drops with it, unless a flight runs.
 /// A flight that runs keeps the cell until it stops, and reaches the store
@@ -43,15 +46,26 @@ use crate::suspended::WebSuspendedCall;
 pub struct Owner {
     cell: Rc<StoreCell>,
     calls: Rc<Calls>,
+    /// The identity of the store, which never changes.
+    id: StoreId,
+    /// The engine of the store, which never changes.
+    engine: Engine,
 }
 
 impl Owner {
     /// The owner of `store`.
     pub fn new(store: WebStore) -> Self {
         let calls = store.calls().clone();
+        let id = store.data().id();
+        let engine = store.data().engine().clone();
         let cell = Rc::new(StoreCell::new(store));
         calls.attach(Rc::downgrade(&cell));
-        Self { cell, calls }
+        Self {
+            cell,
+            calls,
+            id,
+            engine,
+        }
     }
 
     /// The store, after every flight's permit ended.
@@ -108,6 +122,14 @@ impl BackendStore for Owner {
             Ok(store) => store.data_mut(),
             Err(error) => panic!("{error}"),
         }
+    }
+
+    fn id(&self) -> StoreId {
+        self.id
+    }
+
+    fn engine(&self) -> &Engine {
+        &self.engine
     }
 
     fn instantiate<'a>(

@@ -40,18 +40,35 @@ impl<T: MaybeSend + 'static> Store<T> {
 
 impl<T: 'static> Store<T> {
     /// The host's data in the store.
+    ///
+    /// # Panics
+    ///
+    /// Where the backend refuses the store because another reference to
+    /// it lives. The browser backend refuses it to a host function that
+    /// reaches its store past its caller, for example through a global,
+    /// while a guest call that runs on its own calls that host function:
+    /// the resumed stack of a resumable call, or the start function of an
+    /// instantiation, after the host forgot the future that waited for it.
+    /// The caller is the one way to the store then. Every method of the
+    /// store and its handles that returns a [`Result`] returns
+    /// [`Error::Backend`](crate::Error::Backend) there, and only this
+    /// method and [`data_mut`](Store::data_mut), which cannot fail, panic.
     pub fn data(&self) -> &T {
         self.inner.data().user::<T>()
     }
 
     /// The host's data in the store, mutably.
+    ///
+    /// # Panics
+    ///
+    /// Where [`data`](Store::data) does.
     pub fn data_mut(&mut self) -> &mut T {
         self.inner.data_mut().user_mut::<T>()
     }
 
     /// The engine of the store.
     pub fn engine(&self) -> &Engine {
-        self.inner.data().engine()
+        self.inner.engine()
     }
 }
 
@@ -72,7 +89,7 @@ impl<T: 'static> AsContextMut for Store<T> {
 impl<T> fmt::Debug for Store<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Store")
-            .field("id", &self.inner.data().id())
+            .field("id", &self.inner.id())
             .finish_non_exhaustive()
     }
 }

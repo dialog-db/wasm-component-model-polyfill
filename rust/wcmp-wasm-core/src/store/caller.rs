@@ -33,7 +33,7 @@ impl<T: 'static> Caller<'_, T> {
 
     /// The engine of the store.
     pub fn engine(&self) -> &Engine {
-        self.store.data().engine()
+        self.store.engine()
     }
 }
 
@@ -63,7 +63,7 @@ impl<T: 'static> AsContextMut for Caller<'_, T> {
 impl<T> fmt::Debug for Caller<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Caller")
-            .field("store", &self.store.data().id())
+            .field("store", &self.store.id())
             .finish_non_exhaustive()
     }
 }

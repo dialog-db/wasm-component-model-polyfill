@@ -16,13 +16,18 @@ pub struct StoreContext<'a, T> {
 
 impl<'a, T: 'static> StoreContext<'a, T> {
     /// The host's data in the store.
+    ///
+    /// # Panics
+    ///
+    /// Where [`Store::data`](crate::Store::data) does, for a context made
+    /// from a store.
     pub fn data(&self) -> &'a T {
         self.store.data().user::<T>()
     }
 
     /// The engine of the store.
     pub fn engine(&self) -> &'a Engine {
-        self.store.data().engine()
+        self.store.engine()
     }
 }
 
@@ -50,7 +55,7 @@ impl<T: 'static> AsContext for StoreContext<'_, T> {
 impl<T> fmt::Debug for StoreContext<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StoreContext")
-            .field("id", &self.store.data().id())
+            .field("id", &self.store.id())
             .finish_non_exhaustive()
     }
 }
