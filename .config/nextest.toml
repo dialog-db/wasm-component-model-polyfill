@@ -14,6 +14,12 @@
 # each backend of the runtime layer runs in its own lane.
 [profile.default]
 default-filter = "not test(/without_a_provider$/) and not (binary(zena) and test(=it_holds_every_subject_to_the_record_and_prints_the_report)) and not binary(fidelity)"
+# A test that deadlocks is killed after ten minutes rather than holding
+# its lane until a CI job's time limit. The slowest test today, the
+# conformance progress report, takes under a minute; a browser test is
+# also bounded by `WASM_BINDGEN_TEST_TIMEOUT`. Every other profile
+# inherits this.
+slow-timeout = { period = "60s", terminate-after = 10 }
 
 # The Wasmi lane (`tests native wasmi`): the default profile's tests on
 # the Wasmi backend. The corpus files Wasmtime's runner marks

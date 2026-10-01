@@ -1510,7 +1510,10 @@
             });
           };
 
-        commands = {
+        # Every menu command but the sandbox's, which is the whole menu of
+        # the `ci` shell: the sandbox commands reference the guest VM, and a
+        # shell that carries them has the guest's closure to realize.
+        ciCommands = {
           "build" = {
             description = "Build the polyfill crate for both targets as Nix derivations";
             subcommands = {
@@ -1741,9 +1744,14 @@
             };
           };
 
+          # Arguments after `lint` reach `nix flake check`: CI passes `-L
+          # --keep-going`, so its log carries each build's output and one
+          # failed check does not stop the others.
           "lint" = {
-            description = "Every check the flake declares (nix flake check)";
-            command = "nix flake check";
+            description = "Every check the flake declares (nix flake check; arguments pass through)";
+            command = ''
+              nix flake check "$@"
+            '';
           };
 
           # The crate's public surface, as `cargo public-api` reads it out
@@ -1786,11 +1794,14 @@
 
         }
         // markdown.menuCommands
-        // project.menuCommands
-        # `sandbox start` / `prompt` / `status` / `attach` / `fetch` /
-        # `deliver` / `stop` / `dispatch` / `prune`. Every `<inst>` also
-        # accepts the index shown in `sandbox status`.
-        // pkgs.lib.optionalAttrs isLinux sandbox.menuCommands;
+        // project.menuCommands;
+
+        commands =
+          ciCommands
+          # `sandbox start` / `prompt` / `status` / `attach` / `fetch` /
+          # `deliver` / `stop` / `dispatch` / `prune`. Every `<inst>` also
+          # accepts the index shown in `sandbox status`.
+          // pkgs.lib.optionalAttrs isLinux sandbox.menuCommands;
 
         # The smoke test host (`rust/wcmp-smoke`): one program that tells
         # what a developer does with the polyfill, story by story. Natively
@@ -1872,7 +1883,13 @@
             }
             ''
               export HOME=$TMPDIR
-              native=$(${smokeNative}/bin/wcmp-smoke | tail -n 1)
+              # A native run takes seconds; a hung one fails the check here
+              # rather than holding the build until a CI job's time limit.
+              if ! transcript=$(timeout 600 ${smokeNative}/bin/wcmp-smoke); then
+                echo "the native smoke run failed or did not finish within 600s" >&2
+                exit 1
+              fi
+              native=$(printf '%s\n' "$transcript" | tail -n 1)
               mkdir -p $out
               wcmp-smoke-web-check ${smokeWeb} "$native" $out/report.txt
             '';
@@ -1938,6 +1955,10 @@
                   じしf_,)ノ
           '';
           inherit commands;
+        };
+        ciMenu = makeMenu {
+          title = "WCMP (CI)";
+          commands = ciCommands;
         };
       in
       {
@@ -2101,6 +2122,16 @@
             # directly.
             ++ pkgs.lib.optionals isLinux [ sandbox.katsuctl ];
           shellHook = rustEnvironmentHook + makeDevShellHook menu;
+        };
+
+        # The shell GitHub Actions runs the menu in: the same tools and
+        # commands, without the sandbox's, so a runner realizes neither the
+        # guest VM nor `katsuctl` before a lane can start.
+        devShells.ci = pkgs.mkShell {
+          name = "wcmp-ci";
+          env = developmentEnvVars;
+          nativeBuildInputs = ciMenu.commands ++ developmentBuildInputs;
+          shellHook = rustEnvironmentHook + makeDevShellHook ciMenu;
         };
       }
     );

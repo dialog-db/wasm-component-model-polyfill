@@ -40,7 +40,7 @@ trap 'kill "$driver" "$server" 2>/dev/null || true' EXIT
 
 wait_for() {
   for _ in $(seq 100); do
-    if curl -fs -o /dev/null "$1"; then
+    if curl -fs --max-time 2 -o /dev/null "$1"; then
       return 0
     fi
     sleep 0.1
@@ -52,9 +52,13 @@ wait_for "http://127.0.0.1:$page_port/"
 wait_for "http://127.0.0.1:$driver_port/status"
 
 base="http://127.0.0.1:$driver_port"
+# Every WebDriver request is bounded: a browser that never starts, or a
+# page that never answers, fails the check at that request instead of
+# holding the build until a CI job's time limit. Starting the session,
+# which launches Chrome, is the slow one.
 post() {
-  curl -fs -X POST -H 'Content-Type: application/json' --data-binary @- \
-    "$base/$1"
+  curl -fs --max-time 120 -X POST -H 'Content-Type: application/json' \
+    --data-binary @- "$base/$1"
 }
 session=$(jq --compact-output '{capabilities: {alwaysMatch: .}}' \
   "$WASM_BINDGEN_TEST_WEBDRIVER_JSON" | post session | jq -r '.value.sessionId')
@@ -79,7 +83,7 @@ while [ "$SECONDS" -lt "$deadline" ]; do
   sleep 0.5
 done
 csp=$(execute "return document.documentElement.dataset.csp || 'absent'")
-curl -fs -X DELETE "$base/session/$session" >/dev/null
+curl -fs --max-time 30 -X DELETE "$base/session/$session" >/dev/null
 
 printf '%s\n' "$text" | tee "$destination"
 

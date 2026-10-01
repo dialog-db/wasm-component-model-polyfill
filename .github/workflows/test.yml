@@ -17,10 +17,17 @@ permissions:
 # Every job names its runner image rather than `ubuntu-latest`, so a new
 # Ubuntu (and its AppArmor rules, which headless Chrome depends on) arrives
 # by a deliberate change here, not on GitHub's migration date.
+#
+# Every job also sets a time limit under GitHub's six-hour maximum, with
+# room for a run with a cold binary cache. The lint and test steps run
+# under `.github/scripts/watch-runner.sh`, which prints free disk and
+# memory to the log as the step runs and fails the step, naming the
+# largest directories, before a full disk can stall the runner.
 jobs:
   lint_nix:
     name: 'Lint Nix'
     runs-on: 'ubuntu-24.04'
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/flake-checker-action@v14
@@ -28,11 +35,15 @@ jobs:
           send-statistics: false
           ignore-missing-flake-lock: false
 
-  # Every check the flake declares (`nix flake check`).
+  # Every check the flake declares (`nix flake check`), in the `ci` shell,
+  # which leaves out the sandbox commands and so the guest VM. `-L` puts
+  # each build's output in the log; `--keep-going` runs every check after
+  # one fails.
   lint:
     name: 'Lint'
     needs: ['lint_nix']
     runs-on: 'ubuntu-24.04'
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/prepare-runner
@@ -41,7 +52,8 @@ jobs:
       - name: 'Run lints'
         shell: bash
         run: |
-          nix develop --accept-flake-config --command lint
+          .github/scripts/watch-runner.sh \
+            nix develop --accept-flake-config .#ci --command lint -L --keep-going
 
   # The lanes of `tests all`, grouped by the archive they replay, so that
   # each archive is built once. The Zena lane builds both debug archives
@@ -51,6 +63,7 @@ jobs:
     name: 'Tests (${{ matrix.name }})'
     needs: ['lint']
     runs-on: 'ubuntu-24.04'
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
@@ -93,7 +106,8 @@ jobs:
             started=$SECONDS
             echo "::group::tests $lane"
             # shellcheck disable=SC2086
-            if nix develop --accept-flake-config --command tests $lane; then
+            if .github/scripts/watch-runner.sh \
+              nix develop --accept-flake-config .#ci --command tests $lane; then
               echo "::endgroup::"
               echo "tests $lane: passed in $((SECONDS - started))s"
             else
@@ -110,6 +124,7 @@ jobs:
     if: always()
     needs: ['lint_nix', 'lint', 'tests']
     runs-on: 'ubuntu-24.04'
+    timeout-minutes: 5
     steps:
       - name: 'Require every job to pass'
         env:

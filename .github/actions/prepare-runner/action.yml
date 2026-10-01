@@ -16,26 +16,42 @@ runs:
     # SEE: https://github.com/actions/runner-images/issues/10015
     - uses: cisagov/action-disable-apparmor@v1
 
-    # Reclaims the runner's preinstalled software as one large /nix
-    # volume, leaving the root filesystem only root-safe-haven (16GB).
+    # Removes the runner's large preinstalled packages up front, so that
+    # nothing-but-nix below starts from more free space. The preinstalled
+    # language runtimes stay, and so does swap: without it a job under
+    # memory pressure is killed with no error that names the cause.
+    - name: 'Free disk space'
+      uses: jlumbroso/free-disk-space@v2.0.0
+      with:
+        preinstalled-runtimes: false
+
+    # Reclaims the rest of the runner as one large /nix volume, leaving
+    # root-safe-haven (40GB) on the root filesystem: some test runs leave
+    # build artifacts there, under $HOME and the runner's temp space, that
+    # nothing redirects onto /nix. A full root filesystem stalls the runner
+    # rather than failing the job.
     - uses: wimpysworld/nothing-but-nix@v10
       with:
-        root-safe-haven: '16384'
+        root-safe-haven: '40960'
 
     # Nix builds under /nix/build, on the large volume, rather than /tmp.
     # One derivation at a time: each cargo build already uses every core,
     # and two at once can exhaust the runner's 16GB, as they do in a
-    # sandbox VM of the same size.
+    # sandbox VM of the same size. A build that prints nothing for half an
+    # hour, or runs for three, is stopped and named in the log rather than
+    # holding the job until its time limit.
     - uses: cachix/install-nix-action@v31
       with:
         nix_path: nixpkgs=channel:nixos-unstable
         extra_nix_config: |
           build-dir = /nix/build
           max-jobs = 1
+          max-silent-time = 1800
+          timeout = 10800
 
     # The test archives (4 to 7GB each) change with every commit, so they
-    # are not pushed. Claude Code, which the sandbox guest in the dev shell
-    # carries, is not ours to redistribute.
+    # are not pushed. Claude Code, which the sandbox guest carries, is not
+    # ours to redistribute.
     - uses: cachix/cachix-action@v17
       with:
         name: wcmp
