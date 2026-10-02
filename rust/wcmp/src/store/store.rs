@@ -563,6 +563,30 @@ mod tests {
     use super::*;
 
     #[wcmp_macros::test]
+    async fn it_mints_a_handle_through_a_context_inside_a_driver() {
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+        let type_id = ResourceTypeId::fresh();
+        store.context().internal().register_resource(
+            type_id,
+            None,
+            ResourceDestructor::Host(Arc::new(|_data: &mut (), _rep: u32| Ok(()))),
+        );
+
+        let handle = store
+            .run_concurrent(async |accessor: &crate::Accessor<()>| {
+                accessor.with(|context| context.resource_new(type_id, 9))
+            })
+            .await
+            .expect("the driver runs")
+            .expect("the accessor reaches the store")
+            .expect("mint a handle");
+
+        assert_eq!(handle.type_id(), type_id);
+        assert_eq!(handle.rep(), 9);
+    }
+
+    #[wcmp_macros::test]
     fn it_runs_no_destructor_when_the_store_is_dropped() {
         let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store = Store::new(&engine, ()).expect("store");

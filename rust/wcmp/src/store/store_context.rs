@@ -148,6 +148,20 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         self.store_data_mut().host_mut()
     }
 
+    /// Mint a fresh `own<T>` handle in this store's resource table for
+    /// the registered resource type `type_id`, with `rep` as its
+    /// representation, as [`Store::resource_new`] does.
+    ///
+    /// This is the way to mint a handle where the host reaches the store
+    /// only through a context: inside [`Accessor::with`], such as in the
+    /// body of a host `async` function that answers with a resource.
+    ///
+    /// [`Store::resource_new`]: super::Store::resource_new
+    /// [`Accessor::with`]: crate::Accessor::with
+    pub fn resource_new(&self, type_id: ResourceTypeId, rep: u32) -> Result<ResourceHandle> {
+        self.store_data().resource_new(type_id, rep)
+    }
+
     /// The copy budget each crossing of the store starts with. See
     /// [`Store::hostcall_fuel`].
     ///

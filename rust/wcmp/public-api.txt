@@ -632,6 +632,7 @@ impl<'a, T: 'static> wcmp::StoreContext<'a, T>
 pub fn wcmp::StoreContext<'a, T>::data(&self) -> &T
 pub fn wcmp::StoreContext<'a, T>::data_mut(&mut self) -> &mut T
 pub fn wcmp::StoreContext<'a, T>::hostcall_fuel(&self) -> usize
+pub fn wcmp::StoreContext<'a, T>::resource_new(&self, wcmp::ResourceTypeId, u32) -> wcmp::Result<wcmp::ResourceHandle>
 pub fn wcmp::StoreContext<'a, T>::set_hostcall_fuel(&mut self, usize)
 pub struct wcmp::StreamAny
 impl wcmp::StreamAny
