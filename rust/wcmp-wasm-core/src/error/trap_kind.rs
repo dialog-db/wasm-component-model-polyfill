@@ -102,6 +102,11 @@ pub enum TrapKind {
 
     /// A host function returned an error. The error is the host's own,
     /// unchanged. No guest can catch this trap.
+    ///
+    /// A host function that gave a result of the wrong type traps this way
+    /// too: the error is then the runtime layer's own
+    /// [`Error::TypeMismatch`](crate::Error::TypeMismatch), and not a kind
+    /// of its own, because the fault is the host's and not the guest's.
     #[error(transparent)]
     Host(anyhow::Error),
 

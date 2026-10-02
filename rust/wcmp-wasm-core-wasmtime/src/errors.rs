@@ -143,45 +143,77 @@ pub fn instantiation(
 mod tests {
     use super::*;
 
-    /// Every core trap of Wasmtime's, the two reserved ones last.
-    const CORE_TRAPS: [wasmtime::Trap; 19] = [
-        wasmtime::Trap::StackOverflow,
-        wasmtime::Trap::MemoryOutOfBounds,
-        wasmtime::Trap::HeapMisaligned,
-        wasmtime::Trap::TableOutOfBounds,
-        wasmtime::Trap::IndirectCallToNull,
-        wasmtime::Trap::BadSignature,
-        wasmtime::Trap::IntegerOverflow,
-        wasmtime::Trap::IntegerDivisionByZero,
-        wasmtime::Trap::BadConversionToInteger,
-        wasmtime::Trap::UnreachableCodeReached,
-        wasmtime::Trap::AtomicWaitNonSharedMemory,
-        wasmtime::Trap::NullReference,
-        wasmtime::Trap::ArrayOutOfBounds,
-        wasmtime::Trap::AllocationTooLarge,
-        wasmtime::Trap::CastFailure,
-        wasmtime::Trap::UnhandledTag,
-        wasmtime::Trap::ContinuationAlreadyConsumed,
-        wasmtime::Trap::OutOfFuel,
-        wasmtime::Trap::Interrupt,
+    /// Every trap of Wasmtime's that is not a core trap: the Component
+    /// Model's, the debug assertions of its fused adapters, and Pulley's
+    /// disabled opcode. `core_trap` leaves each to the polyfill.
+    const NOT_CORE: [wasmtime::Trap; 31] = [
+        wasmtime::Trap::CannotEnterComponent,
+        wasmtime::Trap::NoAsyncResult,
+        wasmtime::Trap::DisabledOpcode,
+        wasmtime::Trap::AsyncDeadlock,
+        wasmtime::Trap::CannotLeaveComponent,
+        wasmtime::Trap::CannotBlockSyncTask,
+        wasmtime::Trap::InvalidChar,
+        wasmtime::Trap::DebugAssertStringEncodingFinished,
+        wasmtime::Trap::DebugAssertEqualCodeUnits,
+        wasmtime::Trap::DebugAssertPointerAligned,
+        wasmtime::Trap::DebugAssertUpperBitsUnset,
+        wasmtime::Trap::StringOutOfBounds,
+        wasmtime::Trap::ListOutOfBounds,
+        wasmtime::Trap::InvalidDiscriminant,
+        wasmtime::Trap::UnalignedPointer,
+        wasmtime::Trap::TaskCancelNotCancelled,
+        wasmtime::Trap::TaskCancelOrReturnTwice,
+        wasmtime::Trap::SubtaskCancelAfterTerminal,
+        wasmtime::Trap::TaskReturnInvalid,
+        wasmtime::Trap::WaitableSetDropHasWaiters,
+        wasmtime::Trap::SubtaskDropNotResolved,
+        wasmtime::Trap::ThreadNewIndirectInvalidType,
+        wasmtime::Trap::ThreadNewIndirectUninitialized,
+        wasmtime::Trap::BackpressureOverflow,
+        wasmtime::Trap::UnsupportedCallbackCode,
+        wasmtime::Trap::CannotResumeThread,
+        wasmtime::Trap::ConcurrentFutureStreamOp,
+        wasmtime::Trap::ReferenceCountOverflow,
+        wasmtime::Trap::StreamOpTooBig,
+        wasmtime::Trap::WaitableSyncAndAsync,
+        wasmtime::Trap::UncaughtException,
     ];
 
-    #[wcmp_macros::test]
-    fn it_maps_each_core_trap_to_the_kind_of_its_name_and_message() {
-        for trap in CORE_TRAPS {
-            let kind = core_trap(trap).unwrap_or_else(|| panic!("{trap:?} is a core trap"));
-            assert_eq!(format!("{kind:?}"), format!("{trap:?}"));
-            assert_eq!(kind.to_string(), trap.to_string(), "{trap:?}");
-        }
+    /// Every trap Wasmtime has, read back from the byte that encodes each,
+    /// so that a trap a new Wasmtime adds is one these tests see.
+    fn every_trap() -> Vec<wasmtime::Trap> {
+        (0..=u8::MAX).filter_map(wasmtime::Trap::from_u8).collect()
     }
 
     #[wcmp_macros::test]
-    fn it_leaves_a_trap_of_the_component_model_to_the_polyfill() {
-        for trap in [
-            wasmtime::Trap::CannotEnterComponent,
-            wasmtime::Trap::InvalidChar,
-            wasmtime::Trap::UncaughtException,
-        ] {
+    fn it_maps_each_core_trap_to_the_kind_of_its_name_and_message() {
+        let core = every_trap()
+            .into_iter()
+            .filter(|trap| !NOT_CORE.contains(trap))
+            .collect::<Vec<_>>();
+        for trap in &core {
+            let kind = core_trap(*trap).unwrap_or_else(|| {
+                panic!(
+                    "{trap:?} maps to no kind: map it to the kind of its name, or list it as not \
+                     a core trap"
+                )
+            });
+            assert_eq!(format!("{kind:?}"), format!("{trap:?}"));
+            assert_eq!(kind.to_string(), trap.to_string(), "{trap:?}");
+        }
+        assert_eq!(
+            core.len(),
+            19,
+            "Wasmtime has 17 core traps and the two reserved ones: {core:?}"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_leaves_every_other_trap_to_the_polyfill() {
+        let every = every_trap();
+        for trap in NOT_CORE {
+            assert!(every.contains(&trap), "{trap:?} is a trap of Wasmtime's");
             assert!(core_trap(trap).is_none(), "{trap:?}");
         }
     }

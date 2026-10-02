@@ -15,6 +15,7 @@ mod box_future;
 mod host_func;
 mod maybe_send;
 mod maybe_sync;
+mod missing_capability;
 mod raw_handle;
 mod raw_type_handle;
 
@@ -27,5 +28,6 @@ pub use box_future::BoxFuture;
 pub use host_func::HostFunc;
 pub use maybe_send::MaybeSend;
 pub use maybe_sync::MaybeSync;
+pub use missing_capability::missing_capability;
 pub use raw_handle::RawHandle;
 pub use raw_type_handle::RawTypeHandle;

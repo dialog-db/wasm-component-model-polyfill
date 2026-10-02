@@ -120,38 +120,85 @@ pub async fn it_reads_and_writes_a_memory(engine: &Engine) {
     assert_eq!(bytes, [0xdd, 0xcc, 0xbb, 0xaa, 0xff, 0xee, 0x99, 0]);
 }
 
-/// A memory grows by whole pages up to its maximum, and returns its old
-/// size. A growth past the maximum is a structured error, and leaves the
-/// memory as it was.
-pub async fn it_grows_a_memory_up_to_its_maximum(engine: &Engine) {
-    let mut store = support::store(engine, ());
-    let memory = memory(&mut store, MemoryType::new(1, Some(2)));
-
-    assert_eq!(memory.grow(&mut store, 1).ok(), Some(1));
-    assert_eq!(memory.size(&store).ok(), Some(2 * 65_536));
-    let refused = memory.grow(&mut store, 1);
+/// A new memory of `ty` in `store`, a type that needs `capability`, where
+/// the engine declares the capability. Where it does not, the store must
+/// refuse the memory with [`Error::Unsupported`] and the capability, and
+/// there is no memory.
+fn memory_needing<T: 'static>(
+    engine: &Engine,
+    store: &mut Store<T>,
+    capability: Capability,
+    ty: MemoryType,
+) -> Option<Memory> {
+    if support::declares(engine, &[capability]) {
+        return Some(memory(store, ty));
+    }
+    let refused = Memory::new(store, ty);
     assert!(
-        matches!(refused, Err(Error::Grow { delta: 1 })),
-        "{refused:?}"
+        matches!(&refused, Err(Error::Unsupported(named)) if *named == capability),
+        "a memory of {ty:?} is refused with `Unsupported` and `{capability}`: {refused:?}"
     );
-    assert_eq!(memory.size(&store).ok(), Some(2 * 65_536));
+    None
 }
 
-/// The memories each test of ranges runs on: an unshared memory, a shared
-/// one where the engine declares `threads`, and one addressed with 64-bit
-/// numbers where it declares `memory64`.
-fn memories<T: 'static>(engine: &Engine, store: &mut Store<T>) -> Vec<(&'static str, Memory)> {
+/// The memories of `minimum` pages and at most `maximum` that a test runs
+/// on: an unshared memory, a shared one where the engine declares
+/// `threads`, and one addressed with 64-bit numbers where it declares
+/// `memory64`. Where the engine lacks either capability, the store refuses
+/// that memory with `Unsupported` and the capability.
+fn memories_of<T: 'static>(
+    engine: &Engine,
+    store: &mut Store<T>,
+    minimum: u32,
+    maximum: u32,
+) -> Vec<(&'static str, Memory)> {
     let mut memories = vec![(
         "an unshared memory",
-        memory(store, MemoryType::new(1, None)),
+        memory(store, MemoryType::new(minimum, Some(maximum))),
     )];
-    if support::declares(engine, &[Capability::Threads]) {
-        memories.push(("a shared memory", memory(store, MemoryType::shared(1, 1))));
+    let shared = MemoryType::shared(minimum, maximum);
+    if let Some(memory) = memory_needing(engine, store, Capability::Threads, shared) {
+        memories.push(("a shared memory", memory));
     }
-    if support::declares(engine, &[Capability::Memory64]) {
-        memories.push(("a 64-bit memory", memory(store, MemoryType::new64(1, None))));
+    let wide = MemoryType::new64(minimum.into(), Some(maximum.into()));
+    if let Some(memory) = memory_needing(engine, store, Capability::Memory64, wide) {
+        memories.push(("a 64-bit memory", memory));
     }
     memories
+}
+
+/// A memory grows by whole pages up to its maximum, and returns its old
+/// size. The new page holds what the host writes to it. A growth past the
+/// maximum is a structured error, and leaves the memory as it was. That
+/// holds for an unshared memory, a shared one, and one addressed with
+/// 64-bit numbers.
+pub async fn it_grows_a_memory_up_to_its_maximum(engine: &Engine) {
+    let mut store = support::store(engine, ());
+    for (name, memory) in memories_of(engine, &mut store, 1, 2) {
+        assert_eq!(memory.grow(&mut store, 1).ok(), Some(1), "{name}");
+        assert_eq!(memory.size(&store).ok(), Some(2 * 65_536), "{name}");
+        memory
+            .write(&mut store, 65_536 + 8, &[1, 2, 3, 4])
+            .expect("the new page lies inside the memory");
+        assert_eq!(
+            memory.load_u32(&store, 65_536 + 8).ok(),
+            Some(0x0403_0201),
+            "{name}: the new page holds what the host wrote"
+        );
+
+        let refused = memory.grow(&mut store, 1);
+        assert!(
+            matches!(refused, Err(Error::Grow { delta: 1 })),
+            "{name}: {refused:?}"
+        );
+        assert_eq!(memory.size(&store).ok(), Some(2 * 65_536), "{name}");
+    }
+}
+
+/// The memories each test of ranges runs on, each of one page. See
+/// [`memories_of`].
+fn memories<T: 'static>(engine: &Engine, store: &mut Store<T>) -> Vec<(&'static str, Memory)> {
+    memories_of(engine, store, 1, 1)
 }
 
 /// `with_bytes` lends a closure the bytes of the range asked for, and
@@ -339,7 +386,12 @@ pub async fn it_refuses_a_range_outside_the_memory(engine: &Engine) {
 /// `Memory::copy` copies bytes from the memory of one guest to the memory
 /// of another in the same store, and the second guest reads them. Within
 /// one memory, it copies a range onto an overlapping range as if through a
-/// buffer.
+/// buffer, in either direction.
+///
+/// Where the engine declares `threads`, a copy passes through a shared
+/// memory, from one shared memory to another, and within a shared memory
+/// onto an overlapping range in either direction. Where it does not, the
+/// store refuses a shared memory with `Unsupported` and `threads`.
 pub async fn it_copies_between_two_memories_of_one_store(engine: &Engine) {
     let mut store = support::store(engine, ());
     let bytes = wasm!(
@@ -407,8 +459,11 @@ pub async fn it_copies_between_two_memories_of_one_store(engine: &Engine) {
     Memory::copy(&mut store, &source, 65_536, &destination, 65_536, 0)
         .expect("an empty range at the end of a memory is inside it");
 
-    if support::declares(engine, &[Capability::Threads]) {
-        let shared = memory(&mut store, MemoryType::shared(1, 1));
+    let shared = MemoryType::shared(1, 1);
+    let shared_pair = memory_needing(engine, &mut store, Capability::Threads, shared).zip(
+        memory_needing(engine, &mut store, Capability::Threads, shared),
+    );
+    if let Some((shared, other_shared)) = shared_pair {
         Memory::copy(&mut store, &source, 100, &shared, 8, 16)
             .expect("both ranges lie inside their memories");
         Memory::copy(&mut store, &shared, 8, &destination, 300, 16)
@@ -432,34 +487,58 @@ pub async fn it_copies_between_two_memories_of_one_store(engine: &Engine) {
             [
                 1, 2, 3, 4, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
             ],
-            "a shared memory copies onto an overlapping range as if through a buffer"
+            "a shared memory copies onto an overlapping range later in it as if through a buffer"
+        );
+        Memory::copy(&mut store, &shared, 12, &shared, 8, 16)
+            .expect("both ranges lie inside the memory");
+        let moved = shared
+            .with_bytes(&store, 8, 20, <[u8]>::to_vec)
+            .expect("the range lies inside the memory");
+        assert_eq!(
+            moved,
+            [
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 13, 14, 15, 16
+            ],
+            "a shared memory copies onto an overlapping range earlier in it as if through a \
+             buffer"
+        );
+
+        Memory::copy(&mut store, &shared, 8, &other_shared, 40, 16)
+            .expect("both ranges lie inside their memories");
+        let copied = other_shared
+            .with_bytes(&store, 40, 16, <[u8]>::to_vec)
+            .expect("the range lies inside the memory");
+        assert_eq!(
+            copied,
+            pattern::<16>(),
+            "a copy passes from one shared memory to another"
         );
     }
 }
 
 /// A memory addressed with 64-bit numbers uses the same methods. The host
 /// reads what a guest stored, and an offset past 4 GiB is a structured
-/// error.
+/// error. A backend that lacks `memory64` refuses the module, and the
+/// host's own 64-bit memory, with `Unsupported` and `memory64`.
 pub async fn it_addresses_a_64_bit_memory_with_the_same_methods(engine: &Engine) {
-    if !support::declares(engine, &[Capability::Memory64]) {
+    let bytes = wasm!(
+        r#"
+        (module
+          (memory (export "memory") i64 1)
+          (func (export "store") (param i64 i64)
+            local.get 0
+            local.get 1
+            i64.store))
+        "#
+    );
+    if support::refuses(engine, &[Capability::Memory64], &[bytes]).await {
+        let mut store = support::store(engine, ());
+        let wide = MemoryType::new64(1, None);
+        memory_needing(engine, &mut store, Capability::Memory64, wide);
         return;
     }
     let mut store = support::store(engine, ());
-    let instance = support::instance(
-        &mut store,
-        wasm!(
-            r#"
-            (module
-              (memory (export "memory") i64 1)
-              (func (export "store") (param i64 i64)
-                local.get 0
-                local.get 1
-                i64.store))
-            "#
-        ),
-        &[],
-    )
-    .await;
+    let instance = support::instance(&mut store, bytes, &[]).await;
     let memory = exported_memory(&mut store, instance);
     let store_i64 = support::func(&mut store, instance, "store");
     assert!(

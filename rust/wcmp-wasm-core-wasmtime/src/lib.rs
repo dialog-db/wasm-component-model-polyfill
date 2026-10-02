@@ -27,6 +27,16 @@
 //! own. The backend keeps no cache of modules by their bytes, and it does
 //! not turn on Wasmtime's compilation cache.
 //!
+//! A module Wasmtime refuses because it needs a capability the backend
+//! does not declare, such as stack switching where Wasmtime's compiler does
+//! not serve it, is
+//! [`Error::Unsupported`](wcmp_wasm_core::Error::Unsupported), with the
+//! capability that
+//! [`missing_capability`](wcmp_wasm_core::backend::missing_capability)
+//! names. Any other refusal is
+//! [`Error::Compile`](wcmp_wasm_core::Error::Compile), with Wasmtime's
+//! message.
+//!
 //! # The boundary
 //!
 //! The backend describes the imports and exports of a module and nothing

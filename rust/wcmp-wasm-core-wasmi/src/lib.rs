@@ -46,10 +46,12 @@
 //! A module that Wasmi refuses because it needs a capability the backend
 //! does not declare is
 //! [`Error::Unsupported`](wcmp_wasm_core::Error::Unsupported), with the name
-//! of the capability. The backend finds the capability with `wasmparser`'s
-//! validator, whose feature names the capability lexicon repeats: the
-//! module must validate under every feature, and the least set of features
-//! under which it validates must hold a capability the backend lacks. Where
+//! of the capability. The backend finds the capability with
+//! [`missing_capability`](wcmp_wasm_core::backend::missing_capability),
+//! which asks `wasmparser`'s validator, whose feature names the capability
+//! lexicon repeats: the module must validate under every feature, and the
+//! least set of features under which it validates must hold a capability
+//! the backend lacks. Where
 //! the module needs several, the error names the one of them that comes
 //! last in the lexicon, which is the proposal that builds on the others: a
 //! module with GC types and a tag is `gc`. Any other refusal is
@@ -178,7 +180,6 @@ mod convert;
 mod errors;
 mod host_error;
 mod module;
-mod refusal;
 mod resumption;
 mod state;
 mod store;

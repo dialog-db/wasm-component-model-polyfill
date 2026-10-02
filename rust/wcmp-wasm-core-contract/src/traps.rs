@@ -264,7 +264,8 @@ const FIXTURE: [Fixture; 5] = [
 /// message.
 ///
 /// A module of the fixture whose capabilities the engine does not declare
-/// does not run. Each trap runs in a store of its own, so one trap cannot
+/// does not run: the engine refuses it with `Unsupported` and a capability
+/// it lacks. Each trap runs in a store of its own, so one trap cannot
 /// leave a store in a state that changes the next.
 pub async fn it_raises_each_core_trap_the_capabilities_permit(engine: &Engine) {
     it_raises_each_core_trap_allowing(engine, &[]).await;
@@ -304,10 +305,10 @@ pub async fn it_raises_each_core_trap_allowing(engine: &Engine, ambiguous: &[Amb
         }
     }
     let mut raised = 0;
-    for fixture in FIXTURE
-        .iter()
-        .filter(|fixture| support::declares(engine, fixture.capabilities))
-    {
+    for fixture in &FIXTURE {
+        if support::refuses(engine, fixture.capabilities, &[fixture.bytes]).await {
+            continue;
+        }
         for trap in fixture.traps {
             let mut store = support::store(engine, ());
             let instance = support::instance(&mut store, fixture.bytes, &[]).await;
@@ -357,34 +358,31 @@ pub async fn it_raises_each_core_trap_allowing(engine: &Engine, ambiguous: &[Amb
 /// [`TrapKind::UncaughtException`] and the message `thrown Wasm exception`.
 /// The kind carries the exception as an opaque reference, which the host
 /// gives back to a guest of the same store, and the guest reads its
-/// payload.
+/// payload. A backend that lacks `exceptions` refuses the module with
+/// `Unsupported` and `exceptions`.
 pub async fn it_fails_with_an_exception_that_nothing_catches(engine: &Engine) {
-    if !support::declares(engine, &[Capability::Exceptions]) {
+    let bytes = wasm!(
+        r#"
+        (module
+          (tag $oops (param i32))
+          (func (export "throw") (param i32)
+            local.get 0
+            throw $oops)
+          (func (export "payload") (param exnref) (result i32)
+            block $caught (result i32)
+              try_table (catch $oops $caught)
+                local.get 0
+                throw_ref
+              end
+              unreachable
+            end))
+        "#
+    );
+    if support::refuses(engine, &[Capability::Exceptions], &[bytes]).await {
         return;
     }
     let mut store = support::store(engine, ());
-    let instance = support::instance(
-        &mut store,
-        wasm!(
-            r#"
-            (module
-              (tag $oops (param i32))
-              (func (export "throw") (param i32)
-                local.get 0
-                throw $oops)
-              (func (export "payload") (param exnref) (result i32)
-                block $caught (result i32)
-                  try_table (catch $oops $caught)
-                    local.get 0
-                    throw_ref
-                  end
-                  unreachable
-                end))
-            "#
-        ),
-        &[],
-    )
-    .await;
+    let instance = support::instance(&mut store, bytes, &[]).await;
     let throw = support::func(&mut store, instance, "throw");
     let payload = support::func(&mut store, instance, "payload");
 

@@ -8,7 +8,7 @@
 
 use wcmp_macros::wasm;
 use wcmp_wasm_core::{
-    AnyRef, Capability, Engine, ExternRef, FuncType, HeapType, I31, Val, ValType,
+    AnyRef, Capability, Engine, Error, ExternRef, FuncType, HeapType, I31, Val, ValType,
 };
 
 use crate::support;
@@ -88,28 +88,32 @@ pub async fn it_calls_a_funcref_the_guest_hands_out(engine: &Engine) {
 }
 
 /// A guest hands out an `i31ref`, and the host reads its integer. The host
-/// makes an `i31ref`, and a guest reads its integer.
+/// makes an `i31ref`, and a guest reads its integer. A backend that lacks
+/// `gc` refuses the module, and the host's `i31ref`, with `Unsupported`
+/// and `gc`.
 pub async fn it_reads_an_i31ref(engine: &Engine) {
-    if !support::declares(engine, &[Capability::Gc]) {
+    let bytes = wasm!(
+        r#"
+        (module
+          (func (export "make") (param i32) (result i31ref)
+            local.get 0
+            ref.i31)
+          (func (export "read") (param i31ref) (result i32)
+            local.get 0
+            i31.get_s))
+        "#
+    );
+    if support::refuses(engine, &[Capability::Gc], &[bytes]).await {
+        let mut store = support::store(engine, ());
+        let host_made = AnyRef::from_i31(&mut store, I31::wrapping_i32(-7));
+        assert!(
+            matches!(host_made, Err(Error::Unsupported(Capability::Gc))),
+            "{host_made:?}"
+        );
         return;
     }
     let mut store = support::store(engine, ());
-    let instance = support::instance(
-        &mut store,
-        wasm!(
-            r#"
-            (module
-              (func (export "make") (param i32) (result i31ref)
-                local.get 0
-                ref.i31)
-              (func (export "read") (param i31ref) (result i32)
-                local.get 0
-                i31.get_s))
-            "#
-        ),
-        &[],
-    )
-    .await;
+    let instance = support::instance(&mut store, bytes, &[]).await;
     let make = support::func(&mut store, instance, "make");
     let read = support::func(&mut store, instance, "read");
 
@@ -131,35 +135,32 @@ pub async fn it_reads_an_i31ref(engine: &Engine) {
 
 /// A guest hands out a GC struct. The host holds it, tests it for null,
 /// and gives it back to a guest of the same store, which reads it. The
-/// host reads the struct's concrete type as one handle at both ends.
+/// host reads the struct's concrete type as one handle at both ends. A
+/// backend that lacks `gc` refuses the module with `Unsupported` and `gc`.
 pub async fn it_passes_a_gc_object_back_to_its_guest(engine: &Engine) {
-    if !support::declares(engine, &[Capability::Gc]) {
+    let bytes = wasm!(
+        r#"
+        (module
+          (type $pair (struct (field i32) (field i32)))
+          (func (export "make") (param i32 i32) (result (ref null $pair))
+            local.get 0
+            local.get 1
+            struct.new $pair)
+          (func (export "nothing") (result anyref)
+            ref.null any)
+          (func (export "sum") (param (ref null $pair)) (result i32)
+            local.get 0
+            struct.get $pair 0
+            local.get 0
+            struct.get $pair 1
+            i32.add))
+        "#
+    );
+    if support::refuses(engine, &[Capability::Gc], &[bytes]).await {
         return;
     }
     let mut store = support::store(engine, ());
-    let instance = support::instance(
-        &mut store,
-        wasm!(
-            r#"
-            (module
-              (type $pair (struct (field i32) (field i32)))
-              (func (export "make") (param i32 i32) (result (ref null $pair))
-                local.get 0
-                local.get 1
-                struct.new $pair)
-              (func (export "nothing") (result anyref)
-                ref.null any)
-              (func (export "sum") (param (ref null $pair)) (result i32)
-                local.get 0
-                struct.get $pair 0
-                local.get 0
-                struct.get $pair 1
-                i32.add))
-            "#
-        ),
-        &[],
-    )
-    .await;
+    let instance = support::instance(&mut store, bytes, &[]).await;
     let make = support::func(&mut store, instance, "make");
     let nothing = support::func(&mut store, instance, "nothing");
     let sum = support::func(&mut store, instance, "sum");
@@ -197,41 +198,38 @@ pub async fn it_passes_a_gc_object_back_to_its_guest(engine: &Engine) {
 
 /// A guest catches an exception and hands out its `exnref`. The host holds
 /// it, tests it for null, and gives it back to the guest, which rethrows
-/// it and reads the payload.
+/// it and reads the payload. A backend that lacks `exceptions` refuses the
+/// module with `Unsupported` and `exceptions`.
 pub async fn it_passes_an_exnref_back_to_its_guest(engine: &Engine) {
-    if !support::declares(engine, &[Capability::Exceptions]) {
+    let bytes = wasm!(
+        r#"
+        (module
+          (tag $oops (param i32))
+          (func (export "catch") (param i32) (result exnref)
+            block $caught (result exnref)
+              try_table (catch_all_ref $caught)
+                local.get 0
+                throw $oops
+              end
+              unreachable
+            end)
+          (func (export "nothing") (result exnref)
+            ref.null exn)
+          (func (export "payload") (param exnref) (result i32)
+            block $caught (result i32)
+              try_table (catch $oops $caught)
+                local.get 0
+                throw_ref
+              end
+              unreachable
+            end))
+        "#
+    );
+    if support::refuses(engine, &[Capability::Exceptions], &[bytes]).await {
         return;
     }
     let mut store = support::store(engine, ());
-    let instance = support::instance(
-        &mut store,
-        wasm!(
-            r#"
-            (module
-              (tag $oops (param i32))
-              (func (export "catch") (param i32) (result exnref)
-                block $caught (result exnref)
-                  try_table (catch_all_ref $caught)
-                    local.get 0
-                    throw $oops
-                  end
-                  unreachable
-                end)
-              (func (export "nothing") (result exnref)
-                ref.null exn)
-              (func (export "payload") (param exnref) (result i32)
-                block $caught (result i32)
-                  try_table (catch $oops $caught)
-                    local.get 0
-                    throw_ref
-                  end
-                  unreachable
-                end))
-            "#
-        ),
-        &[],
-    )
-    .await;
+    let instance = support::instance(&mut store, bytes, &[]).await;
     let catch = support::func(&mut store, instance, "catch");
     let nothing = support::func(&mut store, instance, "nothing");
     let payload = support::func(&mut store, instance, "payload");
@@ -243,4 +241,113 @@ pub async fn it_passes_an_exnref_back_to_its_guest(engine: &Engine) {
 
     let none = support::call(&mut store, nothing, &[], &[ValType::EXNREF]);
     assert!(none[0].is_null(), "{none:?}");
+}
+
+/// The module of the test of a collection: a struct and its sum, an echo
+/// of an `externref`, and `churn`, which allocates `count` arrays of
+/// `size` bytes and keeps none of them.
+const CHURNS: &[u8] = wasm!(
+    r#"
+    (module
+      (type $pair (struct (field i32) (field i32)))
+      (type $bytes (array (mut i8)))
+      (func (export "make") (param i32 i32) (result (ref null $pair))
+        local.get 0
+        local.get 1
+        struct.new $pair)
+      (func (export "sum") (param (ref null $pair)) (result i32)
+        local.get 0
+        struct.get $pair 0
+        local.get 0
+        struct.get $pair 1
+        i32.add)
+      (func (export "echo") (param externref) (result externref)
+        local.get 0)
+      (func (export "churn") (param $count i32) (param $size i32)
+        block $done
+          loop $again
+            local.get $count
+            i32.eqz
+            br_if $done
+            local.get $size
+            array.new_default $bytes
+            drop
+            local.get $count
+            i32.const 1
+            i32.sub
+            local.set $count
+            br $again
+          end
+        end))
+    "#
+);
+
+/// The host holds a GC struct a guest made, an `externref` it made itself,
+/// and an `externref` a guest handed back, and nothing else holds any of
+/// them. A guest then allocates far more than any engine keeps before it
+/// collects. Each reference survives the collection: the host reads its
+/// `externref`s, and a guest reads the struct. A backend that lacks `gc`
+/// refuses the module with `Unsupported` and `gc`.
+pub async fn it_keeps_the_references_the_host_holds_across_a_collection(engine: &Engine) {
+    if support::refuses(engine, &[Capability::Gc], &[CHURNS]).await {
+        return;
+    }
+    let mut store = support::store(engine, ());
+    let instance = support::instance(&mut store, CHURNS, &[]).await;
+    let make = support::func(&mut store, instance, "make");
+    let sum = support::func(&mut store, instance, "sum");
+    let echo = support::func(&mut store, instance, "echo");
+    let churn = support::func(&mut store, instance, "churn");
+
+    let pair = support::call(
+        &mut store,
+        make,
+        &[Val::I32(20), Val::I32(22)],
+        &[ValType::ANYREF],
+    );
+    let made =
+        ExternRef::new(&mut store, String::from("made")).expect("the store makes an externref");
+    let handed =
+        ExternRef::new(&mut store, String::from("handed")).expect("the store makes an externref");
+    let handed = support::call(&mut store, echo, &[handed.into()], &[ValType::EXTERNREF]);
+    let Val::ExternRef(Some(handed)) = handed[0] else {
+        panic!("the guest hands back an externref: {handed:?}");
+    };
+
+    // 16,384 arrays of 4 KiB: 64 MiB, all of it garbage once it is made.
+    support::call(&mut store, churn, &[Val::I32(16_384), Val::I32(4_096)], &[]);
+
+    for (extern_ref, expected) in [(made, "made"), (handed, "handed")] {
+        let value = extern_ref
+            .data(&store)
+            .expect("the externref belongs to the store");
+        assert_eq!(
+            value.downcast_ref::<String>().map(String::as_str),
+            Some(expected),
+            "the host reads its externref after the collection"
+        );
+        let echoed = support::call(
+            &mut store,
+            echo,
+            &[extern_ref.into()],
+            &[ValType::EXTERNREF],
+        );
+        let Val::ExternRef(Some(echoed)) = echoed[0] else {
+            panic!("the guest hands back an externref: {echoed:?}");
+        };
+        let value = echoed
+            .data(&store)
+            .expect("the externref belongs to the store");
+        assert_eq!(
+            value.downcast_ref::<String>().map(String::as_str),
+            Some(expected),
+            "a guest passes the externref on after the collection"
+        );
+    }
+    let total = support::call(&mut store, sum, &pair, &[ValType::I32]);
+    assert_eq!(
+        total[0].i32(),
+        Some(42),
+        "a guest reads the struct after the collection"
+    );
 }

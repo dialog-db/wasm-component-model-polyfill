@@ -209,9 +209,10 @@ impl core::error::Error for Refusal {}
 /// `catch_all`. The call fails with [`TrapKind::Host`] and the host's own
 /// error, unchanged, and the guest's handler does not run.
 ///
-/// Where the engine does not declare `exceptions`, the guest calls the
-/// failing host function without a handler, and the call fails the same
-/// way.
+/// Where the engine does not declare `exceptions`, it refuses the module
+/// with the handler with `Unsupported` and `exceptions`. The guest then
+/// calls the failing host function without a handler, and the call fails
+/// the same way.
 pub async fn it_traps_with_the_host_error_that_no_guest_can_catch(engine: &Engine) {
     let mut store = support::store(engine, ());
     let fail = Func::new(&mut store, FuncType::new([], []), |_, _, _| {
@@ -219,24 +220,23 @@ pub async fn it_traps_with_the_host_error_that_no_guest_can_catch(engine: &Engin
     })
     .expect("the store makes a host function");
 
-    let bytes: &[u8] = if support::declares(engine, &[Capability::Exceptions]) {
-        wasm!(
-            r#"
-            (module
-              (import "host" "fail" (func $fail))
-              (global $handled (export "handled") (mut i32) (i32.const 0))
-              (func (export "guarded")
-                block $caught
-                  try_table (catch_all $caught)
-                    call $fail
-                  end
-                  return
-                end
-                i32.const 1
-                global.set $handled))
-            "#
-        )
-    } else {
+    let guarded = wasm!(
+        r#"
+        (module
+          (import "host" "fail" (func $fail))
+          (global $handled (export "handled") (mut i32) (i32.const 0))
+          (func (export "guarded")
+            block $caught
+              try_table (catch_all $caught)
+                call $fail
+              end
+              return
+            end
+            i32.const 1
+            global.set $handled))
+        "#
+    );
+    let bytes: &[u8] = if support::refuses(engine, &[Capability::Exceptions], &[guarded]).await {
         wasm!(
             r#"
             (module
@@ -246,6 +246,8 @@ pub async fn it_traps_with_the_host_error_that_no_guest_can_catch(engine: &Engin
                 call $fail))
             "#
         )
+    } else {
+        guarded
     };
     let instance = support::instance(&mut store, bytes, &[fail.into()]).await;
     let guarded = support::func(&mut store, instance, "guarded");
@@ -270,4 +272,55 @@ pub async fn it_traps_with_the_host_error_that_no_guest_can_catch(engine: &Engin
         .get(&mut store)
         .expect("the global belongs to the store");
     assert_eq!(handled.i32(), Some(0), "the guest's handler did not run");
+}
+
+/// A host function of type `[] -> [i32]` writes an `i64` to its result
+/// slot. The guest that called it traps with [`TrapKind::Host`], and the
+/// error the trap carries is the runtime layer's own
+/// [`Error::TypeMismatch`]: the fault is the host's, so no trap kind of the
+/// guest names it. The same function, given a result of its type, answers.
+pub async fn it_traps_with_a_type_mismatch_where_a_host_function_gives_a_wrong_result(
+    engine: &Engine,
+) {
+    let mut store = support::store(engine, ());
+    let answer = Func::new(
+        &mut store,
+        FuncType::new([ValType::I32], [ValType::I32]),
+        |_, params, results| {
+            results[0] = match argument(params)? {
+                0 => Val::I64(7),
+                value => Val::I32(value),
+            };
+            Ok(())
+        },
+    )
+    .expect("the store makes a host function");
+    let instance = support::instance(
+        &mut store,
+        wasm!(
+            r#"
+            (module
+              (import "host" "answer" (func $answer (param i32) (result i32)))
+              (func (export "ask") (param i32) (result i32)
+                local.get 0
+                call $answer))
+            "#
+        ),
+        &[answer.into()],
+    )
+    .await;
+    let ask = support::func(&mut store, instance, "ask");
+
+    match ask.call(&mut store, &[Val::I32(0)], &mut [Val::I32(0)]) {
+        Err(Error::Trap(TrapKind::Host(error))) => assert!(
+            matches!(
+                error.downcast_ref::<Error>(),
+                Some(Error::TypeMismatch { .. })
+            ),
+            "the trap carries a type mismatch: {error:?}"
+        ),
+        other => panic!("the call traps with the host's fault: {other:?}"),
+    }
+    let answered = support::call(&mut store, ask, &[Val::I32(5)], &[ValType::I32]);
+    assert_eq!(answered[0].i32(), Some(5), "the store stays good");
 }

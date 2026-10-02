@@ -90,7 +90,7 @@ impl Backend for Web {
             // for a synchronous compile loads too.
             let module = WebAssembly::compile(&Uint8Array::from(bytes).into())
                 .await
-                .map_err(|error| errors::compile(&error))?
+                .map_err(|error| errors::compile(&error, self.capabilities, bytes))?
                 .dyn_into::<WebAssembly::Module>()
                 .map_err(|_| errors::backend("the compile gave no module"))?;
             self.module(module, bytes)
@@ -102,7 +102,7 @@ impl Backend for Web {
         // limit on the main thread with a `RangeError`, which is a compile
         // error with the browser's message.
         let module = WebAssembly::Module::new(&Uint8Array::from(bytes).into())
-            .map_err(|error| errors::compile(&error))?;
+            .map_err(|error| errors::compile(&error, self.capabilities, bytes))?;
         self.module(module, bytes)
     }
 

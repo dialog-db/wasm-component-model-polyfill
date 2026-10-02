@@ -8,11 +8,12 @@
 
 use core::fmt;
 
-use wcmp_wasm_core::backend::{Backend, BackendModule, BackendStore, BoxFuture, StoreData};
+use wcmp_wasm_core::backend::{
+    Backend, BackendModule, BackendStore, BoxFuture, StoreData, missing_capability,
+};
 use wcmp_wasm_core::{Capabilities, Capability, Error, Result};
 
 use crate::module::WasmiModule;
-use crate::refusal;
 use crate::state::State;
 use crate::store::WasmiStore;
 
@@ -76,7 +77,7 @@ impl Backend for Wasmi {
         // Without its `wat` feature, Wasmi refuses the text format here, as
         // every other engine refuses it.
         let module = wasmi::Module::new(&self.engine, bytes).map_err(|error| {
-            match refusal::missing_capability(self.capabilities, bytes) {
+            match missing_capability(self.capabilities, bytes) {
                 Some(capability) => Error::Unsupported(capability),
                 None => Error::Compile {
                     message: error.to_string(),

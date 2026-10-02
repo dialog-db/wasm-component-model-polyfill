@@ -12,35 +12,38 @@
 //! Every backend of `wcmp_wasm_core` holds one contract. The tests here
 //! state it once, written against the types of `wcmp_wasm_core` alone, and
 //! every backend runs all of them with an engine of its own. A backend's
-//! test file invokes [`contract_tests!`] with a function that makes its
-//! engine:
+//! test file invokes [`contract_tests!`] with a function that makes the
+//! backend:
 //!
 //! ```ignore
-//! use wcmp_wasm_core::Engine;
-//!
-//! fn engine() -> Engine {
-//!     Engine::with_backend(MyBackend::new())
+//! fn backend() -> MyBackend {
+//!     MyBackend::new()
 //! }
 //!
-//! wcmp_wasm_core_contract::contract_tests!(engine);
+//! wcmp_wasm_core_contract::contract_tests!(backend);
 //! ```
 //!
 //! The macro expands to one `#[wcmp_macros::test]` for each test of the
 //! contract, so a backend runs every test, and a test added here reaches
-//! every backend. The caller needs `tokio` natively and
+//! every backend. Most tests take an [`Engine`](wcmp_wasm_core::Engine)
+//! over a new backend. A test of what a backend does past the engine's
+//! checks takes the backend itself. The caller needs `tokio` natively and
 //! `wasm-bindgen-test` on `wasm32`, as every test of the workspace does.
 //! The tests build for both targets, because the browser backend runs them
 //! in the web lane.
 //!
-//! A test that needs a capability runs only where the engine declares it.
-//! Where the engine does not, the test checks what the contract says about
-//! the missing capability, or passes without a check where the contract
-//! says nothing.
+//! A test that needs a capability runs where the engine declares it. Where
+//! the engine does not, the test checks the refusal the contract states
+//! instead, and nothing more: the engine refuses each module of the test
+//! with `Unsupported` and a capability of the test that it lacks, as it
+//! refuses a memory, a reference, or a suspending host function that needs
+//! one. No test passes without a check.
 
 mod boundary;
 mod compile;
 mod host_functions;
 mod memory;
+mod overclaiming;
 mod references;
 mod support;
 mod suspension;
@@ -60,6 +63,7 @@ pub use crate::compile::{
 pub use crate::host_functions::{
     it_calls_a_host_function_of_more_than_eight_parameters,
     it_enters_a_host_function_again_at_any_depth,
+    it_traps_with_a_type_mismatch_where_a_host_function_gives_a_wrong_result,
     it_traps_with_the_host_error_that_no_guest_can_catch,
 };
 pub use crate::memory::{
@@ -69,13 +73,15 @@ pub use crate::memory::{
     it_refuses_a_range_outside_the_memory,
 };
 pub use crate::references::{
-    it_calls_a_funcref_the_guest_hands_out, it_passes_a_gc_object_back_to_its_guest,
-    it_passes_an_exnref_back_to_its_guest, it_reads_an_externref_the_guest_hands_back,
-    it_reads_an_i31ref,
+    it_calls_a_funcref_the_guest_hands_out,
+    it_keeps_the_references_the_host_holds_across_a_collection,
+    it_passes_a_gc_object_back_to_its_guest, it_passes_an_exnref_back_to_its_guest,
+    it_reads_an_externref_the_guest_hands_back, it_reads_an_i31ref,
 };
 pub use crate::suspension::{
     it_finishes_a_resumable_call_that_does_not_suspend,
     it_gives_the_store_back_when_the_future_of_a_resumption_drops,
+    it_refuses_host_suspension_in_the_backend_itself,
     it_refuses_host_suspension_where_it_is_not_declared,
     it_resumes_calls_that_wait_at_once_in_any_order,
     it_runs_a_resumption_in_flight_to_its_next_stop_when_the_store_drops,
@@ -91,23 +97,28 @@ pub use crate::traps::{
     it_raises_each_core_trap_allowing, it_raises_each_core_trap_the_capabilities_permit,
 };
 
-/// The attribute each generated test carries, reached through this crate
-/// so that a backend does not name it itself.
+/// What the generated tests reach through this crate, so that a backend
+/// does not name it itself: the attribute each carries, and the engine
+/// each makes over the backend.
 #[doc(hidden)]
 pub mod __private {
     pub use wcmp_macros::test;
+    pub use wcmp_wasm_core::Engine;
 }
 
 /// Expands to one test for each test of the backend contract, each run
-/// with the engine that `$engine`, a function of no arguments that returns
-/// an [`Engine`](wcmp_wasm_core::Engine), makes.
+/// over the backend that `$backend`, a function of no arguments that
+/// returns a [`Backend`](wcmp_wasm_core::backend::Backend), makes.
 ///
-/// See the crate's documentation.
+/// See the crate's documentation. `@each $backend; ...` expands to the
+/// tests named, each run with an engine over the backend, and
+/// `@backend $backend; ...` to the tests named, each run with the backend
+/// itself, for a backend that runs only some of them.
 #[macro_export]
 macro_rules! contract_tests {
-    ($engine:path) => {
+    ($backend:path) => {
         $crate::contract_tests!(
-            @each $engine;
+            @each $backend;
             it_compiles_a_module_asynchronously_and_synchronously,
             it_refuses_bytes_that_are_not_a_module_with_a_compile_error,
             it_describes_the_imports_and_exports_of_a_module,
@@ -119,11 +130,13 @@ macro_rules! contract_tests {
             it_enters_a_host_function_again_at_any_depth,
             it_calls_a_host_function_of_more_than_eight_parameters,
             it_traps_with_the_host_error_that_no_guest_can_catch,
+            it_traps_with_a_type_mismatch_where_a_host_function_gives_a_wrong_result,
             it_reads_an_externref_the_guest_hands_back,
             it_calls_a_funcref_the_guest_hands_out,
             it_reads_an_i31ref,
             it_passes_a_gc_object_back_to_its_guest,
             it_passes_an_exnref_back_to_its_guest,
+            it_keeps_the_references_the_host_holds_across_a_collection,
             it_refuses_host_suspension_where_it_is_not_declared,
             it_resumes_calls_that_wait_at_once_in_any_order,
             it_runs_a_resumption_in_flight_to_its_next_stop_when_the_store_drops,
@@ -141,12 +154,24 @@ macro_rules! contract_tests {
             it_raises_each_core_trap_the_capabilities_permit,
             it_fails_with_an_exception_that_nothing_catches,
         );
+        $crate::contract_tests!(
+            @backend $backend;
+            it_refuses_host_suspension_in_the_backend_itself,
+        );
     };
-    (@each $engine:path; $($case:ident),* $(,)?) => {
+    (@each $backend:path; $($case:ident),* $(,)?) => {
         $(
             #[$crate::__private::test]
             async fn $case() {
-                $crate::$case(&$engine()).await;
+                $crate::$case(&$crate::__private::Engine::with_backend($backend())).await;
+            }
+        )*
+    };
+    (@backend $backend:path; $($case:ident),* $(,)?) => {
+        $(
+            #[$crate::__private::test]
+            async fn $case() {
+                $crate::$case($backend()).await;
             }
         )*
     };

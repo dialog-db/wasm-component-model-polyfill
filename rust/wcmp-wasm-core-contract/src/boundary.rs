@@ -41,9 +41,11 @@ const ZENA_SHAPED: &[u8] = wasm!(
 
 /// A module that defines a global of a GC reference type and exports a
 /// tag instantiates, and its exported function runs, on every backend that
-/// declares `gc` and `exceptions`.
+/// declares `gc` and `exceptions`. A backend that lacks either refuses the
+/// module with `Unsupported` and the capability it lacks.
 pub async fn it_instantiates_a_module_with_a_gc_global_and_an_exported_tag(engine: &Engine) {
-    if !support::declares(engine, &[Capability::Gc, Capability::Exceptions]) {
+    let needs = [Capability::Gc, Capability::Exceptions];
+    if support::refuses(engine, &needs, &[ZENA_SHAPED]).await {
         return;
     }
     let mut store = support::store(engine, ());
@@ -67,16 +69,15 @@ pub async fn it_instantiates_a_module_with_a_gc_global_and_an_exported_tag(engin
 
 /// A module whose table of a concrete reference type, tag, and GC global
 /// are all internal, and which exports one function, loads and runs. None
-/// of its internal items is a reason to refuse it.
+/// of its internal items is a reason to refuse it. A backend that lacks a
+/// capability the items need refuses the module with `Unsupported` and
+/// that capability.
 pub async fn it_loads_a_module_whose_internal_items_do_not_cross_its_boundary(engine: &Engine) {
     let needs = [
         Capability::Gc,
         Capability::Exceptions,
         Capability::FunctionReferences,
     ];
-    if !support::declares(engine, &needs) {
-        return;
-    }
     let bytes = wasm!(
         r#"
         (module
@@ -109,6 +110,9 @@ pub async fn it_loads_a_module_whose_internal_items_do_not_cross_its_boundary(en
             call_indirect $callbacks (type $callback)))
         "#
     );
+    if support::refuses(engine, &needs, &[bytes]).await {
+        return;
+    }
 
     let module = support::module(engine, bytes).await;
     assert_eq!(module.imports().len(), 0);

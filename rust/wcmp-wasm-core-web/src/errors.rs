@@ -8,7 +8,8 @@
 
 use js_sys::WebAssembly;
 use wasm_bindgen::{JsCast, JsValue};
-use wcmp_wasm_core::{Error, ImportType, TrapKind};
+use wcmp_wasm_core::backend::missing_capability;
+use wcmp_wasm_core::{Capabilities, Error, ImportType, TrapKind};
 
 use crate::carrier::Carrier;
 use crate::traps;
@@ -22,14 +23,19 @@ pub fn message(error: &JsValue) -> String {
     error.as_string().unwrap_or_else(|| format!("{error:?}"))
 }
 
-/// [`Error::Compile`] for a compile that the engine refused, with the
-/// engine's message.
+/// The error of a compile of `bytes` that the engine refused with `error`:
+/// [`Error::Unsupported`] where the module needs a capability that
+/// `declared` lacks, and [`Error::Compile`] with the engine's message
+/// otherwise.
 ///
 /// A synchronous compile of a module above the browser's limit fails here
 /// too: the browser throws a `RangeError` whose message names the limit.
-pub fn compile(error: &JsValue) -> Error {
-    Error::Compile {
-        message: message(error),
+pub fn compile(error: &JsValue, declared: Capabilities, bytes: &[u8]) -> Error {
+    match missing_capability(declared, bytes) {
+        Some(capability) => Error::Unsupported(capability),
+        None => Error::Compile {
+            message: message(error),
+        },
     }
 }
 

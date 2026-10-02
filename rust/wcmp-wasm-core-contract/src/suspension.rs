@@ -12,21 +12,28 @@ use core::task::{Poll, Waker};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use wcmp_macros::wasm;
+use wcmp_wasm_core::backend::Backend;
 use wcmp_wasm_core::{
     Caller, Capability, Engine, Error, Func, FuncType, Instance, ResumableCall, Store,
     SuspendedCall, TrapKind, Val, ValType,
 };
 
+use crate::overclaiming::Overclaiming;
 use crate::support;
 
 /// Where the engine does not declare `host_suspension`, a suspending host
 /// function and a resumable call are each
-/// [`Error::Unsupported`] with `host_suspension`.
+/// [`Error::Unsupported`] with `host_suspension`. Where it declares it, the
+/// store makes a suspending host function.
 pub async fn it_refuses_host_suspension_where_it_is_not_declared(engine: &Engine) {
+    let mut store = support::store(engine, ());
     if support::declares(engine, &[Capability::HostSuspension]) {
+        Func::new_suspending(&mut store, FuncType::new([], [ValType::I32]), |_, _, _| {
+            Ok(Poll::Pending)
+        })
+        .expect("the store makes a suspending host function");
         return;
     }
-    let mut store = support::store(engine, ());
 
     let suspending =
         Func::new_suspending(&mut store, FuncType::new([], [ValType::I32]), |_, _, _| {
@@ -57,6 +64,75 @@ pub async fn it_refuses_host_suspension_where_it_is_not_declared(engine: &Engine
         ),
         "{resumable:?}"
     );
+}
+
+/// A backend that does not declare `host_suspension` refuses it itself,
+/// and not only behind the engine's check of the capability. Through an
+/// engine whose backend claims the capability falsely, a suspending host
+/// function, a resumable call, and a resumable call started in two steps
+/// are each [`Error::Unsupported`] with `host_suspension`, and the store
+/// stays good: a plain call of the same function answers.
+///
+/// Where the backend declares `host_suspension`, the store makes a
+/// suspending host function.
+pub async fn it_refuses_host_suspension_in_the_backend_itself(backend: impl Backend) {
+    if backend.capabilities().contains(Capability::HostSuspension) {
+        let engine = Engine::with_backend(backend);
+        let mut store = support::store(&engine, ());
+        Func::new_suspending(&mut store, FuncType::new([], [ValType::I32]), |_, _, _| {
+            Ok(Poll::Pending)
+        })
+        .expect("the store makes a suspending host function");
+        return;
+    }
+    let engine = Engine::with_backend(Overclaiming::new(backend));
+    assert!(
+        support::declares(&engine, &[Capability::HostSuspension]),
+        "the engine believes the claim"
+    );
+    let mut store = support::store(&engine, ());
+
+    let suspending =
+        Func::new_suspending(&mut store, FuncType::new([], [ValType::I32]), |_, _, _| {
+            Ok(Poll::Pending)
+        });
+    assert!(
+        matches!(
+            suspending,
+            Err(Error::Unsupported(Capability::HostSuspension))
+        ),
+        "the backend refuses a suspending host function: {suspending:?}"
+    );
+
+    let instance = support::instance(
+        &mut store,
+        wasm!(r#"(module (func (export "answer") (result i32) i32.const 42))"#),
+        &[],
+    )
+    .await;
+    let answer = support::func(&mut store, instance, "answer");
+    let resumable = answer
+        .call_resumable(&mut store, &[], &mut [Val::I32(0)])
+        .await;
+    assert!(
+        matches!(
+            resumable,
+            Err(Error::Unsupported(Capability::HostSuspension))
+        ),
+        "the backend refuses a resumable call: {resumable:?}"
+    );
+    let started = answer.start_resumable(&mut store, &[]);
+    assert!(
+        matches!(
+            started.as_ref().err(),
+            Some(Error::Unsupported(Capability::HostSuspension))
+        ),
+        "the backend refuses a resumable call started in two steps: {:?}",
+        started.err()
+    );
+
+    let answered = support::call(&mut store, answer, &[], &[ValType::I32]);
+    assert_eq!(answered[0].i32(), Some(42), "the store stays good");
 }
 
 /// What the host functions of a test of suspension record, outside the
@@ -176,7 +252,7 @@ struct Through {
 /// that says the call cannot suspend. The three that wait are resumed
 /// third, first, second, and each finishes with its own results.
 pub async fn it_resumes_calls_that_wait_at_once_in_any_order(engine: &Engine) {
-    if !support::declares(engine, &[Capability::HostSuspension]) {
+    if support::refuses_host_suspension(engine) {
         return;
     }
     let mut store = support::store(engine, Through::default());
@@ -294,7 +370,7 @@ const TWICE: &[u8] = wasm!(
 /// drops before the store and one after it, and the one after it does not
 /// resume in another store.
 pub async fn it_runs_a_resumption_in_flight_to_its_next_stop_when_the_store_drops(engine: &Engine) {
-    if !support::declares(engine, &[Capability::HostSuspension]) {
+    if support::refuses_host_suspension(engine) {
         return;
     }
     let mut store = support::store(engine, ());
@@ -356,7 +432,7 @@ pub async fn it_runs_a_resumption_in_flight_to_its_next_stop_when_the_store_drop
 /// the call it resumes suspends again, and finishes at its last
 /// resumption.
 pub async fn it_gives_the_store_back_when_the_future_of_a_resumption_drops(engine: &Engine) {
-    if !support::declares(engine, &[Capability::HostSuspension]) {
+    if support::refuses_host_suspension(engine) {
         return;
     }
     let mut store = support::store(engine, 0u32);
@@ -427,7 +503,7 @@ pub async fn it_gives_the_store_back_when_the_future_of_a_resumption_drops(engin
 /// included. The handle of that suspension finishes the call, and the
 /// spent resumption answers no second stop.
 pub async fn it_takes_up_a_resumption_whose_wait_dropped(engine: &Engine) {
-    if !support::declares(engine, &[Capability::HostSuspension]) {
+    if support::refuses_host_suspension(engine) {
         return;
     }
     let mut store = support::store(engine, 0u32);
@@ -561,7 +637,7 @@ async fn answers(engine: &Engine, log: &Log) -> (Store<()>, Instance) {
 /// A suspending host function that answers at once does not suspend its
 /// call, and the resumable call finishes with its results.
 pub async fn it_finishes_a_resumable_call_that_does_not_suspend(engine: &Engine) {
-    if !support::declares(engine, &[Capability::HostSuspension]) {
+    if support::refuses_host_suspension(engine) {
         return;
     }
     let log = Log::default();
@@ -581,7 +657,7 @@ pub async fn it_finishes_a_resumable_call_that_does_not_suspend(engine: &Engine)
 /// call cannot suspend. The store stays good: a resumable call suspends in
 /// it afterwards, and finishes.
 pub async fn it_traps_a_suspension_outside_a_resumable_call(engine: &Engine) {
-    if !support::declares(engine, &[Capability::HostSuspension]) {
+    if support::refuses_host_suspension(engine) {
         return;
     }
     let log = Log::default();
@@ -611,7 +687,7 @@ pub async fn it_traps_a_suspension_outside_a_resumable_call(engine: &Engine) {
 /// with the host's error, unchanged, and does not suspend it. That holds
 /// for a host function that cannot suspend, and for a suspending one.
 pub async fn it_traps_a_resumable_call_with_the_error_of_a_host_function(engine: &Engine) {
-    if !support::declares(engine, &[Capability::HostSuspension]) {
+    if support::refuses_host_suspension(engine) {
         return;
     }
     let log = Log::default();

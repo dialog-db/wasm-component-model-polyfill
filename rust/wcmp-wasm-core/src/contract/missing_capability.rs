@@ -4,14 +4,21 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! The capability a module that Wasmi refuses needs.
+//! The capability a module that an engine refuses needs.
 
 use wasmparser::{Validator, WasmFeatures};
-use wcmp_wasm_core::{Capabilities, Capability};
+
+use crate::capability::{Capabilities, Capability};
 
 /// The capability that the module `bytes` needs and `declared` lacks, or
 /// `None` where the module needs none: it is invalid under every feature,
 /// or it validates without any capability the backend lacks.
+///
+/// A backend calls this where its engine refuses a module, so that the
+/// refusal is [`Error::Unsupported`](crate::Error::Unsupported) with the
+/// capability, as [`Backend::compile`](crate::backend::Backend::compile)
+/// asks, and [`Error::Compile`](crate::Error::Compile) only where no
+/// missing capability explains it.
 ///
 /// The module needs the least set of features between the floor, with the
 /// capabilities of `declared`, and every feature, under which it validates.
@@ -78,13 +85,14 @@ fn validates(features: WasmFeatures, bytes: &[u8]) -> bool {
         .is_ok()
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests {
     use wcmp_macros::wasm;
 
     use super::*;
 
-    /// What the Wasmi backend declares.
+    /// What the Wasmi backend declares, a backend without GC, exceptions,
+    /// typed function references, threads, or stack switching.
     fn declared() -> Capabilities {
         [
             Capability::MultiMemory,
@@ -98,7 +106,7 @@ mod tests {
 
     #[wcmp_macros::test]
     fn it_names_the_capability_a_module_needs_above_what_is_declared() {
-        let cases: [(&[u8], Capability); 4] = [
+        let cases: [(&[u8], Capability); 5] = [
             (
                 wasm!(r#"(module (type (struct (field i32))))"#),
                 Capability::Gc,
@@ -114,6 +122,10 @@ mod tests {
             (
                 wasm!(r#"(module (memory 1 1 shared))"#),
                 Capability::Threads,
+            ),
+            (
+                wasm!(r#"(module (type $f (func)) (type (cont $f)))"#),
+                Capability::StackSwitching,
             ),
         ];
         for (bytes, capability) in cases {
@@ -139,5 +151,12 @@ mod tests {
         assert_eq!(missing_capability(declared(), invalid), None);
         let declared_only = wasm!(r#"(module (memory 1) (memory 1))"#);
         assert_eq!(missing_capability(declared(), declared_only), None);
+    }
+
+    #[wcmp_macros::test]
+    fn it_names_nothing_where_every_capability_the_module_needs_is_declared() {
+        let bytes = wasm!(r#"(module (type (struct (field i32))))"#);
+        let everything = Capability::ALL.into_iter().collect::<Capabilities>();
+        assert_eq!(missing_capability(everything, bytes), None);
     }
 }

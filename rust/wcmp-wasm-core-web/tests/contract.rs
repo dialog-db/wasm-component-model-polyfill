@@ -43,7 +43,7 @@ async fn it_raises_each_core_trap_the_capabilities_permit() {
 }
 
 wcmp_wasm_core_contract::contract_tests!(
-    @each engine;
+    @each Web::new;
     it_compiles_a_module_asynchronously_and_synchronously,
     it_refuses_bytes_that_are_not_a_module_with_a_compile_error,
     it_describes_the_imports_and_exports_of_a_module,
@@ -55,11 +55,13 @@ wcmp_wasm_core_contract::contract_tests!(
     it_enters_a_host_function_again_at_any_depth,
     it_calls_a_host_function_of_more_than_eight_parameters,
     it_traps_with_the_host_error_that_no_guest_can_catch,
+    it_traps_with_a_type_mismatch_where_a_host_function_gives_a_wrong_result,
     it_reads_an_externref_the_guest_hands_back,
     it_calls_a_funcref_the_guest_hands_out,
     it_reads_an_i31ref,
     it_passes_a_gc_object_back_to_its_guest,
     it_passes_an_exnref_back_to_its_guest,
+    it_keeps_the_references_the_host_holds_across_a_collection,
     it_refuses_host_suspension_where_it_is_not_declared,
     it_fails_with_an_exception_that_nothing_catches,
     it_resumes_calls_that_wait_at_once_in_any_order,
@@ -75,4 +77,9 @@ wcmp_wasm_core_contract::contract_tests!(
     it_refuses_a_range_outside_the_memory,
     it_copies_between_two_memories_of_one_store,
     it_addresses_a_64_bit_memory_with_the_same_methods,
+);
+
+wcmp_wasm_core_contract::contract_tests!(
+    @backend Web::new;
+    it_refuses_host_suspension_in_the_backend_itself,
 );

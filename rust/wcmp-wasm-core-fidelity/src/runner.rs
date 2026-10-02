@@ -420,7 +420,11 @@ impl Runner {
     /// or invalid. A module whose text does not even encode is refused
     /// before an engine sees it, which the directive asserts too. A refusal
     /// that a capability the backend declares lifts does not apply to the
-    /// backend, and is skipped: see [`Suite::lifting`].
+    /// backend, and is skipped: see [`Suite::lifting`]. A refusal that names
+    /// a capability the backend does not declare, as
+    /// [`Error::Unsupported`], is a refusal: the module is valid only with
+    /// a feature the backend lacks, such as a tag with results, which only
+    /// stack switching allows.
     async fn assert_refused(
         &mut self,
         mut module: QuoteWat<'_>,
@@ -441,6 +445,11 @@ impl Runner {
         }
         match Module::compile(self.store.engine(), &bytes).await {
             Err(Error::Compile { .. }) => Ok(()),
+            Err(Error::Unsupported(capability))
+                if !self.store.engine().capabilities().contains(capability) =>
+            {
+                Ok(())
+            }
             Err(error) => Err(Miss::Fail(format!(
                 "expected a {fault} module to be refused ({message}), and the error was: {error}"
             ))),

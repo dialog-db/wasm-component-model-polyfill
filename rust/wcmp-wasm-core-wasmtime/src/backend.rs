@@ -9,7 +9,9 @@
 use core::fmt;
 use std::sync::Arc;
 
-use wcmp_wasm_core::backend::{Backend, BackendModule, BackendStore, BoxFuture, StoreData};
+use wcmp_wasm_core::backend::{
+    Backend, BackendModule, BackendStore, BoxFuture, StoreData, missing_capability,
+};
 use wcmp_wasm_core::{Capabilities, Capability, Error, Result};
 
 use crate::errors;
@@ -95,10 +97,14 @@ impl Backend for Wasmtime {
     fn compile_sync(&self, bytes: &[u8]) -> Result<Box<dyn BackendModule>> {
         // `from_binary`, and not `new`, so that the text format is refused
         // here as every other engine refuses it.
-        let module =
-            wasmtime::Module::from_binary(&self.engine, bytes).map_err(|error| Error::Compile {
-                message: format!("{error:#}"),
-            })?;
+        let module = wasmtime::Module::from_binary(&self.engine, bytes).map_err(|error| {
+            match missing_capability(self.capabilities, bytes) {
+                Some(capability) => Error::Unsupported(capability),
+                None => Error::Compile {
+                    message: format!("{error:#}"),
+                },
+            }
+        })?;
         Ok(Box::new(WasmtimeModule::new(module, &self.types)))
     }
 

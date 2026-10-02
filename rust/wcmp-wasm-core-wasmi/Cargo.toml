@@ -18,10 +18,8 @@ anyhow = { workspace = true }
 # the capabilities the backend declares. `auto-dispatch` is Wasmi's own
 # default choice of how its interpreter dispatches.
 wasmi = { workspace = true, features = ["std", "validate", "simd", "memory64", "auto-dispatch"] }
-# Finds the capability a module needs, where Wasmi refuses it, with the
-# validator whose feature names the capability lexicon repeats. The
-# `features` feature is what gives the feature set its named flags, and
-# `simd` is what lets the validator read a vector instruction at all.
+# Reads the order in which a module declares its imports and exports,
+# which Wasmi does not keep.
 wasmparser = { workspace = true, features = ["validate", "features", "simd"] }
 wcmp-wasm-core = { workspace = true }
 

@@ -34,6 +34,12 @@ impl Func {
     /// the guest with [`TrapKind::Host`](crate::TrapKind::Host), carrying
     /// the error unchanged, and no guest can catch the trap.
     ///
+    /// The body writes a value of the function's type to each result
+    /// slot. A result of another type traps the guest with
+    /// [`TrapKind::Host`](crate::TrapKind::Host) too, and the error it
+    /// carries is [`Error::TypeMismatch`](crate::Error::TypeMismatch), which
+    /// the host finds with `downcast_ref::<Error>()`.
+    ///
     /// A type that needs a capability the backend lacks, such as a
     /// parameter of a GC reference type, is
     /// [`Error::Unsupported`](crate::Error::Unsupported).

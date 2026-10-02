@@ -35,6 +35,15 @@
 //! message. Each compile makes a module of its own. The backend keeps no
 //! cache of modules by their bytes.
 //!
+//! A module the browser refuses because it needs a capability the backend
+//! does not declare is
+//! [`Error::Unsupported`](wcmp_wasm_core::Error::Unsupported), with the
+//! capability that
+//! [`missing_capability`](wcmp_wasm_core::backend::missing_capability)
+//! names. Any other refusal is
+//! [`Error::Compile`](wcmp_wasm_core::Error::Compile), with the browser's
+//! message.
+//!
 //! # The boundary
 //!
 //! The JavaScript API names the imports and exports of a module, but not

@@ -12,11 +12,13 @@ repository.workspace = true
 # unchanged, as Wasmtime's own host errors are.
 anyhow = { workspace = true }
 thiserror = { workspace = true }
+# Names the capability a module needs where a backend's engine refuses the
+# module, with the validator whose feature set the capability lexicon
+# matches. The `features` feature is what gives the set its named flags,
+# and `simd` is what lets the validator read a vector instruction at all.
+wasmparser = { workspace = true, features = ["validate", "features", "simd"] }
 
 [dev-dependencies]
-# The feature set whose names the capability lexicon must match. The
-# `features` feature is what gives the set its named flags.
-wasmparser = { workspace = true, features = ["features"] }
 # Wasmtime's trap enum, whose messages the trap kinds must repeat. It is
 # the crate the polyfill already links on both targets, so the test runs in
 # the browser too.

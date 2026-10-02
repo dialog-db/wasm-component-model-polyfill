@@ -131,6 +131,11 @@ pub mod backend {
     //! [`TypeHandle`](crate::TypeHandle) that the backend makes with
     //! [`RawTypeHandle::from_raw`].
     //!
+    //! Where its engine refuses a module, a backend asks
+    //! [`missing_capability`] whether a capability it does not declare
+    //! explains the refusal, which is then
+    //! [`Error::Unsupported`](crate::Error::Unsupported) with that capability.
+    //!
     //! The engine checks what it can before it reaches a backend: that a
     //! handle belongs to the store it is used with, that a module belongs to
     //! the engine of the store, and that the backend declares a capability a
@@ -140,7 +145,7 @@ pub mod backend {
 
     pub use crate::contract::{
         Backend, BackendModule, BackendResumption, BackendStore, BackendSuspendedCall, BoxFuture,
-        HostFunc, RawHandle, RawTypeHandle,
+        HostFunc, RawHandle, RawTypeHandle, missing_capability,
     };
     pub use crate::store::{StoreData, StoreId};
 }

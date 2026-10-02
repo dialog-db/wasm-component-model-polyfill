@@ -24,7 +24,7 @@ type Body =
 /// [`Func::new`](crate::Func::new) or
 /// [`Func::new_suspending`](crate::Func::new_suspending), and hands it to
 /// [`BackendStore::func_new`]. The backend calls it each time a guest calls
-/// the function, with the store the guest runs in. A backend holds four
+/// the function, with the store the guest runs in. A backend holds five
 /// rules for it:
 ///
 /// - The body can be entered again while an earlier call of it runs, at any
@@ -34,6 +34,9 @@ type Body =
 /// - An error from the body traps the guest with
 ///   [`TrapKind::Host`](crate::TrapKind::Host), carrying the error
 ///   unchanged. No guest can catch the trap.
+/// - A result the body wrote that is not a value of its type traps the
+///   guest the same way, with
+///   [`Error::TypeMismatch`](crate::Error::TypeMismatch) as the error.
 /// - A body that is not suspending always answers [`Poll::Ready`]. A
 ///   suspending body can answer [`Poll::Pending`]: "not yet". Inside a
 ///   resumable call whose frames between its start and the host function
