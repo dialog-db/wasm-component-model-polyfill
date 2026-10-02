@@ -37,6 +37,7 @@ use crate::drawer;
 use crate::elements;
 use crate::idb::{self, Database};
 use crate::sources;
+use crate::telemetry;
 
 /// The script of the demo's service worker, beside the page.
 const SERVICE_WORKER: &str = "./sw.js";
@@ -51,7 +52,7 @@ pub async fn start() -> Result<(), JsValue> {
     let window = web_sys::window().ok_or("the page has no window")?;
     boot_step(&window, "registering");
     let container = window.navigator().service_worker();
-    JsFuture::from(container.register(SERVICE_WORKER)).await?;
+    JsFuture::from(container.register(&service_worker_url())).await?;
 
     boot_step(&window, "compiler");
     let context = Context::start().await?;
@@ -75,6 +76,17 @@ pub async fn start() -> Result<(), JsValue> {
     drawer::mount(database).map_err(|error| JsValue::from_str(&error))?;
     boot_step(&window, "ready");
     Ok(())
+}
+
+/// The URL of the service worker's script, with the page's `trace`
+/// parameter when it has one, so that the worker records its spans at
+/// the page's level.
+fn service_worker_url() -> String {
+    let search = telemetry::search();
+    match telemetry::parameter(&search) {
+        Some(level) => format!("{SERVICE_WORKER}?{}={level}", telemetry::PARAMETER),
+        None => SERVICE_WORKER.to_string(),
+    }
 }
 
 /// Replace the skeleton with `<todo-app>`, and keep its `filter` in step

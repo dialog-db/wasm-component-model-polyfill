@@ -57,10 +57,14 @@ mod idb;
 #[cfg(target_arch = "wasm32")]
 mod page;
 #[cfg(target_arch = "wasm32")]
+mod telemetry;
+#[cfg(target_arch = "wasm32")]
 mod worker;
 
 #[cfg(target_arch = "wasm32")]
 pub use page::start as start_page;
+#[cfg(target_arch = "wasm32")]
+pub use telemetry::install as install_tracing;
 #[cfg(target_arch = "wasm32")]
 pub use worker::{fetch as serve_fetch, message as serve_message};
 

@@ -19,6 +19,26 @@ the drawer and see the change at once.
 `demo serve` builds the demo and serves it on a loopback port. `tests demo` runs
 the browser test lane in `rust/wcmp-demo-lane`.
 
+## Tracing
+
+The page and the service worker each record the spans of the polyfill, the
+runtime layer, and the demo with `tracing-web`. Each span becomes user timing
+marks and a measure, named after the span. Record a profile in the browser's
+performance panel and open the timings track to see them: the Zena compiles,
+the element renders and their diffs, the routes, the todo model, IndexedDB, and
+under them the polyfill's compiles, instantiations, and calls. Events at `INFO`
+and above go to the console.
+
+The spans are at `DEBUG` and above by default. The `trace` parameter of the
+page's URL names another level: `?trace=trace` adds the polyfill's turns, its
+canonical ABI, and its host calls, which are many, and `?trace=off` records
+none. The page hands the parameter to the service worker. A service worker
+keeps its own timeline: to see its spans, profile the worker itself, in the
+DevTools that `chrome://inspect/#service-workers` opens for it. Each context
+clears its
+timeline every five seconds, so that the marks do not pile up while nothing
+records them.
+
 ## Zena Defects the Demo Works Around
 
 The demo works around these Zena defects. Each one is a candidate for a report

@@ -51,6 +51,7 @@ pub struct Mounted {
 /// # Errors
 ///
 /// The exception of the DOM call that failed.
+#[tracing::instrument(level = "debug", name = "view diff", skip_all, fields(nodes = views.len()))]
 pub fn patch(
     document: &Document,
     parent: &Node,

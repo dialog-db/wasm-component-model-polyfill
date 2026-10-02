@@ -51,6 +51,7 @@ impl Database {
     /// # Errors
     ///
     /// The exception of IndexedDB.
+    #[tracing::instrument(level = "debug", name = "IndexedDB get", skip_all, fields(key = key))]
     pub async fn get(&self, key: &str) -> Result<JsValue, JsValue> {
         let store = self
             .db
@@ -64,6 +65,7 @@ impl Database {
     /// # Errors
     ///
     /// The exception of IndexedDB.
+    #[tracing::instrument(level = "debug", name = "IndexedDB put", skip_all, fields(key = key))]
     pub async fn put(&self, key: &str, value: &JsValue) -> Result<(), JsValue> {
         let transaction = self
             .db
@@ -80,6 +82,7 @@ impl Database {
     /// # Errors
     ///
     /// The exception of IndexedDB.
+    #[tracing::instrument(level = "debug", name = "IndexedDB delete", skip_all, fields(key = key))]
     pub async fn delete(&self, key: &str) -> Result<(), JsValue> {
         let transaction = self
             .db

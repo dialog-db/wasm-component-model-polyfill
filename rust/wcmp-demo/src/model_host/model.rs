@@ -31,6 +31,7 @@ impl<S: Storage> Model<S> {
     /// # Errors
     ///
     /// The storage's error.
+    #[tracing::instrument(level = "trace", name = "todo model turn", skip_all)]
     pub async fn with<R>(
         &self,
         change: impl FnOnce(&mut TodoList) -> (R, bool),

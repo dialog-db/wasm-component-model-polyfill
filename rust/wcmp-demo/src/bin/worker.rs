@@ -30,4 +30,9 @@ mod web {
     }
 }
 
-fn main() {}
+/// The worker's module starts here, as `sw.js` loads it: the worker
+/// records its spans from its first event on.
+fn main() {
+    #[cfg(target_arch = "wasm32")]
+    wcmp_demo::install_tracing("worker");
+}

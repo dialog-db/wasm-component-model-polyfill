@@ -38,6 +38,7 @@ impl Context {
     ///
     /// The exception of a failed fetch, or the polyfill's error as text
     /// when the compiler does not instantiate.
+    #[tracing::instrument(level = "debug", name = "context start", skip_all)]
     pub async fn start() -> Result<Rc<Self>, JsValue> {
         let engine = Engine::with_backend(wcmp_wasm_core_web::Web::new()).map_err(text)?;
         let bundle = SourceBundle::parse(&fetch_bytes(BUNDLE).await?).map_err(text)?;
@@ -76,6 +77,7 @@ impl Context {
     /// # Errors
     ///
     /// The polyfill's error when the component does not parse.
+    #[tracing::instrument(level = "debug", name = "demo parse", skip_all, fields(bytes = bytes.len()))]
     pub async fn parse(&self, bytes: &[u8]) -> Result<(Component, f64), wcmp::Error> {
         let started = platform::now_millis();
         let component = Component::new(&self.engine, bytes).await?;
@@ -90,6 +92,7 @@ impl Context {
     ///
     /// The polyfill's error when the component does not link or
     /// instantiate.
+    #[tracing::instrument(level = "debug", name = "demo instantiate", skip_all)]
     pub async fn instantiate<T: 'static>(
         &self,
         component: &Component,

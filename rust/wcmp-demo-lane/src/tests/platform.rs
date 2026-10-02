@@ -209,3 +209,56 @@ fn compile_check(
         js(source)
     ))
 }
+
+/// A script that watches the page's performance measures from now on,
+/// as the performance panel would, adds a todo, and answers the names
+/// of the measures it saw once the todo shows, or after `wait`
+/// milliseconds with no measure of an element's render.
+fn measures_around_a_new_todo(wait: u32) -> String {
+    format!(
+        "const seen = [];
+         new PerformanceObserver((list) => {{
+           for (const entry of list.getEntries()) seen.push(entry.name);
+         }}).observe({{ entryTypes: ['measure'] }});
+         await addTodo('traced');
+         await until(() => seen.some((name) => name.startsWith('element render')), 'the measures', {wait})
+           .catch(() => null);
+         return seen;"
+    )
+}
+
+pub fn it_records_the_spans_of_the_page_as_performance_measures(
+    browser: &Browser,
+) -> Result<(), String> {
+    browser.boot()?;
+    let seen = browser.eval(&measures_around_a_new_todo(20_000))?;
+    let names: Vec<&str> = seen
+        .as_array()
+        .map(|names| names.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let missing: Vec<&str> = ["element render", "element op", "view diff", "Func::call"]
+        .into_iter()
+        .filter(|span| !names.iter().any(|name| name.starts_with(span)))
+        .collect();
+    check(missing.is_empty(), || {
+        format!("no measure of {missing:?} among {names:?}")
+    })?;
+    let console = browser.console();
+    check(
+        console
+            .iter()
+            .any(|line| line.contains("tracing to the performance panel")),
+        || format!("the console never said the page traces: {console:?}"),
+    )
+}
+
+pub fn it_records_no_spans_when_the_trace_parameter_is_off(
+    browser: &Browser,
+) -> Result<(), String> {
+    browser.goto("/?trace=off")?;
+    browser.wait_ready()?;
+    let seen = browser.eval(&measures_around_a_new_todo(3_000))?;
+    check(seen.as_array().is_some_and(Vec::is_empty), || {
+        format!("with tracing off the page measured {seen}")
+    })
+}

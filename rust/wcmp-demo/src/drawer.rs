@@ -268,7 +268,7 @@ fn section(document: &Document, kind: &str, name: &str) -> Result<Element, Strin
             let (kind, name, action) = (kind.clone(), name.clone(), action.clone());
             spawn_local(async move {
                 if let Err(error) = act(&kind, &name, &action).await {
-                    web_sys::console::error_1(&JsValue::from_str(&error));
+                    tracing::error!(%kind, %name, %action, "{error}");
                 }
                 refresh();
             });

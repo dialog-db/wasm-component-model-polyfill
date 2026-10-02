@@ -160,6 +160,7 @@ impl<S: Storage + 'static> Router<S> {
 
     /// Answer `request` with the first route that matches its path, or
     /// `None` when no route matches.
+    #[tracing::instrument(level = "debug", name = "route request", skip_all, fields(method = %request.method, path = %request.path_with_query))]
     pub async fn handle(&self, request: HttpRequest) -> Option<HttpResponse> {
         let path = request
             .path_with_query
@@ -217,6 +218,7 @@ impl<S: Storage + 'static> Router<S> {
 
     /// Compile and instantiate the route `status` names from `source`,
     /// recording the times or the diagnostics in `status`.
+    #[tracing::instrument(level = "debug", name = "route start", skip_all, fields(pattern = %status.pattern))]
     async fn start_from(
         &self,
         status: &mut RouteStatus,
@@ -283,6 +285,7 @@ impl<S: Storage + 'static> Router<S> {
 /// # Errors
 ///
 /// The text of the trap, or of the error, that stopped the call.
+#[tracing::instrument(level = "debug", name = "route handle", skip_all)]
 async fn serve<S: Storage + 'static>(
     instance: &mut Instance<S>,
     request: HttpRequest,

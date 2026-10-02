@@ -54,6 +54,8 @@ pub static TESTS: &[Test] = &[
     test!(platform::it_compiles_and_runs_a_program_in_the_service_worker),
     test!(platform::it_reports_the_file_and_line_of_a_compile_error),
     test!(platform::it_compiles_a_program_that_imports_a_file_beside_it),
+    test!(platform::it_records_the_spans_of_the_page_as_performance_measures),
+    test!(platform::it_records_no_spans_when_the_trace_parameter_is_off),
     test!(elements::it_gives_create_the_attributes_set_before_the_element_connects),
     test!(elements::it_gives_an_element_that_connects_again_a_new_id),
     test!(elements::it_serves_fifty_elements_of_a_tag_with_one_instance),

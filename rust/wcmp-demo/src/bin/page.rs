@@ -9,6 +9,7 @@
 
 #[cfg(target_arch = "wasm32")]
 fn main() {
+    wcmp_demo::install_tracing("page");
     wasm_bindgen_futures::spawn_local(async {
         if let Err(error) = wcmp_demo::start_page().await {
             web_sys::console::error_2(&"the demo page failed to start:".into(), &error);

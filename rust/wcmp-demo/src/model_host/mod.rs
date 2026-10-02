@@ -70,6 +70,7 @@ pub fn define<T: ModelHost>(linker: &mut Linker<T>, component: &Component) -> Re
 
 /// Run `function` of [`MODEL`] with `args` on `model`, and answer its
 /// result, if it has one.
+#[tracing::instrument(level = "debug", name = "todo model call", skip_all, fields(function = function))]
 async fn call<S: Storage>(
     model: &Model<S>,
     function: &str,

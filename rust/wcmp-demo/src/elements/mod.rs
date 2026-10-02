@@ -153,6 +153,20 @@ enum Op {
     Trapped,
 }
 
+impl Op {
+    /// The operation's name, for its span.
+    fn name(&self) -> &'static str {
+        match self {
+            Op::Connected => "connected",
+            Op::Disconnected => "disconnected",
+            Op::AttributeChanged(..) => "attribute-changed",
+            Op::Event(..) => "event",
+            Op::Restart => "restart",
+            Op::Trapped => "trapped",
+        }
+    }
+}
+
 /// Every tag and element of the page.
 #[derive(Default)]
 struct Registry {
@@ -215,6 +229,7 @@ pub fn status_of(name: &str) -> Option<TagStatus> {
 ///
 /// The compiler's diagnostics when the source does not compile, or the
 /// reason the component does not instantiate.
+#[tracing::instrument(level = "debug", name = "define element", skip_all, fields(tag = tag))]
 pub async fn define_element(tag: &str, source: &str) -> Result<(), String> {
     if REGISTRY.with(|registry| registry.tags.borrow().contains_key(tag)) {
         return Err(format!("the element {tag} is defined already"));
@@ -337,6 +352,7 @@ fn instances_of(tag: &str) -> Vec<Rc<Instance>> {
 /// Compile `source` for the tag `entry`, instantiate it, and start its
 /// driver. Answer the runtime and the attributes the tag observes, and
 /// put the tag's styles in its sheet.
+#[tracing::instrument(level = "debug", name = "element start", skip_all)]
 async fn start(entry: &Rc<Tag>, source: &str) -> Result<(Rc<Runtime>, Vec<String>), String> {
     let tag = entry.status.borrow().tag.clone();
     let context = context()?;
@@ -597,10 +613,7 @@ async fn run(instance: Rc<Instance>, mut queue: mpsc::UnboundedReceiver<Op>) {
     while let Some(op) = queue.next().await {
         let leaving = matches!(op, Op::Disconnected);
         if let Err(error) = step(&instance, op).await {
-            web_sys::console::error_2(
-                &JsValue::from_str(&format!("<{}>", instance.tag)),
-                &JsValue::from_str(&error),
-            );
+            tracing::error!(tag = %instance.tag, "{error}");
         }
         if leaving && !instance.node.is_connected() {
             release(&instance);
@@ -642,6 +655,7 @@ fn current_runtime(instance: &Instance) -> Option<Rc<Runtime>> {
 }
 
 /// Do one operation of an element.
+#[tracing::instrument(level = "debug", name = "element op", skip_all, fields(tag = %instance.tag, op = op.name()))]
 async fn step(instance: &Rc<Instance>, op: Op) -> Result<(), String> {
     match op {
         Op::Connected | Op::Restart => {
@@ -778,6 +792,7 @@ fn show_card(instance: &Instance, text: &str) -> Result<(), String> {
 }
 
 /// Render the element through `runtime` and patch its shadow root.
+#[tracing::instrument(level = "debug", name = "element render", skip_all, fields(tag = %instance.tag))]
 async fn render(instance: &Rc<Instance>, runtime: &Runtime) -> Result<(), String> {
     let Some(id) = instance.id.get() else {
         return Ok(());

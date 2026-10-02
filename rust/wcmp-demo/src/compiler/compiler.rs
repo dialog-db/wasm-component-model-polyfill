@@ -85,6 +85,7 @@ impl Compiler {
     ///
     /// [`CompileError::Diagnostics`] when the compiler refused the
     /// program, and [`CompileError::Failed`] when it could not run.
+    #[tracing::instrument(level = "debug", name = "Zena compile", skip_all, fields(entry = request.entry_path, world = request.world))]
     pub async fn compile(
         &mut self,
         request: &CompileRequest<'_>,

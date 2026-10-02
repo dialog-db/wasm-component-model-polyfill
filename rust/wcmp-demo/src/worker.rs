@@ -130,6 +130,7 @@ async fn start_worker() -> Result<Rc<Worker>, String> {
 ///
 /// The exception of the network fetch, or of a browser API the answer
 /// needed.
+#[tracing::instrument(level = "debug", name = "service worker fetch", skip_all)]
 pub async fn fetch(request: Request) -> Result<JsValue, JsValue> {
     let url = web_sys::Url::new(&request.url())?;
     let scope = scope()?;
