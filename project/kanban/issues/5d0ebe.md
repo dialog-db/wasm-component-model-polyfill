@@ -5,6 +5,8 @@ type: feature
 blocked_by: [f9f268]
 labels: [PDD025, runtime-layer]
 created: 2026-09-28T21:45:55Z
+disposition: accepted
+disposition_at: 2026-10-02T06:07:52Z
 ---
 
 ## What to build

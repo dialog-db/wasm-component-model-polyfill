@@ -5,6 +5,8 @@ type: bug
 blocked_by: [f9f268]
 labels: [runtime-layer, PDD025]
 created: 2026-09-29T07:32:47Z
+disposition: accepted
+disposition_at: 2026-10-02T06:07:52Z
 ---
 
 ## What to build
