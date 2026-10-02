@@ -14,8 +14,11 @@ use wasmtime::component::{
 use wasmtime::{AsContextMut, Config, Engine, Store};
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use std::sync::Arc;
+
 use wcmp_scenario::{
-    Call, Link, Observations, Outcome, Run, Stage, Typed, TypedSignature, Value, ValueType,
+    Call, Link, Observations, Outcome, Run, SourceBundle, Stage, Typed, TypedSignature, Value,
+    ValueType,
 };
 
 use crate::error::{Error, Result};
@@ -52,13 +55,26 @@ impl WasmtimeRun {
     pub const TEST_FUNCTION: &str = wcmp_scenario::TEST_FUNCTION;
 
     /// An engine with Wasmtime's default configuration, and a linker
-    /// with the WASI imports and the test interface.
+    /// with the WASI imports, the test interface, and a `read-source`
+    /// that has no file to answer with.
     ///
     /// # Errors
     ///
     /// [`Error::Setup`] when Wasmtime refuses the configuration or a
     /// definition.
     pub fn new() -> Result<Self> {
+        Self::with_sources(SourceBundle::default())
+    }
+
+    /// An engine with Wasmtime's default configuration, and a linker
+    /// with the WASI imports, the test interface, and the compiler
+    /// component's `read-source`, which answers from `sources`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Setup`] when Wasmtime refuses the configuration or a
+    /// definition.
+    pub fn with_sources(sources: SourceBundle) -> Result<Self> {
         let setup = |error: wasmtime::Error| Error::Setup(format!("{error:#}"));
         let engine = Engine::new(&Config::new()).map_err(setup)?;
         let mut linker = Linker::new(&engine);
@@ -70,8 +86,63 @@ impl WasmtimeRun {
                 interface.func_wrap(Self::TEST_FUNCTION, |_, (text,): (String,)| Ok((text,)))
             })
             .map_err(setup)?;
+        let sources = Arc::new(sources);
+        linker
+            .instance(wcmp_scenario::COMPILER_HOST_INTERFACE)
+            .and_then(|mut interface| {
+                interface.func_wrap(wcmp_scenario::READ_SOURCE, move |_, (path,): (String,)| {
+                    Ok((sources.read(&path).map(str::to_string),))
+                })
+            })
+            .map_err(setup)?;
         Ok(WasmtimeRun { engine, linker })
     }
+
+    /// Compile `source`, the entry module at `entry_path`, with the
+    /// compiler component `compiler`, against the world `world` of the
+    /// WIT document `wit`, or against the world Zena derives when `wit`
+    /// is empty. The answer is the component's bytes, or the compiler's
+    /// diagnostics.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Compiler`] when the compiler does not parse, link, or
+    /// instantiate, its call fails, or it answers with something other
+    /// than `result<list<u8>, string>`.
+    pub async fn compile(
+        &self,
+        compiler: &[u8],
+        source: &str,
+        entry_path: &str,
+        wit: &str,
+        world: &str,
+    ) -> Result<core::result::Result<Vec<u8>, String>> {
+        let failed = |error: wasmtime::Error| Error::Compiler(format!("{error:#}"));
+        let component = Component::new(&self.engine, compiler).map_err(failed)?;
+        let stdout = MemoryOutputPipe::new(OUTPUT_CAPACITY);
+        let mut store = Store::new(&self.engine, Host::new(stdout));
+        let instance = self
+            .linker
+            .instantiate_async(&mut store, &component)
+            .await
+            .map_err(failed)?;
+        let compile = instance
+            .get_func(&mut store, "compile")
+            .ok_or_else(|| Error::Compiler("the compiler has no `compile` export".to_string()))?;
+        let arguments = [source, entry_path, wit, world].map(|text| Val::String(text.to_string()));
+        let mut results = [Val::Bool(false)];
+        compile
+            .call_async(&mut store, &arguments, &mut results)
+            .await
+            .map_err(failed)?;
+        compiled(&results[0]).ok_or_else(|| {
+            Error::Compiler(format!(
+                "`compile` answered {:?}, which is not a `result<list<u8>, string>`",
+                results[0]
+            ))
+        })
+    }
+
 
     /// Run `scenario` and judge it against its expectations.
     ///
@@ -212,6 +283,30 @@ impl WasmtimeRun {
             .map(str::to_string)
             .collect();
         Observations::observe(&scenario.expectations, Run { outcomes, output }).map_err(judge)
+    }
+}
+
+
+/// The bytes or the diagnostics of a `result<list<u8>, string>`, or
+/// `None` for a value of another type.
+fn compiled(val: &Val) -> Option<core::result::Result<Vec<u8>, String>> {
+    match val {
+        Val::Result(Ok(Some(list))) => match list.as_ref() {
+            Val::List(items) => items
+                .iter()
+                .map(|item| match item {
+                    Val::U8(byte) => Some(*byte),
+                    _ => None,
+                })
+                .collect::<Option<Vec<u8>>>()
+                .map(Ok),
+            _ => None,
+        },
+        Val::Result(Err(Some(text))) => match text.as_ref() {
+            Val::String(text) => Some(Err(text.clone())),
+            _ => None,
+        },
+        _ => None,
     }
 }
 

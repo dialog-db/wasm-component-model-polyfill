@@ -1,0 +1,16 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+// A small program the compiler component compiles in its check. It
+// reads the standard library, prints through `wasi:cli`, and passes a
+// string across the boundary, so the compile reads the standard
+// library's modules and its WIT directory through `read-source`.
+import { console } from 'zena:console';
+
+export let greet = (name: String): String => {
+  console.log('greeting ' + name);
+  return 'hello, ' + name;
+};

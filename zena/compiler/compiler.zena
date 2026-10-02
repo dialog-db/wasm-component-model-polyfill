@@ -1,0 +1,250 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+// Zena's compiler as a component. This entry module calls the compiler's
+// own library code the way Zena's `compileFile` does, with the same
+// options as `zena build --target component`, so a compile here returns
+// the bytes `zena build` writes for the same source.
+//
+// It reads no file system. The entry module and the declared world come
+// in as arguments. Every other file the compile reads, the standard
+// library and relative imports included, comes from the host's
+// `read-source`. A directory of WIT, such as the standard library's
+// `wit`, is read the same way: the host answers its path with the text
+// Zena's `readWitSource` makes of it, every `.wit` file in the
+// directory in name order, each followed by a newline. A package
+// manifest, `zena-packages.json`, comes from the host too, when it has
+// one, as `zena build` reads it from the working directory.
+import { Future } from 'zena:async';
+import { Outcome, Ok, Err, Some, StringBuilder } from 'zena:core';
+import { readSource } from 'wcmp:zena-compiler/host';
+import { CompilerHost } from 'zena-compiler:library-loader';
+import { PackageConfig, stdlibIdToRelativeFile } from 'zena-compiler:module-resolver';
+import { loadPackageMap } from 'zena-compiler:package-manifest';
+import {
+  createCompiler, CompilerOptions, checkCompilation, withBuiltinPackages
+} from 'zena-compiler:compiler';
+import { DiagnosticSeverity, SourceSpan, SyntaxError } from 'zena-compiler:diagnostics';
+import { BinaryGenerator } from 'zena-compiler:codegen/binary-generator';
+import { Program, CompilationUnit } from 'zena-compiler:program';
+import { Module } from 'zena-compiler:ast';
+import { compileComponentRuntimeModule } from 'zena-compiler:codegen/component-runtime';
+import { makeImportEncoder } from 'zena-compiler:codegen/wit-imports';
+import {
+  isWitModulePath, synthesizeWitModuleFrom, synthesizeExportWrapper,
+  declaredPackageNamespaces
+} from 'zena-compiler:wit-module-synth';
+import { ComponentEntryWrapper } from 'zena-compiler:component-entry';
+
+/** Where the standard library's `zena/` directory is, as the host names it. */
+let stdlibRoot = '/stdlib';
+
+/** The path the declared world's document is read from. */
+let worldPath = '/world.wit';
+
+/**
+ * The package manifest, read as `zena build` reads it from the working
+ * directory: a compile with no manifest has only the standard library
+ * and relative imports.
+ */
+let manifestPath = 'zena-packages.json';
+
+/** The target every compile emits for. */
+let target = 'component';
+
+/** A file the host does not have. */
+final class MissingSource extends Error {
+  new(path: String) : super('Cannot read ' + path + ': the host has no such file');
+}
+
+/**
+ * The text of `path`: the declared world's document from memory, and
+ * everything else from the host.
+ */
+let readText = (path: String, worldSource: String): String => {
+  if (path == worldPath) {
+    return worldSource;
+  }
+  let text = readSource(path);
+  if (text is Some<String>) {
+    return (text as Some<String>).value;
+  }
+  throw new MissingSource(path);
+};
+
+/**
+ * The host the compiler reads source through, as Zena's `FileHost` does
+ * for `zena build`: the entry module from memory, `zena:` modules from
+ * the standard library, WIT-backed modules synthesized from their WIT,
+ * and every other file from the host.
+ */
+final class HostReader implements CompilerHost {
+  entryPath: String;
+  entrySource: String;
+  worldSource: String;
+  var packagesWit = '';
+  new(this.entryPath, this.entrySource, this.worldSource);
+
+  readFile(path: String): String {
+    if (isWitModulePath(path)) {
+      let worldSource = this.worldSource;
+      return synthesizeWitModuleFrom(path,
+          (witRoot: String): String => readText(witRoot, worldSource),
+          this.packagesWit);
+    }
+    if (path == this.entryPath) {
+      return this.entrySource;
+    }
+    if (path.startsWith('zena:')) {
+      return readText(stdlibRoot + '/' + stdlibIdToRelativeFile(path), this.worldSource);
+    }
+    return readText(path, this.worldSource);
+  }
+}
+
+/** Whether `x` sorts before `y`, byte by byte, as `compileFile` sorts. */
+let byteLess = (x: String, y: String): boolean => {
+  var minLen = x.length;
+  if (y.length < minLen) { minLen = y.length; }
+  for (var i = 0; i < minLen; i += 1) {
+    let d = x.getByteAt(i) - y.getByteAt(i);
+    if (d != 0) { return d < 0; }
+  }
+  return x.length < y.length;
+};
+
+/**
+ * The source of every WIT-backed package, the standard library's
+ * included, in name order: what `compileFile` hands the encoder so it
+ * emits each interface's true types.
+ */
+let packagesWitOf = (packages: Map<String, PackageConfig>, worldSource: String): String => {
+  let allPackages = withBuiltinPackages(stdlibRoot, packages);
+  let witPackages = new GrowableArray<String>();
+  for (let packageName in allPackages.keys()) {
+    let root = allPackages[packageName].witRoot;
+    if (root != null && (root as String) != worldPath) {
+      witPackages.push(packageName);
+    }
+  }
+  for (var a = 0; a < witPackages.length; a += 1) {
+    for (var b = a + 1; b < witPackages.length; b += 1) {
+      if (byteLess(witPackages[b], witPackages[a])) {
+        let t = witPackages[a];
+        witPackages[a] = witPackages[b];
+        witPackages[b] = t;
+      }
+    }
+  }
+  var text = '';
+  for (let packageName in witPackages) {
+    text = text + readText(allPackages[packageName].witRoot as String, worldSource) + '\n';
+  }
+  return text;
+};
+
+/**
+ * Compile `source`, the module at `entryPath`, against the world
+ * `worldName` of the WIT document `witSource`, or against the world
+ * Zena derives from the program when `witSource` is empty, as `zena
+ * build` does without `--wit`, and answer the bytes of
+ * the component or the text of every error, one per line, each naming
+ * its file, line, and column.
+ */
+let compileOnce = (source: String, entryPath: String, witSource: String,
+    worldName: String): Outcome<FixedArray<u8>, String> => {
+  let host = new HostReader(entryPath, source, witSource);
+  let packages = if (readSource(manifestPath) is Some<String>) {
+    loadPackageMap(host, manifestPath)
+  } else {
+    new Map<String, PackageConfig>()
+  };
+  let declared = witSource != '';
+  // The declared world's document answers for its own packages, as it
+  // does for `zena build --wit`; `wasi` stays the standard library's.
+  if (declared) {
+    for (let namespace in declaredPackageNamespaces(witSource)) {
+      if (namespace == 'wasi' || packages.has(namespace)) { continue; }
+      let config = new PackageConfig('', null);
+      config.witRoot = worldPath;
+      packages[namespace] = config;
+    }
+  }
+  let options = new CompilerOptions(target, stdlibRoot, packages);
+  let packagesWit = packagesWitOf(packages, witSource);
+  host.packagesWit = packagesWit;
+  if (declared) {
+    options.componentWrapperSynth =
+        (path: String, ast: Module): ComponentEntryWrapper | null =>
+            synthesizeExportWrapper(witSource, worldName, path, ast, packagesWit);
+  }
+  let compiler = createCompiler(host, options);
+
+  let compResult = compiler.compile(entryPath);
+  let checkResults = checkCompilation(compResult, null, false, false);
+  let errors = new StringBuilder();
+  var hasError = false;
+  for (let diag in checkResults.diagnostics) {
+    if (diag.severity == DiagnosticSeverity.Error) {
+      if (diag.location != null) {
+        let loc = diag.location as SourceSpan;
+        errors.append(loc.file + ':' + i32ToString(loc.line) + ':' +
+            i32ToString(loc.column) + ' - Error: ' + diag.message + '\n');
+      } else {
+        errors.append('Error: ' + diag.message + '\n');
+      }
+      hasError = true;
+    }
+  }
+  if (hasError) {
+    return new Err<FixedArray<u8>, String>(errors.toString());
+  }
+
+  let entryAst = compResult.entry.ast;
+  let units = new GrowableArray<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in compResult.files) {
+    let res = checkResults.results[file.path];
+    if (res != null) {
+      let unit = {ast: file.ast, model: res.model};
+      units.push(unit);
+      if (file.ast.path == entryAst.path) {
+        entryUnit = unit;
+      }
+    }
+  }
+  let program = new Program(units, entryUnit);
+  let generator = new BinaryGenerator(target, false, false, 1);
+  generator.runtimeMemoryModule =
+      compileComponentRuntimeModule(host, stdlibRoot, packages);
+  generator.importEncoder = if (declared) {
+    makeImportEncoder(witSource, worldName, packagesWit)
+  } else {
+    makeImportEncoder(null, '', packagesWit)
+  };
+  return new Ok<FixedArray<u8>, String>(generator.generate(program).toByteArray());
+};
+
+/**
+ * The `compile` export: `compileOnce`, with a syntax error or a missing
+ * file answered as the error it is, and any other exception answered
+ * with its message, so that a fault in the compiler reaches the host as
+ * text rather than a trap.
+ */
+export async function compile(source: String, entryPath: String,
+    witSource: String, worldName: String): Future<Outcome<FixedArray<u8>, String>> {
+  try {
+    return compileOnce(source, entryPath, witSource, worldName);
+  } catch (e) {
+    if (e is SyntaxError) {
+      return new Err<FixedArray<u8>, String>((e as SyntaxError).message + '\n');
+    }
+    if (e is Error) {
+      return new Err<FixedArray<u8>, String>('Error: ' + (e as Error).message + '\n');
+    }
+    return new Err<FixedArray<u8>, String>('Error: the compiler threw a value that is not an Error\n');
+  }
+}

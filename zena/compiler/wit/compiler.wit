@@ -1,0 +1,32 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+// The world of Zena's compiler as a component.
+package wcmp:zena-compiler;
+
+interface host {
+  // The text of a file that the compilation reads, or none.
+  read-source: func(path: string) -> option<string>;
+}
+
+world compiler {
+  import host;
+  import wasi:cli/stdout@0.3.0;
+  import wasi:cli/stderr@0.3.0;
+  import wasi:clocks/monotonic-clock@0.3.0;
+
+  // The bytes of a component, or the text of the compiler's
+  // diagnostics. `source` is the entry module, at `entry-path`, and it
+  // must match the world `world-name` of the WIT document `wit-source`.
+  // An empty `wit-source` compiles against the world Zena derives from
+  // the program.
+  export compile: async func(
+    source: string,
+    entry-path: string,
+    wit-source: string,
+    world-name: string,
+  ) -> result<list<u8>, string>;
+}

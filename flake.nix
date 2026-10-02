@@ -369,6 +369,99 @@
           echo ${zenaRevision} > "$out/zena-revision"
         '';
 
+        # Zena's compiler as a component (`zena/compiler/`): the entry
+        # module there, compiled by the pinned `zena` with `--target
+        # component` against Zena's source tree at the pin and the
+        # `compiler` world. The build fails unless the result validates,
+        # imports exactly the compiler's host interface, `wasi:cli`'s
+        # standard output and error, and the monotonic clock (with the two
+        # interfaces their types come from), and exports only `compile`.
+        # A component that reached for a file system, or for a Preview 1
+        # function, would import more.
+        zenaCompiler =
+          pkgs.runCommand "zena-compiler"
+            {
+              nativeBuildInputs = [ pkgs.wasm-tools ];
+              passthru = { inherit zenaRevision; };
+            }
+            ''
+              export HOME=$TMPDIR
+              cp -R ${zenaSource} source
+              chmod -R u+w source
+              mkdir source/wcmp
+              cp -R ${./zena/compiler/compiler.zena} source/wcmp/compiler.zena
+              cp -R ${./zena/compiler/wit} source/wcmp/wit
+              cd source
+              # The source tree is the repository root, so `zena` reads its
+              # package manifest, which names the compiler's packages.
+              ZENA_REPO_ROOT=$PWD ${pkgs.lib.getExe zenaToolchain} build \
+                wcmp/compiler.zena --target component --wit wcmp/wit \
+                --world compiler -o compiler.wasm
+              wasm-tools validate --features all compiler.wasm
+              wasm-tools component wit compiler.wasm >compiler.wit
+              grep '^  import ' compiler.wit | sort >imports
+              sort >expected-imports <<'EOF'
+                import wcmp:zena-compiler/host;
+                import wasi:cli/types@0.3.0;
+                import wasi:cli/stdout@0.3.0;
+                import wasi:cli/stderr@0.3.0;
+                import wasi:clocks/types@0.3.0;
+                import wasi:clocks/monotonic-clock@0.3.0;
+              EOF
+              diff expected-imports imports
+              test "$(grep -c '^  export ' compiler.wit)" = 1
+              grep -q '^  export compile: async func(source: string, entry-path: string, wit-source: string, world-name: string) -> result<list<u8>, string>;$' compiler.wit
+              if wasm-tools print compiler.wasm | grep -q 'wasi_snapshot_preview1\|wasi:filesystem'; then
+                echo "the compiler component reaches for a file system or Preview 1" >&2
+                exit 1
+              fi
+              mkdir -p "$out"
+              cp compiler.wasm "$out/zena-compiler.wasm"
+              cp compiler.wit "$out/zena-compiler.wit"
+              echo ${zenaRevision} > "$out/zena-revision"
+            '';
+
+        # The script that packs a source bundle. Its header states the
+        # format and what it holds.
+        sourceBundler = pkgs.writeShellApplication {
+          name = "zena-bundle-sources";
+          runtimeInputs = [
+            pkgs.coreutils
+            pkgs.findutils
+            pkgs.gnused
+          ];
+          text = builtins.readFile ./zena/compiler/bundle.sh;
+        };
+
+        # Every file a compile with the compiler component can read
+        # through `read-source`: Zena's standard library at the pin, under
+        # `/stdlib`, the root the compiler asks for it under.
+        zenaToolchainBundle = pkgs.runCommand "zena-toolchain-bundle" { } ''
+          mkdir -p "$out"
+          ${pkgs.lib.getExe sourceBundler} "$out/zena-sources.bundle" \
+            ${zenaSource}/packages/stdlib/zena /stdlib
+        '';
+
+        # The compiler component against `zena build`: each program under
+        # `zena/compiler/check/` compiled both ways, the component under
+        # Wasmtime with `read-source` served only from the toolchain
+        # bundle, must give the same bytes.
+        zenaCompilerCheck = pkgs.runCommand "zena-compiler-check" { } ''
+          export HOME=$TMPDIR
+          cp ${./zena/compiler/check}/*.zena .
+          for program in *.zena; do
+            ${pkgs.lib.getExe zenaToolchain} build "$program" --target component \
+              -o "''${program%.zena}.expected.wasm"
+            ${wasmtimeRunner}/bin/wcmp-scenario-wasmtime compile \
+              ${zenaCompiler}/zena-compiler.wasm \
+              ${zenaToolchainBundle}/zena-sources.bundle \
+              "$program" "''${program%.zena}.wasm"
+            cmp "''${program%.zena}.expected.wasm" "''${program%.zena}.wasm"
+            echo "zena-compiler-check: $program compiles to the bytes zena build writes"
+          done
+          touch "$out"
+        '';
+
         # The revision of the `zena` input, which later steps compare with
         # the pin the Zena record names. An input with no revision, such
         # as a `path:` override onto a local checkout, has no pin to
@@ -2360,6 +2453,10 @@
           # it. Neither enters the development shell.
           zena = zenaToolchain;
           zena-source = zenaSource;
+          # Zena's compiler as a component, and the source bundle its
+          # `read-source` answers from.
+          zena-compiler = zenaCompiler;
+          zena-toolchain-bundle = zenaToolchainBundle;
           zena-scenarios = zenaScenarios;
           # The scenarios' Rust partners alone, built with this workspace's
           # Rust toolchain.
@@ -2458,6 +2555,11 @@
             # `compileScenarios` and `buildZenaScenarios`.
             zena-scenarios = zenaScenarios;
             zena-scenario-build = zenaScenarioBuildCheck;
+            # Zena's compiler builds as a component that imports only its
+            # host interface, standard output and error, and the clock,
+            # and under Wasmtime it compiles to the bytes `zena build`
+            # writes: see `zenaCompiler` and `zenaCompilerCheck`.
+            zena-compiler = zenaCompilerCheck;
             # Every Zena scenario runs through Wasmtime and writes its
             # observations, whatever its stage; the Wasmtime run holds
             # against its own cases; and it links the workspace's one

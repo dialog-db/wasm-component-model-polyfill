@@ -199,11 +199,15 @@ module calls the compiler's own library code, as `api.zena` does, and exports
 one function through this world:
 
 ```wit
+package wcmp:zena-compiler;
+
+interface host {
+  // The text of a file that the compilation reads, or none.
+  read-source: func(path: string) -> option<string>;
+}
+
 world compiler {
-  import host: interface {
-    // The text of a file that the compilation reads, or none.
-    read-source: func(path: string) -> option<string>;
-  }
+  import host;
   import wasi:cli/stdout@0.3.0;
   import wasi:cli/stderr@0.3.0;
   import wasi:clocks/monotonic-clock@0.3.0;
@@ -219,13 +223,25 @@ world compiler {
 
 `compile` returns the bytes of a component, or the text of the compiler's
 diagnostics. Each diagnostic names the file, the line, and the column. The
-program must match the named world.
+program must match the named world. An empty `wit-source` compiles against the
+world that Zena derives from the program, as `zena build` does without `--wit`.
+For the same source, `compile` returns the same bytes as `zena build`.
 
 The compiler reads every file other than the entry module through `read-source`.
 That includes the standard library, the WIT packages that a world refers to, and
 modules that the entry module imports by a relative path. The entry module gives
 the WIT parser a reader that calls `read-source`, so the parser never touches a
 file system.
+
+Zena reads a WIT package from a directory, such as the WASI WIT of its standard
+library. It joins every `.wit` file of the directory in name order, each with a
+newline after it. `read-source` cannot list a directory. So the source bundle
+holds each directory of WIT at its own path, as that joined text, and the
+compiler reads the directory with one request.
+
+The compiler also reads the package manifest, `zena-packages.json`, through
+`read-source`, as `zena build` reads it from its working directory. A manifest
+lets a compile import a package of Zena modules by name.
 
 The host framework answers `read-source` from two places:
 

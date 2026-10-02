@@ -93,6 +93,7 @@ mod outcome;
 mod record;
 mod report;
 mod run;
+mod source_bundle;
 mod stage;
 mod subject;
 mod syntax;
@@ -117,6 +118,7 @@ pub use crate::outcome::Outcome;
 pub use crate::record::Record;
 pub use crate::report::Report;
 pub use crate::run::Run;
+pub use crate::source_bundle::SourceBundle;
 pub use crate::stage::Stage;
 pub use crate::subject::Subject;
 pub use crate::typed::Typed;
@@ -133,6 +135,16 @@ pub const TEST_INTERFACE: &str = "wcmp:scenario/host";
 /// The function of [`TEST_INTERFACE`]: `echo: func(text: string) ->
 /// string`.
 pub const TEST_FUNCTION: &str = "echo";
+
+/// The interface of the compiler component's one host import. Every
+/// subject supplies it to a scenario, answered from the toolchain's
+/// [`SourceBundle`].
+pub const COMPILER_HOST_INTERFACE: &str = "wcmp:zena-compiler/host";
+
+/// The function of [`COMPILER_HOST_INTERFACE`]: `read-source: func(path:
+/// string) -> option<string>`, the text of a file the compile reads, or
+/// none.
+pub const READ_SOURCE: &str = "read-source";
 
 // The model's own unit tests reach a browser in the web lane.
 #[cfg(all(test, target_arch = "wasm32"))]

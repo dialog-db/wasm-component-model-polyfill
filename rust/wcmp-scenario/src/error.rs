@@ -105,6 +105,9 @@ pub enum Error {
         /// The signature, such as `(s32, u32) -> s32`.
         signature: String,
     },
+    /// A source bundle is not in the format.
+    #[error("the source bundle is malformed: {0}")]
+    Bundle(String),
 }
 
 /// The result of reading a scenario's files or judging a run.

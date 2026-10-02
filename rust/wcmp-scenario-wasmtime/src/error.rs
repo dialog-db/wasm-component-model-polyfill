@@ -63,6 +63,11 @@ pub enum Error {
     /// stage of any scenario, because no scenario has been read yet.
     #[error("setting up Wasmtime: {0}")]
     Setup(String),
+    /// The compiler component could not run a compile: it did not
+    /// instantiate, its call failed, or it answered with something
+    /// other than the bytes of a component or its diagnostics.
+    #[error("the compiler component: {0}")]
+    Compiler(String),
 }
 
 /// The result of reading a scenario or running it.
