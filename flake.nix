@@ -70,10 +70,32 @@
     # `main`, since Zena has no releases, and the lock holds the pin; `nix
     # flake update zena` moves it. It keeps its own nixpkgs, as Zena's author
     # builds and tests it: a different Node.js or Rust can break its build
-    # for reasons unrelated to Zena. Only its `zena` command is used, and
-    # only inside the scenario build (see `buildZenaScenarios` below); it
-    # never enters the development shell.
-    zena.url = "github:elematic/zena";
+    # for reasons unrelated to Zena. Its `zena` command and its source tree
+    # are used only inside the scenario and compiler builds (see
+    # `buildZenaScenarios` and `zenaSource` below); neither enters the
+    # development shell.
+    #
+    # The input names a fork of Zena while Zena lacks a change this
+    # repository needs. Today that is one change: a host can pass its own
+    # reader to the WIT module synthesis, so the compiler builds as a
+    # component that serves its sources from memory (branch
+    # `component-target-compiler`, offered to Zena as a pull request). The
+    # fork holds only changes offered to Zena, as a patch series:
+    #
+    # - Each change is one commit that addresses one concern.
+    # - Each commit starts from Zena's `main`, so that it can go to Zena as
+    #   its own pull request. A commit depends on another only when its
+    #   concern does.
+    # - Each commit has a pull request description and its own tests, in
+    #   the form Zena's contributor guide asks for.
+    # - With two or more changes, a branch `wcmp-pin` combines them, and
+    #   the pin names its revision.
+    # - A defect in Zena that this repository works around, and does not
+    #   fix, gets a bug report for Zena instead of a commit.
+    #
+    # When Zena accepts a change, the series drops it. When Zena holds
+    # every change, the input moves back to `github:elematic/zena`.
+    zena.url = "github:cdata/zena/component-target-compiler";
   };
 
   # The project's binary cache. CI pushes to it, so a shell or a build that
@@ -320,6 +342,32 @@
             exec ${pkgs.lib.getExe zenaPackage} "$@"
           '';
         };
+
+        # Zena's source tree at the pin, for the builds that compile Zena's
+        # own compiler: the compiler's sources, the standard library, and
+        # the WIT parser, at the paths Zena's repository holds them.
+        # Nothing else of the tree is copied, so a change elsewhere in
+        # Zena leaves this as it was. The package manifest names the two
+        # packages copied here, under the names Zena's own manifest gives
+        # them; Zena's manifest names packages this tree leaves out, and
+        # `zena build` refuses a manifest whose package is missing.
+        zenaSourceManifest = builtins.toFile "zena-packages.json" (
+          builtins.toJSON {
+            packages = {
+              zena-compiler = "./packages/zena-compiler/zena/lib";
+              wit-parser = "./packages/wit-parser/zena";
+            };
+          }
+        );
+        zenaSource = pkgs.runCommand "zena-source" { passthru = { inherit zenaRevision; }; } ''
+          mkdir -p "$out/packages/zena-compiler" "$out/packages/stdlib" \
+            "$out/packages/wit-parser"
+          cp -R ${zena}/packages/zena-compiler/zena "$out/packages/zena-compiler/"
+          cp -R ${zena}/packages/stdlib/zena "$out/packages/stdlib/"
+          cp -R ${zena}/packages/wit-parser/zena "$out/packages/wit-parser/"
+          cp ${zenaSourceManifest} "$out/zena-packages.json"
+          echo ${zenaRevision} > "$out/zena-revision"
+        '';
 
         # The revision of the `zena` input, which later steps compare with
         # the pin the Zena record names. An input with no revision, such
@@ -2311,6 +2359,7 @@
           # The pinned Zena toolchain, and every Zena scenario compiled with
           # it. Neither enters the development shell.
           zena = zenaToolchain;
+          zena-source = zenaSource;
           zena-scenarios = zenaScenarios;
           # The scenarios' Rust partners alone, built with this workspace's
           # Rust toolchain.

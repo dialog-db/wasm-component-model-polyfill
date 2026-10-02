@@ -21,69 +21,83 @@ disagree, the record is right.
 
 ## Report
 
-The report of `tests zena` on 2026-09-30:
+The report of `tests zena` on 2026-10-02:
 
 ```text
-zena at b2237f7e65847eda43ef1f4094eea77fe225ce0d
+zena at 1bbe472f4c34d3faf12c74f9876afcfe541c4ac3
 
 - async-sleep
   - Browser: pass
   - Native: pass
+  - Wasmi: parse (component sleeper: unsupported component feature: gc)
   - Wasmtime: pass
 - classes-and-arrays
   - Browser: pass
   - Native: pass
+  - Wasmi: parse (component shapes: unsupported component feature: gc)
   - Wasmtime: pass
 - console-output
   - Browser: pass
   - Native: pass
+  - Wasmi: parse (component printer: unsupported component feature: gc)
   - Wasmtime: pass
 - custom-world
   - Browser: pass
   - Native: pass
+  - Wasmi: parse (component relay: unsupported component feature: gc)
   - Wasmtime: pass
 - exceptions
   - Browser: pass
   - Native: pass
+  - Wasmi: parse (component halver: unsupported component feature: gc)
   - Wasmtime: pass
 - rust-imports-zena-composition
   - Browser: pass
   - Native: pass
+  - Wasmi: parse (component importer: unsupported component feature: gc)
   - Wasmtime: pass
 - rust-imports-zena-run-time
   - Browser: pass
   - Native: pass
+  - Wasmi: parse (component exporter: unsupported component feature: gc)
   - Wasmtime: pass
 - rust-link-run-time
   - Browser: pass
   - Native: pass
+  - Wasmi: pass
   - Wasmtime: pass
 - scalar-export
   - Browser: pass
   - Native: pass
+  - Wasmi: pass
   - Wasmtime: pass
 - string-roundtrip
   - Browser: pass
   - Native: pass
+  - Wasmi: parse (component strings: unsupported component feature: gc)
   - Wasmtime: pass
 - zena-imports-rust-composition
   - Browser: pass
   - Native: pass
+  - Wasmi: parse (component importer: unsupported component feature: gc)
   - Wasmtime: pass
 - zena-imports-rust-run-time
   - Browser: pass
   - Native: pass
+  - Wasmi: parse (component importer: unsupported component feature: gc)
   - Wasmtime: pass
 - zena-link-composition
   - Browser: pass
   - Native: pass
+  - Wasmi: parse (component importer: unsupported component feature: gc)
   - Wasmtime: pass
 - zena-link-run-time
   - Browser: pass
   - Native: pass
+  - Wasmi: parse (component exporter: unsupported component feature: gc)
   - Wasmtime: pass
 
-Passes: Browser 14/14, Native 14/14, Wasmtime 14/14
+Passes: Browser 14/14, Native 14/14, Wasmi 2/14, Wasmtime 14/14
 ```
 
 ## Moving the pin
