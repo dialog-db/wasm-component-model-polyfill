@@ -1,0 +1,129 @@
+import { Future, Completer } from 'zena:async';
+import { Option, Some, Outcome, Ok, Err, some, none } from 'zena:core';
+import { JsonValue, parseJson, stringify } from 'zena:json';
+import {
+  Fields, Request as WireRequest, Response as WireResponse, ErrorCode,
+  Method, MethodGet, MethodHead, MethodPost, MethodPut, MethodDelete,
+  MethodConnect, MethodOptions, MethodTrace, MethodPatch, MethodOther
+} from 'wasi:http/types';
+import { readAllText, textStream } from 'zena:stream';
+import { parseFormUrlencoded, percentDecode } from 'zena:url';
+import { ModelError, ModelErrorNotFound, ModelErrorEmptyTitle } from 'demo:todo/model';
+
+export final class Request {
+  method: String;
+  path: String;
+  params: Map<String, String>;
+  query: Map<String, String>;
+  headers: Map<String, String>;
+  body: String;
+  new(this.method, this.path, this.params, this.query, this.headers, this.body);
+  json(): JsonValue {
+    return parseJson(this.body);
+  }
+}
+
+export final class Response {
+  status: i32;
+  headers: Map<String, String>;
+  body: String;
+  new(this.status, this.headers, this.body);
+}
+
+export let json = (value: JsonValue, status: i32 = 200): Response => {
+  let headers = new Map<String, String>();
+  headers['content-type'] = 'application/json';
+  return new Response(status, headers, stringify(value));
+};
+
+export let status = (code: i32): Response => {
+  return new Response(code, new Map<String, String>(), '');
+};
+
+export let problem = (error: ModelError): Response => {
+  if (error is ModelErrorNotFound) {
+    return status(404);
+  }
+  return status(422);
+};
+
+let methodName = (method: Method): String => {
+  if (method is MethodGet) { return 'GET'; }
+  if (method is MethodPost) { return 'POST'; }
+  if (method is MethodPatch) { return 'PATCH'; }
+  if (method is MethodDelete) { return 'DELETE'; }
+  if (method is MethodPut) { return 'PUT'; }
+  if (method is MethodHead) { return 'HEAD'; }
+  if (method is MethodOptions) { return 'OPTIONS'; }
+  if (method is MethodConnect) { return 'CONNECT'; }
+  if (method is MethodTrace) { return 'TRACE'; }
+  return (method as MethodOther).value;
+};
+
+function unit(): void {}
+
+/**
+ * The parameters of `path` under `pattern`, such as `id` for
+ * `/api/todos/:id`, or `null` when the path does not match.
+ */
+export let matchPattern = (pattern: String, path: String): Map<String, String>? => {
+  let want = pattern.split('/');
+  let have = path.split('/');
+  if (want.length != have.length) {
+    return null;
+  }
+  let params = new Map<String, String>();
+  for (var i = 0; i < want.length; i += 1) {
+    let segment = want[i];
+    if (segment.startsWith(':')) {
+      params[segment.sliceBytes(1, segment.length)] = percentDecode(have[i]);
+    } else if (segment != have[i]) {
+      return null;
+    }
+  }
+  return params;
+};
+
+export async function serve(pattern: String, wire: WireRequest,
+    handle: (request: Request) => Future<Response>): Future<WireResponse> {
+  let method = methodName(wire.getMethod());
+  var target = '/';
+  let pathWithQuery = wire.getPathWithQuery();
+  if (pathWithQuery is Some<String>) {
+    target = (pathWithQuery as Some<String>).value;
+  }
+  let headers = new Map<String, String>();
+  for (let entry in wire.getHeaders().copyAll()) {
+    let (name, value) = entry;
+    headers[name] = String.fromBytes(value);
+  }
+  let received = new Completer<Outcome<void, ErrorCode>>();
+  let (body, trailers) = WireRequest.consumeBody(wire, received.future);
+  let text = await readAllText(body);
+  received.complete(new Ok<void, ErrorCode>(unit()));
+  let parts = target.split('?');
+  let path = parts[0];
+  let query = new Map<String, String>();
+  if (parts.length > 1) {
+    for (let pair in parseFormUrlencoded(target.sliceBytes(path.length + 1, target.length))) {
+      let (name, value) = pair;
+      query[name] = value;
+    }
+  }
+  var params = matchPattern(pattern, path);
+  if (params == null) {
+    params = new Map<String, String>();
+  }
+  let request = new Request(method, path, params as Map<String, String>, query, headers, text);
+  let response = await handle(request);
+  let fields = Fields.create();
+  for (let name in response.headers.keys()) {
+    fields.append(name, response.headers[name].toBytes());
+  }
+  fields.append('x-demo-route', pattern.toBytes());
+  let sent = new Completer<Outcome<Option<Fields>, ErrorCode>>();
+  sent.complete(new Ok<Option<Fields>, ErrorCode>(none));
+  let (out, transmitted) = WireResponse.new_(fields, some(textStream(response.body)), sent.future);
+  out.setStatusCode(response.status as u16);
+  return out;
+}

@@ -11,7 +11,9 @@
 # Arguments: the file to write, then one or more pairs of a directory and
 # the path its files take in the bundle. For the toolchain bundle the
 # pair is Zena's standard library (`packages/stdlib/zena`) and `/stdlib`,
-# the root the compiler component asks for it under.
+# the root the compiler component asks for it under. A prefix of `.`
+# keeps the files' paths relative, as the compiler asks for its package
+# manifest, `zena-packages.json`, and the packages the manifest names.
 #
 # The bundle holds every `.zena`, `.wit`, and `.json` file under each
 # directory, at its path under the pair's prefix. It also holds every
@@ -57,6 +59,17 @@ add() {
   } >>"$out"
 }
 
+under() {
+  # The bundle path of `$1`, a path relative to a pair's directory.
+  if [ "$prefix" = . ]; then
+    printf '%s' "${1:-.}"
+  elif [ -z "$1" ]; then
+    printf '%s' "$prefix"
+  else
+    printf '%s/%s' "$prefix" "$1"
+  fi
+}
+
 while [ $# -gt 0 ]; do
   root=$1
   prefix=${2%/}
@@ -66,16 +79,13 @@ while [ $# -gt 0 ]; do
     find . -type f \( -name '*.zena' -o -name '*.wit' -o -name '*.json' \) |
       sed 's|^\./||' | sort |
       while read -r file; do
-        add "$prefix/$file" "$file"
+        add "$(under "$file")" "$file"
       done
     # A WIT directory: each `.wit` file followed by a newline, which
     # is what `readWitSource` puts after each.
     find . -type f -name '*.wit' -printf '%h\n' | sed 's|^\./\?||' | sort -u |
       while read -r directory; do
-        path=$prefix
-        if [ -n "$directory" ]; then
-          path=$prefix/$directory
-        fi
+        path=$(under "$directory")
         joined=$(mktemp)
         find "${directory:-.}" -maxdepth 1 -type f -name '*.wit' | sort |
           while read -r file; do

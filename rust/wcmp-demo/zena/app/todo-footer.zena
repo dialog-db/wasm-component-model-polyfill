@@ -1,0 +1,94 @@
+// <todo-footer>: how many todos are left, the three filters, and the
+// button that clears the completed todos, which shows only when there
+// are some. A filter is a link to a URL hash, which the page turns into
+// <todo-app>'s `filter`.
+import { Element, View, Event, h } from 'authoring:element';
+import { Future } from 'zena:async';
+
+export class TodoFooter extends Element {
+  attributes(): Array<String> {
+    return ['active', 'completed', 'filter'];
+  }
+
+  styles(): String {
+    return `
+      :host {
+        display: block;
+      }
+      footer {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 12px 16px;
+        border-top: 1px solid var(--md-sys-color-outline-variant);
+        color: var(--md-sys-color-on-surface-variant);
+        font: var(--md-sys-typescale-body-medium);
+      }
+      .filters {
+        display: flex;
+        gap: 4px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      a {
+        display: inline-block;
+        padding: 6px 12px;
+        border-radius: var(--md-sys-shape-corner-small);
+        color: var(--md-sys-color-on-surface-variant);
+        text-decoration: none;
+        font: var(--md-sys-typescale-label-large);
+      }
+      a.selected {
+        background: var(--md-sys-color-secondary-container);
+        color: var(--md-sys-color-on-secondary-container);
+      }
+      .clear-completed {
+        padding: 8px 12px;
+        border: none;
+        border-radius: var(--md-sys-shape-corner-full);
+        background: transparent;
+        color: var(--md-sys-color-primary);
+        font: var(--md-sys-typescale-label-large);
+        cursor: pointer;
+      }
+      .clear-completed:hover {
+        background: var(--md-sys-color-surface-container-high);
+      }
+    `;
+  }
+
+  link(filter: String, label: String, href: String): View {
+    let selected = this.attribute('filter') == filter;
+    return h('li', new Map<String, String>(), [
+      h('a', {'href' => href, 'class' => if (selected) 'selected' else ''}, [label]),
+    ]);
+  }
+
+  render(): View {
+    let active = this.attribute('active');
+    let children = new GrowableArray<View | String>();
+    children.push(h('span', {'class' => 'todo-count'}, [
+      h('strong', new Map<String, String>(), [active]),
+      if (active == '1') ' item left' else ' items left',
+    ]));
+    children.push(h('ul', {'class' => 'filters'}, [
+      this.link('all', 'All', '#/'),
+      this.link('active', 'Active', '#/active'),
+      this.link('completed', 'Completed', '#/completed'),
+    ]));
+    if (this.attribute('completed') != '0' && this.attribute('completed') != '') {
+      children.push(h('button', {'class' => 'clear-completed'}, ['Clear completed'],
+          {'click' => 'clear'}));
+    }
+    return h('footer', {'class' => 'footer'}, children);
+  }
+
+  async on(handler: String, event: Event): Future<void> {
+    if (handler == 'clear') {
+      this.emit('todo-clear');
+    }
+  }
+}

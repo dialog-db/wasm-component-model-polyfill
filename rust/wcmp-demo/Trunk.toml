@@ -1,0 +1,9 @@
+# Trunk builds the demo (`demo serve`): `web/index.html` names the page's
+# binary, the service worker's binary, and the worker's entry script, and
+# `trunk build` produces the site the flake serves.
+[build]
+target = "web/index.html"
+# The service worker's entry script imports the worker's wasm-bindgen
+# output by its plain name, and a service worker's script must keep one
+# URL across builds, so no output name carries a hash.
+filehash = false

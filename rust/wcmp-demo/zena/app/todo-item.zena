@@ -1,0 +1,127 @@
+// <todo-item>: one todo. It shows the checkbox, the title, and the
+// delete button, and edits the title in place after a double-click:
+// Enter or leaving the field saves the edit, and Escape cancels it. It
+// reports each change as a custom event that <todo-app> handles.
+import { Element, View, Event, h } from 'authoring:element';
+import { Future } from 'zena:async';
+
+export class TodoItem extends Element {
+  var editing = false;
+
+  attributes(): Array<String> {
+    return ['todo-id', 'title', 'completed'];
+  }
+
+  styles(): String {
+    return `
+      :host {
+        display: block;
+      }
+      li {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-height: 56px;
+        padding: 0 8px 0 16px;
+        border-radius: var(--md-sys-shape-corner-medium);
+        color: var(--md-sys-color-on-surface);
+        font: var(--md-sys-typescale-body-large);
+      }
+      li:hover {
+        background: var(--md-sys-color-surface-container);
+      }
+      .toggle {
+        width: 22px;
+        height: 22px;
+        margin: 0;
+        accent-color: var(--md-sys-color-primary);
+      }
+      label {
+        flex: 1;
+        padding: 16px 0;
+        word-break: break-word;
+      }
+      li.completed label {
+        color: var(--md-sys-color-outline);
+        text-decoration: line-through;
+      }
+      .destroy {
+        width: 40px;
+        height: 40px;
+        border: none;
+        border-radius: var(--md-sys-shape-corner-full);
+        background: transparent;
+        color: var(--md-sys-color-on-surface-variant);
+        font-size: 22px;
+        cursor: pointer;
+        opacity: 0;
+      }
+      li:hover .destroy, .destroy:focus {
+        opacity: 1;
+      }
+      .destroy:hover {
+        background: var(--md-sys-color-error-container);
+        color: var(--md-sys-color-on-error-container);
+      }
+      .edit {
+        flex: 1;
+        margin: 6px 0;
+        padding: 12px 16px;
+        border: none;
+        border-radius: var(--md-sys-shape-corner-small);
+        outline: 2px solid var(--md-sys-color-primary);
+        background: var(--md-sys-color-surface-container-highest);
+        color: var(--md-sys-color-on-surface);
+        font: var(--md-sys-typescale-body-large);
+      }
+    `;
+  }
+
+  render(): View {
+    let done = this.attribute('completed') == 'true';
+    if (this.editing) {
+      return h('li', {'class' => 'editing'}, [
+        h('input', {
+          'key' => 'edit',
+          'class' => 'edit',
+          'value' => this.attribute('title'),
+          'autofocus' => '',
+          'aria-label' => 'Edit the todo',
+        }, new GrowableArray<View | String>(), {
+          'keydown' => 'key',
+          'blur' => 'save',
+        }),
+      ]);
+    }
+    return h('li', {'class' => if (done) 'completed' else ''}, [
+      h('input', {
+        'key' => 'toggle',
+        'class' => 'toggle',
+        'type' => 'checkbox',
+        'checked' => if (done) 'true' else 'false',
+        'aria-label' => 'Toggle the todo',
+      }, new GrowableArray<View | String>(), {'change' => 'toggle'}),
+      h('label', new Map<String, String>(), [this.attribute('title')], {'dblclick' => 'edit'}),
+      h('button', {'class' => 'destroy', 'aria-label' => 'Delete the todo'}, ['×'],
+          {'click' => 'destroy'}),
+    ]);
+  }
+
+  async on(handler: String, event: Event): Future<void> {
+    let id = this.attribute('todo-id');
+    if (handler == 'toggle') {
+      this.emit('todo-toggle', id);
+    } else if (handler == 'destroy') {
+      this.emit('todo-destroy', id);
+    } else if (handler == 'edit') {
+      this.editing = true;
+    } else if (handler == 'key' && event.key == 'Escape') {
+      this.editing = false;
+    } else if ((handler == 'key' && event.key == 'Enter') || handler == 'save') {
+      if (this.editing) {
+        this.editing = false;
+        this.emit('todo-edit', id + '\n' + event.value);
+      }
+    }
+  }
+}

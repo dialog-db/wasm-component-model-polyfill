@@ -1,0 +1,92 @@
+// <todo-input>: the field for a new todo, and the control that marks
+// every todo complete or active. It reports a new title as `todo-add`
+// and the toggle as `todo-toggle-all`, and <todo-app> handles both.
+import { Element, View, Event, h } from 'authoring:element';
+import { Future } from 'zena:async';
+
+export class TodoInput extends Element {
+  // Whether the next render clears the field: after an add. Otherwise
+  // the view leaves the field's value to the person typing in it.
+  var clear = false;
+
+  attributes(): Array<String> {
+    return ['has-todos', 'all-completed'];
+  }
+
+  styles(): String {
+    return `
+      :host {
+        display: block;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 16px 16px;
+      }
+      .new-todo {
+        flex: 1;
+        min-width: 0;
+        box-sizing: border-box;
+        padding: 16px;
+        border: 1px solid var(--md-sys-color-outline-variant);
+        border-radius: var(--md-sys-shape-corner-large);
+        background: var(--md-sys-color-surface-container-highest);
+        color: var(--md-sys-color-on-surface);
+        font: var(--md-sys-typescale-body-large);
+      }
+      .new-todo:focus {
+        outline: 2px solid var(--md-sys-color-primary);
+        outline-offset: -1px;
+      }
+      .toggle-all {
+        width: 24px;
+        height: 24px;
+        margin: 0;
+        accent-color: var(--md-sys-color-primary);
+      }
+      .label {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+      }
+    `;
+  }
+
+  render(): View {
+    let field = new Map<String, String>();
+    field['class'] = 'new-todo';
+    field['placeholder'] = 'What needs to be done?';
+    field['autofocus'] = '';
+    if (this.clear) {
+      field['value'] = '';
+      this.clear = false;
+    }
+    let row = new GrowableArray<View | String>();
+    if (this.attribute('has-todos') == 'true') {
+      row.push(h('input', {
+        'id' => 'toggle-all',
+        'class' => 'toggle-all',
+        'type' => 'checkbox',
+        'checked' => this.attribute('all-completed'),
+        'aria-label' => 'Mark all as complete',
+      }, new GrowableArray<View | String>(), {'change' => 'toggleAll'}));
+    }
+    row.push(h('input', field, new GrowableArray<View | String>(), {'keydown' => 'key'}));
+    return h('div', {'class' => 'row'}, row);
+  }
+
+  async on(handler: String, event: Event): Future<void> {
+    if (handler == 'key' && event.key == 'Enter') {
+      let title = event.value.trim();
+      if (title != '') {
+        this.emit('todo-add', title);
+        this.clear = true;
+      }
+    } else if (handler == 'toggleAll') {
+      this.emit('todo-toggle-all', if (event.checked) 'true' else 'false');
+    }
+  }
+}

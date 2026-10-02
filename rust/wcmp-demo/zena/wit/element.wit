@@ -1,0 +1,83 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+// The world every element compiles against. The helper that defines an
+// element passes this document to the compiler with the world
+// `element-component`. Authors never see it: the authoring library and
+// the glue the helper writes speak it for them.
+package demo:element;
+
+interface element {
+  // A DOM event, as a handler of the element receives it.
+  record event {
+    // The DOM event type, such as `click`.
+    kind: string,
+    // The value of an input, or a custom event's detail.
+    value: option<string>,
+    // Whether a checkbox is checked.
+    checked: option<bool>,
+    // The key of a keyboard event.
+    key: option<string>,
+  }
+
+  // A property the view sets on a DOM node, rather than an attribute.
+  variant property {
+    text(string),
+    %flag(bool),
+  }
+
+  // An element of a view.
+  record element-node {
+    tag: string,
+    attributes: list<tuple<string, string>>,
+    properties: list<tuple<string, property>>,
+    // A DOM event name, and the name of the handler it calls.
+    events: list<tuple<string, string>>,
+  }
+
+  variant node-kind {
+    element(element-node),
+    text(string),
+  }
+
+  // One node of a view. A view is a tree, which WIT types cannot spell,
+  // so a render flattens it into a list in document order, and each
+  // node names its parent by its index in that list.
+  record node {
+    parent: option<u32>,
+    // A stable identity among siblings.
+    key: option<string>,
+    kind: node-kind,
+  }
+
+  // Every export is `async`: a synchronous export that returns a list
+  // does not build on Zena's component target.
+  observed-attributes: async func() -> list<string>;
+  styles: async func() -> string;
+
+  create: async func(attributes: list<tuple<string, string>>) -> u32;
+  connected: async func(id: u32);
+  disconnected: async func(id: u32);
+  attribute-changed: async func(id: u32, name: string, value: option<string>);
+  handle-event: async func(id: u32, handler: string, event: event);
+  render: async func(id: u32) -> list<node>;
+}
+
+interface host {
+  // Dispatch a custom event on the element's host node. The event
+  // bubbles and crosses shadow boundaries.
+  emit: func(id: u32, name: string, detail: string);
+}
+
+world element-component {
+  import host;
+  import wasi:http/types@0.3.0;
+  import wasi:http/client@0.3.0;
+  import wasi:cli/stdout@0.3.0;
+  import wasi:cli/stderr@0.3.0;
+  import wasi:clocks/monotonic-clock@0.3.0;
+  export element;
+}

@@ -1,0 +1,360 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+// The authoring library for elements. An author extends `Element` and
+// returns a view from `render`, built with `h`. The author never sees
+// WIT: the glue that the demo's helper writes around the author's
+// source exports the element interface through a `Registry`, which
+// keeps one object of the author's class for each element of the tag.
+import { Future, Completer } from 'zena:async';
+import { Option, Some, Outcome, Ok, Err, some, none, u32ToString } from 'zena:core';
+import { console } from 'zena:console';
+import { JsonValue, parseJson } from 'zena:json';
+import { Stream, readAllText, textStream } from 'zena:stream';
+import {
+  Event as WireEvent, Node, NodeKindElement, NodeKindText, ElementNode,
+  Property, PropertyText, PropertyFlag
+} from 'demo:element/element';
+import { emit as hostEmit } from 'demo:element/host';
+import {
+  Fields, Request as WireRequest, Response as WireResponse, ErrorCode, Method,
+  MethodGet, MethodHead, MethodPost, MethodPut, MethodDelete, MethodPatch,
+  MethodOptions, MethodOther
+} from 'wasi:http/types';
+import { send } from 'wasi:http/client';
+
+/** A response to a `request`. */
+export final class HttpResponse {
+  /** The status code. */
+  status: i32;
+  /** Each header, by its lower-case name. */
+  headers: Map<String, String>;
+  /** The body, as text. */
+  body: String;
+  new(this.status, this.headers, this.body);
+
+  /** Whether the status is in the 200s. */
+  ok: boolean {
+    get {
+      return this.status >= 200 && this.status < 300;
+    }
+  }
+
+  /** The body, read as JSON. */
+  json(): JsonValue {
+    return parseJson(this.body);
+  }
+}
+
+/** The WIT method of `name`, such as `GET`. */
+let methodOf = (name: String): Method => {
+  if (name == 'GET') { return new MethodGet(); }
+  if (name == 'POST') { return new MethodPost(); }
+  if (name == 'PATCH') { return new MethodPatch(); }
+  if (name == 'DELETE') { return new MethodDelete(); }
+  if (name == 'PUT') { return new MethodPut(); }
+  if (name == 'HEAD') { return new MethodHead(); }
+  if (name == 'OPTIONS') { return new MethodOptions(); }
+  return new MethodOther(name);
+};
+
+/** The one spellable value of type void, for a `result<_, e>` ok arm. */
+function unit(): void {}
+
+/**
+ * Send a request with any method, headers, and a text body to `path`
+ * on the page's origin, through `wasi:http/client`, and read the whole
+ * response. It throws when the request gets no response at all.
+ */
+export async function request(method: String, path: String,
+    body: String = '',
+    headers: Map<String, String> = new Map<String, String>()): Future<HttpResponse> {
+  let fields = Fields.create();
+  for (let name in headers.keys()) {
+    fields.append(name, headers[name].toBytes());
+  }
+  let trailers = Future.of<Outcome<Option<Fields>, ErrorCode>>(
+      new Ok<Option<Fields>, ErrorCode>(none));
+  var contents: Option<Stream<u8>> = none;
+  if (body != '') {
+    contents = some(textStream(body));
+  }
+  let (wire, transmitted) = WireRequest.new_(fields, contents, trailers, none);
+  wire.setMethod(methodOf(method));
+  wire.setPathWithQuery(some(path));
+  let sent = await send(wire);
+  if (sent is Err<WireResponse, ErrorCode>) {
+    throw new Error('the request ' + method + ' ' + path + ' got no response');
+  }
+  let response = (sent as Ok<WireResponse, ErrorCode>).value;
+  let status = response.getStatusCode() as i32;
+  let received = new Map<String, String>();
+  for (let entry in response.getHeaders().copyAll()) {
+    let (name, value) = entry;
+    received[name] = String.fromBytes(value);
+  }
+  let done = new Completer<Outcome<void, ErrorCode>>();
+  let (stream, ignored) = WireResponse.consumeBody(response, done.future);
+  let text = await readAllText(stream);
+  done.complete(new Ok<void, ErrorCode>(unit()));
+  return new HttpResponse(status, received, text);
+}
+
+/** A DOM event that reached a handler. */
+export final class Event {
+  /** The DOM event type, such as `click`. */
+  kind: String;
+  /** The value of an input, or a custom event's detail; empty if none. */
+  value: String;
+  /** Whether a checkbox is checked. */
+  checked: boolean;
+  /** The key of a keyboard event; empty if none. */
+  key: String;
+  new(this.kind, this.value, this.checked, this.key);
+}
+
+/** One node of a view: an element with its children, or text. */
+export final class View {
+  tag: String;
+  attributes: Map<String, String>;
+  children: Array<View | String>;
+  events: Map<String, String>;
+  new(this.tag, this.attributes, this.children, this.events);
+}
+
+/**
+ * A view of the element `tag`. The attribute `key` gives the node a
+ * stable identity among its siblings. `checked` and `value` become
+ * properties of the DOM node, `checked` set when its value is `true`;
+ * every other key is an attribute. `events` maps a DOM event name to the
+ * name of the handler it calls.
+ */
+export let h = (tag: String,
+    attributes: Map<String, String> = new Map<String, String>(),
+    children: Array<View | String> = new GrowableArray<View | String>(),
+    events: Map<String, String> = new Map<String, String>()): View => {
+  return new View(tag, attributes, children, events);
+};
+
+/** The base of an element's definition. */
+export class Element {
+  var _id: u32 = 0 as u32;
+  var _attributes: Map<String, String> = new Map<String, String>();
+
+  new() {}
+
+  /** The attributes whose changes the element observes. */
+  attributes(): Array<String> {
+    return new GrowableArray<String>();
+  }
+
+  /** The CSS of the element's shadow root. */
+  styles(): String {
+    return '';
+  }
+
+  /** The element's contents. */
+  render(): View {
+    return new View('slot', new Map<String, String>(),
+        new GrowableArray<View | String>(), new Map<String, String>());
+  }
+
+  /** Handle the event `event`, which a view sent to `handler`. */
+  async on(handler: String, event: Event): Future<void> {}
+
+  /** The element has connected to the document. It renders after. */
+  async connected(): Future<void> {}
+
+  /** The element has left the document. */
+  disconnected(): void {}
+
+  /**
+   * The attribute `name` changed; `attribute` reads its new value. The
+   * element renders after.
+   */
+  async changed(name: String): Future<void> {}
+
+  /** The value of the attribute `name`, or empty. */
+  attribute(name: String): String {
+    if (let (true, value) = this._attributes.get(name)) {
+      return value;
+    }
+    return '';
+  }
+
+  /** Whether the element has the attribute `name`. */
+  hasAttribute(name: String): boolean {
+    return this._attributes.has(name);
+  }
+
+  /**
+   * Dispatch the custom event `name` on the element's host node, with
+   * `detail`. It bubbles to the elements around this one.
+   */
+  emit(name: String, detail: String = ''): void {
+    hostEmit(this._id, name, detail);
+  }
+}
+
+/** Append `view` and its children to `out` in document order. */
+function flatten(out: GrowableArray<Node>, view: View | String,
+    parent: Option<u32>): void {
+  if (view is String) {
+    out.push(new Node(parent, none, new NodeKindText(view as String)));
+    return;
+  }
+  let element = view as View;
+  var key: Option<String> = none;
+  let attributes = new GrowableArray<(String, String)>();
+  let properties = new GrowableArray<(String, Property)>();
+  for (let name in element.attributes.keys()) {
+    let value = element.attributes[name];
+    if (name == 'key') {
+      key = some(value);
+    } else if (name == 'checked') {
+      properties.push((name, new PropertyFlag(value == 'true')));
+    } else if (name == 'value') {
+      properties.push((name, new PropertyText(value)));
+    } else {
+      attributes.push((name, value));
+    }
+  }
+  let events = new GrowableArray<(String, String)>();
+  for (let name in element.events.keys()) {
+    events.push((name, element.events[name]));
+  }
+  let index = out.length as u32;
+  out.push(new Node(parent, key, new NodeKindElement(
+      new ElementNode(element.tag, attributes, properties, events))));
+  for (let child in element.children) {
+    flatten(out, child, some(index));
+  }
+}
+
+/**
+ * Trap the component, after the author's code threw `error` in the
+ * method `method`. Zena ends an `async` export that has no result
+ * normally when its body throws, so without the trap a failing handler
+ * would look like one that did nothing. The trap poisons the tag's
+ * store, and the page shows an error card on each element of the tag.
+ */
+function trap(method: String, error: anyref): void {
+  if (error is Error) {
+    console.error(method + ' threw: ' + (error as Error).message);
+  } else {
+    console.error(method + ' threw a value that is not an Error');
+  }
+  // A read through a null reference traps. Zena's code generator does
+  // not lower its `unreachable` intrinsic.
+  let missing = nowhere() as Nowhere;
+  console.error(i32ToString(missing.value));
+}
+
+/** The class of the null reference `trap` reads through. */
+final class Nowhere {
+  value: i32;
+  new(this.value);
+}
+
+/** No `Nowhere`, as the compiler cannot know. */
+function nowhere(): Nowhere? {
+  return null;
+}
+
+/**
+ * The objects of one tag, one for each connected element, by the id
+ * `create` returned. This table stands in for an exported resource,
+ * which Zena does not build.
+ */
+export final class Registry {
+  #make: () => Element;
+  #prototype: Element;
+  var #next: u32 = 1 as u32;
+  #elements: Map<u32, Element> = new Map<u32, Element>();
+
+  new(make: () => Element) : #make = make, #prototype = make() {}
+
+  observedAttributes(): Array<String> {
+    return this.#prototype.attributes();
+  }
+
+  styles(): String {
+    return this.#prototype.styles();
+  }
+
+  create(attributes: Array<(String, String)>): u32 {
+    let make = this.#make;
+    let element = make();
+    let id = this.#next;
+    this.#next = id + (1 as u32);
+    element._id = id;
+    for (let attribute in attributes) {
+      let (name, value) = attribute;
+      element._attributes[name] = value;
+    }
+    this.#elements[id] = element;
+    return id;
+  }
+
+  async connected(id: u32): Future<void> {
+    try {
+      await this.#element(id).connected();
+    } catch (error) {
+      trap('connected', error);
+    }
+  }
+
+  disconnected(id: u32): void {
+    try {
+      this.#element(id).disconnected();
+    } catch (error) {
+      trap('disconnected', error);
+    }
+    this.#elements.delete(id);
+  }
+
+  async attributeChanged(id: u32, name: String, value: Option<String>): Future<void> {
+    let element = this.#element(id);
+    if (value is Some<String>) {
+      element._attributes[name] = (value as Some<String>).value;
+    } else {
+      element._attributes.delete(name);
+    }
+    try {
+      await element.changed(name);
+    } catch (error) {
+      trap('changed', error);
+    }
+  }
+
+  async handleEvent(id: u32, handler: String, event: WireEvent): Future<void> {
+    let value = if (event.value is Some<String>) (event.value as Some<String>).value else '';
+    let checked = if (event.checked is Some<boolean>) (event.checked as Some<boolean>).value else false;
+    let key = if (event.key is Some<String>) (event.key as Some<String>).value else '';
+    try {
+      await this.#element(id).on(handler, new Event(event.kind, value, checked, key));
+    } catch (error) {
+      trap('on', error);
+    }
+  }
+
+  render(id: u32): Array<Node> {
+    let out = new GrowableArray<Node>();
+    try {
+      flatten(out, this.#element(id).render(), none);
+    } catch (error) {
+      trap('render', error);
+    }
+    return out;
+  }
+
+  #element(id: u32): Element {
+    if (let (true, element) = this.#elements.get(id)) {
+      return element;
+    }
+    throw new Error('no element has the id ' + u32ToString(id));
+  }
+}

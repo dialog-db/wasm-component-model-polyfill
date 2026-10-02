@@ -1,0 +1,55 @@
+// The route /api/todos/:id: one todo.
+//
+// PATCH changes the title, the completion, or both, from
+// {"title"?: string, "completed"?: bool}, and answers the todo. DELETE
+// removes the todo. An unknown id answers 404, and an empty title 422.
+import { Request, Response, json, status, problem } from 'authoring:route';
+import { update, remove, Todo, ModelError } from 'demo:todo/model';
+import { JsonObject } from 'zena:json';
+import { Future } from 'zena:async';
+import { Option, Ok, Err, some, none } from 'zena:core';
+
+let todoJson = (todo: Todo): JsonObject => {
+  let out = new JsonObject();
+  out['id'] = todo.id;
+  out['title'] = todo.title;
+  out['completed'] = new Box<boolean>(todo.completed);
+  return out;
+};
+
+export async function handle(request: Request): Future<Response> {
+  let id = request.params['id'];
+  if (request.method == 'PATCH') {
+    var title: Option<String> = none;
+    var completed: Option<boolean> = none;
+    let body = request.json();
+    if (body is JsonObject) {
+      let fields = body as JsonObject;
+      if (fields.has('title')) {
+        let value = fields['title'];
+        if (value is String) {
+          title = some(value as String);
+        }
+      }
+      if (fields.has('completed')) {
+        let value = fields['completed'];
+        if (value is Box<boolean>) {
+          completed = some((value as Box<boolean>).value);
+        }
+      }
+    }
+    let updated = await update(id, title, completed);
+    if (updated is Ok<Todo, ModelError>) {
+      return json(todoJson((updated as Ok<Todo, ModelError>).value));
+    }
+    return problem((updated as Err<Todo, ModelError>).error);
+  }
+  if (request.method == 'DELETE') {
+    let removed = await remove(id);
+    if (removed is Err<void, ModelError>) {
+      return problem((removed as Err<void, ModelError>).error);
+    }
+    return status(204);
+  }
+  return status(405);
+}

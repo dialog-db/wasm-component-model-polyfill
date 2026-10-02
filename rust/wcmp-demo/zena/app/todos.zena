@@ -1,0 +1,81 @@
+// The route /api/todos: the whole todo list.
+//
+// GET answers the todos that `?filter=` selects (all, active, or
+// completed) and the counts of the whole list. POST adds a todo from
+// {"title": string}. PATCH sets every todo's completion from
+// {"completed": bool}. DELETE removes every completed todo.
+import { Request, Response, json, status, problem } from 'authoring:route';
+import {
+  query, add, toggleAll, clearCompleted, Filter, Todo, ModelError
+} from 'demo:todo/model';
+import { JsonObject, JsonArray } from 'zena:json';
+import { Future } from 'zena:async';
+import { Ok, Err } from 'zena:core';
+
+let todoJson = (todo: Todo): JsonObject => {
+  let out = new JsonObject();
+  out['id'] = todo.id;
+  out['title'] = todo.title;
+  out['completed'] = new Box<boolean>(todo.completed);
+  return out;
+};
+
+let filterOf = (request: Request): Filter => {
+  if (let (true, name) = request.query.get('filter')) {
+    if (name == 'active') {
+      return Filter.Active;
+    }
+    if (name == 'completed') {
+      return Filter.Completed;
+    }
+  }
+  return Filter.All;
+};
+
+export async function handle(request: Request): Future<Response> {
+  if (request.method == 'GET') {
+    let (todos, counts) = await query(filterOf(request));
+    let list = new JsonArray();
+    for (let todo in todos) {
+      list.push(todoJson(todo));
+    }
+    let totals = new JsonObject();
+    totals['active'] = new Box<f64>(counts.active as f64);
+    totals['completed'] = new Box<f64>(counts.completed as f64);
+    let out = new JsonObject();
+    out['todos'] = list;
+    out['counts'] = totals;
+    return json(out);
+  }
+  if (request.method == 'POST') {
+    let body = request.json();
+    var title = '';
+    if (body is JsonObject) {
+      let value = (body as JsonObject)['title'];
+      if (value is String) {
+        title = value as String;
+      }
+    }
+    let added = await add(title);
+    if (added is Ok<Todo, ModelError>) {
+      return json(todoJson((added as Ok<Todo, ModelError>).value), 201);
+    }
+    return problem((added as Err<Todo, ModelError>).error);
+  }
+  if (request.method == 'PATCH') {
+    let body = request.json();
+    if (body is JsonObject) {
+      let value = (body as JsonObject)['completed'];
+      if (value is Box<boolean>) {
+        await toggleAll((value as Box<boolean>).value);
+        return status(204);
+      }
+    }
+    return status(400);
+  }
+  if (request.method == 'DELETE') {
+    await clearCompleted();
+    return status(204);
+  }
+  return status(405);
+}

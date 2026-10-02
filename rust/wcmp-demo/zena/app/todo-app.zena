@@ -1,0 +1,201 @@
+// <todo-app>: the TodoMVC application. It owns the list: it is the one
+// element that calls the API, and it passes the todos to its children
+// as attributes. A child reports what a person did with a custom event,
+// and this element calls a route and renders again with the new list.
+// Its `filter` attribute holds the filter, which the page sets from the
+// URL hash.
+import { Element, View, Event, h, request } from 'authoring:element';
+import { JsonObject, JsonArray, JsonValue, stringify } from 'zena:json';
+import { Future } from 'zena:async';
+
+final class Todo {
+  id: String;
+  title: String;
+  completed: boolean;
+  new(this.id, this.title, this.completed);
+}
+
+let text = (value: JsonValue): String => {
+  if (value is String) {
+    return value as String;
+  }
+  return '';
+};
+
+let flag = (value: JsonValue): boolean => {
+  if (value is Box<boolean>) {
+    return (value as Box<boolean>).value;
+  }
+  return false;
+};
+
+let count = (value: JsonValue): i32 => {
+  if (value is Box<f64>) {
+    return (value as Box<f64>).value as i32;
+  }
+  return 0;
+};
+
+export class TodoApp extends Element {
+  var todos = new GrowableArray<Todo>();
+  var active = 0;
+  var completed = 0;
+
+  attributes(): Array<String> {
+    return ['filter'];
+  }
+
+  styles(): String {
+    return `
+      :host {
+        display: block;
+        max-width: 560px;
+        margin: 0 auto;
+      }
+      .todoapp {
+        background: var(--md-sys-color-surface-container-low);
+        border-radius: var(--md-sys-shape-corner-extra-large);
+        box-shadow: var(--md-sys-elevation-2);
+        overflow: hidden;
+      }
+      h1 {
+        margin: 0;
+        padding: 28px 24px 8px;
+        font: var(--md-sys-typescale-display-small);
+        color: var(--md-sys-color-primary);
+        letter-spacing: 0;
+      }
+      .todo-list {
+        list-style: none;
+        margin: 0;
+        padding: 0 8px 8px;
+      }
+    `;
+  }
+
+  async connected(): Future<void> {
+    await this.load();
+  }
+
+  async changed(name: String): Future<void> {
+    if (name == 'filter') {
+      await this.load();
+    }
+  }
+
+  async load(): Future<void> {
+    var filter = this.attribute('filter');
+    if (filter == '') {
+      filter = 'all';
+    }
+    let response = await request('GET', '/api/todos?filter=' + filter);
+    let body = response.json();
+    let todos = new GrowableArray<Todo>();
+    if (body is JsonObject) {
+      let fields = body as JsonObject;
+      let list = fields['todos'];
+      if (list is JsonArray) {
+        let items = list as JsonArray;
+        for (var i = 0; i < items.length; i += 1) {
+          let item = items[i];
+          if (item is JsonObject) {
+            let todo = item as JsonObject;
+            todos.push(new Todo(text(todo['id']), text(todo['title']), flag(todo['completed'])));
+          }
+        }
+      }
+      let counts = fields['counts'];
+      if (counts is JsonObject) {
+        this.active = count((counts as JsonObject)['active']);
+        this.completed = count((counts as JsonObject)['completed']);
+      }
+    }
+    this.todos = todos;
+  }
+
+  render(): View {
+    let total = this.active + this.completed;
+    let header = h('header', {'class' => 'header'}, [
+      h('h1', new Map<String, String>(), ['todos']),
+      h('todo-input', {
+        'has-todos' => if (total > 0) 'true' else 'false',
+        'all-completed' => if (total > 0 && this.active == 0) 'true' else 'false',
+      }, new GrowableArray<View | String>(), {
+        'todo-add' => 'add',
+        'todo-toggle-all' => 'toggleAll',
+      }),
+    ]);
+    let children = new GrowableArray<View | String>();
+    children.push(header);
+    if (total > 0) {
+      let items = new GrowableArray<View | String>();
+      for (let todo in this.todos) {
+        items.push(h('todo-item', {
+          'key' => todo.id,
+          'todo-id' => todo.id,
+          'title' => todo.title,
+          'completed' => if (todo.completed) 'true' else 'false',
+        }, new GrowableArray<View | String>(), {
+          'todo-toggle' => 'toggle',
+          'todo-destroy' => 'destroy',
+          'todo-edit' => 'edit',
+        }));
+      }
+      children.push(h('section', {'class' => 'main'}, [
+        h('ul', {'class' => 'todo-list'}, items),
+      ]));
+      var filter = this.attribute('filter');
+      if (filter == '') {
+        filter = 'all';
+      }
+      children.push(h('todo-footer', {
+        'active' => i32ToString(this.active),
+        'completed' => i32ToString(this.completed),
+        'filter' => filter,
+      }, new GrowableArray<View | String>(), {
+        'todo-clear' => 'clear',
+      }));
+    }
+    return h('section', {'class' => 'todoapp'}, children);
+  }
+
+  async on(handler: String, event: Event): Future<void> {
+    let headers = new Map<String, String>();
+    headers['content-type'] = 'application/json';
+    if (handler == 'add') {
+      let body = new JsonObject();
+      body['title'] = event.value;
+      await request('POST', '/api/todos', stringify(body), headers);
+    } else if (handler == 'toggleAll') {
+      let body = new JsonObject();
+      body['completed'] = new Box<boolean>(event.value == 'true');
+      await request('PATCH', '/api/todos', stringify(body), headers);
+    } else if (handler == 'toggle') {
+      for (let todo in this.todos) {
+        if (todo.id == event.value) {
+          let body = new JsonObject();
+          body['completed'] = new Box<boolean>(!todo.completed);
+          await request('PATCH', '/api/todos/' + todo.id, stringify(body), headers);
+        }
+      }
+    } else if (handler == 'destroy') {
+      await request('DELETE', '/api/todos/' + event.value);
+    } else if (handler == 'edit') {
+      // The detail is the id, a newline, and the new title. An edit to
+      // an empty title deletes the todo.
+      let parts = event.value.split('\n');
+      let id = parts[0];
+      let title = event.value.sliceBytes(id.length + 1, event.value.length).trim();
+      if (title == '') {
+        await request('DELETE', '/api/todos/' + id);
+      } else {
+        let body = new JsonObject();
+        body['title'] = title;
+        await request('PATCH', '/api/todos/' + id, stringify(body), headers);
+      }
+    } else if (handler == 'clear') {
+      await request('DELETE', '/api/todos');
+    }
+    await this.load();
+  }
+}

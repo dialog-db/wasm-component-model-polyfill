@@ -1,0 +1,53 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+// The world every route compiles against, and the todo model the
+// service worker supplies to it. The helper that defines a route passes
+// this document to the compiler with the world `route-component`.
+package demo:route;
+
+world route-component {
+  import demo:todo/model;
+  import wasi:http/types@0.3.0;
+  import wasi:cli/stdout@0.3.0;
+  import wasi:cli/stderr@0.3.0;
+  import wasi:clocks/monotonic-clock@0.3.0;
+  export wasi:http/handler@0.3.0;
+}
+
+package demo:todo {
+  // The todo list, which the service worker keeps in IndexedDB.
+  interface model {
+    record todo {
+      id: string,
+      title: string,
+      completed: bool,
+    }
+
+    record counts {
+      active: u32,
+      completed: u32,
+    }
+
+    enum filter {
+      all,
+      active,
+      completed,
+    }
+
+    variant model-error {
+      not-found,
+      empty-title,
+    }
+
+    query: async func(filter: filter) -> tuple<list<todo>, counts>;
+    add: async func(title: string) -> result<todo, model-error>;
+    update: async func(id: string, title: option<string>, completed: option<bool>) -> result<todo, model-error>;
+    remove: async func(id: string) -> result<_, model-error>;
+    toggle-all: async func(completed: bool);
+    clear-completed: async func();
+  }
+}

@@ -1,0 +1,294 @@
+/*
+ * Copyright 2026 The Dialog DB Project
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+/*
+ * The demo's Material 3 look. Its colors, shapes, type scale, and
+ * elevation are custom properties on the document, in a light theme and
+ * a dark theme that follows the browser's color scheme. Custom
+ * properties inherit through shadow boundaries, so each element's own
+ * styles, which live in its Zena source, read the same tokens.
+ */
+
+:root {
+  color-scheme: light;
+
+  --md-sys-color-primary: #006a60;
+  --md-sys-color-on-primary: #ffffff;
+  --md-sys-color-primary-container: #74f8e5;
+  --md-sys-color-on-primary-container: #00201c;
+  --md-sys-color-secondary: #4a635f;
+  --md-sys-color-on-secondary: #ffffff;
+  --md-sys-color-secondary-container: #cce8e2;
+  --md-sys-color-on-secondary-container: #05201c;
+  --md-sys-color-tertiary: #456179;
+  --md-sys-color-error: #ba1a1a;
+  --md-sys-color-on-error: #ffffff;
+  --md-sys-color-error-container: #ffdad6;
+  --md-sys-color-on-error-container: #410002;
+  --md-sys-color-background: #f4fbf8;
+  --md-sys-color-on-background: #161d1c;
+  --md-sys-color-surface: #f4fbf8;
+  --md-sys-color-on-surface: #161d1c;
+  --md-sys-color-surface-variant: #dae5e1;
+  --md-sys-color-on-surface-variant: #3f4947;
+  --md-sys-color-surface-container-lowest: #ffffff;
+  --md-sys-color-surface-container-low: #eff5f2;
+  --md-sys-color-surface-container: #e9efec;
+  --md-sys-color-surface-container-high: #e3eae7;
+  --md-sys-color-surface-container-highest: #dde4e1;
+  --md-sys-color-outline: #6f7977;
+  --md-sys-color-outline-variant: #bec9c6;
+
+  --md-sys-shape-corner-small: 8px;
+  --md-sys-shape-corner-medium: 12px;
+  --md-sys-shape-corner-large: 16px;
+  --md-sys-shape-corner-extra-large: 28px;
+  --md-sys-shape-corner-full: 999px;
+
+  --md-ref-typeface: "Roboto", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --md-ref-typeface-mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", monospace;
+  --md-sys-typescale-display-small: 400 36px / 44px var(--md-ref-typeface);
+  --md-sys-typescale-headline-small: 400 24px / 32px var(--md-ref-typeface);
+  --md-sys-typescale-title-medium: 500 16px / 24px var(--md-ref-typeface);
+  --md-sys-typescale-body-large: 400 16px / 24px var(--md-ref-typeface);
+  --md-sys-typescale-body-medium: 400 14px / 20px var(--md-ref-typeface);
+  --md-sys-typescale-label-large: 500 14px / 20px var(--md-ref-typeface);
+  --md-sys-typescale-label-medium: 500 12px / 16px var(--md-ref-typeface);
+
+  --md-sys-elevation-1: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px 1px rgb(0 0 0 / 0.15);
+  --md-sys-elevation-2: 0 1px 2px rgb(0 0 0 / 0.3), 0 2px 6px 2px rgb(0 0 0 / 0.15);
+  --md-sys-elevation-3: 0 4px 8px 3px rgb(0 0 0 / 0.15), 0 1px 3px rgb(0 0 0 / 0.3);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --md-sys-color-primary: #53dbc9;
+    --md-sys-color-on-primary: #003731;
+    --md-sys-color-primary-container: #005048;
+    --md-sys-color-on-primary-container: #74f8e5;
+    --md-sys-color-secondary: #b1ccc6;
+    --md-sys-color-on-secondary: #1c3531;
+    --md-sys-color-secondary-container: #334b47;
+    --md-sys-color-on-secondary-container: #cce8e2;
+    --md-sys-color-tertiary: #adcae5;
+    --md-sys-color-error: #ffb4ab;
+    --md-sys-color-on-error: #690005;
+    --md-sys-color-error-container: #93000a;
+    --md-sys-color-on-error-container: #ffdad6;
+    --md-sys-color-background: #0e1513;
+    --md-sys-color-on-background: #dde4e1;
+    --md-sys-color-surface: #0e1513;
+    --md-sys-color-on-surface: #dde4e1;
+    --md-sys-color-surface-variant: #3f4947;
+    --md-sys-color-on-surface-variant: #bec9c6;
+    --md-sys-color-surface-container-lowest: #090f0e;
+    --md-sys-color-surface-container-low: #161d1c;
+    --md-sys-color-surface-container: #1a2120;
+    --md-sys-color-surface-container-high: #252b2a;
+    --md-sys-color-surface-container-highest: #303635;
+    --md-sys-color-outline: #899390;
+    --md-sys-color-outline-variant: #3f4947;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  padding: 48px 16px 24px;
+  background: var(--md-sys-color-background);
+  color: var(--md-sys-color-on-background);
+  font: var(--md-sys-typescale-body-large);
+}
+
+main {
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+a {
+  color: var(--md-sys-color-primary);
+}
+
+.colophon {
+  max-width: 560px;
+  margin: 32px auto 0;
+  color: var(--md-sys-color-on-surface-variant);
+  font: var(--md-sys-typescale-body-medium);
+  text-align: center;
+}
+
+/* The skeleton, and every element whose tag the page has not yet
+   defined: gray placeholders in the shape of what will draw there. */
+.skeleton {
+  padding: 28px 24px 16px;
+  border-radius: var(--md-sys-shape-corner-extra-large);
+  background: var(--md-sys-color-surface-container-low);
+  box-shadow: var(--md-sys-elevation-2);
+}
+
+.skeleton > div,
+todo-input:not(:defined),
+todo-item:not(:defined),
+todo-footer:not(:defined) {
+  display: block;
+  border-radius: var(--md-sys-shape-corner-medium);
+  background: var(--md-sys-color-surface-container-highest);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.skeleton-title {
+  width: 40%;
+  height: 40px;
+  margin-bottom: 20px;
+}
+
+.skeleton-field,
+todo-input:not(:defined) {
+  height: 56px;
+  margin-bottom: 16px;
+}
+
+.skeleton-row,
+todo-item:not(:defined) {
+  height: 48px;
+  margin: 8px 0;
+}
+
+todo-footer:not(:defined) {
+  height: 48px;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* The drawer, plain HTML beside the application. */
+#drawer-toggle {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 2;
+  padding: 16px 20px;
+  border: none;
+  border-radius: var(--md-sys-shape-corner-large);
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+  box-shadow: var(--md-sys-elevation-3);
+  font: var(--md-sys-typescale-label-large);
+  cursor: pointer;
+}
+
+#drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  width: min(560px, 100vw);
+  overflow-y: auto;
+  padding: 24px 24px 96px;
+  background: var(--md-sys-color-surface-container-low);
+  color: var(--md-sys-color-on-surface);
+  box-shadow: var(--md-sys-elevation-3);
+}
+
+#drawer[hidden] {
+  display: none;
+}
+
+#drawer h2 {
+  margin: 0 0 4px;
+  font: var(--md-sys-typescale-headline-small);
+}
+
+.drawer-note {
+  margin: 0 0 16px;
+  color: var(--md-sys-color-on-surface-variant);
+  font: var(--md-sys-typescale-body-medium);
+}
+
+#drawer .source {
+  margin: 0 0 16px;
+  padding: 16px;
+  border-radius: var(--md-sys-shape-corner-large);
+  background: var(--md-sys-color-surface-container);
+}
+
+#drawer h3 {
+  margin: 0;
+  font: var(--md-sys-typescale-title-medium);
+  font-family: var(--md-ref-typeface-mono);
+}
+
+#drawer .meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 4px 0 8px;
+  color: var(--md-sys-color-on-surface-variant);
+  font: var(--md-sys-typescale-label-medium);
+}
+
+#drawer textarea {
+  display: block;
+  width: 100%;
+  min-height: 200px;
+  padding: 12px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-small);
+  background: var(--md-sys-color-surface-container-lowest);
+  color: var(--md-sys-color-on-surface);
+  font: 13px / 1.5 var(--md-ref-typeface-mono);
+  resize: vertical;
+  tab-size: 2;
+}
+
+#drawer .diagnostics,
+#drawer .trapped {
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border-radius: var(--md-sys-shape-corner-small);
+  background: var(--md-sys-color-error-container);
+  color: var(--md-sys-color-on-error-container);
+  font: 12px / 1.5 var(--md-ref-typeface-mono);
+  white-space: pre-wrap;
+}
+
+#drawer .actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+#drawer button {
+  padding: 8px 16px;
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: transparent;
+  color: var(--md-sys-color-primary);
+  font: var(--md-sys-typescale-label-large);
+  cursor: pointer;
+}
+
+#drawer button[data-action="save"] {
+  border-color: transparent;
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+
+#drawer [hidden] {
+  display: none;
+}

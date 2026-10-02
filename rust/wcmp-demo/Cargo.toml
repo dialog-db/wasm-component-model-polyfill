@@ -1,0 +1,101 @@
+[package]
+name = "wcmp-demo"
+description = "A TodoMVC demo whose elements and API routes are Zena components, compiled in the browser and run on the polyfill"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+publish = false
+
+# Trunk builds one binary for the page and one for the service worker. Both
+# run only in the browser; on every other target each is an empty `main`.
+# The host framework's plain Rust, which drives components through the
+# polyfill, builds natively too, where its tests run.
+[[bin]]
+name = "wcmp-demo-page"
+path = "src/bin/page.rs"
+
+[[bin]]
+name = "wcmp-demo-worker"
+path = "src/bin/worker.rs"
+
+[dependencies]
+futures = { workspace = true }
+wcmp = { workspace = true }
+# The source bundle's format, which the Zena scenarios read too.
+wcmp-scenario = { workspace = true }
+
+# The timer of a component's `wait-for` when the host framework runs
+# natively, as it does in its tests.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["time"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+wcmp-wasm-core-web = { workspace = true }
+web-sys = { workspace = true, features = [
+  "AddEventListenerOptions",
+  "Attr",
+  "Client",
+  "Clients",
+  "CssStyleSheet",
+  "CustomEvent",
+  "CustomEventInit",
+  "Document",
+  "DomException",
+  "Element",
+  "Event",
+  "EventTarget",
+  "ExtendableEvent",
+  "ExtendableMessageEvent",
+  "FetchEvent",
+  "Headers",
+  "HtmlElement",
+  "HtmlInputElement",
+  "HtmlTextAreaElement",
+  "IdbDatabase",
+  "IdbFactory",
+  "IdbObjectStore",
+  "IdbOpenDbRequest",
+  "IdbRequest",
+  "IdbTransaction",
+  "IdbTransactionMode",
+  "IdbVersionChangeEvent",
+  "KeyboardEvent",
+  "Location",
+  "MessageChannel",
+  "MessageEvent",
+  "MessagePort",
+  "NamedNodeMap",
+  "Navigator",
+  "Node",
+  "NodeList",
+  "Request",
+  "RequestInit",
+  "Response",
+  "ResponseInit",
+  "ServiceWorker",
+  "ServiceWorkerContainer",
+  "ServiceWorkerGlobalScope",
+  "ServiceWorkerRegistration",
+  "ShadowRoot",
+  "Text",
+  "Url",
+  "Window",
+  "WorkerGlobalScope",
+  "WorkerLocation",
+  "console",
+] }
+
+[dev-dependencies]
+wcmp-macros = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+wcmp-wasm-core-wasmtime = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = { workspace = true }
