@@ -9,7 +9,7 @@
 
 use core::cell::{Cell, RefCell};
 use core::task::Poll;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::rc::{Rc, Weak};
 
 use js_sys::Promise;
@@ -72,8 +72,9 @@ pub struct Calls {
     /// The browser runs their start functions in this order.
     instantiations: RefCell<VecDeque<Rc<Flight>>>,
     /// Each flight that runs, kept until it stops, whether or not code
-    /// still waits for it.
-    running: RefCell<HashMap<u64, Rc<Flight>>>,
+    /// still waits for it. A tree, so that each call keeps and lets go of
+    /// its flight without hashing.
+    running: RefCell<BTreeMap<u64, Rc<Flight>>>,
     /// The number of times the store's owner reached the store. A flight
     /// may reach the store only at the epoch of its permit.
     epoch: Cell<u64>,
@@ -242,7 +243,7 @@ impl Calls {
             leases: RefCell::new(Vec::new()),
             current: RefCell::new(None),
             instantiations: RefCell::new(VecDeque::new()),
-            running: RefCell::new(HashMap::new()),
+            running: RefCell::new(BTreeMap::new()),
             epoch: Cell::new(0),
             hosting: Cell::new(0),
             owner_dropped: Cell::new(false),
@@ -273,11 +274,26 @@ impl Calls {
     /// a dropped future ends the flight's permit, and only a forgotten one
     /// lets go of the store while the flight may still run.
     pub fn claim(&self) -> Result<()> {
+        if self.try_claim() {
+            Ok(())
+        } else {
+            Err(Self::refusal())
+        }
+    }
+
+    /// [`Calls::claim`], answering whether it succeeded, for a caller that
+    /// cannot fail and builds the error only on its cold path.
+    pub fn try_claim(&self) -> bool {
         if self.hosting.get() > 0 {
-            return Err(errors::backend(HOSTING));
+            return false;
         }
         self.epoch.set(self.epoch.get().wrapping_add(1));
-        Ok(())
+        true
+    }
+
+    /// The error of a [`Calls::claim`] that failed.
+    pub fn refusal() -> wcmp_wasm_core::Error {
+        errors::backend(HOSTING)
     }
 
     /// Records that the store's owner dropped the store: every flight may

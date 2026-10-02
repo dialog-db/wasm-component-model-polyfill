@@ -1001,6 +1001,72 @@ async fn it_carries_the_bits_of_each_value_through_a_host_function() {
 }
 
 #[wcmp_macros::test]
+async fn it_carries_the_bits_of_a_nan_through_a_host_function_of_few_arguments() {
+    let engine = engine();
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    // Four floats, each carried as one value, so the wrapper hands them
+    // to the host in one `direct` call rather than one `arg` call each.
+    let types = [ValType::F32, ValType::F64, ValType::F32, ValType::F64];
+    let same = echo(&mut store, FuncType::new(types, types));
+    let module = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (import "host" "same"
+                (func $same (param f32 f64 f32 f64) (result f32 f64 f32 f64)))
+              ;; The guest makes each NaN itself, so only the wrapper
+              ;; carries it, and gives back the bits of each.
+              (func (export "relay") (result i32 i64 i32 i64)
+                (local $a f32)
+                (local $b f64)
+                (local $c f32)
+                (local $d f64)
+                i32.const 0x7fa00001
+                f32.reinterpret_i32
+                i64.const 0x7ff4000000000001
+                f64.reinterpret_i64
+                i32.const 0xffc00002
+                f32.reinterpret_i32
+                i64.const 0xfff8000000000003
+                f64.reinterpret_i64
+                call $same
+                local.set $d
+                local.set $c
+                local.set $b
+                local.set $a
+                local.get $a
+                i32.reinterpret_f32
+                local.get $b
+                i64.reinterpret_f64
+                local.get $c
+                i32.reinterpret_f32
+                local.get $d
+                i64.reinterpret_f64))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    let instance = Instance::instantiate(&mut store, &module, &[same.into()])
+        .await
+        .expect("the module instantiates");
+    let relay = func(&mut store, instance, "relay");
+
+    let mut results = [Val::I32(0), Val::I64(0), Val::I32(0), Val::I64(0)];
+    relay
+        .call(&mut store, &[], &mut results)
+        .expect("the call succeeds");
+
+    // A signaling NaN and a quiet one with a payload keep their bits each
+    // way, which a `Number` would not promise.
+    assert_eq!(results[0].i32(), Some(0x7fa0_0001));
+    assert_eq!(results[1].i64(), Some(0x7ff4_0000_0000_0001));
+    assert_eq!(results[2].i32(), Some(0xffc0_0002_u32 as i32));
+    assert_eq!(results[3].i64(), Some(0xfff8_0000_0000_0003_u64 as i64));
+}
+
+#[wcmp_macros::test]
 fn it_carries_a_v128_parameter_to_a_host_function_through_a_carrier() {
     let engine = engine();
     let mut store = Store::new(&engine, ()).expect("the engine makes a store");
@@ -2615,4 +2681,132 @@ async fn it_traps_a_call_that_traps_after_a_nested_call_of_its_function_returned
         Some(true),
         "the nested call returned 7 in its first stretch"
     );
+}
+
+#[wcmp_macros::test]
+async fn it_ends_a_resumable_call_through_its_promise_where_no_entrance_names_its_type() {
+    let engine = engine();
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    // `make` gives a reference to a concrete type, which the generated
+    // entrance module does not define, so the store calls it through
+    // `WebAssembly.promising` over the function itself.
+    let module = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (type $pair (struct (field i32) (field i32)))
+              (func (export "make") (param i32) (result (ref null $pair))
+                local.get 0
+                i32.eqz
+                if
+                  unreachable
+                end
+                local.get 0
+                local.get 0
+                i32.const 1
+                i32.add
+                struct.new $pair)
+              (func (export "sum") (param (ref null $pair)) (result i32)
+                local.get 0
+                struct.get $pair 0
+                local.get 0
+                struct.get $pair 1
+                i32.add))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    let instance = Instance::instantiate(&mut store, &module, &[])
+        .await
+        .expect("the module instantiates");
+    let make = func(&mut store, instance, "make");
+    let sum = func(&mut store, instance, "sum");
+
+    // A call that returns in its first stretch has nowhere to record its
+    // return but its promise, so it hooks the promise and ends only once
+    // the browser settles it.
+    let mut results = [Val::AnyRef(None)];
+    let outcome = {
+        let mut call = pin!(make.call_resumable(&mut store, &[Val::I32(2)], &mut results));
+        let (first, hooks) =
+            promise_hooks(|| call.as_mut().poll(&mut Context::from_waker(Waker::noop())));
+        assert!(first.is_pending(), "the call ends through its promise");
+        assert!(hooks > 0, "the call hooks its promise");
+        call.await
+    };
+    assert!(
+        matches!(outcome, Ok(ResumableCall::Finished)),
+        "{outcome:?}"
+    );
+    assert!(matches!(results[0], Val::AnyRef(Some(_))), "{results:?}");
+    let mut total = [Val::I32(0)];
+    sum.call(&mut store, &results, &mut total)
+        .expect("the call succeeds");
+    assert_eq!(total[0].i32(), Some(5));
+
+    // A call that traps in its first stretch fails with the reason its
+    // promise gives.
+    let mut results = [Val::AnyRef(None)];
+    let outcome = make
+        .call_resumable(&mut store, &[Val::I32(0)], &mut results)
+        .await;
+    assert!(
+        matches!(outcome, Err(Error::Trap(TrapKind::UnreachableCodeReached))),
+        "{outcome:?}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_gives_each_resumable_call_the_references_it_returned_in_its_first_stretch() {
+    let engine = engine();
+    let (mut store, instance) = instance(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (func $marker (result i32) i32.const 42)
+              (elem declare func $marker)
+              (func (export "hand") (param externref) (result externref funcref)
+                local.get 0
+                ref.func $marker))
+            "#
+        ),
+    )
+    .await;
+    let hand = func(&mut store, instance, "hand");
+
+    // The entrance records each reference in a global, and lets go of it
+    // once the store read it. The next call records its own.
+    for token in ["first", "second"] {
+        let held = ExternRef::new(&mut store, token).expect("the store makes an externref");
+        let mut results = [Val::ExternRef(None), Val::FuncRef(None)];
+        let (outcome, hooks) = promise_hooks(|| {
+            poll_once(hand.call_resumable(&mut store, &[Val::ExternRef(Some(held))], &mut results))
+        });
+        assert!(
+            matches!(outcome, Poll::Ready(Ok(ResumableCall::Finished))),
+            "{outcome:?}"
+        );
+        assert_eq!(hooks, 0, "the entrance recorded the return");
+        let Val::ExternRef(Some(given)) = results[0] else {
+            panic!("the call gave back the externref: {:?}", results[0]);
+        };
+        assert_eq!(
+            given
+                .data(&store)
+                .expect("the externref belongs to the store")
+                .downcast_ref::<&str>(),
+            Some(&token)
+        );
+        let Val::FuncRef(Some(marker)) = results[1] else {
+            panic!("the call gave back the funcref: {:?}", results[1]);
+        };
+        let mut result = [Val::I32(0)];
+        marker
+            .call(&mut store, &[], &mut result)
+            .expect("the call succeeds");
+        assert_eq!(result[0].i32(), Some(42));
+    }
 }

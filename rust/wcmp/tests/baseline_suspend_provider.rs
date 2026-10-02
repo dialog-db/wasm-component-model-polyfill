@@ -24,7 +24,9 @@
 //! Under the host-suspension provider, every export call in the browser
 //! runs its thread as a resumable call. A call that never suspends costs
 //! no more than a plain call there: it ends on its first poll, and hooks
-//! no promise.
+//! no promise. One that traps in its first stretch learns the reason only
+//! from its promise, so its driver awaits the call, and reports the trap
+//! with the engine's reason.
 
 #![cfg(test)]
 
@@ -195,6 +197,77 @@ async fn it_calls_an_export_that_never_suspends_without_a_promise_hook() {
         assert_eq!(results.as_ref(), [Val::U32(x * 2)]);
         assert_eq!(hooks, 0, "a call that never suspends hooks no promise");
     }
+}
+
+/// A component whose export `trap` traps at once, and whose export `ok`
+/// answers 9.
+#[cfg(target_arch = "wasm32")]
+const TRAP: &[u8] = wcmp_macros::component!(
+    r#"
+    (component
+      (core module $m
+        (func (export "trap") unreachable)
+        (func (export "ok") (result i32) i32.const 9))
+      (core instance $i (instantiate $m))
+      (func (export "trap") (canon lift (core func $i "trap")))
+      (func (export "ok") (result u32) (canon lift (core func $i "ok"))))
+    "#
+);
+
+#[cfg(target_arch = "wasm32")]
+#[wcmp_macros::test]
+async fn it_reports_the_reason_of_a_trap_in_the_first_stretch_of_a_start_in_place() {
+    use core::future::Future as _;
+    use core::task::{Context, Waker};
+
+    use wcmp::{Component, Error, Linker, Store, TaskCause};
+
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
+    let component = Component::new(&engine, TRAP)
+        .await
+        .expect("the component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiation succeeds");
+    let trap = instance.get_func("trap").expect("the export");
+    let ok = instance.get_func("ok").expect("the export");
+
+    // The store runs no guest code, so the provider starts the thread in
+    // place. The browser tells why a call trapped only once it settles
+    // the call's promise, so the start is still under way after its
+    // first stretch, and the driver awaits it to learn the reason.
+    let error = {
+        let mut call = core::pin::pin!(trap.call(&mut store, &[]));
+        let first = call.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+        assert!(
+            first.is_pending(),
+            "the trap reaches the driver once the browser settles the call"
+        );
+        call.await.expect_err("the call traps")
+    };
+    let mut described = format!("{error:?}");
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    while let Some(link) = source {
+        described.push_str(&format!(": {link}"));
+        source = link.source();
+    }
+    assert!(
+        described.contains("unreachable"),
+        "the driver reports the engine's reason for the trap, got {described}"
+    );
+
+    // The trap poisoned the store.
+    let refused = ok
+        .call(&mut store, &[])
+        .await
+        .expect_err("a poisoned store refuses the call");
+    assert!(
+        matches!(refused, Error::Task(TaskCause::CannotEnter)),
+        "{refused:?}"
+    );
 }
 
 #[path = "support/backend.rs"]

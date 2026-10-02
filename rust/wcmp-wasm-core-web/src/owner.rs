@@ -102,6 +102,15 @@ impl Owner {
     }
 }
 
+/// The panic of [`data`](BackendStore::data) and
+/// [`data_mut`](BackendStore::data_mut), which cannot fail, where the
+/// owner refuses the store.
+#[cold]
+#[inline(never)]
+fn refused() -> ! {
+    panic!("{}", Calls::refusal())
+}
+
 impl Drop for Owner {
     fn drop(&mut self) {
         self.calls.drop_owner();
@@ -114,20 +123,24 @@ impl BackendStore for Owner {
     /// Where a host function that a flight called runs and reaches the
     /// store through its owner, which refuses then.
     fn data(&self) -> &StoreData {
-        match self.store() {
-            Ok(store) => store.data(),
-            Err(error) => panic!("{error}"),
+        // The engine reaches the data many times in each call, so the
+        // refusal, and the frame its error needs, stay off this path.
+        if !self.calls.try_claim() {
+            refused();
         }
+        // SAFETY: as in `store`, since the claim succeeded.
+        unsafe { &*self.cell.get() }.data()
     }
 
     /// # Panics
     ///
     /// As [`data`](BackendStore::data).
     fn data_mut(&mut self) -> &mut StoreData {
-        match self.store_mut() {
-            Ok(store) => store.data_mut(),
-            Err(error) => panic!("{error}"),
+        if !self.calls.try_claim() {
+            refused();
         }
+        // SAFETY: as in `store_mut`, since the claim succeeded.
+        unsafe { &mut *self.cell.get() }.data_mut()
     }
 
     fn id(&self) -> StoreId {

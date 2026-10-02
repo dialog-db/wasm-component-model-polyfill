@@ -73,6 +73,9 @@ pub struct Entrance {
     /// Where the entrance module records a return: its `done` global and
     /// its result globals.
     record: Option<(WebAssembly::Global, Vec<WebAssembly::Global>)>,
+    /// The result globals that hold a reference, which the host clears
+    /// once it read them.
+    references: Vec<WebAssembly::Global>,
 }
 
 impl Entrance {
@@ -113,9 +116,16 @@ impl Entrance {
         let globals = (0..results.len())
             .map(|index| export::<WebAssembly::Global>(&exports, &format!("r{index}")))
             .collect::<Result<Vec<_>>>()?;
+        let references = globals
+            .iter()
+            .zip(&results)
+            .filter(|(_, ty)| matches!(ty, ValType::Ref(_)))
+            .map(|(global, _)| global.clone())
+            .collect();
         Ok(Self {
             promising: jspi.promising(&enter)?,
             record: Some((done, globals)),
+            references,
         })
     }
 
@@ -125,6 +135,7 @@ impl Entrance {
         Ok(Self {
             promising: jspi.promising(function)?,
             record: None,
+            references: Vec::new(),
         })
     }
 
@@ -140,6 +151,9 @@ impl Entrance {
     }
 
     /// The token of the call of the flight numbered `id`.
+    ///
+    /// No call has the token `0`, which `$done` holds before the first
+    /// return: the store numbers its flights from 1.
     pub fn token(id: u64) -> i32 {
         id as u32 as i32
     }
@@ -148,12 +162,16 @@ impl Entrance {
     /// function itself returns it, where it was the last call of the
     /// entrance to return. Read right after a promising call that did not
     /// suspend, `None` means that the call trapped.
+    ///
+    /// A result global that holds a reference is cleared once read, so
+    /// that the entrance does not keep the value alive until its next
+    /// return.
     pub fn returned(&self, token: i32) -> Option<JsValue> {
         let (done, globals) = self.record.as_ref()?;
         if done.value().as_f64() != Some(f64::from(token)) {
             return None;
         }
-        Some(match globals.as_slice() {
+        let returned = match globals.as_slice() {
             [] => JsValue::UNDEFINED,
             [global] => global.value(),
             globals => globals
@@ -161,7 +179,13 @@ impl Entrance {
                 .map(WebAssembly::Global::value)
                 .collect::<Array>()
                 .into(),
-        })
+        };
+        for global in &self.references {
+            // A result global is nullable and holds a type that the
+            // JavaScript API reaches, so `null` clears it without fail.
+            let _ = js::set_value(global, &JsValue::NULL);
+        }
+        Some(returned)
     }
 }
 

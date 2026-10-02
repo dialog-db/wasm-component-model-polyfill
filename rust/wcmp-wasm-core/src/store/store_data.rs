@@ -6,7 +6,7 @@
 
 //! What a backend keeps for the engine in each store.
 
-use core::any::Any;
+use core::any::{Any, TypeId};
 use core::fmt;
 
 use crate::contract::MaybeSend;
@@ -35,6 +35,10 @@ pub struct StoreData {
     id: StoreId,
     engine: Engine,
     value: Erased,
+    /// The type of `value`. The engine reaches the host's data many times
+    /// in each call, so a read compares this rather than ask `value` for
+    /// its type through its vtable.
+    ty: TypeId,
 }
 
 impl StoreData {
@@ -56,26 +60,31 @@ impl StoreDataInternal for StoreData {
             id: StoreId::allocate(),
             engine,
             value: Box::new(value),
+            ty: TypeId::of::<T>(),
         }
     }
 
     fn user<T: 'static>(&self) -> &T {
-        match self.value.downcast_ref::<T>() {
-            Some(value) => value,
+        if self.ty == TypeId::of::<T>() {
+            // SAFETY: `value` was made from a `T`, as `ty` records.
+            unsafe { &*(&raw const *self.value).cast::<T>() }
+        } else {
             // The engine makes the data of a store of `T` with a `T`, and
             // only the engine can make a `StoreData`. So the data a backend
             // gives back is a `T` unless the backend swapped the data of
             // two of its stores, which breaks the backend contract.
-            None => unreachable!("a backend gave back the data of another store"),
+            unreachable!("a backend gave back the data of another store")
         }
     }
 
     fn user_mut<T: 'static>(&mut self) -> &mut T {
-        match self.value.downcast_mut::<T>() {
-            Some(value) => value,
+        if self.ty == TypeId::of::<T>() {
+            // SAFETY: as in `user`.
+            unsafe { &mut *(&raw mut *self.value).cast::<T>() }
+        } else {
             // As in `user`: only a backend that swapped the data of two of
             // its stores reaches this arm.
-            None => unreachable!("a backend gave back the data of another store"),
+            unreachable!("a backend gave back the data of another store")
         }
     }
 }

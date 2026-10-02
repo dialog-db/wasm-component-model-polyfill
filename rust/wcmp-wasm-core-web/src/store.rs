@@ -8,8 +8,8 @@
 
 use core::any::Any;
 use core::task::Poll;
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap, btree_map};
 use std::rc::Rc;
 
 use js_sys::{Array, Function, Object, Promise, Reflect, Uint8Array, WebAssembly};
@@ -77,8 +77,8 @@ pub struct WebStore {
     jspi: Option<Rc<Jspi>>,
     /// The entrance of each function the host called as a resumable call,
     /// by the index of its handle and whether the call went through its
-    /// carrier.
-    entrances: HashMap<(u64, bool), Rc<Entrance>>,
+    /// carrier. A tree, so a call finds its entrance without hashing.
+    entrances: BTreeMap<(u64, bool), Rc<Entrance>>,
     /// Each entrance module the store compiled, by its bytes.
     entrance_modules: HashMap<Vec<u8>, WebAssembly::Module>,
 }
@@ -107,7 +107,7 @@ impl WebStore {
             wrappers,
             shared_memory: false,
             jspi,
-            entrances: HashMap::new(),
+            entrances: BTreeMap::new(),
             entrance_modules: HashMap::new(),
         }
     }
@@ -400,11 +400,11 @@ impl WebStore {
         let jspi = self
             .jspi
             .clone()
-            .ok_or(Error::Unsupported(Capability::HostSuspension))?;
+            .ok_or_else(|| Error::Unsupported(Capability::HostSuspension))?;
         let (function, args, returns) = self.prepare(func, params, len)?;
         let entrance = match self.entrances.entry((func.index(), returns.carried)) {
-            Entry::Occupied(entry) => entry.get().clone(),
-            Entry::Vacant(entry) => {
+            btree_map::Entry::Occupied(entry) => entry.get().clone(),
+            btree_map::Entry::Vacant(entry) => {
                 let seen = returns
                     .ty
                     .as_ref()
@@ -1201,7 +1201,6 @@ fn extern_kind(ty: &ExternType) -> &'static str {
     }
 }
 
-/// The name of the kind of `external`.
 /// Whether a global of `kind` holds a number, whose value the JavaScript
 /// API reads and writes without fail once the value matches the type. So
 /// the store reads and writes it directly, and not through `Reflect`, which
@@ -1211,6 +1210,7 @@ fn number(kind: Kind) -> bool {
     matches!(kind, Kind::I32 | Kind::I64 | Kind::F32 | Kind::F64)
 }
 
+/// The name of the kind of `external`.
 fn kind_of_extern(external: &Extern) -> &'static str {
     match external {
         Extern::Func(_) => "a function",

@@ -1105,6 +1105,12 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// never holds a callback item.
     fn open_entry_gate(&mut self) -> Result<bool> {
         let held = self.held_work();
+        if held == 0 {
+            // Nothing is held, so nothing is released. The signals go
+            // all the same, as the release would take them.
+            self.lock_tables()?.tasks.take_signalled_sets();
+            return Ok(false);
+        }
         // The tables are reached through a handle of their own, so
         // that the guard on them and the borrow of the scheduler,
         // which the store's data holds, do not overlap.
