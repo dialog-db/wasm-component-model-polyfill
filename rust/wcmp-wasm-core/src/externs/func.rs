@@ -51,6 +51,7 @@ impl Func {
         let mut store = store.as_context_mut();
         checks::func_type(store.engine().capabilities(), &ty)?;
         let body = HostFunc::new(move |store, params, results| {
+            let _span = tracing::trace_span!("core host call").entered();
             func(Caller::from_backend(store), params, results)
         });
         store.backend_mut().func_new(ty, body)
@@ -82,6 +83,7 @@ impl Func {
         capabilities.require(Capability::HostSuspension)?;
         checks::func_type(capabilities, &ty)?;
         let body = HostFunc::suspending(move |store, params, results| {
+            let _span = tracing::trace_span!("core host call (suspending)").entered();
             func(Caller::from_backend(store), params, results)
         });
         store.backend_mut().func_new(ty, body)
@@ -104,6 +106,7 @@ impl Func {
     /// match the type of the function is
     /// [`Error::TypeMismatch`](crate::Error::TypeMismatch). A trap is
     /// [`Error::Trap`](crate::Error::Trap).
+    #[tracing::instrument(level = "trace", name = "core call", skip_all)]
     pub fn call(
         &self,
         mut store: impl AsContextMut,
@@ -139,6 +142,7 @@ impl Func {
     /// The backend must declare
     /// [`host_suspension`](Capability::HostSuspension). Where it does not,
     /// this is [`Error::Unsupported`](crate::Error::Unsupported).
+    #[tracing::instrument(level = "trace", name = "core call (resumable)", skip_all)]
     pub async fn call_resumable(
         &self,
         mut store: impl AsContextMut,
@@ -168,6 +172,7 @@ impl Func {
     /// The backend must declare
     /// [`host_suspension`](Capability::HostSuspension). Where it does not,
     /// this is [`Error::Unsupported`](crate::Error::Unsupported).
+    #[tracing::instrument(level = "trace", name = "core call (start resumable)", skip_all)]
     pub fn start_resumable(
         &self,
         mut store: impl AsContextMut,

@@ -633,6 +633,7 @@ enum HostOutcome {
 /// answers with the return — the lowered result of a synchronous
 /// lower, or the status word of an asynchronous one.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(level = "trace", name = "lowered import call", skip_all)]
 fn invoke_trampoline<T: 'static>(
     mut store_ctx: crate::runtime_layer::StoreContextMut<'_, StoreData<T>>,
     signature: &Arc<Signature>,
@@ -732,7 +733,8 @@ fn invoke_trampoline<T: 'static>(
                     StoreContext::new(store_ctx.as_context_mut()),
                     instance.shared_resource_tables(),
                 );
-                body(call, &lifted, &mut host_results)?;
+                tracing::trace_span!("host function")
+                    .in_scope(|| body(call, &lifted, &mut host_results))?;
                 // A body that reached the store and trapped there, in
                 // a destructor it released, poisoned the store, and
                 // the guest that called it is guest code a poisoned
@@ -768,6 +770,7 @@ fn invoke_trampoline<T: 'static>(
                 let waker = store.internal().active_waker();
                 let started = {
                     let _poll = PollScope::enter(&mut store, &waker);
+                    let _span = tracing::trace_span!("host function start").entered();
                     start(&accessor, lifted)
                 };
                 HostOutcome::Future(started)

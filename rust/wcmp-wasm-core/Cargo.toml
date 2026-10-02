@@ -12,6 +12,9 @@ repository.workspace = true
 # unchanged, as Wasmtime's own host errors are.
 anyhow = { workspace = true }
 thiserror = { workspace = true }
+# Spans on the critical paths, which nothing records until an application
+# installs a subscriber.
+tracing = { workspace = true }
 # Names the capability a module needs where a backend's engine refuses the
 # module, with the validator whose feature set the capability lexicon
 # matches. The `features` feature is what gives the set its named flags,

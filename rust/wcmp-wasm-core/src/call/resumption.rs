@@ -66,6 +66,7 @@ impl Resumption {
     /// The backend must declare
     /// [`host_suspension`](Capability::HostSuspension). Where it does not,
     /// this is [`Error::Unsupported`].
+    #[tracing::instrument(level = "trace", name = "core call stop", skip_all)]
     pub async fn stop(
         &mut self,
         mut store: impl AsContextMut,

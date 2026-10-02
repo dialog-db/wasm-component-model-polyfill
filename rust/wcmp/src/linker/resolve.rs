@@ -161,6 +161,7 @@ pub struct Resolution {
 /// and root-namespace misses surface as [`Error::Link`]; signature
 /// mismatches between a host registration and the component's
 /// declared item surface as [`Error::TypeMismatch`].
+#[tracing::instrument(level = "debug", name = "resolve imports", skip_all, fields(imports = component.imports.len()))]
 pub fn resolve_imports<T: 'static>(
     component: &Component,
     linker: &Linker<T>,

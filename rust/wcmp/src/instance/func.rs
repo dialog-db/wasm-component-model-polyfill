@@ -213,6 +213,7 @@ impl Func {
     /// The body of [`Self::call`], for whatever the call carries: the
     /// untyped call's [`Val`]s, or a typed call's Rust values.
     #[doc(hidden)]
+    #[tracing::instrument(level = "debug", name = "Func::call", skip_all, fields(export = %self.export.name))]
     pub async fn call_values<T: 'static, C: CallValues>(
         &self,
         store: &mut Store<T>,
@@ -401,6 +402,7 @@ impl Func {
     /// carries: the untyped call's [`Val`]s, or a typed call's Rust
     /// values.
     #[doc(hidden)]
+    #[tracing::instrument(level = "debug", name = "Func::call_concurrent", skip_all, fields(export = %self.export.name))]
     pub async fn call_concurrent_values<T: 'static, C: CallValues>(
         &self,
         accessor: &Accessor<T>,
@@ -453,6 +455,7 @@ impl Func {
     /// Everything happens inside the one reach into the store, so a
     /// call whose arguments or whose export are wrong fails before
     /// anything is queued and leaves the store untouched.
+    #[tracing::instrument(level = "trace", name = "start concurrent task", skip_all)]
     fn start_concurrent<T: 'static, C: CallValues>(
         &self,
         store: &mut StoreContext<'_, T>,
@@ -580,6 +583,7 @@ impl Func {
     ///
     /// A turn that finds the task at the gate or waiting, with
     /// nothing else ready, fails the call with the deadlock cause.
+    #[tracing::instrument(level = "trace", name = "async-lifted call", skip_all)]
     async fn call_async<T: 'static, C: CallValues>(
         &self,
         mut store: StoreContext<'_, T>,
@@ -759,6 +763,7 @@ impl Func {
     ///
     /// A trap of the task fails this, which ends the turn that ran
     /// it, so the driver that is polling reports it.
+    #[tracing::instrument(level = "trace", name = "sync-lifted task", skip_all)]
     fn run_task<T: 'static, C: CallValues>(
         &self,
         task: TaskId,
@@ -858,6 +863,7 @@ impl Func {
         }
     }
 
+    #[tracing::instrument(level = "trace", name = "lower arguments", skip_all)]
     fn lower_args<T: 'static, C: CallValues>(
         &self,
         store: &mut StoreContext<'_, T>,
@@ -876,6 +882,7 @@ impl Func {
         values.lower(&mut lower_ctx, &self.export.signature)
     }
 
+    #[tracing::instrument(level = "trace", name = "lift result", skip_all)]
     fn lift_result<T: 'static, C: CallValues>(
         &self,
         store: &mut StoreContext<'_, T>,

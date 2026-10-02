@@ -368,6 +368,7 @@ struct Builtin {
 impl Builtin {
     /// One call of the built-in: the checks, the buffer, the pairing,
     /// and the word the guest receives.
+    #[tracing::instrument(level = "trace", name = "stream or future copy", skip_all)]
     fn copy<T: 'static>(
         &self,
         store: &mut StoreContext<'_, T>,
@@ -580,6 +581,7 @@ impl MoveSide {
 /// the reader's context lowers them one at a time, which moves an
 /// owned handle from the writer's table to the reader's as a call
 /// moves one.
+#[tracing::instrument(level = "trace", name = "move values", skip_all, fields(count = count))]
 fn move_values<T: 'static>(
     store_ctx: &mut RuntimeContextMut<'_, StoreData<T>>,
     tables: &Arc<Mutex<HandleTables>>,

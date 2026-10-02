@@ -33,6 +33,7 @@ impl Instance {
     /// module ([`Error::ImportCount`]). An import of the wrong kind or type
     /// is [`Error::Link`], and a trap in the start function is
     /// [`Error::Trap`].
+    #[tracing::instrument(level = "debug", name = "core instantiate", skip_all, fields(imports = imports.len()))]
     pub async fn instantiate(
         mut store: impl AsContextMut,
         module: &Module,

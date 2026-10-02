@@ -190,6 +190,30 @@
 //! }
 //! ```
 //!
+//! # Tracing
+//!
+//! The polyfill opens a [`tracing`](https://docs.rs/tracing) span on
+//! each of its critical paths. Nothing records them until the
+//! application installs a subscriber, and a span no subscriber wants
+//! costs one cached check.
+//!
+//! - At `DEBUG`: [`Component::new`] and its parse, validation, and core
+//!   module compiles; [`Linker::instantiate`], its import resolution,
+//!   and each core instantiation; [`Func::call`] and
+//!   [`Func::call_concurrent`], with the export's name; and
+//!   [`Store::run_concurrent`].
+//! - At `TRACE`: the driver's turns and their items, thread entries and
+//!   resumes, the lowering of arguments and the lifting of results, the
+//!   calls of lowered imports and host functions, host tasks, string
+//!   transcodes, stream and future copies, and the task and waitable
+//!   built-ins.
+//!
+//! The runtime layer adds its own: core module compiles and
+//! instantiations at `DEBUG`, and core calls, host calls, and
+//! resumptions at `TRACE`. In the browser, a subscriber with a
+//! performance layer, such as `tracing-web`'s, shows the spans in the
+//! browser's performance panel.
+//!
 //! # What the crate keeps to itself
 //!
 //! Re-exporting a type from here carries its whole `pub` surface into

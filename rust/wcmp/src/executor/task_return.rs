@@ -118,6 +118,7 @@ pub fn build_task_return<T: 'static>(
 /// Resolve the current task with the result `args` carries, which is
 /// what one call of the built-in does. The module documentation
 /// states the order of the traps.
+#[tracing::instrument(level = "trace", name = "task.return", skip_all)]
 fn task_return<T: 'static>(
     mut store_ctx: RuntimeContextMut<'_, StoreData<T>>,
     declared: &Arc<CanonOptions>,

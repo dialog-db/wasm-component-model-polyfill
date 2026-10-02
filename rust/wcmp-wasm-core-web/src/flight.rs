@@ -164,6 +164,7 @@ impl Flight {
     /// A flight on its way to park (see [`Flight::park`]) waits there
     /// instead: that is no stop, and nothing wakes.
     pub fn suspend(&self, frame: u32, resolve: Function) -> Option<Rc<StoreCell>> {
+        tracing::trace!(frame, "stack suspended");
         let mut state = self.state.borrow_mut();
         if matches!(*state, State::Parking) {
             *state = State::Parked { frame, resolve };
@@ -210,7 +211,10 @@ impl Flight {
     pub fn resume(&self) -> Option<(u32, Function)> {
         let mut state = self.state.borrow_mut();
         match core::mem::replace(&mut *state, State::Running) {
-            State::Suspended { frame, resolve } => Some((frame, resolve)),
+            State::Suspended { frame, resolve } => {
+                tracing::trace!(frame, "stack resumed");
+                Some((frame, resolve))
+            }
             other => {
                 *state = other;
                 None

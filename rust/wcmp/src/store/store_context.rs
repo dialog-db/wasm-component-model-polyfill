@@ -338,6 +338,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// than guest code. It reaches the store's host data and nothing
     /// else, so it runs outside a turn, as the host call that
     /// released the handle does.
+    #[tracing::instrument(level = "trace", name = "host resource drop", skip_all)]
     fn resource_drop(&mut self, handle: ResourceHandle) -> Result<()> {
         let rep = self.store_data().remove_host_handle(handle)?;
         let Some(destructor) = self.store_data().destructor(handle.type_id()) else {
@@ -421,6 +422,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// touches no guest and leaves the store as it was.
     ///
     /// Workspace-internal; not re-exported by `lib.rs`.
+    #[tracing::instrument(level = "trace", name = "driver turn", skip_all)]
     fn turn(&mut self, waker: &Waker) -> Result<Outcome> {
         let outcome = self.run_driver_turn(waker);
         let host_failure = self.scheduler_mut().take_host_failure();
@@ -954,6 +956,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// No item keeps a trap for the call that started its task, not
     /// even a `Func::call`'s: that call's future may have been dropped
     /// before a later driver's turn ran the task.
+    #[tracing::instrument(level = "trace", name = "turn", skip_all, fields(nested = nested))]
     fn run_turn(
         &mut self,
         waker: &Waker,
@@ -1379,6 +1382,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
 
     /// Run one item of a turn, and evaluate the conditions of the
     /// waiting threads after it, since the item can have met them.
+    #[tracing::instrument(level = "trace", name = "turn item", skip_all)]
     fn run_item(&mut self, item: Item<T>) -> Result<()> {
         // A guest work item queued after a trap, by guest code that
         // was unwinding from it, is dropped rather than run: a
@@ -1616,6 +1620,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// thread suspends or finishes, as the reference's `canon_lower`
     /// continues once the `thread.resume` it made returns.
     /// Workspace-internal.
+    #[tracing::instrument(level = "trace", name = "thread entry", skip_all)]
     fn run_thread_entry(
         &mut self,
         thread: ThreadId,
@@ -1799,6 +1804,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// named to run next, and the frame goes no further. Where it may,
     /// the resume leaves the thread's stop to the store, which waits
     /// for it before anything else and does the rest then.
+    #[tracing::instrument(level = "trace", name = "resume thread", skip_all)]
     fn resume_thread_once(&mut self, thread: ThreadId) -> Result<()> {
         let Some(provider) = self.provider() else {
             return Ok(());

@@ -66,6 +66,7 @@ impl SuspendedCall {
     /// The backend must declare
     /// [`host_suspension`](Capability::HostSuspension). Where it does not,
     /// this is [`Error::Unsupported`](crate::Error::Unsupported).
+    #[tracing::instrument(level = "trace", name = "core call resume", skip_all)]
     pub async fn resume(
         self,
         mut store: impl AsContextMut,

@@ -22,6 +22,8 @@ path = "src/bin/worker.rs"
 
 [dependencies]
 futures = { workspace = true }
+# The demo's own spans, and the polyfill's, which the browser layers record.
+tracing = { workspace = true }
 wcmp = { workspace = true }
 # The source bundle's format, which the Zena scenarios read too.
 wcmp-scenario = { workspace = true }
@@ -33,6 +35,8 @@ tokio = { workspace = true, features = ["time"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-web = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 wcmp-wasm-core-web = { workspace = true }

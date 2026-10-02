@@ -24,6 +24,9 @@ wast-runner = []
 anyhow = { workspace = true }
 semver = { workspace = true }
 thiserror = { workspace = true }
+# Spans on the critical paths, which nothing records until an application
+# installs a subscriber.
+tracing = { workspace = true }
 # Encodes the switch module, the core module the polyfill generates for
 # each store to switch stacks.
 wasm-encoder = { workspace = true }

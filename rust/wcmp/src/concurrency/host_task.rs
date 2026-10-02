@@ -156,6 +156,7 @@ impl<T: 'static> HostTask<T> {
     /// from an earlier poll — reaches the store for the length of a
     /// closure it runs through it, and reaches nothing once this
     /// poll has returned. Workspace-internal.
+    #[tracing::instrument(level = "trace", name = "host task poll", skip_all)]
     pub fn poll(
         &mut self,
         store: &mut StoreContext<'_, T>,

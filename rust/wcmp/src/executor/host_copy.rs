@@ -62,6 +62,7 @@ const POINTER_ARGUMENT: AbiPosition = AbiPosition::Argument(1);
 /// waker of the turn that is running: a poll that is ready is
 /// delivered before this returns, and a pending one joins the store's
 /// host tasks. A failure of either is the built-in's.
+#[tracing::instrument(level = "trace", name = "host read", skip_all)]
 pub fn serve_host_read<T: 'static>(store: &mut StoreContext<'_, T>, writer: EndId) -> Result<()> {
     let mut task = HostTask::copy(
         move |store: &mut StoreContext<'_, T>, outcome: Result<Vec<Val>>| {

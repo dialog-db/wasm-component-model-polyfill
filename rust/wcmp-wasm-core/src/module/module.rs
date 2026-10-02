@@ -33,6 +33,7 @@ impl Module {
     /// `WebAssembly.compile`, so a module above the browser's limit for a
     /// synchronous compile loads too. Each compile makes a module of its
     /// own: the engine keeps no cache of modules by their bytes.
+    #[tracing::instrument(level = "debug", name = "core module compile", skip_all, fields(bytes = bytes.len()))]
     pub async fn compile(engine: &Engine, bytes: &[u8]) -> Result<Self> {
         let inner = engine.backend().compile(bytes).await?;
         Ok(Self {
@@ -47,6 +48,7 @@ impl Module {
     /// This compile is for small modules that a backend or a host
     /// generates. In the browser, a module above the browser's limit for a
     /// synchronous compile fails with a structured error.
+    #[tracing::instrument(level = "debug", name = "core module compile (sync)", skip_all, fields(bytes = bytes.len()))]
     pub fn new(engine: &Engine, bytes: &[u8]) -> Result<Self> {
         let inner = engine.backend().compile_sync(bytes)?;
         Ok(Self {

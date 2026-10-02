@@ -114,6 +114,7 @@ impl Component {
     /// module through its asynchronous API, which is the only way a
     /// large module loads on the main thread. On native it completes
     /// without suspending.
+    #[tracing::instrument(level = "debug", name = "Component::new", skip_all, fields(bytes = bytes.len()))]
     pub async fn new(engine: &Engine, bytes: &[u8]) -> Result<Self> {
         if bytes.len() >= CORE_MODULE_PREAMBLE.len()
             && bytes[..CORE_MODULE_PREAMBLE.len()] == CORE_MODULE_PREAMBLE

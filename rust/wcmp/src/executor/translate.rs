@@ -94,8 +94,10 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
     let mut validator = Validator::new_with_features(features);
     let mut types = ComponentTypesBuilder::new(&validator);
 
-    let (translation, modules) = Translator::new(&tunables, &mut validator, &mut types, &scope)
-        .translate(bytes)
+    let (translation, modules) = tracing::debug_span!("component parse, validate, and adapt")
+        .in_scope(|| {
+            Translator::new(&tunables, &mut validator, &mut types, &scope).translate(bytes)
+        })
         .map_err(|err| refusal(err, bytes, features, capabilities))?;
     // The translator ran with multi-memory on for its adapters. A
     // module with two memories, over a backend without them, fails

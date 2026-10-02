@@ -223,6 +223,7 @@ impl ReservedRecords {
 /// The store records the plan needs are reserved before it runs and
 /// taken back when it fails, so a failed instantiation leaves the
 /// store as it found it. See [`ReservedRecords`].
+#[tracing::instrument(level = "debug", name = "run instantiation plan", skip_all)]
 pub async fn instantiate<T: 'static>(
     component: &Component,
     store: &mut StoreContext<'_, T>,
@@ -684,6 +685,7 @@ async fn run_plan<T: 'static>(
 /// poisons the store. A module that declares none runs no guest code
 /// here, and a failure of its instantiation — an import the substrate
 /// refuses, a feature it lacks — leaves the store as it was.
+#[tracing::instrument(level = "debug", name = "instantiate core module", skip_all)]
 async fn instantiate_core<T: 'static>(
     store: &mut StoreContext<'_, T>,
     module: &Module,

@@ -25,6 +25,9 @@ wasm-encoder = { workspace = true }
 wasmparser = { workspace = true }
 # Assembles the probe modules and the table of exceptions at compile time.
 wcmp-macros = { workspace = true }
+# Spans on the critical paths, which nothing records until an application
+# installs a subscriber.
+tracing = { workspace = true }
 wcmp-wasm-core = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]

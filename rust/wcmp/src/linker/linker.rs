@@ -218,6 +218,7 @@ impl<T: 'static> Linker<T> {
     /// before any guest code runs.
     ///
     /// [`TaskCause::CannotEnter`]: crate::TaskCause::CannotEnter
+    #[tracing::instrument(level = "debug", name = "Linker::instantiate", skip_all)]
     pub async fn instantiate(
         &self,
         store: &mut Store<T>,

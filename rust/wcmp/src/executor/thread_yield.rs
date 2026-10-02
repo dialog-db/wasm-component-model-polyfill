@@ -134,6 +134,7 @@ pub fn build_thread_yield<T: 'static>(
 /// A cancellable yield marks its thread while it gives way, which is
 /// what lets `subtask.cancel` run the thread first, and takes a
 /// request pending once it goes on.
+#[tracing::instrument(level = "trace", name = "thread.yield", skip_all)]
 fn begin_thread_yield<T: 'static>(
     store: &mut StoreContext<'_, T>,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,

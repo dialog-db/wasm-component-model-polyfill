@@ -273,6 +273,7 @@ pub fn build_subtask_drop<T: 'static>(
 /// delivers the task-cancelled event in its place, before it looks at
 /// the set. One that parks waits on the set or on a request, and takes
 /// a request that ended its wait in place of the set's event.
+#[tracing::instrument(level = "trace", name = "waitable-set.wait", skip_all)]
 fn begin_waitable_set_wait<T: 'static>(
     store: &mut StoreContext<'_, T>,
     options: &Arc<CanonOptions>,
@@ -380,6 +381,7 @@ fn deliver_event<T: 'static>(
 }
 
 /// The body of the `waitable-set.poll` built-in.
+#[tracing::instrument(level = "trace", name = "waitable-set.poll", skip_all)]
 fn waitable_set_poll<T: 'static>(
     mut store_ctx: RuntimeContextMut<'_, StoreData<T>>,
     options: &Arc<CanonOptions>,

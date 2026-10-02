@@ -46,6 +46,7 @@ pub async fn compile_module(engine: &Engine, bytes: &[u8]) -> Result<RuntimeModu
 /// together and awaited as one. The translator already validated the
 /// modules; a failure here means the runtime substrate refused a valid
 /// module.
+#[tracing::instrument(level = "debug", name = "core module compiles", skip_all, fields(modules = modules.len()))]
 pub async fn compile_modules(engine: &Engine, modules: &[&[u8]]) -> Result<Vec<RuntimeModule>> {
     let (distinct, slots) = distinct_modules(modules);
     let compiled = all(distinct

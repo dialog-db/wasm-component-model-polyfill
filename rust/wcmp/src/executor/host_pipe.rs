@@ -110,6 +110,7 @@ impl<T: 'static, H: HostConsumer<T>> HostTaskBody<T> for PipeBody<T, H> {
 impl<T: 'static, H: HostConsumer<T>> PipeBody<T, H> {
     /// Drive the two sides until one of them is pending or the pipe is
     /// over.
+    #[tracing::instrument(level = "trace", name = "host pipe step", skip_all)]
     fn step(&mut self, store: &mut StoreContext<'_, T>, cx: &mut Context<'_>) -> Poll<Result<()>> {
         let (Some(producer), Some(consumer)) = (&mut self.producer, &mut self.consumer) else {
             return Poll::Ready(Ok(()));

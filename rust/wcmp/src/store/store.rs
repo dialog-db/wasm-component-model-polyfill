@@ -504,6 +504,7 @@ impl<T: 'static> Store<T> {
     /// [`Func::call_concurrent`] made inside `body` is refused with it.
     ///
     /// [`Func::call_concurrent`]: crate::Func::call_concurrent
+    #[tracing::instrument(level = "debug", name = "Store::run_concurrent", skip_all)]
     pub async fn run_concurrent<R, F>(&mut self, body: F) -> Result<R>
     where
         F: AsyncFnOnce(&Accessor<T>) -> R,

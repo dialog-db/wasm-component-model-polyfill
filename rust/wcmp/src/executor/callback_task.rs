@@ -215,6 +215,7 @@ impl CallbackTask {
     /// it was queued with. Otherwise the item takes the instance,
     /// enters the task, calls the callback, leaves the task, and acts
     /// on the word the callback returned.
+    #[tracing::instrument(level = "trace", name = "callback", skip_all)]
     fn run<T: 'static>(&self, store: &mut StoreContext<'_, T>, slot: EventSlot) -> Result<()> {
         if store.internal().instance_is_held(self.instance)? {
             let item = self.item(slot.clone());

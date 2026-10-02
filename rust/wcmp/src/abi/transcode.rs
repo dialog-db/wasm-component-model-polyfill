@@ -60,6 +60,7 @@ enum Step {
 /// arrive at the width of the memory they address, `i32` for a
 /// 32-bit memory and `i64` for a 64-bit one, and the results are
 /// written back at the widths `result_widths` names.
+#[tracing::instrument(level = "trace", name = "string transcode", skip_all)]
 pub fn transcode<T: 'static>(
     ctx: &mut BoundaryContext<'_, T>,
     op: TranscodeOp,

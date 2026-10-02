@@ -192,6 +192,7 @@ enum Route {
 /// host tasks. A failure of either is the built-in's. Without `now`
 /// the task joins the store's host tasks unpolled, and the next turn
 /// polls it.
+#[tracing::instrument(level = "trace", name = "host write", skip_all)]
 pub fn serve_host_write<T: 'static>(
     store: &mut StoreContext<'_, T>,
     reader: EndId,
