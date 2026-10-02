@@ -305,7 +305,7 @@ definition. The authoring library offers two forms of definition. In the class
 form, the author extends a base class:
 
 ```zena
-import { Element, View, Event, h } from 'demo:element';
+import { Element, View, Event, h } from 'authoring:element';
 
 export class TodoItem extends Element {
   attributes(): Array<String> { return ['todo-id', 'title', 'completed']; }
@@ -314,10 +314,11 @@ export class TodoItem extends Element {
 
   render(): View {
     let done = this.attribute('completed') == 'true';
-    return h('li', { class: done ? 'done' : '' }, [
-      h('input', { type: 'checkbox', checked: done }, [], { change: 'toggle' }),
-      h('label', {}, [this.attribute('title')], { dblclick: 'edit' }),
-      h('button', { class: 'destroy' }, [], { click: 'destroy' }),
+    return h('li', {'class' => if (done) 'completed' else ''}, [
+      h('input', {'type' => 'checkbox', 'checked' => if (done) 'true' else 'false'},
+          [], {'change' => 'toggle'}),
+      h('label', new Map<String, String>(), [this.attribute('title')], {'dblclick' => 'edit'}),
+      h('button', {'class' => 'destroy'}, ['×'], {'click' => 'destroy'}),
     ]);
   }
 
@@ -327,6 +328,10 @@ export class TodoItem extends Element {
   }
 }
 ```
+
+The authoring library is a package of the source bundle, named `authoring` in
+the bundle's package manifest. An author imports `authoring:element` for
+elements and `authoring:route` for routes.
 
 In the function form, the author exports a function from attributes to a view,
 plus an optional event function. The function form keeps no state between
@@ -425,11 +430,22 @@ can use one without a change to what an author writes.
 
 ### Failure
 
+Zena does not trap on an exception that escapes an async export with no result.
+The export returns normally, as if the call did nothing. So the glue catches an
+exception from the author's code and traps on purpose. Zena has no trap
+intrinsic in its current code generator, so the glue reads through a null
+reference.
+
 A trap poisons the tag's `Store`. The host framework then replaces the contents
 of each element of that tag with an error card. An error card is a short message
 that names the tag and the trap. The drawer has a "Restart" control for the tag.
-It compiles the tag again and makes a new `Store`, and each element connects
-again.
+It compiles the tag again from the source it last started from, makes a new
+`Store`, and each element connects again. A later edit that failed to compile
+does not take part.
+
+A route that traps starts again on its next request from the source it last
+started from, in the same way. The compiler component recovers too: a compile
+that traps it makes a new instance for the next compile.
 
 ### Rendering
 
@@ -459,8 +475,11 @@ variant property {
 }
 ```
 
-In `h`, the authoring library puts `checked` and `value` in properties and every
-other key in attributes.
+`h` takes a tag, a map of attributes, a list of children, and a map of events.
+It puts `checked` and `value` in properties and every other key in attributes.
+`checked` is set when its value is `true`. The key `key` gives the node its
+stable identity. The host framework focuses a new node that has the `autofocus`
+attribute, so the field of an edit takes focus when it appears.
 
 The host framework keeps the last view of each element. After a render, it
 compares the new view with the last view inside the element's shadow root. It
@@ -527,19 +546,23 @@ author's source imports the authoring library and exports one function,
 `handle`. It takes a simple request and returns a simple response:
 
 ```zena
-import { Request, Response, json, status, problem } from 'demo:route';
-import { update, remove } from 'demo:todo/model';
+import { Request, Response, json, status, problem } from 'authoring:route';
+import { update, remove, Todo, ModelError } from 'demo:todo/model';
 
 export async function handle(request: Request): Future<Response> {
   let id = request.params['id'];
   if (request.method == 'PATCH') {
-    let body = request.json();
-    let result = await update(id, body.optString('title'), body.optBool('completed'));
-    return result.isOk() ? json(result.value) : problem(result.error);
+    let fields = fieldsOf(request.json());
+    let updated = await update(id, fields.title, fields.completed);
+    if (updated is Ok<Todo, ModelError>) {
+      return json(todoJson((updated as Ok<Todo, ModelError>).value));
+    }
+    return problem((updated as Err<Todo, ModelError>).error);
   }
   if (request.method == 'DELETE') {
-    let result = await remove(id);
-    return result.isOk() ? status(204) : problem(result.error);
+    let removed = await remove(id);
+    if (removed is Ok<void, ModelError>) { return status(204); }
+    return problem((removed as Err<void, ModelError>).error);
   }
   return status(405);
 }
@@ -641,6 +664,11 @@ on the handler side. That is fields, requests, responses, and their bodies as
 streams. A function outside the subset returns an error. So a change in Zena's
 output shows as a failure and not as a silent wrong answer.
 
+A guest hands the host some futures it never reads back, such as the trailers of
+a body and the result of consuming it. The host reads each such future to its
+end and discards the value. A guest's write to a future completes only when the
+other end reads, so a dropped future would keep the guest's task from ending.
+
 ## The Todo Model
 
 The todo model is Rust in the service worker. Route components import it as an
@@ -653,17 +681,20 @@ interface model {
   record todo { id: string, title: string, completed: bool }
   record counts { active: u32, completed: u32 }
   enum filter { all, active, completed }
-  variant error { not-found, empty-title }
+  variant model-error { not-found, empty-title }
 
   query: async func(filter: filter) -> tuple<list<todo>, counts>;
-  add: async func(title: string) -> result<todo, error>;
+  add: async func(title: string) -> result<todo, model-error>;
   update: async func(id: string, title: option<string>, completed: option<bool>)
-    -> result<todo, error>;
-  remove: async func(id: string) -> result<_, error>;
+    -> result<todo, model-error>;
+  remove: async func(id: string) -> result<_, model-error>;
   toggle-all: async func(completed: bool);
   clear-completed: async func();
 }
 ```
+
+The error variant is `model-error` and not `error`, because a WIT type named
+`error` clashes with Zena's built-in `Error`.
 
 The todo model trims titles, refuses an empty title, assigns ids, filters, and
 counts. It stores the list in IndexedDB. Its functions are async because
@@ -719,8 +750,24 @@ The page and the service worker exchange these messages:
   carries the pattern, the compile time, the instantiate time, and the
   diagnostics of a failure.
 - The service worker sends `route-trapped` with a pattern after a route traps.
-- The page sends `routes-status` when the drawer opens. The service worker
-  answers with the last `route-compiled` of each route.
+- The page sends `routes-status` when the drawer opens, and again while it stays
+  open. The service worker answers with the last `route-compiled` of each route.
+
+After a hard reload, no service worker controls the page, and the worker that is
+already active does not claim the page again by itself. So the page sends
+`claim` to the active worker when it starts without a controller, and the
+worker's script calls `clients.claim`.
+
+A message that wants an answer carries a `MessageChannel` port, and the service
+worker answers on that port. It answers a message that fails with the reason, so
+the page never waits on a failure. It answers `route-changed` with the route's
+new status. Each status carries `compiledAt`, the wall-clock time of its
+compile, so a reader can tell a new compile from an old one.
+
+The browser test lane needs two more messages. `define-route` adds a route from
+a source, and `compile-check` compiles and runs a program in the service worker.
+The page exposes both on `window.demo`, beside hooks that define an element and
+read each tag's status.
 
 ## The Drawer
 
@@ -972,7 +1019,8 @@ color change between the two. A test changes a color token on the document, and
 the computed color in each element changes with it.
 
 The demo runs in Safari. A person opens the demo in Epiphany and completes the
-TodoMVC behaviors by hand. The person records the result in the lane's report.
+TodoMVC behaviors by hand. The person records the result in the lane's report,
+the README of the demo lane.
 
 The menu serves the demo. A menu command builds the demo and serves it on a
 local port. The page loads, and the service worker controls it after one reload
