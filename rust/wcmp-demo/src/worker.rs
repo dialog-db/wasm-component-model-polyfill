@@ -310,23 +310,22 @@ pub async fn compile_check(context: &Context, data: &JsValue) -> JsValue {
     set("bytes", JsValue::from_f64(compiled.bytes.len() as f64));
     let outcome =
         async {
-            let (component, parse_ms) = context.parse(&compiled.bytes).await?;
+            let (component, wasm_compile_ms) = context.parse(&compiled.bytes).await?;
             let mut linker: Linker<()> = Linker::new(context.engine());
             crate::wasi::define(&mut linker, &entry)?;
-            let mut instantiated = context
-                .instantiate(&component, parse_ms, &linker, ())
-                .await?;
+            let mut instantiated = context.instantiate(&component, &linker, ()).await?;
             let func = instantiated.instance.get_func(&export).ok_or_else(|| {
                 wcmp::Error::Unsupported {
                     feature: format!("a program with no export `{export}`"),
                 }
             })?;
             let results = func.call(&mut instantiated.store, &[]).await?;
-            Ok::<_, wcmp::Error>((instantiated.millis, results))
+            Ok::<_, wcmp::Error>((wasm_compile_ms, instantiated.millis, results))
         }
         .await;
     match outcome {
-        Ok((millis, results)) => {
+        Ok((wasm_compile_ms, millis, results)) => {
+            set("wasmCompileMs", JsValue::from_f64(wasm_compile_ms));
             set("instantiateMs", JsValue::from_f64(millis));
             let result = match results.first() {
                 Some(Val::S32(value)) => JsValue::from_f64(f64::from(*value)),
@@ -377,6 +376,7 @@ fn status_value(status: &RouteStatus) -> JsValue {
     set("source", JsValue::from_str(&status.source));
     set("shipped", JsValue::from_str(&status.shipped));
     set("compileMs", millis(status.compile_ms));
+    set("wasmCompileMs", millis(status.wasm_compile_ms));
     set("instantiateMs", millis(status.instantiate_ms));
     set("diagnostics", optional(&status.diagnostics));
     set("trapped", optional(&status.trapped));

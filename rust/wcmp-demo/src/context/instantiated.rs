@@ -14,7 +14,7 @@ pub struct Instantiated<T: 'static> {
     pub store: Store<T>,
     /// The instance.
     pub instance: Instance,
-    /// The instantiate time, in milliseconds: the parse of the bytes,
-    /// the link, and the instantiation.
+    /// The instantiate time, in milliseconds: the link and the
+    /// instantiation.
     pub millis: f64,
 }

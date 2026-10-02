@@ -376,10 +376,11 @@ async fn start(entry: &Rc<Tag>, source: &str) -> Result<(Rc<Runtime>, Vec<String
         status.compile_ms = Some(compiled.millis);
         status.diagnostics = None;
     }
-    let (started, parse_ms) = context
+    let (started, wasm_compile_ms) = context
         .parse(&compiled.bytes)
         .await
         .map_err(|error| error.to_string())?;
+    entry.status.borrow_mut().wasm_compile_ms = Some(wasm_compile_ms);
     let mut linker = Linker::new(context.engine());
     wasi::define(&mut linker, &tag).map_err(|error| error.to_string())?;
     let types = http_types::define(&mut linker, &started).map_err(|error| error.to_string())?;
@@ -401,7 +402,6 @@ async fn start(entry: &Rc<Tag>, source: &str) -> Result<(Rc<Runtime>, Vec<String
     let instantiated = context
         .instantiate(
             &started,
-            parse_ms,
             &linker,
             ElementHost {
                 http,

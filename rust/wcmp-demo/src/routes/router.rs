@@ -245,6 +245,8 @@ impl<S: Storage + 'static> Router<S> {
         let component = wcmp::Component::new(&self.engine, &compiled.bytes)
             .await
             .map_err(|error| error.to_string())?;
+        status.wasm_compile_ms = Some(platform::now_millis() - started);
+        let started = platform::now_millis();
         let mut linker = Linker::new(&self.engine);
         wasi::define(&mut linker, &status.pattern).map_err(|error| error.to_string())?;
         let types = http_types::define(&mut linker, &component)

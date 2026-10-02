@@ -13,9 +13,14 @@ pub struct TagStatus {
     pub tag: String,
     /// The source the tag runs, or tried to run last.
     pub source: String,
-    /// The time of the last compile, in milliseconds.
+    /// The time of the last compile of the Zena source to a component,
+    /// in milliseconds.
     pub compile_ms: Option<f64>,
-    /// The time of the last instantiation, in milliseconds.
+    /// The time the polyfill took to compile that component, in
+    /// milliseconds: its translation and the compiles of its core
+    /// modules.
+    pub wasm_compile_ms: Option<f64>,
+    /// The time of the last link and instantiation, in milliseconds.
     pub instantiate_ms: Option<f64>,
     /// The diagnostics of the last compile, when it failed.
     pub diagnostics: Option<String>,

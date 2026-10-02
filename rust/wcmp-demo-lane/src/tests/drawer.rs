@@ -67,6 +67,7 @@ pub fn it_lists_every_source_with_its_timings(browser: &Browser) -> Result<(), S
            tag,
            source: source('element', tag).length > 0,
            compile: shown('element', tag, 'compile'),
+           wasm: shown('element', tag, 'wasm'),
            instantiate: shown('element', tag, 'instantiate'),
          }));
          await api('PATCH', '/api/todos/t1', { completed: true });
@@ -75,6 +76,7 @@ pub fn it_lists_every_source_with_its_timings(browser: &Browser) -> Result<(), S
              pattern,
              source: source('route', pattern).length > 0,
              compile: shown('route', pattern, 'compile'),
+             wasm: shown('route', pattern, 'wasm'),
              instantiate: shown('route', pattern, 'instantiate'),
            }));
            return both.every((route) => /\\d+ ms/.test(route.compile)) && both;
@@ -85,9 +87,12 @@ pub fn it_lists_every_source_with_its_timings(browser: &Browser) -> Result<(), S
         entries.as_array().is_some_and(|entries| {
             entries.iter().all(|entry| {
                 entry["source"] == true
-                    && entry["compile"]
-                        .as_str()
-                        .is_some_and(|text| text.ends_with(" ms"))
+                    && entry["compile"].as_str().is_some_and(|text| {
+                        text.starts_with("Zena → Wasm ") && text.ends_with(" ms")
+                    })
+                    && entry["wasm"].as_str().is_some_and(|text| {
+                        text.starts_with("Wasm compile ") && text.ends_with(" ms")
+                    })
                     && entry["instantiate"]
                         .as_str()
                         .is_some_and(|text| text.ends_with(" ms"))

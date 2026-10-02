@@ -71,8 +71,9 @@ impl Context {
         self.compiler.lock().await.compile(request).await
     }
 
-    /// Parse `bytes` as a component on this context's engine, and
-    /// answer it with the time the parse took, in milliseconds.
+    /// Compile `bytes` as a component on this context's engine, and
+    /// answer it with the time the compile took, in milliseconds: the
+    /// polyfill's translation and the compiles of its core modules.
     ///
     /// # Errors
     ///
@@ -85,8 +86,7 @@ impl Context {
     }
 
     /// Instantiate `component` with `linker` in a new store that holds
-    /// `data`. The time it answers adds `parse_ms`, the time the parse
-    /// took, so it is the whole instantiate time.
+    /// `data`, and answer the time the link and the instantiation took.
     ///
     /// # Errors
     ///
@@ -96,7 +96,6 @@ impl Context {
     pub async fn instantiate<T: 'static>(
         &self,
         component: &Component,
-        parse_ms: f64,
         linker: &Linker<T>,
         data: T,
     ) -> Result<Instantiated<T>, wcmp::Error> {
@@ -106,7 +105,7 @@ impl Context {
         Ok(Instantiated {
             store,
             instance,
-            millis: parse_ms + platform::now_millis() - started,
+            millis: platform::now_millis() - started,
         })
     }
 }

@@ -213,7 +213,7 @@ fn section(document: &Document, kind: &str, name: &str) -> Result<Element, Strin
     }));
     section.append_child(&heading).map_err(js_text)?;
     let meta = make(document, "p", &[("class", "meta")])?;
-    for field in ["compile", "instantiate", "counts"] {
+    for field in ["compile", "wasm", "instantiate", "counts"] {
         let span = make(document, "span", &[("data-field", field)])?;
         meta.append_child(&span).map_err(js_text)?;
     }
@@ -381,6 +381,7 @@ pub fn refresh() {
             &id,
             &status.source,
             status.compile_ms,
+            status.wasm_compile_ms,
             status.instantiate_ms,
             status.diagnostics.as_deref(),
             status.trapped.as_deref(),
@@ -450,6 +451,7 @@ pub fn refresh() {
             &id,
             &source,
             number("compileMs"),
+            number("wasmCompileMs"),
             number("instantiateMs"),
             text("diagnostics").as_deref(),
             text("trapped").as_deref(),
@@ -465,6 +467,7 @@ fn fill(
     id: &str,
     source: &str,
     compile_ms: Option<f64>,
+    wasm_compile_ms: Option<f64>,
     instantiate_ms: Option<f64>,
     diagnostics: Option<&str>,
     trapped: Option<&str>,
@@ -481,7 +484,10 @@ fn fill(
         None => "not yet".to_string(),
     };
     if let Some(span) = field("compile") {
-        span.set_text_content(Some(&format!("compile {}", millis(compile_ms))));
+        span.set_text_content(Some(&format!("Zena → Wasm {}", millis(compile_ms))));
+    }
+    if let Some(span) = field("wasm") {
+        span.set_text_content(Some(&format!("Wasm compile {}", millis(wasm_compile_ms))));
     }
     if let Some(span) = field("instantiate") {
         span.set_text_content(Some(&format!("instantiate {}", millis(instantiate_ms))));
@@ -566,6 +572,7 @@ pub fn element_status_value(status: &TagStatus) -> JsValue {
     set("tag", JsValue::from_str(&status.tag));
     set("source", JsValue::from_str(&status.source));
     set("compileMs", millis(status.compile_ms));
+    set("wasmCompileMs", millis(status.wasm_compile_ms));
     set("instantiateMs", millis(status.instantiate_ms));
     set("diagnostics", optional(&status.diagnostics));
     set("trapped", optional(&status.trapped));
