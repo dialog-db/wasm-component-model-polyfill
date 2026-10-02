@@ -1,3 +1,9 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The smoke test entry point. Natively it prints the report a line at
 //! a time and exits non-zero on a failure. Under `wasm-bindgen` the
 //! page's `window.smoke` object receives each chapter and story

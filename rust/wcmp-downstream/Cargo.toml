@@ -10,7 +10,7 @@
 name = "wcmp-downstream"
 description = "A consumer of the Wasm Component Model Polyfill from outside its workspace"
 version = "0.1.0"
-license = "MIT OR Apache-2.0"
+license = "MPL-2.0"
 edition = "2024"
 publish = false
 

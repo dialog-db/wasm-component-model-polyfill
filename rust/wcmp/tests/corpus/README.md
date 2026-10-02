@@ -12,6 +12,11 @@ commit, recorded below.
 | `wasmtime/`       | `bytecodealliance/wasmtime`, `tests/misc_testsuite/component-model/` (synchronous subset) | `cb091c33cece` | 2026-09-14 |
 | `wasmtime/async/` | `bytecodealliance/wasmtime`, `tests/misc_testsuite/component-model/async/`                | `cb091c33cece` | 2026-09-16 |
 
+The vendored files keep their upstream licenses, not the project's: `cm/` is
+under the Apache License 2.0 and `wasmtime/` under the Apache License 2.0 with
+LLVM exceptions. Each directory holds a copy of its license, taken from the
+commit in the table. A new vendored commit brings its `LICENSE` along.
+
 The polyfill runs both forms of an asynchronous export, the callback
 form and the stackful form, the task built-ins that come with them, and
 both lowers of a call out through an import, so part of `cm/async/` and

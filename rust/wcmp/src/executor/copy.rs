@@ -1,3 +1,9 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The built-ins that copy values through a stream or a future,
 //! `stream.read`, `stream.write`, `future.read`, and `future.write`,
 //! and the four that cancel a copy, `stream.cancel-read`,

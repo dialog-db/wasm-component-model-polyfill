@@ -1,3 +1,9 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Reading the imports and exports of a core module binary.
 //!
 //! The runtime layer describes a module's imports and exports too,

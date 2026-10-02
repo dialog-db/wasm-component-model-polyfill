@@ -1,3 +1,9 @@
+;; Copyright 2026 The Dialog DB Project
+;;
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 ;; The core module behind the `fixed-lists` world. A `list<u32, 4>`
 ;; and a `list<u8, 16>` both fit the flat form, so they arrive as
 ;; four and sixteen `i32` parameters. A `list<u8, 16>` result does not

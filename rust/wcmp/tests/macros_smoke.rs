@@ -1,3 +1,9 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Smoke tests proving that the three `wcmp_macros` macros compose: an async
 //! cross-target `#[test]` that asserts on byte slices produced by `wasm!` and
 //! `component!` at compile time.

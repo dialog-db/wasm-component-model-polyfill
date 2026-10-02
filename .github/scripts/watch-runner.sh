@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Copyright 2026 The Dialog DB Project
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 # Run a command while watching the runner's free disk and memory.
 #
 # A runner whose root filesystem fills up stalls instead of failing,

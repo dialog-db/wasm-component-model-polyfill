@@ -1,3 +1,9 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The canonical-ABI shape a compound value type carries with it.
 //!
 //! A value type's size, alignment, and flat slots are fixed the

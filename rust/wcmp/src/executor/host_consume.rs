@@ -1,3 +1,9 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! A guest's write to a stream or a future whose readable end the
 //! host serves through a consumer, and the pipe that makes a consumer
 //! the reading side of a readable end the host holds.

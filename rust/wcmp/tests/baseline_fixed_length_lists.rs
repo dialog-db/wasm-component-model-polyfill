@@ -1,3 +1,9 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Baseline tests for fixed-length `list<T, N>` values: the type
 //! projection, the canonical ABI in both directions, and the typed
 //! Rust conversion. A fixed-length list is laid out inline, so a

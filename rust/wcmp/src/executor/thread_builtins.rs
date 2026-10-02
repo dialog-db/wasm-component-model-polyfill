@@ -1,3 +1,9 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The thread built-ins other than `thread.yield`: `thread.index`,
 //! `thread.new-indirect`, and `thread.resume-later`, which never
 //! switch stacks, and the five that suspend or switch.

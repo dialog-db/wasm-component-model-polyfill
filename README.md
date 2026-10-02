@@ -403,8 +403,15 @@ code from it remains in this repository.
 
 ## License
 
-Licensed under either of the Apache License, Version 2.0 or the MIT license, at
-your option.
+Copyright 2026 The Dialog DB Project.
+
+This project is licensed under the [Mozilla Public License 2.0](LICENSE). Each
+source file states the same at its top.
+
+Two upstream test suites are vendored under `rust/wcmp/tests/corpus/` and keep
+their own licenses: `cm/` comes from the Component Model and is under the Apache
+License 2.0, and `wasmtime/` comes from Wasmtime and is under the Apache License
+2.0 with LLVM exceptions. Each directory holds a copy of its license.
 
 [Component Model]: https://github.com/WebAssembly/component-model
 [Wasm Core]: https://webassembly.github.io/spec/core/

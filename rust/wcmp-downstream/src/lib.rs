@@ -1,3 +1,9 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! A consumer of the polyfill from outside its workspace. It makes an engine
 //! over the backend of its target, as a host does, so a build of this crate
 //! links the polyfill and the backend together.

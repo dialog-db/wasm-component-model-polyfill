@@ -1,3 +1,9 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 // Scenario 7: a custom world through `--wit` and `--world`. The program
 // imports the test interface's `echo` and returns what it answers.
 import { echo } from 'wcmp:scenario/host';

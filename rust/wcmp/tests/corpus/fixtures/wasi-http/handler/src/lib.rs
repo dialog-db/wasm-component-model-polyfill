@@ -1,3 +1,9 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! A WASI 0.3 HTTP handler, built by `cargo` and wit-bindgen against
 //! the `wasi:http@0.3.0` packages vendored under `../wit/deps/`.
 //!

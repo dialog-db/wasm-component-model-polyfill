@@ -1,3 +1,9 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Lists the scripts of the fidelity suite, from the pinned
 //! specification test suite that `WCMP_SPEC_TESTSUITE` names.
 //!

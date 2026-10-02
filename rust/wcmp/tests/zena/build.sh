@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Copyright 2026 The Dialog DB Project
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 # Compiles every Zena scenario under a directory to components. The
 # flake's `zena-scenarios` package runs this script inside the build
 # sandbox with the `zena` command of the pinned toolchain in `$ZENA`, so

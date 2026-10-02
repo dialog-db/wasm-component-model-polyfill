@@ -1,3 +1,9 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The driver of the `rich` fixture: the component the assertions
 //! reach. It holds no logic of its own. Every value it answers with
 //! has crossed the driver-to-guest boundary and the guest-to-support

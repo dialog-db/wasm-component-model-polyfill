@@ -1,3 +1,9 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 // Scenario 2: a string in and a string out. The string crosses the
 // Canonical ABI as `utf8` in linear memory, so the component has a
 // memory module beside the program module, and a string export brings

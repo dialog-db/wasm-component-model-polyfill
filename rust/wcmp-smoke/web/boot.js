@@ -1,3 +1,9 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 // The smoke page's own script. It lives in a file rather than inline in
 // `index.html` because the page's content-security policy is
 // `script-src 'self' 'wasm-unsafe-eval'`, which admits no inline script.

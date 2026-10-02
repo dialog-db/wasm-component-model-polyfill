@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Copyright 2026 The Dialog DB Project
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 # Regenerates every fixture under this directory from its sources. The
 # `fixtures` menu command runs this script with the flake's `wasm-tools`,
 # `wac`, and Rust toolchain on the PATH, so a rerun on the same system

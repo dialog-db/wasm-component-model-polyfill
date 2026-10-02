@@ -1,3 +1,9 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The polyfill subjects of the Zena toolchain compatibility tests: each
 //! compiled Zena scenario run through the polyfill, in the browser on
 //! `wasm32-unknown-unknown` (the `web` subject), and natively over the

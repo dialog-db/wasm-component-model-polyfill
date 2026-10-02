@@ -1,3 +1,9 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The engine's own plumbing, over test doubles of a backend: dynamic
 //! dispatch to two backends in one binary, the checks the engine makes
 //! before it reaches a backend, host functions, memory access, and the

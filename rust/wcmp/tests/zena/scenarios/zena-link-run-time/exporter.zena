@@ -1,3 +1,9 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 // Scenario 8, the exporter: it implements the `greeter` interface that
 // `importer.zena` imports, and the runner links the two at run time.
 import { Future } from 'zena:async';

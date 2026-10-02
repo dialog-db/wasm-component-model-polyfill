@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Copyright 2026 The Dialog DB Project
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 # Packs what the polyfill subjects of the Zena scenarios read into one
 # file. The flake's test archives embed that file in the `zena` test
 # with `include_bytes!`, so the compiled scenarios and the Wasmtime
