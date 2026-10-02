@@ -59,7 +59,8 @@ These terms recur:
 - The business logic of the todo list is Rust.
 - The drawer shows every Zena source of the demo and recompiles an edit in
   place.
-- The drawer shows the compile time and the instantiate time of each component.
+- The drawer shows the Zena compile time, the Wasm compile time, and the
+  instantiate time of each component.
 - The demo builds from a crate in this workspace with Trunk. A menu command
   serves it.
 - A browser test lane drives every TodoMVC behavior and the drawer. `tests all`
@@ -225,7 +226,23 @@ world compiler {
 diagnostics. Each diagnostic names the file, the line, and the column. The
 program must match the named world. An empty `wit-source` compiles against the
 world that Zena derives from the program, as `zena build` does without `--wit`.
-For the same source, `compile` returns the same bytes as `zena build`.
+For the same source, `compile` in a fresh instance returns the same bytes as
+`zena build`.
+
+The entry module keeps a compiler from one compile to the next, as Zena's
+language service does. Each compile in a fresh instance checks the whole
+standard library again and compiles the component runtime module again, which
+takes most of its time. So the entry module keeps one compiler for each package
+manifest and declared world. The standard library is parsed and checked once.
+Every file of the program is parsed and checked again for each compile, because
+a check that carried over would still refer to what its imports were in the last
+compile. The runtime module compiles once for each manifest.
+
+A compile in a fresh instance returns the bytes of `zena build`, and so does the
+same compile again. After other programs, a compile can return a module that
+orders its globals another way, because the checker keeps generic instantiations
+from earlier programs. The module does the same thing. This is a candidate for a
+report to Zena.
 
 The compiler reads every file other than the entry module through `read-source`.
 That includes the standard library, the WIT packages that a world refers to, and
@@ -777,7 +794,9 @@ element. A bad edit cannot break the tool that fixes it.
 The drawer lists every element and every route. For each one, it shows:
 
 - The Zena source in a text area.
-- The time of the last compile and the last instantiation.
+- Three times of the last start: the compile of the Zena source to a component
+  ("Zena → Wasm"), the polyfill's compile of that component ("Wasm compile"),
+  and the link and instantiation.
 - The compiler's diagnostics after a failed compile.
 - For an element, the count of connected elements and of instances.
 - A "Save" control and a "Reset to original" control.
@@ -1009,9 +1028,9 @@ worker stops and starts again, the request still gets the new behavior.
 "Reset to original" restores the shipped source. After an edit, a test resets
 the element and the route. Both behave as shipped, and IndexedDB holds no edit.
 
-The drawer shows timings. After the page starts, the drawer shows a compile time
-and an instantiate time for every element. After the first request to each
-route, it shows the same for that route.
+The drawer shows timings. After the page starts, the drawer shows a Zena compile
+time, a Wasm compile time, and an instantiate time for every element. After the
+first request to each route, it shows the same for that route.
 
 The look follows the system theme. A test renders the demo with the light color
 scheme and with the dark color scheme. The background color and the primary

@@ -790,6 +790,127 @@ async fn it_compiles_one_source_to_the_same_bytes_in_one_instance_and_in_a_new_o
     assert_eq!(compiles[0], compiles[2], "a compile in a new instance");
 }
 
+// Native only. What this pins is the compiler component's own logic,
+// which no engine changes, and the demo lane runs the kept compiler in
+// Chrome. In the web lane, beside 31 other tests in flight, its run of
+// compiles left another compiler test past the runner's timeout.
+#[cfg(not(target_arch = "wasm32"))]
+#[wcmp_macros::test]
+async fn it_compiles_each_source_after_others_in_one_instance_to_what_it_says() {
+    let polyfill = polyfill();
+    if polyfill.subject() == Subject::Wasmi {
+        // Wasmi refuses the compiler component, which uses GC.
+        return;
+    }
+    let scenario = scenario_named(COMPILER_SCALAR_EXPORT);
+    let compiler = scenario
+        .programs
+        .iter()
+        .find(|program| program.name == "compiler")
+        .and_then(|program| program.component.as_deref())
+        .expect("the compiler scenario holds the compiler component");
+    // The compiler keeps what it checked of the standard library from
+    // one compile to the next: two programs at one path that instantiate
+    // a generic type with a class of the same name and another shape, a
+    // program that instantiates one with a standard type, then one with
+    // an error at a path the next program takes again, with other text.
+    // Each source, its path, and the export a component it compiles to
+    // answers with its arguments.
+    let sources: [(&str, &str, &str, &[Val]); 5] = [
+        (
+            "class Item {\n  x: i32;\n  new(this.x);\n}\nexport let count = (): i32 => {\n  let items = new GrowableArray<Item>();\n  items.push(new Item(4));\n  return items.length + items[0].x;\n};\n",
+            "items.zena",
+            "count",
+            &[],
+        ),
+        (
+            "class Item {\n  label: String;\n  y: i32;\n  new(this.label, this.y);\n}\nexport let count = (): i32 => {\n  let items = new GrowableArray<Item>();\n  items.push(new Item('ab', 7));\n  return items[0].y + items[0].label.length;\n};\n",
+            "items.zena",
+            "count",
+            &[],
+        ),
+        (
+            "export let count = (): i32 => {\n  let names = new GrowableArray<String>();\n  names.push('a');\n  names.push('b');\n  return names.length;\n};\n",
+            "generic.zena",
+            "count",
+            &[],
+        ),
+        (
+            "export let add = (a: i32, b: i32): i32 => {\n  return 'not a number';\n};\n",
+            "scalar.zena",
+            "add",
+            &[],
+        ),
+        (
+            "export let add = (a: i32, b: i32): i32 => {\n  return a + b;\n};\n",
+            "scalar.zena",
+            "add",
+            &[Val::S32(2), Val::S32(3)],
+        ),
+    ];
+    let arguments =
+        |source: &str, path: &str| [source, path, "", ""].map(|text| Val::String(text.to_string()));
+    // What a compile answered, run: the answer of the export of the
+    // component it returned, or the text of its error.
+    let run = async |compiled: &[Val], export: &str, args: &[Val]| -> Result<Vec<Val>, String> {
+        let bytes: Vec<u8> = match compiled {
+            [Val::Result(Ok(Some(list)))] => match list.as_ref() {
+                Val::List(items) => items
+                    .iter()
+                    .map(|item| match item {
+                        Val::U8(byte) => *byte,
+                        other => panic!("a byte of the component is {other:?}"),
+                    })
+                    .collect(),
+                other => panic!("a component that is {other:?}"),
+            },
+            [Val::Result(Err(Some(text)))] => return Err(format!("{text:?}")),
+            other => panic!("`compile` answered {other:?}"),
+        };
+        let (mut store, instance) = polyfill
+            .instantiate(&bytes)
+            .await
+            .unwrap_or_else(|error| panic!("the compiled component: {error}"));
+        let results = instance
+            .get_func(export)
+            .unwrap_or_else(|| panic!("no export `{export}`"))
+            .call(&mut store, args)
+            .await
+            .unwrap_or_else(|error| panic!("`{export}`: {error}"));
+        Ok(results.into_vec())
+    };
+
+    // One instance compiles every source in turn. Each must compile to a
+    // component that answers what its source says, whatever the
+    // compiles before it left in the compiler; the error names its file
+    // and line.
+    let (mut store, instance) = polyfill
+        .instantiate(compiler)
+        .await
+        .unwrap_or_else(|error| panic!("the compiler component: {error}"));
+    let compile = instance.get_func("compile").expect("`compile`");
+    let mut answers = Vec::new();
+    for (source, path, export, args) in sources {
+        let compiled = compile
+            .call(&mut store, &arguments(source, path))
+            .await
+            .unwrap_or_else(|error| panic!("`compile`: {error}"))
+            .into_vec();
+        answers.push(run(&compiled, export, args).await);
+    }
+    assert_eq!(answers[0], Ok(vec![Val::S32(5)]));
+    assert_eq!(answers[1], Ok(vec![Val::S32(9)]));
+    assert_eq!(answers[2], Ok(vec![Val::S32(2)]));
+    assert!(
+        answers[3]
+            .as_ref()
+            .is_err_and(|error| error.contains("scalar.zena:2:")),
+        "{:?}",
+        answers[3]
+    );
+    assert_eq!(answers[4], Ok(vec![Val::S32(5)]));
+}
+
 /// The reports of the Wasmtime run and this target's polyfill subject on
 /// the scenario `name` of `bundle`.
 async fn reports_of(bundle: &[u8], name: &str) -> Vec<Report> {

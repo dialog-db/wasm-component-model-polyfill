@@ -9,6 +9,12 @@
 // options as `zena build --target component`, so a compile here returns
 // the bytes `zena build` writes for the same source.
 //
+// Unlike `compileFile`, it keeps a compiler from one compile to the next,
+// as Zena's language service does, so the standard library is parsed and
+// checked once rather than for every compile: see `Session`. The
+// component runtime memory module, whose source is fixed, compiles once
+// too.
+//
 // It reads no file system. The entry module and the declared world come
 // in as arguments. Every other file the compile reads, the standard
 // library and relative imports included, comes from the host's
@@ -19,13 +25,14 @@
 // manifest, `zena-packages.json`, comes from the host too, when it has
 // one, as `zena build` reads it from the working directory.
 import { Future } from 'zena:async';
-import { Outcome, Ok, Err, Some, StringBuilder } from 'zena:core';
+import { ByteBuffer, Outcome, Ok, Err, Some, StringBuilder } from 'zena:core';
 import { readSource } from 'wcmp:zena-compiler/host';
 import { CompilerHost } from 'zena-compiler:library-loader';
 import { PackageConfig, stdlibIdToRelativeFile } from 'zena-compiler:module-resolver';
 import { loadPackageMap } from 'zena-compiler:package-manifest';
 import {
-  createCompiler, CompilerOptions, checkCompilation, withBuiltinPackages
+  Compiler, createCompiler, CompilerOptions, checkCompilation, ProgramCheckResult,
+  withBuiltinPackages
 } from 'zena-compiler:compiler';
 import { DiagnosticSeverity, SourceSpan, SyntaxError } from 'zena-compiler:diagnostics';
 import { BinaryGenerator } from 'zena-compiler:codegen/binary-generator';
@@ -82,8 +89,8 @@ let readText = (path: String, worldSource: String): String => {
  * and every other file from the host.
  */
 final class HostReader implements CompilerHost {
-  entryPath: String;
-  entrySource: String;
+  var entryPath: String;
+  var entrySource: String;
   worldSource: String;
   var packagesWit = '';
   new(this.entryPath, this.entrySource, this.worldSource);
@@ -147,17 +154,71 @@ let packagesWitOf = (packages: Map<String, PackageConfig>, worldSource: String):
 };
 
 /**
- * Compile `source`, the module at `entryPath`, against the world
- * `worldName` of the WIT document `witSource`, or against the world
- * Zena derives from the program when `witSource` is empty, as `zena
- * build` does without `--wit`, and answer the bytes of
- * the component or the text of every error, one per line, each naming
- * its file, line, and column.
+ * A compiler kept from one compile to the next, as Zena's language
+ * service keeps one: the standard library is parsed and checked once,
+ * not once for every compile.
+ *
+ * A session serves one configuration: one package manifest and one
+ * declared world, or none. The options and the modules synthesized
+ * from WIT then stay the same from one compile to the next, and only
+ * the program changes: the entry module and the files it imports.
+ *
+ * Only the standard library and the modules synthesized from WIT carry
+ * from one compile to the next, and neither imports a file of the
+ * program. Every file of the program is parsed and checked again for
+ * each compile, even one whose text did not change. A check that
+ * carried over would still name what the file imported from the last
+ * compile, and the code generator follows those names: a module whose
+ * import changed under it would compile against the old one.
  */
-let compileOnce = (source: String, entryPath: String, witSource: String,
-    worldName: String): Outcome<FixedArray<u8>, String> => {
+final class Session {
+  host: HostReader;
+  compiler: Compiler;
+  packages: Map<String, PackageConfig>;
+  packagesWit: String;
+  /** The check of the last compile, whose standard library carries over. */
+  var previous: ProgramCheckResult | null = null;
+  /** Every file of the last compile that is the program's. */
+  var paths = new GrowableArray<String>();
+  new(this.host, this.compiler, this.packages, this.packagesWit);
+}
+
+/** The session of each configuration, by `sessionKey`. */
+let sessions = new Map<String, Session>();
+
+/**
+ * The runtime memory module of each package manifest. Its source is the
+ * standard library's, and its compile is deterministic, so one compile
+ * serves every component.
+ */
+let runtimeModules = new Map<String, ByteBuffer>();
+
+/** The key of the configuration a compile runs in. */
+let sessionKey = (manifest: String, witSource: String, worldName: String): String => {
+  return worldName + '\n' + manifest + '\n' + witSource;
+};
+
+/**
+ * `kept`, taken out of `sessions` for the length of a compile of
+ * `source`, the module at `entryPath`: its compiler forgets every file
+ * of the last compile's program, which the compile then reads again.
+ */
+let resumeSession = (kept: Session, key: String, source: String,
+    entryPath: String): Session => {
+  sessions.delete(key);
+  kept.host.entryPath = entryPath;
+  kept.host.entrySource = source;
+  for (let path in kept.paths) {
+    kept.compiler.delete(path);
+  }
+  return kept;
+};
+
+/** A new session for the configuration a compile runs in. */
+let openSession = (source: String, entryPath: String, witSource: String,
+    worldName: String, hasManifest: boolean): Session => {
   let host = new HostReader(entryPath, source, witSource);
-  let packages = if (readSource(manifestPath) is Some<String>) {
+  let packages = if (hasManifest) {
     loadPackageMap(host, manifestPath)
   } else {
     new Map<String, PackageConfig>()
@@ -181,10 +242,48 @@ let compileOnce = (source: String, entryPath: String, witSource: String,
         (path: String, ast: Module): ComponentEntryWrapper | null =>
             synthesizeExportWrapper(witSource, worldName, path, ast, packagesWit);
   }
-  let compiler = createCompiler(host, options);
+  return new Session(host, createCompiler(host, options), packages, packagesWit);
+};
 
-  let compResult = compiler.compile(entryPath);
-  let checkResults = checkCompilation(compResult, null, false, false);
+/**
+ * Compile `source`, the module at `entryPath`, against the world
+ * `worldName` of the WIT document `witSource`, or against the world
+ * Zena derives from the program when `witSource` is empty, as `zena
+ * build` does without `--wit`, and answer the bytes of
+ * the component or the text of every error, one per line, each naming
+ * its file, line, and column.
+ *
+ * The compile runs in the session of its configuration, which forgets
+ * the last compile's program first, so only the standard library and the
+ * modules synthesized from WIT carry over. A compile that throws takes
+ * its session with it, so a compiler it left half done is never used
+ * again.
+ */
+let compileOnce = (source: String, entryPath: String, witSource: String,
+    worldName: String): Outcome<FixedArray<u8>, String> => {
+  let manifest = readSource(manifestPath);
+  let hasManifest = manifest is Some<String>;
+  let manifestText = if (hasManifest) { (manifest as Some<String>).value } else { '' };
+  let key = sessionKey(manifestText, witSource, worldName);
+  let session = if (sessions.has(key)) {
+    resumeSession(sessions[key], key, source, entryPath)
+  } else {
+    openSession(source, entryPath, witSource, worldName, hasManifest)
+  };
+  let declared = witSource != '';
+
+  let compResult = session.compiler.compile(entryPath);
+  let checkResults = checkCompilation(compResult, session.previous, false, false);
+  session.previous = checkResults;
+  let paths = new GrowableArray<String>();
+  for (let file in compResult.files) {
+    if (!file.isStdlib && !isWitModulePath(file.path)) {
+      paths.push(file.path);
+    }
+  }
+  session.paths = paths;
+  sessions[key] = session;
+
   let errors = new StringBuilder();
   var hasError = false;
   for (let diag in checkResults.diagnostics) {
@@ -218,12 +317,15 @@ let compileOnce = (source: String, entryPath: String, witSource: String,
   }
   let program = new Program(units, entryUnit);
   let generator = new BinaryGenerator(target, false, false, 1);
-  generator.runtimeMemoryModule =
-      compileComponentRuntimeModule(host, stdlibRoot, packages);
+  if (!runtimeModules.has(manifestText)) {
+    runtimeModules[manifestText] =
+        compileComponentRuntimeModule(session.host, stdlibRoot, session.packages);
+  }
+  generator.runtimeMemoryModule = runtimeModules[manifestText];
   generator.importEncoder = if (declared) {
-    makeImportEncoder(witSource, worldName, packagesWit)
+    makeImportEncoder(witSource, worldName, session.packagesWit)
   } else {
-    makeImportEncoder(null, '', packagesWit)
+    makeImportEncoder(null, '', session.packagesWit)
   };
   return new Ok<FixedArray<u8>, String>(generator.generate(program).toByteArray());
 };

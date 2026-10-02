@@ -262,3 +262,22 @@ pub fn it_records_no_spans_when_the_trace_parameter_is_off(
         format!("with tracing off the page measured {seen}")
     })
 }
+
+pub fn it_compiles_a_program_again_after_a_file_it_imports_changes(
+    browser: &Browser,
+) -> Result<(), String> {
+    browser.boot()?;
+    // The entry stays as it was, and the file beside it changes and
+    // changes back: the shape of an element's glue and its author's
+    // source, edited in the drawer and reset.
+    let source = "import { six } from './six.zena';\nexport let answer = (): i32 => six() * 7;\n";
+    let mut answers = Vec::new();
+    for six in ["6", "5 + 2", "6"] {
+        let files = format!(r#"{{ "six.zena": "export let six = (): i32 => {six};\n" }}"#);
+        answers.push(compile_check(browser, "compileCheck", source, &files)?);
+    }
+    check(
+        answers[0]["result"] == 42 && answers[1]["result"] == 49 && answers[2]["result"] == 42,
+        || format!("the compiles answered {answers:?}"),
+    )
+}
