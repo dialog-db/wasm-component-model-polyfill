@@ -17,11 +17,12 @@ The browser is the main subject. The Component Model is least likely to reach
 the browser by other means soon, and a browser host is where it has the most
 value. The native run of the polyfill is secondary.
 
-Nine terms recur:
+Ten terms recur:
 
 - The toolchain is the Zena compiler and its standard library, as Zena's own Nix
   package builds them.
 - The pin is the Zena revision that this repository's flake lock records.
+- A compiler scenario is a scenario whose component is Zena's own compiler.
 - A scenario is a small program, or a small group of programs, with a list of
   the calls to make and the results to expect.
 - A partner is a component in a scenario that another toolchain builds.
@@ -53,6 +54,8 @@ Nine terms recur:
 - Scenarios cover one component alone, two Zena components linked together, and
   a Zena component linked with a component from another toolchain. The links are
   made at run time through a `Linker` and ahead of time through composition.
+- Compiler scenarios run Zena's compiler as a component on every subject, and
+  run the components that it returns.
 - A menu command prints a compatibility report that leads with the browser and
   shows why each subject stopped. `tests all` runs the scenarios as one of its
   lanes.
@@ -63,12 +66,11 @@ Nine terms recur:
 
 - A fix for any failure that a scenario finds. Each root cause gets its own
   work.
-- Running the Zena compiler inside the polyfill. The compiler is a WASI Preview
-  1 core module, not a component.
 - A WASI host for the polyfill. The scenario runner supplies only the few WASI
   functions that the scenarios call.
-- The `wasi:http` interfaces. Zena can emit a `fetch` over `wasi:http`, and no
-  scenario uses it until a host for those interfaces exists.
+- A run of a program that uses the `wasi:http` interfaces. A compiler scenario
+  can compile such a program, but no scenario instantiates one until a host for
+  those interfaces exists.
 - A general framework for other external toolchains. The design keeps its
   toolchain-neutral parts apart, and it builds no extension point.
 - Runs with the suspend provider turned off. The conformance suite covers those
@@ -125,8 +127,27 @@ Each fact below was read from the cited source. The Zena facts are from revision
 ## The Toolchain Pin
 
 The toolchain enters the build as a flake input for Zena's repository. The
-scenario builds use Zena's `zena` package without change. They use only the
-`zena` command from it.
+scenario builds use Zena's `zena` package without change. Most scenarios use
+only the `zena` command from it. A compiler scenario also uses Zena's source
+tree at the pin: the compiler's sources, the standard library, and the WIT
+parser.
+
+Zena's repository can lack a change that a scenario needs. In that case, the
+flake input can name a fork of Zena that adds the change. The fork holds only
+changes that are offered to Zena, as a patch series:
+
+- Each change is one commit that addresses one concern.
+- Each commit starts from Zena's `main` branch, so that it can go to Zena as its
+  own pull request. A commit depends on another only when its concern does.
+- Each commit has a pull request description and its own tests, in the form that
+  Zena's contributor guide asks for.
+- One revision of the fork combines every change in the series. The pin names
+  that revision.
+- A defect in Zena that a scenario works around, and does not fix, gets a bug
+  report for Zena instead of a commit.
+
+When Zena accepts a change, the series drops it. When Zena holds every change,
+the flake input moves back to Zena's repository.
 
 The input does not follow this flake's `nixpkgs`. Zena builds against its own
 `nixpkgs`, as its author builds and tests it. A different Node.js or Rust
@@ -139,7 +160,7 @@ the development shell, so a contributor never has Node.js or npm on the path.
 The design assumes that each Zena revision builds under Nix. If a revision does
 not build, the pin stays where it is. The owner of this repository raises the
 failure with Zena's author directly. This repository does not patch Zena's
-build.
+build. A fork changes Zena's source, and Zena's own build builds it.
 
 The package builds every part of Zena, including its website, its editor
 plug-ins, and four Rust crates. The public binary cache does not hold it. Nix
@@ -259,6 +280,28 @@ the prediction. A GC type cannot cross the component boundary, because Zena
 lifts through linear memory. So the design expects no failure in the conversion
 of export types. Scenarios 2 and 3 confirm or refute that too.
 
+### Compiler Scenarios
+
+A compiler scenario runs Zena's compiler as a component on every subject. Its
+Zena program is an entry module that calls the compiler's own library code. The
+build compiles that module with `--target component`, against the toolchain's
+source tree at the pin. The module exports a function that takes Zena source and
+returns the bytes of a component, or the compiler's diagnostics.
+
+The compiler is not small, so a compiler scenario does not meet the fourth
+criterion. A failure in it can have many causes. The other scenarios still
+locate small faults.
+
+An expectations entry of a compiler scenario can name a component that a
+previous call returned. The runner takes the bytes of that call's result, parses
+them as a component, links the component with the test host functions, and
+instantiates it. Later entries can call its exports. The stages apply to that
+component in the same way. A parse failure records `parse`, a missing import
+records `link`, and so on.
+
+A polyfill subject passes a compile call when it returns the same bytes as the
+Wasmtime run.
+
 ### Typed Calls
 
 The scenario runner calls every export untyped, through `Func::call` with `Val`
@@ -320,7 +363,7 @@ The Wasmtime run gets its WASI imports from `wasmtime-wasi`.
 
 The polyfill subjects get them from test host functions in the scenario runner.
 The functions use the polyfill's public `Linker` API, and the crate does not
-export them. They cover only what the first set calls:
+export them. They cover only what the scenarios call:
 
 - The p3 `write-via-stream` functions of `wasi:cli/stdout@0.3.0` and
   `wasi:cli/stderr@0.3.0`, and the `wasi:cli/types@0.3.0` interface that holds
@@ -332,6 +375,9 @@ export them. They cover only what the first set calls:
   with `wasi:clocks/types@0.3.0`. `wait-for` is an async host function. A
   `setTimeout` timer backs it in the browser, and a native timer backs it
   natively.
+- A function that gives Zena's source files to a compiler scenario. It answers a
+  path with the text of that file from the toolchain's source tree at the pin,
+  or with none when the file does not exist.
 - One fixed test interface with one function that takes a string and returns it.
   Scenario 7 imports it. The Wasmtime run defines the same function on
   Wasmtime's `Linker`.
@@ -411,7 +457,9 @@ difference and writes nothing.
 
 ## Moving the Pin
 
-The pin tracks Zena's `main` branch. Zena has no releases.
+The pin tracks Zena's `main` branch. Zena has no releases. While the flake input
+names a fork, the pin tracks the fork's revision that combines the patch series,
+and that revision starts from Zena's `main`.
 
 The owner moves the pin on demand, when Zena lands something relevant. A
 contributor moves it only as part of work that needs a newer compiler. No
@@ -602,6 +650,12 @@ under all three subjects. Scenarios 10 to 14 build the Rust partner from its
 locked manifest at test time. The partner's bytes do not change when the pin
 moves. Scenario 14 passes on every subject while the partners and the run-time
 link work.
+
+A compiler scenario runs what it compiles. A test gives the runner a compiler
+scenario whose entry names the component that a compile call returned. Every
+subject instantiates that component and calls it. When the compiled program
+imports an interface that the test host functions lack, the record shows `link`
+for that scenario.
 
 Typed calls cover scalars and strings. Scenario 1 calls its scalar export with
 `TypedFunc`, and scenario 2 calls its string export with `TypedFunc`. The typed
