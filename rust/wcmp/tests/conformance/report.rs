@@ -467,6 +467,7 @@ impl FileReport {
 /// projection is exact when that target's own run reports no
 /// unexpected failure and no stale expectation, which its test suite
 /// enforces.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn project(reports: &[FileReport], delta: &[Expectation]) -> Vec<FileReport> {
     reports
         .iter()

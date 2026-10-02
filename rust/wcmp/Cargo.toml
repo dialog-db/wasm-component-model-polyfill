@@ -6,6 +6,9 @@ authors.workspace = true
 license.workspace = true
 edition.workspace = true
 repository.workspace = true
+# The tests and their corpus are most of the crate's size, and a consumer
+# runs none of them, so the package leaves them out.
+exclude = ["/tests/"]
 
 [features]
 default = []

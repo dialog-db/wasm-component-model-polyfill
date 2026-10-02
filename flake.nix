@@ -1019,12 +1019,13 @@
         publishCrane = (katsuobushi.inputs.crane.mkLib pkgs).overrideToolchain (_: rustToolchain);
 
         # The crates a consumer of the polyfill downloads: the polyfill, the
-        # runtime layer and its two published backends, and the macros the
+        # runtime layer and its three published backends, and the macros the
         # browser backend runs when it builds. The order is the order they
         # publish in: each comes after every crate it depends on.
         publishedCrates = [
           "wcmp-macros"
           "wcmp-wasm-core"
+          "wcmp-wasm-core-wasmi"
           "wcmp-wasm-core-wasmtime"
           "wcmp-wasm-core-web"
           "wcmp"
@@ -1095,15 +1096,193 @@
           doNotPostBuildInstallCargoBinaries = true;
         };
 
+        # What keeps a crate from building as a crates.io consumer would,
+        # given the text of its manifest, of its `.cargo/config.toml` (or
+        # null), and of its lock file (or null): one line for each. Cargo
+        # applies a `[patch]` or a `[replace]` only in the root workspace, so
+        # a consumer never sees one, and a `[patch]`, a `paths` override, or
+        # a `[source]` replacement in a Cargo configuration changes where a
+        # dependency comes from as well. Each file is parsed, so every
+        # spelling TOML allows for a table — quoted, dotted, escaped, or
+        # inline — reaches the same key. The lock is held to the effect: each
+        # locked package comes from crates.io, or from a path and is the
+        # consumer or a published crate, and no patch is recorded, so a
+        # patch from anywhere Cargo reads one shows.
+        downstreamGuardViolations =
+          {
+            manifest,
+            config ? null,
+            lock ? null,
+          }:
+          let
+            inherit (pkgs.lib) concatMap optional;
+            tables =
+              file: text: names:
+              let
+                parsed = builtins.fromTOML text;
+              in
+              concatMap (name: optional (parsed ? ${name}) "${file} has a `${name}` table") names;
+            cratesIo = "registry+https://github.com/rust-lang/crates.io-index";
+            locked = package: "${package.name} ${package.version}";
+            lockViolations =
+              let
+                parsed = builtins.fromTOML lock;
+              in
+              optional (parsed ? patch) "Cargo.lock records a patch"
+              ++ concatMap (
+                package:
+                if package ? source then
+                  optional (
+                    package.source != cratesIo
+                  ) "Cargo.lock locks ${locked package} from ${package.source}, not crates.io"
+                else
+                  optional (
+                    !builtins.elem package.name ([ "wcmp-downstream" ] ++ publishedCrates)
+                  ) "Cargo.lock locks ${locked package} from a path, and it is not a published crate"
+              ) (parsed.package or [ ]);
+          in
+          tables "Cargo.toml" manifest [
+            "patch"
+            "replace"
+          ]
+          ++ pkgs.lib.optionals (config != null) (
+            tables ".cargo/config.toml" config [
+              "patch"
+              "paths"
+              "source"
+            ]
+          )
+          ++ pkgs.lib.optionals (lock != null) lockViolations;
+
+        # The guard against cases it must refuse, failing the check when it
+        # accepts one. Each is a manifest, a configuration, or a lock that
+        # patches a dependency in a way a consumer would not see.
+        downstreamGuardCheck =
+          let
+            manifest = ''
+              [package]
+              name = "wcmp-downstream"
+              version = "0.1.0"
+            '';
+            cases = {
+              patch-table.manifest = manifest + ''
+                [patch.crates-io]
+                anyhow = { path = "../anyhow" }
+              '';
+              quoted-patch-table.manifest = manifest + ''
+                ["patch".crates-io]
+                anyhow = { path = "../anyhow" }
+              '';
+              literal-patch-table.manifest = manifest + ''
+                [ 'patch' . "crates-io" ]
+                anyhow = { path = "../anyhow" }
+              '';
+              escaped-patch-table.manifest = manifest + ''
+                ["\u0070atch".crates-io]
+                anyhow = { path = "../anyhow" }
+              '';
+              patch-by-url.manifest = manifest + ''
+                [patch."https://github.com/rust-lang/crates.io-index"]
+                anyhow = { path = "../anyhow" }
+              '';
+              # A dotted key and an inline table come before every table
+              # header, where a root key belongs.
+              dotted-patch-key.manifest = ''
+                patch.crates-io.anyhow = { path = "../anyhow" }
+              ''
+              + manifest;
+              inline-patch-table.manifest = ''
+                patch = { crates-io = { anyhow = { path = "../anyhow" } } }
+              ''
+              + manifest;
+              replace-table.manifest = manifest + ''
+                [replace]
+                "anyhow:1.0.0" = { path = "../anyhow" }
+              '';
+              config-patch = {
+                inherit manifest;
+                config = ''
+                  [patch.crates-io]
+                  anyhow = { path = "../anyhow" }
+                '';
+              };
+              config-paths = {
+                inherit manifest;
+                config = ''
+                  paths = ["../anyhow"]
+                '';
+              };
+              config-source-replacement = {
+                inherit manifest;
+                config = ''
+                  [source.crates-io]
+                  replace-with = "mirror"
+                '';
+              };
+              lock-git-source = {
+                inherit manifest;
+                lock = ''
+                  [[package]]
+                  name = "anyhow"
+                  version = "1.0.0"
+                  source = "git+https://github.com/dtolnay/anyhow#0000000"
+                '';
+              };
+              lock-unpublished-path = {
+                inherit manifest;
+                lock = ''
+                  [[package]]
+                  name = "anyhow"
+                  version = "1.0.0"
+                '';
+              };
+              lock-patch = {
+                inherit manifest;
+                lock = ''
+                  [[patch.unused]]
+                  name = "anyhow"
+                  version = "1.0.0"
+                '';
+              };
+            };
+            accepted = builtins.filter (name: downstreamGuardViolations cases.${name} == [ ]) (
+              builtins.attrNames cases
+            );
+          in
+          pkgs.runCommand "wcmp-downstream-guard-check" { } (
+            if accepted == [ ] then
+              ''touch "$out"''
+            else
+              ''
+                echo "The downstream guard accepted: ${toString accepted}" >&2
+                exit 1
+              ''
+          );
+
         # A crate outside the workspace, `rust/wcmp-downstream`, which
         # depends on the polyfill and on a backend as a crates.io consumer
-        # does, with its own lock file and no `[patch]` section. It builds
-        # for the host and for `wasm32-unknown-unknown`. The source holds
-        # the consumer, the published crates, and the workspace manifest
-        # they inherit from, and nothing else of the workspace.
+        # does, with its own lock file and no patch the guard above finds.
+        # It builds for the host and for `wasm32-unknown-unknown`, and its
+        # native test runs a component through the engine it makes, so the
+        # two link at run time too. The build is `--locked`; `downstream
+        # lock` refreshes the lock when a published crate's dependencies
+        # change. The source holds the consumer, the published crates, and
+        # the workspace manifest they inherit from, and nothing else of the
+        # workspace, so no Cargo configuration above the consumer applies.
         downstreamBuildCheck =
           let
-            lock = ./rust/wcmp-downstream/Cargo.lock;
+            directory = ./rust/wcmp-downstream;
+            lock = directory + "/Cargo.lock";
+            readIfExists = path: if builtins.pathExists path then builtins.readFile path else null;
+            violations = downstreamGuardViolations {
+              manifest = builtins.readFile (directory + "/Cargo.toml");
+              config =
+                let
+                  current = readIfExists (directory + "/.cargo/config.toml");
+                in
+                if current != null then current else readIfExists (directory + "/.cargo/config");
+              lock = builtins.readFile lock;
+            };
           in
           publishCrane.mkCargoDerivation {
             pname = "wcmp-downstream-build";
@@ -1127,21 +1306,45 @@
             strictDeps = true;
             nativeBuildInputs = commonBuildInputs;
             cargoArtifacts = null;
-            buildPhaseCargoCommand = ''
-              if grep -nE '^[[:space:]]*(\[+[[:space:]]*patch\b|patch[[:space:]]*[.=])' Cargo.toml; then
-                echo "The downstream crate has a [patch] section, which a" >&2
-                echo "consumer from crates.io would not see." >&2
-                exit 1
-              fi
-              cargo build --locked --offline
-              cargo build --locked --offline --target wasm32-unknown-unknown
-            '';
+            buildPhaseCargoCommand =
+              if violations != [ ] then
+                ''
+                  echo "The downstream crate patches a dependency, which a consumer" >&2
+                  echo "from crates.io would not see:" >&2
+                  ${pkgs.lib.concatMapStrings (line: "echo ${pkgs.lib.escapeShellArg "  ${line}"} >&2\n") violations}
+                  exit 1
+                ''
+              else
+                ''
+                  cargo build --locked --offline
+                  cargo build --locked --offline --target wasm32-unknown-unknown
+                  cargo test --locked --offline
+                '';
             installPhaseCommand = ''
               touch "$out"
             '';
             doInstallCargoArtifacts = false;
             doNotPostBuildInstallCargoBinaries = true;
           };
+
+        # Clippy with `-D warnings` for `wasm32-unknown-unknown`, every
+        # target and feature of the workspace, as the native `clippy` check
+        # runs it for the host. The browser backend has its code only under
+        # `wasm32`, and the polyfill and its tests have `wasm32` paths, which
+        # a native lint never compiles. It reuses the dependency bundle of
+        # the web debug test archive.
+        clippyWasm32 = withTestInputs (buildCrate {
+          pname = "wcmp-cargo-clippy-wasm32-check";
+          version = "0.1.0";
+          target = "wasm32-unknown-unknown";
+          profile = "dev";
+          buildPhaseCargoCommand = ''
+            cargoWithProfile clippy --keep-going --workspace --all-targets --all-features -- -D warnings
+          '';
+          installPhaseCommand = ''touch "$out"'';
+          doInstallCargoArtifacts = false;
+          doNotPostBuildInstallCargoBinaries = true;
+        });
 
         # The listing against the one checked in beside the crate. A `pub`
         # that reaches a workspace-internal type — a field, a constructor, a
@@ -1794,14 +1997,69 @@
             };
           };
 
-          # Arguments after `lint` reach `nix flake check`: CI passes `-L
-          # --keep-going`, so its log carries each build's output and one
-          # failed check does not stop the others.
+          # Every check, or only the checks named after the command, each
+          # built as `nix flake check` would build it (`lint clippy-wasm32
+          # package`). Arguments that begin with `-` reach Nix: CI passes
+          # `-L --keep-going`, so its log carries each build's output and
+          # one failed check does not stop the others.
           "lint" = {
-            description = "Every check the flake declares (nix flake check, with arguments passed through)";
+            description = "Every check the flake declares (nix flake check), or only the checks named after it, as in: lint clippy-wasm32 package (arguments that begin with - pass through to Nix)";
             command = ''
-              nix flake check "$@"
+              flags=()
+              checks=()
+              for argument in "$@"; do
+                case "$argument" in
+                  -*) flags+=("$argument") ;;
+                  *) checks+=(".#checks.${system}.$argument") ;;
+                esac
+              done
+              if [ "''${#checks[@]}" = 0 ]; then
+                exec nix flake check "''${flags[@]}"
+              fi
+              exec nix build --no-link --print-build-logs "''${flags[@]}" "''${checks[@]}"
             '';
+          };
+
+          # The crate outside the workspace that consumes the polyfill as a
+          # crates.io consumer would (`rust/wcmp-downstream`). Its lock file
+          # is its own, and the `downstream-build` check builds with
+          # `--locked`, so a change to a published crate's dependencies
+          # makes it stale. `lock` updates the consumer's own workspace only,
+          # which takes in what the published crates changed and keeps every
+          # other locked version, and writes the lock; `--dry-run` only
+          # prints the difference.
+          "downstream" = {
+            description = "The crate outside the workspace that consumes the polyfill as crates.io would";
+            subcommands = {
+              lock = {
+                description = "Refresh rust/wcmp-downstream/Cargo.lock after a published crate's dependencies change, keeping every other locked version (`--dry-run` only prints the difference)";
+                command = ''
+                  crate="$(git rev-parse --show-toplevel)"/rust/wcmp-downstream
+                  dry=""
+                  for argument in "$@"; do
+                    case "$argument" in
+                      --dry-run) dry=1 ;;
+                      *)
+                        echo "downstream lock: $argument is not an argument of this command (only --dry-run)" >&2
+                        exit 2
+                        ;;
+                    esac
+                  done
+                  committed=$(mktemp)
+                  trap 'rm -f "$committed"' EXIT
+                  cp "$crate/Cargo.lock" "$committed"
+                  cargo update --workspace --manifest-path "$crate/Cargo.toml"
+                  if diff -u "$committed" "$crate/Cargo.lock"; then
+                    echo "downstream lock: rust/wcmp-downstream/Cargo.lock is current, nothing to write"
+                  elif [ -n "$dry" ]; then
+                    cp "$committed" "$crate/Cargo.lock"
+                    echo "downstream lock: the diff above is what a run would write; rust/wcmp-downstream/Cargo.lock is unchanged"
+                  else
+                    echo "downstream lock: wrote rust/wcmp-downstream/Cargo.lock"
+                  fi
+                '';
+              };
+            };
           };
 
           # The crate's public surface, as `cargo public-api` reads it out
@@ -2116,6 +2374,10 @@
             # fidelity suite included, and both embed their inputs at
             # compile time.
             clippy = withTestInputs cargoChecks.clippy;
+            # The same lint for `wasm32-unknown-unknown`, which alone
+            # compiles the browser backend and the `wasm32` paths of the
+            # polyfill and of its tests: see `clippyWasm32`.
+            clippy-wasm32 = clippyWasm32;
             # The web smoke page must still run, and report what the native
             # binary reports: see `smokeWebCheck`.
             smoke-web = smokeWebCheck;
@@ -2133,11 +2395,13 @@
             # source: see `webBackendNoEvalCheck`.
             web-backend-no-eval = webBackendNoEvalCheck;
             # Every published crate packages, and a crate outside the
-            # workspace builds against the polyfill and a backend with no
-            # `[patch]` section: see `packageCheck` and
-            # `downstreamBuildCheck`.
+            # workspace builds and runs against the polyfill and a backend
+            # with no patch of a dependency, which the guard refuses in
+            # every spelling of its cases: see `packageCheck`,
+            # `downstreamBuildCheck`, and `downstreamGuardCheck`.
             package = packageCheck;
             downstream-build = downstreamBuildCheck;
+            downstream-guard = downstreamGuardCheck;
             # Every Zena scenario compiles, or keeps Zena's refusal, with the
             # pinned toolchain, its Rust partners build, and its
             # composition is made or keeps `wac`'s refusal; and the

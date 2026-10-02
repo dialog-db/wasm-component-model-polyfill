@@ -52,13 +52,16 @@
 
 use std::sync::{Arc, Mutex};
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::Accessor;
 use crate::concurrency::Outcome;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::internal::AccessorInternal;
 use crate::internal::FuncInternal;
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
-    Accessor, Component, Engine, EngineConfig, Error, Func, HostCall, Instance, Linker, Result,
-    Store, SuspendProviderKind, Val,
+    Component, Engine, EngineConfig, Error, Func, HostCall, Instance, Linker, Result, Store,
+    SuspendProviderKind, Val,
 };
 use wcmp_macros::component;
 
@@ -784,6 +787,7 @@ const QUEUES_A_CALLBACK_OF_ITS_OWN: &[u8] = component!(
 
 /// The entry at which the `log` of [`instantiate_with_a_refusal`]
 /// reaches for its store from where no poll of it is running.
+#[cfg(not(target_arch = "wasm32"))]
 const REFUSED_AT: u32 = 5;
 
 /// Instantiate `binary` with a `log` that reaches for its store
@@ -795,6 +799,7 @@ const REFUSED_AT: u32 = 5;
 /// store-not-in-poll cause. That is a scheduler cause a yield never
 /// asked a turn to avoid, and it belongs to the item the nested turn
 /// ran rather than to the yield.
+#[cfg(not(target_arch = "wasm32"))]
 async fn instantiate_with_a_refusal(binary: &[u8]) -> (Store<()>, Instance, Log) {
     let engine = fallback_engine();
     let component = Component::new(&engine, binary)

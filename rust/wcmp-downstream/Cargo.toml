@@ -2,10 +2,16 @@
 # a backend as a crates.io consumer would. Each dependency names the version a
 # consumer would ask the registry for, and a path in place of the registry.
 #
-# The manifest has no `[patch]` section, and must never gain one: Cargo applies
-# a patch only in the root workspace, so a consumer would not see it. The
-# `downstream-build` flake check refuses a manifest that has one, and builds
-# this crate for the host and for `wasm32-unknown-unknown`.
+# The manifest has no `[patch]` or `[replace]` section, and must never gain
+# one; nor may a `.cargo/config.toml` beside it patch a dependency. Cargo
+# applies a patch only in the root workspace, so a consumer would not see it.
+# The `downstream-build` flake check refuses a crate that has one, however the
+# table is spelled, builds this crate for the host and for
+# `wasm32-unknown-unknown`, and runs its native test.
+#
+# The lock file beside this manifest is the downstream's own, and the check
+# builds with `--locked`. When a published crate's dependencies change, the
+# lock goes stale and the check fails; `downstream lock` refreshes it.
 [package]
 name = "wcmp-downstream"
 description = "A consumer of the Wasm Component Model Polyfill from outside its workspace"
@@ -28,3 +34,10 @@ wcmp-wasm-core-wasmtime = { version = "0.1.0", path = "../wcmp-wasm-core-wasmtim
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wcmp-wasm-core-web = { version = "0.1.0", path = "../wcmp-wasm-core-web" }
+
+# The native test, which runs a component through the engine: a runtime to
+# drive the polyfill's asynchronous calls, and the text format the component
+# is written in.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { version = "1", features = ["rt"] }
+wat = "1"

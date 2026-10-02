@@ -13,6 +13,12 @@ for the board.
   `build <profile>`, `tests native|web <profile>`, `tests all`,
   `tests conformance`, `tests fidelity <backend>`, `tests regenerate`,
   `tests smoke native|web|check`, `lint`. Each one builds a Nix derivation.
+  `lint <check>...` builds only the named flake checks, for example
+  `lint clippy-wasm32`. Arguments that begin with `-` pass through to Nix, as in
+  CI's `lint -L --keep-going`.
+- `rust/wcmp-downstream` has its own lock, and its check builds `--locked`. When
+  a published crate's dependencies change, refresh the lock with
+  `downstream lock` (`--dry-run` prints the difference only).
 - `cache push` uploads what this machine built for CI to `wcmp.cachix.org`,
   never the test archives or Claude Code. It asks for a token and a
   confirmation. Push only with the owner's OK, because the cache is public.

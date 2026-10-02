@@ -145,11 +145,6 @@ impl<'a, T: 'static> StoreRefInternal<'a, T> {
         self.store.tables()
     }
 
-    /// Clone the handle for the per-store handle-tables ledger.
-    pub fn tables_handle(self) -> Arc<Mutex<HandleTables>> {
-        self.store.tables_handle()
-    }
-
     /// Lock the store's handle tables and record state.
     pub fn lock_tables(self) -> Result<MutexGuard<'a, HandleTables>> {
         self.store.lock_tables()

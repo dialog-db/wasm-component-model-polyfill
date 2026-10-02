@@ -1649,6 +1649,8 @@ dependencies = [
 name = "wcmp-downstream"
 version = "0.1.0"
 dependencies = [
+ "tokio",
+ "wat",
  "wcmp",
  "wcmp-wasm-core-wasmtime",
  "wcmp-wasm-core-web",

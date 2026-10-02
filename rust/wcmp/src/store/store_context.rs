@@ -3611,7 +3611,7 @@ mod tests {
     /// give it back.
     #[cfg(not(target_arch = "wasm32"))]
     fn poison_the_tables<T: 'static>(store: &Store<T>) {
-        let tables = store.internal_ref().tables_handle();
+        let tables = Arc::clone(store.internal_ref().tables());
         let poisoned = unwind(move || {
             let _tables = tables.lock().expect("tables");
             panic!("the host panicked with the tables locked")

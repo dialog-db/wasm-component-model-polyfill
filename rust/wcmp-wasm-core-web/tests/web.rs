@@ -908,7 +908,7 @@ async fn it_carries_the_bits_of_each_value_through_a_host_function() {
         ValType::EXTERNREF,
         ValType::FUNCREF,
     ];
-    let same = echo(&mut store, FuncType::new(types.clone(), types));
+    let same = echo(&mut store, FuncType::new(types, types));
     let module = Module::compile(
         &engine,
         wasm!(

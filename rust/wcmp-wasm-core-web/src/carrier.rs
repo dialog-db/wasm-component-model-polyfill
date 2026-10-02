@@ -120,9 +120,8 @@ impl Carrier {
         let root = match &self.catcher {
             Some(catcher) => catcher.root.clone(),
             None => {
-                let rethrow = Closure::<dyn Fn(JsValue) -> core::result::Result<(), JsValue>>::new(
-                    |exception| Err(exception),
-                );
+                let rethrow =
+                    Closure::<dyn Fn(JsValue) -> core::result::Result<(), JsValue>>::new(Err);
                 let bytes = wcmp_macros::wasm!(
                     r#"
                     (module

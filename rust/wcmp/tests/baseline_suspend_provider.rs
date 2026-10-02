@@ -100,7 +100,6 @@ fn it_keeps_the_answer_it_selected_at_construction() {
 /// Poll `future` once, and answer its output where it is ready.
 #[cfg(target_arch = "wasm32")]
 fn poll_once<F: core::future::Future>(future: F) -> core::task::Poll<F::Output> {
-    use core::future::Future as _;
     let mut future = core::pin::pin!(future);
     future.as_mut().poll(&mut core::task::Context::from_waker(
         core::task::Waker::noop(),
