@@ -1,0 +1,6 @@
+# Compiler scenario 1: the compiler compiles the program of scenario 1
+# against the world Zena derives from it. The scenario instantiates what
+# the compile returned and calls its export, untyped and then typed.
+call compiler compile("export let add = (a: i32, b: i32): i32 => {\n  return a + b;\n};\n", "scalar.zena", "", "") -> component scalar
+call scalar add(1s32, 2s32) -> 3s32
+call typed scalar add(1s32, 2s32) -> 3s32

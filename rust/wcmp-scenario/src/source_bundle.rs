@@ -86,8 +86,7 @@ mod tests {
 
     #[wcmp_macros::test]
     fn it_reads_each_file_by_its_path() {
-        let bundle =
-            SourceBundle::parse(b"file /a.zena 3\nabc\nfile /dir 5\nx\ny\nz\n").unwrap();
+        let bundle = SourceBundle::parse(b"file /a.zena 3\nabc\nfile /dir 5\nx\ny\nz\n").unwrap();
         assert_eq!(bundle.read("/a.zena"), Some("abc"));
         assert_eq!(bundle.read("/dir"), Some("x\ny\nz"));
         assert_eq!(bundle.len(), 2);

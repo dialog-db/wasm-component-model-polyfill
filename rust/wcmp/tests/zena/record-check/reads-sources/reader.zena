@@ -1,0 +1,23 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+// The compiler component's host import, called by a small program: each
+// export asks `read-source` for a path, which every subject answers
+// from the toolchain's source bundle.
+import { readSource } from 'wcmp:zena-compiler/host';
+import { Some } from 'zena:core';
+
+export let has = (path: String): boolean => {
+  return readSource(path) is Some<String>;
+};
+
+export let size = (path: String): u32 => {
+  let text = readSource(path);
+  if (text is Some<String>) {
+    return (text as Some<String>).value.length as u32;
+  }
+  return 0 as u32;
+};

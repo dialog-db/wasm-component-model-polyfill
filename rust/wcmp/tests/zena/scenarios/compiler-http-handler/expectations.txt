@@ -1,0 +1,6 @@
+# Compiler scenario 4: the compiler compiles a program that exports
+# `wasi:http/handler@0.3.0` and answers every request with text. The
+# test host has no `wasi:http`, so the scenario does not instantiate
+# what the compile returned. A polyfill subject must return the bytes
+# the Wasmtime run returned.
+call compiler compile("import { Request, Response, ErrorCode } from 'wasi:http/types';\nimport { Future } from 'zena:async';\nimport { Outcome, Ok } from 'zena:core';\nimport { textResponse } from 'zena:http';\n\nexport async function handle(request: Request): Future<Outcome<Response, ErrorCode>> {\n  return new Ok<Response, ErrorCode>(textResponse('hello from zena'));\n}\n", "service.zena", "package test:http-service;\n\nworld service {\n  import wasi:http/types@0.3.0;\n  import wasi:clocks/monotonic-clock@0.3.0;\n  export wasi:http/handler@0.3.0;\n}\n", "service") -> component

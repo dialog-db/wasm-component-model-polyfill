@@ -1,0 +1,19 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+// The world of `reader.zena`: the compiler component's host interface,
+// imported by a program that asks it for files.
+package wcmp:zena-compiler;
+
+interface host {
+  read-source: func(path: string) -> option<string>;
+}
+
+world reader {
+  import host;
+  export has: func(path: string) -> bool;
+  export size: func(path: string) -> u32;
+}

@@ -28,9 +28,12 @@
 #
 # A scenario whose components are all Rust partners holds no program;
 # its output directory stays empty here, for the flake to fill with the
-# partners. The script fails when the directory holds no scenario, or a
-# scenario holds neither a program nor a partner: that is a layout it
-# cannot read, not an outcome of Zena.
+# partners. So does a scenario that runs Zena's compiler as a component:
+# it holds a `compiler.txt`, and the flake puts the compiler component
+# beside its programs as the program `compiler`. The script fails when
+# the directory holds no scenario, or a scenario holds no program, no
+# partner, and no `compiler.txt`: that is a layout it cannot read, not
+# an outcome of Zena.
 #
 # Zena refusing a program does not fail the build: that outcome is the
 # scenario's `compile` stage, which a later step records. For each
@@ -64,8 +67,9 @@ for scenario in "${scenario_dirs[@]}"; do
     cd "$scenario"
     programs=(*.zena)
     partners=(*/cargo-manifest.toml)
-    if [ ${#programs[@]} -eq 0 ] && [ ${#partners[@]} -eq 0 ]; then
-      echo "zena: scenario $name holds no .zena program and no Rust partner" >&2
+    if [ ${#programs[@]} -eq 0 ] && [ ${#partners[@]} -eq 0 ] &&
+      [ ! -e compiler.txt ]; then
+      echo "zena: scenario $name holds no .zena program, no Rust partner, and no compiler.txt" >&2
       exit 1
     fi
     for program in "${programs[@]}"; do

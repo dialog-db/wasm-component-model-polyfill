@@ -29,6 +29,10 @@
 //!   holds no function.
 //! - The fixed test interface, whose one function takes a string and
 //!   returns it, as the Wasmtime run defines it on Wasmtime's `Linker`.
+//! - The compiler component's `read-source`, which answers a path with
+//!   the text of that file from the toolchain's source bundle, or with
+//!   none when the bundle has no such file, as the Wasmtime run answers
+//!   it.
 //!
 //! Every function of an interface defined here is in the linker, so a
 //! component that imports the whole interface links. A function the
@@ -47,6 +51,7 @@ use wcmp::{
     FutureReader, FutureType, HostCall, InterfaceIdentifier, Linker, ResultType, Source,
     StoreContext, StreamConsumer, StreamReader, StreamResult, Val, ValueType,
 };
+use wcmp_scenario::SourceBundle;
 
 /// The interface `wasi:cli/stdout` and `wasi:cli/stderr` import their
 /// `error-code` from.
@@ -88,8 +93,9 @@ impl Host {
     }
 }
 
-/// Define the test host functions in `linker`.
-pub fn define(linker: &mut Linker<Host>) -> Result<(), Error> {
+/// Define the test host functions in `linker`. `read-source` answers
+/// from `sources`.
+pub fn define(linker: &mut Linker<Host>, sources: Arc<SourceBundle>) -> Result<(), Error> {
     linker.instance(&identifier(CLI_TYPES));
     define_output(linker, STDOUT, |host| &host.stdout)?;
     define_output(linker, STDERR, |host| &host.stderr)?;
@@ -114,6 +120,11 @@ pub fn define(linker: &mut Linker<Host>) -> Result<(), Error> {
         .instance(&test_interface)
         .func_wrap(wcmp_scenario::TEST_FUNCTION, |_, (text,): (String,)| {
             Ok(text)
+        })?;
+    linker
+        .instance(&identifier(wcmp_scenario::COMPILER_HOST_INTERFACE))
+        .func_wrap(wcmp_scenario::READ_SOURCE, move |_, (path,): (String,)| {
+            Ok(sources.read(&path).map(str::to_string))
         })
 }
 

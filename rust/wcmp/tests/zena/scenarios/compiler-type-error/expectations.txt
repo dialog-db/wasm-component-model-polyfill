@@ -1,0 +1,4 @@
+# Compiler scenario 2: the compiler compiles a program with a type error
+# on its second line. The call returns `err`, and the diagnostics name
+# the file and the line.
+call compiler compile("export let add = (a: i32, b: i32): i32 => {\n  return 'not a number';\n};\n", "broken.zena", "", "") -> err containing "broken.zena:2:"

@@ -1,0 +1,2 @@
+This scenario runs Zena's compiler as a component, as its program
+`compiler`. The build puts the compiler component here.

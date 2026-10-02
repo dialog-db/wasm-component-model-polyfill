@@ -6,6 +6,8 @@
 
 //! The Wasmtime run of one scenario.
 
+use std::sync::Arc;
+
 use wasmtime::component::types::{ComponentFunc, ComponentItem};
 use wasmtime::component::{
     Component, ComponentNamedList, ComponentType, Func, Instance, Lift, Linker, LinkerInstance,
@@ -14,8 +16,6 @@ use wasmtime::component::{
 use wasmtime::{AsContextMut, Config, Engine, Store};
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
-use std::sync::Arc;
-
 use wcmp_scenario::{
     Call, Link, Observations, Outcome, Run, SourceBundle, Stage, Typed, TypedSignature, Value,
     ValueType,
@@ -143,7 +143,6 @@ impl WasmtimeRun {
         })
     }
 
-
     /// Run `scenario` and judge it against its expectations.
     ///
     /// A program that did not compile stops the scenario at `compile`,
@@ -180,6 +179,14 @@ impl WasmtimeRun {
     /// expectations is made in order, even after one fails, and the
     /// lines printed to standard output are kept. What the scenario
     /// writes to standard error is kept apart and not observed.
+    ///
+    /// A call whose expectation is a component, such as a compile with
+    /// the compiler component, returns the bytes of one. The runner
+    /// parses, links, and instantiates them under the component's name,
+    /// in the same store and with the same linker, and later calls name
+    /// it like any other component. A failure there stops the scenario
+    /// at that step's stage, as it does for the scenario's own
+    /// components. The observations keep the digest of the bytes.
     ///
     /// A call is untyped, through `Func::call_async` with `Val`
     /// arguments, unless the expectations mark it as typed. A typed call
@@ -276,7 +283,34 @@ impl WasmtimeRun {
 
         let mut outcomes = Vec::with_capacity(scenario.expectations.entries.len());
         for entry in &scenario.expectations.entries {
-            outcomes.push(call(&mut store, &entry.call).await);
+            let (outcome, returned) = call(&mut store, &entry.call, entry.outcome.as_ref()).await;
+            if let (
+                Outcome::Component {
+                    name: Some(name), ..
+                },
+                Some(bytes),
+            ) = (&outcome, returned)
+            {
+                let component = match Component::new(&self.engine, &bytes) {
+                    Ok(component) => component,
+                    Err(error) => {
+                        return stopped(Stage::Parse, format!("component {name}: {error:#}"));
+                    }
+                };
+                let pre = match linker.instantiate_pre(&component) {
+                    Ok(pre) => pre,
+                    Err(error) => {
+                        return stopped(Stage::Link, format!("component {name}: {error:#}"));
+                    }
+                };
+                match pre.instantiate_async(&mut store).await {
+                    Ok(instance) => store.data_mut().instances.push((name.clone(), instance)),
+                    Err(error) => {
+                        return stopped(Stage::Instantiate, format!("component {name}: {error:#}"));
+                    }
+                }
+            }
+            outcomes.push(outcome);
         }
         let output = String::from_utf8_lossy(&stdout.contents())
             .lines()
@@ -285,7 +319,6 @@ impl WasmtimeRun {
         Observations::observe(&scenario.expectations, Run { outcomes, output }).map_err(judge)
     }
 }
-
 
 /// The bytes or the diagnostics of a `result<list<u8>, string>`, or
 /// `None` for a value of another type.
@@ -392,25 +425,61 @@ fn forward_func(
         .map_err(|error| format!("{error:#}"))
 }
 
-/// Make one call and report how it ended.
-async fn call(store: &mut Store<Host>, call: &Call) -> Outcome {
+/// Make one call and report how it ended, with the bytes of the
+/// component it returned when `expected` is a component.
+///
+/// A call whose one result is a `result` with a `string` error, such as
+/// a compile, ends with that error. When `expected` is a component, the
+/// call ends with the component under that name when its result is
+/// `ok` with a `list<u8>`: the runner loads the bytes.
+async fn call(
+    store: &mut Store<Host>,
+    call: &Call,
+    expected: Option<&Outcome>,
+) -> (Outcome, Option<Vec<u8>>) {
     let Some(instance) = store.data().instance(&call.component) else {
-        return Outcome::Failure(format!("the scenario has no component {}", call.component));
+        let reason = format!("the scenario has no component {}", call.component);
+        return (Outcome::Failure(reason), None);
     };
     let Some(func) = lookup(&mut *store, &instance, &call.export) else {
-        return Outcome::Failure(format!(
+        let reason = format!(
             "component {} has no function export {}",
             call.component, call.export
-        ));
+        );
+        return (Outcome::Failure(reason), None);
     };
     if call.typed {
-        return typed_call(store, &func, &call.arguments).await;
+        return (typed_call(store, &func, &call.arguments).await, None);
     }
     let arguments: Vec<Val> = call.arguments.iter().map(to_val).collect();
     let mut results = vec![Val::Bool(false); func.ty(&*store).results().len()];
     if let Err(error) = func.call_async(&mut *store, &arguments, &mut results).await {
-        return Outcome::Failure(format!("{error:#}"));
+        return (Outcome::Failure(format!("{error:#}")), None);
     }
+    if let [result] = results.as_slice() {
+        match (compiled(result), expected) {
+            (Some(Err(text)), _) => {
+                return (
+                    Outcome::Error {
+                        text,
+                        partial: false,
+                    },
+                    None,
+                );
+            }
+            (Some(Ok(bytes)), Some(Outcome::Component { name, .. })) => {
+                let outcome = Outcome::component(name.as_deref(), &bytes);
+                return (outcome, name.is_some().then_some(bytes));
+            }
+            _ => {}
+        }
+    }
+    (results_outcome(&results), None)
+}
+
+/// The outcome of a call that returned `results`: the scenario model's
+/// values, or a failure when one has no value in the model.
+fn results_outcome(results: &[Val]) -> Outcome {
     let mut values = Vec::with_capacity(results.len());
     for (index, result) in results.iter().enumerate() {
         match from_val(result) {
@@ -1073,7 +1142,7 @@ mod tests {
             .iter()
             .map(|observation| match &observation.outcome {
                 Outcome::Failure(reason) => reason.as_str(),
-                Outcome::Results(_) => panic!("{observation} succeeded"),
+                other => panic!("{observation} ended with {other}"),
             })
             .collect();
         assert_eq!(
@@ -1124,7 +1193,7 @@ mod tests {
             .iter()
             .map(|observation| match &observation.outcome {
                 Outcome::Failure(reason) => reason.as_str(),
-                Outcome::Results(_) => panic!("{observation} succeeded"),
+                other => panic!("{observation} ended with {other}"),
             })
             .collect();
         assert_eq!(

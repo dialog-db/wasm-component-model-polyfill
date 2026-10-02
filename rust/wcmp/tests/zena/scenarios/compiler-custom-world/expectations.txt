@@ -1,0 +1,6 @@
+# Compiler scenario 3: the compiler compiles the program of scenario 7
+# against its declared world, which imports the fixed test interface.
+# The scenario instantiates what the compile returned, which every
+# subject's test host links, and calls it.
+call compiler compile("import { echo } from 'wcmp:scenario/host';\n\nexport let relay = (text: String): String => {\n  return echo(text);\n};\n", "relay.zena", "package wcmp:scenario;\n\ninterface host {\n  echo: func(text: string) -> string;\n}\n\nworld relay {\n  import host;\n  export relay: func(text: string) -> string;\n}\n", "relay") -> component relay
+call relay relay("hello, host") -> "hello, host"

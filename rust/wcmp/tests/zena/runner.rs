@@ -14,7 +14,7 @@ use wcmp::{
     PrimitiveType, Store, TypeMismatchPosition, Val, ValueType,
 };
 use wcmp_scenario::{
-    Call, Link, Outcome, Run, Stage, Subject, Typed, TypedSignature, Value, Verdict,
+    Call, Link, Outcome, Run, SourceBundle, Stage, Subject, Typed, TypedSignature, Value, Verdict,
 };
 
 use crate::bundle::Scenario;
@@ -30,6 +30,7 @@ use crate::host::{self, Host};
 pub struct PolyfillRun {
     engine: Engine,
     subject: Subject,
+    sources: Arc<SourceBundle>,
 }
 
 /// The instances of one scenario, each under its program's name. The
@@ -65,7 +66,14 @@ impl PolyfillRun {
     /// once here, so a definition the polyfill refuses fails before any
     /// scenario runs.
     fn with_engine(engine: Engine, subject: Subject) -> Result<Self, Error> {
-        let run = PolyfillRun { engine, subject };
+        let sources = SourceBundle::parse(crate::SOURCES).map_err(|error| Error::Internal {
+            message: format!("the toolchain's source bundle: {error}"),
+        })?;
+        let run = PolyfillRun {
+            engine,
+            subject,
+            sources: Arc::new(sources),
+        };
         run.linker()?;
         Ok(run)
     }
@@ -75,11 +83,26 @@ impl PolyfillRun {
         self.subject
     }
 
-    /// A linker with the test host functions.
+    /// A linker with the test host functions, whose `read-source`
+    /// answers from the toolchain's source bundle.
     fn linker(&self) -> Result<Linker<Host>, Error> {
         let mut linker = Linker::new(&self.engine);
-        host::define(&mut linker)?;
+        host::define(&mut linker, self.sources.clone())?;
         Ok(linker)
+    }
+
+    /// Parse `component`, and link and instantiate it with the test host
+    /// functions in a store of its own.
+    ///
+    /// # Errors
+    ///
+    /// The polyfill's error when the component does not parse, link, or
+    /// instantiate.
+    pub async fn instantiate(&self, component: &[u8]) -> Result<(Store<Host>, Instance), Error> {
+        let component = Component::new(&self.engine, component).await?;
+        let mut store = Store::new(&self.engine, Host::default())?;
+        let instance = self.linker()?.instantiate(&mut store, &component).await?;
+        Ok((store, instance))
     }
 
     /// Run `scenario` and judge it with the scenario model: against the
@@ -195,9 +218,12 @@ impl PolyfillRun {
     /// one fails. A call is untyped, through `Func::call` with `Val`
     /// arguments, unless the expectations mark it as typed. A typed call
     /// goes through `TypedFunc`, for the closed set of signatures of
-    /// [`TypedSignature`], and fails for any other. A result that is
-    /// neither a scalar nor a string fails its call too, because the
-    /// scenario model cannot hold it.
+    /// [`TypedSignature`], and fails for any other. A call that returns
+    /// a component, as a compile does, is recorded by its digest, and a
+    /// later call loads the component under the name its outcome gives.
+    /// A call that returns an error string is recorded as that error.
+    /// Any other result that is neither a scalar nor a string fails its
+    /// call, because the scenario model cannot hold it.
     async fn link_and_call(
         &self,
         scenario: &Scenario,
@@ -236,7 +262,25 @@ impl PolyfillRun {
 
         let mut outcomes = Vec::with_capacity(scenario.expectations.entries.len());
         for entry in &scenario.expectations.entries {
-            outcomes.push(call(&mut store, &instances, &entry.call).await);
+            let (outcome, returned) =
+                call(&mut store, &instances, &entry.call, entry.outcome.as_ref()).await;
+            if let (
+                Outcome::Component {
+                    name: Some(name), ..
+                },
+                Some(bytes),
+            ) = (&outcome, returned)
+            {
+                let component = match Component::new(&self.engine, &bytes).await {
+                    Ok(component) => component,
+                    Err(error) => return Err(stopped(Stage::Parse, name, &error)),
+                };
+                match linker.instantiate(&mut store, &component).await {
+                    Ok(instance) => lock(&instances).push((name.clone(), instance)),
+                    Err(error) => return Err(stopped(instantiation_stage(&error), name, &error)),
+                }
+            }
+            outcomes.push(outcome);
         }
         Ok(Run {
             outcomes,
@@ -406,33 +450,84 @@ fn describe(error: &(dyn std::error::Error + 'static)) -> String {
     text
 }
 
-/// Make one call and report how it ended.
-async fn call(store: &mut Store<Host>, instances: &Instances, call: &Call) -> Outcome {
+/// Make one call and report how it ended, with the bytes of the
+/// component it returned when `expected` is a component.
+///
+/// A call whose one result is a `result` with a `string` error, such as
+/// a compile, ends with that error. When `expected` is a component, the
+/// call ends with the component under that name when its result is `ok`
+/// with a `list<u8>`: the runner loads the bytes.
+async fn call(
+    store: &mut Store<Host>,
+    instances: &Instances,
+    call: &Call,
+    expected: Option<&Outcome>,
+) -> (Outcome, Option<Vec<u8>>) {
     let func = match exported(instances, &call.component, &call.export) {
         Ok(func) => func,
-        Err(reason) => return Outcome::Failure(reason),
+        Err(reason) => return (Outcome::Failure(reason), None),
     };
     if call.typed {
-        return typed_call(store, func, &call.arguments).await;
+        return (typed_call(store, func, &call.arguments).await, None);
     }
     let arguments: Vec<Val> = call.arguments.iter().map(to_val).collect();
     let results = match func.call(store, &arguments).await {
         Ok(results) => results,
-        Err(error) => return Outcome::Failure(describe(&error)),
+        Err(error) => return (Outcome::Failure(describe(&error)), None),
     };
+    if let [result] = &*results {
+        match (compiled(result), expected) {
+            (Some(Err(text)), _) => {
+                let outcome = Outcome::Error {
+                    text,
+                    partial: false,
+                };
+                return (outcome, None);
+            }
+            (Some(Ok(bytes)), Some(Outcome::Component { name, .. })) => {
+                let outcome = Outcome::component(name.as_deref(), &bytes);
+                return (outcome, name.is_some().then_some(bytes));
+            }
+            _ => {}
+        }
+    }
     let mut values = Vec::with_capacity(results.len());
     for (index, result) in results.iter().enumerate() {
         match from_val(result) {
             Some(value) => values.push(value),
             None => {
-                return Outcome::Failure(format!(
+                let reason = format!(
                     "result {} is {result:?}, which is neither a scalar nor a string",
                     index + 1
-                ));
+                );
+                return (Outcome::Failure(reason), None);
             }
         }
     }
-    Outcome::Results(values)
+    (Outcome::Results(values), None)
+}
+
+/// The bytes or the text of a `result<list<u8>, string>`, or `None` for
+/// a value of another type.
+fn compiled(val: &Val) -> Option<Result<Vec<u8>, String>> {
+    match val {
+        Val::Result(Ok(Some(list))) => match list.as_ref() {
+            Val::List(items) => items
+                .iter()
+                .map(|item| match item {
+                    Val::U8(byte) => Some(*byte),
+                    _ => None,
+                })
+                .collect::<Option<Vec<u8>>>()
+                .map(Ok),
+            _ => None,
+        },
+        Val::Result(Err(Some(text))) => match text.as_ref() {
+            Val::String(text) => Some(Err(text.clone())),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Make one typed call of `func` through the polyfill's `TypedFunc`,

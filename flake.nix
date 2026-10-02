@@ -618,6 +618,20 @@
               ''
             ) (rustPartners scenarios)
             + ''
+              # A scenario that runs the compiler component holds a
+              # `compiler.txt`, and the component joins its programs as
+              # `compiler`, as a partner joins them.
+              for marker in ${scenarios}/*/compiler.txt; do
+                [ -e "$marker" ] || continue
+                scenario=$(basename "$(dirname "$marker")")
+                if [ -e "$out/$scenario/compiler.status" ]; then
+                  echo "zena: scenario $scenario has a program named compiler" >&2
+                  exit 1
+                fi
+                cp ${zenaCompiler}/zena-compiler.wasm "$out/$scenario/compiler.wasm"
+                echo 0 >"$out/$scenario/compiler.status"
+                : >"$out/$scenario/compiler.log"
+              done
               chmod -R u+w "$out"
               ${pkgs.lib.getExe zenaComposer} ${scenarios} "$out"
             ''
@@ -698,7 +712,7 @@
             done
             grep -q 'no-scenario holds no scenario directory' no-scenario.err
             test ! -e no-scenario.out
-            grep -q 'scenario empty holds no .zena program and no Rust partner' \
+            grep -q 'scenario empty holds no .zena program, no Rust partner, and no compiler.txt' \
               no-program.err
 
             mkdir -p partners-only/baseline/partner
@@ -770,7 +784,8 @@
             compiled,
           }:
           pkgs.runCommand name { } ''
-            ${wasmtimeRunner}/bin/wcmp-scenario-wasmtime ${scenarios} ${compiled} "$out"
+            ${wasmtimeRunner}/bin/wcmp-scenario-wasmtime ${scenarios} ${compiled} "$out" \
+              ${zenaToolchainBundle}/zena-sources.bundle
           '';
 
         zenaWasmtime = runScenariosUnderWasmtime {
@@ -852,6 +867,7 @@
           derivation.overrideAttrs {
             WCMP_ZENA_SCENARIOS = "${zenaTestScenarios}/scenarios.bundle";
             WCMP_ZENA_RECORD_CHECK = "${zenaRecordCheck}/scenarios.bundle";
+            WCMP_ZENA_SOURCES = "${zenaToolchainBundle}/zena-sources.bundle";
             WCMP_SPEC_TESTSUITE = "${spec-testsuite}";
           };
 

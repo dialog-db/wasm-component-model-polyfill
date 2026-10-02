@@ -36,6 +36,26 @@ zena at 1bbe472f4c34d3faf12c74f9876afcfe541c4ac3
   - Native: pass
   - Wasmi: parse (component shapes: unsupported component feature: gc)
   - Wasmtime: pass
+- compiler-custom-world
+  - Browser: pass
+  - Native: pass
+  - Wasmi: parse (component compiler: unsupported component feature: gc)
+  - Wasmtime: pass
+- compiler-http-handler
+  - Browser: pass
+  - Native: pass
+  - Wasmi: parse (component compiler: unsupported component feature: gc)
+  - Wasmtime: pass
+- compiler-scalar-export
+  - Browser: pass
+  - Native: pass
+  - Wasmi: parse (component compiler: unsupported component feature: gc)
+  - Wasmtime: pass
+- compiler-type-error
+  - Browser: pass
+  - Native: pass
+  - Wasmi: parse (component compiler: unsupported component feature: gc)
+  - Wasmtime: pass
 - console-output
   - Browser: pass
   - Native: pass
@@ -97,8 +117,45 @@ zena at 1bbe472f4c34d3faf12c74f9876afcfe541c4ac3
   - Wasmi: parse (component exporter: unsupported component feature: gc)
   - Wasmtime: pass
 
-Passes: Browser 14/14, Native 14/14, Wasmi 2/14, Wasmtime 14/14
+Passes: Browser 18/18, Native 18/18, Wasmi 2/18, Wasmtime 18/18
 ```
+
+## Compiler scenarios
+
+The four scenarios whose names start with `compiler-` run Zena's own compiler as
+a component on every subject. The build makes the compiler component from the
+pinned toolchain's source tree and the entry module in `zena/compiler/` at the
+root of this repository. A scenario that holds a `compiler.txt` gets that
+component as its program `compiler`. Its expectations hold the Zena source of
+each compile as a string argument.
+
+- `compiler-scalar-export` compiles the program of `scalar-export`, then
+  instantiates the result and calls it.
+- `compiler-type-error` compiles a program with a type error. The call returns
+  `err`, and the text names the file and the line.
+- `compiler-custom-world` compiles the program of `custom-world` against its
+  declared world, then instantiates the result with the test host import and
+  calls it.
+- `compiler-http-handler` compiles a program that exports
+  `wasi:http/handler@0.3.0`. The test host has no `wasi:http`, so the scenario
+  does not instantiate the result.
+
+The compiler's `read-source` import reads every file other than the entry
+module. The test host answers it from the toolchain's source bundle, which holds
+Zena's standard library. A path the bundle lacks answers none.
+
+An expectation `-> component <name>` asks for the bytes of a component. The
+runner parses, links, and instantiates them under `<name>`, and later calls name
+that component. The stages apply as they do to a scenario's own components. The
+Wasmtime run records the SHA-256 digest of the bytes, and a polyfill subject
+passes a compile only when it returns the same bytes. `-> component` with no
+name checks the bytes and loads nothing. `-> err containing "<text>"` asks for
+an `err` whose text contains `<text>`.
+
+These scenarios are expensive. The compiler is about 2.3 MB, and natively one
+compile can take several seconds. A failure in one can have many causes, so
+these scenarios do not locate a small fault. The other scenarios still do that.
+Wasmi has no GC, so the Wasmi subject stops each of them at `parse`.
 
 ## Moving the pin
 

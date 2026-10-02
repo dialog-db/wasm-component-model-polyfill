@@ -69,6 +69,11 @@
 //!   interface export such as `local:demo/api#greet` needs no quoting.
 //!   The outcome is `fail`, optionally followed by a quoted message, or
 //!   the results: `()` for none, one value, or several in parentheses.
+//!   A call that returns a component, as a compile does, has the outcome
+//!   `component`, optionally followed by the name a later call loads it
+//!   as and by its `sha256:` digest. A call that returns an error string
+//!   has the outcome `err "<text>"` for the whole text, or
+//!   `err containing "<text>"` for a part of it.
 //! - `output "<line>"` is the next line the scenario prints.
 //! - `stage <stage> ["<reason>"]` appears in observations only, once,
 //!   and holds the Wasmtime run's verdict.
@@ -114,7 +119,7 @@ pub use crate::link::Link;
 pub use crate::linking::Linking;
 pub use crate::observation::Observation;
 pub use crate::observations::Observations;
-pub use crate::outcome::Outcome;
+pub use crate::outcome::{Outcome, digest};
 pub use crate::record::Record;
 pub use crate::report::Report;
 pub use crate::run::Run;

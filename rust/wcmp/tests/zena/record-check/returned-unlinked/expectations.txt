@@ -1,0 +1,6 @@
+# The compiler compiles a program against a declared world that imports
+# an interface no subject's host supplies. The compile returns a
+# component, and every subject stops at `link` when it links what the
+# compile returned.
+call compiler compile("import { ping } from 'test:absent/api';\nexport let main = (): i32 => ping();\n", "main.zena", "package test:absent;\ninterface api {\n  ping: func() -> s32;\n}\nworld main {\n  import api;\n  export main: func() -> s32;\n}\n", "main") -> component program
+call program main() -> 1s32

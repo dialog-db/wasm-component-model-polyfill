@@ -9,6 +9,9 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+# The digest of a component a call returned, which a run holds in place
+# of its bytes.
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

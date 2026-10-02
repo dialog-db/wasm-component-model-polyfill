@@ -112,6 +112,26 @@ const REFUSED: &str = "refused";
 /// exporter exports nothing its importer imports.
 const UNPLUGGED: &str = "unplugged";
 
+/// The toolchain's source bundle, which the compiler component's
+/// `read-source` answers from. See `zena/compiler/bundle.sh` at the root
+/// of the repository for the format.
+const SOURCES: &[u8] = include_bytes!(env!(
+    "WCMP_ZENA_SOURCES",
+    "the Zena scenario tests embed the bundle the build writes; run them through `tests native` or `tests web`"
+));
+
+/// The record-check scenario whose program asks the compiler
+/// component's host import for files.
+const READS_SOURCES: &str = "reads-sources";
+
+/// The record-check scenario whose compile returns a component that
+/// imports an interface no subject's host supplies.
+const RETURNED_UNLINKED: &str = "returned-unlinked";
+
+/// The name of compiler scenario 1, which compiles the program of
+/// scenario 1 and calls what the compile returned.
+const COMPILER_SCALAR_EXPORT: &str = "compiler-scalar-export";
+
 /// The committed record: the stage of every Zena scenario for every
 /// subject, and the Zena revision it was made from.
 const RECORD: &str = include_str!("zena/record.txt");
@@ -315,7 +335,7 @@ fn with_one_result_changed(observations: &Observations) -> Option<Observations> 
             .iter_mut()
             .find_map(|observation| match &mut observation.outcome {
                 Outcome::Results(results) => results.first_mut(),
-                Outcome::Failure(_) => None,
+                Outcome::Component { .. } | Outcome::Error { .. } | Outcome::Failure(_) => None,
             })?;
     let other = match &*result {
         Value::Bool(value) => Value::Bool(!*value),
@@ -643,6 +663,149 @@ async fn it_records_compose_for_every_subject_of_a_composition_wac_refuses() {
 
     let refused = Verdict::not_composed(&program.name, status, &program.compose_log);
     assert_every_subject_stops(&scenario.name, &refused, &program.compose_log).await;
+}
+
+#[wcmp_macros::test]
+async fn it_answers_read_source_from_the_toolchain_bundle_and_none_for_a_missing_path() {
+    let reports = reports_of(RECORD_CHECK, READS_SOURCES).await;
+    assert_eq!(reports.len(), 2, "{}", lines(&reports));
+    for report in &reports {
+        if report.subject == Subject::Wasmi {
+            // The program passes strings, so its core module uses GC,
+            // which Wasmi refuses.
+            assert_eq!(report.verdict.stage, Stage::Parse, "{report}");
+            continue;
+        }
+        assert!(report.verdict.passed(), "{report}");
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_stops_at_link_when_a_compile_returns_a_component_whose_import_the_host_lacks() {
+    let reports = reports_of(RECORD_CHECK, RETURNED_UNLINKED).await;
+    assert_eq!(reports.len(), 2, "{}", lines(&reports));
+    for report in &reports {
+        if report.subject == Subject::Wasmi {
+            assert_eq!(report.verdict.stage, Stage::Parse, "{report}");
+            continue;
+        }
+        assert_eq!(report.verdict.stage, Stage::Link, "{report}");
+        assert!(
+            report.verdict.reason.starts_with("component program: "),
+            "{report}"
+        );
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_instantiates_and_calls_the_component_a_compile_returned() {
+    let polyfill = polyfill();
+    let scenario = scenario_named(COMPILER_SCALAR_EXPORT);
+    assert!(
+        scenario.observations.verdict.passed(),
+        "{:?}",
+        scenario.observations.verdict
+    );
+    let observed = polyfill
+        .observe(&scenario)
+        .await
+        .unwrap_or_else(|error| panic!("{COMPILER_SCALAR_EXPORT}: {error}"));
+    let run = match (polyfill.subject(), observed) {
+        (Subject::Wasmi, Err(verdict)) => {
+            assert_eq!(verdict.stage, Stage::Parse, "{verdict:?}");
+            return;
+        }
+        (_, Ok(run)) => run,
+        (_, Err(verdict)) => panic!("{COMPILER_SCALAR_EXPORT} stopped: {verdict:?}"),
+    };
+    assert!(
+        matches!(
+            &run.outcomes[0],
+            Outcome::Component { name: Some(name), digest: Some(_) } if name == "scalar"
+        ),
+        "{}",
+        run.outcomes[0]
+    );
+    assert_eq!(run.outcomes[1], Outcome::Results(vec![Value::S32(3)]));
+    assert_eq!(run.outcomes[0], scenario.observations.calls[0].outcome);
+}
+
+#[wcmp_macros::test]
+async fn it_fails_a_compile_whose_bytes_differ_from_the_wasmtime_run() {
+    let polyfill = polyfill();
+    if polyfill.subject() == Subject::Wasmi {
+        // Wasmi stops every compiler scenario at `parse`.
+        return;
+    }
+    let mut scenario = scenario_named(COMPILER_SCALAR_EXPORT);
+    assert!(report(&polyfill, &scenario).await.verdict.passed());
+    let Outcome::Component { digest, .. } = &mut scenario.observations.calls[0].outcome else {
+        panic!("the first call of {COMPILER_SCALAR_EXPORT} returned no component");
+    };
+    *digest = Some(wcmp_scenario::digest(b"bytes the polyfill did not return"));
+
+    let report = report(&polyfill, &scenario).await;
+    assert_eq!(report.verdict.stage, Stage::Mismatch, "{report}");
+    assert!(report.verdict.reason.contains("call 1 "), "{report}");
+}
+
+#[wcmp_macros::test]
+async fn it_compiles_one_source_to_the_same_bytes_in_one_instance_and_in_a_new_one() {
+    let polyfill = polyfill();
+    if polyfill.subject() == Subject::Wasmi {
+        // Wasmi refuses the compiler component, which uses GC.
+        return;
+    }
+    let scenario = scenario_named(COMPILER_SCALAR_EXPORT);
+    let compiler = scenario
+        .programs
+        .iter()
+        .find(|program| program.name == "compiler")
+        .and_then(|program| program.component.as_deref())
+        .expect("the compiler scenario holds the compiler component");
+    let source = "export let add = (a: i32, b: i32): i32 => {\n  return a + b;\n};\n";
+    let arguments = [source, "scalar.zena", "", ""].map(|text| Val::String(text.to_string()));
+
+    let mut compiles = Vec::new();
+    for instances in [2, 1] {
+        let (mut store, instance) = polyfill
+            .instantiate(compiler)
+            .await
+            .unwrap_or_else(|error| panic!("the compiler component: {error}"));
+        let compile = instance.get_func("compile").expect("`compile`");
+        for _ in 0..instances {
+            let results = compile
+                .call(&mut store, &arguments)
+                .await
+                .unwrap_or_else(|error| panic!("`compile`: {error}"));
+            compiles.push(results.into_vec());
+        }
+    }
+    assert!(
+        matches!(&compiles[0][..], [Val::Result(Ok(Some(_)))]),
+        "{:?}",
+        compiles[0]
+    );
+    assert_eq!(compiles[0], compiles[1], "two compiles in one instance");
+    assert_eq!(compiles[0], compiles[2], "a compile in a new instance");
+}
+
+/// The reports of the Wasmtime run and this target's polyfill subject on
+/// the scenario `name` of `bundle`.
+async fn reports_of(bundle: &[u8], name: &str) -> Vec<Report> {
+    subjects(bundle)
+        .await
+        .into_iter()
+        .filter(|report| report.scenario == name)
+        .collect()
+}
+
+/// The scenario `name` of the bundle of every Zena scenario.
+fn scenario_named(name: &str) -> Scenario {
+    zena_scenarios()
+        .into_iter()
+        .find(|scenario| scenario.name == name)
+        .unwrap_or_else(|| panic!("the Zena bundle has no scenario {name}"))
 }
 
 /// Zena compiles to WebAssembly GC, so a component it builds from a
@@ -1519,7 +1682,8 @@ const MILLISECOND: u64 = 1_000_000;
 async fn instantiate(component: &[u8]) -> (Store<Host>, Instance) {
     let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let mut linker = Linker::new(&engine);
-    host::define(&mut linker).expect("the test host functions");
+    let sources = wcmp_scenario::SourceBundle::parse(SOURCES).expect("the source bundle");
+    host::define(&mut linker, std::sync::Arc::new(sources)).expect("the test host functions");
     let component = Component::new(&engine, component)
         .await
         .expect("the component parses");

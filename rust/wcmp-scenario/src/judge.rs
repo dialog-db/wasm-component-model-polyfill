@@ -27,11 +27,12 @@ pub struct Reference<'a> {
 impl Reference<'_> {
     /// Judge `run`.
     ///
-    /// A call that failed where the reference has results is the `call`
-    /// stage, and the first such call gives the reason, whatever else
-    /// differs. Otherwise the first difference, in call order and then
-    /// in the output, is the `mismatch` stage. A run with no difference
-    /// passes.
+    /// A call that failed where the reference has results, a component,
+    /// or an error, or that returned an error where the reference has a
+    /// component, is the `call` stage, and the first such call gives the
+    /// reason, whatever else differs. Otherwise the first difference, in
+    /// call order and then in the output, is the `mismatch` stage. A run
+    /// with no difference passes.
     pub fn judge(&self, run: &Run) -> Result<Verdict> {
         if run.outcomes.len() != self.calls.len() {
             return Err(Error::CallCount {
@@ -42,14 +43,19 @@ impl Reference<'_> {
         let pairs = || self.calls.iter().zip(&run.outcomes).enumerate();
 
         for (index, ((call, reference), observed)) in pairs() {
-            if let (Some(Outcome::Results(_)), Outcome::Failure(message)) = (reference, observed) {
-                let mut reason = format!("call {} `{call}` failed", index + 1);
-                if !message.is_empty() {
-                    reason.push_str(": ");
-                    reason.push_str(message);
-                }
-                return Ok(Verdict::new(Stage::Call, reason));
+            let message = match (reference, observed) {
+                (Some(reference), Outcome::Failure(message)) if !reference.is_failure() => message,
+                // A component the call had to return, and the call
+                // returned an error instead: the compile failed.
+                (Some(Outcome::Component { .. }), Outcome::Error { text, .. }) => text,
+                _ => continue,
+            };
+            let mut reason = format!("call {} `{call}` failed", index + 1);
+            if !message.is_empty() {
+                reason.push_str(": ");
+                reason.push_str(message.trim_end());
             }
+            return Ok(Verdict::new(Stage::Call, reason));
         }
 
         for (index, ((call, reference), observed)) in pairs() {

@@ -220,17 +220,42 @@ impl Cursor<'_> {
         })
     }
 
-    /// `fail ["<message>"]`, `(<values>)`, or one value.
+    /// `fail ["<message>"]`, `component [<name>] [<digest>]`, `err
+    /// [containing] "<text>"`, `(<values>)`, or one value.
     fn outcome(&mut self) -> core::result::Result<Outcome, String> {
         let before = self.rest;
-        if self.word() == "fail" {
-            self.skip_blanks();
-            let message = if self.peek() == Some('"') {
-                self.string()?
-            } else {
-                String::new()
-            };
-            return Ok(Outcome::Failure(message));
+        match self.word().as_str() {
+            "fail" => {
+                self.skip_blanks();
+                let message = if self.peek() == Some('"') {
+                    self.string()?
+                } else {
+                    String::new()
+                };
+                return Ok(Outcome::Failure(message));
+            }
+            "component" => {
+                let mut name = self.word();
+                let mut digest = String::new();
+                if name.starts_with("sha256:") {
+                    digest = core::mem::take(&mut name);
+                } else if !name.is_empty() {
+                    digest = self.word();
+                }
+                if !digest.is_empty() && !digest.starts_with("sha256:") {
+                    return Err(format!("`{digest}` is not a `sha256:` digest"));
+                }
+                return Ok(Outcome::Component {
+                    name: (!name.is_empty()).then_some(name),
+                    digest: (!digest.is_empty()).then_some(digest),
+                });
+            }
+            "err" => {
+                let partial = self.eat("containing ");
+                let text = self.string()?;
+                return Ok(Outcome::Error { text, partial });
+            }
+            _ => {}
         }
         self.rest = before;
         if self.eat("(") {

@@ -37,6 +37,22 @@ classes-and-arrays wasmtime pass
 classes-and-arrays web pass
 classes-and-arrays native pass
 classes-and-arrays wasmi parse "component shapes: unsupported component feature: gc"
+compiler-custom-world wasmtime pass
+compiler-custom-world web pass
+compiler-custom-world native pass
+compiler-custom-world wasmi parse "component compiler: unsupported component feature: gc"
+compiler-http-handler wasmtime pass
+compiler-http-handler web pass
+compiler-http-handler native pass
+compiler-http-handler wasmi parse "component compiler: unsupported component feature: gc"
+compiler-scalar-export wasmtime pass
+compiler-scalar-export web pass
+compiler-scalar-export native pass
+compiler-scalar-export wasmi parse "component compiler: unsupported component feature: gc"
+compiler-type-error wasmtime pass
+compiler-type-error web pass
+compiler-type-error native pass
+compiler-type-error wasmi parse "component compiler: unsupported component feature: gc"
 console-output wasmtime pass
 console-output web pass
 console-output native pass

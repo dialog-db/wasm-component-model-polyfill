@@ -335,4 +335,133 @@ mod tests {
             })
         );
     }
+
+    #[wcmp_macros::test]
+    fn it_reads_a_returned_component_and_an_error() {
+        let expectations: Expectations = r#"
+            call compiler compile("x", "main.zena", "", "") -> component program
+            call compiler compile("x", "main.zena", "", "") -> component program sha256:00ff
+            call compiler compile("x", "main.zena", "", "") -> component
+            call compiler compile("x", "main.zena", "", "") -> component sha256:00ff
+            call compiler compile("y", "main.zena", "", "") -> err containing "main.zena:1"
+            call compiler compile("y", "main.zena", "", "") -> err "main.zena:1:1 - Error\n"
+        "#
+        .parse()
+        .unwrap();
+        let outcomes: Vec<_> = expectations
+            .entries
+            .iter()
+            .map(|entry| entry.outcome.clone().unwrap())
+            .collect();
+
+        assert_eq!(
+            outcomes,
+            [
+                Outcome::Component {
+                    name: Some("program".to_string()),
+                    digest: None,
+                },
+                Outcome::Component {
+                    name: Some("program".to_string()),
+                    digest: Some("sha256:00ff".to_string()),
+                },
+                Outcome::Component {
+                    name: None,
+                    digest: None,
+                },
+                Outcome::Component {
+                    name: None,
+                    digest: Some("sha256:00ff".to_string()),
+                },
+                Outcome::Error {
+                    text: "main.zena:1".to_string(),
+                    partial: true,
+                },
+                Outcome::Error {
+                    text: "main.zena:1:1 - Error\n".to_string(),
+                    partial: false,
+                },
+            ]
+        );
+        for entry in &expectations.entries {
+            let line = entry.to_string();
+            let again: Expectations = line.parse().unwrap();
+            assert_eq!(again.entries[0], *entry, "{line}");
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_holds_a_returned_component_to_its_digest_when_both_sides_have_one() {
+        let named = Outcome::Component {
+            name: Some("program".to_string()),
+            digest: None,
+        };
+        let these = Outcome::component(Some("program"), b"these bytes");
+        let those = Outcome::component(Some("program"), b"those bytes");
+
+        assert_eq!(named, these);
+        assert_eq!(these, Outcome::component(Some("program"), b"these bytes"));
+        assert_ne!(these, those);
+        assert_ne!(named, Outcome::component(Some("other"), b"these bytes"));
+        assert_ne!(
+            Outcome::component(None, b"these bytes"),
+            Outcome::component(None, b"those bytes")
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_matches_a_partial_error_text_inside_the_whole_text() {
+        let part = Outcome::Error {
+            text: "main.zena:3".to_string(),
+            partial: true,
+        };
+        let whole = |text: &str| Outcome::Error {
+            text: text.to_string(),
+            partial: false,
+        };
+
+        assert_eq!(part, whole("main.zena:3:7 - Error: no such name\n"));
+        assert_ne!(part, whole("main.zena:4:7 - Error: no such name\n"));
+        assert_ne!(whole("a"), whole("ab"));
+    }
+
+    #[wcmp_macros::test]
+    fn it_stops_at_call_when_a_compile_returns_an_error_where_a_component_is_expected() {
+        let expectations: Expectations = r#"
+            call compiler compile("y", "main.zena", "", "") -> component program
+        "#
+        .parse()
+        .unwrap();
+        let run = Run {
+            outcomes: vec![Outcome::Error {
+                text: "main.zena:1:1 - Error: no\n".to_string(),
+                partial: false,
+            }],
+            output: vec![],
+        };
+
+        let verdict = expectations.judge(&run).unwrap();
+        assert_eq!(verdict.stage, Stage::Call);
+        assert!(
+            verdict
+                .reason
+                .ends_with("failed: main.zena:1:1 - Error: no")
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_gives_mismatch_for_a_component_with_other_bytes() {
+        let expectations: Expectations = format!(
+            "call compiler compile(\"x\", \"main.zena\", \"\", \"\") -> {}",
+            Outcome::component(Some("program"), b"the bytes Wasmtime saw")
+        )
+        .parse()
+        .unwrap();
+        let run = Run {
+            outcomes: vec![Outcome::component(Some("program"), b"other bytes")],
+            output: vec![],
+        };
+
+        assert_eq!(expectations.judge(&run).unwrap().stage, Stage::Mismatch);
+    }
 }

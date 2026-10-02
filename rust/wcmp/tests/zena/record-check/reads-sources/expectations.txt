@@ -1,0 +1,11 @@
+# A program that asks the test host's `read-source` for files. A file of
+# the toolchain's standard library and a directory of its WIT are in the
+# source bundle, and a path the bundle lacks answers none. The sizes of a
+# file and of a directory have no outcome here: the Wasmtime run reads
+# them from the same bundle, and each subject must read the same text.
+call reader has("/stdlib/json.zena") -> true
+call reader has("/stdlib/wit") -> true
+call reader has("/stdlib/no-such-module.zena") -> false
+call reader size("/stdlib/no-such-module.zena") -> 0u32
+call reader size("/stdlib/json.zena")
+call reader size("/stdlib/wit")
