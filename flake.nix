@@ -2111,6 +2111,13 @@
                   };
                 };
               };
+              demo = {
+                description = "The demo lane: the Zena TodoMVC demo in headless Chrome over WebDriver, each test in a session of its own (`tests demo [-j <n>] [--report <file>] [<filter>...]`)";
+                command = ''
+                  runner="$(nix build --no-link --print-out-paths .#demo-lane)"
+                  "$runner/bin/wcmp-demo-lane" "$@"
+                '';
+              };
               zena = {
                 description = "The Zena scenarios on every subject, held to every line of tests/zena/record.txt, then the compatibility report: the pin, each scenario with the stage of Browser, Native (the polyfill over Wasmtime), Wasmi, and Wasmtime and the reason of each that stopped before pass, and pass counts (`tests zena regenerate [--dry-run]` writes the record again from every subject, the browser included, or only prints the difference)";
                 command = zenaCommand;
@@ -2127,7 +2134,7 @@
               # Arguments after the leaf reach every nextest lane, and not
               # the Zena lane, which takes none.
               all = {
-                description = "Every lane, each timed: both targets in debug and release, the conformance corpus on both targets with the suspend provider off, so the corpus runs in all four states, the polyfill's tests and the corpus on the Wasmi backend, the fidelity suite on each backend of the runtime layer, and the Zena scenarios on every subject (grab a coffee)";
+                description = "Every lane, each timed: both targets in debug and release, the conformance corpus on both targets with the suspend provider off, so the corpus runs in all four states, the polyfill's tests and the corpus on the Wasmi backend, the fidelity suite on each backend of the runtime layer, the Zena scenarios on every subject, and the demo lane (grab a coffee)";
                 command = ''
                   status=0
                   lane() {
@@ -2148,7 +2155,22 @@
                     lane "$suite" "$@"
                   done
                   lane zena
+                  lane demo
                   exit "$status"
+                '';
+              };
+            };
+          };
+
+          # The demo: a TodoMVC whose elements and routes are Zena
+          # components the browser compiles at run time.
+          demo = {
+            description = "The Zena TodoMVC demo";
+            subcommands = {
+              serve = {
+                description = "Build the demo and serve it (`nix run .#demo`, with a port after the leaf, 8766 by default)";
+                command = ''
+                  nix run .#demo -- "$@"
                 '';
               };
             };
@@ -2373,6 +2395,88 @@
               wcmp-smoke-web-check ${smokeWeb} "$native" $out/report.txt
             '';
 
+        # The demo's own Zena files that a compile reads: the authoring
+        # library and the package manifest that names it. The elements and
+        # routes of the demo are in the page's and the worker's binaries,
+        # which hand them to the compiler.
+        demoZenaSource = pkgs.lib.fileset.toSource {
+          root = ./rust/wcmp-demo/zena;
+          fileset = pkgs.lib.fileset.unions [
+            ./rust/wcmp-demo/zena/authoring
+            ./rust/wcmp-demo/zena/zena-packages.json
+          ];
+        };
+
+        # The demo's source bundle: the toolchain's standard library under
+        # `/stdlib`, and the demo's authoring library and its manifest at
+        # the relative paths the compiler asks for them.
+        demoSourceBundle = pkgs.runCommand "wcmp-demo-sources" { } ''
+          mkdir -p "$out"
+          ${pkgs.lib.getExe sourceBundler} "$out/zena-sources.bundle" \
+            ${zenaSource}/packages/stdlib/zena /stdlib \
+            ${demoZenaSource} .
+        '';
+
+        # The demo (`rust/wcmp-demo`): Trunk builds the page's binary and
+        # the service worker's, and the site holds the compiler component
+        # and the source bundle beside them, which each context fetches
+        # when it starts.
+        demoSite = buildTrunkCrate {
+          pname = "wcmp-demo";
+          version = "0.1.0";
+          profile = "dev";
+          trunkConfig = "rust/wcmp-demo/Trunk.toml";
+          trunkIndexPath = "web/index.html";
+          # Trunk writes `dist` beside `Trunk.toml`, not beside the page.
+          installPhaseCommand = ''
+            cp -r dist $out
+            chmod u+w $out
+            cp ${zenaCompiler}/zena-compiler.wasm $out/
+            cp ${demoSourceBundle}/zena-sources.bundle $out/
+          '';
+        };
+
+        # The demo on a loopback port: `nix run .#demo` (`demo serve` inside
+        # the shell), with an optional port after `--`. Every response says
+        # `no-store`, as the smoke page's do, so a rebuilt demo never meets
+        # a cached copy of the last one.
+        demoServer = pkgs.writeShellApplication {
+          name = "wcmp-demo";
+          runtimeInputs = [ pkgs.static-web-server ];
+          text = ''
+            port="''${1:-8766}"
+            echo "demo: http://127.0.0.1:$port/  (Ctrl-C stops the server)"
+            exec static-web-server \
+              --config-file ${smokeWebServerConfig} \
+              --root ${demoSite} \
+              --host 127.0.0.1 \
+              --port "$port" \
+              --cache-control-headers=false \
+              --log-level warn
+          '';
+        };
+
+        # The demo lane (`rust/wcmp-demo-lane`): a native program that
+        # serves the built demo, starts ChromeDriver, and drives the demo in
+        # headless Chrome, a session per test. `tests demo` runs it outside
+        # any build, so a pass is never a cached one.
+        demoLane = buildCrate {
+          pname = "wcmp-demo-lane";
+          version = "0.1.0";
+          cargoExtraArgs = "--package wcmp-demo-lane";
+        };
+        demoLaneRunner = pkgs.writeShellApplication {
+          name = "wcmp-demo-lane";
+          runtimeInputs = [ pkgs.coreutils ];
+          text = ''
+            export WCMP_DEMO_SITE=${demoSite}
+            export CHROME=${chromePath}
+            export CHROMEDRIVER=${pkgs.chromedriver}/bin/chromedriver
+            export STATIC_WEB_SERVER=${pkgs.static-web-server}/bin/static-web-server
+            exec ${demoLane}/bin/wcmp-demo-lane "$@"
+          '';
+        };
+
         # The benchmark suite (`rust/wcmp-bench`): one binary that
         # measures the polyfill, natively and, through the same
         # `wasm-bindgen` path the smoke page takes, in a browser. The
@@ -2450,6 +2554,13 @@
             program = "${smokeWebServer}/bin/wcmp-smoke-web";
             meta.description = "Serve the smoke test page on a loopback port";
           };
+          # The demo on a loopback port: `nix run .#demo` (`demo serve`
+          # inside the shell), with an optional port after `--`.
+          demo = {
+            type = "app";
+            program = "${demoServer}/bin/wcmp-demo";
+            meta.description = "Serve the Zena TodoMVC demo on a loopback port";
+          };
         }
         # `nix run .#sandbox -- --agent --name <name>` is `sandbox start`
         # from outside the dev shell.
@@ -2484,6 +2595,13 @@
 
           smoke-native = smokeNative;
           smoke-web = smokeWeb;
+
+          # The demo's site, and the source bundle its compiler reads.
+          demo = demoSite;
+          demo-sources = demoSourceBundle;
+          # The demo lane, with the demo, Chrome, ChromeDriver, and the
+          # server it needs.
+          demo-lane = demoLaneRunner;
 
           bench-native = benchNative;
           bench-web = benchWeb;

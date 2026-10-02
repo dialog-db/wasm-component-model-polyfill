@@ -104,6 +104,9 @@ jobs:
           - name: 'zena'
             lanes: |
               zena
+          - name: 'demo'
+            lanes: |
+              demo
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/prepare-runner

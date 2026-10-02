@@ -1,0 +1,16 @@
+// Answers with the method, the path, and the parameter `name`; traps
+// when the query asks for it.
+import { Request, Response, json } from 'authoring:route';
+import { JsonObject } from 'zena:json';
+import { Future } from 'zena:async';
+
+export async function handle(request: Request): Future<Response> {
+  if (let (true, value) = request.query.get('trap')) {
+    throw new Error('the route was asked to trap');
+  }
+  let out = new JsonObject();
+  out['method'] = request.method;
+  out['path'] = request.path;
+  out['name'] = request.params['name'];
+  return json(out);
+}

@@ -1,0 +1,12 @@
+// The function form: no state, so a click tells the page with a custom
+// event.
+import { Element, View, Event, h } from 'authoring:element';
+import { Future } from 'zena:async';
+
+export function render(element: Element): View {
+  return h('button', {'class' => 'go'}, [element.attribute('label')], {'click' => 'go'});
+}
+
+export async function on(handler: String, event: Event, element: Element): Future<void> {
+  element.emit('test-clicked', element.attribute('label'));
+}

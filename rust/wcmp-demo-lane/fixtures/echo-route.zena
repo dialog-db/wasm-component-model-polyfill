@@ -1,0 +1,16 @@
+// Echoes the method, the x-test header, and the body of each request.
+import { Request, Response, json } from 'authoring:route';
+import { JsonObject } from 'zena:json';
+import { Future } from 'zena:async';
+
+export async function handle(request: Request): Future<Response> {
+  let out = new JsonObject();
+  out['method'] = request.method;
+  var header = '';
+  if (let (true, value) = request.headers.get('x-test')) {
+    header = value;
+  }
+  out['header'] = header;
+  out['body'] = request.body;
+  return json(out);
+}

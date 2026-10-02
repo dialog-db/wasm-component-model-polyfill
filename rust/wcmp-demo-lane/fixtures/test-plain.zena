@@ -1,0 +1,6 @@
+// The function form with no event function.
+import { Element, View, h } from 'authoring:element';
+
+export function render(element: Element): View {
+  return h('p', new Map<String, String>(), [element.attribute('label')]);
+}

@@ -1,0 +1,19 @@
+// A parent that renders <test-child> and shows the detail of its event.
+import { Element, View, Event, h } from 'authoring:element';
+import { Future } from 'zena:async';
+
+export class TestParent extends Element {
+  var heard = 'nothing';
+
+  render(): View {
+    return h('div', new Map<String, String>(), [
+      h('test-child', new Map<String, String>(), new GrowableArray<View | String>(),
+          {'test-ping' => 'heard'}),
+      h('p', {'class' => 'heard'}, [this.heard]),
+    ]);
+  }
+
+  async on(handler: String, event: Event): Future<void> {
+    this.heard = event.value;
+  }
+}

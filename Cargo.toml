@@ -2,6 +2,8 @@
 members = [
   "rust/wcmp",
   "rust/wcmp-bench",
+  "rust/wcmp-demo",
+  "rust/wcmp-demo-lane",
   "rust/wcmp-macros",
   "rust/wcmp-scenario",
   "rust/wcmp-scenario-wasmtime",
@@ -24,10 +26,15 @@ repository = "https://github.com/cdata/wasm-component-model-polyfill"
 
 [workspace.dependencies]
 anyhow = "1"
+# The demo's async plumbing: a lock that waits, channels, and a set of
+# futures that a store's driver polls together.
+futures = "0.3"
 js-sys = "0.3"
 proc-macro2 = "1"
 quote = "1"
 semver = "1"
+# The demo lane's WebDriver messages, which are JSON.
+serde_json = "1"
 sha2 = "0.10"
 syn = { version = "2", features = ["full"] }
 thiserror = "2"
@@ -39,6 +46,9 @@ tokio = "1"
 wasm-bindgen = "=0.2.126"
 wasm-bindgen-futures = "0.4"
 wasm-bindgen-test = "0.3"
+# The browser API the demo drives: the DOM, custom elements, the service
+# worker, `fetch`, and IndexedDB. Each crate names the features it uses.
+web-sys = "0.3"
 # Encodes the switch module the polyfill generates for each store. The
 # version is the one `wasmtime-environ` already links, so the graph keeps one.
 wasm-encoder = { version = "0.258", default-features = false, features = ["std"] }

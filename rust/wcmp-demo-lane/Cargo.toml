@@ -1,0 +1,15 @@
+[package]
+name = "wcmp-demo-lane"
+description = "The browser test lane of the Zena TodoMVC demo: the served demo in headless Chrome, driven over WebDriver"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+publish = false
+
+# The lane drives a browser from the host, so it is native only. On
+# `wasm32-unknown-unknown` the binary does nothing, which keeps the
+# workspace building for the web lanes.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+serde_json = { workspace = true }

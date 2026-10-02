@@ -1,0 +1,24 @@
+// An element whose `boom` handler throws, which traps its component,
+// and whose `bump` handler counts, which shows the tag works.
+import { Element, View, Event, h } from 'authoring:element';
+import { Future } from 'zena:async';
+
+export class TestTrap extends Element {
+  var count = 0;
+
+  render(): View {
+    return h('div', new Map<String, String>(), [
+      h('button', {'class' => 'boom'}, ['boom'], {'click' => 'boom'}),
+      h('button', {'class' => 'bump'}, ['bump'], {'click' => 'bump'}),
+      h('span', {'class' => 'count'}, [i32ToString(this.count)]),
+    ]);
+  }
+
+  async on(handler: String, event: Event): Future<void> {
+    if (handler == 'bump') {
+      this.count = this.count + 1;
+      return;
+    }
+    throw new Error('boom');
+  }
+}

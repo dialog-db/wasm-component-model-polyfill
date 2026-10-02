@@ -1,0 +1,16 @@
+// An element that calls a function of wasi:http/types the demo's subset
+// leaves out.
+import { Element, View, Event, h } from 'authoring:element';
+import { Future } from 'zena:async';
+import { Fields } from 'wasi:http/types';
+
+export class TestUnsupported extends Element {
+  render(): View {
+    return h('button', {'class' => 'go'}, ['go'], {'click' => 'go'});
+  }
+
+  async on(handler: String, event: Event): Future<void> {
+    let fields = Fields.create();
+    fields.getAndDelete('x');
+  }
+}

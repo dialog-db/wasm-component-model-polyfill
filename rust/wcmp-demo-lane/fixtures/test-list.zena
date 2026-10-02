@@ -1,0 +1,19 @@
+// Renders its comma-separated `items` as a keyed list.
+import { Element, View, h } from 'authoring:element';
+
+export class TestList extends Element {
+  attributes(): Array<String> {
+    return ['items'];
+  }
+
+  render(): View {
+    let items = new GrowableArray<View | String>();
+    let text = this.attribute('items');
+    if (text != '') {
+      for (let item in text.split(',')) {
+        items.push(h('li', {'key' => item}, [item]));
+      }
+    }
+    return h('ul', new Map<String, String>(), items);
+  }
+}

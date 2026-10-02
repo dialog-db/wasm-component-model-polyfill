@@ -1,0 +1,33 @@
+// Counts the clicks on its button, and keeps a log of the handlers it
+// ran, in order. `slow` waits before it logs, so a later call that ran
+// at the same time would log first.
+import { Element, View, Event, h } from 'authoring:element';
+import { Future } from 'zena:async';
+import { sleep, milliseconds } from 'zena:time';
+
+export class TestCounter extends Element {
+  var count = 0;
+  var log = '';
+
+  render(): View {
+    return h('div', new Map<String, String>(), [
+      h('button', {'class' => 'bump'}, ['bump'], {'click' => 'bump'}),
+      h('button', {'class' => 'slow'}, ['slow'], {'click' => 'slow'}),
+      h('button', {'class' => 'fast'}, ['fast'], {'click' => 'fast'}),
+      h('span', {'class' => 'count'}, [i32ToString(this.count)]),
+      h('span', {'class' => 'log'}, [this.log]),
+    ]);
+  }
+
+  async on(handler: String, event: Event): Future<void> {
+    if (handler == 'bump') {
+      this.count = this.count + 1;
+    } else if (handler == 'slow') {
+      this.log = this.log + 'slow-start,';
+      await sleep(milliseconds(400));
+      this.log = this.log + 'slow-end,';
+    } else if (handler == 'fast') {
+      this.log = this.log + 'fast,';
+    }
+  }
+}

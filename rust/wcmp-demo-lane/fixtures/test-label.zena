@@ -1,0 +1,21 @@
+// Renders its `label` attribute, its id, and its `mode` as a class, in
+// nodes whose tags never change, so the diff changes them in place.
+import { Element, View, h } from 'authoring:element';
+import { u32ToString } from 'zena:core';
+
+export class TestLabel extends Element {
+  attributes(): Array<String> {
+    return ['label', 'mode'];
+  }
+
+  styles(): String {
+    return 'p { color: rgb(1, 2, 3); }';
+  }
+
+  render(): View {
+    return h('div', {'class' => this.attribute('mode')}, [
+      h('span', new Map<String, String>(), [this.attribute('label')]),
+      h('p', {'title' => this.attribute('label')}, ['id ' + u32ToString(this._id)]),
+    ]);
+  }
+}

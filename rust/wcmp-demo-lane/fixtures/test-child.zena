@@ -1,0 +1,13 @@
+// A child that tells its parent about a click with a custom event.
+import { Element, View, Event, h } from 'authoring:element';
+import { Future } from 'zena:async';
+
+export class TestChild extends Element {
+  render(): View {
+    return h('button', {'class' => 'ping'}, ['ping'], {'click' => 'ping'});
+  }
+
+  async on(handler: String, event: Event): Future<void> {
+    this.emit('test-ping', 'hello from the child');
+  }
+}

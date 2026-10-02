@@ -1,0 +1,34 @@
+// Sends one request of each method, with a header and a body, to
+// /api/echo, and shows what came back.
+import { Element, View, Event, h, request } from 'authoring:element';
+import { Future } from 'zena:async';
+
+export class TestSender extends Element {
+  var results = '';
+
+  render(): View {
+    return h('div', new Map<String, String>(), [
+      h('button', {'class' => 'send'}, ['send'], {'click' => 'send'}),
+      h('pre', {'class' => 'results'}, [this.results]),
+    ]);
+  }
+
+  async on(handler: String, event: Event): Future<void> {
+    var out = '';
+    for (let method in ['GET', 'POST', 'PATCH', 'DELETE']) {
+      let headers = new Map<String, String>();
+      headers['x-test'] = 'header-' + method;
+      var body = '';
+      if (method != 'GET') {
+        body = 'body-' + method;
+      }
+      let response = await request(method, '/api/echo?q=1', body, headers);
+      var route = '';
+      if (let (true, value) = response.headers.get('x-demo-route')) {
+        route = value;
+      }
+      out = out + method + ' ' + i32ToString(response.status) + ' ' + route + ' ' + response.body + '\n';
+    }
+    this.results = out;
+  }
+}
