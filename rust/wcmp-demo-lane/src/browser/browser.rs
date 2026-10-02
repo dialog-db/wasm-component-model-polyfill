@@ -43,6 +43,16 @@ impl Browser {
             .request(method, &format!("/session/{}{path}", self.session), body)
     }
 
+    /// A PNG of the browser's window as it is now.
+    ///
+    /// # Errors
+    ///
+    /// The WebDriver error, or an answer that is not base64.
+    pub fn screenshot(&self) -> Result<Vec<u8>, String> {
+        let encoded = self.command("GET", "/screenshot", None)?;
+        decode_base64(encoded.as_str().unwrap_or_default())
+    }
+
     /// Open `path` on the demo's origin.
     pub fn goto(&self, path: &str) -> Result<(), String> {
         let url = format!("{}{path}", self.origin);
@@ -227,4 +237,32 @@ impl Drop for Browser {
             .driver
             .request("DELETE", &format!("/session/{}", self.session), None);
     }
+}
+
+/// The bytes the standard base64 text `text` encodes.
+fn decode_base64(text: &str) -> Result<Vec<u8>, String> {
+    let value = |byte: u8| match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    let mut bytes = Vec::with_capacity(text.len() / 4 * 3);
+    let mut buffer = 0u32;
+    let mut bits = 0;
+    for byte in text
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace() && *byte != b'=')
+    {
+        let six = value(byte).ok_or_else(|| format!("`{}` is not base64", byte as char))?;
+        buffer = (buffer << 6) | u32::from(six);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push((buffer >> bits) as u8);
+        }
+    }
+    Ok(bytes)
 }

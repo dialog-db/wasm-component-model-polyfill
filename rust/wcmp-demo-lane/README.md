@@ -20,9 +20,15 @@ more, and the report marks it "after a tab crash". Any other failure fails the
 test at once.
 
 A person can look into a running demo. With `WCMP_DEMO_LANE_EVAL` set to a
-script, the lane opens the demo, waits `WCMP_DEMO_LANE_WAIT` seconds (10 by
-default), runs the script with the lane's helpers in scope, and prints its
-answer and the page's console.
+script, the lane opens the demo, at the path `WCMP_DEMO_LANE_PATH` names (`/` by
+default), waits `WCMP_DEMO_LANE_WAIT` seconds (10 by default), runs the script
+with the lane's helpers in scope, and prints its answer and the page's console.
+With `WCMP_DEMO_LANE_CPU_PROFILE` set to a file, it writes a V8 CPU profile of
+the page while the script runs, which Chrome's performance panel opens.
+`WCMP_DEMO_LANE_CDP` names CDP methods, separated by commas, to send before the
+script, such as `Debugger.enable`, which is what an open DevTools does.
+`WCMP_DEMO_LANE_HEADED` opens a browser window instead of a headless browser,
+for the lane and for inspect mode.
 
 ## Report
 

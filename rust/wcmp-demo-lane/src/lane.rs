@@ -247,9 +247,15 @@ fn run_tests(jobs: usize, filters: &[String]) -> Result<(Vec<String>, bool), Str
     Ok((lines, passed == tests.len()))
 }
 
-/// For a person looking into the demo: open it, wait the seconds
+/// For a person looking into the demo: open it, at the path
+/// `WCMP_DEMO_LANE_PATH` names, `/` by default, wait the seconds
 /// `WCMP_DEMO_LANE_WAIT` names, 10 by default, run `script` with the
 /// prelude in scope, and print what it answers and the page's console.
+/// With `WCMP_DEMO_LANE_CPU_PROFILE` set to a file, write a V8 CPU
+/// profile of the page while the script runs to it. With
+/// `WCMP_DEMO_LANE_CDP` set to CDP methods, separated by commas, send
+/// each before the script runs. With `WCMP_DEMO_LANE_SCREENSHOT` set to
+/// a file, write a PNG of the window to it after the script runs.
 fn inspect(script: &str) -> Result<(), String> {
     let tools = Tools::from_env()?;
     let server_port = free_port()?;
@@ -283,13 +289,47 @@ fn inspect(script: &str) -> Result<(), String> {
     let profile = std::env::temp_dir().join(format!("wcmp-demo-inspect-{}", std::process::id()));
     let session = driver.session(&tools.chrome, &profile.to_string_lossy())?;
     let browser = Browser::new(driver, session, format!("http://127.0.0.1:{server_port}"))?;
-    browser.goto("/")?;
+    let path = std::env::var("WCMP_DEMO_LANE_PATH").unwrap_or_else(|_| "/".to_string());
+    browser.goto(&path)?;
     let wait = std::env::var("WCMP_DEMO_LANE_WAIT")
         .ok()
         .and_then(|wait| wait.parse().ok())
         .unwrap_or(10);
     std::thread::sleep(Duration::from_secs(wait));
+    // A V8 CPU profile of the page while the script runs, when
+    // `WCMP_DEMO_LANE_CPU_PROFILE` names a file to write it to. It opens
+    // in the performance panel of Chrome's DevTools.
+    // CDP methods to send, with no parameters, before the script runs,
+    // when `WCMP_DEMO_LANE_CDP` names them, separated by commas: such as
+    // `Debugger.enable`, which is what an open DevTools does.
+    for method in std::env::var("WCMP_DEMO_LANE_CDP")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|method| !method.is_empty())
+    {
+        browser.cdp(method, serde_json::json!({}))?;
+    }
+    let cpu_profile = std::env::var("WCMP_DEMO_LANE_CPU_PROFILE").ok();
+    if cpu_profile.is_some() {
+        browser.cdp("Profiler.enable", serde_json::json!({}))?;
+        browser.cdp(
+            "Profiler.setSamplingInterval",
+            serde_json::json!({ "interval": 100 }),
+        )?;
+        browser.cdp("Profiler.start", serde_json::json!({}))?;
+    }
     let answer = browser.eval(script);
+    if let Some(file) = cpu_profile {
+        let stopped = browser.cdp("Profiler.stop", serde_json::json!({}))?;
+        std::fs::write(&file, stopped["profile"].to_string())
+            .map_err(|error| format!("writing {file}: {error}"))?;
+    }
+    // A screenshot of the window once the script ran, when
+    // `WCMP_DEMO_LANE_SCREENSHOT` names a file to write it to.
+    if let Ok(file) = std::env::var("WCMP_DEMO_LANE_SCREENSHOT") {
+        std::fs::write(&file, browser.screenshot()?)
+            .map_err(|error| format!("writing {file}: {error}"))?;
+    }
     for line in browser.console() {
         println!("console: {line}");
     }

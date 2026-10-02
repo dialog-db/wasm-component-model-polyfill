@@ -86,26 +86,31 @@ impl WebDriver {
     }
 
     /// Start a session with the browser `chrome`, its profile in
-    /// `profile`.
+    /// `profile`. With `WCMP_DEMO_LANE_HEADED` set, the browser opens a
+    /// window, with its GPU, as a person's would.
     ///
     /// # Errors
     ///
     /// The WebDriver error.
     pub fn session(&self, chrome: &str, profile: &str) -> Result<String, String> {
+        let headed = std::env::var_os("WCMP_DEMO_LANE_HEADED").is_some();
+        let mut args = vec![
+            "--no-sandbox".to_string(),
+            "--disable-dev-shm-usage".to_string(),
+            "--window-size=1280,1000".to_string(),
+            format!("--user-data-dir={profile}"),
+        ];
+        if !headed {
+            args.push("--headless=new".to_string());
+            args.push("--disable-gpu".to_string());
+        }
         let capabilities = json!({
             "capabilities": {
                 "alwaysMatch": {
                     "browserName": "chrome",
                     "goog:chromeOptions": {
                         "binary": chrome,
-                        "args": [
-                            "--headless=new",
-                            "--no-sandbox",
-                            "--disable-gpu",
-                            "--disable-dev-shm-usage",
-                            "--window-size=1280,1000",
-                            format!("--user-data-dir={profile}"),
-                        ],
+                        "args": args,
                     },
                     "goog:loggingPrefs": { "performance": "ALL", "browser": "ALL" },
                 },
