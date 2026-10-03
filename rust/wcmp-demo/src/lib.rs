@@ -35,6 +35,7 @@ mod compiler;
 mod glue;
 mod highlight;
 mod http_types;
+mod language;
 mod model;
 mod model_host;
 mod platform;
@@ -43,6 +44,8 @@ mod sources;
 mod view;
 mod wasi;
 
+#[cfg(target_arch = "wasm32")]
+mod assist;
 #[cfg(target_arch = "wasm32")]
 mod client;
 #[cfg(target_arch = "wasm32")]

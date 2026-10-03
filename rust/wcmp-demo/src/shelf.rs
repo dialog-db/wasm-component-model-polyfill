@@ -26,12 +26,15 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Document, Element, HtmlTextAreaElement};
 
+use crate::assist::Assist;
+use crate::context::Context;
 use crate::editor;
 use crate::elements::{self, TagStatus};
 use crate::idb::{self, Database};
@@ -42,6 +45,10 @@ use crate::sources;
 #[derive(Default)]
 struct State {
     database: Option<Database>,
+    /// The page's context, whose compiler answers the language service.
+    context: Option<Rc<Context>>,
+    /// The language service of each section's editor, by section id.
+    assists: HashMap<String, Rc<Assist>>,
     /// The last status of each route, from the service worker.
     routes: HashMap<String, JsValue>,
     /// The sources a person changed in a text area and has not saved.
@@ -77,8 +84,12 @@ const PREFERENCES: &str = "wcmp-demo-shelf";
 /// # Errors
 ///
 /// The reason a browser API failed.
-pub fn mount(database: Database) -> Result<(), String> {
-    STATE.with(|state| state.borrow_mut().database = Some(database));
+pub fn mount(database: Database, context: Rc<Context>) -> Result<(), String> {
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        state.database = Some(database);
+        state.context = Some(context);
+    });
     let page = document()?;
     let body = page.body().ok_or("the page has no body")?;
 
@@ -252,6 +263,9 @@ fn set_open(open: bool) {
             let _ = load_routes().await;
             refresh();
         });
+        if let Some(assist) = active().and_then(|id| assist_of(&id)) {
+            assist.schedule_check();
+        }
     }
     save_preferences();
     refresh();
@@ -316,6 +330,13 @@ fn select(id: &str) {
             let _ = tab.set_attribute("aria-selected", if chosen { "true" } else { "false" });
         }
     }
+    // The language service checks what the panel shows, and only once a
+    // person can see it: not while the page starts.
+    if is_open()
+        && let Some(assist) = assist_of(id)
+    {
+        assist.schedule_check();
+    }
     if let Ok(sections) = document.query_selector_all("#shelf-panel section") {
         for section in (0..sections.length()).filter_map(|index| sections.item(index)) {
             let section: Element = section.unchecked_into();
@@ -329,6 +350,33 @@ fn select(id: &str) {
         }
     }
     save_preferences();
+}
+
+/// The language service of the editor of the section `id`.
+fn assist_of(id: &str) -> Option<Rc<Assist>> {
+    STATE.with(|state| state.borrow().assists.get(id).cloned())
+}
+
+/// Open the tab of the source whose file, as the program names it, is
+/// `file`, and answer its editor's text area: where a definition the
+/// language service found in another source of the shelf is.
+fn open_file(file: &str) -> Option<HtmlTextAreaElement> {
+    let id = STATE.with(|state| {
+        state
+            .borrow()
+            .assists
+            .iter()
+            .find(|(_, assist)| assist.path() == file)
+            .map(|(id, _)| id.clone())
+    })?;
+    select(&id);
+    set_open(true);
+    let (kind, name) = id.split_once(':')?;
+    find_section(&document().ok()?, kind, name)?
+        .query_selector("textarea")
+        .ok()??
+        .dyn_into()
+        .ok()
 }
 
 /// The section the panel shows.
@@ -394,7 +442,7 @@ fn section(document: &Document, kind: &str, name: &str) -> Result<Element, Strin
     section.append_child(&toolbar).map_err(js_text)?;
     let editor = make(document, "div", &[("class", "editor")])?;
     let dirty_id = id.clone();
-    editor::mount(
+    let text = editor::mount(
         document,
         &editor,
         &format!("The Zena source of {name}"),
@@ -404,6 +452,16 @@ fn section(document: &Document, kind: &str, name: &str) -> Result<Element, Strin
     )
     .map_err(js_text)?;
     section.append_child(&editor).map_err(js_text)?;
+    // The problems the language service finds as a person types.
+    let problems = make(document, "ul", &[("class", "problems")])?;
+    let _ = problems.set_attribute("hidden", "");
+    section.append_child(&problems).map_err(js_text)?;
+    let context = STATE
+        .with(|state| state.borrow().context.clone())
+        .ok_or("the shelf has no context")?;
+    let assist =
+        Assist::attach(kind, name, context, text, &editor, problems, open_file).map_err(js_text)?;
+    STATE.with(|state| state.borrow_mut().assists.insert(id.clone(), assist));
     // Below the source: a trap of the running component, and the
     // diagnostics of a compile that failed.
     let trapped = make(
@@ -422,6 +480,7 @@ fn section(document: &Document, kind: &str, name: &str) -> Result<Element, Strin
     section.append_child(&diagnostics).map_err(js_text)?;
     let actions = make(document, "div", &[("class", "actions")])?;
     for (action, label) in [
+        ("format", "Format"),
         ("save", "Save"),
         ("reset", "Reset to original"),
         ("restart", "Restart"),
@@ -462,6 +521,12 @@ async fn act(kind: &str, name: &str, action: &str) -> Result<(), String> {
         .ok_or("the shelf has no database")?;
     let key = idb::edit_key(kind, name);
     let id = section_id(kind, name);
+    if action == "format" {
+        if let Some(assist) = assist_of(&id) {
+            assist.format().await;
+        }
+        return Ok(());
+    }
     match (kind, action) {
         ("element", "save") => {
             let source = text_of(&id)?;

@@ -60,6 +60,9 @@ These terms recur:
 - The shelf shows every Zena source of the demo and recompiles an edit in place.
 - The shelf shows the Zena compile time, the Wasm compile time, and the
   instantiate time of each component.
+- The shelf's editor highlights Zena. It shows what Zena's language service
+  finds as a person types: diagnostics, hover, completions, and definitions. It
+  formats a source with Zena's formatter.
 - The demo builds from a crate in this workspace with Trunk. A menu command
   serves it.
 - A browser test lane drives every TodoMVC behavior and the shelf. `tests all`
@@ -72,8 +75,12 @@ These terms recur:
 - A cache of compiled components. Each context compiles every component each
   time that it needs one.
 - A dedicated worker for compilation. The page compiles on its main thread.
-- A code editor with highlighting, completion, or Zena's language service. The
-  shelf edits plain text.
+- A full code editor. The shelf's editor is a text area with highlighting and
+  marks drawn beneath it. It has no undo history of its own, no folding, and no
+  wrapping.
+- Language features that Zena's language service does not have. The shelf shows
+  what the service answers and builds none of its own.
+- The Node.js toolchain. The editor and its highlighter are Rust.
 - Public hosting of the demo.
 - The official TodoMVC test suite. Its selectors cannot see into a shadow root.
 - A reusable framework. The authoring library and the host framework belong to
@@ -196,7 +203,7 @@ routes. They share an origin, so they share IndexedDB.
 The compiler component is Zena's compiler, compiled by Zena with
 `--target component`. Its entry module belongs to this repository. The entry
 module calls the compiler's own library code, as `api.zena` does, and exports
-one function through this world:
+`compile` and Zena's language service through this world:
 
 ```wit
 package wcmp:zena-compiler;
@@ -204,6 +211,23 @@ package wcmp:zena-compiler;
 interface host {
   // The text of a file that the compilation reads, or none.
   read-source: func(path: string) -> option<string>;
+}
+
+interface language {
+  // diagnostic, hover-info, completion, location: records of what the
+  // language service answers. Offsets count UTF-8 bytes.
+
+  check: async func(
+    source: string,
+    entry-path: string,
+    files: list<tuple<string, string>>,  // the files beside the entry
+    wit-source: string,
+    world-name: string,
+  ) -> list<diagnostic>;
+  hover: async func(path: string, offset: u32) -> option<hover-info>;
+  complete: async func(path: string, offset: u32) -> list<completion>;
+  definition: async func(path: string, offset: u32) -> option<location>;
+  format: async func(source: string) -> result<string, string>;
 }
 
 world compiler {
@@ -218,6 +242,8 @@ world compiler {
     wit-source: string,   // a WIT document that holds the world
     world-name: string,
   ) -> result<list<u8>, string>;
+
+  export language;
 }
 ```
 
@@ -270,6 +296,26 @@ The host framework answers `read-source` from two places:
 
 The host framework sends the compiler's `stdout` and `stderr` to the browser
 console.
+
+### The Language Interface
+
+The `language` interface is Zena's language service and Zena's formatter. Both
+are Zena code from the pinned toolchain, compiled into the compiler component
+with the compiler. The entry module only adapts them to the interface.
+
+`check` checks a program as `compile` would compile it, with the editor's text
+of each file. It answers the diagnostics of every file that is not the standard
+library's. The service recovers from the parse errors that it can, so a person
+who is mid-edit still gets answers. `hover`, `complete`, and `definition` answer
+about the program of the last check. `format` prints a source as Zena's
+formatter does.
+
+The entry module keeps one language service, for the manifest and world of the
+last check. A check for another world replaces it. The service keeps the
+standard library checked from one check to the next, as the compile keeps it.
+
+The service looks files up by paths from the root. The entry module gives it the
+program's files at rooted paths and gives back paths as the editor names them.
 
 ### The Pin
 
@@ -799,7 +845,7 @@ keeps whether the shelf is open and which tab is active, for the next visit.
 
 For the source of the active tab, the shelf shows:
 
-- The Zena source in a text area. Ctrl-S or Cmd-S saves it.
+- The Zena source in an editor. Ctrl-S or Cmd-S saves it.
 - Three times of the last start: the compile of the Zena source to a component
   ("Zena → Wasm"), the polyfill's compile of that component ("Wasm compile"),
   and the link and instantiation.
@@ -821,6 +867,33 @@ When a person saves a route, the page writes the source and sends
 
 "Reset to original" removes the edit from IndexedDB and applies the shipped
 source in the same way as a save.
+
+### The Editor
+
+The editor is a text area over two layers of the same text. One layer colors the
+tokens of Zena. The highlighter is a Rust port of the Zena Playground's
+tokenizer. The other layer underlines the problems that the language service
+finds. The text area's own text is clear, so the caret and the selection are the
+browser's.
+
+While the shelf is open, a pause in typing checks the active source through
+`check`. The editor underlines each problem and lists it below the source. A
+click on a listed problem moves the caret to it. The editor uses the language
+service in these ways:
+
+- Resting the pointer on a name shows its declaration, its type, and its doc
+  comment.
+- Typing a dot, or Ctrl-Space, shows completions. Typing filters them. The arrow
+  keys choose one, and Enter or Tab inserts it.
+- F12, or a Ctrl-click or Cmd-click, moves the caret to the declaration of the
+  name under it. A declaration in another source of the demo opens that tab.
+- The "Format" control replaces the source with what Zena's formatter prints.
+
+A check runs only while its tab is shown. Every check and query waits for the
+compiler component, which runs one call at a time. The language service answers
+from the last program that it could parse. A line that its parser cannot recover
+from, such as `let x = this.` before another `let`, leaves completions on the
+program before the edit.
 
 ## Look
 

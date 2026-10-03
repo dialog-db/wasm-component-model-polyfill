@@ -360,6 +360,7 @@ body {
 }
 
 #shelf .editor .highlight,
+#shelf .editor .marks,
 #shelf .editor textarea {
   position: absolute;
   inset: 0;
@@ -367,6 +368,7 @@ body {
   padding: 12px;
   border: none;
   font: 13px / 1.5 var(--md-ref-typeface-mono);
+  font-variant-ligatures: none;
   letter-spacing: normal;
   tab-size: 2;
   white-space: pre;
@@ -377,6 +379,135 @@ body {
   color: var(--md-sys-color-on-surface);
   pointer-events: none;
   scrollbar-width: none;
+}
+
+/* The diagnostics' wavy lines, under text the layer keeps transparent. */
+#shelf .editor .marks {
+  color: transparent;
+  pointer-events: none;
+  scrollbar-width: none;
+}
+
+#shelf .editor .marks .error,
+#shelf .editor .marks .warning,
+#shelf .editor .marks .information {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+#shelf .editor .marks .error {
+  text-decoration-color: var(--md-sys-color-error);
+}
+
+#shelf .editor .marks .warning {
+  text-decoration-color: var(--code-literal);
+}
+
+#shelf .editor .marks .information {
+  text-decoration-color: var(--md-sys-color-outline);
+}
+
+/* The hover's tooltip and the completions, over the editor. */
+#shelf .editor .tooltip,
+#shelf .editor .completions {
+  position: absolute;
+  z-index: 3;
+  max-width: min(560px, 90%);
+  margin: 0;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-small);
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface);
+  box-shadow: var(--md-sys-elevation-3);
+  font: 12px / 1.5 var(--md-ref-typeface-mono);
+}
+
+#shelf .editor .tooltip {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  pointer-events: none;
+  white-space: pre-wrap;
+}
+
+#shelf .editor .tooltip .message {
+  color: var(--md-sys-color-error);
+}
+
+#shelf .editor .tooltip .doc {
+  font-family: var(--md-ref-typeface);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+#shelf .editor .completions {
+  min-width: 240px;
+  max-height: 220px;
+  padding: 4px 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+#shelf .editor .completions li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 2px 10px;
+  white-space: nowrap;
+}
+
+#shelf .editor .completions li[aria-selected="true"] {
+  background: color-mix(in srgb, var(--md-sys-color-primary) 18%, transparent);
+}
+
+#shelf .editor .completions .kind {
+  width: 5em;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 11px;
+}
+
+#shelf .editor .completions .detail {
+  overflow: hidden;
+  color: var(--md-sys-color-on-surface-variant);
+  text-overflow: ellipsis;
+}
+
+/* The problems the language service finds as a person types. */
+#shelf .problems {
+  flex: none;
+  max-height: 25%;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  list-style: none;
+  font: 12px / 1.5 var(--md-ref-typeface-mono);
+}
+
+#shelf .problems li {
+  padding: 2px 8px;
+  border-radius: var(--md-sys-shape-corner-small);
+  cursor: pointer;
+}
+
+#shelf .problems li:hover {
+  background: var(--md-sys-color-surface-container-high);
+}
+
+#shelf .problems li.error::before {
+  content: "● ";
+  color: var(--md-sys-color-error);
+}
+
+#shelf .problems li.warning::before {
+  content: "● ";
+  color: var(--code-literal);
+}
+
+#shelf .problems li.information::before {
+  content: "● ";
+  color: var(--md-sys-color-outline);
 }
 
 #shelf .editor textarea {
@@ -464,8 +595,10 @@ body {
   color: var(--md-sys-color-on-primary);
 }
 
-/* Last, so that it wins over every display above it. */
+/* Last, and as specific as any rule above, so that it wins over every
+   display above it. */
 #shelf-panel[hidden],
-#shelf [hidden] {
+#shelf [hidden],
+#shelf .editor [hidden] {
   display: none;
 }

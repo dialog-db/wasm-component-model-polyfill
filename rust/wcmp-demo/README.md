@@ -35,9 +35,22 @@ canonical ABI, and its host calls, which are many, and `?trace=off` records
 none. The page hands the parameter to the service worker. A service worker
 keeps its own timeline: to see its spans, profile the worker itself, in the
 DevTools that `chrome://inspect/#service-workers` opens for it. Each context
-clears its
-timeline every five seconds, so that the marks do not pile up while nothing
-records them.
+clears its timeline every five seconds, so that the marks do not pile up while
+nothing records them.
+
+## Editor
+
+The shelf's editor is a text area over two layers: one colors Zena's tokens,
+and one underlines problems. `src/highlight/` ports the Zena Playground's
+tokenizer to Rust. `src/assist.rs` asks the compiler component's `language`
+interface, which is Zena's own language service and formatter, for diagnostics,
+hover, completions, definitions, and formatting. Nothing here needs Node.js.
+
+- A pause in typing checks the source, underlines its problems, and lists them.
+- Resting the pointer on a name shows what it is.
+- A dot or Ctrl-Space shows completions; Enter or Tab inserts one.
+- F12 or a Ctrl-click (Cmd-click) goes to a definition.
+- "Format" prints the source as Zena's formatter does.
 
 ## Zena Defects the Demo Works Around
 
@@ -61,3 +74,8 @@ to Zena.
 7. Code after a `throw` in the same block fails with "Unreachable code
    detected", so a test fixture that throws needs a condition around the
    `throw`.
+8. The language service adds a leading `/` to a path when it looks up a file,
+   but keys a checked file by the path it was loaded at. The compiler's entry
+   module gives the service every file at a path from the root.
+9. A WIT record and a function of the same name in one interface clash ("defined
+   more than once"). The record of a hover is `hover-info`.

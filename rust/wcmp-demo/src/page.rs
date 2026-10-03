@@ -73,7 +73,7 @@ pub async fn start() -> Result<(), JsValue> {
 
     boot_step(&window, "mounting");
     mount(&window)?;
-    shelf::mount(database).map_err(|error| JsValue::from_str(&error))?;
+    shelf::mount(database, context).map_err(|error| JsValue::from_str(&error))?;
     boot_step(&window, "ready");
     Ok(())
 }

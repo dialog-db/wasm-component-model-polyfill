@@ -104,6 +104,11 @@ pub static TESTS: &[Test] = &[
     test!(shelf::it_resets_a_route_to_the_shipped_source),
     test!(shelf::it_shows_one_source_at_a_time_by_its_tab_and_keeps_the_choice),
     test!(shelf::it_marks_a_tab_with_an_edit_and_with_a_failure),
+    test!(shelf::it_shows_no_problems_in_the_shipped_sources),
+    test!(shelf::it_marks_and_lists_the_problems_of_a_source_as_a_person_types),
+    test!(shelf::it_shows_what_is_under_the_pointer),
+    test!(shelf::it_completes_the_members_after_a_dot),
+    test!(shelf::it_goes_to_a_definition_and_formats_the_source),
 ];
 
 /// Fail with `message` unless `condition` holds.

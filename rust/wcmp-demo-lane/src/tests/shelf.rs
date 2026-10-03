@@ -51,6 +51,47 @@ const editKey = async (key) => {
   return value;
 };
 const later = (test, what) => until(test, what, 30000);
+const openTab = async (kind, name) => {
+  await openShelf();
+  document.querySelector(`#shelf .shelf-tab[data-tab="${kind}:${name}"]`).click();
+  await settle(200);
+  return section(kind, name);
+};
+// The point of the viewport at the middle of the character at `offset`
+// of the editor `text`, whose font is monospaced and whose lines do not
+// wrap.
+const pointAt = (text, offset) => {
+  const style = getComputedStyle(text);
+  const probe = document.createElement('span');
+  probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;font:' + style.font;
+  probe.textContent = 'M'.repeat(64);
+  document.body.append(probe);
+  const width = probe.getBoundingClientRect().width / 64;
+  probe.remove();
+  const before = text.value.slice(0, offset);
+  const row = before.split('\n').length - 1;
+  const column = offset - before.lastIndexOf('\n') - 1;
+  const rect = text.getBoundingClientRect();
+  return {
+    x: rect.left + parseFloat(style.paddingLeft) + (column + 0.5) * width - text.scrollLeft,
+    y: rect.top + parseFloat(style.paddingTop) + (row + 0.5) * parseFloat(style.lineHeight) - text.scrollTop,
+  };
+};
+// Put the caret of `text` at `offset`, in view, as a click would.
+const caretAt = async (text, offset) => {
+  text.focus();
+  text.setSelectionRange(offset, offset);
+  text.blur();
+  text.focus();
+  await settle(300);
+};
+// Change the text of `text` as typing `typed` at the end of the change
+// would, with the caret after it.
+const typeInto = (text, value, caret, typed) => {
+  text.value = value;
+  text.setSelectionRange(caret, caret);
+  text.dispatchEvent(new InputEvent('input', { bubbles: true, data: typed }));
+};
 "#;
 
 /// Run `body` with the shelf's helpers in scope.
@@ -467,4 +508,134 @@ pub fn it_marks_a_tab_with_an_edit_and_with_a_failure(browser: &Browser) -> Resu
         answer["clean"] == "clean" && answer["edited"] == "edited" && answer["failed"] == "failed",
         || format!("the tab's states were {answer}"),
     )
+}
+
+pub fn it_shows_no_problems_in_the_shipped_sources(browser: &Browser) -> Result<(), String> {
+    browser.boot()?;
+    let answer = run(
+        browser,
+        "const found = {};
+         for (const tab of document.querySelectorAll('#shelf .shelf-tab')) {
+           const [kind, name] = [tab.dataset.tab.slice(0, tab.dataset.tab.indexOf(':')),
+                                 tab.dataset.tab.slice(tab.dataset.tab.indexOf(':') + 1)];
+           const editor = await openTab(kind, name);
+           // A check of a source with no problems leaves the list hidden,
+           // so wait for the check itself: the marks layer repaints.
+           await settle(2500);
+           found[tab.dataset.tab] = [...editor.querySelector('.problems').children]
+             .map((item) => item.textContent);
+         }
+         return found;",
+    )?;
+    let clean = answer.as_object().is_some_and(|found| {
+        found.len() == 6
+            && found
+                .values()
+                .all(|problems| problems == &serde_json::json!([]))
+    });
+    check(clean, || {
+        format!("the shipped sources had problems: {answer}")
+    })
+}
+
+pub fn it_marks_and_lists_the_problems_of_a_source_as_a_person_types(
+    browser: &Browser,
+) -> Result<(), String> {
+    browser.boot()?;
+    let answer = run(
+        browser,
+        "const editor = await openTab('element', 'todo-item');
+         const text = editor.querySelector('textarea');
+         const value = text.value.replace('var editing = false;',
+                                          \"var editing = false;\\n  var broken: i32 = 'text';\");
+         typeInto(text, value, value.indexOf(\"'text';\") + 7, ';');
+         const problems = editor.querySelector('.problems');
+         await later(() => !problems.hidden && problems.textContent, 'the problems');
+         const marked = [...editor.querySelectorAll('.marks .error')].map((mark) => mark.textContent);
+         problems.firstElementChild.click();
+         const placed = text.selectionStart === value.indexOf('var broken');
+         return { problems: problems.textContent, marked, placed };",
+    )?;
+    let problems = answer["problems"].as_str().unwrap_or_default();
+    check(
+        problems.contains("9:3")
+            && problems.contains("Type mismatch")
+            && answer["marked"] == serde_json::json!(["var broken: i32 = 'text';"])
+            && answer["placed"] == true,
+        || format!("the check showed {answer}"),
+    )
+}
+
+pub fn it_shows_what_is_under_the_pointer(browser: &Browser) -> Result<(), String> {
+    browser.boot()?;
+    let answer = run(
+        browser,
+        "const editor = await openTab('element', 'todo-item');
+         const text = editor.querySelector('textarea');
+         const at = text.value.indexOf('extends Element') + 'extends '.length + 2;
+         await caretAt(text, at);
+         const point = pointAt(text, at);
+         text.dispatchEvent(new MouseEvent('mousemove', { clientX: point.x, clientY: point.y, bubbles: true }));
+         const tip = editor.querySelector('.tooltip');
+         await later(() => !tip.hidden && tip.textContent, 'the hover');
+         return tip.innerText;",
+    )?;
+    let tip = answer.as_str().unwrap_or_default();
+    check(
+        tip.contains("Element") && tip.contains("The base of an element's definition."),
+        || format!("the hover showed {answer}"),
+    )
+}
+
+pub fn it_completes_the_members_after_a_dot(browser: &Browser) -> Result<(), String> {
+    browser.boot()?;
+    let answer = run(
+        browser,
+        "const editor = await openTab('element', 'todo-item');
+         const text = editor.querySelector('textarea');
+         const anchor = 'render(): View {';
+         // Zena's parser recovers from `this.` when a `;` follows it.
+         const value = text.value.replace(anchor, anchor + '\\n    let probe = this.;');
+         const caret = value.indexOf('let probe = this.') + 'let probe = this.'.length;
+         await caretAt(text, caret);
+         typeInto(text, value, caret, '.');
+         const popup = editor.querySelector('.completions');
+         await later(() => !popup.hidden && popup.children.length, 'the completions');
+         const labels = [...popup.children].map((row) => row.dataset.label);
+         const chosen = popup.children[0].dataset.label;
+         text.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+         await settle(200);
+         return { labels, chosen, line: text.value.split('\\n').find((line) => line.includes('let probe')) };",
+    )?;
+    let labels = answer["labels"].as_array().cloned().unwrap_or_default();
+    let has = |label: &str| labels.iter().any(|known| known == label);
+    let chosen = answer["chosen"].as_str().unwrap_or_default();
+    check(
+        has("attribute")
+            && has("emit")
+            && has("editing")
+            && answer["line"].as_str() == Some(&format!("    let probe = this.{chosen};")),
+        || format!("the completions were {answer}"),
+    )
+}
+
+pub fn it_goes_to_a_definition_and_formats_the_source(browser: &Browser) -> Result<(), String> {
+    browser.boot()?;
+    let answer = run(
+        browser,
+        "const editor = await openTab('element', 'todo-item');
+         const text = editor.querySelector('textarea');
+         const use = text.value.indexOf('if (this.editing)') + 'if (this.'.length + 2;
+         await caretAt(text, use);
+         text.dispatchEvent(new KeyboardEvent('keydown', { key: 'F12', bubbles: true }));
+         const declared = text.value.indexOf('var editing');
+         await later(() => text.selectionStart === declared, 'the definition');
+         typeInto(text, text.value.replace('var editing = false;', 'var   editing=false ;'), 0, ' ');
+         editor.querySelector('[data-action=\"format\"]').click();
+         await later(() => text.value.includes('var editing = false;'), 'the format');
+         return true;",
+    )?;
+    check(answer == true, || {
+        format!("the definition and the format answered {answer}")
+    })
 }
