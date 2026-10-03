@@ -253,8 +253,9 @@ fn run_tests(jobs: usize, filters: &[String]) -> Result<(Vec<String>, bool), Str
 /// prelude in scope, and print what it answers and the page's console.
 /// With `WCMP_DEMO_LANE_CPU_PROFILE` set to a file, write a V8 CPU
 /// profile of the page while the script runs to it. With
-/// `WCMP_DEMO_LANE_CDP` set to CDP methods, separated by commas, send
-/// each before the script runs. With `WCMP_DEMO_LANE_SCREENSHOT` set to
+/// `WCMP_DEMO_LANE_CDP` set to CDP commands, separated by semicolons,
+/// each a method and optionally its parameters as JSON, send each before
+/// the script runs. With `WCMP_DEMO_LANE_SCREENSHOT` set to
 /// a file, write a PNG of the window to it after the script runs.
 fn inspect(script: &str) -> Result<(), String> {
     let tools = Tools::from_env()?;
@@ -299,15 +300,20 @@ fn inspect(script: &str) -> Result<(), String> {
     // A V8 CPU profile of the page while the script runs, when
     // `WCMP_DEMO_LANE_CPU_PROFILE` names a file to write it to. It opens
     // in the performance panel of Chrome's DevTools.
-    // CDP methods to send, with no parameters, before the script runs,
-    // when `WCMP_DEMO_LANE_CDP` names them, separated by commas: such as
+    // CDP commands to send before the script runs, when
+    // `WCMP_DEMO_LANE_CDP` names them, separated by semicolons, each a
+    // method and optionally its parameters as JSON: such as
     // `Debugger.enable`, which is what an open DevTools does.
-    for method in std::env::var("WCMP_DEMO_LANE_CDP")
+    for command in std::env::var("WCMP_DEMO_LANE_CDP")
         .unwrap_or_default()
-        .split(',')
-        .filter(|method| !method.is_empty())
+        .split(';')
+        .map(str::trim)
+        .filter(|command| !command.is_empty())
     {
-        browser.cdp(method, serde_json::json!({}))?;
+        let (method, params) = command.split_once(' ').unwrap_or((command, "{}"));
+        let params: serde_json::Value = serde_json::from_str(params)
+            .map_err(|error| format!("the parameters of {method}: {error}"))?;
+        browser.cdp(method, params)?;
     }
     let cpu_profile = std::env::var("WCMP_DEMO_LANE_CPU_PROFILE").ok();
     if cpu_profile.is_some() {

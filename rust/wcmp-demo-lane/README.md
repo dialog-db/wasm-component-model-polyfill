@@ -25,11 +25,12 @@ default), waits `WCMP_DEMO_LANE_WAIT` seconds (10 by default), runs the script
 with the lane's helpers in scope, and prints its answer and the page's console.
 With `WCMP_DEMO_LANE_CPU_PROFILE` set to a file, it writes a V8 CPU profile of
 the page while the script runs, which Chrome's performance panel opens.
-`WCMP_DEMO_LANE_CDP` names CDP methods, separated by commas, to send before the
-script, such as `Debugger.enable`, which is what an open DevTools does.
-`WCMP_DEMO_LANE_HEADED` opens a browser window instead of a headless browser,
-for the lane and for inspect mode. `WCMP_DEMO_LANE_SCREENSHOT` names a PNG file
-to write a screenshot of the window to once the script has run.
+`WCMP_DEMO_LANE_CDP` names CDP commands to send before the script, separated by
+semicolons, each a method and optionally its parameters as JSON, such as
+`Debugger.enable`, which is what an open DevTools does. `WCMP_DEMO_LANE_HEADED`
+opens a browser window instead of a headless browser, for the lane and for
+inspect mode. `WCMP_DEMO_LANE_SCREENSHOT` names a PNG file to write a screenshot
+of the window to once the script has run.
 
 ## Report
 
