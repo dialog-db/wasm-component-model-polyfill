@@ -12,6 +12,75 @@ interface host {
   read-source: func(path: string) -> option<string>;
 }
 
+// What Zena's language service tells an editor about a program, for the
+// source it shows. Offsets count UTF-8 bytes from the start of a file,
+// and lines and columns count from one.
+interface language {
+  enum severity {
+    error,
+    warning,
+    information,
+  }
+
+  record diagnostic {
+    file: string,
+    start: u32,
+    length: u32,
+    line: u32,
+    column: u32,
+    severity: severity,
+    message: string,
+  }
+
+  // What a symbol under a position is: its declaration, its type, and
+  // its doc comment.
+  record hover-info {
+    label: string,
+    detail: string,
+    doc: string,
+  }
+
+  // A completion at a position. `kind` is the Language Server
+  // Protocol's completion item kind: 2 a method, 3 a function, 6 a
+  // variable, 7 a class, and 14 a keyword.
+  record completion {
+    label: string,
+    kind: u32,
+    detail: string,
+    doc: string,
+  }
+
+  record location {
+    file: string,
+    start: u32,
+    length: u32,
+    line: u32,
+    column: u32,
+  }
+
+  // Check a program as `compile` would compile it, with the files
+  // `files` beside its entry module, and answer the diagnostics of every
+  // file of the program that is not the standard library's. Each query
+  // below answers about the program of the last check.
+  check: async func(
+    source: string,
+    entry-path: string,
+    files: list<tuple<string, string>>,
+    wit-source: string,
+    world-name: string,
+  ) -> list<diagnostic>;
+
+  hover: async func(path: string, offset: u32) -> option<hover-info>;
+
+  complete: async func(path: string, offset: u32) -> list<completion>;
+
+  definition: async func(path: string, offset: u32) -> option<location>;
+
+  // `source` as Zena's formatter prints it, or the text of the syntax
+  // error that stopped it.
+  format: async func(source: string) -> result<string, string>;
+}
+
 world compiler {
   import host;
   import wasi:cli/stdout@0.3.0;
@@ -29,4 +98,6 @@ world compiler {
     wit-source: string,
     world-name: string,
   ) -> result<list<u8>, string>;
+
+  export language;
 }

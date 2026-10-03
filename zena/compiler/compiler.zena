@@ -25,7 +25,7 @@
 // manifest, `zena-packages.json`, comes from the host too, when it has
 // one, as `zena build` reads it from the working directory.
 import { Future } from 'zena:async';
-import { ByteBuffer, Outcome, Ok, Err, Some, StringBuilder } from 'zena:core';
+import { ByteBuffer, Option, Outcome, Ok, Err, Some, StringBuilder, some, none } from 'zena:core';
 import { readSource } from 'wcmp:zena-compiler/host';
 import { CompilerHost } from 'zena-compiler:library-loader';
 import { PackageConfig, stdlibIdToRelativeFile } from 'zena-compiler:module-resolver';
@@ -45,6 +45,14 @@ import {
   declaredPackageNamespaces
 } from 'zena-compiler:wit-module-synth';
 import { ComponentEntryWrapper } from 'zena-compiler:component-entry';
+import { LanguageService } from 'language-service:service';
+import { DocumentHost, FileReader } from 'language-service:host';
+import { HoverResult } from 'language-service:hover';
+import { format as formatSource } from 'zena-formatter:printer';
+import {
+  Diagnostic as EditorDiagnostic, HoverInfo as EditorHover, Completion as EditorCompletion,
+  Location as EditorLocation, Severity
+} from 'wcmp:zena-compiler/language';
 
 /** Where the standard library's `zena/` directory is, as the host names it. */
 let stdlibRoot = '/stdlib';
@@ -215,9 +223,25 @@ let resumeSession = (kept: Session, key: String, source: String,
 };
 
 /** A new session for the configuration a compile runs in. */
-let openSession = (source: String, entryPath: String, witSource: String,
-    worldName: String, hasManifest: boolean): Session => {
-  let host = new HostReader(entryPath, source, witSource);
+/**
+ * The packages of a configuration, the WIT text of those backed by WIT,
+ * and the options a compiler of it takes.
+ */
+final class Configuration {
+  packages: Map<String, PackageConfig>;
+  packagesWit: String;
+  options: CompilerOptions;
+  new(this.packages, this.packagesWit, this.options);
+}
+
+/**
+ * The configuration of a compile against the world `worldName` of the
+ * WIT document `witSource`, or the derived world when it is empty, with
+ * the package manifest when there is one. `host` reads the manifest, and
+ * learns the WIT text of the packages.
+ */
+let configure = (host: HostReader, witSource: String, worldName: String,
+    hasManifest: boolean): Configuration => {
   let packages = if (hasManifest) {
     loadPackageMap(host, manifestPath)
   } else {
@@ -242,7 +266,15 @@ let openSession = (source: String, entryPath: String, witSource: String,
         (path: String, ast: Module): ComponentEntryWrapper | null =>
             synthesizeExportWrapper(witSource, worldName, path, ast, packagesWit);
   }
-  return new Session(host, createCompiler(host, options), packages, packagesWit);
+  return new Configuration(packages, packagesWit, options);
+};
+
+let openSession = (source: String, entryPath: String, witSource: String,
+    worldName: String, hasManifest: boolean): Session => {
+  let host = new HostReader(entryPath, source, witSource);
+  let config = configure(host, witSource, worldName, hasManifest);
+  return new Session(host, createCompiler(host, config.options), config.packages,
+      config.packagesWit);
 };
 
 /**
@@ -348,5 +380,182 @@ export async function compile(source: String, entryPath: String,
       return new Err<FixedArray<u8>, String>('Error: ' + (e as Error).message + '\n');
     }
     return new Err<FixedArray<u8>, String>('Error: the compiler threw a value that is not an Error\n');
+  }
+}
+
+// The language service: what Zena's own language service answers an
+// editor, for a program as `compile` would compile it. The service is
+// Zena's (`language-service:service`), on a compiler of the same
+// configuration as a compile's, which recovers from parse errors as an
+// editor wants, and reads through the same host: the standard library
+// and the package manifest from `read-source`, and the modules a world
+// gives from their WIT.
+
+/** A language service, and the configuration it serves. */
+final class Analysis {
+  key: String;
+  service: LanguageService;
+  new(this.key, this.service);
+}
+
+/**
+ * The one language service kept between calls: a check for another
+ * configuration replaces it, and every query answers from the last
+ * check.
+ */
+final class AnalysisSlot {
+  var current: Analysis | null = null;
+  new() {}
+}
+
+let analyses = new AnalysisSlot();
+
+/**
+ * The language service for the world `worldName` of `witSource`, or the
+ * derived world when it is empty: the one kept, when it serves that
+ * configuration, and otherwise a new one, which the slot keeps instead.
+ */
+let analysisFor = (witSource: String, worldName: String): LanguageService => {
+  let manifest = readSource(manifestPath);
+  let hasManifest = manifest is Some<String>;
+  let manifestText = if (hasManifest) { (manifest as Some<String>).value } else { '' };
+  let key = sessionKey(manifestText, witSource, worldName);
+  let current = analyses.current;
+  if (current != null && (current as Analysis).key == key) {
+    return (current as Analysis).service;
+  }
+  let reader = new HostReader('', '', witSource);
+  let config = configure(reader, witSource, worldName, hasManifest);
+  config.options.recoverFromParseErrors = true;
+  let read: FileReader = (path: String): String | null => {
+    let text: String | null = try { reader.readFile(path) } catch (e) { null };
+    return text;
+  };
+  let host = new DocumentHost(stdlibRoot, read);
+  let service = new LanguageService(host, createCompiler(host, config.options));
+  analyses.current = new Analysis(key, service);
+  return service;
+};
+
+/**
+ * `path` as the language service keys a file: from the root. The service
+ * prefixes a path without its leading slash when it looks the file up,
+ * but checks a file under the path it was loaded at, so the program's
+ * files load from the root too: the entry module, the files beside it,
+ * and through them the files they import by a relative path.
+ */
+let rooted = (path: String): String =>
+    if (path.startsWith('/') || path.startsWith('zena:')) { path } else { '/' + path };
+
+/** A path of the program as the editor named it: without the root `rooted` added. */
+let unrooted = (path: String): String =>
+    if (path.startsWith('/') && !path.startsWith(stdlibRoot + '/') && path != worldPath) {
+      path.sliceBytes(1, path.length)
+    } else {
+      path
+    };
+
+/** Whether `file` is the standard library's, whose findings an editor leaves out. */
+let isStdlibFile = (file: String): boolean =>
+    file.startsWith('zena:') || file.startsWith(stdlibRoot + '/');
+
+/** The language service of the last check, if there was one. */
+let lastAnalysis = (): LanguageService | null => {
+  let current = analyses.current;
+  if (current == null) {
+    return null;
+  }
+  return (current as Analysis).service;
+};
+
+/**
+ * The `check` export: the diagnostics of the program `compile` would
+ * compile, with `files` beside the entry module, in every file that is
+ * not the standard library's.
+ */
+export async function check(source: String, entryPath: String,
+    files: Array<(String, String)>, witSource: String,
+    worldName: String): Future<Array<EditorDiagnostic>> {
+  let out = new GrowableArray<EditorDiagnostic>();
+  let service = analysisFor(witSource, worldName);
+  for (let file in files) {
+    let (path, text) = file;
+    service.openDocument(rooted(path), text);
+  }
+  for (let diag in service.check(rooted(entryPath), source)) {
+    let severity = if (diag.severity == DiagnosticSeverity.Error) {
+      Severity.Error
+    } else if (diag.severity == DiagnosticSeverity.Warning) {
+      Severity.Warning
+    } else {
+      Severity.Information
+    };
+    if (diag.location == null) {
+      out.push(new EditorDiagnostic(entryPath, 0 as u32, 0 as u32, 1 as u32, 1 as u32,
+          severity, diag.message));
+      continue;
+    }
+    let loc = diag.location as SourceSpan;
+    if (isStdlibFile(loc.file)) {
+      continue;
+    }
+    out.push(new EditorDiagnostic(unrooted(loc.file), loc.start as u32, loc.length as u32,
+        loc.line as u32, loc.column as u32, severity, diag.message));
+  }
+  return out;
+}
+
+/** The `hover` export: what is at byte `offset` of `path`, in the last check. */
+export async function hover(path: String, offset: u32): Future<Option<EditorHover>> {
+  let service = lastAnalysis();
+  if (service == null) {
+    return none;
+  }
+  let found = (service as LanguageService).getHover(rooted(path), offset as i32);
+  if (found == null) {
+    return none;
+  }
+  let result = found as HoverResult;
+  return some(new EditorHover(result.label, result.typeStr, result.docComment));
+}
+
+/** The `complete` export: the completions at byte `offset` of `path`, in the last check. */
+export async function complete(path: String, offset: u32): Future<Array<EditorCompletion>> {
+  let out = new GrowableArray<EditorCompletion>();
+  let service = lastAnalysis();
+  if (service == null) {
+    return out;
+  }
+  for (let item in (service as LanguageService).getCompletions(rooted(path), offset as i32)) {
+    out.push(new EditorCompletion(item.label, (item.kind as i32) as u32, item.detail,
+        item.docComment));
+  }
+  return out;
+}
+
+/** The `definition` export: where what is at byte `offset` of `path` is declared. */
+export async function definition(path: String, offset: u32): Future<Option<EditorLocation>> {
+  let service = lastAnalysis();
+  if (service == null) {
+    return none;
+  }
+  let found = (service as LanguageService).getDefinition(rooted(path), offset as i32);
+  if (found == null) {
+    return none;
+  }
+  let span = found as SourceSpan;
+  return some(new EditorLocation(unrooted(span.file), span.start as u32, span.length as u32,
+      span.line as u32, span.column as u32));
+}
+
+/** The `format` export: `source` as Zena's formatter prints it. */
+export async function format(source: String): Future<Outcome<String, String>> {
+  try {
+    return new Ok<String, String>(formatSource(source));
+  } catch (e) {
+    if (e is Error) {
+      return new Err<String, String>((e as Error).message);
+    }
+    return new Err<String, String>('the formatter threw a value that is not an Error');
   }
 }

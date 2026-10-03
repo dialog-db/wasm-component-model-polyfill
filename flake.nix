@@ -344,27 +344,34 @@
         };
 
         # Zena's source tree at the pin, for the builds that compile Zena's
-        # own compiler: the compiler's sources, the standard library, and
-        # the WIT parser, at the paths Zena's repository holds them.
-        # Nothing else of the tree is copied, so a change elsewhere in
-        # Zena leaves this as it was. The package manifest names the two
-        # packages copied here, under the names Zena's own manifest gives
-        # them; Zena's manifest names packages this tree leaves out, and
-        # `zena build` refuses a manifest whose package is missing.
+        # own compiler: the compiler's sources, the standard library, the
+        # WIT parser, and the language service and the formatter, whose
+        # answers the compiler component gives an editor, at the paths
+        # Zena's repository holds them. Nothing else of the tree is
+        # copied, so a change elsewhere in Zena leaves this as it was. The
+        # package manifest names the packages copied here, under the names
+        # Zena's own manifest gives them; Zena's manifest names packages
+        # this tree leaves out, and `zena build` refuses a manifest whose
+        # package is missing.
         zenaSourceManifest = builtins.toFile "zena-packages.json" (
           builtins.toJSON {
             packages = {
               zena-compiler = "./packages/zena-compiler/zena/lib";
               wit-parser = "./packages/wit-parser/zena";
+              language-service = "./packages/language-service/zena/lib";
+              zena-formatter = "./packages/zena-formatter/zena/lib";
             };
           }
         );
         zenaSource = pkgs.runCommand "zena-source" { passthru = { inherit zenaRevision; }; } ''
           mkdir -p "$out/packages/zena-compiler" "$out/packages/stdlib" \
-            "$out/packages/wit-parser"
+            "$out/packages/wit-parser" "$out/packages/language-service/zena" \
+            "$out/packages/zena-formatter/zena"
           cp -R ${zena}/packages/zena-compiler/zena "$out/packages/zena-compiler/"
           cp -R ${zena}/packages/stdlib/zena "$out/packages/stdlib/"
           cp -R ${zena}/packages/wit-parser/zena "$out/packages/wit-parser/"
+          cp -R ${zena}/packages/language-service/zena/lib "$out/packages/language-service/zena/"
+          cp -R ${zena}/packages/zena-formatter/zena/lib "$out/packages/zena-formatter/zena/"
           cp ${zenaSourceManifest} "$out/zena-packages.json"
           echo ${zenaRevision} > "$out/zena-revision"
         '';
@@ -375,7 +382,8 @@
         # `compiler` world. The build fails unless the result validates,
         # imports exactly the compiler's host interface, `wasi:cli`'s
         # standard output and error, and the monotonic clock (with the two
-        # interfaces their types come from), and exports only `compile`.
+        # interfaces their types come from), and exports only `compile` and
+        # the language service an editor asks, `language`.
         # A component that reached for a file system, or for a Preview 1
         # function, would import more.
         zenaCompiler =
@@ -409,8 +417,9 @@
                 import wasi:clocks/monotonic-clock@0.3.0;
               EOF
               diff expected-imports imports
-              test "$(grep -c '^  export ' compiler.wit)" = 1
+              test "$(grep -c '^  export ' compiler.wit)" = 2
               grep -q '^  export compile: async func(source: string, entry-path: string, wit-source: string, world-name: string) -> result<list<u8>, string>;$' compiler.wit
+              grep -q '^  export wcmp:zena-compiler/language;$' compiler.wit
               if wasm-tools print compiler.wasm | grep -q 'wasi_snapshot_preview1\|wasi:filesystem'; then
                 echo "the compiler component reaches for a file system or Preview 1" >&2
                 exit 1
