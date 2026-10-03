@@ -2420,11 +2420,13 @@
         # The demo (`rust/wcmp-demo`): Trunk builds the page's binary and
         # the service worker's, and the site holds the compiler component
         # and the source bundle beside them, which each context fetches
-        # when it starts.
+        # when it starts. It builds with the release profile: the dev
+        # profile compiles the polyfill and the demo at `opt-level = 1`, and
+        # the demo is something a person runs and times.
         demoSite = buildTrunkCrate {
           pname = "wcmp-demo";
           version = "0.1.0";
-          profile = "dev";
+          profile = "release";
           trunkConfig = "rust/wcmp-demo/Trunk.toml";
           trunkIndexPath = "web/index.html";
           # Trunk writes `dist` beside `Trunk.toml`, not beside the page.
