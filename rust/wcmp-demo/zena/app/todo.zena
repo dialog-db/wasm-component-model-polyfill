@@ -6,8 +6,7 @@
 import { Request, Response, json, status, problem } from 'authoring:route';
 import { update, remove, Todo, ModelError } from 'demo:todo/model';
 import { JsonObject } from 'zena:json';
-import { Future } from 'zena:async';
-import { Option, Ok, Err, some, none } from 'zena:core';
+import { Ok, Err } from 'zena:core';
 
 let todoJson = (todo: Todo): JsonObject => {
   let out = new JsonObject();

@@ -3,7 +3,6 @@
 // Enter or leaving the field saves the edit, and Escape cancels it. It
 // reports each change as a custom event that <todo-app> handles.
 import { Element, View, Event, h } from 'authoring:element';
-import { Future } from 'zena:async';
 
 export class TodoItem extends Element {
   var editing = false;

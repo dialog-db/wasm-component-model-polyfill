@@ -2,7 +2,6 @@
 // every todo complete or active. It reports a new title as `todo-add`
 // and the toggle as `todo-toggle-all`, and <todo-app> handles both.
 import { Element, View, Event, h } from 'authoring:element';
-import { Future } from 'zena:async';
 
 export class TodoInput extends Element {
   // Whether the next render clears the field: after an add. Otherwise

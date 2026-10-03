@@ -9,7 +9,6 @@ import {
   query, add, toggleAll, clearCompleted, Filter, Todo, ModelError
 } from 'demo:todo/model';
 import { JsonObject, JsonArray } from 'zena:json';
-import { Future } from 'zena:async';
 import { Ok, Err } from 'zena:core';
 
 let todoJson = (todo: Todo): JsonObject => {

@@ -6,7 +6,6 @@
 // URL hash.
 import { Element, View, Event, h, request } from 'authoring:element';
 import { JsonObject, JsonArray, JsonValue, stringify } from 'zena:json';
-import { Future } from 'zena:async';
 
 final class Todo {
   id: String;

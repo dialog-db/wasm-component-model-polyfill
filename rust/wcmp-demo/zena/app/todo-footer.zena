@@ -3,7 +3,6 @@
 // are some. A filter is a link to a URL hash, which the page turns into
 // <todo-app>'s `filter`.
 import { Element, View, Event, h } from 'authoring:element';
-import { Future } from 'zena:async';
 
 export class TodoFooter extends Element {
   attributes(): Array<String> {
@@ -86,7 +85,7 @@ export class TodoFooter extends Element {
     return h('footer', {'class' => 'footer'}, children);
   }
 
-  async on(handler: String, event: Event): Future<void> {
+  async on(handler: String, _event: Event): Future<void> {
     if (handler == 'clear') {
       this.emit('todo-clear');
     }
