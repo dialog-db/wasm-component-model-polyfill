@@ -78,6 +78,8 @@ kanban-plugin: basic
 
 ## In Progress
 
+- [ ] [[6d6207]]
+
 ## Needs Review
 
 - [ ] [[f259d6]]
