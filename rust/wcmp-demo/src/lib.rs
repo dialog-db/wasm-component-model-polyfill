@@ -33,6 +33,7 @@
 
 mod compiler;
 mod glue;
+mod highlight;
 mod http_types;
 mod model;
 mod model_host;
@@ -48,6 +49,8 @@ mod client;
 mod context;
 #[cfg(target_arch = "wasm32")]
 mod dom;
+#[cfg(target_arch = "wasm32")]
+mod editor;
 #[cfg(target_arch = "wasm32")]
 mod elements;
 #[cfg(target_arch = "wasm32")]

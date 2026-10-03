@@ -32,6 +32,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Document, Element, HtmlTextAreaElement};
 
+use crate::editor;
 use crate::elements::{self, TagStatus};
 use crate::idb::{self, Database};
 use crate::page;
@@ -392,22 +393,16 @@ fn section(document: &Document, kind: &str, name: &str) -> Result<Element, Strin
     toolbar.append_child(&meta).map_err(js_text)?;
     section.append_child(&toolbar).map_err(js_text)?;
     let editor = make(document, "div", &[("class", "editor")])?;
-    let text = make(
-        document,
-        "textarea",
-        &[
-            ("spellcheck", "false"),
-            ("aria-label", &format!("The Zena source of {name}")),
-        ],
-    )?;
     let dirty_id = id.clone();
-    let on_input = Closure::<dyn Fn()>::new(move || {
-        STATE.with(|state| state.borrow_mut().dirty.insert(dirty_id.clone()));
-    });
-    text.add_event_listener_with_callback("input", on_input.as_ref().unchecked_ref())
-        .map_err(js_text)?;
-    on_input.forget();
-    editor.append_child(&text).map_err(js_text)?;
+    editor::mount(
+        document,
+        &editor,
+        &format!("The Zena source of {name}"),
+        move || {
+            STATE.with(|state| state.borrow_mut().dirty.insert(dirty_id.clone()));
+        },
+    )
+    .map_err(js_text)?;
     section.append_child(&editor).map_err(js_text)?;
     // Below the source: a trap of the running component, and the
     // diagnostics of a compile that failed.
@@ -697,7 +692,7 @@ fn fill(
     if !dirty && let Ok(Some(text)) = section.query_selector("textarea") {
         let text: HtmlTextAreaElement = text.unchecked_into();
         if text.value() != source {
-            text.set_value(source);
+            editor::set_text(&text, source);
         }
     }
     // The tab's dot: a failure first, then an edit not saved.
@@ -745,8 +740,7 @@ fn set_text(id: &str, source: &str) -> Result<(), String> {
         .query_selector("textarea")
         .map_err(js_text)?
         .ok_or("the section has no text area")?;
-    text.unchecked_into::<HtmlTextAreaElement>()
-        .set_value(source);
+    editor::set_text(&text.unchecked_into::<HtmlTextAreaElement>(), source);
     Ok(())
 }
 

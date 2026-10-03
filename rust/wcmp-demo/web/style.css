@@ -58,6 +58,16 @@
   --md-sys-typescale-body-large: 400 16px / 24px var(--md-ref-typeface);
   --md-sys-typescale-body-medium: 400 14px / 20px var(--md-ref-typeface);
   --md-sys-typescale-label-large: 500 14px / 20px var(--md-ref-typeface);
+
+  /* The colors of Zena source in the shelf's editor. */
+  --code-keyword: #7b3fa0;
+  --code-type: #006a60;
+  --code-string: #7d5700;
+  --code-escape: #a04100;
+  --code-literal: #b3401a;
+  --code-comment: #6f7977;
+  --code-property: #2f5f86;
+  --code-punctuation: #3f4947;
   --md-sys-typescale-label-medium: 500 12px / 16px var(--md-ref-typeface);
 
   --md-sys-elevation-1: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px 1px rgb(0 0 0 / 0.15);
@@ -68,6 +78,15 @@
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
+
+    --code-keyword: #d9a8f5;
+    --code-type: #53dbc9;
+    --code-string: #ecc56c;
+    --code-escape: #ffb68f;
+    --code-literal: #f5a97c;
+    --code-comment: #8a9592;
+    --code-property: #9ccaf0;
+    --code-punctuation: #bec9c6;
 
     --md-sys-color-primary: #53dbc9;
     --md-sys-color-on-primary: #003731;
@@ -318,27 +337,96 @@ body {
 }
 
 #shelf .editor {
-  display: flex;
   flex: 1;
   min-height: 0;
 }
 
-#shelf textarea {
-  flex: 1;
-  min-height: 0;
-  padding: 12px;
+/*
+ * The editor: a text area over its highlighted copy. The two share every
+ * metric, so each character of the one lies over the same character of
+ * the other, and neither wraps a line.
+ */
+#shelf .editor {
+  position: relative;
   border: 1px solid var(--md-sys-color-outline-variant);
   border-radius: var(--md-sys-shape-corner-small);
   background: var(--md-sys-color-surface-container-lowest);
-  color: var(--md-sys-color-on-surface);
-  font: 13px / 1.5 var(--md-ref-typeface-mono);
-  resize: none;
-  tab-size: 2;
+  overflow: hidden;
 }
 
-#shelf textarea:focus {
+#shelf .editor:focus-within {
   outline: 2px solid var(--md-sys-color-primary);
   outline-offset: -1px;
+}
+
+#shelf .editor .highlight,
+#shelf .editor textarea {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 12px;
+  border: none;
+  font: 13px / 1.5 var(--md-ref-typeface-mono);
+  letter-spacing: normal;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+}
+
+#shelf .editor .highlight {
+  color: var(--md-sys-color-on-surface);
+  pointer-events: none;
+  scrollbar-width: none;
+}
+
+#shelf .editor textarea {
+  background: transparent;
+  color: transparent;
+  caret-color: var(--md-sys-color-on-surface);
+  resize: none;
+  outline: none;
+}
+
+#shelf .editor textarea::selection {
+  background: color-mix(in srgb, var(--md-sys-color-primary) 28%, transparent);
+  color: transparent;
+}
+
+/* The colors of Zena's tokens, from the theme's palette. */
+.tok-comment {
+  color: var(--code-comment);
+  font-style: italic;
+}
+.tok-string {
+  color: var(--code-string);
+}
+.tok-escape {
+  color: var(--code-escape);
+}
+.tok-number,
+.tok-bool,
+.tok-null {
+  color: var(--code-literal);
+}
+.tok-control,
+.tok-definition,
+.tok-module,
+.tok-modifier,
+.tok-operator-keyword,
+.tok-self {
+  color: var(--code-keyword);
+  font-weight: 600;
+}
+.tok-type {
+  color: var(--code-type);
+}
+.tok-meta,
+.tok-property {
+  color: var(--code-property);
+}
+.tok-operator,
+.tok-punctuation {
+  color: var(--code-punctuation);
 }
 
 #shelf .diagnostics,

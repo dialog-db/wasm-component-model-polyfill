@@ -57,6 +57,7 @@ web-sys = { workspace = true, features = [
   "ExtendableMessageEvent",
   "FetchEvent",
   "Headers",
+  "HtmlDocument",
   "HtmlElement",
   "HtmlInputElement",
   "HtmlTextAreaElement",
