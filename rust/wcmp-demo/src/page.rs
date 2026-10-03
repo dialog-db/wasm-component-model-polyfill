@@ -14,7 +14,7 @@
 //!    instantiates the compiler.
 //! 3. It reads the element sources a person edited from IndexedDB.
 //! 4. It compiles and defines each element. An edit that does not
-//!    compile falls back to the shipped source, and the drawer keeps the
+//!    compile falls back to the shipped source, and the shelf keeps the
 //!    edit and its diagnostics.
 //! 5. It waits until the service worker controls it.
 //! 6. It replaces the skeleton with `<todo-app>`, whose first request
@@ -33,9 +33,9 @@ use wasm_bindgen_futures::{JsFuture, future_to_promise};
 use web_sys::{ServiceWorkerContainer, Window};
 
 use crate::context::Context;
-use crate::drawer;
 use crate::elements;
 use crate::idb::{self, Database};
+use crate::shelf;
 use crate::sources;
 use crate::telemetry;
 
@@ -73,7 +73,7 @@ pub async fn start() -> Result<(), JsValue> {
 
     boot_step(&window, "mounting");
     mount(&window)?;
-    drawer::mount(database).map_err(|error| JsValue::from_str(&error))?;
+    shelf::mount(database).map_err(|error| JsValue::from_str(&error))?;
     boot_step(&window, "ready");
     Ok(())
 }
@@ -288,7 +288,7 @@ fn install_hooks(window: &Window, context: Rc<Context>) -> Result<(), JsValue> {
     let statuses = Closure::<dyn Fn() -> JsValue>::new(|| {
         elements::statuses()
             .iter()
-            .map(drawer::element_status_value)
+            .map(shelf::element_status_value)
             .collect::<js_sys::Array>()
             .into()
     });

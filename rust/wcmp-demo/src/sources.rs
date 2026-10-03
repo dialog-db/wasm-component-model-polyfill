@@ -6,7 +6,7 @@
 
 //! The Zena source the demo ships: its four elements and its two routes,
 //! each as its author wrote it, against the authoring library and with
-//! no WIT. A person can edit each in the drawer.
+//! no WIT. A person can edit each in the shelf.
 
 /// The elements, by tag, in the order the page defines them: the
 /// children before the element that renders them.

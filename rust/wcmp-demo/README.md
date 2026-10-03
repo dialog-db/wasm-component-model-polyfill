@@ -3,10 +3,10 @@
 A TodoMVC application whose elements and routes are Zena programs. The page and
 the service worker each run Zena's compiler as a component on the polyfill, and
 compile the Zena sources when the demo starts. A person can edit any source in
-the drawer and see the change at once.
+the shelf and see the change at once.
 
 - `src/` is the host framework: the compiler per context, the custom elements,
-  the routes, `wasi:http`, the todo model, and the drawer. `src/bin/` holds the
+  the routes, `wasi:http`, the todo model, and the shelf. `src/bin/` holds the
   two Trunk binaries, one for the page and one for the service worker.
 - `zena/authoring/` is the authoring library, the package `authoring` of the
   source bundle. Authors import `authoring:element` and `authoring:route`.

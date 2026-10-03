@@ -18,10 +18,10 @@ use serde_json::Value;
 use crate::browser::Browser;
 
 mod app;
-mod drawer;
 mod elements;
 mod platform;
 mod routes;
+mod shelf;
 
 /// One test of the lane.
 pub struct Test {
@@ -90,18 +90,20 @@ pub static TESTS: &[Test] = &[
     test!(app::it_calls_the_routes_through_wasi_http_and_the_service_worker),
     test!(app::it_follows_the_color_scheme),
     test!(app::it_reads_the_color_tokens_in_every_element),
-    test!(drawer::it_lists_every_source_with_its_timings),
-    test!(drawer::it_shows_a_new_compile_of_a_route_after_the_worker_stops),
-    test!(drawer::it_shows_one_instance_and_the_connected_elements),
-    test!(drawer::it_applies_an_element_edit_in_place),
-    test!(drawer::it_keeps_the_last_good_element_after_a_failed_edit),
-    test!(drawer::it_falls_back_to_the_shipped_element_when_an_edit_fails_at_boot),
-    test!(drawer::it_resets_an_element_to_the_shipped_source),
-    test!(drawer::it_restarts_an_element_after_a_trap),
-    test!(drawer::it_applies_a_route_edit_in_the_service_worker),
-    test!(drawer::it_answers_500_for_a_saved_route_that_traps),
-    test!(drawer::it_keeps_the_old_route_after_a_failed_edit),
-    test!(drawer::it_resets_a_route_to_the_shipped_source),
+    test!(shelf::it_lists_every_source_with_its_timings),
+    test!(shelf::it_shows_a_new_compile_of_a_route_after_the_worker_stops),
+    test!(shelf::it_shows_one_instance_and_the_connected_elements),
+    test!(shelf::it_applies_an_element_edit_in_place),
+    test!(shelf::it_keeps_the_last_good_element_after_a_failed_edit),
+    test!(shelf::it_falls_back_to_the_shipped_element_when_an_edit_fails_at_boot),
+    test!(shelf::it_resets_an_element_to_the_shipped_source),
+    test!(shelf::it_restarts_an_element_after_a_trap),
+    test!(shelf::it_applies_a_route_edit_in_the_service_worker),
+    test!(shelf::it_answers_500_for_a_saved_route_that_traps),
+    test!(shelf::it_keeps_the_old_route_after_a_failed_edit),
+    test!(shelf::it_resets_a_route_to_the_shipped_source),
+    test!(shelf::it_shows_one_source_at_a_time_by_its_tab_and_keeps_the_choice),
+    test!(shelf::it_marks_a_tab_with_an_edit_and_with_a_failure),
 ];
 
 /// Fail with `message` unless `condition` holds.

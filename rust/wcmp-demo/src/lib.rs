@@ -49,13 +49,13 @@ mod context;
 #[cfg(target_arch = "wasm32")]
 mod dom;
 #[cfg(target_arch = "wasm32")]
-mod drawer;
-#[cfg(target_arch = "wasm32")]
 mod elements;
 #[cfg(target_arch = "wasm32")]
 mod idb;
 #[cfg(target_arch = "wasm32")]
 mod page;
+#[cfg(target_arch = "wasm32")]
+mod shelf;
 #[cfg(target_arch = "wasm32")]
 mod telemetry;
 #[cfg(target_arch = "wasm32")]

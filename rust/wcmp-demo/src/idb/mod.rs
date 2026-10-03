@@ -9,7 +9,7 @@
 //! they share an origin.
 //!
 //! It holds the todo list, under [`TODOS`], and each edit a person saved
-//! in the drawer, under [`edit_key`].
+//! in the shelf, under [`edit_key`].
 
 use std::cell::RefCell;
 use std::rc::Rc;

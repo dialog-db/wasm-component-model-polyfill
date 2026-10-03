@@ -87,6 +87,7 @@ web-sys = { workspace = true, features = [
   "ServiceWorkerGlobalScope",
   "ServiceWorkerRegistration",
   "ShadowRoot",
+  "Storage",
   "Text",
   "Url",
   "Window",

@@ -28,7 +28,8 @@ the page while the script runs, which Chrome's performance panel opens.
 `WCMP_DEMO_LANE_CDP` names CDP methods, separated by commas, to send before the
 script, such as `Debugger.enable`, which is what an open DevTools does.
 `WCMP_DEMO_LANE_HEADED` opens a browser window instead of a headless browser,
-for the lane and for inspect mode.
+for the lane and for inspect mode. `WCMP_DEMO_LANE_SCREENSHOT` names a PNG file
+to write a screenshot of the window to once the script has run.
 
 ## Report
 
@@ -40,8 +41,8 @@ The last full run, on Chromium 154.0.8037.57, on 2026-10-02:
 | Elements  | 16    | 16     |
 | Routes    | 6     | 6      |
 | TodoMVC   | 11    | 11     |
-| Drawer    | 12    | 12     |
-| **Total** | 59    | 59     |
+| Shelf     | 14    | 14     |
+| **Total** | 61    | 61     |
 
 ## Safari
 

@@ -175,90 +175,178 @@ todo-footer:not(:defined) {
   }
 }
 
-/* The drawer, plain HTML beside the application. */
-#drawer-toggle {
-  position: fixed;
-  right: 24px;
-  bottom: 24px;
-  z-index: 2;
-  padding: 16px 20px;
-  border: none;
-  border-radius: var(--md-sys-shape-corner-large);
-  background: var(--md-sys-color-primary-container);
-  color: var(--md-sys-color-on-primary-container);
-  box-shadow: var(--md-sys-elevation-3);
-  font: var(--md-sys-typescale-label-large);
-  cursor: pointer;
+/*
+ * The shelf, plain HTML beside the application: a bar along the bottom
+ * of the page, always shown, with a tab for each Zena file, and above it
+ * the panel of the active file, when the shelf is open. The page leaves
+ * room below the application for whichever of the two is shown.
+ */
+:root {
+  --shelf-bar-height: 48px;
+  --shelf-panel-height: min(46vh, 520px);
 }
 
-#drawer {
+body {
+  padding-bottom: var(--shelf-bar-height);
+}
+
+:root[data-shelf="open"] body {
+  padding-bottom: calc(var(--shelf-bar-height) + var(--shelf-panel-height));
+}
+
+#shelf {
   position: fixed;
-  top: 0;
   right: 0;
   bottom: 0;
-  z-index: 1;
-  width: min(560px, 100vw);
-  overflow-y: auto;
-  padding: 24px 24px 96px;
+  left: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
   background: var(--md-sys-color-surface-container-low);
   color: var(--md-sys-color-on-surface);
   box-shadow: var(--md-sys-elevation-3);
 }
 
-#drawer[hidden] {
-  display: none;
+.shelf-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  height: var(--shelf-bar-height);
+  padding: 0 8px;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
 }
 
-#drawer h2 {
-  margin: 0 0 4px;
-  font: var(--md-sys-typescale-headline-small);
+#shelf-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 0 8px;
+  border: none;
+  background: transparent;
+  color: var(--md-sys-color-primary);
+  font: var(--md-sys-typescale-label-large);
+  white-space: nowrap;
+  cursor: pointer;
 }
 
-.drawer-note {
-  margin: 0 0 16px;
+#shelf-toggle::before {
+  content: "▴";
+  display: inline-block;
+  width: 1em;
+  transition: transform 120ms ease;
+}
+
+#shelf-toggle[aria-expanded="true"]::before {
+  transform: rotate(180deg);
+}
+
+.shelf-tabs {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.shelf-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  border: none;
+  border-bottom: 3px solid transparent;
+  background: transparent;
   color: var(--md-sys-color-on-surface-variant);
-  font: var(--md-sys-typescale-body-medium);
+  font: 13px / 1 var(--md-ref-typeface-mono);
+  white-space: nowrap;
+  cursor: pointer;
 }
 
-#drawer .source {
-  margin: 0 0 16px;
-  padding: 16px;
-  border-radius: var(--md-sys-shape-corner-large);
-  background: var(--md-sys-color-surface-container);
+.shelf-tab:hover {
+  background: var(--md-sys-color-surface-container-high);
 }
 
-#drawer h3 {
-  margin: 0;
-  font: var(--md-sys-typescale-title-medium);
-  font-family: var(--md-ref-typeface-mono);
+.shelf-tab[aria-selected="true"] {
+  border-bottom-color: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-surface);
 }
 
-#drawer .meta {
+.shelf-tab .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: transparent;
+}
+
+.shelf-tab[data-state="edited"] .dot {
+  background: var(--md-sys-color-primary);
+}
+
+.shelf-tab[data-state="failed"] .dot {
+  background: var(--md-sys-color-error);
+}
+
+#shelf-panel {
+  height: var(--shelf-panel-height);
+  overflow: hidden;
+}
+
+#shelf .source {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  padding: 8px 16px 12px;
+}
+
+#shelf .toolbar {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  margin: 4px 0 8px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+#shelf .meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 0;
   color: var(--md-sys-color-on-surface-variant);
   font: var(--md-sys-typescale-label-medium);
 }
 
-#drawer textarea {
-  display: block;
-  width: 100%;
-  min-height: 200px;
+#shelf .editor {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+#shelf textarea {
+  flex: 1;
+  min-height: 0;
   padding: 12px;
   border: 1px solid var(--md-sys-color-outline-variant);
   border-radius: var(--md-sys-shape-corner-small);
   background: var(--md-sys-color-surface-container-lowest);
   color: var(--md-sys-color-on-surface);
   font: 13px / 1.5 var(--md-ref-typeface-mono);
-  resize: vertical;
+  resize: none;
   tab-size: 2;
 }
 
-#drawer .diagnostics,
-#drawer .trapped {
-  margin: 8px 0 0;
+#shelf textarea:focus {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: -1px;
+}
+
+#shelf .diagnostics,
+#shelf .trapped {
+  flex: none;
+  max-height: 30%;
+  margin: 0;
+  overflow-y: auto;
   padding: 8px 12px;
   border-radius: var(--md-sys-shape-corner-small);
   background: var(--md-sys-color-error-container);
@@ -267,14 +355,13 @@ todo-footer:not(:defined) {
   white-space: pre-wrap;
 }
 
-#drawer .actions {
+#shelf .actions {
   display: flex;
   gap: 8px;
-  margin-top: 8px;
 }
 
-#drawer button {
-  padding: 8px 16px;
+#shelf .actions button {
+  padding: 6px 14px;
   border: 1px solid var(--md-sys-color-outline);
   border-radius: var(--md-sys-shape-corner-full);
   background: transparent;
@@ -283,12 +370,14 @@ todo-footer:not(:defined) {
   cursor: pointer;
 }
 
-#drawer button[data-action="save"] {
+#shelf .actions button[data-action="save"] {
   border-color: transparent;
   background: var(--md-sys-color-primary);
   color: var(--md-sys-color-on-primary);
 }
 
-#drawer [hidden] {
+/* Last, so that it wins over every display above it. */
+#shelf-panel[hidden],
+#shelf [hidden] {
   display: none;
 }

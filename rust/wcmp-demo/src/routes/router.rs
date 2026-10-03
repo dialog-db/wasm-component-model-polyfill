@@ -184,7 +184,7 @@ impl<S: Storage + 'static> Router<S> {
                 Err(_) => {
                     // An edit that does not compile falls back to the
                     // shipped source. The status keeps the edit's
-                    // diagnostics, for the drawer to show.
+                    // diagnostics, for the shelf to show.
                     let diagnostics = route.status.diagnostics.clone();
                     let shipped = route.status.shipped.clone();
                     let fallback = self.start_from(&mut route.status, &shipped).await;

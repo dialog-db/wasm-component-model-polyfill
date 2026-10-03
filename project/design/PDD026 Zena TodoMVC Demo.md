@@ -36,7 +36,7 @@ These terms recur:
 - A view is the description of an element's contents that the element returns
   when it renders.
 - The todo model is the Rust code in the service worker that owns the todo list.
-- The drawer is a panel of the demo that shows and edits every Zena source.
+- The shelf is a panel of the demo that shows and edits every Zena source.
 
 ## Goals
 
@@ -57,13 +57,12 @@ These terms recur:
   route component.
 - Authors write against the authoring library and never write WIT.
 - The business logic of the todo list is Rust.
-- The drawer shows every Zena source of the demo and recompiles an edit in
-  place.
-- The drawer shows the Zena compile time, the Wasm compile time, and the
+- The shelf shows every Zena source of the demo and recompiles an edit in place.
+- The shelf shows the Zena compile time, the Wasm compile time, and the
   instantiate time of each component.
 - The demo builds from a crate in this workspace with Trunk. A menu command
   serves it.
-- A browser test lane drives every TodoMVC behavior and the drawer. `tests all`
+- A browser test lane drives every TodoMVC behavior and the shelf. `tests all`
   runs the lane.
 - The Zena compatibility suite gains scenarios that run the compiler component
   on every subject.
@@ -74,7 +73,7 @@ These terms recur:
   time that it needs one.
 - A dedicated worker for compilation. The page compiles on its main thread.
 - A code editor with highlighting, completion, or Zena's language service. The
-  drawer edits plain text.
+  shelf edits plain text.
 - Public hosting of the demo.
 - The official TodoMVC test suite. Its selectors cannot see into a shadow root.
 - A reusable framework. The authoring library and the host framework belong to
@@ -182,7 +181,7 @@ toolchain. The Zena facts are from revision `b2237f7` of its repository, dated
   │  element components          │  fetch    │  route components            │
   │   <todo-app> ── wasi:http ───┼──────────►│   /api/todos ── todo model ──┼─► IndexedDB
   │   <todo-item> …              │           │   /api/todos/:id             │
-  │ drawer (plain Rust and HTML) │ messages  │                              │
+  │ shelf (plain Rust and HTML)  │ messages  │                              │
   └──────────────────────────────┴◄────────►─┴──────────────────────────────┘
 ```
 
@@ -304,7 +303,7 @@ library, and the WIT parser.
 ### Where It Runs
 
 The page runs the compiler component on its main thread. A compile blocks the
-page for its duration. The drawer shows that duration, so the cost is visible.
+page for its duration. The shelf shows that duration, so the cost is visible.
 
 The service worker runs its own instance of the compiler component. A service
 worker cannot start a worker, so no other place exists.
@@ -455,7 +454,7 @@ reference.
 
 A trap poisons the tag's `Store`. The host framework then replaces the contents
 of each element of that tag with an error card. An error card is a short message
-that names the tag and the trap. The drawer has a "Restart" control for the tag.
+that names the tag and the trap. The shelf has a "Restart" control for the tag.
 It compiles the tag again from the source it last started from, makes a new
 `Store`, and each element connects again. A later edit that failed to compile
 does not take part.
@@ -634,14 +633,14 @@ definition. A request that matches no pattern goes to the network.
 The service worker compiles a route on the first request that matches it after
 the worker starts. It keeps the instance until the browser stops the worker.
 Chromium stops an idle service worker after 30 seconds, so a later request can
-pay for a new compile. The drawer shows that cost.
+pay for a new compile. The shelf shows that cost.
 
 ### Failure
 
 If a route fails to compile, the service worker answers its requests with 500
 and a body that holds the diagnostics. If a route traps, the service worker
 answers that request with 500 and drops the instance. The next request to the
-route compiles it again. Both failures reach the drawer.
+route compiles it again. Both failures reach the shelf.
 
 ### The Routes of the Demo
 
@@ -749,7 +748,7 @@ The page starts in this order:
    service worker.
 
 If an edited source fails to compile at boot, the page compiles the shipped
-source instead. The drawer keeps the edit and shows its diagnostics.
+source instead. The shelf keeps the edit and shows its diagnostics.
 
 The service worker fetches the compiler component and the source bundle when it
 starts. It reads any edited route sources from IndexedDB. It compiles each route
@@ -767,7 +766,7 @@ The page and the service worker exchange these messages:
   carries the pattern, the compile time, the instantiate time, and the
   diagnostics of a failure.
 - The service worker sends `route-trapped` with a pattern after a route traps.
-- The page sends `routes-status` when the drawer opens, and again while it stays
+- The page sends `routes-status` when the shelf opens, and again while it stays
   open. The service worker answers with the last `route-compiled` of each route.
 
 After a hard reload, no service worker controls the page, and the worker that is
@@ -786,14 +785,21 @@ a source, and `compile-check` compiles and runs a program in the service worker.
 The page exposes both on `window.demo`, beside hooks that define an element and
 read each tag's status.
 
-## The Drawer
+## The Shelf
 
-The drawer is a panel at the side of the page. It is plain Rust and HTML, not an
-element. A bad edit cannot break the tool that fixes it.
+The shelf is a collapsible panel along the bottom of the page. It is plain Rust
+and HTML, not an element. A bad edit cannot break the tool that fixes it.
 
-The drawer lists every element and every route. For each one, it shows:
+A bar along the bottom of the page is always shown. It holds the control that
+opens and closes the shelf, and a tab for each element and each route. A dot on
+a tab marks an edit that is not saved, or a failure: diagnostics or a trap. The
+open shelf shows the source of the active tab. The page leaves room below the
+application for the bar, or for the whole shelf when it is open. The browser
+keeps whether the shelf is open and which tab is active, for the next visit.
 
-- The Zena source in a text area.
+For the source of the active tab, the shelf shows:
+
+- The Zena source in a text area. Ctrl-S or Cmd-S saves it.
 - Three times of the last start: the compile of the Zena source to a component
   ("Zena → Wasm"), the polyfill's compile of that component ("Wasm compile"),
   and the link and instantiation.
@@ -807,7 +813,7 @@ compiles it. If the compile succeeds, the page makes a new `Store` and instance
 for the tag. The host framework calls `create` and `connected` again for each
 connected element of that tag, and renders each one. The elements keep their
 attributes. State that lived only in the old instance is gone. If the compile
-fails, the old instance keeps running and the drawer shows the diagnostics.
+fails, the old instance keeps running and the shelf shows the diagnostics.
 
 When a person saves a route, the page writes the source and sends
 `route-changed`. The service worker compiles the route at once and answers with
@@ -824,7 +830,7 @@ theme follows the color scheme setting of the browser. Custom properties inherit
 through shadow boundaries, so every element reads the same tokens.
 
 Each element's styles live in its Zena source. `styles` returns them. A person
-can change the look of an element from the drawer.
+can change the look of an element from the shelf.
 
 The demo does not use Material Web. Its controls are web components themselves,
 so they compete with the demo's elements.
@@ -885,25 +891,25 @@ A developer hears that the Component Model can run in a browser and doubts it.
 
 > The developer opens the demo. A skeleton list appears, and a moment later the
 > todo list draws. The developer adds three todos, completes one, and filters to
-> "Active". Nothing looks unusual. Then the developer opens the drawer. It lists
+> "Active". Nothing looks unusual. Then the developer opens the shelf. It lists
 > four elements and two routes, each with its Zena source and a compile time in
 > milliseconds. The developer understands that the page compiled all of it a few
 > seconds ago.
 
 A person in the audience of a talk asks whether the source is real.
 
-> The presenter opens `<todo-item>` in the drawer and changes the label of the
-> delete button. The presenter saves. The drawer shows a new compile time, and
+> The presenter opens `<todo-item>` in the shelf and changes the label of the
+> delete button. The presenter saves. The shelf shows a new compile time, and
 > every row in the list shows the new label. The todos stay. The presenter then
-> types a syntax error and saves. The drawer shows Zena's diagnostic with its
+> types a syntax error and saves. The shelf shows Zena's diagnostic with its
 > line number, and the list keeps working.
 
 A developer wants to see a route compile.
 
-> The developer opens the `/api/todos/:id` route in the drawer and makes `PATCH`
-> refuse titles shorter than three letters. The developer saves. The drawer
-> shows the service worker's compile time. The developer edits a todo to "ab",
-> and the edit fails with the new rule.
+> The developer opens the `/api/todos/:id` route in the shelf and makes `PATCH`
+> refuse titles shorter than three letters. The developer saves. The shelf shows
+> the service worker's compile time. The developer edits a todo to "ab", and the
+> edit fails with the new rule.
 
 The owner moves the Zena pin.
 
@@ -964,7 +970,7 @@ The calls of one element run in order. A test fires two events on one element in
 one task. The second `handle-event` starts after the first completes.
 
 One instance serves every element of a tag. A test adds fifty elements of one
-tag and then removes forty. The drawer shows one instance throughout, and it
+tag and then removes forty. The shelf shows one instance throughout, and it
 shows fifty and then ten connected elements.
 
 Styles apply. The computed style of a node in an element matches the CSS that
@@ -993,11 +999,11 @@ The todo list persists. A test adds todos, stops the service worker, and reloads
 the page. The list is the same.
 
 A route compiles again after the service worker stops. A test stops the service
-worker and sends a request. The response is correct, and the drawer shows a new
+worker and sends a request. The response is correct, and the shelf shows a new
 compile for that route.
 
 A route failure answers 500. A test saves a route that traps. The request gets
-500, and the drawer shows the trap. The next request compiles the route again.
+500, and the shelf shows the trap. The next request compiles the route again.
 
 Every TodoMVC behavior works. The browser test lane covers each behavior of the
 TodoMVC specification through the shadow roots:
@@ -1011,24 +1017,24 @@ TodoMVC specification through the shadow roots:
 - Persistence after a reload.
 
 An element edit applies in place. A test changes the source of `<todo-item>` in
-the drawer and saves. Every item renders with the change, and the list keeps its
+the shelf and saves. Every item renders with the change, and the list keeps its
 todos.
 
 A failed edit keeps the last good version. A test saves a source with a syntax
-error. The drawer shows the diagnostics, and the old element keeps working.
+error. The shelf shows the diagnostics, and the old element keeps working.
 
 An edit that fails at boot falls back. A test stores an edit that does not
-compile and reloads the page. The element runs its shipped source, and the
-drawer shows the edit and its diagnostics.
+compile and reloads the page. The element runs its shipped source, and the shelf
+shows the edit and its diagnostics.
 
 A route edit applies in the service worker. A test changes a route's source in
-the drawer and saves. The next request gets the new behavior. After the service
+the shelf and saves. The next request gets the new behavior. After the service
 worker stops and starts again, the request still gets the new behavior.
 
 "Reset to original" restores the shipped source. After an edit, a test resets
 the element and the route. Both behave as shipped, and IndexedDB holds no edit.
 
-The drawer shows timings. After the page starts, the drawer shows a Zena compile
+The shelf shows timings. After the page starts, the shelf shows a Zena compile
 time, a Wasm compile time, and an instantiate time for every element. After the
 first request to each route, it shows the same for that route.
 

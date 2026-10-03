@@ -269,7 +269,7 @@ pub fn it_compiles_a_program_again_after_a_file_it_imports_changes(
     browser.boot()?;
     // The entry stays as it was, and the file beside it changes and
     // changes back: the shape of an element's glue and its author's
-    // source, edited in the drawer and reset.
+    // source, edited in the shelf and reset.
     let source = "import { six } from './six.zena';\nexport let answer = (): i32 => six() * 7;\n";
     let mut answers = Vec::new();
     for six in ["6", "5 + 2", "6"] {
