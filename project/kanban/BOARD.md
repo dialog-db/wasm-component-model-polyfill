@@ -106,6 +106,7 @@ kanban-plugin: basic
 - [ ] [[42e1da]]
 - [ ] [[3858dd]]
 - [ ] [[20d26c]]
+- [ ] [[e014ab]]
 
 ## Ready
 
