@@ -11,6 +11,8 @@
 // class. Each instance opens its shadow root in its constructor, and
 // hands each lifecycle callback to Rust, which calls the tag's
 // component. Rust finds an element's state through the element itself.
+// The shadow root starts with a slot, so that an element shows its
+// children until its first render replaces the slot with its view.
 
 window.demoElements = {
   define(tag, observed, host) {
@@ -23,7 +25,7 @@ window.demoElements = {
 
         constructor() {
           super();
-          this.attachShadow({ mode: "open" });
+          this.attachShadow({ mode: "open" }).append(document.createElement("slot"));
         }
 
         connectedCallback() {

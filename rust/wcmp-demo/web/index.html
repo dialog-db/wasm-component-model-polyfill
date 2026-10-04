@@ -41,20 +41,45 @@
   <body>
     <main id="app">
       <!--
-        The skeleton: a gray placeholder in the shape of the todo list,
-        until the page has compiled the elements and mounts <todo-app>.
+        The application. The page defines <todo-app> once it has compiled
+        the elements and the service worker controls the page. Until then,
+        and until the element's list has loaded, the element shows this
+        spinner.
       -->
-      <div class="skeleton" aria-busy="true" aria-label="Loading">
-        <div class="skeleton-title"></div>
-        <div class="skeleton-field"></div>
-        <div class="skeleton-row"></div>
-        <div class="skeleton-row"></div>
-        <div class="skeleton-row"></div>
-      </div>
+      <todo-app>
+        <div class="loading" role="progressbar" aria-label="Loading">
+          <svg class="spinner" viewBox="0 0 48 48" aria-hidden="true">
+            <circle cx="24" cy="24" r="20" />
+          </svg>
+        </div>
+      </todo-app>
+      <!--
+        The spinner turns by the Web Animations API, not by CSS animations:
+        the element moves the spinner into slots of its shadow root, which
+        restarts a CSS animation, and a restart shows as a jump.
+      -->
+      <script>
+        (() => {
+          const spinner = document.querySelector("todo-app .spinner");
+          const forever = { duration: 1400, iterations: Infinity };
+          spinner.animate(
+            [{ transform: "rotate(0deg)" }, { transform: "rotate(360deg)" }],
+            forever,
+          );
+          spinner.firstElementChild.animate(
+            [
+              { strokeDasharray: "1 126", strokeDashoffset: 0, easing: "ease-in-out" },
+              { strokeDasharray: "90 126", strokeDashoffset: -35, easing: "ease-in-out" },
+              { strokeDasharray: "90 126", strokeDashoffset: -124 },
+            ],
+            forever,
+          );
+        })();
+      </script>
     </main>
     <footer class="colophon">
       <p>
-        Double-click a todo to edit it. Every part of this page is a
+        Every part of this page is a
         <a href="https://component-model.bytecodealliance.org/">component</a>
         the browser compiled from <a href="https://zena-lang.dev/">Zena</a>
         source, running on the Wasm Component Model Polyfill.

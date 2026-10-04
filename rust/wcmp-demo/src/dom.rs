@@ -23,12 +23,21 @@
 //! root has one listener for each event name any of its views used,
 //! which finds the handler on the event's path.
 //!
+//! An element whose view handles `resize` reports its size: the host
+//! observes it with a `ResizeObserver`, and dispatches a `resize` custom
+//! event on it, whose detail is the height of its border box in CSS
+//! pixels, once it has been laid out and at each change after. The event
+//! does not bubble. A view that stops handling `resize` stops the
+//! observation.
+//!
 //! An element the diff creates with an `autofocus` attribute, or one that
 //! gains the attribute, takes the focus once the diff has placed it.
 //!
 //! The first render after an element had nothing mounted, such as after
-//! an error card, clears the shadow root before it places the view.
+//! an error card, or over the slot an element's shadow root starts with,
+//! clears the shadow root before it places the view.
 
+use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{Document, Element, Node};
 
@@ -36,6 +45,17 @@ use crate::view::{self, Kind, Property, View};
 
 /// The property of a DOM element that holds its events.
 pub const EVENTS: &str = "__demoOn";
+
+/// The property of a DOM element that marks it observed for `resize`.
+const RESIZE: &str = "__demoResize";
+
+/// The event an element's view handles to learn its height.
+const RESIZE_EVENT: &str = "resize";
+
+thread_local! {
+    /// The observer of every element whose view handles `resize`.
+    static RESIZE_OBSERVER: Option<web_sys::ResizeObserver> = resize_observer();
+}
 
 /// A node of the last view, with the DOM node made for it.
 pub struct Mounted {
@@ -267,7 +287,54 @@ fn set_events(
         listen(event);
     }
     js_sys::Reflect::set(element, &JsValue::from_str(EVENTS), &table)?;
+    let wanted = events.iter().any(|(event, _)| event == RESIZE_EVENT);
+    let observed = js_sys::Reflect::get(element, &JsValue::from_str(RESIZE))?.is_truthy();
+    // Observing an element again would report its size again, and the
+    // render that report causes would observe it again.
+    if wanted != observed {
+        RESIZE_OBSERVER.with(|observer| {
+            if let Some(observer) = observer {
+                if wanted {
+                    observer.observe(element);
+                } else {
+                    observer.unobserve(element);
+                }
+            }
+        });
+        js_sys::Reflect::set(
+            element,
+            &JsValue::from_str(RESIZE),
+            &JsValue::from_bool(wanted),
+        )?;
+    }
     Ok(())
+}
+
+/// The observer that dispatches `resize` on each element it observes,
+/// with the height of the element's border box, or none where the
+/// browser has no `ResizeObserver`.
+fn resize_observer() -> Option<web_sys::ResizeObserver> {
+    let callback = Closure::<dyn Fn(js_sys::Array)>::new(|entries: js_sys::Array| {
+        for entry in entries.iter() {
+            let entry: web_sys::ResizeObserverEntry = entry.unchecked_into();
+            let Some(size) = entry
+                .border_box_size()
+                .iter()
+                .next()
+                .map(JsCast::unchecked_into::<web_sys::ResizeObserverSize>)
+            else {
+                continue;
+            };
+            let init = web_sys::CustomEventInit::new();
+            init.set_detail(&JsValue::from_str(&size.block_size().to_string()));
+            if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict(RESIZE_EVENT, &init) {
+                let _ = entry.target().dispatch_event(&event);
+            }
+        }
+    });
+    let observer = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()).ok()?;
+    callback.forget();
+    Some(observer)
 }
 
 /// `view` without its children, which the mounted children keep.

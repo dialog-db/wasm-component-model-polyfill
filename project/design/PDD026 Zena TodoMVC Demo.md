@@ -557,7 +557,10 @@ A view can hold another element by its tag, for example `todo-item`. That child
 is a separate custom element with its own instance and its own shadow root.
 
 The host framework renders an element after `connected`, after each
-`attribute-changed`, and after each `handle-event`.
+`attribute-changed`, and after each `handle-event`. An element's shadow root
+starts with a slot, so the element shows its children until its first render
+replaces the slot with its view. A view can hold a slot of its own to keep
+showing them.
 
 The host framework puts the result of `styles` in each shadow root of the tag.
 
@@ -572,6 +575,13 @@ authoring library calls `emit`, and the host framework dispatches the event on
 the element's host node. The parent's view listens for that event like any other
 DOM event. The `value` field of the parent's `event` record carries the
 `detail`.
+
+The event `resize` is the host framework's. When a view names it on a node, the
+host framework observes the node with a `ResizeObserver`. It calls the handler
+once the node is laid out and again each time the node's height changes. The
+`value` field holds the height in CSS pixels. When the view stops naming the
+event, the observation stops. An element uses it to animate to a height that
+only layout can tell.
 
 ### Data Down, Events Up
 
@@ -786,12 +796,27 @@ The page starts in this order:
 2. The page fetches the compiler component and the source bundle, and
    instantiates the compiler.
 3. The page reads any edited element sources from IndexedDB.
-4. The page compiles and defines each element. Until its tag is defined, an
-   element shows a skeleton. A skeleton is a gray placeholder in the shape of
-   the element.
+4. The page compiles and defines each element except `<todo-app>`.
 5. The page waits until the service worker controls it.
-6. The page adds `<todo-app>` to the document. Its first request goes to the
-   service worker.
+6. The page compiles and defines `<todo-app>`. The document holds it from the
+   start, so it upgrades in place. Its first request goes to the service worker.
+
+From the start, the document's `<todo-app>` holds a spinner as its child, in a
+space as tall as the element's frame. The element shows it until it first
+renders, which is after its list has loaded. Then the element reveals the list:
+
+1. Its first render keeps the spinner, through a slot, and lays the list out of
+   sight, transparent and 10 pixels low, in a frame that keeps the spinner's
+   height.
+2. The `resize` event tells it the height of the list.
+3. At once, the frame moves to that height, the spinner fades out as it rises 10
+   pixels, and the list fades in as it rises into place.
+4. When the list's fade ends, the list stands in the frame on its own, and the
+   frame follows its height from then on.
+
+The hint "Double-click a todo to edit it." is part of the list, so it appears
+only with the list. The shelf rises into view from below the page when the page
+adds it. With reduced motion, each of these takes a moment.
 
 If an edited source fails to compile at boot, the page compiles the shipped
 source instead. The shelf keeps the edit and shows its diagnostics.
@@ -962,12 +987,12 @@ The scenarios are:
 
 A developer hears that the Component Model can run in a browser and doubts it.
 
-> The developer opens the demo. A skeleton list appears, and a moment later the
-> todo list draws. The developer adds three todos, completes one, and filters to
-> "Active". Nothing looks unusual. Then the developer opens the shelf. It lists
-> four elements and two routes, each with its Zena source and a compile time in
-> milliseconds. The developer understands that the page compiled all of it a few
-> seconds ago.
+> The developer opens the demo. A spinner turns, and a moment later the todo
+> list fades into place. The developer adds three todos, completes one, and
+> filters to "Active". Nothing looks unusual. Then the developer opens the
+> shelf. It lists four elements and two routes, each with its Zena source and a
+> compile time in milliseconds. The developer understands that the page compiled
+> all of it a few seconds ago.
 
 A person in the audience of a talk asks whether the source is real.
 

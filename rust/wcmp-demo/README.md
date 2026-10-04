@@ -62,9 +62,9 @@ to Zena.
 2. A class field typed `Array<T>` with a `GrowableArray` initializer fails in
    the code generator with "constructor field type". The fields use `var` with
    no declared type.
-3. A call to `h('slot')` that relies on default arguments, inside a method of a
-   base class, fails in the code generator with "call argument type". The base
-   class builds its `View` with every argument.
+3. A call to `h('slot')` that relies on default arguments fails in the code
+   generator with "call argument type", inside a method of the base class and
+   in `<todo-app>`'s `render`. Each of those calls gives every argument.
 4. An imported function cannot be used as a value ("non-local identifier"). The
    glue wraps each import in a closure.
 5. The code generator does not support the `unreachable()` intrinsic. The

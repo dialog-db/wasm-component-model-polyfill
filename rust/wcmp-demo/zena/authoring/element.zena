@@ -107,7 +107,10 @@ export async function request(method: String, path: String,
 export final class Event {
   /** The DOM event type, such as `click`. */
   kind: String;
-  /** The value of an input, or a custom event's detail; empty if none. */
+  /**
+   * The value of an input, or a custom event's detail; empty if none.
+   * For `resize`, the height of the node in CSS pixels.
+   */
   value: String;
   /** Whether a checkbox is checked. */
   checked: boolean;
@@ -130,7 +133,9 @@ export final class View {
  * stable identity among its siblings. `checked` and `value` become
  * properties of the DOM node, `checked` set when its value is `true`;
  * every other key is an attribute. `events` maps a DOM event name to the
- * name of the handler it calls.
+ * name of the handler it calls. The event `resize` is the host's: it
+ * reaches the handler once the node has been laid out, and again each
+ * time its height changes, with the height as the event's value.
  */
 export let h = (tag: String,
     attributes: Map<String, String> = new Map<String, String>(),

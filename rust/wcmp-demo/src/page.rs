@@ -13,13 +13,15 @@
 //! 2. It fetches the compiler component and the source bundle, and
 //!    instantiates the compiler.
 //! 3. It reads the element sources a person edited from IndexedDB.
-//! 4. It compiles and defines each element. An edit that does not
-//!    compile falls back to the shipped source, and the shelf keeps the
-//!    edit and its diagnostics.
+//! 4. It compiles and defines each element but `<todo-app>`. An edit
+//!    that does not compile falls back to the shipped source, and the
+//!    shelf keeps the edit and its diagnostics.
 //! 5. It waits until the service worker controls it.
-//! 6. It replaces the skeleton with `<todo-app>`, whose first request
-//!    goes to the service worker, and sets its `filter` from the URL
-//!    hash, then and at each `hashchange`.
+//! 6. It sets the `filter` of the `<todo-app>` in the document from the
+//!    URL hash, then and at each `hashchange`, and compiles and defines
+//!    `<todo-app>`. The element upgrades in place, and its first request
+//!    goes to the service worker. Until it first renders, it shows the
+//!    spinner the document holds inside it.
 //!
 //! The page records each step on the document element's `data-boot`
 //! attribute, which the browser tests read, and exposes `window.demo`,
@@ -42,6 +44,10 @@ use crate::telemetry;
 /// The script of the demo's service worker, beside the page.
 const SERVICE_WORKER: &str = "./sw.js";
 
+/// The element at the root of the application, which the page defines
+/// last, once the service worker can answer its requests.
+const ROOT: &str = "todo-app";
+
 /// Start the page.
 ///
 /// # Errors
@@ -62,17 +68,18 @@ pub async fn start() -> Result<(), JsValue> {
     boot_step(&window, "elements");
     let database = Database::open().await?;
     for (tag, shipped) in sources::ELEMENTS {
-        let edit = database.text(&idb::edit_key("element", tag)).await?;
-        elements::define_with_edit(tag, edit.as_deref(), shipped)
-            .await
-            .map_err(|error| JsValue::from_str(&error))?;
+        if tag != ROOT {
+            define(&database, tag, shipped).await?;
+        }
     }
 
     boot_step(&window, "waiting-for-worker");
     controlled(&container).await?;
 
     boot_step(&window, "mounting");
-    mount(&window)?;
+    follow_hash(&window)?;
+    let root = sources::element(ROOT).ok_or("the demo ships no root element")?;
+    define(&database, ROOT, root).await?;
     shelf::mount(database, context).map_err(|error| JsValue::from_str(&error))?;
     boot_step(&window, "ready");
     Ok(())
@@ -89,17 +96,23 @@ fn service_worker_url() -> String {
     }
 }
 
-/// Replace the skeleton with `<todo-app>`, and keep its `filter` in step
-/// with the URL hash.
-fn mount(window: &Window) -> Result<(), JsValue> {
+/// Define the element `tag` from the edit a person saved, or from
+/// `shipped`.
+async fn define(database: &Database, tag: &str, shipped: &str) -> Result<(), JsValue> {
+    let edit = database.text(&idb::edit_key("element", tag)).await?;
+    elements::define_with_edit(tag, edit.as_deref(), shipped)
+        .await
+        .map_err(|error| JsValue::from_str(&error))
+}
+
+/// Keep the `filter` of the document's `<todo-app>` in step with the URL
+/// hash.
+fn follow_hash(window: &Window) -> Result<(), JsValue> {
     let document = window.document().ok_or("the page has no document")?;
-    let main = document
-        .get_element_by_id("app")
-        .ok_or("the page has no #app")?;
-    let app = document.create_element("todo-app")?;
+    let app = document
+        .query_selector(ROOT)?
+        .ok_or("the page has no <todo-app>")?;
     app.set_attribute("filter", &filter_of(&window.location().hash()?))?;
-    let children = js_sys::Array::of1(&app);
-    main.replace_children_with_node(&children);
     let hashchange = Closure::<dyn Fn()>::new(move || {
         let Some(window) = web_sys::window() else {
             return;

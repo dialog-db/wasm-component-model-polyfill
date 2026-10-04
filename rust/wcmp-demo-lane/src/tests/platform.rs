@@ -22,23 +22,45 @@ pub fn it_loads_the_page_and_the_service_worker_controls_it(
     })
 }
 
-pub fn it_shows_a_skeleton_until_the_elements_are_defined(browser: &Browser) -> Result<(), String> {
+pub fn it_shows_a_spinner_until_the_list_draws_and_then_reveals_it(
+    browser: &Browser,
+) -> Result<(), String> {
     browser.goto("/")?;
     let early = browser.eval(
-        "return {
-           boot: document.documentElement.dataset.boot,
-           skeleton: document.querySelector('.skeleton') !== null,
-           app: document.querySelector('todo-app') !== null,
+        "const app = document.querySelector('todo-app');
+         return {
+           spinner: app !== null && app.querySelector('.loading .spinner') !== null,
+           defined: customElements.get('todo-app') !== undefined,
+           hint: document.body.textContent.includes('Double-click'),
          };",
     )?;
-    check(early["skeleton"] == true && early["app"] == false, || {
-        format!("before the elements were defined the page showed {early}")
-    })?;
+    check(
+        early["spinner"] == true && early["defined"] == false && early["hint"] == false,
+        || format!("before the elements were defined the page showed {early}"),
+    )?;
     browser.wait_ready()?;
-    let late = browser.eval("return document.querySelector('.skeleton') === null;")?;
-    check(late == true, || {
-        "the skeleton stayed after <todo-app> mounted".to_string()
-    })
+    let late = browser.eval(
+        "const root = app().shadowRoot;
+         await until(() => root.querySelector('.frame[data-phase=\"shown\"]'), 'the reveal', 10000);
+         const frame = root.querySelector('.frame');
+         const content = root.querySelector('.content');
+         return {
+           spinner: root.querySelector('.spinner, slot') !== null,
+           style: frame.getAttribute('style'),
+           fits: Math.abs(frame.getBoundingClientRect().height
+                          - content.getBoundingClientRect().height) < 1,
+           opacity: getComputedStyle(content).opacity,
+           hint: root.querySelector('.info').textContent,
+         };",
+    )?;
+    check(
+        late["spinner"] == false
+            && late["style"].is_null()
+            && late["fits"] == true
+            && late["opacity"] == "1"
+            && late["hint"] == "Double-click a todo to edit it.",
+        || format!("after the reveal the list showed {late}"),
+    )
 }
 
 pub fn it_stops_the_service_worker_and_the_next_request_starts_it(
