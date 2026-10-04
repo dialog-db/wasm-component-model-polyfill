@@ -58,8 +58,8 @@ These terms recur:
 - Authors write against the authoring library and never write WIT.
 - The business logic of the todo list is Rust.
 - The shelf shows every Zena source of the demo and recompiles an edit in place.
-- The shelf shows the Zena compile time, the Wasm compile time, and the
-  instantiate time of each component.
+- The shelf shows the Zena compile time, the Wasm compile time, the instantiate
+  time, and the size of each component.
 - The shelf's editor highlights Zena. It shows what Zena's language service
   finds as a person types: diagnostics, hover, completions, and definitions. It
   formats a source with Zena's formatter.
@@ -878,6 +878,8 @@ For the source of the active tab, the shelf shows:
 - Three times of the last start: the compile of the Zena source to a component
   ("Zena → Wasm"), the polyfill's compile of that component ("Wasm compile"),
   and the link and instantiation.
+- The size of the component that the last successful compile produced, in
+  kilobytes, with the exact count of bytes in its tooltip.
 - The compiler's diagnostics after a failed compile.
 - For an element, the count of connected elements and of instances.
 - A "Save" control and a "Reset to original" control.

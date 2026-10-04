@@ -239,6 +239,7 @@ impl<S: Storage + 'static> Router<S> {
             }
         };
         status.compile_ms = Some(compiled.millis);
+        status.component_bytes = Some(compiled.bytes.len());
         status.diagnostics = None;
         status.trapped = None;
         let started = platform::now_millis();

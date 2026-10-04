@@ -374,6 +374,7 @@ async fn start(entry: &Rc<Tag>, source: &str) -> Result<(Rc<Runtime>, Vec<String
     {
         let mut status = entry.status.borrow_mut();
         status.compile_ms = Some(compiled.millis);
+        status.component_bytes = Some(compiled.bytes.len());
         status.diagnostics = None;
     }
     let (started, wasm_compile_ms) = context

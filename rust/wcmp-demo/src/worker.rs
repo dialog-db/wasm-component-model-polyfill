@@ -376,6 +376,10 @@ fn status_value(status: &RouteStatus) -> JsValue {
     set("source", JsValue::from_str(&status.source));
     set("shipped", JsValue::from_str(&status.shipped));
     set("compileMs", millis(status.compile_ms));
+    set(
+        "componentBytes",
+        millis(status.component_bytes.map(|bytes| bytes as f64)),
+    );
     set("wasmCompileMs", millis(status.wasm_compile_ms));
     set("instantiateMs", millis(status.instantiate_ms));
     set("diagnostics", optional(&status.diagnostics));

@@ -108,6 +108,8 @@ pub fn it_lists_every_source_with_its_timings(browser: &Browser) -> Result<(), S
            tag,
            source: source('element', tag).length > 0,
            compile: shown('element', tag, 'compile'),
+           size: shown('element', tag, 'size'),
+           bytes: field('element', tag, 'size').title,
            wasm: shown('element', tag, 'wasm'),
            instantiate: shown('element', tag, 'instantiate'),
          }));
@@ -117,6 +119,8 @@ pub fn it_lists_every_source_with_its_timings(browser: &Browser) -> Result<(), S
              pattern,
              source: source('route', pattern).length > 0,
              compile: shown('route', pattern, 'compile'),
+             size: shown('route', pattern, 'size'),
+             bytes: field('route', pattern, 'size').title,
              wasm: shown('route', pattern, 'wasm'),
              instantiate: shown('route', pattern, 'instantiate'),
            }));
@@ -130,6 +134,16 @@ pub fn it_lists_every_source_with_its_timings(browser: &Browser) -> Result<(), S
                 entry["source"] == true
                     && entry["compile"].as_str().is_some_and(|text| {
                         text.starts_with("Zena → Wasm ") && text.ends_with(" ms")
+                    })
+                    && entry["size"]
+                        .as_str()
+                        .is_some_and(|text| text.starts_with("component ") && text.ends_with(" kB"))
+                    && entry["bytes"].as_str().is_some_and(|text| {
+                        text.ends_with(" bytes")
+                            && text
+                                .trim_end_matches(" bytes")
+                                .chars()
+                                .all(|c| c.is_ascii_digit() || c == ',')
                     })
                     && entry["wasm"].as_str().is_some_and(|text| {
                         text.starts_with("Wasm compile ") && text.ends_with(" ms")

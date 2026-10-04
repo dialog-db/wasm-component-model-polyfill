@@ -434,7 +434,7 @@ fn section(document: &Document, kind: &str, name: &str) -> Result<Element, Strin
     // The toolbar: the source's times and counts, then its controls.
     let toolbar = make(document, "div", &[("class", "toolbar")])?;
     let meta = make(document, "p", &[("class", "meta")])?;
-    for field in ["compile", "wasm", "instantiate", "counts"] {
+    for field in ["compile", "size", "wasm", "instantiate", "counts"] {
         let span = make(document, "span", &[("data-field", field)])?;
         meta.append_child(&span).map_err(js_text)?;
     }
@@ -618,6 +618,7 @@ pub fn refresh() {
             &id,
             &status.source,
             status.compile_ms,
+            status.component_bytes.map(|bytes| bytes as f64),
             status.wasm_compile_ms,
             status.instantiate_ms,
             status.diagnostics.as_deref(),
@@ -688,6 +689,7 @@ pub fn refresh() {
             &id,
             &source,
             number("compileMs"),
+            number("componentBytes"),
             number("wasmCompileMs"),
             number("instantiateMs"),
             text("diagnostics").as_deref(),
@@ -704,6 +706,7 @@ fn fill(
     id: &str,
     source: &str,
     compile_ms: Option<f64>,
+    component_bytes: Option<f64>,
     wasm_compile_ms: Option<f64>,
     instantiate_ms: Option<f64>,
     diagnostics: Option<&str>,
@@ -722,6 +725,17 @@ fn fill(
     };
     if let Some(span) = field("compile") {
         span.set_text_content(Some(&format!("Zena → Wasm {}", millis(compile_ms))));
+    }
+    if let Some(span) = field("size") {
+        span.set_text_content(Some(&format!("component {}", size(component_bytes))));
+        match component_bytes {
+            Some(bytes) => {
+                let _ = span.set_attribute("title", &format!("{} bytes", grouped(bytes as u64)));
+            }
+            None => {
+                let _ = span.remove_attribute("title");
+            }
+        }
     }
     if let Some(span) = field("wasm") {
         span.set_text_content(Some(&format!("Wasm compile {}", millis(wasm_compile_ms))));
@@ -821,6 +835,10 @@ pub fn element_status_value(status: &TagStatus) -> JsValue {
     set("tag", JsValue::from_str(&status.tag));
     set("source", JsValue::from_str(&status.source));
     set("compileMs", millis(status.compile_ms));
+    set(
+        "componentBytes",
+        millis(status.component_bytes.map(|bytes| bytes as f64)),
+    );
     set("wasmCompileMs", millis(status.wasm_compile_ms));
     set("instantiateMs", millis(status.instantiate_ms));
     set("diagnostics", optional(&status.diagnostics));
@@ -829,6 +847,30 @@ pub fn element_status_value(status: &TagStatus) -> JsValue {
     set("instances", JsValue::from_f64(status.instances as f64));
     set("starts", JsValue::from_f64(f64::from(status.starts)));
     object.into()
+}
+
+/// A size in bytes, as the shelf shows it: in bytes, kilobytes, or
+/// megabytes, of a thousand each.
+fn size(bytes: Option<f64>) -> String {
+    match bytes {
+        None => "not yet".to_string(),
+        Some(bytes) if bytes < 1_000.0 => format!("{bytes:.0} B"),
+        Some(bytes) if bytes < 1_000_000.0 => format!("{:.1} kB", bytes / 1_000.0),
+        Some(bytes) => format!("{:.2} MB", bytes / 1_000_000.0),
+    }
+}
+
+/// `number` with its digits in groups of three: `421,948`.
+fn grouped(number: u64) -> String {
+    let digits = number.to_string();
+    let mut out = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
 }
 
 /// A new element `tag` with `attributes`.

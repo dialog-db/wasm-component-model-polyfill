@@ -20,6 +20,10 @@ pub struct RouteStatus {
     /// The time of the last compile of the Zena source to a component,
     /// in milliseconds.
     pub compile_ms: Option<f64>,
+    /// The size of the component the last compile of the Zena source
+    /// produced, in bytes. A failed compile leaves the size of the one
+    /// before, which still runs.
+    pub component_bytes: Option<usize>,
     /// The time the polyfill took to compile that component, in
     /// milliseconds: its translation and the compiles of its core
     /// modules.
