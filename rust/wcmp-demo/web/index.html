@@ -48,42 +48,23 @@
       -->
       <todo-app>
         <div class="loading" role="progressbar" aria-label="Loading">
-          <svg class="spinner" viewBox="0 0 48 48" aria-hidden="true">
-            <circle cx="24" cy="24" r="20" />
-          </svg>
+          <div class="spinner" aria-hidden="true"></div>
         </div>
       </todo-app>
       <!--
-        The spinner turns by the Web Animations API, not by CSS animations:
-        the element moves the spinner into slots of its shadow root, which
-        restarts a CSS animation, and a restart shows as a jump.
+        The spinner only turns, by the Web Animations API. A turn of an HTML
+        element runs on the browser's compositor, so it stays smooth while
+        the page compiles on its main thread. A CSS animation would restart
+        when the element moves the spinner into a slot of its shadow root.
       -->
       <script>
-        (() => {
-          const spinner = document.querySelector("todo-app .spinner");
-          const forever = { duration: 1400, iterations: Infinity };
-          spinner.animate(
-            [{ transform: "rotate(0deg)" }, { transform: "rotate(360deg)" }],
-            forever,
-          );
-          spinner.firstElementChild.animate(
-            [
-              { strokeDasharray: "1 126", strokeDashoffset: 0, easing: "ease-in-out" },
-              { strokeDasharray: "90 126", strokeDashoffset: -35, easing: "ease-in-out" },
-              { strokeDasharray: "90 126", strokeDashoffset: -124 },
-            ],
-            forever,
-          );
-        })();
+        document
+          .querySelector("todo-app .spinner")
+          .animate([{ transform: "rotate(0turn)" }, { transform: "rotate(1turn)" }], {
+            duration: 900,
+            iterations: Infinity,
+          });
       </script>
     </main>
-    <footer class="colophon">
-      <p>
-        Every part of this page is a
-        <a href="https://component-model.bytecodealliance.org/">component</a>
-        the browser compiled from <a href="https://zena-lang.dev/">Zena</a>
-        source, running on the Wasm Component Model Polyfill.
-      </p>
-    </footer>
   </body>
 </html>

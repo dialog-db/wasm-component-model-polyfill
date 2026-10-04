@@ -139,14 +139,6 @@ a {
   color: var(--md-sys-color-primary);
 }
 
-.colophon {
-  max-width: 560px;
-  margin: 32px auto 0;
-  color: var(--md-sys-color-on-surface-variant);
-  font: var(--md-sys-typescale-body-medium);
-  text-align: center;
-}
-
 /* <todo-app> before its list draws: a spinner, in a space as tall as
    the element's frame while it shows the spinner. The element keeps
    showing it through a slot while the list fades in. */
@@ -162,18 +154,15 @@ todo-app {
   height: 240px;
 }
 
+/* A ring whose arc fades in to its head, which the page's script
+   turns. */
 .loading .spinner {
-  width: 48px;
-  height: 48px;
-}
-
-/* The page's script turns the spinner and draws its arc. */
-.loading .spinner circle {
-  fill: none;
-  stroke: var(--md-sys-color-primary);
-  stroke-width: 4;
-  stroke-linecap: round;
-  stroke-dasharray: 1 126;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: conic-gradient(transparent, var(--md-sys-color-primary) 0.8turn, transparent 0.8turn);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3.5px));
+  will-change: transform;
 }
 
 /*

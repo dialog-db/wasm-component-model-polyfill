@@ -31,11 +31,11 @@ pub fn it_shows_a_spinner_until_the_list_draws_and_then_reveals_it(
          return {
            spinner: app !== null && app.querySelector('.loading .spinner') !== null,
            defined: customElements.get('todo-app') !== undefined,
-           hint: document.body.textContent.includes('Double-click'),
+           text: [...document.body.querySelectorAll('p, footer')].length,
          };",
     )?;
     check(
-        early["spinner"] == true && early["defined"] == false && early["hint"] == false,
+        early["spinner"] == true && early["defined"] == false && early["text"] == 0,
         || format!("before the elements were defined the page showed {early}"),
     )?;
     browser.wait_ready()?;
@@ -58,7 +58,9 @@ pub fn it_shows_a_spinner_until_the_list_draws_and_then_reveals_it(
             && late["style"].is_null()
             && late["fits"] == true
             && late["opacity"] == "1"
-            && late["hint"] == "Double-click a todo to edit it.",
+            && late["hint"].as_str().is_some_and(|hint| {
+                hint.starts_with("Double-click a todo to edit it. Every part of this page")
+            }),
         || format!("after the reveal the list showed {late}"),
     )
 }

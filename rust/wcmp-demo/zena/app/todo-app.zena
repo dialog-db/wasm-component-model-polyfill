@@ -130,10 +130,13 @@ export class TodoApp extends Element {
       }
       .info {
         margin: 0;
-        padding: 24px 16px 0;
+        padding: 32px 0 0;
         color: var(--md-sys-color-on-surface-variant);
         font: var(--md-sys-typescale-body-medium);
         text-align: center;
+      }
+      .info a {
+        color: var(--md-sys-color-primary);
       }
     `;
   }
@@ -222,8 +225,7 @@ export class TodoApp extends Element {
       }));
     }
     let list = h('section', {'class' => 'todoapp'}, children);
-    let info = h('p', {'class' => 'info'}, ['Double-click a todo to edit it.'],
-        new Map<String, String>());
+    let info = h('p', {'class' => 'info'}, this.colophon(), new Map<String, String>());
     if (this.phase == 'shown') {
       return h('div', {'class' => 'frame', 'data-phase' => this.phase}, [
         h('div', {'class' => 'content', 'key' => 'content'}, [list, info],
@@ -246,6 +248,22 @@ export class TodoApp extends Element {
       frame['style'] = 'height: ' + this.height + 'px';
     }
     return h('div', frame, [spinner, content], new Map<String, String>());
+  }
+
+  /**
+   * The words below the list: how to edit a todo, and what the page is.
+   * They appear with the list, which they are about.
+   */
+  colophon(): Array<View | String> {
+    let none = new Map<String, String>();
+    let words = new GrowableArray<View | String>();
+    words.push('Double-click a todo to edit it. Every part of this page is a ');
+    words.push(h('a', {'href' => 'https://component-model.bytecodealliance.org/'},
+        ['component'], none));
+    words.push(' the browser compiled from ');
+    words.push(h('a', {'href' => 'https://zena-lang.dev/'}, ['Zena'], none));
+    words.push(' source, running on the Wasm Component Model Polyfill.');
+    return words;
   }
 
   async on(handler: String, event: Event): Future<void> {
