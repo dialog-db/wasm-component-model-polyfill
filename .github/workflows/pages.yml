@@ -1,0 +1,68 @@
+on:
+  workflow_dispatch:
+  # After each run of the Test workflow for a push to `main`. The deploy
+  # takes only a commit that passed, and by then the Test run has pushed
+  # what it built to the binary cache, so the demo builds from the cache.
+  workflow_run:
+    workflows: ['Test']
+    types: ['completed']
+    branches: ['main']
+
+name: 'Pages'
+
+# One deploy at a time, and a deploy in progress finishes: GitHub Pages
+# takes the last one to complete.
+concurrency:
+  group: 'pages'
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+# The demo (`rust/wcmp-demo`), deployed to GitHub Pages at the
+# repository's path. The site names its assets relative to its page, so
+# it needs nothing from the path it is served at.
+jobs:
+  build:
+    name: 'Build the demo'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push')
+    runs-on: 'ubuntu-24.04'
+    timeout-minutes: 120
+    steps:
+      # A `workflow_run` run starts at the tip of `main`; build the commit
+      # the Test run passed instead, which a later push may have left
+      # behind.
+      - uses: actions/checkout@v7
+        with:
+          ref: '${{ github.event.workflow_run.head_sha || github.sha }}'
+      - uses: ./.github/actions/prepare-runner
+      # The site is a store path of read-only files; the artifact takes a
+      # writable copy of it.
+      - name: 'Build the site'
+        shell: bash
+        run: |
+          .github/scripts/retry-downloads.sh \
+            nix build --accept-flake-config -L --out-link demo .#demo
+          cp -rL demo _site
+          chmod -R u+w _site
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: '_site'
+
+  deploy:
+    name: 'Deploy to GitHub Pages'
+    needs: ['build']
+    runs-on: 'ubuntu-24.04'
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: 'github-pages'
+      url: '${{ steps.deployment.outputs.page_url }}'
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

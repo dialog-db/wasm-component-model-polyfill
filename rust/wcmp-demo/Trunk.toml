@@ -7,3 +7,7 @@ target = "web/index.html"
 # output by its plain name, and a service worker's script must keep one
 # URL across builds, so no output name carries a hash.
 filehash = false
+# The page names its assets relative to itself, so the site works from
+# any path: the root of `demo serve`, and the repository's path on
+# GitHub Pages.
+public_url = "./"

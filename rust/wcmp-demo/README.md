@@ -19,6 +19,11 @@ the shelf and see the change at once.
 `demo serve` builds the demo and serves it on a loopback port. `tests demo` runs
 the browser test lane in `rust/wcmp-demo-lane`.
 
+The Pages workflow (`.github/workflows/pages.yml`) deploys the demo to GitHub
+Pages after each push to `main` whose Test run passes, and on demand. The page
+names its assets relative to itself, so the site works at the repository's path
+there as it does at the root of `demo serve`.
+
 ## Tracing
 
 The page and the service worker each record the spans of the polyfill, the
