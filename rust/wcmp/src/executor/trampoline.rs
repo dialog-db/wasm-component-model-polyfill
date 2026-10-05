@@ -90,7 +90,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use anyhow::{Context, anyhow};
+use anyhow::anyhow;
 
 use crate::abi::boundary_call::BoundaryCall;
 use crate::abi::context::BoundaryContext;
@@ -111,10 +111,10 @@ use crate::internal::{
     AccessorInternal, ErrorInternal, HostCallInternal, HostResourceInternal, ResourceTypeIdInternal,
 };
 use crate::linker::{HostCall, HostFuncFuture, HostFuncKind, HostResource};
-use crate::runtime_layer::host_func;
 use crate::runtime_layer::{
     AsContextMut, Func as RuntimeFunc, FuncType, Val as RuntimeVal, ValType as CoreType,
 };
+use crate::runtime_layer::{host_func, into_anyhow};
 use crate::store::StoreContextInternalExt;
 
 use super::ResourceDestructor;
@@ -256,15 +256,17 @@ pub fn build_resource_drop_trampoline<T: 'static>(
             // with the guard, whether the destructor returned or
             // failed.
             let _call = BoundaryCall::destructor(&tables, runtime.destructor.instance())?;
-            // A destructor's failure is carried, not rendered. The
-            // call this drop is inside reports whatever the
-            // trampoline hands back, and a host that wants to know
-            // what went wrong can read a structured error and cannot
-            // read a string. `context` leaves the error it wraps
-            // reachable, so a host can still downcast it.
+            // A destructor's failure is carried, not rendered: the
+            // call this drop is inside gets it back as it was raised
+            // (see `call_failure`). A host destructor's error is the
+            // host's own, and a failure the polyfill raised inside a
+            // guest destructor is its own cause, so both pass through
+            // as they are. A trap of the guest destructor's own code
+            // is labelled as the destructor's, with the trap under it.
             match &runtime.destructor {
-                ResourceDestructor::Host(body) => body(store_ctx.data_mut().host_mut(), rep)
-                    .map_err(|err| anyhow::Error::new(err).context(DESTRUCTOR_FAILED))?,
+                ResourceDestructor::Host(body) => {
+                    body(store_ctx.data_mut().host_mut(), rep).map_err(anyhow::Error::from)?
+                }
                 ResourceDestructor::Local { function, .. } => {
                     let destructor = *function
                         .lock()
@@ -272,7 +274,14 @@ pub fn build_resource_drop_trampoline<T: 'static>(
                     if let Some(destructor) = destructor {
                         destructor
                             .call(&mut store_ctx, &[RuntimeVal::I32(rep as i32)], &mut [])
-                            .context(DESTRUCTOR_FAILED)?;
+                            .map_err(|error| {
+                                let cause = into_anyhow(error);
+                                if cause.is::<Error>() {
+                                    cause
+                                } else {
+                                    cause.context(DESTRUCTOR_FAILED)
+                                }
+                            })?;
                     }
                 }
             }
@@ -486,27 +495,13 @@ pub fn build_trampoline<T: 'static>(
     )
 }
 
-/// What a lowered import that failed traps with.
-///
-/// The message carries every cause in the failure's source chain. A
-/// trap that unwound through a guest frame on its way here, such as a
-/// host call's failure met in a nested turn above this call, reaches
-/// this frame as a substrate failure whose own message names none of
-/// it, and the trap the driver reports would otherwise lose it. A
-/// cause whose words the message already carries, as it does for an
-/// error whose own message embeds its source, is not repeated.
+/// What a lowered import that failed traps with: the failure itself,
+/// as the trap's error. The runtime layer hands a host function's
+/// error back unchanged, so the call into the guest that met the trap
+/// gets the failure back as it was raised, a failure of a nested turn
+/// above this call included (see `call_failure`).
 fn invocation_failed(err: Error) -> anyhow::Error {
-    let mut message = format!("trampoline invocation failed: {err}");
-    let mut cause = std::error::Error::source(&err);
-    while let Some(inner) = cause {
-        let text = inner.to_string();
-        if !message.contains(&text) {
-            message.push_str(": ");
-            message.push_str(&text);
-        }
-        cause = inner.source();
-    }
-    anyhow!(message)
+    anyhow::Error::from(err)
 }
 
 /// Whether a lowered import can block: a synchronous lower of a host

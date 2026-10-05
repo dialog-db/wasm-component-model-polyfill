@@ -755,14 +755,11 @@ async fn it_propagates_a_host_function_error_through_the_call() {
     let trigger = inst.get_func("trigger").expect("trigger export");
     let outcome = trigger.call(&mut store, &[]).await;
     let err = outcome.expect_err("call should fail");
-    // The error is currently wrapped by the runtime substrate's
-    // trap surface; the structured polyfill error is preserved as
-    // a `#[source]` chain. Asserting the top-level `Error::Abi` /
-    // `Error::Instantiation` shape is enough to prove host errors
-    // propagate.
+    // The host function's error traps the guest, and the call gets
+    // that error back as the host function raised it.
     assert!(
-        matches!(err, Error::Instantiation(_) | Error::Abi(_)),
-        "expected wrapped host error, got {err:?}"
+        matches!(&err, Error::Internal { message } if message == "host refused"),
+        "expected the host function's own error, got {err:?}"
     );
 }
 

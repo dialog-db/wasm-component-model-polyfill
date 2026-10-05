@@ -60,8 +60,8 @@ use crate::internal::AccessorInternal;
 use crate::internal::FuncInternal;
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
-    Component, Engine, EngineConfig, Error, Func, HostCall, Instance, Linker, Result, Store,
-    SuspendProviderKind, Val,
+    Component, Engine, EngineConfig, Error, Func, HostCall, Instance, Linker, Result,
+    SchedulerCause, Store, SuspendProviderKind, Val,
 };
 use wcmp_macros::component;
 
@@ -657,13 +657,19 @@ async fn it_fails_the_call_of_a_callee_that_gives_way_for_ever_with_the_stack_sw
     // More times than any budget: the call cannot finish, so what
     // the test measures is that it stops rather than what it
     // answers.
-    let message = call_expecting_a_trap(&mut store, &instance, "run", &[Val::U32(u32::MAX)]).await;
+    let error = func(&instance, "run")
+        .call(&mut store, &[Val::U32(u32::MAX)])
+        .await
+        .expect_err("the callee never stops giving way");
 
+    // The built-in raised the cause inside the callee, below which
+    // the caller's frame and its lowered import lie, and the host
+    // gets the cause itself back.
     assert!(
-        message.contains("blocking here requires a stack switch"),
+        matches!(error, Error::Scheduler(SchedulerCause::StackSwitchNeeded)),
         "a callee that never stops giving way against a store that holds \
          nothing can only be released by the caller whose frame is below it, \
-         so the seam gives up past its budget and the call fails: {message}"
+         so the seam gives up past its budget and the call fails: {error:?}"
     );
 }
 

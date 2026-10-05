@@ -77,7 +77,7 @@ use crate::resource::HandleTables;
 use crate::runtime_layer::host_func;
 use crate::runtime_layer::{
     AsContextMut, Func as RuntimeFunc, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
-    substrate_failure,
+    call_failure,
 };
 use crate::store::StoreContextInternalExt;
 use crate::store::{StoreContext, StoreData};
@@ -346,7 +346,7 @@ pub fn cross_result_into_caller<T: 'static>(
     };
     let crossed = return_
         .call(store_ctx.as_context_mut(), &arguments, &mut results)
-        .map_err(substrate_failure);
+        .map_err(call_failure);
     {
         // The callee's scope goes back whichever way the crossing
         // went: its core function or its callback is still on the

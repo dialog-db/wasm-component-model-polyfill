@@ -361,19 +361,13 @@ fn lock_tables(
         .map_err(|_| anyhow!("resource handle tables lock poisoned"))
 }
 
-/// The trap a structured error becomes on its way to the guest. The
-/// message is the error's own with its chain flattened into it,
-/// because a trap crosses back into guest code as a string; the
-/// conformance corpora match it by substring.
+/// The trap a structured error becomes on its way to the guest: the
+/// error itself, as the trap's error. The runtime layer hands it back
+/// unchanged, so the call into the guest gets the error back as it was
+/// raised (see `call_failure`), and its message, which the conformance
+/// corpora match by substring, is the error's own.
 fn trap(error: Error) -> anyhow::Error {
-    let mut message = error.to_string();
-    let mut link = std::error::Error::source(&error);
-    while let Some(source) = link {
-        message.push_str(": ");
-        message.push_str(&source.to_string());
-        link = source.source();
-    }
-    anyhow!("{message}")
+    anyhow::Error::from(error)
 }
 
 fn arg_u32(args: &[RuntimeVal], index: usize) -> anyhow::Result<u32> {

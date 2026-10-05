@@ -396,11 +396,14 @@ fn waitable_set_poll<T: 'static>(
     let (id, table) = calling_instance(abi_state, options.instance)?;
     trap_if_cannot_leave(abi_state, id, &mut store_ctx)?;
 
-    let delivered = {
+    // A pending request comes first for a cancellable poll, and the
+    // set keeps its event. Otherwise the set answers: the event of
+    // the waitable that joined it earliest among those that hold one,
+    // or the none event, whose two payloads are zero, when it holds
+    // none.
+    let event = {
         let mut guard = lock_tables(tables)?;
         let set = set_at(&guard, table, set_index)?;
-        // A pending request comes first for a cancellable poll, and
-        // the set keeps its event.
         let cancelled = if cancellable {
             let thread = current_thread(&guard)?;
             guard.tasks.take_pending_cancel_of(thread)
@@ -408,23 +411,19 @@ fn waitable_set_poll<T: 'static>(
             false
         };
         if cancelled {
-            Some(Event::task_cancelled())
-        } else if guard.tasks.set_has_pending_event(set).map_err(trap)? {
-            Some(guard.poll_waitable_set(set).map_err(trap)?)
+            Event::task_cancelled()
         } else {
-            None
+            guard.poll_waitable_set(set).map_err(trap)?
         }
     };
 
-    // A poll of a set that holds no event answers with the none
-    // event, whose two payloads are zero. That event is written at
-    // the pointer the way a delivered one is: the reference stores
-    // both words on every path, so the none path checks the pointer
-    // the delivering path checks, and a pointer that is misaligned
-    // or leaves the memory traps whether or not the set held an
-    // event. A guest that reads the pair after the none code reads
-    // two zero words rather than what it last left there.
-    let event = delivered.unwrap_or_else(Event::none);
+    // The none event is written at the pointer the way a delivered
+    // one is: the reference stores both words on every path, so the
+    // none path checks the pointer the delivering path checks, and a
+    // pointer that is misaligned or leaves the memory traps whether
+    // or not the set held an event. A guest that reads the pair after
+    // the none code reads two zero words rather than what it last left
+    // there.
     let (code, payloads) = (event.code().value(), event.payloads());
     write_payloads(
         &mut store_ctx,
@@ -475,6 +474,13 @@ fn write_payloads<T: 'static>(
         instance,
         scope,
     );
+    // The pair is checked whole before either half is written, as
+    // Wasmtime checks it, so a pointer whose eight bytes straddle the
+    // end of the memory writes nothing. The reference writes the first
+    // payload and then traps on the second.
+    if !ctx.in_bounds(pointer as usize, bytes.len()) {
+        return Err(trap(event_pointer_out_of_bounds(pointer)));
+    }
     ctx.write_own_bytes(pointer as usize, &bytes).map_err(trap)
 }
 
@@ -559,38 +565,27 @@ fn misaligned_event_pointer() -> Error {
     })
 }
 
-/// The trap a structured error becomes on its way to the guest. The
-/// message is the error's own, which the conformance corpora match
-/// by substring.
-///
-/// Two things happen on the way. A scheduler cause takes the `wasm
-/// trap:` prefix a trap reaching guest code renders with, and drops
-/// the wrapper the [`Error::Scheduler`] variant would otherwise put
-/// in front of it, so that a corpus file can match the whole prefix
-/// and message. Two of the five causes are Wasmtime trap codes and
-/// carry its text exactly: the deadlock cause is `AsyncDeadlock` and
-/// the cannot-block cause is `CannotBlockSyncTask`, both in
-/// `wasmtime-environ`'s `src/trap_encoding.rs`. The other three —
-/// the stack-switch, recursive-driver and store-not-in-poll causes —
-/// are the polyfill's own, with no trap code of Wasmtime's behind
-/// them; they take the same prefix because they reach the guest as
-/// traps all the same. And the error's chain is flattened into the
-/// message, because a trap crosses back into guest code as a string:
-/// an error that carries the trap of the work a nested turn ran
-/// would otherwise reach the host as the wrapper alone, with the
-/// guest's own trap lost under it.
+/// The trap of an event pointer whose two payloads do not both lie
+/// inside the memory: the guest handed a pointer out of bounds, which
+/// is the out-of-bounds cause of the argument that carries it.
+fn event_pointer_out_of_bounds(pointer: u32) -> Error {
+    Error::from(AbiError {
+        position: AbiPosition::Argument(1),
+        valtype: Some(ValueType::Primitive(PrimitiveType::U32)),
+        cause: AbiCause::OutOfBoundsMemory {
+            offset: pointer as usize,
+            length: 2 * size_of::<u32>(),
+        },
+    })
+}
+
+/// The trap a structured error becomes on its way to the guest: the
+/// error itself, as the trap's error. The runtime layer hands it back
+/// unchanged, so the call into the guest gets the error back as it was
+/// raised (see `call_failure`), and its message, which the conformance
+/// corpora match by substring, is the error's own.
 fn trap(error: Error) -> anyhow::Error {
-    if let Error::Scheduler(cause) = &error {
-        return anyhow!("wasm trap: {cause}");
-    }
-    let mut message = error.to_string();
-    let mut link = std::error::Error::source(&error);
-    while let Some(source) = link {
-        message.push_str(": ");
-        message.push_str(&source.to_string());
-        link = source.source();
-    }
-    anyhow!("{message}")
+    anyhow::Error::from(error)
 }
 
 fn arg_u32(args: &[RuntimeVal], index: usize) -> anyhow::Result<u32> {

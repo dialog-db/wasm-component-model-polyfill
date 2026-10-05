@@ -18,8 +18,8 @@ use crate::internal::ErrorInternal;
 use crate::runtime_layer::{
     Extern as RuntimeExtern, Func as RuntimeFunc, FuncType, HostFrames, Imports,
     Instance as RuntimeInstance, Module as RuntimeModule, ResumableCall, Resumption, Shared,
-    SuspendedCall, TrapKind, Val as RuntimeVal, ValType as RuntimeValType, at_once, host_func,
-    instantiate, substrate_failure,
+    SuspendedCall, TrapKind, Val as RuntimeVal, ValType as RuntimeValType, at_once, call_failure,
+    host_func, instantiate, substrate_failure,
 };
 use crate::store::{StoreContext, StoreContextInternalExt};
 
@@ -201,7 +201,7 @@ impl Threads {
             Ok(_) => Err(Error::internal(
                 "a resumable call ended in a way the provider does not know",
             )),
-            Err(error) => Err(substrate_failure(error)),
+            Err(error) => Err(call_failure(error)),
         }
     }
 }
@@ -662,7 +662,7 @@ impl<T: 'static> SuspendProvider<T> for HostSuspensionProvider {
             // handed over the results of an entry that finished.
             None => match lock(&self.finished).remove(&index) {
                 Some(results) => finished_with(Some(results)),
-                None => Err(substrate_failure(crate::runtime_layer::RuntimeError::Trap(
+                None => Err(call_failure(crate::runtime_layer::RuntimeError::Trap(
                     TrapKind::Other(
                         "a thread started from inside a guest call trapped before it first \
                      suspended"

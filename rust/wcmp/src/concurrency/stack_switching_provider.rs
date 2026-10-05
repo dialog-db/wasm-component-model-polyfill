@@ -16,7 +16,7 @@ use crate::internal::ErrorInternal;
 use crate::runtime_layer::{
     Engine as RuntimeEngine, Extern as RuntimeExtern, Func as RuntimeFunc, FuncType, Imports,
     Instance as RuntimeInstance, Module as RuntimeModule, Val as RuntimeVal,
-    ValType as RuntimeValType, at_once, host_func, instantiate, substrate_failure,
+    ValType as RuntimeValType, at_once, call_failure, host_func, instantiate, substrate_failure,
 };
 use crate::store::{StoreContext, StoreContextInternalExt};
 
@@ -276,7 +276,7 @@ impl<T: 'static> SuspendProvider<T> for StackSwitchingProvider {
         let mut status = [RuntimeVal::I32(0)];
         start
             .call(store.internal().runtime_mut(), &arguments, &mut status)
-            .map_err(substrate_failure)?;
+            .map_err(call_failure)?;
         self.status(index, &status[0])
     }
 
@@ -289,7 +289,7 @@ impl<T: 'static> SuspendProvider<T> for StackSwitchingProvider {
                 &[RuntimeVal::I32(index.cast_signed())],
                 &mut status,
             )
-            .map_err(substrate_failure)?;
+            .map_err(call_failure)?;
         self.status(index, &status[0])
     }
 

@@ -52,7 +52,8 @@ use std::sync::{Arc, Mutex};
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
     Accessor, Component, Engine, EngineConfig, Error, Func, FunctionParameter, FunctionType,
-    HostCall, HostResource, Instance, Linker, PrimitiveType, ResourceType, Store, Val, ValueType,
+    HostCall, HostResource, Instance, Linker, PrimitiveType, ResourceType, SchedulerCause, Store,
+    Val, ValueType,
 };
 use wcmp_macros::component;
 
@@ -644,8 +645,10 @@ async fn it_fails_a_future_that_stays_pending_with_the_stack_switch_cause() {
         .await
         .expect_err("a future that never resolves cannot be blocked on to the end");
 
+    // The cause is raised inside the lowered import and reaches the
+    // host as the cause itself, not as the text of a trap.
     assert!(
-        chain(&err).contains("blocking here requires a stack switch"),
+        matches!(err, Error::Scheduler(SchedulerCause::StackSwitchNeeded)),
         "expected the stack-switch cause, got {err:?}"
     );
 }

@@ -64,7 +64,8 @@ use crate::executor::{AsyncLift, CallbackTask};
 use crate::internal::ErrorInternal;
 use crate::resource::{HandleTables, TableId};
 use crate::runtime_layer::{
-    Func as RuntimeFunc, Val as RuntimeVal, ValType as RuntimeValType, substrate_failure,
+    Func as RuntimeFunc, Val as RuntimeVal, ValType as RuntimeValType, call_failure,
+    substrate_failure,
 };
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
@@ -498,7 +499,7 @@ fn start_call<T: 'static>(
                 &core_arguments,
                 &mut core_results,
             )
-            .map_err(substrate_failure)
+            .map_err(call_failure)
             .map(|()| core_results);
         return finish(store, called);
     }
@@ -548,7 +549,7 @@ fn resolve_sync_lift<T: 'static>(
         let mut empty: [RuntimeVal; 0] = [];
         let ran = post_return
             .call(store.internal().runtime_mut(), core_results, &mut empty)
-            .map_err(substrate_failure);
+            .map_err(call_failure);
         call.end(store.internal().runtime_mut())?;
         ran?;
     }
@@ -588,7 +589,7 @@ fn call_start_function<T: 'static>(
     // for each slot of `results`, typed as the callee takes them.
     start
         .call(store.internal().runtime_mut(), &arguments, &mut results)
-        .map_err(substrate_failure)?;
+        .map_err(call_failure)?;
     Ok(results)
 }
 

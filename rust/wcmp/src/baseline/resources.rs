@@ -891,18 +891,17 @@ async fn it_rejects_a_host_mint_against_an_unknown_resource_type() {
         .call(&mut store, &[])
         .await
         .expect_err("minting against an unknown identity fails the call");
-    // The host error crosses the substrate as a trap, so the cause
-    // is read off the error chain's text.
-    let text = format!("{err:?}");
+    // The host error traps the guest, and the call gets it back as
+    // the host function raised it.
     assert!(
-        text.contains("no host registration matches the transferred resource type"),
-        "expected the unregistered-resource-type cause in the error, got {text}"
+        matches!(&err, Error::Abi(abi) if matches!(abi.cause, AbiCause::UnregisteredResourceType)),
+        "expected the unregistered-resource-type cause, got {err:?}"
     );
     assert!(
-        text.contains("at result: no host registration"),
+        err.to_string().contains("at result: no host registration"),
         "an identity no registration and no instantiation of the store ever \
          introduced has no name to render, so the refusal names no value \
-         type, got {text}"
+         type, got {err}"
     );
 }
 
@@ -2286,17 +2285,22 @@ async fn it_names_the_resource_type_a_refused_host_mint_asked_for() {
         .await
         .expect_err("minting against a type the instance does not hold fails");
 
-    // The host error crosses the substrate as a trap, so the
-    // rendering is read off the error chain's text.
-    let text = format!("{err:?}");
-    assert!(
-        text.contains("no host registration matches the transferred resource type"),
-        "expected the unregistered-resource-type cause, got {text}"
-    );
-    assert!(
-        text.contains("label: \"gadget\""),
-        "the refusal names the resource type the mint asked for, got {text}"
-    );
+    // The host error traps the guest, and the call gets it back as
+    // the host function raised it.
+    match &err {
+        Error::Abi(abi) => {
+            assert!(
+                matches!(abi.cause, AbiCause::UnregisteredResourceType),
+                "expected the unregistered-resource-type cause, got {err:?}"
+            );
+            assert_eq!(
+                abi.valtype,
+                Some(ValueType::Own(ResourceType::new("gadget"))),
+                "the refusal names the resource type the mint asked for"
+            );
+        }
+        other => panic!("expected the unregistered-resource-type cause, got {other:?}"),
+    }
 }
 
 /// A component that defines a resource whose in-binary destructor

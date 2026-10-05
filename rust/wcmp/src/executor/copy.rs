@@ -753,29 +753,13 @@ fn lock_tables(
         .map_err(|_| anyhow!("resource handle tables lock poisoned"))
 }
 
-/// The trap a structured error becomes on its way to the guest. The
-/// message is the error's own, which the conformance corpora match
-/// by substring.
-///
-/// A scheduler cause, which a blocked synchronous copy fails with,
-/// takes the `wasm trap:` prefix a trap reaching guest code renders
-/// with, as the other blocking built-ins give it. Every other error
-/// has its chain flattened into the message, because a trap crosses
-/// back into guest code as a string: an error that carries the trap
-/// of the work a nested turn ran would otherwise reach the host as
-/// the wrapper alone.
+/// The trap a structured error becomes on its way to the guest: the
+/// error itself, as the trap's error. The runtime layer hands it back
+/// unchanged, so the call into the guest gets the error back as it was
+/// raised (see `call_failure`), and its message, which the conformance
+/// corpora match by substring, is the error's own.
 fn trap(error: Error) -> anyhow::Error {
-    if let Error::Scheduler(cause) = &error {
-        return anyhow!("wasm trap: {cause}");
-    }
-    let mut message = error.to_string();
-    let mut link = std::error::Error::source(&error);
-    while let Some(source) = link {
-        message.push_str(": ");
-        message.push_str(&source.to_string());
-        link = source.source();
-    }
-    anyhow!("{message}")
+    anyhow::Error::from(error)
 }
 
 fn arg_u32(args: &[RuntimeVal], index: usize) -> anyhow::Result<u32> {

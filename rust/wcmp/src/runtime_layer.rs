@@ -185,10 +185,35 @@ impl SubstrateCause for anyhow::Error {
     }
 }
 
-/// The polyfill error a runtime-layer failure of a guest call
-/// becomes. Workspace-internal.
+/// The polyfill error a runtime-layer failure of a step that is not
+/// a call into a guest becomes: compiling or instantiating a module,
+/// which runs its start function, or making a store, a global, or a
+/// host function. Workspace-internal.
+///
+/// The failure is an instantiation error, with the runtime layer's
+/// failure as its source. A failure the polyfill raised inside a core
+/// start function stays reachable there by downcast, but the error is
+/// the instantiation's, as [`call_failure`] is the call's.
 pub fn substrate_failure(error: impl SubstrateCause) -> Error {
     Error::from(InstantiationError::SubstrateFailure(error.into_cause()))
+}
+
+/// The polyfill error a runtime-layer failure of a call into a guest
+/// becomes. Workspace-internal.
+///
+/// A host function of the polyfill that fails inside the guest, a
+/// lowered import or a built-in, traps the guest with its own
+/// [`Error`] as the trap's error, and the runtime layer hands that
+/// error back unchanged, so the failure comes back as it was raised:
+/// a scheduler cause as [`Error::Scheduler`], a broken rule of a
+/// waitable as [`Error::Waitable`], and so on, however many guest
+/// frames it unwound through. Every other failure is a trap of the
+/// guest's own, which comes back as [`Error::Trap`].
+pub fn call_failure(error: impl SubstrateCause) -> Error {
+    match error.into_cause().downcast::<Error>() {
+        Ok(raised) => raised,
+        Err(cause) => Error::Trap(cause),
+    }
 }
 
 /// The data of a store that counts the host functions running in it.

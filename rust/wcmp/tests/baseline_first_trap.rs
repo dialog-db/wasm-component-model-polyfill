@@ -1070,5 +1070,79 @@ async fn it_ends_a_later_driver_when_a_thread_that_outlived_its_async_task_traps
     }
 }
 
+/// A component whose export runs `unreachable`, and a component
+/// whose core start function does.
+const TRAPS_WHEN_CALLED: &[u8] = component!(
+    r#"
+    (component
+      (core module $m (func (export "boom") unreachable))
+      (core instance $i (instantiate $m))
+      (func (export "boom") (canon lift (core func $i "boom"))))
+    "#
+);
+const TRAPS_WHEN_STARTED: &[u8] = component!(
+    r#"
+    (component
+      (core module $m (func $boom unreachable) (start $boom))
+      (core instance $i (instantiate $m)))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_reports_a_guest_trap_of_a_call_as_the_trap_and_not_as_an_instantiation_error() {
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
+    let component = Component::new(&engine, TRAPS_WHEN_CALLED)
+        .await
+        .expect("component parses");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = Linker::new(&engine)
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    let error = instance
+        .get_func("boom")
+        .expect("`boom` is exported")
+        .call(&mut store, &[])
+        .await
+        .expect_err("`boom` traps");
+    let message = error.to_string();
+    assert!(
+        matches!(error, Error::Trap(_)),
+        "a trap of the guest's own is a trap: {error:?}"
+    );
+    assert!(
+        message.starts_with("wasm trap: ") && message.contains("unreachable"),
+        "the message names the trap: {message}"
+    );
+    assert!(
+        !message.contains("instantiat"),
+        "the call did not instantiate anything: {message}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_still_reports_a_trap_of_a_core_start_function_as_an_instantiation_error() {
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
+    let component = Component::new(&engine, TRAPS_WHEN_STARTED)
+        .await
+        .expect("component parses");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let error = match Linker::<()>::new(&engine)
+        .instantiate(&mut store, &component)
+        .await
+    {
+        Ok(_) => panic!("the core start function traps"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, Error::Instantiation(_)),
+        "the trap ended an instantiation: {error:?}"
+    );
+    assert!(
+        error.to_string().starts_with("instantiation error: "),
+        "{error}"
+    );
+}
+
 #[path = "support/backend.rs"]
 mod test_backend;

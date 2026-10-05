@@ -164,9 +164,7 @@ use crate::executor::ir::{CoreParameter, CoreSignature};
 use crate::internal::ErrorInternal;
 use crate::resource::HandleTables;
 use crate::runtime_layer::host_func;
-use crate::runtime_layer::{
-    AsContextMut, Func as RuntimeFunc, Val as RuntimeVal, substrate_failure,
-};
+use crate::runtime_layer::{AsContextMut, Func as RuntimeFunc, Val as RuntimeVal, call_failure};
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 
@@ -371,7 +369,7 @@ fn run_thread<T: 'static>(
     let outcome = start
         .function
         .call(store.internal().runtime_mut(), &[start.context], &mut [])
-        .map_err(substrate_failure);
+        .map_err(call_failure);
     {
         let mut guard = store.internal().lock_tables()?;
         guard.leave_thread(thread);
@@ -533,9 +531,8 @@ fn build_suspension<T: 'static>(
                 return Ok(BlockStep::Ready(vec![RuntimeVal::I32(CANCELLED)]));
             };
             let named = named_argument(switch, args);
-            let begun = named.and_then(|named| {
-                begin_suspension(store, id, form, cancel, named).map_err(suspension_trap)
-            });
+            let begun = named
+                .and_then(|named| begin_suspension(store, id, form, cancel, named).map_err(trap));
             if begun.is_err() {
                 // The thread never suspended, and is in no yield.
                 answer(store, cancel, false)?;
@@ -549,7 +546,7 @@ fn build_suspension<T: 'static>(
                 return Ok(Some(vec![RuntimeVal::I32(CANCELLED)]));
             };
             let suspended = named_argument(switch, args)
-                .and_then(|named| suspension(store, id, form, named).map_err(suspension_trap));
+                .and_then(|named| suspension(store, id, form, named).map_err(trap));
             if !matches!(suspended, Ok(None)) {
                 let answer = answer(store, cancel, suspended.is_ok())?;
                 suspended?;
@@ -564,7 +561,7 @@ fn build_suspension<T: 'static>(
                     Readiness::Planned,
                     move |store: &mut StoreContext<'_, T>, waited| {
                         let answer = answer(store, cancel, waited.is_ok())?;
-                        waited.map_err(suspension_trap)?;
+                        waited.map_err(trap)?;
                         Ok(vec![RuntimeVal::I32(answer)])
                     },
                 ),
@@ -768,7 +765,7 @@ fn begin_suspension<T: 'static>(
         readiness,
         move |store: &mut StoreContext<'_, T>, waited| {
             let answer = answer(store, cancel, waited.is_ok())?;
-            waited.map_err(suspension_trap)?;
+            waited.map_err(trap)?;
             Ok(vec![RuntimeVal::I32(answer)])
         },
     ))
@@ -1008,27 +1005,13 @@ fn lock_tables(
         .map_err(|_| anyhow!("resource handle tables lock poisoned"))
 }
 
-/// The trap a structured error becomes on its way to the guest. The
-/// message is the error's own, which the conformance corpora match
-/// by substring.
+/// The trap a structured error becomes on its way to the guest: the
+/// error itself, as the trap's error. The runtime layer hands it back
+/// unchanged, so the call into the guest gets the error back as it was
+/// raised (see `call_failure`), and its message, which the conformance
+/// corpora match by substring, is the error's own.
 fn trap(error: Error) -> anyhow::Error {
-    anyhow!("{error}")
-}
-
-/// The trap a suspending built-in's failure becomes on its way to the
-/// guest. A cause of the built-in's own keeps its message, which the
-/// conformance corpora match by substring, and a scheduler cause
-/// takes the `wasm trap:` prefix `thread.yield` gives the seam's
-/// causes. Any other failure is the failure of guest code the
-/// built-in ran — the thread a switch started, or an item a nested
-/// turn ran — and it keeps its whole chain, as the failure of a
-/// callee a start intrinsic runs does.
-fn suspension_trap(error: Error) -> anyhow::Error {
-    match error {
-        Error::Scheduler(cause) => anyhow!("wasm trap: {cause}"),
-        Error::Thread(_) => trap(error),
-        other => other.into(),
-    }
+    anyhow::Error::from(error)
 }
 
 fn arg_u32(args: &[RuntimeVal], index: usize) -> anyhow::Result<u32> {

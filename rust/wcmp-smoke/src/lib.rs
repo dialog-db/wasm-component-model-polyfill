@@ -2299,30 +2299,15 @@ fn tallying(engine: &Engine) -> Result<Linker<HostState>, String> {
     Ok(linker)
 }
 
-/// Whether `error`, or an error it carries, is the stack-switch
-/// cause: the guest waited where only setting its stack aside would
-/// have let it go on, and the engine has no way to do that.
+/// Whether `error` is the stack-switch cause: the guest waited where
+/// only setting its stack aside would have let it go on, and the
+/// engine has no way to do that.
 ///
-/// A wait that fails inside a built-in or a lowered import the guest
-/// called traps the guest, and the trap carries the cause as its
-/// message rather than as a value: the error the call returns is the
-/// trap, and the cause is the text inside it. So a link of the chain
-/// matches either as the cause itself or by carrying the cause's own
-/// message, which is how the conformance corpora match it too.
+/// The cause reaches the host as itself, whether the wait failed in a
+/// driver or inside a built-in or a lowered import the guest called,
+/// so the match is on the value and never on the text.
 fn needs_stack_switch(error: &Error) -> bool {
-    let message = SchedulerCause::StackSwitchNeeded.to_string();
-    let mut link: Option<&(dyn std::error::Error + 'static)> = Some(error);
-    while let Some(current) = link {
-        if matches!(
-            current.downcast_ref::<SchedulerCause>(),
-            Some(SchedulerCause::StackSwitchNeeded)
-        ) || current.to_string().contains(&message)
-        {
-            return true;
-        }
-        link = current.source();
-    }
-    false
+    matches!(error, Error::Scheduler(SchedulerCause::StackSwitchNeeded))
 }
 
 /// Every message in an error's chain, on one line.

@@ -108,6 +108,7 @@ pub wcmp::Error::NotAComponent
 pub wcmp::Error::Scheduler(wcmp::SchedulerCause)
 pub wcmp::Error::Task(wcmp::TaskCause)
 pub wcmp::Error::Thread(wcmp::ThreadCause)
+pub wcmp::Error::Trap(anyhow::Error)
 pub wcmp::Error::TypeIndexOutOfBounds
 pub wcmp::Error::TypeIndexOutOfBounds::index: u32
 pub wcmp::Error::TypeMismatch(alloc::boxed::Box<wcmp::TypeMismatch>)

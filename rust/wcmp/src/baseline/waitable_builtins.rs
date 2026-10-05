@@ -28,7 +28,7 @@
 
 use crate::internal::FuncInternal;
 use crate::store::StoreInternalExt;
-use crate::{Component, Engine, Error, Func, Instance, Linker, Store, Val};
+use crate::{AbiCause, AbiPosition, Component, Engine, Error, Func, Instance, Linker, Store, Val};
 use wcmp_macros::component;
 
 /// A component whose synchronous exports are the five waitable set
@@ -828,12 +828,89 @@ async fn it_traps_a_poll_whose_event_pointer_is_not_aligned() {
 const MEMORY_BYTES: u32 = 65_536;
 
 #[wcmp_macros::test]
+async fn it_fails_a_wait_and_a_poll_whose_event_pair_leaves_the_memory_with_the_out_of_bounds_cause()
+ {
+    // The pair is checked whole before either word is written, as
+    // Wasmtime checks it: the cause names the pair's offset and its
+    // eight bytes. The reference writes the first word and then traps
+    // on the second, which would name the four bytes past the end.
+    for (export, ready) in [("wait-at", true), ("poll-at", false)] {
+        let (mut store, instance) = instantiate(SET_BUILTINS).await;
+        let set_index = call_u32(&mut store, &instance, "new-set", &[]).await;
+        if ready {
+            ready_subtask_in_set(&mut store, &instance, set_index);
+        }
+        // A word the guest left in the half of the pair that does lie
+        // inside the memory.
+        call(
+            &mut store,
+            &instance,
+            "poke",
+            &[Val::U32(MEMORY_BYTES - 4), Val::U32(0x5A5A_5A5A)],
+        )
+        .await
+        .expect("the poke returns");
+        let error = func(&instance, export)
+            .call(
+                &mut store,
+                &[Val::U32(set_index), Val::U32(MEMORY_BYTES - 4)],
+            )
+            .await
+            .expect_err("the pair leaves the memory");
+        match error {
+            Error::Abi(abi) => {
+                assert_eq!(abi.position, AbiPosition::Argument(1), "{export}");
+                assert!(
+                    matches!(
+                        abi.cause,
+                        AbiCause::OutOfBoundsMemory {
+                            offset: 65_532,
+                            length: 8
+                        }
+                    ),
+                    "{export} failed with {:?}",
+                    abi.cause
+                );
+            }
+            other => panic!("{export} failed with {other:?}, not the out-of-bounds cause"),
+        }
+
+        // The trap poisoned the store, so no guest can read the word
+        // back; the host reads the instance's memory instead.
+        let memory = func(&instance, "wait")
+            .abi_state()
+            .lock()
+            .expect("the instance's ABI state")
+            .memories
+            .iter()
+            .flatten()
+            .copied()
+            .next()
+            .expect("the instance's memory");
+        let mut word = [0u8; 4];
+        memory
+            .read(
+                store.internal().inner_mut(),
+                u64::from(MEMORY_BYTES - 4),
+                &mut word,
+            )
+            .expect("the host reads the memory");
+        assert_eq!(
+            u32::from_le_bytes(word),
+            0x5A5A_5A5A,
+            "{export} wrote nothing of a pair that straddles the end"
+        );
+    }
+}
+
+#[wcmp_macros::test]
 async fn it_traps_a_poll_of_an_empty_set_on_every_pointer_a_wait_traps_on() {
     // Three pointers and the cause each one raises: one that is not
     // a multiple of four, one two bytes from the end of the memory,
     // which is not a multiple of four either and so fails the same
     // way, and one four bytes from the end, which is aligned and
-    // fails when the pair leaves the memory halfway through.
+    // fails with the out-of-bounds cause because the pair leaves the
+    // memory halfway through.
     //
     // The whole message cannot be compared, because the substrate
     // puts the core function the trap came from in front of the
@@ -841,7 +918,10 @@ async fn it_traps_a_poll_of_an_empty_set_on_every_pointer_a_wait_traps_on() {
     for (pointer, cause) in [
         (1, "event pointer not aligned to 4"),
         (MEMORY_BYTES - 2, "event pointer not aligned to 4"),
-        (MEMORY_BYTES - 4, "guest memory access failed"),
+        (
+            MEMORY_BYTES - 4,
+            "out-of-bounds memory access at offset 65532 for 8 bytes",
+        ),
     ] {
         let (mut store, instance) = instantiate(SET_BUILTINS).await;
         let set_index = call_u32(&mut store, &instance, "new-set", &[]).await;

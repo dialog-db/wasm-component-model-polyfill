@@ -77,8 +77,8 @@
 //! until its last thread ends.
 //!
 //! Every failure travels as the structured error itself rather than
-//! as its message, so the call the guest is inside fails with a
-//! substrate failure a host can read the cause back out of.
+//! as its message, so the call the guest is inside fails with that
+//! error, as the built-in raised it.
 
 use std::sync::{Arc, Mutex};
 

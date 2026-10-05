@@ -28,7 +28,7 @@ use crate::internal::{AccessorInternal, ErrorInternal};
 use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId, TableId};
 use crate::runtime_layer::{
     AsContextMut, Func as RuntimeFunc, FuncType, StoreContextMut as RuntimeContextMut,
-    Val as RuntimeVal, substrate_failure,
+    Val as RuntimeVal, call_failure, substrate_failure,
 };
 use crate::types::ResourceType;
 use crate::value::Val;
@@ -1660,7 +1660,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             let mut results = results;
             let called = entry
                 .call(self.runtime_mut(), args, &mut results)
-                .map_err(substrate_failure)
+                .map_err(call_failure)
                 .map(|()| results);
             return finish(self, called);
         };
@@ -2490,13 +2490,13 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                         .tasks
                         .stop_waiting(thread, block.previous);
                     match block.step.finish(self, Err(Error::Scheduler(cause))) {
-                        Err(trap) => trap,
-                        Ok(_) => anyhow::anyhow!("wasm trap: {}", self.idle_cause(task)),
+                        Err(trap) => call_failure(trap),
+                        Ok(_) => Error::Scheduler(self.idle_cause(task)),
                     }
                 }
-                None => anyhow::anyhow!("wasm trap: {cause}"),
+                None => Error::Scheduler(cause),
             };
-            let finished = parked.finish(self, Err(substrate_failure(trap)));
+            let finished = parked.finish(self, Err(trap));
             // Whatever the finish left above the thread's scopes goes
             // with it, as a trap's unwind takes it.
             self.lock_tables()?.tasks.cut_scopes(base);

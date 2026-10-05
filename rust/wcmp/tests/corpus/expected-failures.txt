@@ -43,4 +43,4 @@ wasmtime/alias-region-reexported-entities-to-imported-module.wast:14 substrate c
 wasmtime/alias-region-reexported-entities-to-imported-module.wast:101 cascade no instance to invoke
 wasmtime/alias-region-reexported-entities-to-imported-module.wast:102 cascade no instance to invoke
 wasmtime/alias-region-reexported-entities-to-imported-module.wast:103 cascade no instance to invoke
-wasmtime/exceptions.wast:237 trap-message expected a trap `uncaught exception propagated out of component`, got `instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: resource destructor failed: thrown Wasm exception`
+wasmtime/exceptions.wast:237 trap-message expected a trap `uncaught exception propagated out of component`, got `resource destructor failed: thrown Wasm exception`

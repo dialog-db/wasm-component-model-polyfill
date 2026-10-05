@@ -36,7 +36,10 @@
 #![cfg(test)]
 
 use crate::store::StoreInternalExt;
-use crate::{Component, Engine, EngineConfig, Instance, Linker, Store, SuspendProviderKind};
+use crate::{
+    Component, Engine, EngineConfig, Error, Instance, Linker, SchedulerCause, Store,
+    SuspendProviderKind,
+};
 use wcmp_macros::component;
 
 /// A callee that reads the future it is handed synchronously, which
@@ -212,13 +215,17 @@ fn scope_depth(store: &Store<()>) -> usize {
 
 /// Call `name` and hand back the whole message it fails with.
 async fn call_trap(store: &mut Store<()>, instance: &Instance, name: &str) -> String {
+    chain(&call_error(store, instance, name).await)
+}
+
+/// Call `name` with no arguments and hand back the error it failed
+/// with.
+async fn call_error(store: &mut Store<()>, instance: &Instance, name: &str) -> Error {
     let func = instance.get_func(name).expect("the caller's export");
-    let error = func
-        .call(store, &[])
+    func.call(store, &[])
         .await
         .map(|values| format!("the call returned {values:?}"))
-        .expect_err("the callee waits for its caller, which is below it on the stack");
-    chain(&error)
+        .expect_err("the callee waits for its caller, which is below it on the stack")
 }
 
 #[wcmp_macros::test]
@@ -230,7 +237,8 @@ async fn it_fails_a_callee_an_async_lower_started_that_waits_on_its_caller_with_
     // caller below the start would write the future once a stack
     // switch returned control to it.
     let (mut store, instance) = instantiate(READS_WHAT_ONLY_THE_CALLER_WRITES).await;
-    let message = call_trap(&mut store, &instance, "run-async").await;
+    let error = call_error(&mut store, &instance, "run-async").await;
+    let message = chain(&error);
     assert!(
         message.contains(STACK_SWITCH),
         "expected the stack-switch cause, got {message}"
@@ -238,6 +246,12 @@ async fn it_fails_a_callee_an_async_lower_started_that_waits_on_its_caller_with_
     assert!(
         !message.contains("deadlock detected"),
         "a frame below the block could still move, so this is not a deadlock: {message}"
+    );
+    // The start intrinsic ran the callee whose block raised the cause,
+    // and the host gets the cause itself back.
+    assert!(
+        matches!(error, Error::Scheduler(SchedulerCause::StackSwitchNeeded)),
+        "expected the stack-switch cause as a value, got {error:?}"
     );
     assert_eq!(
         scope_depth(&store),

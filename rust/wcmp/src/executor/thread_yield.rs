@@ -228,16 +228,11 @@ fn trap_if_cannot_leave(
     Err(trap(Error::Task(TaskCause::CannotLeave)))
 }
 
-/// The trap a structured error becomes on its way to the guest. The
-/// message is the error's own, which the conformance corpora match
-/// by substring, with the `wasm trap:` prefix a trap reaching guest
-/// code renders with for a scheduler cause. The stack-switch cause
-/// the seam's budget raises is the polyfill's own and has no
-/// Wasmtime trap code behind it; it takes the prefix because it
-/// reaches the guest as a trap all the same.
+/// The trap a structured error becomes on its way to the guest: the
+/// error itself, as the trap's error. The runtime layer hands it back
+/// unchanged, so the call into the guest gets the error back as it was
+/// raised (see `call_failure`), and its message, which the conformance
+/// corpora match by substring, is the error's own.
 fn trap(error: Error) -> anyhow::Error {
-    match error {
-        Error::Scheduler(cause) => anyhow!("wasm trap: {cause}"),
-        other => anyhow!("{other}"),
-    }
+    anyhow::Error::from(error)
 }

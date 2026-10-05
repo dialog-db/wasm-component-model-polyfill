@@ -106,6 +106,21 @@ pub enum Error {
     #[error("link error: {0}")]
     Link(#[source] Box<LinkError>),
 
+    /// A guest trapped during a call: a trap of core Wasm, such as an
+    /// `unreachable` instruction or an access out of the bounds of a
+    /// memory, or another failure the runtime layer ended the guest
+    /// call with. The message is the trap's own, which names it as
+    /// Wasmtime names a trap, `wasm trap: <trap>`, and its source
+    /// chain is the trap's. A trap that ended a resource destructor
+    /// reads `resource destructor failed`, with the trap as its source.
+    /// A failure the polyfill raised inside the guest, such as a
+    /// scheduler cause, reaches the host as its own variant instead.
+    ///
+    /// `anyhow::Error` appears here because the runtime layer's error
+    /// type stays out of the public API; treat it as opaque.
+    #[error(transparent)]
+    Trap(anyhow::Error),
+
     /// The runtime substrate failed to instantiate a successfully
     /// linked component, or the polyfill rejected the component for
     /// a structural reason it intentionally defers
@@ -138,7 +153,17 @@ pub enum Error {
     /// The concurrency scheduler could not carry a driver through a
     /// turn. The carried [`SchedulerCause`] names which of the six
     /// ways this can happen occurred.
-    #[error("scheduler error: {0}")]
+    ///
+    /// A cause a guest's block fails with reaches the host as this
+    /// variant whether a driver met it or a built-in, a lowered
+    /// import, or a start intrinsic did inside the guest. Three of
+    /// the causes are traps of the guest, and the variant renders
+    /// them as Wasmtime renders a trap, `wasm trap: <cause>`
+    /// (`Trap`'s `Display` in `wasmtime-environ`'s
+    /// `src/trap_encoding.rs`): the deadlock, cannot-block, and
+    /// stack-switch causes. The other three are not traps, and render
+    /// as `scheduler error: <cause>`.
+    #[error("{}{}", .0.prefix(), .0)]
     Scheduler(#[source] SchedulerCause),
 
     /// A guest broke one of the rules that govern waitables and
@@ -971,6 +996,22 @@ pub enum SchedulerCause {
     TableFull,
 }
 
+impl SchedulerCause {
+    /// What [`Error::Scheduler`] puts in front of the cause: the
+    /// `wasm trap: ` of a trap for a cause a guest traps with, and
+    /// `scheduler error: ` for the others.
+    fn prefix(&self) -> &'static str {
+        match self {
+            SchedulerCause::Deadlock
+            | SchedulerCause::CannotBlock
+            | SchedulerCause::StackSwitchNeeded => "wasm trap: ",
+            SchedulerCause::RecursiveDriver
+            | SchedulerCause::StoreNotInPoll
+            | SchedulerCause::TableFull => "scheduler error: ",
+        }
+    }
+}
+
 /// The structured reason a waitable operation failed.
 ///
 /// Carried by [`Error::Waitable`]. Each cause is a trap in the
@@ -1694,20 +1735,22 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    fn it_renders_the_deadlock_cause_as_the_trap_message() {
+    fn it_renders_the_deadlock_cause_as_wasmtime_renders_its_trap() {
         let err = Error::Scheduler(SchedulerCause::Deadlock);
+        assert_eq!(err.to_string(), Trap::AsyncDeadlock.to_string());
         assert_eq!(
             err.to_string(),
-            "scheduler error: deadlock detected: event loop cannot make further progress"
+            "wasm trap: deadlock detected: event loop cannot make further progress"
         );
     }
 
     #[wcmp_macros::test]
-    fn it_renders_the_cannot_block_cause_as_the_trap_message() {
+    fn it_renders_the_cannot_block_cause_as_wasmtime_renders_its_trap() {
         let err = Error::Scheduler(SchedulerCause::CannotBlock);
+        assert_eq!(err.to_string(), Trap::CannotBlockSyncTask.to_string());
         assert_eq!(
             err.to_string(),
-            "scheduler error: cannot block a synchronous task before returning"
+            "wasm trap: cannot block a synchronous task before returning"
         );
     }
 
@@ -1745,11 +1788,11 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    fn it_renders_the_stack_switch_needed_cause() {
+    fn it_renders_the_stack_switch_needed_cause_as_a_trap() {
         let err = Error::Scheduler(SchedulerCause::StackSwitchNeeded);
         assert_eq!(
             err.to_string(),
-            "scheduler error: blocking here requires a stack switch, but this thread cannot switch its stack"
+            "wasm trap: blocking here requires a stack switch, but this thread cannot switch its stack"
         );
     }
 
