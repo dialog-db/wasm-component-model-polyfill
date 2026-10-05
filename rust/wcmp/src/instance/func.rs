@@ -543,15 +543,17 @@ impl Func {
         )
         .for_task(task);
 
-        // A synchronous export's task ignores the entry gate, as the
-        // reference states: the gate applies to a task whose
-        // function type is `async`. The exclusive flag is the
-        // reference's `not opts.async or opts.callback`, which is
-        // true here; the gate reads it only for a task that does
-        // wait at it.
+        // A synchronous export of a synchronous function ignores the
+        // entry gate, as the reference states: the gate applies to a
+        // task whose function type is `async`, which a synchronous
+        // lift can carry, and such a task waits at the gate and
+        // takes the instance exclusively, as `Func::call`'s does.
+        // The exclusive flag is the reference's `not opts.async or
+        // opts.callback`, which is true here; the gate reads it only
+        // for a task that does wait at it.
         store
             .internal()
-            .start_export_thread(task, instance_id, false, true, item)?;
+            .start_export_thread(task, instance_id, self.ty().async_, true, item)?;
         Ok(Delivery::Returned(returned))
     }
 

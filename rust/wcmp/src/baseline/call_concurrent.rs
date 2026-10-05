@@ -25,11 +25,14 @@
 //! task claims its instance as its start is queued, so a second call
 //! into the same export waits at the gate and starts when the first
 //! releases the instance, which a callback task does between events.
-//! A synchronous export's task ignores the gate, so a call into one
-//! runs at once even while a callback task of the same instance waits
-//! in its event loop; a second such call is queued behind the first
-//! and starts when the first returns, or inside the first's nested
-//! turn when the first blocks and the two share an instance.
+//! An export whose function type is `async` waits at the gate however
+//! it is lifted, and a synchronous lift of one holds the instance
+//! until it returns. A synchronous export's task ignores the gate, so
+//! a call into one runs at once even while a callback task of the same
+//! instance waits in its event loop; a second such call is queued
+//! behind the first and starts when the first returns, or inside the
+//! first's nested turn when the first blocks and the two share an
+//! instance.
 //!
 //! The future is spawn-like. Dropping it cancels nothing: the task
 //! stays in the store and runs in the next turn of any driver. And a
@@ -200,6 +203,36 @@ const SYNC_YIELDS: &[u8] = component!(
         (canon lift (core func $i "give-way")))
       (func (export "step") (param "x" u32) (result u32)
         (canon lift (core func $i "step"))))
+    "#
+);
+
+/// One export whose function type is `async` and whose lift is
+/// synchronous. It logs its argument, gives way through
+/// `thread.yield`, logs one higher, and returns ten times the
+/// argument. Its task waits at the entry gate and holds its instance
+/// exclusively until it returns, as the reference's
+/// `Task.needs_exclusive` gives a synchronous lift, so the yield
+/// leaves a second call held at the gate rather than starting it.
+const ASYNC_TYPED_SYNC_LIFT: &[u8] = component!(
+    r#"
+    (component
+      (import "log" (func $log (param "x" u32)))
+      (core func $log (canon lower (func $log)))
+      (core func $yield (canon thread.yield))
+      (core module $m
+        (import "" "log" (func $log (param i32)))
+        (import "" "thread.yield" (func $yield (result i32)))
+        (func (export "give-way") (param i32) (result i32)
+          (call $log (local.get 0))
+          (drop (call $yield))
+          (call $log (i32.add (local.get 0) (i32.const 1)))
+          (i32.mul (local.get 0) (i32.const 10))))
+      (core instance $i (instantiate $m
+        (with "" (instance
+          (export "log" (func $log))
+          (export "thread.yield" (func $yield))))))
+      (func (export "give-way") async (param "x" u32) (result u32)
+        (canon lift (core func $i "give-way"))))
     "#
 );
 
@@ -669,6 +702,39 @@ async fn it_queues_a_second_call_into_a_synchronous_export_behind_the_first() {
         entries(&log),
         vec![1, 2, 10, 11],
         "the second task started when the first returned"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_holds_a_second_call_of_an_async_typed_synchronous_lift_at_the_entry_gate() {
+    let (mut store, instance, log) = instantiate(ASYNC_TYPED_SYNC_LIFT).await;
+    let give_way = func(&instance, "give-way");
+
+    let calls = store
+        .run_concurrent(async |accessor| two_calls(accessor, (&give_way, 1), (&give_way, 10)).await)
+        .await
+        .expect("run the closure");
+
+    assert_eq!(
+        calls.at_gate, 1,
+        "the function type is `async`, so the first task claimed the instance \
+         as its start was queued and the second call waits at the entry gate"
+    );
+    assert_eq!(
+        calls.first.expect("the first call resolves").as_ref(),
+        [Val::U32(10)],
+        "the first call resolves with what its task returned"
+    );
+    assert_eq!(
+        calls.second.expect("the second call resolves").as_ref(),
+        [Val::U32(100)],
+        "and so does the second"
+    );
+    assert_eq!(
+        entries(&log),
+        vec![1, 2, 10, 11],
+        "the first task's yield ran nothing of the second call, which started \
+         only once the first task returned and left the instance"
     );
 }
 
