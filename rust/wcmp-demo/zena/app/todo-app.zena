@@ -48,6 +48,46 @@ let spinnerHeight = '240px';
 /** The duration and the easing of each part of the reveal. */
 let reveal = '450ms cubic-bezier(0.2, 0, 0, 1)';
 
+/** A link out of the demo, which opens in a new tab. */
+let link = (href: String, label: String): View => {
+  return h('a', {'href' => href, 'target' => '_blank', 'rel' => 'noopener'}, [label],
+      new Map<String, String>());
+};
+
+/** A paragraph of `words`. */
+let paragraph = (words: Array<View | String>): View => {
+  return h('p', new Map<String, String>(), words, new Map<String, String>());
+};
+
+/** The words about the demo: what it shows, and how it is made. */
+let about = (): Array<View | String> => {
+  let first = new GrowableArray<View | String>();
+  first.push('This app demonstrates some of the potential of the ');
+  first.push(link('https://component-model.bytecodealliance.org/', 'Wasm Component Model'));
+  first.push('. It has not shipped in web browsers, but you can use it today via the ');
+  first.push(link('https://github.com/dialog-db/wasm-component-model-polyfill',
+      'Wasm Component Model Polyfill'));
+  first.push('.');
+  let second = new GrowableArray<View | String>();
+  second.push('The site consists of a Rust app shell and a Rust service worker, shipped as '
+      + 'two Wasm core modules with a ');
+  second.push(link('https://wasm-bindgen.github.io/wasm-bindgen/', 'wasm-bindgen'));
+  second.push(' JS shim. The shell defines a closed set of custom elements and the service '
+      + 'worker a closed set of routes. Each one is implemented in a ');
+  second.push(link('https://zena-lang.dev/', 'Zena'));
+  second.push(' source file, editable on the page.');
+  let third = new GrowableArray<View | String>();
+  third.push('The Zena compiler and tooling ship separately as a Wasm Component. Custom '
+      + 'elements are compiled from Zena to Wasm at boot, and routes are compiled lazily on '
+      + 'first request. Saving an edit hot-swaps the implementation, and every placement of '
+      + 'a component shares one instance.');
+  let paragraphs = new GrowableArray<View | String>();
+  paragraphs.push(paragraph(first));
+  paragraphs.push(paragraph(second));
+  paragraphs.push(paragraph(third));
+  return paragraphs;
+};
+
 export class TodoApp extends Element {
   var todos = new GrowableArray<Todo>();
   var active = 0;
@@ -58,6 +98,8 @@ export class TodoApp extends Element {
   var phase = 'measuring';
   // The height of the list, in CSS pixels, as the host last reported it.
   var height = '';
+  // Whether the words about the demo show, below the list.
+  var about = false;
 
   attributes(): Array<String> {
     return ['filter'];
@@ -109,6 +151,9 @@ export class TodoApp extends Element {
         .content {
           transition-duration: 1ms;
         }
+        .about {
+          animation: none;
+        }
       }
       .todoapp {
         background: var(--md-sys-color-surface-container-low);
@@ -129,14 +174,59 @@ export class TodoApp extends Element {
         padding: 0 8px 8px;
       }
       .info {
-        margin: 0;
-        padding: 32px 0 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+        padding: 24px 0 0;
         color: var(--md-sys-color-on-surface-variant);
         font: var(--md-sys-typescale-body-medium);
-        text-align: center;
       }
-      .info a {
+      .about-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        height: 32px;
+        padding: 0 14px 0 10px;
+        border: 1px solid var(--md-sys-color-outline-variant);
+        border-radius: var(--md-sys-shape-corner-full);
+        background: transparent;
+        color: var(--md-sys-color-on-surface-variant);
+        font: var(--md-sys-typescale-label-large);
+        cursor: pointer;
+      }
+      .about-toggle:hover,
+      .about-toggle[aria-expanded="true"] {
+        background: var(--md-sys-color-surface-container-high);
+        color: var(--md-sys-color-on-surface);
+      }
+      .about-toggle .icon {
+        display: inline-grid;
+        place-items: center;
+        width: 18px;
+        height: 18px;
+        border: 1.5px solid currentColor;
+        border-radius: 50%;
+        font: 700 11px / 1 var(--md-ref-typeface);
+      }
+      .about {
+        padding: 0 8px;
+        animation: about-in ${reveal};
+      }
+      .about p {
+        margin: 0 0 12px;
+      }
+      .about p:last-child {
+        margin: 0;
+      }
+      .about a {
         color: var(--md-sys-color-primary);
+      }
+      @keyframes about-in {
+        from {
+          opacity: 0;
+          transform: translateY(-6px);
+        }
       }
     `;
   }
@@ -225,7 +315,7 @@ export class TodoApp extends Element {
       }));
     }
     let list = h('section', {'class' => 'todoapp'}, children);
-    let info = h('p', {'class' => 'info'}, this.colophon(), new Map<String, String>());
+    let info = this.info();
     if (this.phase == 'shown') {
       return h('div', {'class' => 'frame', 'data-phase' => this.phase}, [
         h('div', {'class' => 'content', 'key' => 'content'}, [list, info],
@@ -251,19 +341,26 @@ export class TodoApp extends Element {
   }
 
   /**
-   * The words below the list: how to edit a todo, and what the page is.
-   * They appear with the list, which they are about.
+   * Below the list: the pill that shows the words about the demo, and the
+   * words while it is open. They appear with the list, which they are
+   * about.
    */
-  colophon(): Array<View | String> {
+  info(): View {
     let none = new Map<String, String>();
-    let words = new GrowableArray<View | String>();
-    words.push('Double-click a todo to edit it. Every part of this page is a ');
-    words.push(h('a', {'href' => 'https://component-model.bytecodealliance.org/'},
-        ['component'], none));
-    words.push(' the browser compiled from ');
-    words.push(h('a', {'href' => 'https://zena-lang.dev/'}, ['Zena'], none));
-    words.push(' source, running on the Wasm Component Model Polyfill.');
-    return words;
+    let label = new GrowableArray<View | String>();
+    label.push(h('span', {'class' => 'icon', 'aria-hidden' => 'true'}, ['i'], none));
+    label.push('About this demo');
+    let children = new GrowableArray<View | String>();
+    children.push(h('button', {
+      'type' => 'button',
+      'class' => 'about-toggle',
+      'aria-expanded' => if (this.about) 'true' else 'false',
+      'aria-controls' => 'about',
+    }, label, {'click' => 'about'}));
+    if (this.about) {
+      children.push(h('div', {'id' => 'about', 'class' => 'about'}, about(), none));
+    }
+    return h('div', {'class' => 'info'}, children, none);
   }
 
   async on(handler: String, event: Event): Future<void> {
@@ -279,6 +376,10 @@ export class TodoApp extends Element {
       if (this.phase == 'revealing') {
         this.phase = 'shown';
       }
+      return;
+    }
+    if (handler == 'about') {
+      this.about = !this.about;
       return;
     }
     let headers = new Map<String, String>();

@@ -38,12 +38,12 @@ The last full run, on Chromium 154.0.8037.57, on 2026-10-02:
 
 | Group     | Tests | Passes |
 | --------- | ----- | ------ |
-| Platform  | 14    | 14     |
+| Platform  | 15    | 15     |
 | Elements  | 16    | 16     |
 | Routes    | 6     | 6      |
 | TodoMVC   | 11    | 11     |
 | Shelf     | 20    | 20     |
-| **Total** | 67    | 67     |
+| **Total** | 68    | 68     |
 
 ## Safari
 

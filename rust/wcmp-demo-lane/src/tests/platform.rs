@@ -50,7 +50,8 @@ pub fn it_shows_a_spinner_until_the_list_draws_and_then_reveals_it(
            fits: Math.abs(frame.getBoundingClientRect().height
                           - content.getBoundingClientRect().height) < 1,
            opacity: getComputedStyle(content).opacity,
-           hint: root.querySelector('.info').textContent,
+           pill: root.querySelector('.about-toggle').lastChild.textContent,
+           about: root.querySelector('.about') !== null,
          };",
     )?;
     check(
@@ -58,10 +59,60 @@ pub fn it_shows_a_spinner_until_the_list_draws_and_then_reveals_it(
             && late["style"].is_null()
             && late["fits"] == true
             && late["opacity"] == "1"
-            && late["hint"].as_str().is_some_and(|hint| {
-                hint.starts_with("Double-click a todo to edit it. Every part of this page")
-            }),
+            && late["pill"] == "About this demo"
+            && late["about"] == false,
         || format!("after the reveal the list showed {late}"),
+    )
+}
+
+pub fn it_shows_what_the_demo_is_behind_the_about_pill(browser: &Browser) -> Result<(), String> {
+    browser.boot()?;
+    let answer = browser.eval(
+        "const root = app().shadowRoot;
+         await until(() => root.querySelector('.frame[data-phase=\"shown\"]'), 'the reveal', 10000);
+         const pill = root.querySelector('.about-toggle');
+         pill.click();
+         const about = await until(() => root.querySelector('.about'), 'the words', 10000);
+         const open = {
+           expanded: pill.getAttribute('aria-expanded'),
+           paragraphs: [...about.querySelectorAll('p')].map((p) => p.textContent.slice(0, 40)),
+           links: [...about.querySelectorAll('a')].map((a) => [a.textContent, a.href, a.target]),
+         };
+         pill.click();
+         await until(() => root.querySelector('.about') === null, 'the words to close', 10000);
+         return { open, closed: pill.getAttribute('aria-expanded') };",
+    )?;
+    let open = &answer["open"];
+    let blank = "_blank";
+    check(
+        open["expanded"] == "true"
+            && answer["closed"] == "false"
+            && open["paragraphs"]
+                == serde_json::json!([
+                    "This app demonstrates some of the potent",
+                    "The site consists of a Rust app shell an",
+                    "The Zena compiler and tooling ship separ"
+                ])
+            && open["links"]
+                == serde_json::json!([
+                    [
+                        "Wasm Component Model",
+                        "https://component-model.bytecodealliance.org/",
+                        blank
+                    ],
+                    [
+                        "Wasm Component Model Polyfill",
+                        "https://github.com/dialog-db/wasm-component-model-polyfill",
+                        blank
+                    ],
+                    [
+                        "wasm-bindgen",
+                        "https://wasm-bindgen.github.io/wasm-bindgen/",
+                        blank
+                    ],
+                    ["Zena", "https://zena-lang.dev/", blank]
+                ]),
+        || format!("the pill showed {answer}"),
     )
 }
 

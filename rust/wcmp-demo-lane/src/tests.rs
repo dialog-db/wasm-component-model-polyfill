@@ -45,6 +45,7 @@ macro_rules! test {
 pub static TESTS: &[Test] = &[
     test!(platform::it_loads_the_page_and_the_service_worker_controls_it),
     test!(platform::it_shows_a_spinner_until_the_list_draws_and_then_reveals_it),
+    test!(platform::it_shows_what_the_demo_is_behind_the_about_pill),
     test!(platform::it_stops_the_service_worker_and_the_next_request_starts_it),
     test!(platform::it_reads_each_network_response_with_its_headers),
     test!(platform::it_sets_the_color_scheme),

@@ -814,13 +814,15 @@ renders, which is after its list has loaded. Then the element reveals the list:
 4. When the list's fade ends, the list stands in the frame on its own, and the
    frame follows its height from then on.
 
-The words below the list, which say how to edit a todo and what the page is, are
-part of the list. Nothing shows below the spinner, and the words appear only
-with the list. The spinner only turns, and the page turns it with the Web
-Animations API. The browser's compositor runs that turn, so the spinner stays
-smooth while the page compiles on its main thread, and the move into a slot does
-not restart it. The shelf rises into view from below the page when the page adds
-it. With reduced motion, each of these takes a moment.
+Below the list, a pill button, "About this demo", opens and closes three
+paragraphs that say what the demo shows and how it is made, with links to the
+Component Model, the polyfill, `wasm-bindgen`, and Zena. The pill is part of the
+list, so nothing shows below the spinner, and the pill appears only with the
+list. The spinner only turns, and the page turns it with the Web Animations API.
+The browser's compositor runs that turn, so the spinner stays smooth while the
+page compiles on its main thread, and the move into a slot does not restart it.
+The shelf rises into view from below the page when the page adds it. With
+reduced motion, each of these takes a moment.
 
 If an edited source fails to compile at boot, the page compiles the shipped
 source instead. The shelf keeps the edit and shows its diagnostics.
