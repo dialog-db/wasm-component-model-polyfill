@@ -96,7 +96,7 @@
 //!
 //! [`LinkerInstance`]: super::LinkerInstance
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use semver::Version;
 
@@ -124,10 +124,12 @@ pub enum ImportBinding {
         /// import.
         chosen: InterfaceIdentifier,
     },
-    /// The import was an interface-typed instance with an empty
-    /// item set, and no registered entry was needed to satisfy it.
-    /// The linker may still have had a matching entry; this variant
-    /// records that it was not consulted.
+    /// No registered entry was needed to satisfy the import: an
+    /// instance whose items need nothing from the host, or a resource
+    /// import whose resource an earlier import already defined, as the
+    /// root `(type (eq ...))` import a world-level `use` of an
+    /// imported resource produces. The linker may still have had a
+    /// matching entry; this variant records that it was not consulted.
     Vacuous,
     /// The import was satisfied through the root namespace: the root
     /// entry itself for a function, resource, or module import, or
@@ -168,6 +170,9 @@ pub fn resolve_imports<T: 'static>(
 ) -> Result<Resolution> {
     let registered: Vec<&InterfaceIdentifier> = linker.registered_keys().collect();
     let mut bindings = Vec::with_capacity(component.imports.len());
+    // The resources the imports so far have defined, by the index of
+    // their table in the component.
+    let mut defined: HashSet<usize> = HashSet::new();
     for import in component.imports.iter() {
         let binding = match (&import.name, &import.ty) {
             (ExternalName::Interface(id), ExternType::Instance(instance)) => {
@@ -197,18 +202,39 @@ pub fn resolve_imports<T: 'static>(
             // host item, and one host item lives in the root
             // namespace, under the name as written or under a
             // version compatible with it.
-            (ExternalName::Interface(id), _) => resolve_root(import, &id.to_string(), linker)?,
-            (ExternalName::Plain(name), _) => resolve_root(import, name, linker)?,
+            (ExternalName::Interface(id), _) => {
+                resolve_root(import, &id.to_string(), linker, &defined)?
+            }
+            (ExternalName::Plain(name), _) => resolve_root(import, name, linker, &defined)?,
         };
+        define_resources(&import.ty, &mut defined);
         bindings.push(binding);
     }
     check_shared_identities(component, linker, &bindings)?;
     Ok(Resolution { bindings })
 }
 
+/// Add the index of every resource `ty` declares to `defined`: the
+/// import's own, or the items of an instance, nested instances
+/// included.
+fn define_resources(ty: &ExternType, defined: &mut HashSet<usize>) {
+    match ty {
+        ExternType::Resource(resource) | ExternType::ResourceEquals(resource) => {
+            defined.extend(resource.index());
+        }
+        ExternType::Instance(instance) => {
+            for item in instance.items.iter() {
+                define_resources(&item.ty, defined);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// A component that declares one resource type in several imports
-/// (an instance whose item is `(type (eq $r))` of another's) needs
-/// one identity behind all of them. Every registration for the same
+/// (an instance whose item is `(type (eq $r))` of another's, or a
+/// root import `(type (eq $r))` of an instance's item) needs one
+/// identity behind all of them. Every registration for the same
 /// resource must carry the same identity, or a handle minted under
 /// one interface could not lower through the other.
 fn check_shared_identities<T: 'static>(
@@ -219,6 +245,24 @@ fn check_shared_identities<T: 'static>(
     let mut seen: HashMap<usize, (ResourceTypeId, TypeMismatchPosition)> = HashMap::new();
     for (import, binding) in component.imports.iter().zip(bindings) {
         let ExternType::Instance(instance) = &import.ty else {
+            if let (
+                ExternType::Resource(resource) | ExternType::ResourceEquals(resource),
+                ImportBinding::Root { name },
+            ) = (&import.ty, binding)
+            {
+                let position = ItemPosition::root(&import.name, name);
+                let host = linker.root_registration().resource(name);
+                if let (Some(index), Some(host)) = (resource.index(), host) {
+                    check_shared_identity(
+                        &mut seen,
+                        index,
+                        host.type_id(),
+                        position.for_item(name),
+                        resource,
+                        name,
+                    )?;
+                }
+            }
             continue;
         };
         let (registration, position) = match (binding, &import.name) {
@@ -245,24 +289,42 @@ fn check_shared_identities<T: 'static>(
             else {
                 continue;
             };
-            match seen.get(&index) {
-                None => {
-                    seen.insert(index, (host.type_id(), position.for_item(&item.name)));
-                }
-                Some((first, _)) if *first == host.type_id() => {}
-                Some(_) => {
-                    return Err(Error::from(TypeMismatch {
-                        position: position.for_item(&item.name),
-                        expected: TypeRendering::Value(ValueType::Own(resource.clone())),
-                        actual: TypeRendering::Value(ValueType::Own(ResourceType::new(
-                            item.name.clone(),
-                        ))),
-                    }));
-                }
-            }
+            check_shared_identity(
+                &mut seen,
+                index,
+                host.type_id(),
+                position.for_item(&item.name),
+                resource,
+                &item.name,
+            )?;
         }
     }
     Ok(())
+}
+
+/// Record that the resource at table `index` is registered as
+/// `identity` at `position`, or refuse a second registration of it
+/// under another identity.
+fn check_shared_identity(
+    seen: &mut HashMap<usize, (ResourceTypeId, TypeMismatchPosition)>,
+    index: usize,
+    identity: ResourceTypeId,
+    position: TypeMismatchPosition,
+    resource: &ResourceType,
+    name: &str,
+) -> Result<()> {
+    match seen.get(&index) {
+        None => {
+            seen.insert(index, (identity, position));
+            Ok(())
+        }
+        Some((first, _)) if *first == identity => Ok(()),
+        Some(_) => Err(Error::from(TypeMismatch {
+            position,
+            expected: TypeRendering::Value(ValueType::Own(resource.clone())),
+            actual: TypeRendering::Value(ValueType::Own(ResourceType::new(name.to_owned()))),
+        })),
+    }
 }
 
 /// How a type-mismatch diagnostic names the registration an item
@@ -390,10 +452,20 @@ fn instance_is_vacuous(instance: &InstanceType) -> bool {
 /// lookup goes through [`root_key`] rather than straight to `name`:
 /// a registration under a version on the import's compatibility
 /// track answers when nothing sits under the name as written.
+///
+/// A resource import with nothing registered under its name is
+/// satisfied when an earlier import already defined the resource,
+/// whose table index is in `defined`. That is the root import a
+/// world-level `use` of an imported interface's resource produces,
+/// `(import "r" (type (eq $r)))`, which names the resource the
+/// interface brought in rather than a new one. Wasmtime's linker
+/// accepts it with no definition of its own on the same rule
+/// (`TypeChecker::definition` in `component/matching.rs`).
 fn resolve_root<T: 'static>(
     import: &ComponentImport,
     name: &str,
     linker: &Linker<T>,
+    defined: &HashSet<usize>,
 ) -> Result<ImportBinding> {
     let root = linker.root_registration();
     let name = &root_key(root, name);
@@ -414,7 +486,15 @@ fn resolve_root<T: 'static>(
             )?;
             Ok(bound())
         }
-        ExternType::Resource(_) | ExternType::ResourceEquals(_) => {
+        ExternType::Resource(resource) | ExternType::ResourceEquals(resource) => {
+            if root.resource(name).is_none()
+                && root.kind_of(name).is_none()
+                && resource
+                    .index()
+                    .is_some_and(|index| defined.contains(&index))
+            {
+                return Ok(ImportBinding::Vacuous);
+            }
             check_resource_item(name, root, &import.name, None)?;
             Ok(bound())
         }
@@ -1101,7 +1181,7 @@ mod tests {
                 name: ExternalName::Interface(id(name)),
                 ty,
             };
-            match resolve_root(&import, name, &linker) {
+            match resolve_root(&import, name, &linker, &HashSet::new()) {
                 Err(Error::Link(inner)) => match *inner {
                     LinkError::UnsupportedRegistration { import, reason } => {
                         assert_eq!(import, ExternalName::Interface(id(name)));

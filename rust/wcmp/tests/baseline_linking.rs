@@ -1781,6 +1781,147 @@ async fn it_links_a_resource_nested_two_levels() {
     assert_eq!(*store.data(), 1, "the nested destructor ran once");
 }
 
+/// A world that imports an interface with a resource and `use`s that
+/// resource at world level: the root import `request` is `(type (eq
+/// ...))` of the interface's `request`, so it names the resource the
+/// interface brings in rather than a new one. `run` mints a handle
+/// through the interface's constructor and drops it through the root
+/// type, which runs the destructor registered on the interface.
+const WORLD_LEVEL_USE: &[u8] = component!(
+    r#"
+    (component
+      (import "test:guest/types" (instance $types
+        (export "request" (type $r (sub resource)))
+        (export "make" (func (result (own $r))))))
+      (alias export $types "request" (type $request))
+      (import "request" (type $root-request (eq $request)))
+      (alias export $types "make" (func $make))
+      (core func $make (canon lower (func $make)))
+      (core func $drop (canon resource.drop $root-request))
+      (core module $m
+        (import "" "make" (func $make (result i32)))
+        (import "" "drop" (func $drop (param i32)))
+        (func (export "run") call $make call $drop))
+      (core instance $i (instantiate $m
+        (with "" (instance
+          (export "make" (func $make))
+          (export "drop" (func $drop))))))
+      (func (export "run") (canon lift (core func $i "run"))))
+    "#
+);
+
+/// Register the `test:guest/types` interface [`WORLD_LEVEL_USE`]
+/// imports: the `request` resource, whose destructor counts drops in
+/// the store's data, and the `make` constructor.
+fn register_types(linker: &mut Linker<u32>) {
+    let interface: InterfaceIdentifier = "test:guest/types".parse().expect("identifier");
+    let mut types = linker.instance(&interface);
+    let request = types
+        .resource("request", |drops, _rep| {
+            *drops += 1;
+            Ok(())
+        })
+        .expect("the registration");
+    types
+        .func_new(
+            "make",
+            FunctionType {
+                parameters: vec![],
+                result: Some(ValueType::Own(ResourceType::new("request"))),
+                async_: false,
+            },
+            move |call, _, results| {
+                results[0] = Val::Own(call.resource_new(request, 7)?);
+                Ok(())
+            },
+        )
+        .expect("the registration");
+}
+
+#[wcmp_macros::test]
+async fn it_resolves_a_world_level_use_of_an_imported_resource_through_its_interface() {
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
+    let component = Component::new(&engine, WORLD_LEVEL_USE)
+        .await
+        .expect("component parses");
+    let mut linker: Linker<u32> = Linker::new(&engine);
+    register_types(&mut linker);
+    let mut store: Store<u32> = Store::new(&engine, 0).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the interface's registration satisfies the root alias of its resource");
+    instance
+        .get_func("run")
+        .expect("`run` is exported")
+        .call(&mut store, &[])
+        .await
+        .expect("call succeeds");
+    assert_eq!(
+        *store.data(),
+        1,
+        "the drop through the root type ran the interface's destructor"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_root_alias_of_a_resource_registered_under_another_identity() {
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
+    let component = Component::new(&engine, WORLD_LEVEL_USE)
+        .await
+        .expect("component parses");
+    let mut linker: Linker<u32> = Linker::new(&engine);
+    register_types(&mut linker);
+    linker
+        .root()
+        .resource("request", |_, _| Ok(()))
+        .expect("the registration");
+    let mut store: Store<u32> = Store::new(&engine, 0).expect("store");
+    match linker.instantiate(&mut store, &component).await {
+        Ok(_) => panic!("the root registration is another resource than the interface's"),
+        Err(Error::TypeMismatch(_)) => {}
+        Err(other) => panic!("expected a type mismatch, got {other:?}"),
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_root_resource_import_that_names_nothing_registered() {
+    const COMPONENT: &[u8] = component!(
+        r#"
+        (component
+          (import "request" (type $r (sub resource)))
+          (core func $drop (canon resource.drop $r))
+          (core module $m
+            (import "" "drop" (func $drop (param i32)))
+            (func (export "run") (param i32) local.get 0 call $drop))
+          (core instance $i (instantiate $m
+            (with "" (instance (export "drop" (func $drop))))))
+          (func (export "run") (param "r" (own $r))
+            (canon lift (core func $i "run"))))
+        "#
+    );
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
+    let component = Component::new(&engine, COMPONENT)
+        .await
+        .expect("component parses");
+    let linker: Linker<u32> = Linker::new(&engine);
+    let mut store: Store<u32> = Store::new(&engine, 0).expect("store");
+    let err = match linker.instantiate(&mut store, &component).await {
+        Ok(_) => panic!("a fresh resource with nothing registered cannot be linked"),
+        Err(err) => err,
+    };
+    match err {
+        Error::Link(inner) => match *inner {
+            LinkError::UnresolvedImport { import, item } => {
+                assert_eq!(import, ExternalName::Plain("request".to_owned()));
+                assert_eq!(item, None);
+            }
+            other => panic!("expected an unresolved import, got {other:?}"),
+        },
+        other => panic!("expected a link error, got {other:?}"),
+    }
+}
+
 #[wcmp_macros::test]
 async fn it_links_an_interface_named_import_with_a_nested_instance() {
     const COMPONENT: &[u8] = component!(
