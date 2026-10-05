@@ -14,11 +14,23 @@
 # each backend of the runtime layer runs in its own lane.
 [profile.default]
 default-filter = "not test(/without_a_provider$/) and not (binary(zena) and test(=it_holds_every_subject_to_the_record_and_prints_the_report)) and not binary(fidelity)"
-# A test that deadlocks is killed after ten minutes rather than holding
-# its lane until a CI job's time limit. The slowest test today, the
-# conformance progress report, takes under a minute; a browser test is
-# also bounded by `WASM_BINDGEN_TEST_TIMEOUT`. Every other profile
-# inherits this.
+# A test that hangs fails its lane with its name instead of stalling it.
+# nextest names a test SLOW after each minute and kills it after ten,
+# and the lane reports it as TIMEOUT. Every other profile inherits this,
+# so the limit holds on every native lane, debug and release, and on the
+# Zena lane. The slowest tests today, the conformance progress report
+# and the Wasmi lane's memory hogs, take under a minute natively, so ten
+# minutes leaves room for a loaded CI runner without letting a hang hold
+# a lane for long.
+#
+# A browser test is bounded sooner: the `wbg-pool` daemon gives up on a
+# tab after `WASM_BINDGEN_TEST_TIMEOUT` seconds (180, set by the dev
+# shell), reads what output the page wrote, and fails the test with "test
+# run timed out". The daemon keeps that clock outside the page, so it
+# fires even when a guest spins and the page's own timers never run.
+# The ten-minute limit stays behind it in case the runner itself wedges.
+# The demo lane does not run through nextest; every WebDriver command it
+# sends is bounded to three minutes (`rust/wcmp-demo-lane`).
 slow-timeout = { period = "60s", terminate-after = 10 }
 
 # The Wasmi lane (`tests native wasmi`): the default profile's tests on

@@ -1247,6 +1247,12 @@ async fn it_releases_a_synchronous_read_through_a_callback_task_of_another_insta
             })
             .await;
             let parked = filled_done.is_none();
+            // A failed first read means the nested turn never ran the
+            // writer, so the second phase would wait for two completions
+            // that cannot both arrive. Hand the failure back instead.
+            if first_done.is_err() {
+                return (first_done, parked, None, None);
+            }
 
             let mut second = Box::pin(drain.call_concurrent(accessor, &into_104));
             let mut second_done: Option<Result<Box<[Val]>, Error>> = None;
@@ -1268,12 +1274,7 @@ async fn it_releases_a_synchronous_read_through_a_callback_task_of_another_insta
                 }
             })
             .await;
-            (
-                first_done,
-                parked,
-                second_done.expect("the second drain resolved"),
-                filled_done.expect("fill-then-park resolved"),
-            )
+            (first_done, parked, second_done, filled_done)
         })
         .await
         .expect("the driver returns");
@@ -1288,14 +1289,17 @@ async fn it_releases_a_synchronous_read_through_a_callback_task_of_another_insta
         parked,
         "the writer was parked in its event loop when the read returned"
     );
-    let second =
-        second.unwrap_or_else(|error| panic!("the second drain failed: {}", chain(&error)));
+    let second = second
+        .expect("the second drain resolved")
+        .unwrap_or_else(|error| panic!("the second drain failed: {}", chain(&error)));
     assert_eq!(
         second.as_ref(),
         &[Val::U32(packed(0, 4))],
         "the second read took the parked write at once"
     );
-    let filled = filled.unwrap_or_else(|error| panic!("fill-then-park failed: {}", chain(&error)));
+    let filled = filled
+        .expect("fill-then-park resolved")
+        .unwrap_or_else(|error| panic!("fill-then-park failed: {}", chain(&error)));
     assert_eq!(
         filled.as_ref(),
         &[Val::U32(packed(0, 4))],

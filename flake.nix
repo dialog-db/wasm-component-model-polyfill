@@ -1746,13 +1746,28 @@
         # it and would idle for five minutes on its own, so a browser lane
         # pins its rendezvous directory under the lane workspace and stops
         # it on exit, before the workspace (and the browser's files under
-        # it) goes away. `--stop` returns before the daemon has finished
-        # removing its own files, so a removal that races it can meet a
-        # directory that is not empty yet; it retries for a few seconds,
-        # and only the last attempt can fail the lane.
+        # it) goes away. `--stop` returns before the browser has exited:
+        # the daemon kills Chrome's main process only, and its helper
+        # processes (renderers, the crash handler) go on writing under the
+        # profile for a moment, so a removal that races them meets a
+        # directory that is not empty. Every one of them names the
+        # workspace on its command line (`--user-data-dir`, `--database`),
+        # so the teardown waits up to ten seconds for those processes to
+        # exit, kills any left, and only then removes the workspace. The
+        # removal still retries for a few seconds, and only its last
+        # attempt can fail the lane.
+        # Where the teardown finds `pgrep` and `pkill`: procps on Linux,
+        # and on Darwin the system's own, which macOS ships in
+        # `/usr/bin`.
+        procpsBin = if isLinux then "${pkgs.procps}/bin/" else "";
         browserPool = ''
           export WBG_POOL_DIR="$workspace/wbg-pool"
-          trap 'wbg-pool daemon --stop >/dev/null 2>&1
+          trap 'wbg-pool daemon --stop >/dev/null 2>&1 || true
+            for _ in $(seq 100); do
+              ${procpsBin}pgrep -f "$WBG_POOL_DIR" >/dev/null || break
+              sleep 0.1
+            done
+            ${procpsBin}pkill -KILL -f "$WBG_POOL_DIR" 2>/dev/null || true
             for _ in 1 2 3 4 5; do
               rm -rf "$workspace" 2>/dev/null && break
               sleep 1
@@ -1993,10 +2008,10 @@
           };
 
           "tests" = {
-            description = "Run the test suites from Nix-built archives, and the Zena scenarios with their compatibility report";
+            description = "Run the test suites from Nix-built archives, and the Zena scenarios with their compatibility report. The native, web, fidelity, and all lanes pass the arguments after the leaf to cargo nextest run (all hands them to every lane but zena and demo), so tests native debug -E 'test(<name>)' runs one test. nextest joins two -E filters with or, so on a lane with a filter of its own (native wasmi, fidelity) a further -E adds tests rather than narrowing them";
             subcommands = {
               native = {
-                description = "Unit and integration tests on ${system}";
+                description = "Unit and integration tests on ${system} (arguments after the leaf reach `cargo nextest run`, as in `-E 'test(<name>)'`)";
                 subcommands = {
                   debug = menuTestCommand {
                     description = "Unit and integration tests (${system}, debug)";
@@ -2030,7 +2045,7 @@
                 };
               };
               web = {
-                description = "Unit and integration tests in headless Chrome (one browser per test in flight, with parallelism following available memory unless NEXTEST_TEST_THREADS or -j says otherwise)";
+                description = "Unit and integration tests in headless Chrome (one tab per test in flight, with parallelism following available memory unless NEXTEST_TEST_THREADS or -j says otherwise, and arguments after the leaf reach `cargo nextest run`, as in `-E 'test(<name>)'`)";
                 subcommands = {
                   debug = menuTestCommand {
                     description = "Unit and integration tests (wasm32-unknown-unknown, debug)";
@@ -2244,6 +2259,58 @@
                     echo "downstream lock: the diff above is what a run would write; rust/wcmp-downstream/Cargo.lock is unchanged"
                   else
                     echo "downstream lock: wrote rust/wcmp-downstream/Cargo.lock"
+                  fi
+                '';
+              };
+            };
+          };
+
+          # The workspace's Rust sources and its lock file, with the flake's
+          # pinned toolchain. `format` runs the same rustfmt the `rustfmt`
+          # check runs, over every workspace crate. `lock` re-resolves
+          # `Cargo.lock` the way `cargo update --workspace` does: it takes in
+          # what the manifests changed and keeps every other locked version,
+          # where `cargo generate-lockfile` would move the whole graph to the
+          # newest versions. It resolves offline first, from the registry
+          # index cargo already has, and goes to crates.io only when that
+          # fails. It prints the lock's difference; `--dry-run` stops there.
+          "rust" = {
+            description = "Format the workspace's Rust sources, or refresh its Cargo.lock, with the flake's pinned toolchain";
+            subcommands = {
+              format = {
+                description = "Format every workspace crate with the rustfmt the `rustfmt` check runs";
+                command = ''
+                  cargo fmt --all --manifest-path "$(git rev-parse --show-toplevel)"/Cargo.toml
+                '';
+              };
+              lock = {
+                description = "Re-resolve Cargo.lock after a manifest changes a dependency, keeping every other locked version (`--dry-run` only prints the difference)";
+                command = ''
+                  root="$(git rev-parse --show-toplevel)"
+                  dry=""
+                  for argument in "$@"; do
+                    case "$argument" in
+                      --dry-run) dry=1 ;;
+                      *)
+                        echo "rust lock: $argument is not an argument of this command (only --dry-run)" >&2
+                        exit 2
+                        ;;
+                    esac
+                  done
+                  committed=$(mktemp)
+                  trap 'rm -f "$committed"' EXIT
+                  cp "$root/Cargo.lock" "$committed"
+                  if ! cargo update --workspace --offline --manifest-path "$root/Cargo.toml" 2>/dev/null; then
+                    echo "rust lock: the local registry index cannot resolve the manifests; resolving online"
+                    cargo update --workspace --manifest-path "$root/Cargo.toml"
+                  fi
+                  if diff -u "$committed" "$root/Cargo.lock"; then
+                    echo "rust lock: Cargo.lock is current, nothing to write"
+                  elif [ -n "$dry" ]; then
+                    cp "$committed" "$root/Cargo.lock"
+                    echo "rust lock: the diff above is what a run would write; Cargo.lock is unchanged"
+                  else
+                    echo "rust lock: wrote Cargo.lock"
                   fi
                 '';
               };
