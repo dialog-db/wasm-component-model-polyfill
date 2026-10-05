@@ -3,7 +3,7 @@ id: e2fb8a
 title: The downstream guard refuses every Cargo config override
 type: bug
 blocked_by: [994479]
-labels: [runtime-layer]
+labels: [runtime-layer, backlog-burndown-001-q4]
 created: 2026-10-02T04:37:52Z
 ---
 

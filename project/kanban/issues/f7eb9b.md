@@ -3,7 +3,7 @@ id: f7eb9b
 title: Speed up and prove the browser memory accessor fallback paths
 type: chore
 blocked_by: [215523]
-labels: [runtime-layer]
+labels: [runtime-layer, backlog-burndown-001-q3]
 created: 2026-09-29T13:36:41Z
 ---
 

@@ -3,7 +3,7 @@ id: dced20
 title: "Resource handles: a stale host index is refused, a host borrow lowers back, a defining guest's borrow reaches a host, and lends come back after a trap"
 type: bug
 blocked_by: []
-labels: [resource]
+labels: [resource, backlog-burndown-001-q2]
 created: 2026-09-22T06:53:00Z
 ---
 

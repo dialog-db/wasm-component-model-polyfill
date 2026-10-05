@@ -3,7 +3,7 @@ id: 5cddf6
 title: The record cap stays internal, and its full-table cause moves out of the scheduler
 type: bug
 blocked_by: []
-labels: [concurrency]
+labels: [concurrency, backlog-burndown-001-q3]
 created: 2026-09-27T03:16:16Z
 ---
 

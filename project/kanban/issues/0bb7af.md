@@ -3,7 +3,7 @@ id: 0bb7af
 title: The gate runs the benchmarks and sees the whole public API
 type: chore
 blocked_by: []
-labels: [bench, api]
+labels: [bench, api, backlog-burndown-001-q3]
 created: 2026-09-22T10:18:02Z
 ---
 

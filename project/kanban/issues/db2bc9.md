@@ -3,7 +3,7 @@ id: db2bc9
 title: Keep tests zena gating under an inherited regenerate variable, and test its browser parsing
 type: bug
 blocked_by: []
-labels: [zena]
+labels: [zena, backlog-burndown-001-q4]
 created: 2026-09-28T05:22:00Z
 ---
 

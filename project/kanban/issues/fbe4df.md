@@ -3,7 +3,7 @@ id: fbe4df
 title: Survey Wasm Core engines for a full-fidelity fourth backend
 type: docs
 blocked_by: []
-labels: [runtime-layer]
+labels: [runtime-layer, backlog-burndown-001-q4]
 created: 2026-09-30T19:38:03Z
 ---
 

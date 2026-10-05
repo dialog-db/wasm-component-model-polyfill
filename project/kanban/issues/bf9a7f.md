@@ -3,7 +3,7 @@ id: bf9a7f
 title: Release browser entrance references when a later stretch returns
 type: chore
 blocked_by: [f87de5]
-labels: [runtime-layer]
+labels: [runtime-layer, backlog-burndown-001-q4]
 created: 2026-10-02T04:38:09Z
 ---
 
