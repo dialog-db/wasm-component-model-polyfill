@@ -11,6 +11,7 @@
 use super::in_flight::InFlight;
 use super::instance_id::InstanceId;
 use super::plan::Plan;
+use super::subtask_id::SubtaskId;
 
 /// What the scheduler has to do before anything else, under a
 /// provider that runs a thread once the driver of the store awaits it
@@ -67,9 +68,10 @@ pub struct DeferredWork<T: 'static> {
     /// a thread takes: the built-in's thread suspends for the start
     /// then, and leaves the rest of the built-in as a plan.
     pub may_defer_start: bool,
-    /// Whether a nested-start mark a trampoline put on the stack comes
-    /// off once the work is done, rather than as the trampoline returns.
-    pub ends_nested_start: bool,
+    /// The subtask of a nested-start mark a trampoline put on the
+    /// stack, when the mark comes off once the work is done rather than
+    /// as the trampoline returns.
+    pub ends_nested_start: Option<SubtaskId>,
     /// The instance of a nested start that left work to the store, with
     /// the may-not-suspend flag it had before the start cleared it. The
     /// flag stays clear until the nested-start mark comes off, as it
@@ -130,7 +132,7 @@ impl<T: 'static> Default for DeferredWork<T> {
             request: None,
             note_owed: false,
             may_defer_start: false,
-            ends_nested_start: false,
+            ends_nested_start: None,
             nested_may_not_suspend: None,
             ends_thread_switch: false,
             stopped_at_end: false,

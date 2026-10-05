@@ -312,11 +312,9 @@ impl Func {
             .internal()
             .start_export_thread(task, instance_id, self.ty().async_, true, item)?;
 
-        Driver::run(store, Some(task), move |_store, _waker| {
-            match outcome.lock() {
-                Ok(mut slot) => slot.take().map(Ok),
-                Err(_) => Some(Err(Error::internal("a call's outcome slot is poisoned"))),
-            }
+        Driver::run(store, move |_store, _waker| match outcome.lock() {
+            Ok(mut slot) => slot.take().map(Ok),
+            Err(_) => Some(Err(Error::internal("a call's outcome slot is poisoned"))),
         })
         .await
     }
@@ -620,7 +618,7 @@ impl Func {
             .internal()
             .start_export_thread(task, instance_id, true, needs_exclusive, item)?;
 
-        Driver::run(store, Some(task), move |_store, waker| {
+        Driver::run(store, move |_store, waker| {
             match channel.take_or_wait(waker) {
                 Ok(result) => result.map(C::from_resolution),
                 Err(error) => Some(Err(error)),

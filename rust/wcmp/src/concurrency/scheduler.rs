@@ -1522,7 +1522,8 @@ impl<T: 'static> Scheduler<T> {
     ///
     /// The work the host-suspension provider leaves to the store, in the browser,
     /// is not let go of: a resume already issued, a failed start, the
-    /// thread named to run next, the switchers, and the plans. A later
+    /// thread named to run next, the switchers that are still parked,
+    /// and the plans. A later
     /// driver's turn carries that work forward before it runs any item,
     /// so it can still resume a guest thread of a poisoned store. Every
     /// other provider, and none, leaves no such work.
@@ -1541,6 +1542,15 @@ impl<T: 'static> Scheduler<T> {
         items.extend(held.entries.into_values().map(|entry| entry.item));
         let mut host_tasks = self.host_tasks.retire_all();
         self.parked_calls.clear();
+        // A switcher is taken back by the frame that started or resumed
+        // it, and the trap unwound that frame or will. The record of a
+        // switcher that is no longer parked can only be stale: a later
+        // frame at the same level of deferred work would take it back
+        // and resume a thread that is not suspended. A parked switcher
+        // keeps its record, for the work the provider left to the store.
+        let parked = &self.parked;
+        self.switchers
+            .retain(|(thread, _)| parked.contains_key(thread));
         host_tasks.extend(self.settled_calls.drain().map(|(_, (task, _))| task));
         self.host_end_wakers.clear();
         DiscardedWork {
@@ -1808,6 +1818,35 @@ mod tests {
                 Ok(())
             },
         )
+    }
+
+    #[wcmp_macros::test]
+    fn it_drops_the_record_of_a_switcher_that_is_not_parked_when_a_trap_discards_the_work() {
+        let mut store = store();
+        let thread = {
+            let mut guard = store.internal().tables().lock().expect("tables");
+            let instance = guard.tasks.insert_instance();
+            let task = guard
+                .tasks
+                .push_task(None, None, instance)
+                .expect("room under the record cap");
+            guard.tasks.start_task(task);
+            guard
+                .tasks
+                .current_thread()
+                .expect("the task's implicit thread")
+        };
+        store.internal().scheduler_mut().push_switcher(thread);
+        assert_eq!(store.internal().scheduler().switcher_mark(), 1);
+
+        drop(store.internal().scheduler_mut().discard_all_work());
+
+        assert_eq!(
+            store.internal().scheduler().switcher_mark(),
+            0,
+            "the switcher is not parked, so no frame can take it back and its \
+             record would only be resumed by mistake"
+        );
     }
 
     #[wcmp_macros::test]

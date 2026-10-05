@@ -702,7 +702,7 @@ pub fn run_nested_start<T: 'static>(
     // goes back then, since the thread has not stopped before.
     if matches!(ran, Ok(Ok(()))) && store.internal().defers_work() {
         let deferred = store.internal().scheduler_mut().deferred_mut();
-        deferred.ends_nested_start = true;
+        deferred.ends_nested_start = Some(subtask);
         deferred.nested_may_not_suspend = may_not_suspend.map(|old| (instance, old));
         return Ok(());
     }
@@ -710,7 +710,7 @@ pub fn run_nested_start<T: 'static>(
         guard.tasks.set_may_not_suspend(instance, old);
     }
     if let Ok(mut guard) = tables.lock() {
-        guard.tasks.end_nested_start();
+        guard.tasks.end_nested_start(subtask);
     }
     ran.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }

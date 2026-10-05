@@ -517,9 +517,10 @@ thread lines of `cm/async/trap-if-sync-and-waitable-set.wast` and
 `wasmtime/async/join-during-sync-read.wast` pass too, and so do the
 lines of `during-sync-scheduling-candidates.wast` whose thread
 suspends or yields after its task resolved, because each of those
-threads suspends in the provider. A thread of a sync-typed call cannot
-suspend its stack even under a provider, but its block runs the ready
-threads of its own instance, as the reference's `canon_lift` does: a
+threads suspends in the provider. A thread of a sync-typed call does not
+suspend its stack to wait even under a provider, only to switch, as the
+overview above says, but its block runs the ready threads of its own
+instance, as the reference's `canon_lift` does: a
 yield of `during-sync-scheduling-candidates.wast` resumes the thread
 `thread.resume-later` made ready in the provider, and in two lines
 each of `trap-if-block-and-sync.wast` and the two `during-sync-call`

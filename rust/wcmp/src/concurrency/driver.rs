@@ -14,7 +14,6 @@ use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 
 use super::outcome::Outcome;
-use super::task_id::TaskId;
 use super::yield_wake::YieldWake;
 
 /// A host future that polls the store's scheduler.
@@ -33,8 +32,8 @@ use super::yield_wake::YieldWake;
 ///   inside a turn fails with the recursive-driver cause.
 /// - When a turn finds nothing ready, no host task pending, and the
 ///   condition unmet, the driver fails with the deadlock cause, or
-///   with the cannot-block cause when the task it waits on must not
-///   block.
+///   with the cannot-block cause when any instance of the store must
+///   not suspend.
 /// - A failure of a turn, and the idle failure above, are traps, and
 ///   each poisons the store. What the condition yields is the call's
 ///   own, and the call decides whether it was a trap.
@@ -71,30 +70,22 @@ impl Driver {
     /// The condition is consulted before each turn, and once more
     /// when a turn goes idle or leaves only a host task pending, so
     /// work the driver itself queued before it was polled is seen
-    /// and a turn that resolved the condition never parks. `task`
-    /// is the task the driver waits on, when there is one: it
-    /// decides whether an idle turn is a deadlock or a task that
-    /// must not block.
+    /// and a turn that resolved the condition never parks.
     pub fn run<'a, T: 'static, C, R>(
         store: StoreContext<'a, T>,
-        task: Option<TaskId>,
         condition: C,
     ) -> impl Future<Output = Result<R>> + 'a
     where
         C: FnMut(&mut StoreContext<'_, T>, &Waker) -> Option<Result<R>> + 'a,
         R: 'a,
     {
-        drive(store, task, condition)
+        drive(store, condition)
     }
 }
 
 /// The body of a driver: turns until `condition` yields, and the
 /// store's flight awaited whenever a turn leaves one.
-async fn drive<T: 'static, C, R>(
-    mut store: StoreContext<'_, T>,
-    task: Option<TaskId>,
-    mut condition: C,
-) -> Result<R>
+async fn drive<T: 'static, C, R>(mut store: StoreContext<'_, T>, mut condition: C) -> Result<R>
 where
     C: FnMut(&mut StoreContext<'_, T>, &Waker) -> Option<Result<R>>,
 {
@@ -103,10 +94,9 @@ where
     }
     let mut yield_wake: Option<YieldWake> = None;
     loop {
-        let step = poll_fn(|context| {
-            poll_turns(&mut store, task, &mut condition, &mut yield_wake, context)
-        })
-        .await;
+        let step =
+            poll_fn(|context| poll_turns(&mut store, &mut condition, &mut yield_wake, context))
+                .await;
         match step {
             Step::Done(done) => return done,
             Step::Fly => store.internal().fly().await,
@@ -118,7 +108,6 @@ where
 /// store a flight, or nothing can go on until a wake.
 fn poll_turns<T: 'static, C, R>(
     store: &mut StoreContext<'_, T>,
-    task: Option<TaskId>,
     condition: &mut C,
     yield_wake: &mut Option<YieldWake>,
     context: &mut Context<'_>,
@@ -178,13 +167,13 @@ where
                 if let Some(done) = condition(store, waker) {
                     return Poll::Ready(Step::Done(done));
                 }
-                let cause = store.internal().idle_cause(task);
+                let cause = store.internal().idle_cause();
                 // A thread suspended in the provider can never
                 // resume in an idle store, so it traps with the
                 // cause, and its failure reaches the call it
                 // belongs to as the same trap would with no
                 // provider.
-                match store.internal().fail_parked_threads(task) {
+                match store.internal().fail_parked_threads() {
                     Ok(true) => {
                         if let Some(done) = condition(store, waker) {
                             return Poll::Ready(Step::Done(done));
@@ -328,7 +317,6 @@ mod tests {
         let watched = log.clone();
         let mut driver = Box::pin(Driver::run(
             store.internal().context(),
-            None,
             move |_store, _waker| (!watched.lock().expect("log").is_empty()).then(|| Ok(())),
         ));
 
@@ -354,8 +342,7 @@ mod tests {
             .push_high_priority(Item::new(
                 ItemKind::TaskStart,
                 move |store: &mut StoreContext<'_, ()>| {
-                    let mut nested =
-                        Box::pin(Driver::run(store.internal().reborrow(), None, never));
+                    let mut nested = Box::pin(Driver::run(store.internal().reborrow(), never));
                     let outcome = poll_once(&mut nested, Waker::noop());
                     *recorded.lock().expect("record") = Some(cause(outcome));
                     Ok(())
@@ -374,7 +361,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_fails_a_driver_that_goes_idle_with_the_deadlock_cause() {
         let mut store = store();
-        let mut driver = Box::pin(Driver::run(store.internal().context(), None, never));
+        let mut driver = Box::pin(Driver::run(store.internal().context(), never));
 
         let outcome = poll_once(&mut driver, Waker::noop());
 
@@ -386,29 +373,33 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    fn it_fails_a_driver_whose_task_must_not_block_with_the_cannot_block_cause() {
+    fn it_names_the_cannot_block_cause_when_any_instance_of_an_idle_store_must_not_suspend() {
+        // The instance that must not suspend is not the one the
+        // driver's task runs in: the idle store's error reads every
+        // instance, as Wasmtime names it.
         let mut store = store();
-        let task = {
+        {
             let mut guard = store.internal().tables().lock().expect("tables");
-            let instance = guard.tasks.insert_instance();
+            let held = guard.tasks.insert_instance();
             guard
                 .tasks
-                .instance_mut(instance)
+                .instance_mut(held)
                 .expect("instance record")
                 .may_not_suspend = true;
+            let other = guard.tasks.insert_instance();
             guard
                 .tasks
-                .create_task(None, None, instance)
-                .expect("room under the record cap")
-        };
-        let mut driver = Box::pin(Driver::run(store.internal().context(), Some(task), never));
+                .create_task(None, None, other)
+                .expect("room under the record cap");
+        }
+        let mut driver = Box::pin(Driver::run(store.internal().context(), never));
 
         let outcome = poll_once(&mut driver, Waker::noop());
 
         assert_eq!(
             cause(outcome),
             Error::Scheduler(SchedulerCause::CannotBlock).to_string(),
-            "the task the driver waits on is one that must not block"
+            "an instance of the store must not suspend"
         );
     }
 
@@ -422,7 +413,7 @@ mod tests {
             .push_low_priority(marker(&log, "deferred"));
 
         {
-            let mut abandoned = Box::pin(Driver::run(store.internal().context(), None, never));
+            let mut abandoned = Box::pin(Driver::run(store.internal().context(), never));
             assert!(
                 poll_once(&mut abandoned, Waker::noop()).is_pending(),
                 "the turn yielded, so the driver returns pending"
@@ -436,7 +427,6 @@ mod tests {
         let watched = log.clone();
         let mut other = Box::pin(Driver::run(
             store.internal().context(),
-            None,
             move |_store, _waker| {
                 if watched.lock().expect("log").is_empty() {
                     None
@@ -474,7 +464,7 @@ mod tests {
             .push_low_priority(marker(&log, "deferred"));
         let wakes = Arc::new(Wakes::default());
         let waker = Waker::from(wakes.clone());
-        let mut driver = Box::pin(Driver::run(store.internal().context(), None, never));
+        let mut driver = Box::pin(Driver::run(store.internal().context(), never));
 
         let outcome = poll_once(&mut driver, &waker);
 
@@ -522,7 +512,7 @@ mod tests {
             .push_low_priority(marker(&log, "resumed"));
 
         let watched = log.clone();
-        Driver::run(store.internal().context(), None, move |_store, _waker| {
+        Driver::run(store.internal().context(), move |_store, _waker| {
             if watched.lock().expect("log").contains(&"resumed") {
                 Some(Ok(()))
             } else {

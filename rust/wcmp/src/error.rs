@@ -899,28 +899,32 @@ pub enum AbiCause {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum SchedulerCause {
-    /// A driver, or a suspension that fell back to a nested turn,
-    /// went idle with nothing ready, no host task pending, no
-    /// synchronous call left to return, no frame below it that
-    /// could still move, and its condition unmet. An idle store that
-    /// still holds such a call — an instance still carrying
-    /// may-not-suspend — fails with [`SchedulerCause::CannotBlock`]
-    /// instead. A block above a nested start whose caller would go
-    /// on fails with [`SchedulerCause::StackSwitchNeeded`], because
-    /// that caller could still move under a stack switch. The
-    /// message is
-    /// Wasmtime's deadlock trap, `Trap::AsyncDeadlock` in
-    /// `wasmtime-environ`'s `src/trap_encoding.rs`, so the
-    /// conformance corpus can match it by substring.
+    /// Nothing left can meet the condition of a wait.
+    ///
+    /// A driver fails with it when its store goes idle with the
+    /// condition unmet and no instance of the store must not suspend;
+    /// with one that must, it fails with
+    /// [`SchedulerCause::CannotBlock`]. A block that fell back to
+    /// nested turns fails with it when the turns went idle, no frame
+    /// below the block would go on or waits in an instance that must
+    /// not suspend, and no host task is pending. A block that spins
+    /// past the seam's budget fails with
+    /// [`SchedulerCause::StackSwitchNeeded`] instead, whatever the
+    /// store holds. The message is Wasmtime's deadlock trap,
+    /// `Trap::AsyncDeadlock` in `wasmtime-environ`'s
+    /// `src/trap_encoding.rs`, so the conformance corpus can match it
+    /// by substring.
     #[error("deadlock detected: event loop cannot make further progress")]
     Deadlock,
 
-    /// A task that must not block went idle while waiting, or a
-    /// task that may block found the store idle while an instance
-    /// still carried may-not-suspend — some synchronous call had not
-    /// returned. Wasmtime reports this trap in the second case too:
-    /// the callee blocking forever is that caller failing to return,
-    /// so the cause names the caller's rule. The message is
+    /// A synchronous call could not return. A block fails with it
+    /// when its own instance must not suspend and no other thread of
+    /// that instance is ready, or when a caller below it waits for it
+    /// in such an instance. A driver fails with it when its store goes
+    /// idle while any instance of the store must not suspend, which is
+    /// how Wasmtime names the error of an idle store: the callee
+    /// blocking for ever is that caller failing to return, so the
+    /// cause names the caller's rule. The message is
     /// Wasmtime's cannot-block trap, `Trap::CannotBlockSyncTask` in
     /// `wasmtime-environ`'s `src/trap_encoding.rs`, so the
     /// conformance corpus can match it by substring.
@@ -955,17 +959,26 @@ pub enum SchedulerCause {
     /// therefore comes from a store with no provider — a target
     /// without one, or an engine the host turned it off for — and
     /// from a thread that waits in a nested turn on another thread's
-    /// stack, past the seam's budget.
+    /// stack.
+    ///
+    /// It also ends a wait that spins: one whose nested turns the
+    /// store did not serve, a turn after a turn, past the seam's
+    /// budget. Such a wait is taken to be waiting for a guest frame
+    /// below it, which only a stack switch could reach, whatever else
+    /// the store holds; the cause then makes no claim about the
+    /// store. A wait for a condition, such as `waitable-set.wait`,
+    /// counts its own turns from its start, so the yields before it
+    /// never count toward it. A yield and a `thread.suspend` count the
+    /// store's run across frames, which the yields before them are
+    /// part of.
     ///
     /// Unlike [`Error::Unsupported`], the feature itself is
     /// supported here; only the capability to serve it is missing,
     /// and a host may want to branch on that distinction. A block
-    /// that the store went idle under with no such nested start
-    /// below it fails with [`SchedulerCause::Deadlock`] instead,
-    /// because nothing left could have met its condition — or with
-    /// [`SchedulerCause::CannotBlock`] when an instance still carried
-    /// may-not-suspend at idle, because a synchronous call had yet to
-    /// return.
+    /// whose turns went idle within the budget, with no frame below
+    /// it that would go on and no host task pending, fails with
+    /// [`SchedulerCause::Deadlock`] or [`SchedulerCause::CannotBlock`]
+    /// instead, by the rules those two state.
     #[error("blocking here requires a stack switch, but this thread cannot switch its stack")]
     StackSwitchNeeded,
 

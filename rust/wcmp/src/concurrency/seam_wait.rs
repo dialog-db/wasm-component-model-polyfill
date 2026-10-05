@@ -18,6 +18,7 @@ use crate::store::StoreContextInternalExt;
 use super::instance_id::InstanceId;
 use super::outcome::Outcome;
 use super::readiness::Readiness;
+use super::scheduler::SPIN_BUDGET;
 use super::subtask_id::SubtaskId;
 use super::suspend_seam::SuspendSeam;
 use super::thread_id::ThreadId;
@@ -61,6 +62,15 @@ pub struct SeamWait<T: 'static> {
     /// Where the last nested turn stands, when it stopped for the
     /// store to resume a thread.
     open: Open,
+    /// How many of the wait's own nested turns in a row the store did
+    /// not serve: the part of the seam's run of unserved turns this
+    /// wait ran itself, which the budget holds a wait for a condition
+    /// to. `None` for a suspension, which the budget holds to the
+    /// store's whole run, as it holds a yield: a thread that suspends
+    /// again and again in one frame after another is asking again for
+    /// what it was refused, and only the run across those frames shows
+    /// it.
+    own_turns: Option<u32>,
     /// The wait serves the stores of one host data type.
     store: PhantomData<fn(T)>,
 }
@@ -235,7 +245,14 @@ impl<T: 'static> SeamWait<T> {
             Turns::UntilHeld => {
                 let condition = self.condition;
                 let holds = move |store: &StoreContext<'_, T>| condition.holds(store);
-                Self::run_open(store, &holds, self.call, self.only, &mut self.open)
+                Self::run_open(
+                    store,
+                    &holds,
+                    self.call,
+                    self.only,
+                    &mut self.open,
+                    &mut self.own_turns,
+                )
             }
         }
     }
@@ -250,21 +267,24 @@ impl<T: 'static> SeamWait<T> {
         condition: &dyn Fn(&StoreContext<'_, T>) -> bool,
     ) -> Result<()> {
         let mut open = Open::Closed;
+        let mut own_turns = Some(0);
         let only = store.internal().must_not_block_instance();
-        Self::run_open(store, condition, None, only, &mut open)
+        Self::run_open(store, condition, None, only, &mut open, &mut own_turns)
             .unwrap_or(Err(Error::Scheduler(SchedulerCause::StackSwitchNeeded)))
     }
 
     /// The loop of a wait that runs nested turns until its condition
     /// holds, from where `open` says the last turn stands. It leaves
     /// `open` saying where the turn stopped when it stops for the
-    /// store, answering `None`.
+    /// store, answering `None`, and `own_turns` holding the wait's own
+    /// part of the seam's run when the budget holds the wait to it.
     fn run_open(
         store: &mut StoreContext<'_, T>,
         condition: &dyn Fn(&StoreContext<'_, T>) -> bool,
         call: Option<SubtaskId>,
         only: Option<InstanceId>,
         open: &mut Open,
+        own_turns: &mut Option<u32>,
     ) -> Option<Result<()>> {
         // The waker of the outer turn, so that a wake of a host task
         // polled here reaches the waker the executor already holds.
@@ -272,11 +292,11 @@ impl<T: 'static> SeamWait<T> {
         // nothing serves instead, as it does for a trampoline that
         // starts a host task outside a turn.
         let waker = store.internal().active_waker();
-        // Whether the seam's budget is what ended the loop. The
-        // budget is the run of turns the store did not serve, and
-        // it is kept on the seam rather than here, so that a thread
-        // which asks again and again in separate frames — a yield
-        // loop — is one run and not a fresh one every time.
+        // Whether the seam's budget is what ended the loop. The seam
+        // keeps the store's run of turns it did not serve, across
+        // frames, and the block is held to its own part of that run,
+        // which `own_turns` keeps across the times the wait stops for
+        // the store.
         let past_budget;
         loop {
             let outcome = match core::mem::replace(open, Open::Closed) {
@@ -308,7 +328,19 @@ impl<T: 'static> SeamWait<T> {
                     outcome
                 }
             };
-            let noted = SuspendSeam::note_turn(store);
+            // A wait for a condition is held to its own part of the
+            // run: its turns in a row that the store did not serve,
+            // counted from its start. The run of the store reaches
+            // further back, over the yields before the wait, which are
+            // no evidence about it.
+            let run = SuspendSeam::note_turn(store);
+            let noted = match own_turns {
+                Some(own) => {
+                    *own = if run == 0 { 0 } else { own.saturating_add(1) };
+                    *own > SPIN_BUDGET
+                }
+                None => run > SPIN_BUDGET,
+            };
             match outcome {
                 Outcome::Progress if !noted => continue,
                 // Nothing more can progress from inside the guest
@@ -377,7 +409,7 @@ impl<T: 'static> SeamWait<T> {
             }
         }
         self.open = Open::Closed;
-        if SuspendSeam::note_turn(store) {
+        if SuspendSeam::note_turn(store) > SPIN_BUDGET {
             return Some(Err(SuspendSeam::past_budget(store)));
         }
         Some(Ok(()))
@@ -433,6 +465,10 @@ impl<T: 'static> SeamWait<T> {
         turns: Turns,
         call: Option<SubtaskId>,
     ) -> Self {
+        let own_turns = match condition {
+            Condition::Holds(_) => Some(0),
+            Condition::Resumed(_) => None,
+        };
         Self {
             _record: record,
             condition,
@@ -440,6 +476,7 @@ impl<T: 'static> SeamWait<T> {
             call,
             only: store.internal().must_not_block_instance(),
             open: Open::Closed,
+            own_turns,
             store: PhantomData,
         }
     }

@@ -278,7 +278,11 @@ async fn instantiate_on(engine: Engine, binary: &[u8]) -> (Store<()>, Instance, 
 
 /// Instantiate `binary` in a fresh store with nothing registered.
 async fn instantiate_bare(binary: &[u8]) -> (Store<()>, Instance) {
-    let engine = fallback_engine();
+    instantiate_on_bare(fallback_engine(), binary).await
+}
+
+/// Instantiate `binary` on `engine` as [`instantiate_bare`] does.
+async fn instantiate_on_bare(engine: Engine, binary: &[u8]) -> (Store<()>, Instance) {
     let component = Component::new(&engine, binary)
         .await
         .expect("component parses");
@@ -713,6 +717,51 @@ async fn it_returns_zero_from_every_yield_of_a_host_call_that_gives_way_and_then
         answer, 7,
         "a guest loop that gives way inside the budget is served whether or \
          not a guest frame is below it"
+    );
+}
+
+/// [`HOST_CALL_GIVES_WAY`] with an `async`-typed export, whose task
+/// may block, so a provider runs its thread on a stack of its own.
+const ASYNC_TYPED_HOST_CALL_GIVES_WAY: &[u8] = component!(
+    r#"
+    (component
+      (core func $yield (canon thread.yield))
+      (core module $m
+        (import "" "thread.yield" (func $yield (result i32)))
+        (func (export "spin") (param $n i32) (result i32)
+          (local $i i32)
+          (block $done
+            (loop $again
+              (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+              (drop (call $yield))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $again)))
+          (i32.const 7)))
+      (core instance $i (instantiate $m (with "" (instance
+        (export "thread.yield" (func $yield))))))
+      (func (export "spin") async (param "n" u32) (result u32)
+        (canon lift (core func $i "spin"))))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_never_holds_a_thread_to_the_budget_under_a_provider() {
+    // Under a provider the export's thread runs on a stack of its own,
+    // so each yield suspends it and the store resumes it: the seam runs
+    // no nested turn and its budget, which a turn after a turn of the
+    // fallback counts, never comes into it. Many times the budget's
+    // worth of yields, which the fallback cuts short, all return zero.
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
+    if engine.suspend_provider() == SuspendProviderKind::None {
+        return;
+    }
+    let (mut store, instance) = instantiate_on_bare(engine, ASYNC_TYPED_HOST_CALL_GIVES_WAY).await;
+
+    let answer = call_u32(&mut store, &instance, "spin", &[Val::U32(1000)]).await;
+
+    assert_eq!(
+        answer, 7,
+        "the provider served every yield, so the export ran to its end"
     );
 }
 

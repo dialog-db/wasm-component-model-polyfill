@@ -19,7 +19,6 @@ use super::block_step::BlockStep;
 use super::pending_block::PendingBlock;
 use super::plan::Plan;
 use super::readiness::Readiness;
-use super::scheduler::SPIN_BUDGET;
 use super::seam_wait::SeamWait;
 use super::thread_id::ThreadId;
 
@@ -124,7 +123,10 @@ type Switches<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> bool;
 ///   the nested turn runs the item where it stands.
 /// - **The cause says why the wait cannot end.** When the nested
 ///   turns cannot progress and the condition is still unmet, the
-///   built-in traps with the first of five causes that holds:
+///   built-in traps with the first of five causes that holds. Rules
+///   2 and 3 are read together, in one walk of the frames below the
+///   blocked thread from the innermost out, and the frame nearer the
+///   block decides between them:
 ///
 ///   1. The cannot-block cause, when the blocked thread's own
 ///      instance must not suspend, which is the may-not-suspend flag
@@ -145,8 +147,8 @@ type Switches<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> bool;
 ///      that, a synchronous lower's caller would get control back
 ///      only to wait for the callee, which runs the ready work this
 ///      block already ran, so that caller can release nothing.
-///   3. The cannot-block cause, when no caller below goes on and a
-///      caller below waits for the blocked callee, through a
+///   3. The cannot-block cause, when a caller below waits for the
+///      blocked callee, through a
 ///      synchronous lower or a fused adapter's direct call, in an
 ///      instance that must not suspend, with no other thread of that
 ///      instance ready. That caller's wait is a block of its own
@@ -187,7 +189,14 @@ type Switches<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> bool;
 ///   but a resumption after a yield, against a store with no host
 ///   future that can still resolve. A turn that ran any other item,
 ///   or that ran against a store whose host future wants another
-///   poll, starts the count over. Once the run passes
+///   poll, starts the count over. A yield and a suspension fail once
+///   the store's run passes the budget, since a thread that asks
+///   again in one frame after another shows its spin only across
+///   those frames. A wait for a condition fails once its own part of
+///   the run does, the turns it ran itself in a row, so the yields a
+///   thread took before it waited are not the wait's to count: a
+///   guest that yields up to the budget and then blocks on an idle
+///   store gets the cause the store's other rules name. Once the run passes
 ///   [`SPIN_BUDGET`] the seam gives up and the call the suspended
 ///   thread is inside fails with
 ///   [`SchedulerCause::StackSwitchNeeded`], because the one thread
@@ -261,6 +270,8 @@ type Switches<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> bool;
 /// separate, and they compose: a body's closure that reaches a
 /// blocking built-in gets a nested turn, and an item that nested
 /// turn runs which reaches the seam again gets one of its own.
+///
+/// [`SPIN_BUDGET`]: super::scheduler::SPIN_BUDGET
 pub struct SuspendSeam<T: 'static> {
     unserved_turns: u32,
     served_mark: (u64, u64),
@@ -531,8 +542,17 @@ impl<T: 'static> SuspendSeam<T> {
                 .internal()
                 .scheduler_mut()
                 .begin_block(thread, PendingBlock::new(readiness, previous, step));
+            // A switcher that leaves the rest of its block as a plan is
+            // still a switcher its frame takes back, recorded at the
+            // frame's level of deferred work as the other branch records
+            // it.
+            let mark = store.internal().scheduler().switcher_mark();
+            if switcher {
+                store.internal().scheduler_mut().push_switcher(thread);
+            }
             if let Err(error) = store.internal().leave_plan(plan) {
                 store.internal().scheduler_mut().end_block(thread);
+                store.internal().scheduler_mut().pop_switcher_above(mark);
                 return Err(error.into());
             }
             return Ok(false);
@@ -647,6 +667,8 @@ impl<T: 'static> SuspendSeam<T> {
     /// answers `Ok(Some(()))`, which is what makes the built-in return
     /// zero whenever it returns at all. It answers `Ok(None)` when it
     /// left the rest of the yield to the scheduler as a plan.
+    ///
+    /// [`SPIN_BUDGET`]: super::scheduler::SPIN_BUDGET
     pub fn give_way(store: &mut StoreContext<'_, T>) -> Result<Option<()>> {
         let wait = SeamWait::give_way(store)?;
         Self::waited(store, wait)
@@ -803,11 +825,16 @@ impl<T: 'static> SuspendSeam<T> {
     ///
     /// What the store ran is measured from the last turn the seam
     /// noted, not from the top of this suspension. The run is
-    /// therefore one run across every suspension of the store: a
-    /// thread that gives way in one frame after another builds a
-    /// single run, and whatever the store ran in between — a
-    /// driver's turn included — ends it.
-    pub fn note_turn(store: &mut StoreContext<'_, T>) -> bool {
+    /// therefore one run across every yield of the store: a thread
+    /// that gives way in one frame after another builds a single run,
+    /// and whatever the store ran in between — a driver's turn
+    /// included — ends it. The answer is the length of the run, zero
+    /// when the store served this turn. A block holds its own turns to
+    /// the budget as well, counted from its start: see
+    /// [`SeamWait`](super::SeamWait).
+    ///
+    /// [`SPIN_BUDGET`]: super::scheduler::SPIN_BUDGET
+    pub fn note_turn(store: &mut StoreContext<'_, T>) -> u32 {
         let items_run = store.internal().scheduler().items_run();
         let resumptions = store.internal().scheduler().resumptions();
         let pending = store.internal().scheduler().host_future_pending();
@@ -820,7 +847,7 @@ impl<T: 'static> SuspendSeam<T> {
         } else {
             seam.unserved_turns.saturating_add(1)
         };
-        seam.unserved_turns > SPIN_BUDGET
+        seam.unserved_turns
     }
 
     /// The failure a suspension ends with once the run of turns the
@@ -832,6 +859,8 @@ impl<T: 'static> SuspendSeam<T> {
     /// say, is a run of its own, and would otherwise read the
     /// finished run as its own and fail with the stack-switch cause
     /// at its first turn, whatever the store's other rules would name.
+    ///
+    /// [`SPIN_BUDGET`]: super::scheduler::SPIN_BUDGET
     pub fn past_budget(store: &mut StoreContext<'_, T>) -> Error {
         store
             .internal()
@@ -879,6 +908,7 @@ mod tests {
     use super::super::item_kind::ItemKind;
     use super::super::lower_kind::LowerKind;
     use super::super::outcome::Outcome;
+    use super::super::scheduler::SPIN_BUDGET;
     use super::super::subtask_id::SubtaskId;
 
     use super::*;
@@ -1280,7 +1310,6 @@ mod tests {
         let watched = slot.clone();
         let mut driver = Box::pin(Driver::run(
             store.internal().reborrow(),
-            None,
             move |_store, _waker| watched.lock().expect("slot").is_some().then(|| Ok(())),
         ));
         let done = poll_once(&mut driver, &outer);
@@ -1554,6 +1583,68 @@ mod tests {
     }
 
     #[wcmp_macros::test]
+    fn it_traps_with_the_deadlock_cause_while_only_another_instance_must_not_suspend() {
+        let mut owner = store();
+        let mut store = owner.internal().context();
+        // Instance A has a synchronous call in progress, and the block
+        // is in instance B, which may suspend. The cannot-block rule
+        // reads the blocked thread's own instance alone.
+        {
+            let mut guard = store.internal().tables().lock().expect("tables");
+            let other = guard.tasks.insert_instance();
+            guard
+                .tasks
+                .instance_mut(other)
+                .expect("instance record")
+                .may_not_suspend = true;
+        }
+        current_task(&store, false);
+
+        let outcome = store
+            .internal()
+            .run_in_turn(Waker::noop(), |store| {
+                SuspendSeam::suspend(store, |_| false)
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            Error::Scheduler(SchedulerCause::Deadlock).to_string(),
+            "a synchronous call in another instance of the store does not \
+             make this block fail with the cannot-block cause"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_reads_the_frames_below_a_block_innermost_first() {
+        let mut owner = store();
+        let mut store = owner.internal().context();
+        // A lowers C asynchronously, C calls the sync-typed C2
+        // directly, C2 lowers D synchronously, and D blocks. C2 waits
+        // for D right below the block, in an instance that must not
+        // suspend, and traps before control would ever return to A's
+        // asynchronous lower further down.
+        current_task(&store, false);
+        let _ = nested_start(&store, LowerKind::Async, false);
+        current_task(&store, true);
+        let _ = nested_start(&store, LowerKind::Sync, false);
+
+        let outcome = store
+            .internal()
+            .run_in_turn(Waker::noop(), |store| {
+                SuspendSeam::suspend(store, |_| false)
+            })
+            .expect("the outer turn runs");
+
+        assert_eq!(
+            cause(outcome),
+            Error::Scheduler(SchedulerCause::CannotBlock).to_string(),
+            "the sync-typed caller nearer the block decides, as the \
+             reference and a provider give"
+        );
+    }
+
+    #[wcmp_macros::test]
     fn it_traps_with_the_cannot_block_cause_above_a_direct_call_whose_caller_must_not_block() {
         let mut owner = store();
         let mut store = owner.internal().context();
@@ -1639,12 +1730,12 @@ mod tests {
         let mut owner = store();
         let mut store = owner.internal().context();
         current_task(&store, false);
-        let _ = nested_start(&store, LowerKind::Async, false);
+        let subtask = nested_start(&store, LowerKind::Async, false);
         {
             let mut guard = store.internal().tables().lock().expect("tables");
             let callee = guard.tasks.current_task().expect("the callee's task");
             guard.leave_task_scope(callee);
-            guard.tasks.end_nested_start();
+            guard.tasks.end_nested_start(subtask);
         }
 
         let outcome = store
@@ -1724,7 +1815,6 @@ mod tests {
         let watched = seen.clone();
         let mut driver = Box::pin(Driver::run(
             store.internal().reborrow(),
-            None,
             move |_store, _waker| watched.lock().expect("record").is_some().then(|| Ok(())),
         ));
         let done = poll_once(&mut driver, &outer);
@@ -1852,7 +1942,6 @@ mod tests {
 
         let mut driver = Box::pin(Driver::run(
             store.internal().reborrow(),
-            None,
             |_store: &mut StoreContext<'_, ()>, _waker: &Waker| -> Option<Result<()>> { None },
         ));
         let outcome = poll_once(&mut driver, Waker::noop());
@@ -3124,6 +3213,46 @@ mod tests {
             "the store held nothing at every one of them and ran nothing \
              between them, so the thread is waiting on a guest frame on the \
              real stack and only a stack switch would reach it"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_names_a_block_after_a_run_of_give_ways_by_the_stores_own_rules() {
+        let mut owner = store();
+        let mut store = owner.internal().context();
+        current_task(&store, false);
+
+        assert_eq!(
+            cause(gives_way(&mut store, SPIN_BUDGET)),
+            "the seam returned with the condition held",
+            "the yields stay inside the budget"
+        );
+        assert_eq!(
+            cause(SuspendSeam::suspend(&mut store, |_| false)),
+            Error::Scheduler(SchedulerCause::Deadlock).to_string(),
+            "a block starts a run of its own, so the yields before it do not \
+             decide its cause: the store is idle, and nothing can meet the \
+             condition"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_counts_the_give_ways_of_two_tasks_as_one_run() {
+        let mut owner = store();
+        let mut store = owner.internal().context();
+        let half = SPIN_BUDGET / 2;
+
+        current_task(&store, false);
+        assert_eq!(
+            cause(gives_way(&mut store, half)),
+            "the seam returned with the condition held"
+        );
+        current_task(&store, false);
+        assert_eq!(
+            cause(gives_way(&mut store, SPIN_BUDGET + 1 - half)),
+            Error::Scheduler(SchedulerCause::StackSwitchNeeded).to_string(),
+            "the run is the store's, not a thread's: two tasks that take turns \
+             to give way against a store that holds nothing build one run"
         );
     }
 

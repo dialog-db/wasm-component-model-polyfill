@@ -302,6 +302,124 @@ async fn it_fails_a_callee_that_returned_to_a_sync_lower_and_waits_on_its_caller
     );
 }
 
+/// A caller that lowers the callee's `boom` asynchronously, so a
+/// start intrinsic runs the callee from inside its own frame, and a
+/// callee that calls the host function `panic` from its first core
+/// function.
+#[cfg(not(target_arch = "wasm32"))]
+const CALLEE_PANICS: &[u8] = component!(
+    r#"
+    (component
+      (import "panic" (func $panic))
+      (component $callee
+        (import "panic" (func $panic))
+        (core func $panic (canon lower (func $panic)))
+        (core module $m
+          (import "" "panic" (func $panic))
+          (func (export "boom") (result i32) (call $panic) (i32.const 0))
+          (func (export "cb") (param i32 i32 i32) (result i32) unreachable))
+        (core instance $i (instantiate $m (with "" (instance
+          (export "panic" (func $panic))))))
+        (func (export "boom") async
+          (canon lift (core func $i "boom") async (callback (core func $i "cb")))))
+      (component $caller
+        (import "boom" (func $boom async))
+        (core func $boom (canon lower (func $boom) async))
+        (core module $m
+          (import "" "boom" (func $boom (result i32)))
+          (func (export "go") (result i32) (drop (call $boom)) (i32.const 7)))
+        (core instance $i (instantiate $m (with "" (instance
+          (export "boom" (func $boom))))))
+        (func (export "go") async (result u32) (canon lift (core func $i "go"))))
+      (instance $a (instantiate $callee (with "panic" (func $panic))))
+      (instance $b (instantiate $caller (with "boom" (func $a "boom"))))
+      (export "go" (func $b "go")))
+    "#
+);
+
+/// A panic is an abort in the browser, so only a native build can
+/// unwind one, and only over Wasmtime: Wasmi does not unwind a host
+/// function's panic through guest code, so the test names Wasmtime
+/// whatever backend its lane runs.
+#[cfg(not(target_arch = "wasm32"))]
+#[wcmp_macros::test]
+async fn it_leaves_no_nested_start_mark_when_the_callee_a_start_ran_panics() {
+    use core::future::Future;
+    use core::task::{Context, Waker};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex, PoisonError};
+
+    use crate::HostCall;
+    use crate::concurrency::Scope;
+    use crate::resource::HandleTables;
+    use crate::store::StoreContextInternalExt;
+
+    /// How many nested-start marks the stack of scopes holds.
+    fn nested_start_marks(tables: &Mutex<HandleTables>) -> usize {
+        tables
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .tasks
+            .scopes()
+            .iter()
+            .filter(|scope| matches!(scope, Scope::NestedStart { .. }))
+            .count()
+    }
+
+    let mut config = EngineConfig::new();
+    config.suspend_provider(false);
+    let engine = Engine::with_backend(crate::runtime_layer::test_wasmtime_backend())
+        .and_then(|engine| engine.with_config(&config))
+        .expect("engine");
+    let component = Component::new(&engine, CALLEE_PANICS)
+        .await
+        .expect("component parses");
+    // How many nested-start marks were on the stack while the callee
+    // ran, read by the host function before it panics.
+    let marked = Arc::new(AtomicUsize::new(0));
+    let seen = marked.clone();
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker
+        .root()
+        .func_wrap(
+            "panic",
+            move |mut call: HostCall<'_, ()>, (): ()| -> crate::Result<()> {
+                let marks = nested_start_marks(call.store().internal_ref().tables());
+                seen.store(marks, Ordering::SeqCst);
+                panic!("the host function panics")
+            },
+        )
+        .expect("the registration");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    let go = instance.get_func("go").expect("the caller's export");
+
+    // With no provider the whole call runs in its first poll, so the
+    // panic unwinds out of that poll.
+    let panicked = catch_unwind(AssertUnwindSafe(|| {
+        let mut call = Box::pin(go.call(&mut store, &[]));
+        let _ = call.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+    }));
+    assert!(
+        panicked.is_err(),
+        "the host function's panic unwound the call"
+    );
+    assert_eq!(
+        marked.load(Ordering::SeqCst),
+        1,
+        "the start intrinsic marked the stack while its callee ran"
+    );
+    assert_eq!(
+        nested_start_marks(store.internal_ref().tables()),
+        0,
+        "the start took its mark off as the panic unwound"
+    );
+}
+
 /// Whether the engine runs guest threads through a provider on this
 /// target.
 fn has_provider() -> bool {

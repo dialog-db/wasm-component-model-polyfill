@@ -11,7 +11,7 @@ use core::task::Waker;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::concurrency::{InstanceId, Scheduler, StoreProvider, TaskId, TurnGuard};
+use crate::concurrency::{InstanceId, Scheduler, StoreProvider, TurnGuard};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
 use crate::internal::ErrorInternal;
@@ -505,27 +505,36 @@ impl<T: 'static> StoreData<T> {
             .unwrap_or_else(|| Waker::noop().clone())
     }
 
-    /// Why a driver that went idle failed: the cannot-block cause
-    /// when the task it waits on is one that must not block, and the
-    /// deadlock cause otherwise.
+    /// Why a driver whose store went idle with work left failed: the
+    /// cannot-block cause when any instance of the store must not
+    /// suspend, and the deadlock cause when none must.
     ///
-    /// The task the driver waits on is the only call that can be in
-    /// flight here. A synchronous call between two components holds a
-    /// native frame for its whole length, and a driver is polled with
-    /// no such frame under it, so no other instance can be inside a
-    /// call that must return. A thread suspended in the provider
-    /// holds none either: the callee of such a call runs on its
-    /// caller's stack and must not block, so it waits in a nested turn
-    /// and never suspends the stack it runs on. The nested turn of the
-    /// suspend seam is the path that runs under such a call, and
-    /// [`suspend_cause`](Self::suspend_cause) is what answers there.
+    /// This is the one rule that reads every instance of the store
+    /// rather than the blocked thread's own, and it is how Wasmtime
+    /// names the error of an idle store (`any_may_not_suspend` in
+    /// `concurrent.rs`): an instance that must not suspend has a
+    /// synchronous call in progress that the idle store can no longer
+    /// return from, and that call failing to return is what went
+    /// wrong. The call need not be the driver's own. A thread that
+    /// must not block can suspend as a switcher, so an idle store can
+    /// hold another instance's synchronous call as well.
     ///
-    /// A store that goes idle while a thread is suspended in the
-    /// provider fails the driver with the deadlock cause: nothing left
-    /// in the store can resume the thread.
-    /// Workspace-internal.
-    pub fn idle_cause(&self, task: Option<TaskId>) -> SchedulerCause {
-        if self.must_not_block(task) {
+    /// A thread suspended in the provider that the idle store can no
+    /// longer resume fails with the same cause, which reaches the call
+    /// it belongs to. Workspace-internal.
+    pub fn idle_cause(&self) -> SchedulerCause {
+        let any_may_not_suspend = self
+            .tables
+            .lock()
+            .map(|guard| {
+                guard
+                    .tasks
+                    .instances()
+                    .iter()
+                    .any(|record| record.may_not_suspend)
+            })
+            .unwrap_or(false);
+        if any_may_not_suspend {
             SchedulerCause::CannotBlock
         } else {
             SchedulerCause::Deadlock
@@ -585,34 +594,28 @@ impl<T: 'static> StoreData<T> {
     }
 
     /// The cause of a failed block once the blocked thread's own
-    /// instance does not give the cannot-block cause. Four rules, in
-    /// this order.
+    /// instance does not give the cannot-block cause. The other four
+    /// rules: two that frames below the block decide, then two that
+    /// the store decides.
     ///
-    /// A nested start between the blocked thread and the base of the
-    /// real stack gives the stack-switch cause. A start intrinsic
-    /// ran an `async`-typed callee from inside its own frame, and
-    /// the blocked thread runs above that frame. The reference runs
-    /// the callee on a stack of its own and returns to the
-    /// trampoline when it blocks, so the caller that started the
-    /// callee would go on and could still meet the condition. The
-    /// store cannot see that work, because it is guest code on the
-    /// real stack rather than an item or a host task, so an idle
-    /// store here does not mean nothing can move. Only the target's
-    /// capability is missing. Wasmtime runs such a callee on a
-    /// fiber of its own, and the same shapes do not fail there.
-    ///
-    /// The rule reads the nested starts whose caller would go on: an
-    /// asynchronous lower's, and a synchronous lower's once the
-    /// callee has resolved and the lower would return its result.
-    /// Before that, a synchronous lower's caller would get control
-    /// back only to wait for the callee's result.
-    ///
-    /// That wait is the next rule. A caller below that waits for the
-    /// blocked callee, through a synchronous lower or a fused adapter's
-    /// direct call, in an instance that must not suspend, with no other
-    /// thread of that instance ready, gives the cannot-block cause:
-    /// its wait is a block of its own instance, which the reference's
-    /// `canon_lift` traps.
+    /// A frame below the blocked thread decides first, read in one
+    /// walk from the innermost frame out
+    /// ([`TaskTables::cause_below`](crate::concurrency::TaskTables::cause_below)).
+    /// A frame that would go on under a stack switch gives the
+    /// stack-switch cause: a start intrinsic ran a callee from inside
+    /// its own frame and the caller that started it would go on once
+    /// control returned to it, or a thread built-in switched to a
+    /// thread that is now running above a thread that is not
+    /// suspended. The store cannot see that work, because it is guest
+    /// code on the real stack rather than an item or a host task, so
+    /// an idle store here does not mean nothing can move. Only the
+    /// target's capability is missing. Wasmtime runs such a callee on
+    /// a fiber of its own, and the same shapes do not fail there. A
+    /// caller below that waits for the blocked callee in an instance
+    /// that must not suspend, with no other thread of that instance
+    /// ready, gives the cannot-block cause: its wait is a block of its
+    /// own instance, which the reference's `canon_lift` traps. Of the
+    /// two, the frame nearer the block counts.
     ///
     /// A host task that has not resolved gives the stack-switch
     /// cause, because the reference permits that block and only the
@@ -621,32 +624,23 @@ impl<T: 'static> StoreData<T> {
     /// synchronous lower counts through them: the lower parks its
     /// future there for as long as the call waits on it.
     ///
-    /// Otherwise the store is idle and no frame below the block can
-    /// move: nothing left can ever meet the condition. An item a turn
-    /// is still holding back does not change that answer: a nested
-    /// turn runs every item it is allowed to run, so an item left over
-    /// is one no turn of this store can release. That gives the deadlock
-    /// cause. A synchronous call into an instance that no caller below
-    /// waits in does not change it.
+    /// Otherwise the deadlock cause: no frame below the block would go
+    /// on, and the store holds nothing that can meet the condition. An
+    /// item a turn is still holding back does not change that answer:
+    /// a nested turn runs every item it is allowed to run, so an item
+    /// left over is one no turn of this store can release. A
+    /// synchronous call into an instance that no caller below waits in
+    /// does not change it either.
     fn cause_past_cannot_block(&self) -> SchedulerCause {
-        let (goes_on, cannot_block) = self
+        let below = self
             .tables
             .lock()
-            .map(|guard| {
-                (
-                    guard.tasks.caller_below_goes_on(),
-                    guard.tasks.caller_below_cannot_block(),
-                )
-            })
-            .unwrap_or((false, false));
-        if goes_on {
-            SchedulerCause::StackSwitchNeeded
-        } else if cannot_block {
-            SchedulerCause::CannotBlock
-        } else if self.host_future_pending() {
-            SchedulerCause::StackSwitchNeeded
-        } else {
-            SchedulerCause::Deadlock
+            .ok()
+            .and_then(|guard| guard.tasks.cause_below());
+        match below {
+            Some(cause) => cause,
+            None if self.host_future_pending() => SchedulerCause::StackSwitchNeeded,
+            None => SchedulerCause::Deadlock,
         }
     }
 
@@ -675,20 +669,5 @@ impl<T: 'static> StoreData<T> {
             .instance(instance)?
             .may_not_suspend
             .then_some(instance)
-    }
-
-    /// Whether `task` runs in an instance that forbids its threads
-    /// to suspend. A store whose tables are unreachable answers
-    /// `false`, so a poisoned lock never turns a deadlock into a
-    /// cannot-block.
-    fn must_not_block(&self, task: Option<TaskId>) -> bool {
-        let Ok(guard) = self.tables.lock() else {
-            return false;
-        };
-        task.and_then(|task| guard.tasks.task(task))
-            .and_then(|record| record.instance)
-            .and_then(|instance| guard.tasks.instance(instance))
-            .map(|record| record.may_not_suspend)
-            .unwrap_or(false)
     }
 }

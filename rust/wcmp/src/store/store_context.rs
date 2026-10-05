@@ -505,8 +505,8 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// thing: the suspend seam's own documentation sets the two side
     /// by side.
     ///
-    /// Four rules hold for the fallback, and two of them are this
-    /// turn's.
+    /// The suspend seam states the five rules that hold for the
+    /// fallback, and two of them are this turn's.
     ///
     /// A nested turn runs a resumption after a yield itself, once
     /// it has run every other ready item and polled every woken
@@ -572,8 +572,8 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     }
 
     /// Why a driver that went idle failed. Workspace-internal.
-    fn idle_cause(&self, task: Option<TaskId>) -> SchedulerCause {
-        self.store_data().idle_cause(task)
+    fn idle_cause(&self) -> SchedulerCause {
+        self.store_data().idle_cause()
     }
 
     /// Why a nested turn that went idle with its condition unmet
@@ -1928,7 +1928,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             None => false,
         };
         let deferred = self.scheduler_mut().deferred_mut();
-        plan.ends_nested_start = core::mem::take(&mut deferred.ends_nested_start);
+        plan.ends_nested_start = deferred.ends_nested_start.take();
         plan.restores_may_not_suspend = deferred.nested_may_not_suspend.take();
         plan.ends_thread_switch = core::mem::take(&mut deferred.ends_thread_switch);
         plan.note_owed = core::mem::take(&mut deferred.note_owed);
@@ -1949,19 +1949,19 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     }
 
     /// Take off the marks a trampoline that left a plan put on the
-    /// stack: its nested-start mark and its thread-switch mark, as
-    /// `nested_start` and `thread_switch` say, and put back the
+    /// stack: the nested-start mark of the subtask `nested_start` names
+    /// and its thread-switch mark, as `thread_switch` says, and put back the
     /// may-not-suspend flag the nested start cleared, as
     /// `may_not_suspend` says.
     fn end_marks(
         &mut self,
-        nested_start: bool,
+        nested_start: Option<SubtaskId>,
         may_not_suspend: Option<(InstanceId, bool)>,
         thread_switch: bool,
     ) -> Result<()> {
         let mut guard = self.lock_tables()?;
-        if nested_start {
-            guard.tasks.end_nested_start();
+        if let Some(subtask) = nested_start {
+            guard.tasks.end_nested_start(subtask);
         }
         if let Some((instance, old)) = may_not_suspend {
             guard.tasks.set_may_not_suspend(instance, old);
@@ -2163,7 +2163,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             let plan = self.innermost_plan()?;
             (
                 core::mem::take(&mut plan.note_owed),
-                core::mem::take(&mut plan.ends_nested_start),
+                plan.ends_nested_start.take(),
                 plan.restores_may_not_suspend.take(),
                 core::mem::take(&mut plan.ends_thread_switch),
                 plan.then_wait.take(),
@@ -2435,10 +2435,10 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     }
 
     /// Fail every thread suspended in the provider with the cause an
-    /// idle store gives for `task`, the task the driver waits on, as
-    /// though the wait of each had failed there, and answer whether
-    /// any was suspended. A driver does this when its store goes idle:
-    /// nothing left in the store can resume those threads.
+    /// idle store gives, as though the wait of each had failed there,
+    /// and answer whether any was suspended. A driver does this when
+    /// its store goes idle: nothing left in the store can resume those
+    /// threads.
     ///
     /// The threads fail in the order they last suspended, so a thread
     /// a nested start began fails before the thread that began it, as
@@ -2459,7 +2459,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     ///
     /// A finish that fails itself fails the driver: the first such
     /// failure is the answer. Workspace-internal.
-    fn fail_parked_threads(&mut self, task: Option<TaskId>) -> Result<bool> {
+    fn fail_parked_threads(&mut self) -> Result<bool> {
         let threads = self.scheduler().parked_in_order();
         if threads.is_empty() {
             return Ok(false);
@@ -2483,7 +2483,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             // cause, which gives back what its first part took and
             // answers the trap the guest sees. A thread that waits in
             // none traps with the cause itself.
-            let cause = self.idle_cause(task);
+            let cause = self.idle_cause();
             let trap = match block {
                 Some(block) => {
                     self.lock_tables()?
@@ -2491,7 +2491,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                         .stop_waiting(thread, block.previous);
                     match block.step.finish(self, Err(Error::Scheduler(cause))) {
                         Err(trap) => call_failure(trap),
-                        Ok(_) => Error::Scheduler(self.idle_cause(task)),
+                        Ok(_) => Error::Scheduler(self.idle_cause()),
                     }
                 }
                 None => Error::Scheduler(cause),
@@ -3584,11 +3584,9 @@ mod tests {
             !store.internal().turn_in_flight(),
             "the turn the panic unwound out of is over"
         );
-        let mut driver = Box::pin(Driver::run(
-            store.internal().context(),
-            None,
-            |_store, _waker| Some(Ok(())),
-        ));
+        let mut driver = Box::pin(Driver::run(store.internal().context(), |_store, _waker| {
+            Some(Ok(()))
+        }));
         assert!(
             matches!(poll_once(&mut driver, Waker::noop()), Poll::Ready(Ok(()))),
             "a driver entered after the panic is not refused"
@@ -3621,11 +3619,9 @@ mod tests {
             "the turn's guard took the tables back from the poison the panic \
              left, so the store is not refusing every later reader"
         );
-        let mut driver = Box::pin(Driver::run(
-            store.internal().context(),
-            None,
-            |_store, _waker| Some(Ok(())),
-        ));
+        let mut driver = Box::pin(Driver::run(store.internal().context(), |_store, _waker| {
+            Some(Ok(()))
+        }));
         assert!(
             matches!(poll_once(&mut driver, Waker::noop()), Poll::Ready(Ok(()))),
             "a driver entered after the panic is not refused"
@@ -3685,11 +3681,9 @@ mod tests {
         // here before anything that could clear it.
         poison_the_tables(&store);
 
-        let mut driver = Box::pin(Driver::run(
-            store.internal().context(),
-            None,
-            |_store, _waker| Some(Ok(())),
-        ));
+        let mut driver = Box::pin(Driver::run(store.internal().context(), |_store, _waker| {
+            Some(Ok(()))
+        }));
         assert!(
             matches!(poll_once(&mut driver, Waker::noop()), Poll::Ready(Ok(()))),
             "the driver read the store's turn state past the poison, so a \
@@ -3758,7 +3752,7 @@ mod tests {
         {
             // A driver the item gave way to, dropped before the item
             // ran. Dropping it cancels nothing.
-            let mut abandoned = Box::pin(Driver::run(store.internal().context(), None, never));
+            let mut abandoned = Box::pin(Driver::run(store.internal().context(), never));
             assert!(
                 poll_once(&mut abandoned, Waker::noop()).is_pending(),
                 "the turn gave way, so the driver returns pending"
@@ -4033,7 +4027,7 @@ mod tests {
         );
 
         {
-            let mut driver = Box::pin(Driver::run(store.internal().context(), None, never));
+            let mut driver = Box::pin(Driver::run(store.internal().context(), never));
             assert!(
                 poll_once(&mut driver, &driver_waker).is_pending(),
                 "the host task is still pending, so the driver waits on it"
@@ -4464,7 +4458,6 @@ mod tests {
         let watched = log.clone();
         let mut driver = Box::pin(Driver::run(
             store.internal().context(),
-            None,
             move |_store, _waker| {
                 watched
                     .lock()

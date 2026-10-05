@@ -61,6 +61,14 @@ pub fn test_backend() -> impl Backend {
     test_backends::backend()
 }
 
+/// The Wasmtime backend, whatever backend the lane's tests run on,
+/// for a native test that needs Wasmtime's own behavior: it unwinds a
+/// host function's panic through guest code, which Wasmi does not.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub fn test_wasmtime_backend() -> impl Backend {
+    test_backends::Kind::Wasmtime.backend()
+}
+
 /// The backend of the crate's tests where it declares `capability`,
 /// and natively Wasmtime where it does not, for a test of a feature
 /// that needs the capability.

@@ -314,11 +314,9 @@ mod tests {
             !store.internal().turn_in_flight(),
             "the turn the closure ran inside is over"
         );
-        let mut driver = Box::pin(Driver::run(
-            store.internal().context(),
-            None,
-            |_store, _waker| Some(Ok(())),
-        ));
+        let mut driver = Box::pin(Driver::run(store.internal().context(), |_store, _waker| {
+            Some(Ok(()))
+        }));
         assert!(
             matches!(poll_once(&mut driver, Waker::noop()), Poll::Ready(Ok(()))),
             "a driver entered after the panic is not refused"

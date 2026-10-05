@@ -221,9 +221,9 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
         self.context.active_waker()
     }
 
-    /// The cause an idle store reports for `task`.
-    pub fn idle_cause(self, task: Option<TaskId>) -> SchedulerCause {
-        self.context.idle_cause(task)
+    /// The cause an idle store reports.
+    pub fn idle_cause(self) -> SchedulerCause {
+        self.context.idle_cause()
     }
 
     /// The cause a refused suspend reports.
@@ -321,9 +321,9 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
     }
 
     /// Fail every thread suspended in the provider with the cause an
-    /// idle store gives for `task`.
-    pub fn fail_parked_threads(self, task: Option<TaskId>) -> Result<bool> {
-        self.context.fail_parked_threads(task)
+    /// idle store gives.
+    pub fn fail_parked_threads(self) -> Result<bool> {
+        self.context.fail_parked_threads()
     }
 
     /// The provider the store keeps, when the engine selected one.

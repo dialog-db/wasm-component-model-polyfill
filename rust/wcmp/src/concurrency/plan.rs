@@ -10,6 +10,7 @@
 use super::instance_id::InstanceId;
 use super::readiness::Readiness;
 use super::seam_wait::SeamWait;
+use super::subtask_id::SubtaskId;
 use super::thread_id::ThreadId;
 
 /// Work a trampoline left for the scheduler, under a provider that
@@ -62,9 +63,10 @@ pub struct Plan<T: 'static> {
     /// when the condition holds, and otherwise waits as any suspended
     /// thread does.
     pub suspends: bool,
-    /// Whether the nested-start mark the trampoline put on the stack
-    /// comes off once the work the trampoline left is done.
-    pub ends_nested_start: bool,
+    /// The subtask of the nested-start mark the trampoline put on the
+    /// stack, when that mark comes off once the work the trampoline
+    /// left is done.
+    pub ends_nested_start: Option<SubtaskId>,
     /// The instance whose may-not-suspend flag goes back to the value
     /// here once the nested-start mark comes off.
     pub restores_may_not_suspend: Option<(InstanceId, bool)>,
@@ -88,7 +90,7 @@ impl<T: 'static> Plan<T> {
             wait: None,
             then_wait: None,
             suspends: false,
-            ends_nested_start: false,
+            ends_nested_start: None,
             restores_may_not_suspend: None,
             ends_thread_switch: false,
             note_owed: false,

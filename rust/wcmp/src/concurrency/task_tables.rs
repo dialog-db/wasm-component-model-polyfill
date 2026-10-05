@@ -679,16 +679,18 @@ impl TaskTables {
         self.scopes.push(Scope::NestedStart { subtask, lower });
     }
 
-    /// Take off the innermost nested-start mark. The mark is found
-    /// rather than popped, so that a scope a failed call stranded
-    /// above it stays for the unwind that owns it. A mark an unwind
-    /// already discarded leaves nothing to take.
-    pub fn end_nested_start(&mut self) {
-        if let Some(at) = self
-            .scopes
-            .iter()
-            .rposition(|scope| matches!(scope, Scope::NestedStart { .. }))
-        {
+    /// Take off the nested-start mark of `subtask`, which the frame
+    /// that started the subtask's callee put on the stack. The mark is
+    /// found by its subtask rather than popped, so that a scope a
+    /// failed call stranded above it stays for the unwind that owns
+    /// it, and so that a frame can only ever take off its own mark:
+    /// one that would take another frame's finds none of its own and
+    /// takes nothing. A mark an unwind already discarded leaves
+    /// nothing to take.
+    pub fn end_nested_start(&mut self, subtask: SubtaskId) {
+        if let Some(at) = self.scopes.iter().rposition(|scope| {
+            matches!(scope, Scope::NestedStart { subtask: marked, .. } if *marked == subtask)
+        }) {
             self.scopes.remove(at);
         }
     }
@@ -715,74 +717,59 @@ impl TaskTables {
         }
     }
 
-    /// Whether a frame below the current one would go on under a
-    /// stack switch: the stack carries a nested-start mark whose
-    /// caller would run its own code once control came back to it.
+    /// The cause a frame below the blocked thread decides, read in one
+    /// walk of the stack of scopes from the innermost frame out, which
+    /// stops at the first frame that decides. `None` when no frame does,
+    /// and the store's own state decides instead.
     ///
-    /// An asynchronous lower's caller always would: the lower
-    /// answers with the status word and the caller goes on from
-    /// there. A synchronous lower's caller would only once the
-    /// callee has resolved, because the lower returns the callee's
-    /// result. Before that, the caller would only wait for the
-    /// callee, and the wait runs the same ready work the callee's own
-    /// block already ran, so it releases nothing. A record that is
-    /// gone counts as resolved. A frame further down that would go
-    /// on has a mark of its own.
+    /// Two kinds of frame decide. A frame that would go on under a stack
+    /// switch gives the stack-switch cause: only the target's capability
+    /// is missing to return control to it. And a caller that waits for
+    /// the blocked callee in an instance that must not suspend, with no
+    /// other thread of that instance ready, gives the cannot-block cause:
+    /// its wait is a block of its own instance, which the reference's
+    /// `canon_lift` traps. The innermost of the two is the one that
+    /// counts. A sync-typed caller that waits right below the block traps
+    /// before control would ever return to an asynchronous lower further
+    /// down, which is the order the reference and a provider give.
     ///
-    /// A thread-switch mark counts while the thread that switched is
-    /// not suspended: it yielded to the thread it started, or a
-    /// `thread.resume-later` has made it ready since. A thread that
-    /// stays suspended would get control back only once something
-    /// resumed it, and that is the ready work the block above it
-    /// already ran.
-    pub fn caller_below_goes_on(&self) -> bool {
-        self.scopes.iter().any(|scope| match *scope {
-            Scope::NestedStart {
-                lower: LowerKind::Async,
-                ..
-            } => true,
-            Scope::NestedStart {
-                subtask,
-                lower: LowerKind::Sync,
-            } => self
-                .subtask(subtask)
-                .is_none_or(|record| record.state.resolved()),
-            Scope::ThreadSwitch { thread } => {
-                self.thread(thread).is_some_and(|record| !record.suspended)
-            }
-            Scope::Task(_) | Scope::Subtask(_) => false,
-        })
-    }
-
-    /// Whether a caller below waits for the blocked callee in an
-    /// instance that must not suspend, with no other thread of that
-    /// instance ready.
+    /// Each frame below the blocked thread's own task, innermost first:
     ///
-    /// A caller below waits for the call above it when it made that
-    /// call synchronously and the call has not resolved: a fused
-    /// adapter's direct call, which leaves the callee's task scope
-    /// right above the caller's, or a synchronous lower whose start
-    /// intrinsic left a nested-start mark between the two. That wait
-    /// is a block of the caller's own instance. In the reference every
-    /// call runs as a thread of its own, so the blocked callee hands
-    /// control back to the caller's lower, whose thread then blocks,
-    /// and a sync-typed caller's `canon_lift` traps when no thread of
-    /// its instance is ready. Wasmtime traps there too, through
-    /// `switch_or_trap_if_may_not_suspend` on the caller's instance
-    /// after a start intrinsic's callee suspended.
+    /// - An asynchronous lower's nested-start mark would go on: the lower
+    ///   answers with the status word and the caller goes on from there.
+    /// - A synchronous lower's mark would go on once the callee has
+    ///   resolved, because the lower returns the callee's result. A
+    ///   record that is gone counts as resolved. Before that, the caller
+    ///   only waits for the callee, and the walk goes on to the caller.
+    /// - A thread-switch mark would go on while the thread that switched
+    ///   is not suspended: it yielded to the thread it started, or a
+    ///   `thread.resume-later` has made it ready since. A thread that
+    ///   stays suspended would get control back only once something
+    ///   resumed it, which is the ready work the block above already ran.
+    /// - A caller's task, which a fused adapter's direct call or a
+    ///   synchronous lower left below the callee, waits for the callee.
+    ///   Its instance decides when it must not suspend: the cannot-block
+    ///   cause with no other thread of that instance ready. A caller
+    ///   whose instance may suspend waits in turn, so its own caller
+    ///   decides. Wasmtime traps there too, through
+    ///   `switch_or_trap_if_may_not_suspend` on the caller's instance
+    ///   after a start intrinsic's callee suspended.
     ///
-    /// The callers are read from the innermost out. A caller whose
-    /// instance may suspend waits in turn, so its own caller decides.
-    /// The search ends at a frame that would go on, which
-    /// [`caller_below_goes_on`](Self::caller_below_goes_on) reads, and
-    /// at a frame that is no synchronous call between two guests: a
-    /// host call's subtask, or a thread built-in's switch.
-    pub fn caller_below_cannot_block(&self) -> bool {
+    /// The cannot-block rule reads only callers that wait for the block
+    /// above them. Past a host call's subtask, a suspended thread's
+    /// switch, or a caller whose instance has another thread ready, a
+    /// frame further down no longer waits for this block, so only a
+    /// frame that would go on can still decide.
+    pub fn cause_below(&self) -> Option<SchedulerCause> {
         let mut blocked_seen = false;
+        let mut waits = true;
         for (position, scope) in self.scopes.iter().enumerate().rev() {
             match *scope {
                 Scope::Task(_) if !blocked_seen => blocked_seen = true,
                 Scope::Task(_) => {
+                    if !waits {
+                        continue;
+                    }
                     let instance = self
                         .thread_at_depth(position + 1)
                         .and_then(|caller| self.thread_instance(caller));
@@ -790,21 +777,37 @@ impl TaskTables {
                         .and_then(|instance| self.instance(instance))
                         .is_some_and(|record| record.may_not_suspend);
                     if let (true, Some(instance)) = (must_not_suspend, instance) {
-                        return !self.other_thread_ready_in(instance);
+                        if !self.other_thread_ready_in(instance) {
+                            return Some(SchedulerCause::CannotBlock);
+                        }
+                        waits = false;
                     }
                 }
                 Scope::NestedStart {
+                    lower: LowerKind::Async,
+                    ..
+                } => return Some(SchedulerCause::StackSwitchNeeded),
+                Scope::NestedStart {
                     subtask,
                     lower: LowerKind::Sync,
-                } if self
-                    .subtask(subtask)
-                    .is_some_and(|record| !record.state.resolved()) => {}
-                Scope::NestedStart { .. } | Scope::ThreadSwitch { .. } | Scope::Subtask(_) => {
-                    return false;
+                } => {
+                    if self
+                        .subtask(subtask)
+                        .is_none_or(|record| record.state.resolved())
+                    {
+                        return Some(SchedulerCause::StackSwitchNeeded);
+                    }
                 }
+                Scope::ThreadSwitch { thread } => {
+                    if self.thread(thread).is_some_and(|record| !record.suspended) {
+                        return Some(SchedulerCause::StackSwitchNeeded);
+                    }
+                    waits = false;
+                }
+                Scope::Subtask(_) => waits = false,
             }
         }
-        false
+        None
     }
 
     /// The scope an operation counts against when the crossing that
@@ -2900,6 +2903,15 @@ fn event_code(kind: EndKind) -> EventCode {
 mod tests {
     use super::*;
 
+    /// Whether the walk below the blocked thread finds a frame that
+    /// would go on under a stack switch.
+    fn goes_on(tables: &TaskTables) -> bool {
+        matches!(
+            tables.cause_below(),
+            Some(SchedulerCause::StackSwitchNeeded)
+        )
+    }
+
     #[wcmp_macros::test]
     fn it_keeps_the_scope_under_a_nested_start_mark_current() {
         // The mark sits between a caller's task and the callee's.
@@ -2938,10 +2950,10 @@ mod tests {
         // The lower answers with the status word, so the caller's own
         // code runs on whatever the callee has done.
         let mut tables = TaskTables::new();
-        assert!(!tables.caller_below_goes_on());
+        assert!(!goes_on(&tables));
         let subtask = tables.insert_subtask().expect("room under the record cap");
         tables.begin_nested_start(subtask, LowerKind::Async);
-        assert!(tables.caller_below_goes_on());
+        assert!(goes_on(&tables));
     }
 
     #[wcmp_macros::test]
@@ -2952,12 +2964,12 @@ mod tests {
         let mut tables = TaskTables::new();
         let subtask = tables.insert_subtask().expect("room under the record cap");
         tables.begin_nested_start(subtask, LowerKind::Sync);
-        assert!(!tables.caller_below_goes_on());
+        assert!(!goes_on(&tables));
 
         tables
             .subtask_returned(subtask)
             .expect("the callee returns");
-        assert!(tables.caller_below_goes_on());
+        assert!(goes_on(&tables));
     }
 
     #[wcmp_macros::test]
@@ -2975,10 +2987,10 @@ mod tests {
 
         tables.begin_thread_switch(thread);
         assert_eq!(tables.current_scope(), Some(Scope::Task(task)));
-        assert!(tables.caller_below_goes_on());
+        assert!(goes_on(&tables));
 
         tables.suspend_thread(thread).expect("the thread suspends");
-        assert!(!tables.caller_below_goes_on());
+        assert!(!goes_on(&tables));
 
         assert!(
             !tables
@@ -2986,11 +2998,11 @@ mod tests {
                 .expect("the thread is suspended"),
             "the thread has run, so it has no start to queue"
         );
-        assert!(tables.caller_below_goes_on());
+        assert!(goes_on(&tables));
 
         tables.end_thread_switch();
         assert_eq!(tables.scopes(), &[Scope::Task(task)]);
-        assert!(!tables.caller_below_goes_on());
+        assert!(!goes_on(&tables));
     }
 
     #[wcmp_macros::test]
@@ -3001,11 +3013,11 @@ mod tests {
         let inner = tables.insert_subtask().expect("room under the record cap");
         tables.begin_nested_start(outer, LowerKind::Async);
         tables.begin_nested_start(inner, LowerKind::Sync);
-        assert!(tables.caller_below_goes_on());
+        assert!(goes_on(&tables));
     }
 
     #[wcmp_macros::test]
-    fn it_takes_off_the_innermost_mark_and_leaves_what_a_failure_stranded_above_it() {
+    fn it_takes_off_its_own_mark_and_leaves_what_a_failure_stranded_above_it() {
         // A callee that failed without popping its scope leaves it
         // above the mark. Ending the nested start takes the mark
         // alone, so the unwind that owns the stranded scope still
@@ -3023,7 +3035,7 @@ mod tests {
             .push_task(None, None, instance)
             .expect("room under the record cap");
 
-        tables.end_nested_start();
+        tables.end_nested_start(inner);
         assert_eq!(
             tables.scopes(),
             &[
@@ -3035,17 +3047,42 @@ mod tests {
                 Scope::Task(stranded)
             ]
         );
-        tables.end_nested_start();
-        assert!(!tables.caller_below_goes_on());
+        tables.end_nested_start(outer);
+        assert!(!goes_on(&tables));
         assert_eq!(
             tables.scopes(),
             &[Scope::Task(caller), Scope::Task(stranded)]
         );
-        tables.end_nested_start();
+        tables.end_nested_start(outer);
         assert_eq!(
             tables.scopes().len(),
             2,
             "a mark that is gone leaves nothing to take"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_takes_off_no_mark_but_the_one_of_the_subtask_it_names() {
+        // The outer frame ends its start while the inner frame's mark
+        // is still above it: the inner mark stays, and the outer one
+        // goes.
+        let mut tables = TaskTables::new();
+        let outer = tables.insert_subtask().expect("room under the record cap");
+        let inner = tables.insert_subtask().expect("room under the record cap");
+        let stray = tables.insert_subtask().expect("room under the record cap");
+        tables.begin_nested_start(outer, LowerKind::Async);
+        tables.begin_nested_start(inner, LowerKind::Sync);
+
+        tables.end_nested_start(stray);
+        assert_eq!(tables.scopes().len(), 2, "no mark is the stray subtask's");
+
+        tables.end_nested_start(outer);
+        assert_eq!(
+            tables.scopes(),
+            &[Scope::NestedStart {
+                subtask: inner,
+                lower: LowerKind::Sync
+            }]
         );
     }
 
