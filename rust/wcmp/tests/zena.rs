@@ -790,11 +790,6 @@ async fn it_compiles_one_source_to_the_same_bytes_in_one_instance_and_in_a_new_o
     assert_eq!(compiles[0], compiles[2], "a compile in a new instance");
 }
 
-// Native only. What this pins is the compiler component's own logic,
-// which no engine changes, and the demo lane runs the kept compiler in
-// Chrome. In the web lane, beside 31 other tests in flight, its run of
-// compiles left another compiler test past the runner's timeout.
-#[cfg(not(target_arch = "wasm32"))]
 #[wcmp_macros::test]
 async fn it_compiles_each_source_after_others_in_one_instance_to_what_it_says() {
     let polyfill = polyfill();

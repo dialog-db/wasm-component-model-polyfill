@@ -982,6 +982,21 @@
         chrome = if pkgs.stdenv.hostPlatform.isDarwin then pkgs.google-chrome else pkgs.chromium;
         chromePath = "${chrome}/bin/${chrome.meta.mainProgram}";
 
+        # The Chrome features every browser this flake launches turns off:
+        # the allocation samplers that capture a native stack by walking
+        # frame pointers. The in-process heap profiler
+        # (`HeapProfilerReporting`) and GWP-ASan (`GwpAsanMalloc`,
+        # `GwpAsanPartitionAlloc`) are on by default and sample a few
+        # renderers' allocations. In Chromium 154 their stack walk
+        # (`base::debug::TraceStackFramePointers`) segfaults when it meets
+        # V8's wasm frames, as a Liftoff recompile in a wasm deoptimization
+        # allocates, so a sampled renderer running the Zena compiler dies
+        # and its test waits out the runner's timeout. The web lanes lost
+        # every compiler test in flight that way in 3 of 6 runs. Forcing the
+        # heap profiler into every renderer reproduces it at once, and with
+        # the three off ten runs in a row passed.
+        chromeSamplers = "HeapProfilerReporting,GwpAsanMalloc,GwpAsanPartitionAlloc";
+
         # Headless Chrome refuses to start under the Nix build sandbox on
         # Linux and under the default sandbox/GPU configuration on Darwin.
         # wasm-bindgen-test-runner reads this JSON and passes the flags
@@ -997,6 +1012,7 @@
               "--no-sandbox"
               "--disable-gpu"
               "--disable-dev-shm-usage"
+              "--disable-features=${chromeSamplers}"
             ];
           };
         };
@@ -1579,6 +1595,13 @@
           # configuration passes to the stock runner: Chrome's sandbox does
           # not initialize inside a sandbox VM, and test code is trusted.
           "WBG_POOL_NO_SANDBOX" = "1";
+          # The pooled browser turns off the allocation samplers (see
+          # `chromeSamplers`). wbg-pool passes these after its own flags,
+          # and Chrome keeps the last `--disable-features`, so the list
+          # repeats the three cache features wbg-pool turns off itself
+          # (`daemon/browser.rs` in the pinned tree).
+          "WBG_POOL_BROWSER_ARGS" =
+            "--disable-features=SplitCacheByNetworkIsolationKey,SplitCodeCacheByNetworkIsolationKey,SplitHttpCacheByNetworkIsolationKey,${chromeSamplers}";
         };
 
         # Wraps a Nix-built test archive (`buildTestArchive`) into a menu

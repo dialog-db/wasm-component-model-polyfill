@@ -94,9 +94,15 @@ impl WebDriver {
     /// The WebDriver error.
     pub fn session(&self, chrome: &str, profile: &str) -> Result<String, String> {
         let headed = std::env::var_os("WCMP_DEMO_LANE_HEADED").is_some();
+        // The allocation samplers that walk frame pointers crash a
+        // renderer that runs the Zena compiler: their stack walk
+        // segfaults on V8's wasm frames. The flake turns them off in every
+        // browser it launches, for the same reason.
         let mut args = vec![
             "--no-sandbox".to_string(),
             "--disable-dev-shm-usage".to_string(),
+            "--disable-features=HeapProfilerReporting,GwpAsanMalloc,GwpAsanPartitionAlloc"
+                .to_string(),
             "--window-size=1280,1000".to_string(),
             format!("--user-data-dir={profile}"),
         ];
