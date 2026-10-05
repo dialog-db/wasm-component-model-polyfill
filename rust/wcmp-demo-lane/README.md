@@ -42,8 +42,8 @@ The last full run, on Chromium 154.0.8037.57, on 2026-10-02:
 | Elements  | 16    | 16     |
 | Routes    | 6     | 6      |
 | TodoMVC   | 11    | 11     |
-| Shelf     | 19    | 19     |
-| **Total** | 66    | 66     |
+| Shelf     | 20    | 20     |
+| **Total** | 67    | 67     |
 
 ## Safari
 

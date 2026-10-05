@@ -24,9 +24,12 @@ const section = (kind, name) =>
   document.querySelector(`#shelf section[data-kind="${kind}"][data-name="${name}"]`);
 const field = (kind, name, which) =>
   section(kind, name).querySelector(`[data-field="${which}"]`);
+// The text of a field: the value of a metric, or the whole text of a
+// field that is not one.
 const shown = (kind, name, which) => {
   const node = field(kind, name, which);
-  return node && !node.hidden ? node.textContent : '';
+  const value = node && node.querySelector('.value');
+  return node && !node.hidden ? (value ?? node).textContent : '';
 };
 const source = (kind, name) => section(kind, name).querySelector('textarea').value;
 const edit = (kind, name, change) => {
@@ -106,7 +109,7 @@ pub fn it_lists_every_source_with_its_timings(browser: &Browser) -> Result<(), S
         "await openShelf();
          const elements = ['todo-input', 'todo-item', 'todo-footer', 'todo-app'].map((tag) => ({
            tag,
-           source: source('element', tag).length > 0,
+           source: shown('element', tag, 'source-size'),
            compile: shown('element', tag, 'compile'),
            size: shown('element', tag, 'size'),
            bytes: field('element', tag, 'size').title,
@@ -117,7 +120,7 @@ pub fn it_lists_every_source_with_its_timings(browser: &Browser) -> Result<(), S
          const routes = await later(() => {
            const both = ['/api/todos', '/api/todos/:id'].map((pattern) => ({
              pattern,
-             source: source('route', pattern).length > 0,
+             source: shown('route', pattern, 'source-size'),
              compile: shown('route', pattern, 'compile'),
              size: shown('route', pattern, 'size'),
              bytes: field('route', pattern, 'size').title,
@@ -126,18 +129,27 @@ pub fn it_lists_every_source_with_its_timings(browser: &Browser) -> Result<(), S
            }));
            return both.every((route) => /\\d+ ms/.test(route.compile)) && both;
          }, 'a compile time for each route');
-         return { elements, routes, sections: document.querySelectorAll('#shelf section').length };",
+         const labels = (kind, name) => [...section(kind, name).querySelectorAll('.metric .label')]
+           .map((label) => label.textContent);
+         return {
+           elements,
+           routes,
+           sections: document.querySelectorAll('#shelf section').length,
+           labels: [labels('element', 'todo-app'), labels('route', '/api/todos')],
+         };",
     )?;
     let timed = |entries: &Value| {
         entries.as_array().is_some_and(|entries| {
             entries.iter().all(|entry| {
-                entry["source"] == true
-                    && entry["compile"].as_str().is_some_and(|text| {
-                        text.starts_with("Zena → Wasm ") && text.ends_with(" ms")
-                    })
+                entry["source"]
+                    .as_str()
+                    .is_some_and(|text| text.ends_with(" kB"))
+                    && entry["compile"]
+                        .as_str()
+                        .is_some_and(|text| text.ends_with(" ms"))
                     && entry["size"]
                         .as_str()
-                        .is_some_and(|text| text.starts_with("component ") && text.ends_with(" kB"))
+                        .is_some_and(|text| text.ends_with(" kB"))
                     && entry["bytes"].as_str().is_some_and(|text| {
                         text.ends_with(" bytes")
                             && text
@@ -145,9 +157,9 @@ pub fn it_lists_every_source_with_its_timings(browser: &Browser) -> Result<(), S
                                 .chars()
                                 .all(|c| c.is_ascii_digit() || c == ',')
                     })
-                    && entry["wasm"].as_str().is_some_and(|text| {
-                        text.starts_with("Wasm compile ") && text.ends_with(" ms")
-                    })
+                    && entry["wasm"]
+                        .as_str()
+                        .is_some_and(|text| text.ends_with(" ms"))
                     && entry["instantiate"]
                         .as_str()
                         .is_some_and(|text| text.ends_with(" ms"))
@@ -155,7 +167,28 @@ pub fn it_lists_every_source_with_its_timings(browser: &Browser) -> Result<(), S
         })
     };
     check(
-        answer["sections"] == 6 && timed(&answer["elements"]) && timed(&answer["routes"]),
+        answer["sections"] == 6
+            && timed(&answer["elements"])
+            && timed(&answer["routes"])
+            && answer["labels"]
+                == serde_json::json!([
+                    [
+                        "Zena byte size",
+                        "Zena → Wasm compile",
+                        "Component byte size",
+                        "Wasm → Component compile",
+                        "Instantiate",
+                        "Elements"
+                    ],
+                    [
+                        "Zena byte size",
+                        "Zena → Wasm compile",
+                        "Component byte size",
+                        "Wasm → Component compile",
+                        "Instantiate",
+                        "Compilations"
+                    ]
+                ]),
         || format!("the shelf showed {answer}"),
     )
 }
@@ -214,8 +247,8 @@ pub fn it_shows_one_instance_and_the_connected_elements(browser: &Browser) -> Re
          return { fifty, ten };",
     )?;
     check(
-        answer["fifty"] == "50 connected · 1 instance"
-            && answer["ten"] == "10 connected · 1 instance",
+        answer["fifty"] == "50 connected, 1 instance"
+            && answer["ten"] == "10 connected, 1 instance",
         || format!("the shelf showed {answer}"),
     )
 }
@@ -395,13 +428,13 @@ pub fn it_answers_500_for_a_saved_route_that_traps(browser: &Browser) -> Result<
            \"if (request.method == 'GET') {\",
            \"if (request.method == 'GET') {\\n    if (request.path != '') {\\n      throw new Error('edited to trap');\\n    }\"));
          act('route', '/api/todos', 'save');
-         await later(() => /compiled 2 times/.test(shown('route', '/api/todos', 'counts')), 'the route compile');
+         await later(() => /^2(,|$)/.test(shown('route', '/api/todos', 'counts')), 'the route compile');
          const trapped = await api('GET', '/api/todos');
          const shownTrap = await later(() => shown('route', '/api/todos', 'trapped'), 'the trap in the shelf');
          await api('GET', '/api/todos');
          const counts = await later(() => {
            const text = shown('route', '/api/todos', 'counts');
-           return /compiled 3 times/.test(text) && text;
+           return /^3(,|$)/.test(text) && text;
          }, 'the compile after the trap');
          return { status: trapped.status, shownTrap, counts };",
     )?;
@@ -501,6 +534,45 @@ pub fn it_shows_one_source_at_a_time_by_its_tab_and_keeps_the_choice(
             && after["visible"] == serde_json::json!(["/api/todos"])
             && after["closed"] == true,
         || format!("after a reload the shelf showed {after}"),
+    )
+}
+
+pub fn it_follows_an_edit_with_the_source_size_and_mutes_the_rest_until_a_save(
+    browser: &Browser,
+) -> Result<(), String> {
+    browser.boot()?;
+    let answer = run(
+        browser,
+        "await openShelf();
+         const bytes = () => Number(field('element', 'todo-footer', 'source-size').title
+           .replace(/[^0-9]/g, ''));
+         const color = (which) => getComputedStyle(
+           field('element', 'todo-footer', which).querySelector('.value')).color;
+         const before = { bytes: bytes(), compile: color('compile'), source: color('source-size') };
+         // Three bytes of ASCII and the two of `×` in UTF-8.
+         edit('element', 'todo-footer', (text) => text + '// ×');
+         const during = {
+           bytes: bytes(),
+           edited: section('element', 'todo-footer').hasAttribute('data-edited'),
+         };
+         await settle(300);
+         during.compile = color('compile');
+         during.source = color('source-size');
+         act('element', 'todo-footer', 'save');
+         await later(() => !section('element', 'todo-footer').hasAttribute('data-edited'),
+           'the save');
+         await settle(300);
+         return { before, during, after: { compile: color('compile') } };",
+    )?;
+    let before = &answer["before"];
+    let during = &answer["during"];
+    check(
+        during["bytes"].as_f64() == before["bytes"].as_f64().map(|bytes| bytes + 5.0)
+            && during["edited"] == true
+            && during["compile"] != before["compile"]
+            && during["source"] == before["source"]
+            && answer["after"]["compile"] == before["compile"],
+        || format!("the metrics showed {answer}"),
     )
 }
 

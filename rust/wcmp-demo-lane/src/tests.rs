@@ -103,6 +103,7 @@ pub static TESTS: &[Test] = &[
     test!(shelf::it_keeps_the_old_route_after_a_failed_edit),
     test!(shelf::it_resets_a_route_to_the_shipped_source),
     test!(shelf::it_shows_one_source_at_a_time_by_its_tab_and_keeps_the_choice),
+    test!(shelf::it_follows_an_edit_with_the_source_size_and_mutes_the_rest_until_a_save),
     test!(shelf::it_marks_a_tab_with_an_edit_and_with_a_failure),
     test!(shelf::it_shows_no_problems_in_the_shipped_sources),
     test!(shelf::it_marks_and_lists_the_problems_of_a_source_as_a_person_types),

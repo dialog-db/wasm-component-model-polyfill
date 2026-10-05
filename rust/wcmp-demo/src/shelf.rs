@@ -431,12 +431,35 @@ fn section(document: &Document, kind: &str, name: &str) -> Result<Element, Strin
         ],
     )?;
     let _ = section.set_attribute("hidden", "");
-    // The toolbar: the source's times and counts, then its controls.
+    // The toolbar: the source's sizes, times, and counts, then its
+    // controls. Each metric is a label over its value.
     let toolbar = make(document, "div", &[("class", "toolbar")])?;
-    let meta = make(document, "p", &[("class", "meta")])?;
-    for field in ["compile", "size", "wasm", "instantiate", "counts"] {
-        let span = make(document, "span", &[("data-field", field)])?;
-        meta.append_child(&span).map_err(js_text)?;
+    let meta = make(document, "div", &[("class", "meta")])?;
+    let counts = if kind == "element" {
+        "Elements"
+    } else {
+        "Compilations"
+    };
+    for (field, label) in [
+        (SOURCE_SIZE, "Zena byte size"),
+        ("compile", "Zena → Wasm compile"),
+        ("size", "Component byte size"),
+        ("wasm", "Wasm → Component compile"),
+        ("instantiate", "Instantiate"),
+        ("counts", counts),
+    ] {
+        let metric = make(
+            document,
+            "div",
+            &[("class", "metric"), ("data-field", field)],
+        )?;
+        let name = make(document, "span", &[("class", "label")])?;
+        name.set_text_content(Some(label));
+        let value = make(document, "span", &[("class", "value")])?;
+        value.set_text_content(Some(NONE_YET));
+        metric.append_child(&name).map_err(js_text)?;
+        metric.append_child(&value).map_err(js_text)?;
+        meta.append_child(&metric).map_err(js_text)?;
     }
     toolbar.append_child(&meta).map_err(js_text)?;
     section.append_child(&toolbar).map_err(js_text)?;
@@ -448,6 +471,7 @@ fn section(document: &Document, kind: &str, name: &str) -> Result<Element, Strin
         &format!("The Zena source of {name}"),
         move || {
             STATE.with(|state| state.borrow_mut().dirty.insert(dirty_id.clone()));
+            show_edit(&dirty_id);
         },
     )
     .map_err(js_text)?;
@@ -624,7 +648,7 @@ pub fn refresh() {
             status.diagnostics.as_deref(),
             status.trapped.as_deref(),
             Some(format!(
-                "{} connected · {} instance{}",
+                "{} connected, {} instance{}",
                 status.connected,
                 status.instances,
                 if status.instances == 1 { "" } else { "s" }
@@ -671,15 +695,12 @@ pub fn refresh() {
                 .map(|at| {
                     let time = js_sys::Date::new(&JsValue::from_f64(at));
                     format!(
-                        " · last at {}",
+                        ", last at {}",
                         String::from(time.to_locale_time_string("en-US"))
                     )
                 })
                 .unwrap_or_default();
-            format!(
-                "compiled {compiles} time{}{at}",
-                if compiles == 1.0 { "" } else { "s" }
-            )
+            format!("{compiles}{at}")
         });
         if let Some(at) = number("compiledAt") {
             let _ = section.set_attribute("data-compiled-at", &at.to_string());
@@ -696,6 +717,59 @@ pub fn refresh() {
             text("trapped").as_deref(),
             counts,
         );
+    }
+}
+
+/// The metric of the size of the Zena source, which follows the editor.
+const SOURCE_SIZE: &str = "source-size";
+
+/// The value of a metric the shelf has not measured yet.
+const NONE_YET: &str = "—";
+
+/// Show what an edit to the source of the section `id` changes at once:
+/// the size of the source, and the mark that mutes every other metric,
+/// which the last save measured, until the next save.
+fn show_edit(id: &str) {
+    let Some((kind, name)) = id.split_once(':') else {
+        return;
+    };
+    let Ok(document) = document() else {
+        return;
+    };
+    let Some(section) = find_section(&document, kind, name) else {
+        return;
+    };
+    let dirty = STATE.with(|state| state.borrow().dirty.contains(id));
+    if dirty {
+        let _ = section.set_attribute("data-edited", "");
+    } else {
+        let _ = section.remove_attribute("data-edited");
+    }
+    if let Ok(Some(text)) = section.query_selector("textarea") {
+        let text = text.unchecked_into::<HtmlTextAreaElement>().value();
+        let bytes = text.len() as f64;
+        set_metric(&section, SOURCE_SIZE, &size(Some(bytes)), Some(bytes));
+    }
+}
+
+/// Show `value` in the metric `field` of `section`, with the exact count
+/// of `bytes` in its tooltip when it is a size.
+fn set_metric(section: &Element, field: &str, value: &str, bytes: Option<f64>) {
+    let Ok(Some(metric)) = section.query_selector(&format!("[data-field=\"{field}\"]")) else {
+        return;
+    };
+    if let Ok(Some(shown)) = metric.query_selector(".value")
+        && shown.text_content().as_deref() != Some(value)
+    {
+        shown.set_text_content(Some(value));
+    }
+    match bytes {
+        Some(bytes) => {
+            let _ = metric.set_attribute("title", &format!("{} bytes", grouped(bytes as u64)));
+        }
+        None => {
+            let _ = metric.remove_attribute("title");
+        }
     }
 }
 
@@ -721,31 +795,18 @@ fn fill(
     };
     let millis = |value: Option<f64>| match value {
         Some(value) => format!("{value:.0} ms"),
-        None => "not yet".to_string(),
+        None => NONE_YET.to_string(),
     };
-    if let Some(span) = field("compile") {
-        span.set_text_content(Some(&format!("Zena → Wasm {}", millis(compile_ms))));
-    }
-    if let Some(span) = field("size") {
-        span.set_text_content(Some(&format!("component {}", size(component_bytes))));
-        match component_bytes {
-            Some(bytes) => {
-                let _ = span.set_attribute("title", &format!("{} bytes", grouped(bytes as u64)));
-            }
-            None => {
-                let _ = span.remove_attribute("title");
-            }
-        }
-    }
-    if let Some(span) = field("wasm") {
-        span.set_text_content(Some(&format!("Wasm compile {}", millis(wasm_compile_ms))));
-    }
-    if let Some(span) = field("instantiate") {
-        span.set_text_content(Some(&format!("instantiate {}", millis(instantiate_ms))));
-    }
-    if let Some(span) = field("counts") {
-        span.set_text_content(counts.as_deref());
-    }
+    set_metric(section, "compile", &millis(compile_ms), None);
+    set_metric(section, "size", &size(component_bytes), component_bytes);
+    set_metric(section, "wasm", &millis(wasm_compile_ms), None);
+    set_metric(section, "instantiate", &millis(instantiate_ms), None);
+    set_metric(
+        section,
+        "counts",
+        counts.as_deref().unwrap_or(NONE_YET),
+        None,
+    );
     for (name, text) in [("diagnostics", diagnostics), ("trapped", trapped)] {
         if let Some(element) = field(name) {
             match text {
@@ -774,6 +835,7 @@ fn fill(
             editor::set_text(&text, source);
         }
     }
+    show_edit(id);
     // The tab's dot: a failure first, then an edit not saved.
     if let Ok(document) = document()
         && let Some(tab) = find_tab(&document, id)
@@ -853,7 +915,7 @@ pub fn element_status_value(status: &TagStatus) -> JsValue {
 /// megabytes, of a thousand each.
 fn size(bytes: Option<f64>) -> String {
     match bytes {
-        None => "not yet".to_string(),
+        None => NONE_YET.to_string(),
         Some(bytes) if bytes < 1_000.0 => format!("{bytes:.0} B"),
         Some(bytes) if bytes < 1_000_000.0 => format!("{:.1} kB", bytes / 1_000.0),
         Some(bytes) => format!("{:.2} MB", bytes / 1_000_000.0),

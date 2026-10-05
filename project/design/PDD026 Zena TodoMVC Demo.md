@@ -875,13 +875,24 @@ keeps whether the shelf is open and which tab is active, for the next visit.
 For the source of the active tab, the shelf shows:
 
 - The Zena source in an editor. Ctrl-S or Cmd-S saves it.
-- Three times of the last start: the compile of the Zena source to a component
-  ("Zena → Wasm"), the polyfill's compile of that component ("Wasm compile"),
-  and the link and instantiation.
-- The size of the component that the last successful compile produced, in
-  kilobytes, with the exact count of bytes in its tooltip.
+- Its metrics, each a small label over its value:
+  - "Zena byte size": the size of the source in the editor, which follows each
+    edit.
+  - "Zena → Wasm compile": the time of the compile of the Zena source to a
+    component.
+  - "Component byte size": the size of the component that the last successful
+    compile produced.
+  - "Wasm → Component compile": the time of the polyfill's compile of that
+    component.
+  - "Instantiate": the time of the link and instantiation.
+  - For an element, "Elements": the count of connected elements and of
+    instances. For a route, "Compilations": how many times the service worker
+    compiled it, and when it last did.
+
+  A size shows its exact count of bytes in its tooltip. An edit that is not
+  saved mutes every metric but the size of the source, until the next save.
+
 - The compiler's diagnostics after a failed compile.
-- For an element, the count of connected elements and of instances.
 - A "Save" control and a "Reset to original" control.
 - A "Restart" control after a trap.
 
