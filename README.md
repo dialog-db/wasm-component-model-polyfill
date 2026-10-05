@@ -14,6 +14,11 @@ table shows what works today.
 
 ## How it works
 
+If you are familiar with Wasm but new to the [Component Model], consider
+watching this video for a quick (~8 minute) introduction:
+
+[![Wasm Components Explainer](https://img.youtube.com/vi/h04vdcj03Ss/0.jpg)](https://www.youtube.com/watch?v=h04vdcj03Ss)
+
 The polyfill has three layers:
 
 - **Translation.** [`wasmtime-environ`] parses and validates the component
