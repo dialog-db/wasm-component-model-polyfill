@@ -2156,6 +2156,16 @@
                       fi
                     '';
                   };
+                }
+                // pkgs.lib.optionalAttrs isLinux {
+                  webkit = {
+                    description = "Drive the smoke test page in WebKitGTK, the engine Safari is built on, on a headless Weston display, and print its report against the native run's";
+                    command = ''
+                      page=$(nix build --no-link --print-out-paths .#smoke-web)
+                      native=$("$(nix build --no-link --print-out-paths .#smoke-native)"/bin/wcmp-smoke | tail -n 1)
+                      ${smokeWebkit}/bin/wcmp-smoke-webkit "$page" "$native"
+                    '';
+                  };
                 };
               };
               demo = {
@@ -2493,6 +2503,53 @@
               mkdir -p $out
               wcmp-smoke-web-check ${smokeWeb} "$native" $out/report.txt
             '';
+
+        # The smoke test page in WebKit, the engine Safari is built on:
+        # WebKitGTK's MiniBrowser, driven through its `WebKitWebDriver` by
+        # the same `web/check.sh` the Chromium check runs, against the
+        # native run's summary. WebKitGTK draws through a Wayland
+        # compositor and has no headless mode of its own, so the run starts
+        # a headless Weston on a socket of its own and points the browser
+        # at it. That needs a user session's runtime directory rather than
+        # the build sandbox, so this is a menu command and not a flake
+        # check. Linux only, where WebKitGTK and Weston build.
+        smokeWebkit = pkgs.writeShellApplication {
+          name = "wcmp-smoke-webkit";
+          runtimeInputs = [
+            pkgs.coreutils
+            pkgs.weston
+            smokeWebCheckDriver
+          ];
+          text = ''
+            page=$1
+            native=$2
+            runtime=$(mktemp -d)
+            trap 'kill "''${weston:-}" 2>/dev/null || true; rm -rf "$runtime"' EXIT
+            XDG_RUNTIME_DIR=$runtime weston --backend=headless --socket=wcmp-smoke \
+              --width=1280 --height=800 --idle-time=0 >"$runtime/weston.log" 2>&1 &
+            weston=$!
+            for _ in $(seq 100); do
+              [ -S "$runtime/wcmp-smoke" ] && break
+              sleep 0.1
+            done
+            if [ ! -S "$runtime/wcmp-smoke" ]; then
+              cat "$runtime/weston.log" >&2
+              echo "smoke webkit: the headless Weston did not start" >&2
+              exit 1
+            fi
+            export XDG_RUNTIME_DIR=$runtime WAYLAND_DISPLAY=wcmp-smoke
+            export WCMP_SMOKE_WEBDRIVER=${pkgs.webkitgtk_6_0}/bin/WebKitWebDriver
+            export WASM_BINDGEN_TEST_WEBDRIVER_JSON=${webkitDriverConfig}
+            wcmp-smoke-web-check "$page" "$native" "$runtime/report.txt"
+          '';
+        };
+        webkitDriverConfig = (pkgs.formats.json { }).generate "webkit-webdriver.json" {
+          browserName = "MiniBrowser";
+          "webkitgtk:browserOptions" = {
+            binary = "${pkgs.webkitgtk_6_0}/libexec/webkitgtk-6.0/MiniBrowser";
+            args = [ "--automation" ];
+          };
+        };
 
         # The demo's own Zena files that a compile reads: the authoring
         # library and the package manifest that names it. The elements and

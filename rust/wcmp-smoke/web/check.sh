@@ -23,8 +23,11 @@
 #
 # Arguments: the page directory, the native summary line, the report's
 # destination path. Environment: `WASM_BINDGEN_TEST_WEBDRIVER_JSON` for
-# the browser capabilities. The flake wraps this script with `curl`,
-# `jq`, `chromedriver`, and `static-web-server` on its PATH.
+# the browser capabilities, and `WCMP_SMOKE_WEBDRIVER` for the WebDriver
+# server, `chromedriver` unless it names another: `tests smoke webkit`
+# names WebKitGTK's `WebKitWebDriver`, which takes the same `--port`.
+# The flake wraps this script with `curl`, `jq`, `chromedriver`, and
+# `static-web-server` on its PATH.
 
 page=$1
 native=$2
@@ -40,7 +43,7 @@ driver_port=$((page_port + 1))
 static-web-server --root "$page" --host 127.0.0.1 --port "$page_port" \
   --log-level error &
 server=$!
-chromedriver --port="$driver_port" >/dev/null 2>&1 &
+"${WCMP_SMOKE_WEBDRIVER:-chromedriver}" --port="$driver_port" >/dev/null 2>&1 &
 driver=$!
 trap 'kill "$driver" "$server" 2>/dev/null || true' EXIT
 

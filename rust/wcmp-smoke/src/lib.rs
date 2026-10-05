@@ -14,7 +14,10 @@
 //! It runs as a native binary (`tests smoke native`) and as a page in
 //! the browser (`tests smoke web`) from the same source, so a reader
 //! can check the polyfill by reading this file and by running it on
-//! both targets.
+//! both targets. `tests smoke check` drives the page in headless
+//! Chromium, and `tests smoke webkit` in WebKitGTK, the engine Safari is
+//! built on, on a headless Wayland display; each compares the page's
+//! summary with the native run's.
 //!
 //! Each story is self-contained: it builds its own store, runs a
 //! component, and returns the evidence it observed. A failure in one
@@ -1141,8 +1144,8 @@ pub fn counts(steps: &[Step]) -> (usize, usize, usize) {
     )
 }
 
-/// The report's last line. `tests smoke check` compares it between
-/// the native run and the page.
+/// The report's last line. `tests smoke check` and `tests smoke webkit`
+/// compare it between the native run and the page.
 pub fn summary(steps: &[Step]) -> String {
     let (passed, failed, skipped) = counts(steps);
     format!("smoke: {passed} passed, {failed} failed, {skipped} skipped")
@@ -1594,10 +1597,26 @@ fn type_name(ty: &ValueType) -> String {
 /// A string goes from the host into a 32-bit component, through an
 /// adapter into a 64-bit component that copies it in an `i64`
 /// memory, and back.
+///
+/// A browser whose engine has no 64-bit memories refuses the
+/// component with the structured unsupported-feature error that names
+/// `memory64`, and the story reports that refusal as the expected
+/// outcome there. WebKit is such a browser today: JavaScriptCore in
+/// WebKitGTK 2.54 ships its `useWasmMemory64` option off ("currently
+/// only supported in the IPInt tier", `jsc --options`). Natively the
+/// engine has them, so a refusal is a failure.
 async fn memory64(engine: &Engine) -> Result<String, String> {
-    let component = Component::new(engine, MEMORY64_COMPOSITION)
-        .await
-        .map_err(fail)?;
+    let component = match Component::new(engine, MEMORY64_COMPOSITION).await {
+        Ok(component) => component,
+        #[cfg(target_arch = "wasm32")]
+        Err(error) if matches!(&error, Error::Unsupported { feature } if feature == "memory64") => {
+            return Ok(format!(
+                "this browser has no 64-bit memories, so the component was refused with \
+                 \"{error}\", as expected"
+            ));
+        }
+        Err(error) => return Err(fail(error)),
+    };
     let linker: Linker<HostState> = Linker::new(engine);
     let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
     let instance = linker
