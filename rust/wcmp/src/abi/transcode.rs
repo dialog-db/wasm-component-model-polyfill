@@ -147,7 +147,7 @@ pub fn transcode<T: 'static>(
                         return Ok(Step::Stop);
                     }
                     let ch = char::from(*b);
-                    if written + ch.len_utf8() > dst_len {
+                    if written.saturating_add(ch.len_utf8()) > dst_len {
                         return Ok(Step::Stop);
                     }
                     let mut buf = [0u8; 4];
@@ -222,22 +222,27 @@ pub fn transcode<T: 'static>(
             })?;
             set_results(results, &[written, written])
         }
+        // Both compact ops check and validate the whole source before
+        // they inflate the Latin-1 prefix already in the destination,
+        // so a source that is out of bounds or invalid writes nothing.
         TranscodeOp::Utf8ToCompactUtf16 => {
             let (src, src_len, dst, _dst_len, latin1_so_far) = five(args)?;
-            inflate_latin1(ctx, dst, latin1_so_far)?;
+            let rest = at(dst, latin1_so_far.checked_mul(2))?;
             check_source(ctx, src, src_len)?;
             validate_utf8(ctx, src, src_len)?;
-            let units = utf8_to_utf16(ctx, src, src_len, dst + latin1_so_far * 2)?;
-            set_results(results, &[units + latin1_so_far])
+            inflate_latin1(ctx, dst, latin1_so_far)?;
+            let units = utf8_to_utf16(ctx, src, src_len, rest)?;
+            set_results(results, &[at(units, Some(latin1_so_far))?])
         }
         TranscodeOp::Utf16ToCompactUtf16 => {
             let (src, src_len, dst, _dst_len, latin1_so_far) = five(args)?;
-            inflate_latin1(ctx, dst, latin1_so_far)?;
+            let rest = at(dst, latin1_so_far.checked_mul(2))?;
             let bytes = utf16_bytes(src_len)?;
             check_source(ctx, src, bytes)?;
             validate_utf16(ctx, src, bytes)?;
-            copy(ctx, src, dst + latin1_so_far * 2, bytes)?;
-            set_results(results, &[src_len + latin1_so_far])
+            inflate_latin1(ctx, dst, latin1_so_far)?;
+            copy(ctx, src, rest, bytes)?;
+            set_results(results, &[at(src_len, Some(latin1_so_far))?])
         }
     }
 }
@@ -265,14 +270,14 @@ fn walk<T: 'static>(
         let size = (length - read_so_far).min(CHUNK);
         let last = read_so_far + size == length;
         let stepped = ctx
-            .with_source_bytes(offset + read_so_far, size, |bytes| {
+            .with_source_bytes(at(offset, Some(read_so_far))?, size, |bytes| {
                 step(bytes, last, &mut out)
             })
             .map_err(|_| invalid("out-of-bounds string read in adapter"))??;
         if let Some(dst) = dst
             && !out.is_empty()
         {
-            write(ctx, dst + written, &out)?;
+            write(ctx, at(dst, Some(written))?, &out)?;
             written += out.len();
             out.clear();
         }
@@ -425,13 +430,22 @@ fn inflate_latin1<T: 'static>(
     while end > 0 {
         let start = end.saturating_sub(CHUNK);
         let bytes = ctx
-            .read_own_bytes(dst + start, end - start)
+            .read_own_bytes(at(dst, Some(start))?, end - start)
             .map_err(|_| invalid("out-of-bounds string read in adapter"))?;
         let units: Vec<u8> = bytes.iter().flat_map(|b| [*b, 0]).collect();
-        write(ctx, dst + start * 2, &units)?;
+        write(ctx, at(dst, start.checked_mul(2))?, &units)?;
         end = start;
     }
     Ok(())
+}
+
+/// The address `by` bytes past `base`, or the out-of-bounds failure
+/// where `by` overflowed already or the sum would wrap: on `wasm32` a
+/// 4 GiB memory ends past the host's address range, and an address
+/// that wrapped would land at the start of memory.
+fn at(base: usize, by: Option<usize>) -> Result<usize> {
+    by.and_then(|by| base.checked_add(by))
+        .ok_or_else(|| invalid("out-of-bounds string write in adapter"))
 }
 
 fn write<T: 'static>(ctx: &mut BoundaryContext<'_, T>, offset: usize, bytes: &[u8]) -> Result<()> {
@@ -519,15 +533,22 @@ mod tests {
 
     impl TwoMemories {
         fn new() -> Self {
+            Self::with_type(MemoryType::new(PAGES, None))
+        }
+
+        /// Two 64-bit memories, which memory64 adapters address with
+        /// `i64` pointers and lengths.
+        fn new64() -> Self {
+            Self::with_type(MemoryType::new64(u64::from(PAGES), None))
+        }
+
+        fn with_type(ty: MemoryType) -> Self {
             let engine =
                 Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
             let mut store: Store<()> = Store::new(&engine, ()).expect("store");
             let mut memory = || {
-                Memory::new(
-                    store.internal().inner_mut().as_context_mut(),
-                    MemoryType::new(PAGES, None),
-                )
-                .expect("a guest memory")
+                Memory::new(store.internal().inner_mut().as_context_mut(), ty)
+                    .expect("a guest memory")
             };
             let (source, destination) = (memory(), memory());
             let state = Arc::new(Mutex::new(AbiRuntimeState::with_slabs(
@@ -582,6 +603,23 @@ mod tests {
 
         /// Run `op` with 32-bit `args`, and return its `results`.
         fn run(&mut self, op: TranscodeOp, args: &[usize], results: usize) -> Result<Vec<usize>> {
+            let args: Vec<RuntimeVal> = args.iter().map(|a| RuntimeVal::I32(*a as i32)).collect();
+            self.run_at(op, &args, results, FlatType::I32)
+        }
+
+        /// Run `op` with 64-bit `args`, and return its 64-bit `results`.
+        fn run64(&mut self, op: TranscodeOp, args: &[u64], results: usize) -> Result<Vec<usize>> {
+            let args: Vec<RuntimeVal> = args.iter().map(|a| RuntimeVal::I64(*a as i64)).collect();
+            self.run_at(op, &args, results, FlatType::I64)
+        }
+
+        fn run_at(
+            &mut self,
+            op: TranscodeOp,
+            args: &[RuntimeVal],
+            results: usize,
+            width: FlatType,
+        ) -> Result<Vec<usize>> {
             let mut ctx = BoundaryContext::for_copy(
                 self.store.internal().inner_mut().as_context_mut(),
                 self.destination_options.clone(),
@@ -589,20 +627,14 @@ mod tests {
                 BoundaryInstance::without_tables(None),
                 None,
             );
-            let args: Vec<RuntimeVal> = args.iter().map(|a| RuntimeVal::I32(*a as i32)).collect();
             let mut slots = vec![RuntimeVal::I32(0); results];
-            transcode(
-                &mut ctx,
-                op,
-                &args,
-                &mut slots,
-                &vec![FlatType::I32; results],
-            )?;
+            transcode(&mut ctx, op, args, &mut slots, &vec![width; results])?;
             Ok(slots
                 .iter()
                 .map(|slot| match slot {
                     RuntimeVal::I32(v) => *v as u32 as usize,
-                    _ => panic!("a 32-bit result"),
+                    RuntimeVal::I64(v) => *v as u64 as usize,
+                    _ => panic!("an integer result"),
                 })
                 .collect())
         }
@@ -907,5 +939,199 @@ mod tests {
             (4, 4),
             "each chunk lent once and written once"
         );
+    }
+
+    /// The message of the failure `result` carries.
+    fn failure(result: Result<Vec<usize>>) -> String {
+        match result {
+            Err(error) => error.to_string(),
+            Ok(results) => panic!("the transcode succeeded with {results:?}"),
+        }
+    }
+
+    /// UTF-16 of `CHUNK / 2 - 1` units of `a`, then `unit`, which so
+    /// ends the first chunk, then `rest`.
+    fn utf16_ending_the_first_chunk_with(unit: u16, rest: &str) -> Vec<u8> {
+        let mut bytes = utf16_le(&"a".repeat(CHUNK / 2 - 1));
+        bytes.extend_from_slice(&unit.to_le_bytes());
+        bytes.extend(utf16_le(rest));
+        assert!(bytes.len() > CHUNK);
+        bytes
+    }
+
+    /// Each op that reads UTF-16 and checks it, with the arguments it
+    /// takes for a source of `units` code units at 0, and its results.
+    fn utf16_checking_ops(units: usize) -> [(TranscodeOp, Vec<usize>, usize); 4] {
+        [
+            (TranscodeOp::CopyUtf16, vec![0, units, 0], 0),
+            (
+                TranscodeOp::Utf16ToCompactProbablyUtf16,
+                vec![0, units, 0],
+                1,
+            ),
+            (
+                TranscodeOp::Utf16ToCompactUtf16,
+                vec![0, units, 0, units, 0],
+                1,
+            ),
+            (TranscodeOp::Utf16ToUtf8, vec![0, units, 0, 3 * units, 0], 2),
+        ]
+    }
+
+    #[wcmp_macros::test]
+    fn it_rejects_a_lone_high_surrogate_at_a_chunk_end_that_no_low_one_follows() {
+        // The high surrogate ends the first chunk, so it is held back
+        // and read again at the start of the second, where a unit that
+        // is not a low surrogate follows it.
+        let bytes = utf16_ending_the_first_chunk_with(0xD83D, "b");
+        for (op, args, results) in utf16_checking_ops(bytes.len() / 2) {
+            let mut copy = TwoMemories::new();
+            copy.put(0, &bytes);
+            let message = failure(copy.run(op, &args, results));
+            assert!(
+                message.contains("invalid utf16 encoding"),
+                "{op:?}: {message}"
+            );
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_rejects_a_lone_low_surrogate_that_starts_the_second_chunk() {
+        let mut bytes = utf16_le(&"a".repeat(CHUNK / 2));
+        bytes.extend_from_slice(&0xDC00u16.to_le_bytes());
+        bytes.extend(utf16_le("b"));
+        for (op, args, results) in utf16_checking_ops(bytes.len() / 2) {
+            let mut copy = TwoMemories::new();
+            copy.put(0, &bytes);
+            let message = failure(copy.run(op, &args, results));
+            assert!(
+                message.contains("invalid utf16 encoding"),
+                "{op:?}: {message}"
+            );
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_keeps_utf16_whose_only_wide_unit_is_in_a_later_chunk() {
+        // Every unit of the first chunk fits Latin-1, so the walk must
+        // carry what it learned into the second chunk, where `Ā` is.
+        let text = format!("{}Ā{}", "a".repeat(CHUNK / 2 + 5), "b".repeat(7));
+        let bytes = utf16_le(&text);
+        let units = bytes.len() / 2;
+        let mut copy = TwoMemories::new();
+        copy.put(0, &bytes);
+        let results = copy
+            .run(TranscodeOp::Utf16ToCompactProbablyUtf16, &[0, units, 0], 1)
+            .expect("the transcode");
+        assert_eq!(results, vec![units | UTF16_TAG as usize]);
+        assert_eq!(
+            copy.take(0, bytes.len()),
+            bytes,
+            "the units were kept as UTF-16"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_stops_a_latin1_to_utf8_first_pass_past_the_first_chunk() {
+        let ascii = CHUNK + 5;
+        let mut bytes = vec![b'a'; ascii];
+        bytes.push(0xE9);
+        bytes.extend_from_slice(b"tail");
+        let mut copy = TwoMemories::new();
+        copy.put(0, &bytes);
+        let results = copy
+            .run(
+                TranscodeOp::Latin1ToUtf8,
+                &[0, bytes.len(), 0, 2 * bytes.len(), 1],
+                2,
+            )
+            .expect("the transcode");
+        assert_eq!(
+            results,
+            vec![ascii, ascii],
+            "the first pass stopped at the first byte that is not ASCII"
+        );
+        assert_eq!(copy.take(0, ascii), vec![b'a'; ascii]);
+    }
+
+    #[wcmp_macros::test]
+    fn it_refuses_an_out_of_bounds_source_before_it_inflates_the_latin1_prefix() {
+        let prefix = b"latin";
+        let size = PAGES as usize * 64 * 1024;
+        for (op, len) in [
+            (TranscodeOp::Utf8ToCompactUtf16, CHUNK + 1),
+            (TranscodeOp::Utf16ToCompactUtf16, CHUNK / 2 + 1),
+        ] {
+            let mut copy = TwoMemories::new();
+            copy.put_destination(0, prefix);
+            let message = failure(copy.run(op, &[size - CHUNK, len, 0, 4 * len, prefix.len()], 1));
+            assert!(
+                message.contains("out-of-bounds string read in adapter"),
+                "{op:?}: {message}"
+            );
+            assert_eq!(
+                copy.take(0, prefix.len() * 2),
+                [prefix.as_slice(), &[0; 5]].concat(),
+                "{op:?} left the Latin-1 prefix as it was"
+            );
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_refuses_an_invalid_source_before_it_inflates_the_latin1_prefix() {
+        let prefix = b"latin";
+        let mut copy = TwoMemories::new();
+        copy.put(0, &[0xC3]);
+        copy.put_destination(0, prefix);
+        let message = failure(copy.run(
+            TranscodeOp::Utf8ToCompactUtf16,
+            &[0, 1, 0, 4, prefix.len()],
+            1,
+        ));
+        assert!(message.contains("invalid utf8 encoding"), "{message}");
+        assert_eq!(copy.take(0, prefix.len()), prefix.to_vec());
+    }
+
+    #[wcmp_macros::test]
+    fn it_transcodes_with_64_bit_pointers_and_lengths() {
+        let text = split_utf16();
+        let bytes = utf16_le(&text);
+        let units = bytes.len() / 2;
+        let mut copy = TwoMemories::new64();
+        copy.put(0, &bytes);
+        let to = 2 * CHUNK as u64;
+        copy.run64(TranscodeOp::CopyUtf16, &[0, units as u64, to], 0)
+            .expect("the copy");
+        assert_eq!(copy.take(to as usize, bytes.len()), bytes);
+
+        let results = copy
+            .run64(
+                TranscodeOp::Utf16ToUtf8,
+                &[0, units as u64, 0, 3 * units as u64, 0],
+                2,
+            )
+            .expect("the transcode");
+        assert_eq!(results, vec![units, text.len()]);
+        assert_eq!(copy.take(0, text.len()), text.as_bytes());
+    }
+
+    #[wcmp_macros::test]
+    fn it_refuses_an_address_past_the_hosts_range_without_wrapping() {
+        // A prefix length that doubles past the host's address range
+        // is refused before anything is read or written, rather than
+        // wrapping round to an address near zero.
+        let mut copy = TwoMemories::new64();
+        copy.put(0, b"abc");
+        for op in [
+            TranscodeOp::Utf8ToCompactUtf16,
+            TranscodeOp::Utf16ToCompactUtf16,
+        ] {
+            let message = failure(copy.run64(op, &[0, 1, 0, 8, 1 << 63], 1));
+            assert!(
+                message.contains("out-of-bounds string write")
+                    || message.contains("64-bit memory offset"),
+                "{op:?}: {message}"
+            );
+        }
     }
 }
