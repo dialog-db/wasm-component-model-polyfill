@@ -23,10 +23,13 @@
 //! test does with the polyfill after that point happens under the
 //! policy: every engine, component, store, host function, and module
 //! the polyfill compiles. What the page loaded before the policy — the
-//! test binary and the `wasm-bindgen` glue around it — is script from
-//! the page's own origin, which the policy admits anyway; the smoke
-//! page (`rust/wcmp-smoke/web`) declares the same policy in its markup
-//! and so covers loading too.
+//! test binary and the `wasm-bindgen` glue around it — runs because it
+//! loaded first: the runner serves it from an origin of its own, apart
+//! from the page's, which `'self'` would refuse had the policy been in
+//! place. The policy does not take back script that already runs. The
+//! smoke page (`rust/wcmp-smoke/web`) declares the same policy in its
+//! markup and loads its script from its own origin, so it covers
+//! loading.
 //!
 //! The runner opens a fresh tab on a fresh origin for every test, so a
 //! policy one test installs does not reach another. The entry check of
@@ -272,6 +275,169 @@ async fn it_calls_a_host_function_of_more_than_eight_parameters_under_the_policy
         &[Val::U32((1..=PARAMETERS).sum())],
         "the guest read the host function's result"
     );
+}
+
+/// A stackful export of an `async` function type that lowers the
+/// host's `async` function `answer` synchronously. A host future that
+/// is not ready blocks the export's thread, which the browser backend
+/// suspends through JavaScript Promise Integration.
+const BLOCKS_ON_A_HOST_PROMISE: &[u8] = component!(
+    r#"
+    (component
+      (import "answer" (func $answer async (param "x" u32) (result u32)))
+      (core func $answer (canon lower (func $answer)))
+      (core module $m
+        (import "" "answer" (func $answer (param i32) (result i32)))
+        (func (export "run") (param i32) (result i32)
+          (call $answer (local.get 0))))
+      (core instance $i (instantiate $m
+        (with "" (instance (export "answer" (func $answer))))))
+      (func (export "run") async (param "x" u32) (result u32)
+        (canon lift (core func $i "run"))))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_suspends_on_an_async_host_function_that_awaits_a_promise_under_the_policy() {
+    // The host function awaits a JavaScript promise, which settles only
+    // on a microtask, so the guest's synchronous lower blocks and its
+    // thread suspends through `WebAssembly.Suspending` and
+    // `WebAssembly.promising`, under the policy.
+    install_the_policy();
+
+    let mut config = wcmp::EngineConfig::new();
+    config.wasm_component_model_async_stackful(true);
+    let engine = engine().with_config(&config).expect("the engine");
+    let component = Component::new(&engine, BLOCKS_ON_A_HOST_PROMISE)
+        .await
+        .expect("the component compiles under the policy");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker
+        .root()
+        .func_wrap_concurrent("answer", |_accessor: &wcmp::Accessor<()>, (x,): (u32,)| {
+            let promise =
+                js_sys::Promise::resolve(&wasm_bindgen::JsValue::from_f64(f64::from(x * 2)));
+            async move {
+                let resolved = wasm_bindgen_futures::JsFuture::from(promise)
+                    .await
+                    .expect("the promise resolves");
+                Ok(resolved.as_f64().expect("the promise's value") as u32)
+            }
+        })
+        .expect("the registration of `answer`");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the component instantiates under the policy");
+    let result = instance
+        .get_func("run")
+        .expect("the guest's export")
+        .call(&mut store, &[Val::U32(21)])
+        .await
+        .expect("the blocked call resolves under the policy");
+    assert_eq!(
+        result.as_ref(),
+        &[Val::U32(42)],
+        "the promise's value reached the guest"
+    );
+}
+
+/// A component whose export hands the host's `measure` the string it
+/// was given, through one memory and its allocator.
+const PASSES_A_STRING: &[u8] = component!(
+    r#"
+    (component
+      (import "measure" (func $measure (param "s" string) (result u32)))
+      (core module $libc
+        (memory (export "memory") 1)
+        (global $next (mut i32) (i32.const 1024))
+        (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+          (local $at i32)
+          (local.set $at (global.get $next))
+          (global.set $next (i32.add (global.get $next) (local.get 3)))
+          (local.get $at)))
+      (core instance $libc (instantiate $libc))
+      (core func $measure (canon lower (func $measure) (memory (core memory $libc "memory"))))
+      (core module $m
+        (import "" "measure" (func $measure (param i32 i32) (result i32)))
+        (func (export "run") (param i32 i32) (result i32)
+          (call $measure (local.get 0) (local.get 1))))
+      (core instance $i (instantiate $m
+        (with "" (instance (export "measure" (func $measure))))))
+      (func (export "run") (param "s" string) (result u32)
+        (canon lift (core func $i "run")
+          (memory (core memory $libc "memory"))
+          (realloc (core func $libc "realloc")))))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_runs_over_a_backend_without_multi_memory_under_the_policy() {
+    // A browser without `multi_memory`, as Safari was, makes the
+    // backend move bytes with `TypedArray.set` rather than a module of
+    // its own. The page cannot take the feature away, so the test
+    // refuses the backend's probe for it while the backend is made, and
+    // passes a string both ways under the policy. A fused adapter
+    // between two memories needs the feature and is refused without it,
+    // so a copy between two components' memories is not covered here.
+    install_the_policy();
+
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
+    let namespace = js_sys::Reflect::get(&js_sys::global(), &"WebAssembly".into())
+        .expect("the page has WebAssembly");
+    let validate = js_sys::Reflect::get(&namespace, &"validate".into())
+        .expect("validate")
+        .unchecked_into::<js_sys::Function>();
+    let probe = wcmp_macros::wasm!(r#"(module (memory 1) (memory 1))"#);
+    let original = validate.clone();
+    let refuse = Closure::<
+        dyn Fn(wasm_bindgen::JsValue) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>,
+    >::new(move |bytes: wasm_bindgen::JsValue| {
+        if js_sys::Uint8Array::new(&bytes).to_vec() == probe {
+            return Ok(wasm_bindgen::JsValue::FALSE);
+        }
+        let namespace = js_sys::Reflect::get(&js_sys::global(), &"WebAssembly".into())?;
+        js_sys::Reflect::apply(&original, &namespace, &js_sys::Array::of1(&bytes))
+    });
+    js_sys::Reflect::set(&namespace, &"validate".into(), refuse.as_ref()).expect("patch validate");
+    let backend = wcmp_wasm_core_web::Web::new();
+    let capabilities =
+        wcmp_wasm_core::Engine::with_backend(wcmp_wasm_core_web::Web::new()).capabilities();
+    js_sys::Reflect::set(&namespace, &"validate".into(), &validate).expect("restore validate");
+    assert!(
+        !capabilities.contains(wcmp_wasm_core::Capability::MultiMemory),
+        "the backend was made as in a browser without `multi_memory`"
+    );
+
+    let engine = Engine::with_backend(backend).expect("the engine");
+    let component = Component::new(&engine, PASSES_A_STRING)
+        .await
+        .expect("the component compiles under the policy");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker
+        .root()
+        .func_wrap(
+            "measure",
+            |_call: wcmp::HostCall<'_, ()>, (text,): (String,)| {
+                Ok(u32::try_from(text.len()).expect("a short string"))
+            },
+        )
+        .expect("the registration of `measure`");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the component instantiates under the policy");
+    let text = "measured under the policy";
+    let result = instance
+        .get_func("run")
+        .expect("the guest's export")
+        .call(&mut store, &[Val::String(text.into())])
+        .await
+        .expect("the string crosses both ways under the policy");
+    assert_eq!(result.as_ref(), &[Val::U32(text.len() as u32)]);
 }
 
 #[path = "support/backend.rs"]
